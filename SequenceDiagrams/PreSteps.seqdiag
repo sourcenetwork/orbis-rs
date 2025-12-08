@@ -1,0 +1,8 @@
+Alice->Charlie: Do DKG (with params)
+Alice->Dave: Do DKG (with params)
+Charlie->Dave: Crypto nerd math
+Dave->Charlie: Crypto nerd math
+Charlie->Charlie: Store ring shard
+Dave->Dave: Store ring shard
+Dave->BulletinBoard: Publick Key
+Charlie->BulletinBoard: Public Key

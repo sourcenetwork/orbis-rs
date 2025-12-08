@@ -1,0 +1,12 @@
+Alice->BulletinBoard: Gets public key of ring (maybe also endpoints?)
+Alice->Alice: Uses Public key to encrypt secret
+Alice->BulletinBoard: Posts Secret (maybe sends to ring to post first?)
+Bob->Bob: Creates keypair to encrypt to
+Bob->BulletinBoard: Gets secrets (and ring nodes info (charlie/Dave))
+Bob->Charlie: Do Crypto nerd math sends public key
+Bob->Dave: Do Crypto nerd math sends public key
+Charlie->Dave: Check ACP then Crypto nerd math
+Dave->Charlie: Check ACP then Crypto nerd math
+Charlie->Bob: sends shares of secret encrypted to bob's key
+Dave->Bob: sends shares of secret encrypted to bob's key
+Bob->Bob: verify/revover/decrypt secret
