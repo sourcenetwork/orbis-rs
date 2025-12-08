@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/network",
+    # Future crates will be added here:
+    # "crates/bulletin-board",
+    # "crates/local-db",
+    # "crates/dkg",
+    # "crates/threshold-dealer",
+    # "crates/orbis-types",
+    # "crates/orbis-core",
+    "bin/orbis-node",
+    # "bin/orbis-encryptor",
+    # "bin/orbis-reader",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+authors = ["Orbis Contributors"]
+license = "MIT OR Apache-2.0"
+rust-version = "1.70"
+
+[workspace.dependencies]
+# Common dependencies across workspace
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+anyhow = "1.0"
+thiserror = "1.0"
+async-trait = "0.1"
+hex = "0.4"
+futures = "0.3"
+
+# Networking
+iroh = "0.95"
+iroh-gossip = "0.95"

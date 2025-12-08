@@ -1,0 +1,15 @@
+[package]
+name = "orbis-node"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+network = { path = "../../crates/network" }
+iroh = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }

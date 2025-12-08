@@ -257,6 +257,7 @@ Bob receives:
 
 ## User to Ring Communication 
 * Rest? Through Libp2p? GRPC?
+* How does the first flow work, do nodes make connections with ring first or wait for message from user then setup connection
 
 ## Authentication
 TODO

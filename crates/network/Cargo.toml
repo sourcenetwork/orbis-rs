@@ -1,0 +1,25 @@
+[package]
+name = "network"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+iroh = "0.95"
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+async-trait = "0.1"
+hex = "0.4"
+futures = "0.3"
+
+[features]
+default = []
+gossip = ["dep:iroh-gossip"]
+
+[dependencies.iroh-gossip]
+version = "0.95"
+optional = true
+
