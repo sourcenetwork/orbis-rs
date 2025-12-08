@@ -3,12 +3,12 @@
 //! This module implements the Network trait using iroh's QUIC-based networking.
 
 use async_trait::async_trait;
+use futures::StreamExt;
+use iroh::endpoint::Connection as IrohConnection;
+use iroh::{Endpoint, EndpointAddr};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use futures::StreamExt;
-use iroh::{Endpoint, EndpointAddr};
-use iroh::endpoint::Connection as IrohConnection;
 
 use crate::error::{NetworkError, Result};
 use crate::r#trait::{Connection, Message, Network, PeerId, ProtocolHandler};
@@ -23,9 +23,10 @@ pub struct IrohNetwork {
 impl IrohNetwork {
     /// Create a new Iroh network instance
     pub async fn new() -> Result<Self> {
-        let endpoint = Endpoint::bind().await
+        let endpoint = Endpoint::bind()
+            .await
             .map_err(|e| NetworkError::Connection(format!("Failed to bind endpoint: {}", e)))?;
-        
+
         let node_id = endpoint.id();
         let peer_id = PeerId::new(node_id.as_bytes().to_vec());
 
@@ -46,10 +47,10 @@ impl IrohNetwork {
         let handlers = Arc::clone(&self.handlers);
         // Clone endpoint to move into spawn
         let endpoint = self.endpoint.clone();
-        
+
         tokio::spawn(async move {
             let mut incoming = endpoint.accept();
-            
+
             // TODO: Fix Accept stream iteration
             // Accept doesn't implement Stream directly - need to check iroh 0.95 docs
             // for correct usage (may need to use a different method or trait)
@@ -63,12 +64,12 @@ impl IrohNetwork {
             //         Ok(conn) => {
             //             let alpn = conn.alpn();
             //             let protocol = String::from_utf8_lossy(&alpn).to_string();
-            //             
+            //
             //             let handlers_read = handlers.read().await;
             //             if let Some(handler) = handlers_read.get(&protocol) {
             //                 let handler = Arc::clone(handler);
             //                 drop(handlers_read);
-            //                 
+            //
             //                 tokio::spawn(async move {
             //                     let connection = IrohConnectionWrapper::new(conn);
             //                     if let Err(e) = handler.handle(Box::new(connection)).await {
@@ -90,29 +91,34 @@ impl IrohNetwork {
 impl Network for IrohNetwork {
     async fn connect(&self, peer_id: &PeerId, protocol: &str) -> Result<Box<dyn Connection>> {
         use iroh::PublicKey;
-        use std::str::FromStr;
         use std::net::SocketAddr;
-        
+        use std::str::FromStr;
+
         // Convert peer_id bytes to PublicKey
         // The peer_id might be in format "node_id" or "node_id@ip:port"
-        let peer_id_str = std::str::from_utf8(peer_id.as_bytes())
-            .map_err(|_| NetworkError::InvalidAddress("Invalid peer ID format - not UTF-8".to_string()))?;
-        
+        let peer_id_str = std::str::from_utf8(peer_id.as_bytes()).map_err(|_| {
+            NetworkError::InvalidAddress("Invalid peer ID format - not UTF-8".to_string())
+        })?;
+
         // Parse the address - could be "node_id" or "node_id@ip:port"
         let (node_id_str, socket_addr_opt) = if let Some((id, addr)) = peer_id_str.split_once('@') {
             (id, Some(addr))
         } else {
             (peer_id_str, None)
         };
-        
+
         let public_key = PublicKey::from_str(node_id_str)
             .map_err(|e| NetworkError::InvalidAddress(format!("Invalid peer ID: {}", e)))?;
-        
+
         // Create EndpointAddr from the public key
         let peer_addr = if let Some(addr_str) = socket_addr_opt {
-            let socket_addr: SocketAddr = addr_str.parse()
-                .map_err(|e| NetworkError::InvalidAddress(format!("Invalid socket address '{}': {}", addr_str, e)))?;
-            
+            let socket_addr: SocketAddr = addr_str.parse().map_err(|e| {
+                NetworkError::InvalidAddress(format!(
+                    "Invalid socket address '{}': {}",
+                    addr_str, e
+                ))
+            })?;
+
             // Add the IP address to the endpoint address
             EndpointAddr::new(public_key).with_ip_addr(socket_addr)
         } else {
@@ -120,13 +126,16 @@ impl Network for IrohNetwork {
             // iroh will try to discover the peer via its discovery mechanisms
             EndpointAddr::new(public_key)
         };
-        
+
         let alpn = protocol.as_bytes().to_vec();
-        
+
         // Connect to the peer
-        let conn = self.endpoint.connect(peer_addr, &alpn).await
+        let conn = self
+            .endpoint
+            .connect(peer_addr, &alpn)
+            .await
             .map_err(|e| NetworkError::Connection(format!("Failed to connect: {}", e)))?;
-        
+
         Ok(Box::new(IrohConnectionWrapper::new(conn)))
     }
 
@@ -166,12 +175,16 @@ impl IrohConnectionWrapper {
 impl Connection for IrohConnectionWrapper {
     async fn send(&mut self, message: Message) -> Result<()> {
         // Use bidirectional stream for reliable message delivery
-        let (mut send, mut recv) = self.conn.open_bi().await
+        let (mut send, mut recv) = self
+            .conn
+            .open_bi()
+            .await
             .map_err(|e| NetworkError::Connection(format!("Failed to open stream: {}", e)))?;
 
         // Send message data
         use tokio::io::AsyncWriteExt;
-        send.write_all(&message.data).await
+        send.write_all(&message.data)
+            .await
             .map_err(|e| NetworkError::Io(e.into()))?;
         send.finish()
             .map_err(|e| NetworkError::Connection(format!("Failed to finish stream: {}", e)))?;
@@ -185,12 +198,16 @@ impl Connection for IrohConnectionWrapper {
 
     async fn recv(&mut self) -> Result<Message> {
         // Accept incoming bidirectional stream
-        let (mut send, mut recv) = self.conn.accept_bi().await
+        let (mut send, mut recv) = self
+            .conn
+            .accept_bi()
+            .await
             .map_err(|e| NetworkError::Connection(format!("Failed to accept stream: {}", e)))?;
 
         // Read message data
         // iroh's read_to_end takes a size limit (usize) and returns Vec<u8>
-        let buffer = recv.read_to_end(1024 * 1024) // 1MB limit
+        let buffer = recv
+            .read_to_end(1024 * 1024) // 1MB limit
             .await
             .map_err(|e| NetworkError::Connection(format!("Failed to read data: {}", e)))?;
 
@@ -198,7 +215,8 @@ impl Connection for IrohConnectionWrapper {
         let protocol = String::from_utf8_lossy(&self.conn.alpn()).to_string();
 
         // Send acknowledgment (optional)
-        send.write_all(b"OK").await
+        send.write_all(b"OK")
+            .await
             .map_err(|e| NetworkError::Io(e.into()))?;
         send.finish()
             .map_err(|e| NetworkError::Connection(format!("Failed to finish stream: {}", e)))?;
@@ -215,4 +233,3 @@ impl Connection for IrohConnectionWrapper {
         &self.peer_id
     }
 }
-

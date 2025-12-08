@@ -7,4 +7,3 @@ pub mod router;
 
 pub use base::IrohNetwork;
 pub use router::Router;
-

@@ -27,4 +27,3 @@ pub enum NetworkError {
 
 /// Result type for network operations
 pub type Result<T> = std::result::Result<T, NetworkError>;
-

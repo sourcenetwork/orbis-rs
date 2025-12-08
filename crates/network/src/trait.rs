@@ -3,8 +3,8 @@
 //! This module defines the core networking abstractions that can be implemented
 //! by various backends (iroh, libp2p, etc.).
 
-use async_trait::async_trait;
 use crate::error::Result;
+use async_trait::async_trait;
 
 /// A peer identifier in the network
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -74,4 +74,3 @@ pub trait Network: Send + Sync {
     /// Get the local address/endpoint
     fn local_address(&self) -> Result<String>;
 }
-

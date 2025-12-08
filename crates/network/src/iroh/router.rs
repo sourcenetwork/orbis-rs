@@ -3,23 +3,23 @@
 //! This module provides a router that can compose multiple protocols
 //! using iroh's ALPN (Application-Layer Protocol Negotiation) support.
 
-use std::sync::Arc;
-use iroh::Endpoint;
-use iroh::protocol::Router as IrohRouter;
 use anyhow::Error as AnyError;
+use iroh::protocol::Router as IrohRouter;
+use iroh::Endpoint;
+use std::sync::Arc;
 
 use crate::error::Result;
-use crate::r#trait::ProtocolHandler;
 use crate::iroh::base::IrohConnectionWrapper;
+use crate::r#trait::ProtocolHandler;
 
 /// ALPN protocol identifiers for Orbis
 pub mod alpn {
     /// DKG protocol between ring nodes
     pub const DKG: &[u8] = b"orbis/dkg/0";
-    
+
     /// Re-encryption requests (Bob → Ring nodes)
     pub const REENCRYPT: &[u8] = b"orbis/reencrypt/0";
-    
+
     /// Ring node coordination
     pub const COORD: &[u8] = b"orbis/coord/0";
 }
@@ -43,8 +43,9 @@ impl Router {
 
     /// Shutdown the router
     pub async fn shutdown(self) -> Result<()> {
-        self.router.shutdown().await
-            .map_err(|e| crate::error::NetworkError::Protocol(format!("Failed to shutdown router: {}", e)))?;
+        self.router.shutdown().await.map_err(|e| {
+            crate::error::NetworkError::Protocol(format!("Failed to shutdown router: {}", e))
+        })?;
         Ok(())
     }
 }
@@ -65,14 +66,12 @@ impl RouterBuilder {
     /// Spawn the router with all registered handlers
     pub fn spawn(self) -> Router {
         let mut builder = IrohRouter::builder(self.endpoint.clone());
-        
+
         for (alpn, handler) in self.handlers {
-            let handler_wrapper = IrohProtocolHandlerWrapper {
-                handler,
-            };
+            let handler_wrapper = IrohProtocolHandlerWrapper { handler };
             builder = builder.accept(alpn, Arc::new(handler_wrapper));
         }
-        
+
         let router = builder.spawn();
         Router { router }
     }
@@ -96,26 +95,25 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
     fn accept(
         &self,
         connection: iroh::endpoint::Connection,
-    ) -> impl std::future::Future<Output = std::result::Result<(), iroh::protocol::AcceptError>> + Send {
+    ) -> impl std::future::Future<Output = std::result::Result<(), iroh::protocol::AcceptError>> + Send
+    {
         let handler = Arc::clone(&self.handler);
         async move {
             // Convert iroh connection to our Connection trait
             let conn = IrohConnectionWrapper::new(connection);
-            
+
             // Call our handler
-            handler.handle(Box::new(conn)).await
-                .map_err(|e| {
-                    // Convert NetworkError to AcceptError
-                    // NetworkError implements std::error::Error via thiserror
-                    // Use the Display implementation to create a string error
-                    iroh::protocol::AcceptError::from_err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e.to_string()
-                    ))
-                })?;
+            handler.handle(Box::new(conn)).await.map_err(|e| {
+                // Convert NetworkError to AcceptError
+                // NetworkError implements std::error::Error via thiserror
+                // Use the Display implementation to create a string error
+                iroh::protocol::AcceptError::from_err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
 
             Ok(())
         }
     }
 }
-
