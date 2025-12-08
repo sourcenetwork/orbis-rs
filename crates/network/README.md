@@ -70,7 +70,7 @@ alpn::COORD  // "orbis/coord/0"
 
 ## Architecture
 
-- **trait_**: Core networking traits (Network, Connection, ProtocolHandler)
+- **trait**: Core networking traits (Network, Connection, ProtocolHandler)
 - **iroh/base**: Iroh QUIC implementation
 - **iroh/router**: ALPN-based protocol routing
 - **error**: Error types for network operations

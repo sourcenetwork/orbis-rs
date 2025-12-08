@@ -9,7 +9,7 @@ use iroh::protocol::Router as IrohRouter;
 use anyhow::Error as AnyError;
 
 use crate::error::Result;
-use crate::trait_::ProtocolHandler;
+use crate::r#trait::ProtocolHandler;
 use crate::iroh::base::IrohConnectionWrapper;
 
 /// ALPN protocol identifiers for Orbis

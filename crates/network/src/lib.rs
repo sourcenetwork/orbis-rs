@@ -6,10 +6,10 @@
 
 pub mod error;
 pub mod iroh;
-pub mod trait_;
+pub mod r#trait;
 
 pub use error::{NetworkError, Result};
 pub use iroh::IrohNetwork;
 pub use iroh::router::Router as IrohRouter;
-pub use trait_::{Connection, Message, Network, PeerId, ProtocolHandler};
+pub use r#trait::{Connection, Message, Network, PeerId, ProtocolHandler};
 

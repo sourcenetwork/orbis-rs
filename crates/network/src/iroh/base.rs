@@ -11,7 +11,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh::endpoint::Connection as IrohConnection;
 
 use crate::error::{NetworkError, Result};
-use crate::trait_::{Connection, Message, Network, PeerId, ProtocolHandler};
+use crate::r#trait::{Connection, Message, Network, PeerId, ProtocolHandler};
 
 /// Iroh-based network implementation
 pub struct IrohNetwork {
