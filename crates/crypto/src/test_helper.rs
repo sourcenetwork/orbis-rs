@@ -55,6 +55,24 @@ where
     where
         F: Fn(u32, usize, usize) -> Result<Box<Node>>,
     {
+        // Validate parameters
+        if node_count == 0 {
+            return Err(CryptoError::DKGError(
+                "node_count must be greater than 0".to_string(),
+            ));
+        }
+        if threshold == 0 {
+            return Err(CryptoError::DKGError(
+                "threshold must be greater than 0".to_string(),
+            ));
+        }
+        if threshold > node_count {
+            return Err(CryptoError::DKGError(format!(
+                "threshold ({}) cannot exceed node_count ({})",
+                threshold, node_count
+            )));
+        }
+
         let mut nodes = Vec::new();
 
         // Generate a shared session ID for all nodes (in real system, this would be agreed upon)
@@ -188,7 +206,7 @@ where
 #[cfg(test)]
 pub mod generic_tests {
     use super::*;
-    use crate::r#trait::PubPoly;
+    use crate::r#trait::{PolynomialCommitment, PubPoly};
 
     /// Run a basic DKG test with the given parameters
     ///
@@ -311,5 +329,159 @@ pub mod generic_tests {
         Z: Fn(&Node::PublicKey) -> bool,
     {
         test_dkg_basic(node_factory, 5, 3, check_zero)
+    }
+
+    /// Test polynomial commitment verification
+    ///
+    /// Verifies that polynomial commitments can correctly verify shares.
+    /// This tests the PolynomialCommitment trait implementation.
+    ///
+    /// # Arguments
+    /// * `node_factory` - Function that creates a DKG node
+    /// * `create_wrong_share` - Function that creates an invalid share value for testing
+    pub fn test_polynomial_commitment_verification<Node, F, CreateWrong>(
+        node_factory: F,
+        create_wrong_share: CreateWrong,
+    ) -> Result<()>
+    where
+        Node: TestDkgNode,
+        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PubPoly: Clone,
+        Node::PolynomialCommitment: Clone,
+        Node::ShareValue: Clone,
+        F: Fn(u32, usize, usize) -> Result<Box<Node>>,
+        CreateWrong: Fn() -> Node::ShareValue,
+    {
+        // Create a node and generate a polynomial
+        let mut node = *node_factory(1, 2, 3)?;
+        node.generate_polynomial()?;
+
+        let commitment = node.commitment();
+
+        // Get a valid share by generating shares and taking one
+        let shares = node.generate_shares()?;
+        let test_share = shares
+            .first()
+            .ok_or_else(|| CryptoError::DKGError("No shares generated".to_string()))?;
+
+        // Verify the valid share
+        assert!(
+            commitment.verify_share(test_share.to_id, &test_share.value),
+            "Valid share should verify correctly"
+        );
+
+        // Verify that a wrong share fails
+        let wrong_value = create_wrong_share();
+        assert!(
+            !commitment.verify_share(test_share.to_id, &wrong_value),
+            "Wrong share should fail verification"
+        );
+
+        Ok(())
+    }
+
+    /// Test invalid threshold parameters
+    ///
+    /// Verifies that the coordinator rejects invalid threshold configurations.
+    pub fn test_invalid_threshold<Node, F>(
+        node_factory: F,
+    ) -> Result<()>
+    where
+        Node: TestDkgNode,
+        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PubPoly: Clone,
+        Node::PolynomialCommitment: Clone,
+        Node::ShareValue: Clone,
+        F: Fn(u32, usize, usize) -> Result<Box<Node>> + Clone,
+    {
+        // Test threshold > node_count
+        let result = DKGCoordinator::new(node_factory.clone(), 3, 4);
+        assert!(
+            result.is_err(),
+            "Should reject threshold (4) greater than node_count (3)"
+        );
+
+        // Test threshold == 0
+        let result = DKGCoordinator::new(node_factory.clone(), 3, 0);
+        assert!(
+            result.is_err(),
+            "Should reject threshold of 0"
+        );
+
+        // Test node_count == 0
+        let result = DKGCoordinator::new(node_factory, 0, 1);
+        assert!(
+            result.is_err(),
+            "Should reject node_count of 0"
+        );
+
+        Ok(())
+    }
+
+    /// Test that share verification fails with wrong/tampered shares
+    ///
+    /// Verifies that shares that don't match their commitments are rejected.
+    pub fn test_share_verification_fails_with_wrong_commitment<Node, F, CreateShare>(
+        node_factory: F,
+        create_invalid_share: CreateShare,
+    ) -> Result<()>
+    where
+        Node: TestDkgNode,
+        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PubPoly: Clone,
+        Node::PolynomialCommitment: Clone,
+        Node::ShareValue: Clone,
+        F: Fn(u32, usize, usize) -> Result<Box<Node>> + Clone,
+        CreateShare: Fn(u32, u32, u64) -> crate::r#trait::DistributedShare<Node::ShareValue>,
+    {
+        // Create two nodes with same session ID
+        use rand_core::{OsRng, RngCore};
+        let mut rng = OsRng;
+        let mut session_id_bytes = [0u8; 8];
+        rng.fill_bytes(&mut session_id_bytes);
+        let session_id = u64::from_le_bytes(session_id_bytes);
+
+        let mut node1 = *node_factory(1, 2, 3)?;
+        let mut node2 = *node_factory(2, 2, 3)?;
+
+        // Set same session ID for both nodes (for testing)
+        node1.set_session_id(session_id);
+        node2.set_session_id(session_id);
+
+        // Generate polynomials
+        node1.generate_polynomial()?;
+        node2.generate_polynomial()?;
+
+        // Node 2 receives node 1's commitment
+        node2.receive_commitment(1, node1.commitment())?;
+
+        // Node 1 generates shares
+        let shares = node1.generate_shares()?;
+        let share_for_node2 = shares
+            .iter()
+            .find(|s| s.to_id == 2)
+            .ok_or_else(|| CryptoError::DKGError("Share for node 2 not found".to_string()))?;
+
+        // This should succeed
+        assert!(
+            node2.receive_share(share_for_node2.clone()).is_ok(),
+            "Valid share should be accepted"
+        );
+
+        // Create a fresh node2 to test the tampered share
+        let mut node2_fresh = *node_factory(2, 2, 3)?;
+        node2_fresh.set_session_id(session_id);
+        node2_fresh.receive_commitment(1, node1.commitment())?;
+
+        // Create a tampered share
+        let tampered_share = create_invalid_share(1, 2, session_id);
+
+        // This should fail
+        assert!(
+            node2_fresh.receive_share(tampered_share).is_err(),
+            "Tampered share should be rejected"
+        );
+
+        Ok(())
     }
 }
