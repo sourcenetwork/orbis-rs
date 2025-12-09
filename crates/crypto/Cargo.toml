@@ -10,3 +10,10 @@ rust-version.workspace = true
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 ark-bls12-381 = "0.4"
+ark-ec = "0.4"
+ark-ff = "0.4"
+ark-std = "0.4"
+ark-serialize = "0.4"
+rand = "0.8"
+rand_core = "0.6"
+subtle = "2.5"

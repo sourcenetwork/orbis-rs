@@ -4,3 +4,5 @@
 //! by various curves.
 pub mod error;
 pub mod r#trait;
+
+pub mod bls12_381;
