@@ -5,13 +5,9 @@ members = [
     # Future crates will be added here:
     # "crates/bulletin-board",
     # "crates/local-db",
-    # "crates/dkg",
-    # "crates/threshold-dealer",
     # "crates/orbis-types",
     # "crates/orbis-core",
-    "bin/orbis-node",
-    # "bin/orbis-encryptor",
-    # "bin/orbis-reader",
+    "bin/orbis-node", "crates/crypto",
 ]
 
 [workspace.package]
