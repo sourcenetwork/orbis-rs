@@ -1,13 +1,9 @@
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::{AffineRepr, Group};
 use ark_ff::Zero;
-use ark_serialize::CanonicalSerialize;
 use ark_std::{vec::Vec, UniformRand};
 use rand_core::{OsRng, RngCore};
 use std::collections::HashMap;
-use std::error::Error;
-use std::fmt;
-use subtle::ConstantTimeEq;
 
 use super::common::{PolynomialCommitment, PubPoly};
 use crate::{
@@ -317,5 +313,39 @@ impl DKGNode {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+impl crate::test_helper::TestDkgNode for DKGNode {
+    fn id(&self) -> u32 {
+        self.id
+    }
+
+    fn commitment(&self) -> Self::PolynomialCommitment {
+        self.commitment.clone()
+    }
+
+    fn set_session_id(&mut self, session_id: u64) {
+        self.session_id = session_id;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dkg_tests::run_all_tests;
+    use crate::r#trait::PubPoly;
+    use crate::test_helper::{generic_tests, DKGCoordinator};
+    
+    #[test]
+    fn test_all_dkg_tests() {
+        // Run all generic DKG tests using the convenience function
+        run_all_tests(
+            |id, threshold, total_nodes| DKGNode::new(id, threshold, total_nodes),
+            |pk: &G1Affine| *pk == G1Affine::zero(),
+            |share_value: &Fr| (G1Projective::generator() * share_value).into(),
+        )
+        .unwrap();
     }
 }

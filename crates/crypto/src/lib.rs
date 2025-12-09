@@ -6,3 +6,9 @@ pub mod error;
 pub mod r#trait;
 
 pub mod bls12_381;
+
+#[cfg(test)]
+pub mod test_helper;
+
+#[cfg(test)]
+mod dkg_tests;
