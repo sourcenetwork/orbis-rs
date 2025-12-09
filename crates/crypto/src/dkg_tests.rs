@@ -25,7 +25,7 @@
 //! ```
 use crate::error::Result;
 use crate::r#trait::PubPoly;
-use crate::test_helper::{generic_tests, DKGCoordinator};
+use crate::test_helper::generic_tests;
 
 /// Run all generic DKG tests for a given implementation
 ///
@@ -47,9 +47,7 @@ pub fn run_all_tests<Node, F, Z, G, W, I>(
 ) -> Result<()>
 where
     Node: crate::test_helper::TestDkgNode,
-    Node::PublicKey: ark_serialize::CanonicalSerialize
-        + PartialEq
-        + std::fmt::Debug,
+    Node::PublicKey: ark_serialize::CanonicalSerialize + PartialEq + std::fmt::Debug,
     Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
     Node::PolynomialCommitment: Clone,
     Node::ShareValue: Clone,
@@ -62,12 +60,7 @@ where
     // Run all the generic tests
     generic_tests::test_dkg_2_of_3(node_factory.clone(), Some(check_zero.clone()))?;
     generic_tests::test_dkg_3_of_5(node_factory.clone(), Some(check_zero.clone()))?;
-    generic_tests::test_shares_match_pub_poly(
-        node_factory.clone(),
-        3,
-        2,
-        share_to_pubkey.clone(),
-    )?;
+    generic_tests::test_shares_match_pub_poly(node_factory.clone(), 3, 2, share_to_pubkey.clone())?;
     generic_tests::test_polynomial_commitment_verification(
         node_factory.clone(),
         create_wrong_share.clone(),
@@ -80,4 +73,3 @@ where
 
     Ok(())
 }
-

@@ -296,10 +296,7 @@ pub mod generic_tests {
     /// Test DKG with 2-of-3 threshold
     ///
     /// This is a common test case: 3 nodes with threshold 2.
-    pub fn test_dkg_2_of_3<Node, F, Z>(
-        node_factory: F,
-        check_zero: Option<Z>,
-    ) -> Result<()>
+    pub fn test_dkg_2_of_3<Node, F, Z>(node_factory: F, check_zero: Option<Z>) -> Result<()>
     where
         Node: TestDkgNode,
         Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
@@ -315,10 +312,7 @@ pub mod generic_tests {
     /// Test DKG with 3-of-5 threshold
     ///
     /// Tests a larger scenario with 5 nodes and threshold 3.
-    pub fn test_dkg_3_of_5<Node, F, Z>(
-        node_factory: F,
-        check_zero: Option<Z>,
-    ) -> Result<()>
+    pub fn test_dkg_3_of_5<Node, F, Z>(node_factory: F, check_zero: Option<Z>) -> Result<()>
     where
         Node: TestDkgNode,
         Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
@@ -383,9 +377,7 @@ pub mod generic_tests {
     /// Test invalid threshold parameters
     ///
     /// Verifies that the coordinator rejects invalid threshold configurations.
-    pub fn test_invalid_threshold<Node, F>(
-        node_factory: F,
-    ) -> Result<()>
+    pub fn test_invalid_threshold<Node, F>(node_factory: F) -> Result<()>
     where
         Node: TestDkgNode,
         Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
@@ -403,17 +395,11 @@ pub mod generic_tests {
 
         // Test threshold == 0
         let result = DKGCoordinator::new(node_factory.clone(), 3, 0);
-        assert!(
-            result.is_err(),
-            "Should reject threshold of 0"
-        );
+        assert!(result.is_err(), "Should reject threshold of 0");
 
         // Test node_count == 0
         let result = DKGCoordinator::new(node_factory, 0, 1);
-        assert!(
-            result.is_err(),
-            "Should reject node_count of 0"
-        );
+        assert!(result.is_err(), "Should reject node_count of 0");
 
         Ok(())
     }
