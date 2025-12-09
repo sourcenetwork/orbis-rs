@@ -38,18 +38,21 @@ pub trait PolynomialCommitment: Clone + Debug + Send + Sync {
     fn verify_share(&self, share_id: i32, share_value: &Self::ShareValue) -> bool;
 }
 
-pub trait DKG: Send + Sync {
+pub trait Dkg: Send + Sync {
     type ShareValue;
     type PublicKey;
     type PubPoly: PubPoly<PublicKey = Self::PublicKey>;
-
+    type PolynomialCommitment: PolynomialCommitment<
+        PublicKey = Self::PublicKey,
+        ShareValue = Self::ShareValue,
+    >;
     /// Initialize a new DKG node
     ///
     /// # Arguments
     /// * `id` - Unique identifier for this node (1-indexed)
     /// * `threshold` - Minimum number of nodes needed to reconstruct (t)
     /// * `total_nodes` - Total number of participating nodes (n)
-    fn new(id: u32, threshold: usize, total_nodes: usize) -> Result<Box<Self>>
+    fn new(id: i32, threshold: usize, total_nodes: usize) -> Result<Box<Self>>
     where
         Self: Sized;
     /// Phase 1: Generate and broadcast polynomial commitment
@@ -60,13 +63,17 @@ pub trait DKG: Send + Sync {
     /// Phase 2: Generate shares for all other nodes
     ///
     /// Returns a vector of shares to be sent to each node
-    fn generate_shares(&self) -> Result<DistributedShare<Self::ShareValue>>;
+    fn generate_shares(&self) -> Result<Vec<DistributedShare<Self::ShareValue>>>;
 
     /// Phase 3: Receive and verify a share from another node
     fn receive_share(&mut self, share: DistributedShare<Self::ShareValue>) -> Result<()>;
 
     /// Receive a commitment from another node
-    fn receive_commitment(&mut self, from_id: i32, commitment: Self::PublicKey) -> Result<()>;
+    fn receive_commitment(
+        &mut self,
+        from_id: i32,
+        commitment: Self::PolynomialCommitment,
+    ) -> Result<()>;
 
     /// Phase 4: Compute the final secret share
     ///
