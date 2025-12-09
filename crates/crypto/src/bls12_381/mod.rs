@@ -1,2 +1,2 @@
+pub mod common;
 pub mod dkg;
-pub mod pub_poly;

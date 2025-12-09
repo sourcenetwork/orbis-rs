@@ -4,6 +4,7 @@
 //! by various Curves.
 use crate::error::Result;
 use std::collections::HashMap;
+use std::fmt::Debug;
 
 /// A share distributed by one participant to another
 #[derive(Clone, Debug)]
@@ -22,21 +23,26 @@ pub struct PriShare<ShareValue> {
     pub v: ShareValue,
 }
 
-/// A polynomial commitment
-#[derive(Clone, Debug)]
-pub struct PolynomialCommitment<PublicKey> {
-    pub coefficients: Vec<PublicKey>, // Commitments to polynomial coefficients
-}
-
-pub trait PubPoly {
+pub trait PubPoly: Clone + Debug + Send + Sync {
     type PublicKey;
+    /// Evaluate the public polynomial at index i
     fn eval(&self, i: i32) -> Self::PublicKey;
 }
 
-pub trait DKG {
+pub trait PolynomialCommitment: Clone + Debug + Send + Sync {
+    type PublicKey;
+    type ShareValue;
+    /// Evaluate the polynomial commitment at index i
+    fn eval(&self, i: i32) -> Self::PublicKey;
+    /// Verify a share against this commitment using constant-time comparison
+    fn verify_share(&self, share_id: i32, share_value: &Self::ShareValue) -> bool;
+}
+
+pub trait DKG: Send + Sync {
     type ShareValue;
     type PublicKey;
     type PubPoly: PubPoly<PublicKey = Self::PublicKey>;
+
     /// Initialize a new DKG node
     ///
     /// # Arguments

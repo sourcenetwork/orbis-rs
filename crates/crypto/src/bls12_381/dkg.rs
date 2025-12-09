@@ -8,3 +8,6 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use subtle::ConstantTimeEq;
+
+use super::common::PubPoly;
+use crate::r#trait::{PriShare, DKG};
