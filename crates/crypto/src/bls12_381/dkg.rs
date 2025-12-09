@@ -18,7 +18,7 @@ use crate::{
 /// Complete DKG state for a single node
 #[derive(Clone, Debug)]
 pub struct DKGNode {
-    pub id: i32,
+    pub id: u32,
     pub threshold: usize,
     pub total_nodes: usize,
 
@@ -29,19 +29,19 @@ pub struct DKGNode {
     pub commitment: PolynomialCommitment,
 
     // Shares received from other nodes
-    received_shares: HashMap<i32, Fr>, // from_id -> share_value
+    received_shares: HashMap<u32, Fr>, // from_id -> share_value
 
     // Commitments received from other nodes
-    received_commitments: HashMap<i32, PolynomialCommitment>,
+    received_commitments: HashMap<u32, PolynomialCommitment>,
 
     // Session ID for this DKG run (prevents replay attacks)
     pub session_id: u64,
 
     // Track received nonces to prevent replay
-    received_nonces: HashMap<i32, Vec<[u8; 16]>>, // from_id -> list of nonces
+    received_nonces: HashMap<u32, Vec<[u8; 16]>>, // from_id -> list of nonces
 
     // Track complaints about malicious nodes
-    complaints: HashMap<i32, Vec<i32>>, // complainer_id -> list of accused_ids
+    complaints: HashMap<u32, Vec<u32>>, // complainer_id -> list of accused_ids
 }
 
 impl Dkg for DKGNode {
@@ -50,8 +50,8 @@ impl Dkg for DKGNode {
     type PubPoly = PubPoly;
     type PolynomialCommitment = PolynomialCommitment;
 
-    fn new(id: i32, threshold: usize, total_nodes: usize) -> Result<Box<Self>> {
-        if id < 1 || id > total_nodes as i32 {
+    fn new(id: u32, threshold: usize, total_nodes: usize) -> Result<Box<Self>> {
+        if id == 0 || id > total_nodes as u32 {
             return Err(CryptoError::DKGError(format!(
                 "Invalid node id: {} (must be between 1 and {})",
                 id, total_nodes
@@ -119,7 +119,7 @@ impl Dkg for DKGNode {
         let mut rng = OsRng;
         let mut shares = Vec::new();
 
-        for to_id in 1..=self.total_nodes as i32 {
+        for to_id in 1..=self.total_nodes as u32 {
             let share_value = self.eval_polynomial(to_id);
 
             // Generate nonce for replay protection
@@ -197,8 +197,8 @@ impl Dkg for DKGNode {
         Ok(())
     }
 
-    fn receive_commitment(&mut self, from_id: i32, commitment: PolynomialCommitment) -> Result<()> {
-        if from_id < 1 || from_id > self.total_nodes as i32 {
+    fn receive_commitment(&mut self, from_id: u32, commitment: PolynomialCommitment) -> Result<()> {
+        if from_id == 0 || from_id > self.total_nodes as u32 {
             return Err(CryptoError::DKGError(format!(
                 "Invalid node id: {}",
                 from_id
@@ -270,7 +270,7 @@ impl Dkg for DKGNode {
 
         Ok(result)
     }
-    fn get_complaints(&self) -> &HashMap<i32, Vec<i32>> {
+    fn get_complaints(&self) -> &HashMap<u32, Vec<u32>> {
         &self.complaints
     }
 
@@ -302,7 +302,7 @@ impl Dkg for DKGNode {
 }
 
 impl DKGNode {
-    pub fn eval_polynomial(&self, x: i32) -> Fr {
+    pub fn eval_polynomial(&self, x: u32) -> Fr {
         if self.polynomial_coeffs.is_empty() {
             return Fr::zero();
         }

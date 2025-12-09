@@ -14,7 +14,7 @@ impl PubPolyTrait for PubPoly {
     type PublicKey = G1Affine;
 
     /// Evaluate the public polynomial at index i
-    fn eval(&self, i: i32) -> Self::PublicKey {
+    fn eval(&self, i: u32) -> Self::PublicKey {
         if self.commits.is_empty() {
             return G1Affine::zero();
         }
@@ -42,7 +42,7 @@ impl PolynomialCommitmentTrait for PolynomialCommitment {
     type PublicKey = G1Affine;
     type ShareValue = Fr;
 
-    fn eval(&self, x: i32) -> G1Affine {
+    fn eval(&self, x: u32) -> G1Affine {
         if self.coefficients.is_empty() {
             return G1Affine::zero();
         }
@@ -59,7 +59,7 @@ impl PolynomialCommitmentTrait for PolynomialCommitment {
         result.into()
     }
 
-    fn verify_share(&self, share_id: i32, share_value: &Fr) -> bool {
+    fn verify_share(&self, share_id: u32, share_value: &Fr) -> bool {
         let expected = self.eval(share_id);
         let actual: G1Affine = (G1Projective::generator() * share_value).into();
 

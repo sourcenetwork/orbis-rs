@@ -9,8 +9,8 @@ use std::fmt::Debug;
 /// A share distributed by one participant to another
 #[derive(Clone, Debug)]
 pub struct DistributedShare<ShareValue> {
-    pub from_id: i32,
-    pub to_id: i32,
+    pub from_id: u32,
+    pub to_id: u32,
     pub value: ShareValue,
     pub nonce: [u8; 16], // Nonce to prevent replay attacks
     pub session_id: u64, // Session ID to prevent replay attacks
@@ -19,23 +19,23 @@ pub struct DistributedShare<ShareValue> {
 /// Private share containing an index and a scalar value
 #[derive(Clone, Debug)]
 pub struct PriShare<ShareValue> {
-    pub i: i32,
+    pub i: u32,
     pub v: ShareValue,
 }
 
 pub trait PubPoly: Clone + Debug + Send + Sync {
     type PublicKey;
     /// Evaluate the public polynomial at index i
-    fn eval(&self, i: i32) -> Self::PublicKey;
+    fn eval(&self, i: u32) -> Self::PublicKey;
 }
 
 pub trait PolynomialCommitment: Clone + Debug + Send + Sync {
     type PublicKey;
     type ShareValue;
     /// Evaluate the polynomial commitment at index i
-    fn eval(&self, i: i32) -> Self::PublicKey;
+    fn eval(&self, i: u32) -> Self::PublicKey;
     /// Verify a share against this commitment using constant-time comparison
-    fn verify_share(&self, share_id: i32, share_value: &Self::ShareValue) -> bool;
+    fn verify_share(&self, share_id: u32, share_value: &Self::ShareValue) -> bool;
 }
 
 pub trait Dkg: Send + Sync {
@@ -52,7 +52,7 @@ pub trait Dkg: Send + Sync {
     /// * `id` - Unique identifier for this node (1-indexed)
     /// * `threshold` - Minimum number of nodes needed to reconstruct (t)
     /// * `total_nodes` - Total number of participating nodes (n)
-    fn new(id: i32, threshold: usize, total_nodes: usize) -> Result<Box<Self>>
+    fn new(id: u32, threshold: usize, total_nodes: usize) -> Result<Box<Self>>
     where
         Self: Sized;
     /// Phase 1: Generate and broadcast polynomial commitment
@@ -71,7 +71,7 @@ pub trait Dkg: Send + Sync {
     /// Receive a commitment from another node
     fn receive_commitment(
         &mut self,
-        from_id: i32,
+        from_id: u32,
         commitment: Self::PolynomialCommitment,
     ) -> Result<()>;
 
@@ -87,7 +87,7 @@ pub trait Dkg: Send + Sync {
     /// in their polynomial commitments
     fn compute_aggregate_public_key(&self) -> Result<Self::PublicKey>;
     /// Get complaints about malicious nodes
-    fn get_complaints(&self) -> &HashMap<i32, Vec<i32>>;
+    fn get_complaints(&self) -> &HashMap<u32, Vec<u32>>;
     /// Compute the public polynomial (sum of all commitments)
     ///
     /// This is used for verification in the re-encryption protocol
