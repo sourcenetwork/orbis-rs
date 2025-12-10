@@ -1,17 +1,15 @@
 // Include the generated proto code
-pub mod server;
+pub mod dkg;
 
+use crate::dkg::service::CryptoServiceImpl;
 use clap::Parser;
-use server::CryptoServiceImpl;
 use std::net::SocketAddr;
-use tonic::{Request, Response, Status};
+
 pub mod crypto_service {
     tonic::include_proto!("crypto_service");
 }
-use crypto_service::{
-    crypto_service_server::{CryptoService, CryptoServiceServer},
-    EncryptionRequest, EncryptionResponse, StartDkgRequest, StartDkgResponse,
-};
+
+use crypto_service::crypto_service_server::CryptoServiceServer;
 
 #[derive(Parser, Debug)]
 #[command(name = "orbis-node")]

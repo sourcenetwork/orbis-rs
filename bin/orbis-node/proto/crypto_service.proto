@@ -4,7 +4,6 @@ package crypto_service;
 
 service CryptoService {
   rpc StartDkg(StartDkgRequest) returns (StartDkgResponse);
-  rpc RequestEncryption(EncryptionRequest) returns (EncryptionResponse);
 }
 
 message StartDkgRequest {
