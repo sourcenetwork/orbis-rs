@@ -1,14 +1,34 @@
+use crate::app_state::{AppState, DkgSession};
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
 use crate::crypto_service::{
     crypto_service_server::CryptoService, EncryptionRequest, EncryptionResponse, StartDkgRequest,
     StartDkgResponse,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Implementation of the CryptoService
-#[derive(Debug, Default)]
-pub struct CryptoServiceImpl;
+#[derive(Debug)]
+pub struct CryptoServiceImpl {
+    pub state: AppState,
+}
+
+impl CryptoServiceImpl {
+    /// Create a new CryptoServiceImpl with shared application state
+    pub fn new(state: AppState) -> Self {
+        Self { state }
+    }
+}
+
+impl Default for CryptoServiceImpl {
+    fn default() -> Self {
+        Self::new(AppState::new(
+            "default-node".to_string(),
+            "[::1]:50051".to_string(),
+        ))
+    }
+}
 
 #[tonic::async_trait]
 impl CryptoService for CryptoServiceImpl {
@@ -30,6 +50,18 @@ impl CryptoService for CryptoServiceImpl {
             .duration_since(UNIX_EPOCH)
             .map_err(|e| Status::internal(format!("Failed to get timestamp: {}", e)))?
             .as_secs() as i64;
+
+        // Store session in shared state
+        let session = DkgSession {
+            session_id: req.session_id.clone(),
+            threshold: req.threshold,
+            total_participants: req.total_participants,
+            participant_ids: req.participant_ids.clone(),
+            status: "started".to_string(),
+            created_at,
+            parameters: req.parameters.clone(),
+        };
+        self.state.store_dkg_session(session).await;
 
         let response = StartDkgResponse {
             session_id: req.session_id.clone(),
