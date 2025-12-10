@@ -256,14 +256,19 @@ Bob receives:
 ---
 
 ## User to Ring Communication 
-* Rest? Through Libp2p? GRPC?
-* How does the first flow work, do nodes make connections with ring first or wait for message from user then setup connection
+* GRPC -> https question?
 
 ## Authentication
 TODO
 * Authentication is meant to use acp from source hub. 
 * unexplored open to input
-
+* When alice stores a secret she sends an ACP policy
+* its own trait (sourcehub or something else)
 
 ## Networking
 * TODO: look into iroh at first, maybe make it a triat and be generalizable as long as it is a channel
+* keep channels open (fine)
+
+- Relayer node (builds pieces back)
+- 
+- proxy re-encryption proof of encryption to public dkg key stored with secret in verify

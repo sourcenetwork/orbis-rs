@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package crypto_service;
+
+service CryptoService {
+  rpc StartDkg(StartDkgRequest) returns (StartDkgResponse);
+  rpc RequestEncryption(EncryptionRequest) returns (EncryptionResponse);
+}
+
+message StartDkgRequest {
+  string session_id = 1;
+  uint32 threshold = 2;
+  uint32 total_participants = 3;
+  repeated string participant_ids = 4;
+  map<string, string> parameters = 5;
+}
+
+message StartDkgResponse {
+  string session_id = 1;
+  string status = 2;
+  string message = 3;
+  int64 created_at = 4;
+}
+
+message EncryptionRequest {
+  string key_id = 1;
+  bytes plaintext = 2;
+  string encryption_algorithm = 3;
+  map<string, string> metadata = 4;
+}
+
+message EncryptionResponse {
+  string request_id = 1;
+  bytes ciphertext = 2;
+  bytes nonce = 3;
+  string algorithm_used = 4;
+  int64 encrypted_at = 5;
+}
