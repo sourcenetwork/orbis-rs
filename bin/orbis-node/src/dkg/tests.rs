@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::helpers::test_helpers::create_test_app_state_default;
+    use crate::helpers::test_helpers::{create_test_app_state_default, setup_three_node_network};
     use crate::{
         crypto_service::{crypto_service_server::CryptoService, StartDkgRequest},
         CryptoServiceImpl,
@@ -171,77 +171,15 @@ mod tests {
     /// establish connections to each other.
     #[tokio::test]
     async fn test_three_nodes_connect() {
-        use crate::helpers::test_helpers::create_test_app_state;
-        use network::Network;
+        // Set up three-node network with routers started for Bob and Charlie
+        let mut network = setup_three_node_network(true).await;
 
-        // Create three nodes: Alice, Bob, and Charlie
-        println!("Creating three test nodes...");
-        let alice_state =
-            create_test_app_state(Some("alice".to_string()), Some("127.0.0.1:0".to_string())).await;
-        let bob_state =
-            create_test_app_state(Some("bob".to_string()), Some("127.0.0.1:0".to_string())).await;
-        let charlie_state =
-            create_test_app_state(Some("charlie".to_string()), Some("127.0.0.1:0".to_string()))
-                .await;
+        // Get peer IDs for connection (Bob and Charlie)
+        let peer_ids = network.get_peer_ids_for_connection();
+        println!("Peer IDs for connection: {:?}", peer_ids);
 
-        // Get peer IDs (iroh PublicKey strings) for each node
-        let alice_peer_id = alice_state.network.local_peer_id();
-        let alice_address = alice_state
-            .network
-            .local_address()
-            .expect("Failed to get Alice's address");
-
-        let bob_peer_id = bob_state.network.local_peer_id();
-        let bob_address = bob_state
-            .network
-            .local_address()
-            .expect("Failed to get Bob's address");
-
-        let charlie_peer_id = charlie_state.network.local_peer_id();
-        let charlie_address = charlie_state
-            .network
-            .local_address()
-            .expect("Failed to get Charlie's address");
-
-        println!(
-            "Alice - Peer ID: {}, Address: {}",
-            hex::encode(alice_peer_id.as_bytes()),
-            alice_address
-        );
-        println!(
-            "Bob - Peer ID: {}, Address: {}",
-            hex::encode(bob_peer_id.as_bytes()),
-            bob_address
-        );
-        println!(
-            "Charlie - Peer ID: {}, Address: {}",
-            hex::encode(charlie_peer_id.as_bytes()),
-            charlie_address
-        );
-
-        // Start routers for Bob and Charlie so they can accept incoming connections
-        println!("Starting routers for Bob and Charlie...");
-        let bob_endpoint = bob_state.network.endpoint().clone();
-        let bob_router = network::IrohRouter::builder(bob_endpoint).spawn();
-
-        let charlie_endpoint = charlie_state.network.endpoint().clone();
-        let charlie_router = network::IrohRouter::builder(charlie_endpoint).spawn();
-
-        // Use the node addresses (PublicKey strings) as peer IDs for connection
-        // The local_address() returns the iroh PublicKey string representation
-        // Format: "node_id" or "node_id@ip:port" - we'll use just "node_id" for now
-        // In a production environment, you'd include the IP:port if known
-        let bob_peer_id_formatted = bob_address.clone();
-        let charlie_peer_id_formatted = charlie_address.clone();
-
-        println!("Bob peer ID for connection: {}", bob_peer_id_formatted);
-        println!(
-            "Charlie peer ID for connection: {}",
-            charlie_peer_id_formatted
-        );
-
-        // Create Alice's service
-        let alice_service = CryptoServiceImpl::new(alice_state);
+        // Create Alice's service (clone app_state to avoid move)
+        let alice_service = CryptoServiceImpl::new(network.alice.app_state.clone());
 
         // Alice sends StartDkgRequest with Bob and Charlie's peer IDs
         let request = StartDkgRequest {
@@ -253,7 +191,7 @@ mod tests {
                 "bob".to_string(),
                 "charlie".to_string(),
             ],
-            peer_ids: vec![bob_peer_id_formatted, charlie_peer_id_formatted],
+            peer_ids,
             parameters: {
                 let mut map = HashMap::new();
                 map.insert("key_type".to_string(), "BLS12_381".to_string());
@@ -282,14 +220,10 @@ mod tests {
 
         // Clean up routers
         println!("Cleaning up routers...");
-        bob_router
-            .shutdown()
+        network
+            .shutdown_routers()
             .await
-            .expect("Failed to shutdown Bob's router");
-        charlie_router
-            .shutdown()
-            .await
-            .expect("Failed to shutdown Charlie's router");
+            .expect("Failed to shutdown routers");
 
         println!("Test completed successfully!");
     }
