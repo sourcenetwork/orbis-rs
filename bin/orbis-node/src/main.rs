@@ -6,6 +6,7 @@ use crate::dkg::service::CryptoServiceImpl;
 use app_state::AppState;
 use clap::Parser;
 use std::net::SocketAddr;
+use network::Network;
 
 pub mod crypto_service {
     tonic::include_proto!("crypto_service");
@@ -27,22 +28,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let addr: SocketAddr = args.addr.parse()?;
 
+    // Initialize iroh network for node-to-node communication
+    println!("Initializing iroh network...");
+    let network = network::IrohNetwork::new().await
+        .map_err(|e| format!("Failed to initialize iroh network: {}", e))?;
+    
+    // Get the local peer ID and address before wrapping in Arc
+    let local_peer_id = network.local_peer_id();
+    let local_address = network.local_address()
+        .map_err(|e| format!("Failed to get local address: {}", e))?;
+    
+    let network_arc = std::sync::Arc::new(network);
+    
+    println!("Iroh network initialized:");
+    println!("  Local Peer ID: {}", hex::encode(local_peer_id.as_bytes()));
+    println!("  Local Address: {}", local_address);
+
+    // Start the iroh router in the background
+    // The router will handle incoming connections automatically
+    let endpoint = network_arc.endpoint().clone();
+    let router = network::IrohRouter::builder(endpoint)
+        .spawn();
+    
+    println!("Iroh router started and ready to accept connections");
+
     // Create shared application state
     let app_state = AppState::new(
         "orbis-node-1".to_string(), // TODO: Generate or load from config
         args.addr.clone(),
+        network_arc.clone(),
     );
 
     println!("Starting CryptoService gRPC server on {}", addr);
     println!("Server is ready to accept connections...");
+    println!("  gRPC: {} (for user clients)", addr);
+    println!("  Iroh: {} (for node-to-node communication)", local_address);
 
     // Initialize service with shared state
     let service = CryptoServiceImpl::new(app_state.clone());
 
-    tonic::transport::Server::builder()
+    // Start gRPC server
+    let grpc_server = tonic::transport::Server::builder()
         .add_service(CryptoServiceServer::new(service))
-        .serve(addr)
-        .await?;
+        .serve(addr);
+
+    // Run gRPC server (router runs in background automatically)
+    let result = tokio::select! {
+        result = grpc_server => {
+            result
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("Received shutdown signal...");
+            Ok(())
+        }
+    };
+    
+    // Clean shutdown of router
+    println!("Shutting down router...");
+    router.shutdown().await?;
+    
+    result?;
 
     Ok(())
 }

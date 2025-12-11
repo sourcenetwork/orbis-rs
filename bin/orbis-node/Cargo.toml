@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 network = { path = "../../crates/network" }
+crypto = { path = "../../crates/crypto" }
 tonic = "0.14.2"
 tonic-prost = "0.14"
 prost = "0.14.1"
@@ -17,6 +18,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 thiserror = { workspace = true }
+hex = { workspace = true }
 
 
 [build-dependencies]

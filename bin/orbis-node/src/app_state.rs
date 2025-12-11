@@ -1,28 +1,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use crypto::bls12_381::dkg::DKGNode;
+use network::IrohNetwork;
 
 /// Shared application state accessible by all gRPC endpoints
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppState {
     /// Active DKG sessions: session_id -> session metadata
-    pub dkg_sessions: Arc<RwLock<HashMap<String, DkgSession>>>,
+    pub dkg_sessions: Arc<RwLock<HashMap<u64, DKGNode>>>,
     /// Encryption keys: key_id -> key data
     pub encryption_keys: Arc<RwLock<HashMap<String, EncryptionKey>>>,
     /// Server configuration
     pub config: ServerConfig,
-}
-
-/// DKG session metadata
-#[derive(Debug, Clone)]
-pub struct DkgSession {
-    pub session_id: String,
-    pub threshold: u32,
-    pub total_participants: u32,
-    pub participant_ids: Vec<String>,
-    pub status: String,
-    pub created_at: i64,
-    pub parameters: HashMap<String, String>,
+    /// Iroh network for node-to-node communication
+    pub network: Arc<IrohNetwork>,
 }
 
 /// Encryption key data
@@ -43,7 +35,7 @@ pub struct ServerConfig {
 
 impl AppState {
     /// Create a new AppState instance
-    pub fn new(node_id: String, bind_address: String) -> Self {
+    pub fn new(node_id: String, bind_address: String, network: Arc<IrohNetwork>) -> Self {
         Self {
             dkg_sessions: Arc::new(RwLock::new(HashMap::new())),
             encryption_keys: Arc::new(RwLock::new(HashMap::new())),
@@ -51,17 +43,18 @@ impl AppState {
                 node_id,
                 bind_address,
             },
+            network,
         }
     }
 
     /// Get a DKG session by ID
-    pub async fn get_dkg_session(&self, session_id: &str) -> Option<DkgSession> {
+    pub async fn get_dkg_session(&self, session_id: &u64) -> Option<DKGNode> {
         let sessions = self.dkg_sessions.read().await;
         sessions.get(session_id).cloned()
     }
 
     /// Store a DKG session
-    pub async fn store_dkg_session(&self, session: DkgSession) {
+    pub async fn store_dkg_session(&self, session: DKGNode) {
         let mut sessions = self.dkg_sessions.write().await;
         sessions.insert(session.session_id.clone(), session);
     }
@@ -76,5 +69,16 @@ impl AppState {
     pub async fn store_encryption_key(&self, key: EncryptionKey) {
         let mut keys = self.encryption_keys.write().await;
         keys.insert(key.key_id.clone(), key);
+    }
+}
+
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("dkg_sessions", &"<HashMap>")
+            .field("encryption_keys", &"<HashMap>")
+            .field("config", &self.config)
+            .field("network", &"<IrohNetwork>")
+            .finish()
     }
 }

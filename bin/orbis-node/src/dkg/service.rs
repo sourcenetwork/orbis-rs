@@ -1,7 +1,8 @@
-use crate::app_state::{AppState, DkgSession};
+use crate::app_state::{AppState};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
+use crypto::bls12_381::dkg::DKGNode;
 
 use crate::crypto_service::{
     crypto_service_server::CryptoService, EncryptionRequest, EncryptionResponse, StartDkgRequest,
@@ -23,10 +24,9 @@ impl CryptoServiceImpl {
 
 impl Default for CryptoServiceImpl {
     fn default() -> Self {
-        Self::new(AppState::new(
-            "default-node".to_string(),
-            "[::1]:50051".to_string(),
-        ))
+        // Default implementation requires async initialization, so this is a placeholder
+        // In practice, use CryptoServiceImpl::new() with a properly initialized AppState
+        panic!("Default implementation not supported. Use CryptoServiceImpl::new() with initialized AppState")
     }
 }
 
@@ -51,17 +51,17 @@ impl CryptoService for CryptoServiceImpl {
             .map_err(|e| Status::internal(format!("Failed to get timestamp: {}", e)))?
             .as_secs() as i64;
 
-        // Store session in shared state
-        let session = DkgSession {
-            session_id: req.session_id.clone(),
-            threshold: req.threshold,
-            total_participants: req.total_participants,
-            participant_ids: req.participant_ids.clone(),
-            status: "started".to_string(),
-            created_at,
-            parameters: req.parameters.clone(),
-        };
-        self.state.store_dkg_session(session).await;
+        // // Store session in shared state
+        // let session = DKGNode {
+        //     session_id: req.session_id.clone(),
+        //     threshold: req.threshold,
+        //     total_participants: req.total_participants,
+        //     participant_ids: req.participant_ids.clone(),
+        //     status: "started".to_string(),
+        //     created_at,
+        //     parameters: req.parameters.clone(),
+        // };
+        // self.state.store_dkg_session(session).await;
 
         let response = StartDkgResponse {
             session_id: req.session_id.clone(),
