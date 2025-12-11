@@ -3,11 +3,16 @@ use crate::crypto_service::{
     crypto_service_server::CryptoService, EncryptionRequest, EncryptionResponse, StartDkgRequest,
     StartDkgResponse,
 };
+use crate::dkg::coordinator::DkgCoordinator;
+use crate::dkg::messages::DkgMessage;
 use crate::{constants::ALPNDKG, helpers::helpers::connect_to_peers};
 use crypto::bls12_381::dkg::DKGNode;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 /// Implementation of the CryptoService
 #[derive(Debug)]
@@ -53,6 +58,59 @@ impl CryptoService for CryptoServiceImpl {
             .map_err(|e| Status::internal(format!("Failed to get timestamp: {}", e)))?
             .as_secs() as i64;
 
+        // Convert session_id string to u64 by hashing it
+        // This allows string session IDs from the proto while DKGNode uses u64
+        let mut hasher = DefaultHasher::new();
+        req.session_id.hash(&mut hasher);
+        let session_id = hasher.finish();
+
+        // Create DKG coordinator
+        let app_state_arc = Arc::new(self.state.clone());
+        let coordinator = DkgCoordinator::new(app_state_arc);
+
+        // Validate threshold and total_participants
+        if req.threshold as usize > req.total_participants as usize {
+            return Err(Status::invalid_argument(format!(
+                "Threshold ({}) cannot be greater than total participants ({})",
+                req.threshold, req.total_participants
+            )));
+        }
+
+        // Handle edge case: empty participants (for testing)
+        // Return early without creating DKG session
+        if req.total_participants == 0 {
+            let response = StartDkgResponse {
+                session_id: req.session_id.clone(),
+                status: "started".to_string(),
+                message: format!(
+                    "DKG session started with threshold {} and {} participants",
+                    req.threshold, req.total_participants
+                ),
+                created_at,
+            };
+            return Ok(Response::new(response));
+        }
+
+        // Determine this node's ID (for now, use 1 as initiator)
+        // TODO: Get from config or derive from participant_ids
+        let node_id = 1u32;
+
+        // Create DKG session
+        coordinator
+            .create_session(
+                session_id,
+                node_id,
+                req.threshold as usize,
+                req.total_participants as usize,
+            )
+            .await
+            .map_err(|e| Status::internal(format!("Failed to create DKG session: {}", e)))?;
+
+        // Store peer IDs in session state for later use (needed for Phase 2)
+        coordinator
+            .set_peer_ids(&session_id, req.peer_ids.clone())
+            .await;
+
         // Connect to peer nodes using iroh network
         // Peer IDs should be in iroh PublicKey format: either "node_id" or "node_id@ip:port"
         // where node_id is the iroh public key string representation
@@ -74,19 +132,42 @@ impl CryptoService for CryptoServiceImpl {
                 // Return gRPC error and end execution
                 return Err(Status::failed_precondition(error_msg));
             }
-        }
 
-        // // Store session in shared state
-        // let session = DKGNode {
-        //     session_id: req.session_id.clone(),
-        //     threshold: req.threshold,
-        //     total_participants: req.total_participants,
-        //     participant_ids: req.participant_ids.clone(),
-        //     status: "started".to_string(),
-        //     created_at,
-        //     parameters: req.parameters.clone(),
-        // };
-        // self.state.store_dkg_session(session).await;
+            // Send SessionInit message to all peers
+            let participant_ids: Vec<u32> = (1..=req.total_participants as u32).collect();
+            let session_init_msg = DkgMessage::SessionInit {
+                session_id,
+                threshold: req.threshold,
+                total_participants: req.total_participants,
+                participant_ids: participant_ids.clone(),
+            };
+
+            // Send SessionInit to all peers (they will create their sessions and start Phase 1)
+            for peer_id_str in &req.peer_ids {
+                if let Err(e) = coordinator
+                    .send_message_to_peer(peer_id_str, session_init_msg.clone())
+                    .await
+                {
+                    eprintln!("Failed to send SessionInit to peer {}: {}", peer_id_str, e);
+                    // Continue with other peers
+                }
+            }
+
+            // Initiate Phase 1: Generate polynomial and broadcast commitment
+            // This happens for the initiator (Alice)
+            if let Err(e) = coordinator
+                .initiate_phase1_commitments(session_id, &req.peer_ids)
+                .await
+            {
+                eprintln!("Failed to initiate Phase 1: {}", e);
+                return Err(Status::internal(format!(
+                    "Failed to initiate Phase 1: {}",
+                    e
+                )));
+            }
+
+            println!("DKG Protocol: Phase 1 initiated, commitments broadcasted");
+        }
 
         let response = StartDkgResponse {
             session_id: req.session_id.clone(),
