@@ -176,21 +176,13 @@ mod tests {
 
         // Create three nodes: Alice, Bob, and Charlie
         println!("Creating three test nodes...");
-        let alice_state = create_test_app_state(
-            Some("alice".to_string()),
-            Some("127.0.0.1:0".to_string()),
-        )
-        .await;
-        let bob_state = create_test_app_state(
-            Some("bob".to_string()),
-            Some("127.0.0.1:0".to_string()),
-        )
-        .await;
-        let charlie_state = create_test_app_state(
-            Some("charlie".to_string()),
-            Some("127.0.0.1:0".to_string()),
-        )
-        .await;
+        let alice_state =
+            create_test_app_state(Some("alice".to_string()), Some("127.0.0.1:0".to_string())).await;
+        let bob_state =
+            create_test_app_state(Some("bob".to_string()), Some("127.0.0.1:0".to_string())).await;
+        let charlie_state =
+            create_test_app_state(Some("charlie".to_string()), Some("127.0.0.1:0".to_string()))
+                .await;
 
         // Get peer IDs (iroh PublicKey strings) for each node
         let alice_peer_id = alice_state.network.local_peer_id();
@@ -243,7 +235,10 @@ mod tests {
         let charlie_peer_id_formatted = charlie_address.clone();
 
         println!("Bob peer ID for connection: {}", bob_peer_id_formatted);
-        println!("Charlie peer ID for connection: {}", charlie_peer_id_formatted);
+        println!(
+            "Charlie peer ID for connection: {}",
+            charlie_peer_id_formatted
+        );
 
         // Create Alice's service
         let alice_service = CryptoServiceImpl::new(alice_state);

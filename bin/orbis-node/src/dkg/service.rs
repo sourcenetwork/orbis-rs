@@ -3,7 +3,7 @@ use crate::crypto_service::{
     crypto_service_server::CryptoService, EncryptionRequest, EncryptionResponse, StartDkgRequest,
     StartDkgResponse,
 };
-use crate::helpers::helpers::connect_to_peers;
+use crate::{constants::ALPNDKG, helpers::helpers::connect_to_peers};
 use crypto::bls12_381::dkg::DKGNode;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -58,7 +58,7 @@ impl CryptoService for CryptoServiceImpl {
         // where node_id is the iroh public key string representation
         if !req.peer_ids.is_empty() {
             let connection_summary =
-                connect_to_peers(&self.state.network, req.peer_ids.clone(), "orbis/dkg/0").await;
+                connect_to_peers(&self.state.network, req.peer_ids.clone(), ALPNDKG).await;
 
             // Log summary
             if connection_summary.failed > 0 {
