@@ -1,8 +1,8 @@
-use crate::app_state::{AppState};
+use crate::app_state::AppState;
+use crypto::bls12_381::dkg::DKGNode;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
-use crypto::bls12_381::dkg::DKGNode;
 
 use crate::crypto_service::{
     crypto_service_server::CryptoService, EncryptionRequest, EncryptionResponse, StartDkgRequest,

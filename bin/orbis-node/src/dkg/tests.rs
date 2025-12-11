@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::helpers::test_helpers::create_test_app_state_default;
     use crate::{
         crypto_service::{crypto_service_server::CryptoService, StartDkgRequest},
         CryptoServiceImpl,
@@ -11,7 +11,8 @@ mod tests {
     /// Unit test: Test start_dkg directly
     #[tokio::test]
     async fn test_start_dkg_unit() {
-        let service = CryptoServiceImpl::default();
+        let app_state = create_test_app_state_default().await;
+        let service = CryptoServiceImpl::new(app_state);
 
         let request = StartDkgRequest {
             session_id: "test-session-123".to_string(),
@@ -61,7 +62,8 @@ mod tests {
     /// Unit test: Test start_dkg with minimal request
     #[tokio::test]
     async fn test_start_dkg_minimal() {
-        let service = CryptoServiceImpl::default();
+        let app_state = create_test_app_state_default().await;
+        let service = CryptoServiceImpl::new(app_state);
 
         let request = StartDkgRequest {
             session_id: "minimal-session".to_string(),
@@ -91,7 +93,8 @@ mod tests {
     /// Unit test: Test start_dkg with empty participant list
     #[tokio::test]
     async fn test_start_dkg_empty_participants() {
-        let service = CryptoServiceImpl::default();
+        let app_state = create_test_app_state_default().await;
+        let service = CryptoServiceImpl::new(app_state);
 
         let request = StartDkgRequest {
             session_id: "empty-session".to_string(),
@@ -119,7 +122,8 @@ mod tests {
     /// Unit test: Test start_dkg with custom parameters
     #[tokio::test]
     async fn test_start_dkg_with_parameters() {
-        let service = CryptoServiceImpl::default();
+        let app_state = create_test_app_state_default().await;
+        let service = CryptoServiceImpl::new(app_state);
 
         let mut parameters = HashMap::new();
         parameters.insert("algorithm".to_string(), "ECDSA".to_string());

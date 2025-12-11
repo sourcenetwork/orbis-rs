@@ -1,8 +1,8 @@
+use crypto::bls12_381::dkg::DKGNode;
+use network::IrohNetwork;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crypto::bls12_381::dkg::DKGNode;
-use network::IrohNetwork;
 
 /// Shared application state accessible by all gRPC endpoints
 #[derive(Clone)]

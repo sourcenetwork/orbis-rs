@@ -1,12 +1,13 @@
 // Include the generated proto code
 pub mod app_state;
 pub mod dkg;
+pub mod helpers;
 
 use crate::dkg::service::CryptoServiceImpl;
 use app_state::AppState;
 use clap::Parser;
-use std::net::SocketAddr;
 use network::Network;
+use std::net::SocketAddr;
 
 pub mod crypto_service {
     tonic::include_proto!("crypto_service");
@@ -30,16 +31,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize iroh network for node-to-node communication
     println!("Initializing iroh network...");
-    let network = network::IrohNetwork::new().await
+    let network = network::IrohNetwork::new()
+        .await
         .map_err(|e| format!("Failed to initialize iroh network: {}", e))?;
-    
+
     // Get the local peer ID and address before wrapping in Arc
     let local_peer_id = network.local_peer_id();
-    let local_address = network.local_address()
+    let local_address = network
+        .local_address()
         .map_err(|e| format!("Failed to get local address: {}", e))?;
-    
+
     let network_arc = std::sync::Arc::new(network);
-    
+
     println!("Iroh network initialized:");
     println!("  Local Peer ID: {}", hex::encode(local_peer_id.as_bytes()));
     println!("  Local Address: {}", local_address);
@@ -47,9 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start the iroh router in the background
     // The router will handle incoming connections automatically
     let endpoint = network_arc.endpoint().clone();
-    let router = network::IrohRouter::builder(endpoint)
-        .spawn();
-    
+    let router = network::IrohRouter::builder(endpoint).spawn();
+
     println!("Iroh router started and ready to accept connections");
 
     // Create shared application state
@@ -82,11 +84,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
     };
-    
+
     // Clean shutdown of router
     println!("Shutting down router...");
     router.shutdown().await?;
-    
+
     result?;
 
     Ok(())
