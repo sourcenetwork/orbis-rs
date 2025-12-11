@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use crate::helpers::test_helpers::{create_test_app_state_default, setup_three_node_network};
+    use crate::helpers::test_helpers::{
+        create_test_app_state, create_test_app_state_default, setup_three_node_network,
+    };
     use crate::{
         crypto_service::{crypto_service_server::CryptoService, StartDkgRequest},
         CryptoServiceImpl,
@@ -30,7 +32,7 @@ mod tests {
                 map.insert("curve".to_string(), "bls12_381".to_string());
                 map
             },
-            peer_ids: vec!["test".to_string()],
+            peer_ids: vec![], // Empty for unit tests - no actual connections needed
         };
 
         let tonic_request = Request::new(request.clone());
@@ -73,7 +75,7 @@ mod tests {
             total_participants: 1,
             participant_ids: vec!["single-participant".to_string()],
             parameters: HashMap::new(),
-            peer_ids: vec!["test".to_string()],
+            peer_ids: vec![], // Empty for unit tests - no actual connections needed
         };
 
         let tonic_request = Request::new(request.clone());
@@ -105,7 +107,7 @@ mod tests {
             total_participants: 0,
             participant_ids: vec![],
             parameters: HashMap::new(),
-            peer_ids: vec!["test".to_string()],
+            peer_ids: vec![], // Empty for unit tests - no actual connections needed
         };
 
         let tonic_request = Request::new(request.clone());
@@ -146,7 +148,7 @@ mod tests {
                 "p5".to_string(),
             ],
             parameters: parameters.clone(),
-            peer_ids: vec!["test".to_string()],
+            peer_ids: vec![], // Empty for unit tests - no actual connections needed
         };
 
         let tonic_request = Request::new(request.clone());
@@ -226,5 +228,133 @@ mod tests {
             .expect("Failed to shutdown routers");
 
         println!("Test completed successfully!");
+    }
+
+    /// Test: Verify that StartDkg fails when unable to connect to all requested peers
+    ///
+    /// This test verifies that if a node cannot connect to all requested peer IDs,
+    /// the gRPC service returns an error and stops execution.
+    #[tokio::test]
+    async fn test_start_dkg_fails_on_connection_failure() {
+        // Create only Alice node
+        let alice_state =
+            create_test_app_state(Some("alice".to_string()), Some("127.0.0.1:0".to_string())).await;
+
+        // Create Alice's service
+        let alice_service = CryptoServiceImpl::new(alice_state);
+
+        // Create a request with invalid peer IDs that won't connect
+        // Using obviously invalid peer IDs that won't resolve
+        let request = StartDkgRequest {
+            session_id: "failure-test-session".to_string(),
+            threshold: 2,
+            total_participants: 3,
+            participant_ids: vec![
+                "alice".to_string(),
+                "bob".to_string(),
+                "charlie".to_string(),
+            ],
+            peer_ids: vec![
+                "invalid-peer-id-1".to_string(),
+                "invalid-peer-id-2".to_string(),
+            ],
+            parameters: {
+                let mut map = HashMap::new();
+                map.insert("key_type".to_string(), "BLS12_381".to_string());
+                map.insert("curve".to_string(), "bls12_381".to_string());
+                map
+            },
+        };
+
+        println!("Alice sending StartDkgRequest with invalid peer IDs...");
+        let tonic_request = Request::new(request);
+        let result = alice_service.start_dkg(tonic_request).await;
+
+        // Verify that the request fails with a gRPC error
+        assert!(
+            result.is_err(),
+            "start_dkg should fail when unable to connect to all peers"
+        );
+
+        let status = result.unwrap_err();
+        assert_eq!(
+            status.code(),
+            tonic::Code::FailedPrecondition,
+            "Error code should be FailedPrecondition"
+        );
+        assert!(
+            status
+                .message()
+                .contains("Failed to connect to all required peers"),
+            "Error message should indicate connection failure"
+        );
+        assert!(
+            status.message().contains("Connected to 0/2 peers"),
+            "Error message should show connection statistics"
+        );
+
+        println!("Test passed: Service correctly returned error for failed connections");
+    }
+
+    /// Test: Verify that StartDkg succeeds when connecting to valid peers
+    ///
+    /// This test verifies that if a node can connect to all requested peer IDs,
+    /// the gRPC service succeeds.
+    #[tokio::test]
+    async fn test_start_dkg_succeeds_on_all_connections() {
+        // Set up three-node network with routers started for Bob and Charlie
+        let mut network = setup_three_node_network(true).await;
+
+        // Get peer IDs for connection (Bob and Charlie)
+        let peer_ids = network.get_peer_ids_for_connection();
+        println!("Peer IDs for connection: {:?}", peer_ids);
+
+        // Create Alice's service
+        let alice_service = CryptoServiceImpl::new(network.alice.app_state.clone());
+
+        // Alice sends StartDkgRequest with Bob and Charlie's peer IDs
+        let request = StartDkgRequest {
+            session_id: "success-test-session".to_string(),
+            threshold: 2,
+            total_participants: 3,
+            participant_ids: vec![
+                "alice".to_string(),
+                "bob".to_string(),
+                "charlie".to_string(),
+            ],
+            peer_ids,
+            parameters: {
+                let mut map = HashMap::new();
+                map.insert("key_type".to_string(), "BLS12_381".to_string());
+                map.insert("curve".to_string(), "bls12_381".to_string());
+                map
+            },
+        };
+
+        println!("Alice sending StartDkgRequest with valid peer IDs...");
+        let tonic_request = Request::new(request.clone());
+        let result = alice_service.start_dkg(tonic_request).await;
+
+        // Verify that the request succeeds when all connections are successful
+        assert!(
+            result.is_ok(),
+            "start_dkg should succeed when all peer connections are successful"
+        );
+
+        let response: Response<_> = result.unwrap();
+        let inner = response.into_inner();
+
+        // Verify response
+        assert_eq!(inner.session_id, request.session_id);
+        assert_eq!(inner.status, "started");
+        assert!(inner.message.contains("DKG session started"));
+
+        // Clean up routers
+        network
+            .shutdown_routers()
+            .await
+            .expect("Failed to shutdown routers");
+
+        println!("Test passed: Service correctly succeeded when all connections worked");
     }
 }

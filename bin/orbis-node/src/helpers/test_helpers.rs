@@ -3,6 +3,7 @@
 //! This module provides utility functions for setting up test environments.
 
 use crate::app_state::AppState;
+use crate::dkg::protocol_handler;
 use hex;
 use network::IrohRouter;
 use std::sync::Arc;
@@ -110,8 +111,10 @@ pub struct ThreeNodeNetwork {
 impl ThreeNodeNetwork {
     /// Get Bob and Charlie's peer IDs formatted for connection
     ///
-    /// Returns a vector of peer ID strings that can be used in StartDkgRequest
+    /// Returns a vector of peer ID strings that can be used in StartDkgRequest.
+    /// The peer IDs are formatted as "node_id@ip:port" for proper addressing.
     pub fn get_peer_ids_for_connection(&self) -> Vec<String> {
+        // The address field contains the formatted "node_id@ip:port" string
         vec![self.bob.address.clone(), self.charlie.address.clone()]
     }
 
@@ -173,18 +176,33 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
         .network
         .local_address()
         .expect("Failed to get Alice's address");
+    let alice_sockets = alice_state.network.endpoint().bound_sockets();
+    let alice_socket_addr = alice_sockets
+        .first()
+        .expect("Alice endpoint should have at least one bound socket");
+    let alice_peer_id_with_addr = format!("{}@{}", alice_address, alice_socket_addr);
 
     let bob_peer_id = bob_state.network.local_peer_id();
     let bob_address = bob_state
         .network
         .local_address()
         .expect("Failed to get Bob's address");
+    let bob_sockets = bob_state.network.endpoint().bound_sockets();
+    let bob_socket_addr = bob_sockets
+        .first()
+        .expect("Bob endpoint should have at least one bound socket");
+    let bob_peer_id_with_addr = format!("{}@{}", bob_address, bob_socket_addr);
 
     let charlie_peer_id = charlie_state.network.local_peer_id();
     let charlie_address = charlie_state
         .network
         .local_address()
         .expect("Failed to get Charlie's address");
+    let charlie_sockets = charlie_state.network.endpoint().bound_sockets();
+    let charlie_socket_addr = charlie_sockets
+        .first()
+        .expect("Charlie endpoint should have at least one bound socket");
+    let charlie_peer_id_with_addr = format!("{}@{}", charlie_address, charlie_socket_addr);
 
     println!(
         "Alice - Peer ID: {}, Address: {}",
@@ -202,17 +220,26 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
         charlie_address
     );
 
-    // Optionally start routers for Bob and Charlie
+    // Optionally start routers for Bob and Charlie with DKG protocol handler
+    // Use the same production setup as main.rs
     let bob_router = if start_routers {
         println!("Starting router for Bob...");
-        Some(network::IrohRouter::builder(bob_state.network.endpoint().clone()).spawn())
+        let bob_app_state = Arc::new(bob_state.clone());
+        Some(protocol_handler::create_router_with_dkg_handler(
+            bob_state.network.endpoint().clone(),
+            bob_app_state,
+        ))
     } else {
         None
     };
 
     let charlie_router = if start_routers {
         println!("Starting router for Charlie...");
-        Some(network::IrohRouter::builder(charlie_state.network.endpoint().clone()).spawn())
+        let charlie_app_state = Arc::new(charlie_state.clone());
+        Some(protocol_handler::create_router_with_dkg_handler(
+            charlie_state.network.endpoint().clone(),
+            charlie_app_state,
+        ))
     } else {
         None
     };
@@ -221,19 +248,19 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
         alice: TestNode {
             app_state: alice_state,
             peer_id: alice_peer_id,
-            address: alice_address,
+            address: alice_peer_id_with_addr,
             router: None,
         },
         bob: TestNode {
             app_state: bob_state,
             peer_id: bob_peer_id,
-            address: bob_address,
+            address: bob_peer_id_with_addr,
             router: bob_router,
         },
         charlie: TestNode {
             app_state: charlie_state,
             peer_id: charlie_peer_id,
-            address: charlie_address,
+            address: charlie_peer_id_with_addr,
             router: charlie_router,
         },
     }

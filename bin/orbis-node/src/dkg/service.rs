@@ -57,15 +57,22 @@ impl CryptoService for CryptoServiceImpl {
         // Peer IDs should be in iroh PublicKey format: either "node_id" or "node_id@ip:port"
         // where node_id is the iroh public key string representation
         if !req.peer_ids.is_empty() {
+            let requested_peers = req.peer_ids.len();
             let connection_summary =
                 connect_to_peers(&self.state.network, req.peer_ids.clone(), ALPNDKG).await;
 
-            // Log summary
-            if connection_summary.failed > 0 {
-                eprintln!(
-                    "Warning: Failed to connect to {}/{} peers",
-                    connection_summary.failed, connection_summary.total
+            // Check if we successfully connected to all requested peers
+            if connection_summary.successful < requested_peers {
+                let error_msg = format!(
+                    "Failed to connect to all required peers. Connected to {}/{} peers. Failed connections: {}",
+                    connection_summary.successful,
+                    requested_peers,
+                    connection_summary.failed
                 );
+                eprintln!("Error: {}", error_msg);
+
+                // Return gRPC error and end execution
+                return Err(Status::failed_precondition(error_msg));
             }
         }
 

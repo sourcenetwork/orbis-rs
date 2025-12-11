@@ -48,19 +48,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Local Peer ID: {}", hex::encode(local_peer_id.as_bytes()));
     println!("  Local Address: {}", local_address);
 
-    // Start the iroh router in the background
-    // The router will handle incoming connections automatically
-    let endpoint = network_arc.endpoint().clone();
-    let router = network::IrohRouter::builder(endpoint).spawn();
-
-    println!("Iroh router started and ready to accept connections");
-
-    // Create shared application state
+    // Create shared application state (needed for router)
     let app_state = AppState::new(
         "orbis-node-1".to_string(), // TODO: Generate or load from config
         args.addr.clone(),
         network_arc.clone(),
     );
+    let app_state_arc = std::sync::Arc::new(app_state.clone());
+
+    // Start the iroh router in the background with DKG protocol handler
+    // The router will handle incoming connections automatically
+    let endpoint = network_arc.endpoint().clone();
+    let router = dkg::protocol_handler::create_router_with_dkg_handler(endpoint, app_state_arc);
+
+    println!("Iroh router started with DKG protocol handler and ready to accept connections");
 
     println!("Starting CryptoService gRPC server on {}", addr);
     println!("Server is ready to accept connections...");
