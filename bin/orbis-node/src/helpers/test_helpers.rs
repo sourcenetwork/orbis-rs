@@ -30,10 +30,10 @@ use std::sync::Arc;
 /// }
 /// ```
 pub async fn create_test_app_state(
-    node_id: Option<String>,
+    node_id: Option<u32>,
     bind_address: Option<String>,
 ) -> AppState {
-    let node_id = node_id.unwrap_or_else(|| "test-node".to_string());
+    let node_id = node_id.unwrap_or(1);
     let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
 
     // Initialize iroh network for testing
@@ -50,7 +50,7 @@ pub async fn create_test_app_state(
 /// Create a test AppState with default values
 ///
 /// Convenience function that creates a test AppState with default
-/// node_id ("test-node") and bind_address ("127.0.0.1:0").
+/// node_id (1) and bind_address ("127.0.0.1:0").
 ///
 /// # Example
 /// ```rust
@@ -109,17 +109,37 @@ pub struct ThreeNodeNetwork {
 }
 
 impl ThreeNodeNetwork {
-    /// Get Bob and Charlie's peer IDs formatted for connection
+    /// Get peer IDs for connection (excluding self)
     ///
     /// Returns a vector of peer ID strings that can be used in StartDkgRequest.
     /// The peer IDs are formatted as "node_id@ip:port" for proper addressing.
+    /// This excludes Alice's own peer ID to avoid self-connection errors.
     pub fn get_peer_ids_for_connection(&self) -> Vec<String> {
         // The address field contains the formatted "node_id@ip:port" string
-        vec![self.bob.address.clone(), self.charlie.address.clone()]
+        // Exclude Alice's own peer ID to avoid self-connection
+        vec![
+            self.bob.address.clone(),
+            self.charlie.address.clone(),
+        ]
+    }
+    
+    /// Get all peer IDs including Alice (for SessionInit)
+    ///
+    /// Returns a vector of all peer ID strings including Alice.
+    /// This should be used in SessionInit messages so all nodes know about all participants.
+    pub fn get_all_peer_ids(&self) -> Vec<String> {
+        vec![
+            self.alice.address.clone(),
+            self.bob.address.clone(),
+            self.charlie.address.clone(),
+        ]
     }
 
     /// Shutdown all routers in the network
     pub async fn shutdown_routers(&mut self) -> Result<(), network::error::NetworkError> {
+        if let Some(router) = self.alice.router.take() {
+            router.shutdown().await?;
+        }
         if let Some(router) = self.bob.router.take() {
             router.shutdown().await?;
         }
@@ -164,11 +184,11 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
 
     // Create three nodes: Alice, Bob, and Charlie
     let alice_state =
-        create_test_app_state(Some("alice".to_string()), Some("127.0.0.1:0".to_string())).await;
+        create_test_app_state(Some(1), Some("127.0.0.1:0".to_string())).await;
     let bob_state =
-        create_test_app_state(Some("bob".to_string()), Some("127.0.0.1:0".to_string())).await;
+        create_test_app_state(Some(2), Some("127.0.0.1:0".to_string())).await;
     let charlie_state =
-        create_test_app_state(Some("charlie".to_string()), Some("127.0.0.1:0".to_string())).await;
+        create_test_app_state(Some(3), Some("127.0.0.1:0".to_string())).await;
 
     // Get peer IDs and addresses for each node
     let alice_peer_id = alice_state.network.local_peer_id();
@@ -220,8 +240,20 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
         charlie_address
     );
 
-    // Optionally start routers for Bob and Charlie with DKG protocol handler
+    // Optionally start routers for all nodes with DKG protocol handler
     // Use the same production setup as main.rs
+    // Alice also needs a router to accept incoming connections from Bob and Charlie
+    let alice_router = if start_routers {
+        println!("Starting router for Alice...");
+        let alice_app_state = Arc::new(alice_state.clone());
+        Some(protocol_handler::create_router_with_dkg_handler(
+            alice_state.network.endpoint().clone(),
+            alice_app_state,
+        ))
+    } else {
+        None
+    };
+
     let bob_router = if start_routers {
         println!("Starting router for Bob...");
         let bob_app_state = Arc::new(bob_state.clone());
@@ -249,7 +281,7 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
             app_state: alice_state,
             peer_id: alice_peer_id,
             address: alice_peer_id_with_addr,
-            router: None,
+            router: alice_router,
         },
         bob: TestNode {
             app_state: bob_state,

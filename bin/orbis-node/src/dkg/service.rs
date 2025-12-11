@@ -7,12 +7,12 @@ use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::messages::DkgMessage;
 use crate::{constants::ALPNDKG, helpers::helpers::connect_to_peers};
 use crypto::bls12_381::dkg::DKGNode;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 /// Implementation of the CryptoService
 #[derive(Debug)]
@@ -91,9 +91,8 @@ impl CryptoService for CryptoServiceImpl {
             return Ok(Response::new(response));
         }
 
-        // Determine this node's ID (for now, use 1 as initiator)
-        // TODO: Get from config or derive from participant_ids
-        let node_id = 1u32;
+        // Get node_id from config
+        let node_id = self.state.config.node_id;
 
         // Create DKG session
         coordinator
@@ -134,12 +133,28 @@ impl CryptoService for CryptoServiceImpl {
             }
 
             // Send SessionInit message to all peers
+            // Include all peer_ids (including our own) so non-initiators know who to send messages to
+            // First, get our own peer ID and add it to the list
+            use network::Network;
+            let our_peer_id = self.state.network.local_peer_id();
+            let our_address = self.state.network.local_address()
+                .expect("Failed to get local address");
+            let our_sockets = self.state.network.endpoint().bound_sockets();
+            let our_socket_addr = our_sockets.first()
+                .expect("Endpoint should have at least one bound socket");
+            let our_peer_id_with_addr = format!("{}@{}", our_address, our_socket_addr);
+            
+            // Combine our peer ID with the provided peer_ids for SessionInit
+            let mut all_peer_ids = vec![our_peer_id_with_addr];
+            all_peer_ids.extend_from_slice(&req.peer_ids);
+            
             let participant_ids: Vec<u32> = (1..=req.total_participants as u32).collect();
             let session_init_msg = DkgMessage::SessionInit {
                 session_id,
                 threshold: req.threshold,
                 total_participants: req.total_participants,
                 participant_ids: participant_ids.clone(),
+                peer_ids: all_peer_ids.clone(), // Include all peer_ids (including our own) so receivers know all participants
             };
 
             // Send SessionInit to all peers (they will create their sessions and start Phase 1)

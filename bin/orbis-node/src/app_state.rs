@@ -29,13 +29,13 @@ pub struct EncryptionKey {
 /// Server configuration
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
-    pub node_id: String,
+    pub node_id: u32,
     pub bind_address: String,
 }
 
 impl AppState {
     /// Create a new AppState instance
-    pub fn new(node_id: String, bind_address: String, network: Arc<IrohNetwork>) -> Self {
+    pub fn new(node_id: u32, bind_address: String, network: Arc<IrohNetwork>) -> Self {
         Self {
             dkg_sessions: Arc::new(RwLock::new(HashMap::new())),
             encryption_keys: Arc::new(RwLock::new(HashMap::new())),

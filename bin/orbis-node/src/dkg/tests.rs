@@ -11,8 +11,11 @@ mod tests {
     use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tonic::{Request, Response};
+    use serial_test::serial;
+    use tokio::time::Duration;
     /// Unit test: Test start_dkg directly
     #[tokio::test]
+    #[serial]
     async fn test_start_dkg_unit() {
         let app_state = create_test_app_state_default().await;
         let service = CryptoServiceImpl::new(app_state);
@@ -65,6 +68,7 @@ mod tests {
 
     /// Unit test: Test start_dkg with minimal request
     #[tokio::test]
+    #[serial]
     async fn test_start_dkg_minimal() {
         let app_state = create_test_app_state_default().await;
         let service = CryptoServiceImpl::new(app_state);
@@ -97,6 +101,7 @@ mod tests {
 
     /// Unit test: Test start_dkg with empty participant list
     #[tokio::test]
+    #[serial]
     async fn test_start_dkg_empty_participants() {
         let app_state = create_test_app_state_default().await;
         let service = CryptoServiceImpl::new(app_state);
@@ -127,6 +132,7 @@ mod tests {
 
     /// Unit test: Test start_dkg with custom parameters
     #[tokio::test]
+    #[serial]
     async fn test_start_dkg_with_parameters() {
         let app_state = create_test_app_state_default().await;
         let service = CryptoServiceImpl::new(app_state);
@@ -172,6 +178,7 @@ mod tests {
     /// and has Alice send a StartDkgRequest with Bob and Charlie's peer IDs so they can all
     /// establish connections to each other.
     #[tokio::test]
+    #[serial]
     async fn test_three_nodes_connect() {
         // Set up three-node network with routers started for Bob and Charlie
         let mut network = setup_three_node_network(true).await;
@@ -235,10 +242,11 @@ mod tests {
     /// This test verifies that if a node cannot connect to all requested peer IDs,
     /// the gRPC service returns an error and stops execution.
     #[tokio::test]
+    #[serial]
     async fn test_start_dkg_fails_on_connection_failure() {
         // Create only Alice node
         let alice_state =
-            create_test_app_state(Some("alice".to_string()), Some("127.0.0.1:0".to_string())).await;
+            create_test_app_state(Some(1), Some("127.0.0.1:0".to_string())).await;
 
         // Create Alice's service
         let alice_service = CryptoServiceImpl::new(alice_state);
@@ -301,6 +309,7 @@ mod tests {
     /// This test verifies that if a node can connect to all requested peer IDs,
     /// the gRPC service succeeds.
     #[tokio::test]
+    #[serial]
     async fn test_start_dkg_succeeds_on_all_connections() {
         // Set up three-node network with routers started for Bob and Charlie
         let mut network = setup_three_node_network(true).await;
@@ -349,12 +358,50 @@ mod tests {
         assert_eq!(inner.status, "started");
         assert!(inner.message.contains("DKG session started"));
 
+        // Wait for DKG to complete (all nodes should reach Phase 4)
+        // Convert session_id string to u64 (same as in service.rs)
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        request.session_id.hash(&mut hasher);
+        let session_id = hasher.finish();
+
+        // Wait up to 10 seconds for DKG to complete
+        use tokio::time::{sleep, Duration};
+        use crypto::r#trait::Dkg;
+        let check_interval = Duration::from_millis(100);
+        let max_wait = Duration::from_secs(50);
+        
+        let start = std::time::Instant::now();
+        loop {
+            // Check if Alice's session has completed Phase 4
+            // We can check by trying to get the session and see if we can compute the aggregate key
+            use crate::dkg::coordinator::DkgCoordinator;
+            use std::sync::Arc;
+            let alice_coordinator = DkgCoordinator::new(Arc::new(network.alice.app_state.clone()));
+            
+            // Try to get the session and check if we can compute aggregate key (indicates Phase 4 complete)
+            if let Some(session) = alice_coordinator.get_session(&session_id).await {
+                // If we can compute aggregate key, Phase 4 is complete
+                if session.compute_aggregate_public_key().is_ok() {
+                    println!("DKG completed successfully! Aggregate public key computed.");
+                    break;
+                }
+            }
+            
+            if start.elapsed() > max_wait {
+                panic!("DKG did not complete within {} seconds", max_wait.as_secs());
+            }
+            
+            sleep(check_interval).await;
+        }
+
         // Clean up routers
         network
             .shutdown_routers()
             .await
             .expect("Failed to shutdown routers");
 
-        println!("Test passed: Service correctly succeeded when all connections worked");
+        println!("Test passed: Service correctly succeeded when all connections worked and DKG completed");
     }
 }

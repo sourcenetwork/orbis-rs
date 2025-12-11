@@ -35,6 +35,7 @@ pub enum DkgMessage {
         threshold: u32,
         total_participants: u32,
         participant_ids: Vec<u32>,
+        peer_ids: Vec<String>, // Peer IDs for all participants (so non-initiators know who to send to)
     },
     /// Acknowledgment message
     Ack {

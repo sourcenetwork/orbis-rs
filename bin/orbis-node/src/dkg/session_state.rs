@@ -75,7 +75,7 @@ impl DkgSessionState {
 /// Global session state manager
 pub struct SessionStateManager {
     /// session_id -> session state
-    states: Arc<RwLock<HashMap<u64, DkgSessionState>>>,
+    pub(crate) states: Arc<RwLock<HashMap<u64, DkgSessionState>>>,
 }
 
 impl SessionStateManager {

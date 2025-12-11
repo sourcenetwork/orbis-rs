@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create shared application state (needed for router)
     let app_state = AppState::new(
-        "orbis-node-1".to_string(), // TODO: Generate or load from config
+        1u32, // TODO: Generate or load from config
         args.addr.clone(),
         network_arc.clone(),
     );
