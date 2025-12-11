@@ -29,6 +29,7 @@ mod tests {
                 map.insert("curve".to_string(), "bls12_381".to_string());
                 map
             },
+            peer_ids: vec!["test".to_string()],
         };
 
         let tonic_request = Request::new(request.clone());
@@ -71,6 +72,7 @@ mod tests {
             total_participants: 1,
             participant_ids: vec!["single-participant".to_string()],
             parameters: HashMap::new(),
+            peer_ids: vec!["test".to_string()],
         };
 
         let tonic_request = Request::new(request.clone());
@@ -102,6 +104,7 @@ mod tests {
             total_participants: 0,
             participant_ids: vec![],
             parameters: HashMap::new(),
+            peer_ids: vec!["test".to_string()],
         };
 
         let tonic_request = Request::new(request.clone());
@@ -142,6 +145,7 @@ mod tests {
                 "p5".to_string(),
             ],
             parameters: parameters.clone(),
+            peer_ids: vec!["test".to_string()],
         };
 
         let tonic_request = Request::new(request.clone());
