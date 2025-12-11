@@ -1,7 +1,18 @@
-//! DKG Coordinator
+//! DKG Session Manager
 //!
-//! This module implements the DKG protocol coordinator that manages sessions,
-//! coordinates protocol phases, and uses DKGNode for cryptographic operations.
+//! This module implements the DKG protocol session manager for each node.
+//! Each node has its own instance that manages its participation in DKG sessions.
+//!
+//! **Architecture: Decentralized (Peer-to-Peer)**
+//!
+//! This is NOT a central coordinator. Each node has its own session manager that:
+//! - Manages this node's participation in DKG sessions
+//! - Handles incoming messages from other nodes
+//! - Maintains this node's session state
+//! - Coordinates this node's protocol phases
+//!
+//! The DKG protocol itself is peer-to-peer with no central authority.
+//! All nodes participate equally in the protocol.
 
 use crate::app_state::AppState;
 use crate::dkg::messages::DkgMessage;
@@ -10,16 +21,27 @@ use crypto::r#trait::Dkg;
 use network::PeerId;
 use std::sync::Arc;
 
-/// DKG Protocol Coordinator
+/// DKG Session Manager
 ///
-/// Manages DKG sessions, coordinates protocol phases, and handles the
-/// protocol state machine. Uses DKGNode for cryptographic operations.
+/// Each node has its own instance that manages this node's participation
+/// in DKG sessions. This is NOT a central coordinator - the protocol is
+/// decentralized with each node managing its own state.
+///
+/// Responsibilities:
+/// - Manage this node's DKG session state
+/// - Handle incoming DKG protocol messages
+/// - Coordinate this node's protocol phases
+/// - Use DKGNode for cryptographic operations
 pub struct DkgCoordinator {
     app_state: Arc<AppState>,
 }
 
 impl DkgCoordinator {
-    /// Create a new DKG coordinator
+    /// Create a new DKG session manager for this node
+    ///
+    /// Each node creates its own instance to manage its participation
+    /// in DKG sessions. This is part of a decentralized architecture
+    /// where all nodes participate equally.
     pub fn new(app_state: Arc<AppState>) -> Self {
         Self { app_state }
     }

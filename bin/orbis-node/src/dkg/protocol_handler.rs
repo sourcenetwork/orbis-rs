@@ -6,9 +6,13 @@
 //! The handler acts as the network layer:
 //! - Accepts connections (authentication via iroh)
 //! - Reads/writes messages
-//! - Routes messages to the DKG coordinator
+//! - Routes messages to the DKG session manager
 //!
-//! The actual DKG protocol logic is handled by the DKG coordinator.
+//! The actual DKG protocol logic is handled by the DKG session manager.
+//!
+//! **Architecture Note**: Each node has its own session manager instance.
+//! The DKG protocol is decentralized - there is no central coordinator.
+//! All nodes participate equally in the peer-to-peer protocol.
 
 use crate::app_state::AppState;
 use crate::dkg::coordinator::DkgCoordinator;
@@ -21,7 +25,10 @@ use std::sync::Arc;
 /// DKG Protocol Handler
 ///
 /// Network layer handler that accepts connections and routes messages
-/// to the DKG coordinator for processing.
+/// to this node's DKG session manager for processing.
+///
+/// Each node has its own handler instance that manages connections
+/// for this node's participation in the decentralized DKG protocol.
 pub struct DkgProtocolHandler {
     coordinator: Arc<DkgCoordinator>,
 }
