@@ -37,6 +37,7 @@ impl CryptoService for CryptoServiceImpl {
         request: Request<StartDkgRequest>,
     ) -> Result<Response<StartDkgResponse>, Status> {
         let req = request.into_inner();
+        // TODO: Authentication, is user allowed to create a ring
 
         println!("Received StartDkg request:");
         println!("  Session ID: {}", req.session_id);
