@@ -97,10 +97,6 @@ pub async fn connect_to_peers<N: Network>(
                     success: true,
                     error: None,
                 });
-                // Connection is established, can be used for communication
-                // Note: The connection is dropped here. In production, you may want to
-                // store it or pass it to a handler for ongoing communication
-                drop(connection);
             }
             Err(e) => {
                 let error_msg = format!("{}", e);

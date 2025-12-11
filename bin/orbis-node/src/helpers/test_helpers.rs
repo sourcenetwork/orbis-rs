@@ -81,7 +81,14 @@ impl std::fmt::Debug for TestNode {
             .field("app_state", &"<AppState>")
             .field("peer_id", &hex::encode(self.peer_id.as_bytes()))
             .field("address", &self.address)
-            .field("router", &if self.router.is_some() { "Some(<IrohRouter>)" } else { "None" })
+            .field(
+                "router",
+                &if self.router.is_some() {
+                    "Some(<IrohRouter>)"
+                } else {
+                    "None"
+                },
+            )
             .finish()
     }
 }
@@ -153,21 +160,12 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
     println!("Setting up three-node test network...");
 
     // Create three nodes: Alice, Bob, and Charlie
-    let alice_state = create_test_app_state(
-        Some("alice".to_string()),
-        Some("127.0.0.1:0".to_string()),
-    )
-    .await;
-    let bob_state = create_test_app_state(
-        Some("bob".to_string()),
-        Some("127.0.0.1:0".to_string()),
-    )
-    .await;
-    let charlie_state = create_test_app_state(
-        Some("charlie".to_string()),
-        Some("127.0.0.1:0".to_string()),
-    )
-    .await;
+    let alice_state =
+        create_test_app_state(Some("alice".to_string()), Some("127.0.0.1:0".to_string())).await;
+    let bob_state =
+        create_test_app_state(Some("bob".to_string()), Some("127.0.0.1:0".to_string())).await;
+    let charlie_state =
+        create_test_app_state(Some("charlie".to_string()), Some("127.0.0.1:0".to_string())).await;
 
     // Get peer IDs and addresses for each node
     let alice_peer_id = alice_state.network.local_peer_id();
