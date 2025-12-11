@@ -3,8 +3,8 @@ use crate::crypto_service::{
     crypto_service_server::CryptoService, EncryptionRequest, EncryptionResponse, StartDkgRequest,
     StartDkgResponse,
 };
+use crate::helpers::helpers::connect_to_peers;
 use crypto::bls12_381::dkg::DKGNode;
-use network::{Network, PeerId};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
@@ -56,29 +56,19 @@ impl CryptoService for CryptoServiceImpl {
         // Peer IDs should be in iroh PublicKey format: either "node_id" or "node_id@ip:port"
         // where node_id is the iroh public key string representation
         if !req.peer_ids.is_empty() {
-            println!("Connecting to {} peer nodes...", req.peer_ids.len());
+            let connection_summary = connect_to_peers(
+                &self.state.network,
+                req.peer_ids.clone(),
+                "orbis/dkg/0",
+            )
+            .await;
 
-            for peer_id_str in &req.peer_ids {
-                // Convert peer ID string to PeerId
-                // The network.connect() method will parse this as UTF-8 and then as iroh PublicKey
-                let peer_id = PeerId::new(peer_id_str.as_bytes().to_vec());
-
-                // Connect to the peer using the DKG protocol
-                // The protocol name matches what's defined in router.rs (alpn::DKG)
-                match self.state.network.connect(&peer_id, "orbis/dkg/0").await {
-                    Ok(mut connection) => {
-                        println!("  ✓ Connected to peer: {}", peer_id_str);
-                        // Connection is established, can be used for DKG communication
-                        // TODO: Store connection or use it for DKG protocol
-                        drop(connection); // Close for now, will be managed properly later
-                    }
-                    Err(e) => {
-                        eprintln!("  ✗ Failed to connect to peer {}: {}", peer_id_str, e);
-                        // Continue with other peers even if one fails
-                        // In a production system, you might want to track failed connections
-                        // and retry or return an error if critical peers are unreachable
-                    }
-                }
+            // Log summary
+            if connection_summary.failed > 0 {
+                eprintln!(
+                    "Warning: Failed to connect to {}/{} peers",
+                    connection_summary.failed, connection_summary.total
+                );
             }
         }
 
