@@ -42,10 +42,7 @@ pub enum DkgMessage {
         message_type: String,
     },
     /// Error message
-    Error {
-        session_id: u64,
-        error: String,
-    },
+    Error { session_id: u64, error: String },
 }
 
 impl DkgMessage {

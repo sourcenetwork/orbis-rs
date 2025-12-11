@@ -130,7 +130,10 @@ impl DkgCoordinator {
             }
             DkgMessage::Error { error, .. } => {
                 // Error received
-                eprintln!("DKG Coordinator: Received error for session {}: {}", session_id, error);
+                eprintln!(
+                    "DKG Coordinator: Received error for session {}: {}",
+                    session_id, error
+                );
                 None
             }
         };
