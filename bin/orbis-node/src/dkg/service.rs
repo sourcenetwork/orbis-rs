@@ -56,12 +56,8 @@ impl CryptoService for CryptoServiceImpl {
         // Peer IDs should be in iroh PublicKey format: either "node_id" or "node_id@ip:port"
         // where node_id is the iroh public key string representation
         if !req.peer_ids.is_empty() {
-            let connection_summary = connect_to_peers(
-                &self.state.network,
-                req.peer_ids.clone(),
-                "orbis/dkg/0",
-            )
-            .await;
+            let connection_summary =
+                connect_to_peers(&self.state.network, req.peer_ids.clone(), "orbis/dkg/0").await;
 
             // Log summary
             if connection_summary.failed > 0 {

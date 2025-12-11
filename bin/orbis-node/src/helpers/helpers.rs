@@ -77,7 +77,10 @@ pub async fn connect_to_peers<N: Network>(
         };
     }
 
-    println!("Connecting to {} peer nodes using protocol '{}'...", total, protocol);
+    println!(
+        "Connecting to {} peer nodes using protocol '{}'...",
+        total, protocol
+    );
 
     for peer_id_str in peer_ids {
         // Convert peer ID string to PeerId
@@ -101,7 +104,10 @@ pub async fn connect_to_peers<N: Network>(
             }
             Err(e) => {
                 let error_msg = format!("{}", e);
-                eprintln!("  ✗ Failed to connect to peer {}: {}", peer_id_str, error_msg);
+                eprintln!(
+                    "  ✗ Failed to connect to peer {}: {}",
+                    peer_id_str, error_msg
+                );
                 failed += 1;
                 results.push(PeerConnectionResult {
                     peer_id: peer_id_str.clone(),
