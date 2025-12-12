@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create shared application state (needed for router)
     let app_state = AppState::new(
-        node_id, // TODO: Generate or load from config
+        node_id,
         args.addr.clone(),
         network_arc.clone(),
     );
