@@ -137,17 +137,21 @@ impl CryptoService for CryptoServiceImpl {
             // First, get our own peer ID and add it to the list
             use network::Network;
             let our_peer_id = self.state.network.local_peer_id();
-            let our_address = self.state.network.local_address()
+            let our_address = self
+                .state
+                .network
+                .local_address()
                 .expect("Failed to get local address");
             let our_sockets = self.state.network.endpoint().bound_sockets();
-            let our_socket_addr = our_sockets.first()
+            let our_socket_addr = our_sockets
+                .first()
                 .expect("Endpoint should have at least one bound socket");
             let our_peer_id_with_addr = format!("{}@{}", our_address, our_socket_addr);
-            
+
             // Combine our peer ID with the provided peer_ids for SessionInit
             let mut all_peer_ids = vec![our_peer_id_with_addr];
             all_peer_ids.extend_from_slice(&req.peer_ids);
-            
+
             let participant_ids: Vec<u32> = (1..=req.total_participants as u32).collect();
             let session_init_msg = DkgMessage::SessionInit {
                 session_id,

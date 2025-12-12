@@ -8,11 +8,11 @@ mod tests {
         CryptoServiceImpl,
     };
     use hex;
+    use serial_test::serial;
     use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tonic::{Request, Response};
-    use serial_test::serial;
     use tokio::time::Duration;
+    use tonic::{Request, Response};
     /// Unit test: Test start_dkg directly
     #[tokio::test]
     #[serial]
@@ -245,8 +245,7 @@ mod tests {
     #[serial]
     async fn test_start_dkg_fails_on_connection_failure() {
         // Create only Alice node
-        let alice_state =
-            create_test_app_state(Some(1), Some("127.0.0.1:0".to_string())).await;
+        let alice_state = create_test_app_state(Some(1), Some("127.0.0.1:0".to_string())).await;
 
         // Create Alice's service
         let alice_service = CryptoServiceImpl::new(alice_state);
@@ -367,11 +366,11 @@ mod tests {
         let session_id = hasher.finish();
 
         // Wait up to 10 seconds for DKG to complete
-        use tokio::time::{sleep, Duration};
         use crypto::r#trait::Dkg;
+        use tokio::time::{sleep, Duration};
         let check_interval = Duration::from_millis(100);
         let max_wait = Duration::from_secs(50);
-        
+
         let start = std::time::Instant::now();
         loop {
             // Check if Alice's session has completed Phase 4
@@ -379,7 +378,7 @@ mod tests {
             use crate::dkg::coordinator::DkgCoordinator;
             use std::sync::Arc;
             let alice_coordinator = DkgCoordinator::new(Arc::new(network.alice.app_state.clone()));
-            
+
             // Try to get the session and check if we can compute aggregate key (indicates Phase 4 complete)
             if let Some(session) = alice_coordinator.get_session(&session_id).await {
                 // If we can compute aggregate key, Phase 4 is complete
@@ -388,11 +387,11 @@ mod tests {
                     break;
                 }
             }
-            
+
             if start.elapsed() > max_wait {
                 panic!("DKG did not complete within {} seconds", max_wait.as_secs());
             }
-            
+
             sleep(check_interval).await;
         }
 

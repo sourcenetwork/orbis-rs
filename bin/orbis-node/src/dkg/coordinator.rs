@@ -144,23 +144,26 @@ impl DkgCoordinator {
                     if offset + 48 > commitment.len() {
                         break;
                     }
-                    let coeff = G1Affine::deserialize_compressed(&commitment[offset..offset+48])
-                        .map_err(|e| format!("Failed to deserialize commitment coefficient: {}", e))?;
+                    let coeff = G1Affine::deserialize_compressed(&commitment[offset..offset + 48])
+                        .map_err(|e| {
+                            format!("Failed to deserialize commitment coefficient: {}", e)
+                        })?;
                     commitment_coeffs.push(coeff);
                     offset += 48;
                 }
-                
+
                 let polynomial_commitment = PolynomialCommitment {
                     coefficients: commitment_coeffs,
                 };
-                
+
                 // Store the commitment in the session
-                session.receive_commitment(from_node_id, polynomial_commitment)
+                session
+                    .receive_commitment(from_node_id, polynomial_commitment)
                     .map_err(|e| format!("Failed to receive commitment: {}", e))?;
-                
+
                 // Store updated session (with the new commitment)
                 self.app_state.store_dkg_session(session.clone()).await;
-                
+
                 // Track that we received it
                 self.session_state.increment_commitments(&session_id).await;
 
@@ -169,12 +172,13 @@ impl DkgCoordinator {
                 if session.commitment.coefficients.is_empty() {
                     println!("DKG Coordinator: First commitment received, generating our polynomial and sending commitment");
                     // Generate polynomial
-                    session.generate_polynomial()
+                    session
+                        .generate_polynomial()
                         .map_err(|e| format!("Failed to generate polynomial: {}", e))?;
-                    
+
                     // Store the session with the generated polynomial BEFORE sending commitments
                     self.app_state.store_dkg_session(session.clone()).await;
-                    
+
                     // Get peer IDs from session state to send our commitment
                     if let Some(peer_ids) = self.session_state.get_peer_ids(&session_id).await {
                         // Send our commitment to all peers (excluding ourselves)
@@ -182,10 +186,11 @@ impl DkgCoordinator {
                         let commitment = &session.commitment;
                         let mut commitment_bytes = Vec::new();
                         for coeff in &commitment.coefficients {
-                            coeff.serialize_compressed(&mut commitment_bytes)
+                            coeff
+                                .serialize_compressed(&mut commitment_bytes)
                                 .map_err(|e| format!("Failed to serialize commitment: {}", e))?;
                         }
-                        
+
                         let node_id = session.id;
                         let mut sent_count = 0;
                         for peer_id_str in &peer_ids {
@@ -196,7 +201,7 @@ impl DkgCoordinator {
                                 from_node_id: node_id,
                                 commitment: commitment_bytes.clone(),
                             };
-                            
+
                             match self.send_message_to_peer(peer_id_str, commitment_msg).await {
                                 Ok(_) => sent_count += 1,
                                 Err(e) => {
@@ -204,13 +209,22 @@ impl DkgCoordinator {
                                         // Skip - we tried to connect to ourselves
                                         continue;
                                     }
-                                    eprintln!("Failed to send commitment to peer {}: {}", peer_id_str, e);
+                                    eprintln!(
+                                        "Failed to send commitment to peer {}: {}",
+                                        peer_id_str, e
+                                    );
                                 }
                             }
                         }
-                        println!("DKG Coordinator: Sent our commitment to {}/{} peers", sent_count, peer_ids.len());
+                        println!(
+                            "DKG Coordinator: Sent our commitment to {}/{} peers",
+                            sent_count,
+                            peer_ids.len()
+                        );
                     } else {
-                        println!("DKG Coordinator: Generated polynomial but no peer_ids available yet");
+                        println!(
+                            "DKG Coordinator: Generated polynomial but no peer_ids available yet"
+                        );
                     }
                 }
 
@@ -236,7 +250,7 @@ impl DkgCoordinator {
                     .get_dkg_session(&session_id)
                     .await
                     .ok_or_else(|| format!("DKG session {} not found", session_id))?;
-                
+
                 // Deserialize share value
                 let share_val = Fr::deserialize_compressed(share_value.as_slice())
                     .map_err(|e| format!("Failed to deserialize share value: {}", e))?;
@@ -264,14 +278,14 @@ impl DkgCoordinator {
                 // IMPORTANT: We must store the session AFTER receive_share() has mutated it
                 // Clone the mutated session before storing
                 let session_to_store = session.clone();
-                
+
                 // Verify the share was actually stored by trying to compute secret share
                 // (this will fail if we don't have all shares yet, but that's okay)
                 let share_check = session_to_store.compute_secret_share();
                 println!("DKG Coordinator: Stored session after receiving share from node {} (session {}). Share check: {}", 
                     from_node_id, session_id,
                     if share_check.is_ok() { "has all shares" } else { "needs more shares" });
-                
+
                 self.app_state.store_dkg_session(session_to_store).await;
 
                 // Track share received
@@ -472,17 +486,18 @@ impl DkgCoordinator {
         // Check if we have commitments from all other nodes
         // We need to check if we've generated our own polynomial AND received commitments from all others
         let expected_commitments = session.total_nodes - 1; // Excluding self
-        
+
         // First, make sure we've generated our polynomial
         if session.commitment.coefficients.is_empty() {
             // Haven't generated polynomial yet, can't proceed to Phase 2
             return Ok(());
         }
-        
+
         // Get the actual count from session_state (drop the lock quickly)
         let received_commitments = {
             let states = self.session_state.states.read().await;
-            states.get(&session_id)
+            states
+                .get(&session_id)
                 .map(|s| s.commitments_received)
                 .unwrap_or(0)
         };
@@ -520,8 +535,12 @@ impl DkgCoordinator {
 
         // Make sure we've generated our polynomial
         if session.commitment.coefficients.is_empty() {
-            println!("DKG Coordinator: Generating polynomial before Phase 2 (node {})", session.id);
-            session.generate_polynomial()
+            println!(
+                "DKG Coordinator: Generating polynomial before Phase 2 (node {})",
+                session.id
+            );
+            session
+                .generate_polynomial()
                 .map_err(|e| format!("Failed to generate polynomial: {}", e))?;
             // Store the session with the generated polynomial BEFORE re-fetching
             let session_to_store = session.clone();
@@ -532,17 +551,23 @@ impl DkgCoordinator {
                 .get_dkg_session(&session_id)
                 .await
                 .ok_or_else(|| format!("DKG session {} not found", session_id))?;
-            println!("DKG Coordinator: Re-fetched session after generating polynomial (node {})", session.id);
+            println!(
+                "DKG Coordinator: Re-fetched session after generating polynomial (node {})",
+                session.id
+            );
         }
 
         // Generate shares for all nodes
-        println!("DKG Coordinator: Generating shares for node {} (session {})", session.id, session_id);
+        println!(
+            "DKG Coordinator: Generating shares for node {} (session {})",
+            session.id, session_id
+        );
         let shares = session
             .generate_shares()
             .map_err(|e| format!("Failed to generate shares: {}", e))?;
-        
+
         println!("DKG Coordinator: Generated {} shares", shares.len());
-        
+
         // IMPORTANT: Don't store the session here - it would overwrite any received shares!
         // The session is already stored when we receive shares, so we don't need to store it again
         // We only need the node_id for sending shares
@@ -561,22 +586,35 @@ impl DkgCoordinator {
         // This is inefficient but works without proper node_id to peer_id mapping
         let current_node_id = node_id;
         let mut shares_sent = 0;
-        
+
         if peer_ids.is_empty() {
             eprintln!("DKG Coordinator: WARNING - No peer_ids available to send shares to!");
             return Ok(()); // Can't send shares without peer_ids
         }
-        
-        println!("DKG Coordinator: About to send shares - {} shares, {} peers, node {}", shares.len(), peer_ids.len(), current_node_id);
-        println!("DKG Coordinator: Sending {} shares to {} peers (node {})", shares.len(), peer_ids.len(), current_node_id);
-        
+
+        println!(
+            "DKG Coordinator: About to send shares - {} shares, {} peers, node {}",
+            shares.len(),
+            peer_ids.len(),
+            current_node_id
+        );
+        println!(
+            "DKG Coordinator: Sending {} shares to {} peers (node {})",
+            shares.len(),
+            peer_ids.len(),
+            current_node_id
+        );
+
         for share in shares.iter() {
             // Skip sending share to ourselves
             if share.to_id == current_node_id {
-                println!("DKG Coordinator: Skipping share to ourselves (node {})", current_node_id);
+                println!(
+                    "DKG Coordinator: Skipping share to ourselves (node {})",
+                    current_node_id
+                );
                 continue;
             }
-            
+
             // Serialize share value
             use ark_serialize::CanonicalSerialize;
             let mut share_value_bytes = Vec::new();
@@ -597,12 +635,17 @@ impl DkgCoordinator {
             // In production, you'd have proper node_id to peer_id mapping
             let mut sent = false;
             for peer_id_str in peer_ids {
-                match self.send_message_to_peer(peer_id_str, share_msg.clone()).await {
+                match self
+                    .send_message_to_peer(peer_id_str, share_msg.clone())
+                    .await
+                {
                     Ok(_) => {
                         shares_sent += 1;
                         sent = true;
-                        println!("DKG Coordinator: Sent share from node {} to node {} via peer {}", 
-                            node_id, share.to_id, peer_id_str);
+                        println!(
+                            "DKG Coordinator: Sent share from node {} to node {} via peer {}",
+                            node_id, share.to_id, peer_id_str
+                        );
                         break; // Successfully sent to one peer, move to next share
                     }
                     Err(e) => {
@@ -615,12 +658,19 @@ impl DkgCoordinator {
                 }
             }
             if !sent {
-                eprintln!("DKG Coordinator: Failed to send share from node {} to node {} to any peer", 
-                    node_id, share.to_id);
+                eprintln!(
+                    "DKG Coordinator: Failed to send share from node {} to node {} to any peer",
+                    node_id, share.to_id
+                );
             }
         }
 
-        println!("Phase 2: Sent {}/{} shares to peers (node {})", shares_sent, shares.len() - 1, node_id);
+        println!(
+            "Phase 2: Sent {}/{} shares to peers (node {})",
+            shares_sent,
+            shares.len() - 1,
+            node_id
+        );
         Ok(())
     }
 
@@ -638,10 +688,11 @@ impl DkgCoordinator {
         // Check if we have shares from all other nodes
         // We can't access received_shares directly (it's private), so we use session_state counter
         let expected_shares = session.total_nodes - 1; // Excluding self
-        // Get the actual count from session_state (drop the lock quickly)
+                                                       // Get the actual count from session_state (drop the lock quickly)
         let received_shares = {
             let states = self.session_state.states.read().await;
-            states.get(&session_id)
+            states
+                .get(&session_id)
                 .map(|s| s.shares_received)
                 .unwrap_or(0)
         };
@@ -655,7 +706,7 @@ impl DkgCoordinator {
             // Add a small delay to ensure all async operations have completed
             use tokio::time::{sleep, Duration};
             sleep(Duration::from_millis(300)).await;
-            
+
             // Retry a few times to ensure we get the latest session state
             let mut session_check = None;
             for attempt in 0..5 {
@@ -663,7 +714,10 @@ impl DkgCoordinator {
                 if let Some(ref sess) = session_check {
                     // Try to compute aggregate key to verify we have all commitments
                     if sess.compute_aggregate_public_key().is_ok() {
-                        println!("DKG Coordinator: All commitments verified on attempt {}", attempt + 1);
+                        println!(
+                            "DKG Coordinator: All commitments verified on attempt {}",
+                            attempt + 1
+                        );
                         break;
                     }
                 }
@@ -671,21 +725,28 @@ impl DkgCoordinator {
                     sleep(Duration::from_millis(100)).await;
                 }
             }
-            
-            let session_check = session_check.ok_or_else(|| format!("DKG session {} not found", session_id))?;
-            
+
+            let session_check =
+                session_check.ok_or_else(|| format!("DKG session {} not found", session_id))?;
+
             // Final check - try to compute aggregate key
             match session_check.compute_aggregate_public_key() {
                 Ok(_) => {
                     println!("DKG Coordinator: All commitments verified, proceeding to Phase 4");
                 }
                 Err(e) => {
-                    println!("DKG Coordinator: Not all commitments received yet ({}), will retry later", e);
+                    println!(
+                        "DKG Coordinator: Not all commitments received yet ({}), will retry later",
+                        e
+                    );
                     return Ok(());
                 }
             }
-            
-            println!("DKG Coordinator: Calling initiate_phase4_completion for session {}", session_id);
+
+            println!(
+                "DKG Coordinator: Calling initiate_phase4_completion for session {}",
+                session_id
+            );
             self.initiate_phase4_completion(session_id).await?;
         }
 
@@ -696,7 +757,10 @@ impl DkgCoordinator {
     ///
     /// This is triggered when all shares have been received and verified.
     pub async fn initiate_phase4_completion(&self, session_id: u64) -> Result<(), String> {
-        println!("DKG Coordinator: Starting Phase 4 completion for session {}", session_id);
+        println!(
+            "DKG Coordinator: Starting Phase 4 completion for session {}",
+            session_id
+        );
 
         // Re-fetch session one more time to ensure we have the latest state
         // Retry a few times to handle race conditions where session might be overwritten
@@ -710,7 +774,10 @@ impl DkgCoordinator {
                 // Try to compute secret share - if it succeeds, we have all the data
                 match sess.compute_secret_share() {
                     Ok(_) => {
-                        println!("DKG Coordinator: Session has all shares on attempt {}", attempt + 1);
+                        println!(
+                            "DKG Coordinator: Session has all shares on attempt {}",
+                            attempt + 1
+                        );
                         break;
                     }
                     Err(e) => {
@@ -720,25 +787,40 @@ impl DkgCoordinator {
                 }
             }
         }
-        
+
         let session = session.ok_or_else(|| format!("DKG session {} not found", session_id))?;
-        
+
         // If we still don't have all shares after retries, log the error
         if let Some(ref err) = last_error {
-            eprintln!("DKG Coordinator: After retries, session still missing data: {}", err);
+            eprintln!(
+                "DKG Coordinator: After retries, session still missing data: {}",
+                err
+            );
         }
 
-        println!("DKG Coordinator: Re-fetched session for Phase 4, node {}", session.id);
+        println!(
+            "DKG Coordinator: Re-fetched session for Phase 4, node {}",
+            session.id
+        );
 
         // Compute final secret share
-        println!("DKG Coordinator: Attempting to compute secret share for node {}...", session.id);
+        println!(
+            "DKG Coordinator: Attempting to compute secret share for node {}...",
+            session.id
+        );
         let _final_share = match session.compute_secret_share() {
             Ok(share) => {
-                println!("DKG Coordinator: Successfully computed secret share for node {}", session.id);
+                println!(
+                    "DKG Coordinator: Successfully computed secret share for node {}",
+                    session.id
+                );
                 share
             }
             Err(e) => {
-                eprintln!("DKG Coordinator: Failed to compute secret share for node {}: {}", session.id, e);
+                eprintln!(
+                    "DKG Coordinator: Failed to compute secret share for node {}: {}",
+                    session.id, e
+                );
                 return Err(format!("Failed to compute secret share: {}", e));
             }
         };
@@ -748,7 +830,10 @@ impl DkgCoordinator {
             .compute_aggregate_public_key()
             .map_err(|e| format!("Failed to compute aggregate public key: {}", e))?;
 
-        println!("DKG Coordinator: Computed aggregate public key for node {}", session.id);
+        println!(
+            "DKG Coordinator: Computed aggregate public key for node {}",
+            session.id
+        );
 
         // Update phase
         self.session_state

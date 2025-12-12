@@ -29,10 +29,7 @@ use std::sync::Arc;
 ///     // Use app_state in your test...
 /// }
 /// ```
-pub async fn create_test_app_state(
-    node_id: Option<u32>,
-    bind_address: Option<String>,
-) -> AppState {
+pub async fn create_test_app_state(node_id: Option<u32>, bind_address: Option<String>) -> AppState {
     let node_id = node_id.unwrap_or(1);
     let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
 
@@ -117,12 +114,9 @@ impl ThreeNodeNetwork {
     pub fn get_peer_ids_for_connection(&self) -> Vec<String> {
         // The address field contains the formatted "node_id@ip:port" string
         // Exclude Alice's own peer ID to avoid self-connection
-        vec![
-            self.bob.address.clone(),
-            self.charlie.address.clone(),
-        ]
+        vec![self.bob.address.clone(), self.charlie.address.clone()]
     }
-    
+
     /// Get all peer IDs including Alice (for SessionInit)
     ///
     /// Returns a vector of all peer ID strings including Alice.
@@ -183,12 +177,9 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
     println!("Setting up three-node test network...");
 
     // Create three nodes: Alice, Bob, and Charlie
-    let alice_state =
-        create_test_app_state(Some(1), Some("127.0.0.1:0".to_string())).await;
-    let bob_state =
-        create_test_app_state(Some(2), Some("127.0.0.1:0".to_string())).await;
-    let charlie_state =
-        create_test_app_state(Some(3), Some("127.0.0.1:0".to_string())).await;
+    let alice_state = create_test_app_state(Some(1), Some("127.0.0.1:0".to_string())).await;
+    let bob_state = create_test_app_state(Some(2), Some("127.0.0.1:0".to_string())).await;
+    let charlie_state = create_test_app_state(Some(3), Some("127.0.0.1:0".to_string())).await;
 
     // Get peer IDs and addresses for each node
     let alice_peer_id = alice_state.network.local_peer_id();
