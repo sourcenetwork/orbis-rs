@@ -18,6 +18,7 @@ use crate::app_state::AppState;
 use crate::constants::ALPNDKG;
 use crate::dkg::messages::DkgMessage;
 use crate::dkg::session_state::{DkgPhase, SessionStateManager};
+// TODO: any crypto specific things should be generalized and come from crypto::bls12_381
 use ark_bls12_381::{Fr, G1Affine};
 use ark_serialize::CanonicalDeserialize;
 use crypto::bls12_381::common::PolynomialCommitment;
@@ -28,6 +29,7 @@ use network::Message as NetworkMessage;
 use network::PeerId;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use ark_serialize::CanonicalSerialize;
 
 /// DKG Session Manager
 ///
@@ -158,6 +160,7 @@ impl DkgCoordinator {
                 use ark_serialize::CanonicalDeserialize;
                 let mut commitment_coeffs = Vec::new();
                 let mut offset = 0;
+                // TODO: generalize this 
                 // Each G1Affine is 48 bytes when compressed
                 while offset < commitment.len() {
                     if offset + 48 > commitment.len() {
@@ -215,7 +218,6 @@ impl DkgCoordinator {
                     // Get peer IDs and node_id from session to send our commitment
                     if let Some(peer_ids) = self.session_state.get_peer_ids(&session_id).await {
                         // Serialize our commitment
-                        use ark_serialize::CanonicalSerialize;
                         let (commitment_bytes, node_id) = self
                             .app_state
                             .with_dkg_session(&session_id, |session| {
@@ -276,6 +278,7 @@ impl DkgCoordinator {
             } => {
                 // Phase 2: Receive and verify share
                 // Deserialize share value
+                // TODO: Genralize FR?
                 let share_val = Fr::deserialize_compressed(share_value.as_slice())
                     .map_err(|e| format!("Failed to deserialize share value: {}", e))?;
 
@@ -437,7 +440,6 @@ impl DkgCoordinator {
                     .map_err(|e| format!("Failed to generate polynomial: {}", e))?;
 
                 // Serialize commitment
-                use ark_serialize::CanonicalSerialize;
                 let mut bytes = Vec::new();
                 for coeff in &session.commitment.coefficients {
                     coeff.serialize_compressed(&mut bytes).map_err(|e| {
@@ -590,7 +592,6 @@ impl DkgCoordinator {
             }
 
             // Serialize share value
-            use ark_serialize::CanonicalSerialize;
             let mut share_value_bytes = Vec::new();
             share
                 .value
