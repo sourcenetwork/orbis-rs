@@ -54,10 +54,14 @@ impl DkgCoordinator {
     /// Each node creates its own instance to manage its participation
     /// in DKG sessions. This is part of a decentralized architecture
     /// where all nodes participate equally.
+    ///
+    /// The session_state is shared from AppState to ensure all coordinators
+    /// (service, protocol handler, etc.) use the same state.
     pub fn new(app_state: Arc<AppState>) -> Self {
+        let session_state = app_state.dkg_session_state.clone();
         Self {
             app_state,
-            session_state: Arc::new(SessionStateManager::new()),
+            session_state,
         }
     }
 
@@ -630,20 +634,18 @@ impl DkgCoordinator {
                 }
             } else {
                 // Fallback: broadcast to all peers (only if mapping not set up)
-                let mut sent = false;
+                let mut sent_count = 0;
                 for peer_id_str in peer_ids {
                     match self
                         .send_message_to_peer(peer_id_str, share_msg.clone())
                         .await
                     {
                         Ok(_) => {
-                            shares_sent += 1;
-                            sent = true;
+                            sent_count += 1;
                             println!(
                                 "DKG Coordinator: Sent share from node {} to node {} via peer {} (broadcast)",
                                 node_id, share.to_id, peer_id_str
                             );
-                            break;
                         }
                         Err(e) => {
                             if e.contains("ourself") {
@@ -653,7 +655,9 @@ impl DkgCoordinator {
                         }
                     }
                 }
-                if !sent {
+                if sent_count > 0 {
+                    shares_sent += 1;
+                } else {
                     eprintln!(
                         "DKG Coordinator: Failed to send share from node {} to node {} to any peer",
                         node_id, share.to_id

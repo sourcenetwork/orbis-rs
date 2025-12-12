@@ -8,11 +8,13 @@ mod tests {
         CryptoServiceImpl,
     };
     use hex;
+    use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
     use serial_test::serial;
     use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::time::Duration;
     use tonic::{Request, Response};
+
     /// Unit test: Test start_dkg directly
     #[tokio::test]
     #[serial]
@@ -368,7 +370,7 @@ mod tests {
         // Wait up to 10 seconds for DKG to complete
         use crypto::r#trait::Dkg;
         use tokio::time::{sleep, Duration};
-        let check_interval = Duration::from_millis(100);
+        let check_interval = Duration::from_millis(1000);
         let max_wait = Duration::from_secs(50);
 
         let start = std::time::Instant::now();
@@ -384,11 +386,28 @@ mod tests {
                 let session_guard = session.read().await;
                 let key = session_guard.compute_aggregate_public_key();
                 // If we can compute aggregate key, Phase 4 is complete
-                if key.is_ok() {
-                    println!(
-                        "DKG completed successfully! Aggregate public key computed. {:?}",
-                        key.unwrap()
-                    );
+                if let Ok(aggregate_key) = key {
+                    let key_string = aggregate_key.to_string();
+                    let share_alice = network
+                        .alice
+                        .app_state
+                        .local_storage
+                        .get_encrypted(LocalStorageKeys::RingKey(key_string.clone()));
+                    let share_bob = network
+                        .bob
+                        .app_state
+                        .local_storage
+                        .get_encrypted(LocalStorageKeys::RingKey(key_string.clone()));
+                    let share_charlie = network
+                        .charlie
+                        .app_state
+                        .local_storage
+                        .get_encrypted(LocalStorageKeys::RingKey(key_string));
+
+                    assert!(share_alice.unwrap().is_some());
+                    assert!(share_bob.unwrap().is_some());
+                    assert!(share_charlie.unwrap().is_some());
+
                     break;
                 }
             }

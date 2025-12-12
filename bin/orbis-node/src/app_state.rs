@@ -1,3 +1,4 @@
+use crate::dkg::session_state::SessionStateManager;
 use crypto::bls12_381::dkg::DKGNode;
 use local_storage::memory::MemoryStorage as LocalStorage;
 use network::IrohNetwork;
@@ -19,6 +20,8 @@ pub struct AppState {
     pub network: Arc<IrohNetwork>,
     /// Local Storage implementation for storing items locally
     pub local_storage: LocalStorage,
+    /// Shared DKG session state manager for tracking protocol progress
+    pub dkg_session_state: Arc<SessionStateManager>,
 }
 
 /// Encryption key data
@@ -54,6 +57,7 @@ impl AppState {
             },
             network,
             local_storage,
+            dkg_session_state: Arc::new(SessionStateManager::new()),
         }
     }
 
