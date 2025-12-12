@@ -24,11 +24,11 @@ impl PeerId {
 #[derive(Debug, Clone)]
 pub struct Message {
     pub data: Vec<u8>,
-    pub protocol: String,
+    pub protocol: Vec<u8>,
 }
 
 impl Message {
-    pub fn new(data: Vec<u8>, protocol: impl Into<String>) -> Self {
+    pub fn new(data: Vec<u8>, protocol: impl Into<Vec<u8>>) -> Self {
         Self {
             data,
             protocol: protocol.into(),
@@ -63,10 +63,10 @@ pub trait ProtocolHandler: Send + Sync {
 #[async_trait]
 pub trait Network: Send + Sync {
     /// Connect to a peer at the given address
-    async fn connect(&self, peer_id: &PeerId, protocol: &str) -> Result<Box<dyn Connection>>;
+    async fn connect(&self, peer_id: &PeerId, protocol: &[u8]) -> Result<Box<dyn Connection>>;
 
     /// Start listening for incoming connections
-    async fn listen(&mut self, protocol: &str, handler: Box<dyn ProtocolHandler>) -> Result<()>;
+    async fn listen(&mut self, protocol: &[u8], handler: Box<dyn ProtocolHandler>) -> Result<()>;
 
     /// Get the local peer ID
     fn local_peer_id(&self) -> PeerId;

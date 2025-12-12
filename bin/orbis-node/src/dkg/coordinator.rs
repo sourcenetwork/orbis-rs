@@ -15,12 +15,13 @@
 //! All nodes participate equally in the protocol.
 
 use crate::app_state::AppState;
-use crate::constants::ALPNDKG;
 use crate::dkg::messages::DkgMessage;
 use crate::dkg::session_state::{DkgPhase, SessionStateManager};
+use network::iroh::router::alpn::DKG;
 // TODO: any crypto specific things should be generalized and come from crypto::bls12_381
 use ark_bls12_381::{Fr, G1Affine};
 use ark_serialize::CanonicalDeserialize;
+use ark_serialize::CanonicalSerialize;
 use crypto::bls12_381::common::PolynomialCommitment;
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::r#trait::DistributedShare;
@@ -29,7 +30,6 @@ use network::Message as NetworkMessage;
 use network::PeerId;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use ark_serialize::CanonicalSerialize;
 
 /// DKG Session Manager
 ///
@@ -160,7 +160,7 @@ impl DkgCoordinator {
                 use ark_serialize::CanonicalDeserialize;
                 let mut commitment_coeffs = Vec::new();
                 let mut offset = 0;
-                // TODO: generalize this 
+                // TODO: generalize this
                 // Each G1Affine is 48 bytes when compressed
                 while offset < commitment.len() {
                     if offset + 48 > commitment.len() {
@@ -403,10 +403,9 @@ impl DkgCoordinator {
         use crate::helpers::helpers::connect_to_peer;
 
         // Connect to peer
-        let mut connection =
-            connect_to_peer(&self.app_state.network, peer_id_str.to_string(), ALPNDKG)
-                .await
-                .map_err(|e| format!("Failed to connect to peer {}: {}", peer_id_str, e))?;
+        let mut connection = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
+            .await
+            .map_err(|e| format!("Failed to connect to peer {}: {}", peer_id_str, e))?;
 
         // Serialize message
         let message_data = serde_json::to_vec(&message)
@@ -414,7 +413,7 @@ impl DkgCoordinator {
 
         // Send message
         connection
-            .send(NetworkMessage::new(message_data, ALPNDKG.to_string()))
+            .send(NetworkMessage::new(message_data, DKG))
             .await
             .map_err(|e| format!("Failed to send message to peer {}: {}", peer_id_str, e))?;
 

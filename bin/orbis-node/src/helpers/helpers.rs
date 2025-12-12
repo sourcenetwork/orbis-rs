@@ -40,7 +40,7 @@ pub struct PeerConnectionSummary {
 /// * `peer_ids` - Vector of peer ID strings to connect to. Peer IDs should be in iroh
 ///   PublicKey format: either "node_id" or "node_id@ip:port" where node_id is the
 ///   iroh public key string representation
-/// * `protocol` - The protocol to use for the connection (e.g., "orbis/dkg/0")
+/// * `protocol` - The protocol to use for the connection (e.g., b"orbis/dkg/0")
 ///
 /// # Returns
 /// A `PeerConnectionSummary` containing details about all connection attempts
@@ -53,7 +53,7 @@ pub struct PeerConnectionSummary {
 /// let summary = connect_to_peers(
 ///     &app_state.network,
 ///     vec!["peer1".to_string(), "peer2".to_string()],
-///     "orbis/dkg/0"
+///     b"orbis/dkg/0"
 /// ).await;
 ///
 /// println!("Connected to {}/{} peers", summary.successful, summary.total);
@@ -61,7 +61,7 @@ pub struct PeerConnectionSummary {
 pub async fn connect_to_peers<N: Network>(
     network: &Arc<N>,
     peer_ids: Vec<String>,
-    protocol: &str,
+    protocol: &[u8],
 ) -> PeerConnectionSummary {
     let total = peer_ids.len();
     let mut successful = 0;
@@ -77,9 +77,10 @@ pub async fn connect_to_peers<N: Network>(
         };
     }
 
+    let protocol_str = std::str::from_utf8(protocol).unwrap_or("<invalid-utf8>");
     println!(
         "Connecting to {} peer nodes using protocol '{}'...",
-        total, protocol
+        total, protocol_str
     );
 
     for peer_id_str in peer_ids {
@@ -135,7 +136,7 @@ pub async fn connect_to_peers<N: Network>(
 /// # Arguments
 /// * `network` - The iroh network instance to use for connections
 /// * `peer_id` - Peer ID string to connect to
-/// * `protocol` - The protocol to use for the connection (e.g., "orbis/dkg/0")
+/// * `protocol` - The protocol to use for the connection (e.g., b"orbis/dkg/0")
 ///
 /// # Returns
 /// `Ok(Box<dyn Connection>)` if successful, `Err(NetworkError)` if failed
@@ -145,7 +146,7 @@ pub async fn connect_to_peers<N: Network>(
 /// use network::Network;
 /// use crate::helpers::helpers::connect_to_peer;
 ///
-/// match connect_to_peer(&app_state.network, "peer1".to_string(), "orbis/dkg/0").await {
+/// match connect_to_peer(&app_state.network, "peer1".to_string(), b"orbis/dkg/0").await {
 ///     Ok(connection) => {
 ///         // Use connection for communication
 ///     }
@@ -157,7 +158,7 @@ pub async fn connect_to_peers<N: Network>(
 pub async fn connect_to_peer<N: Network>(
     network: &Arc<N>,
     peer_id: String,
-    protocol: &str,
+    protocol: &[u8],
 ) -> Result<Box<dyn network::Connection>, network::error::NetworkError> {
     let peer_id_obj = PeerId::new(peer_id.as_bytes().to_vec());
     network.connect(&peer_id_obj, protocol).await

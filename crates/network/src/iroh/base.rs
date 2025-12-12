@@ -17,7 +17,7 @@ use crate::r#trait::{Connection, Message, Network, PeerId, ProtocolHandler};
 pub struct IrohNetwork {
     endpoint: Endpoint,
     local_peer_id: PeerId,
-    handlers: Arc<RwLock<HashMap<String, Arc<dyn ProtocolHandler>>>>,
+    handlers: Arc<RwLock<HashMap<Vec<u8>, Arc<dyn ProtocolHandler>>>>,
 }
 
 impl IrohNetwork {
@@ -89,7 +89,7 @@ impl IrohNetwork {
 
 #[async_trait]
 impl Network for IrohNetwork {
-    async fn connect(&self, peer_id: &PeerId, protocol: &str) -> Result<Box<dyn Connection>> {
+    async fn connect(&self, peer_id: &PeerId, protocol: &[u8]) -> Result<Box<dyn Connection>> {
         use iroh::PublicKey;
         use std::net::SocketAddr;
         use std::str::FromStr;
@@ -127,7 +127,7 @@ impl Network for IrohNetwork {
             EndpointAddr::new(public_key)
         };
 
-        let alpn = protocol.as_bytes().to_vec();
+        let alpn = protocol.to_vec();
 
         // Connect to the peer
         let conn = self
@@ -139,9 +139,9 @@ impl Network for IrohNetwork {
         Ok(Box::new(IrohConnectionWrapper::new(conn)))
     }
 
-    async fn listen(&mut self, protocol: &str, handler: Box<dyn ProtocolHandler>) -> Result<()> {
+    async fn listen(&mut self, protocol: &[u8], handler: Box<dyn ProtocolHandler>) -> Result<()> {
         let mut handlers = self.handlers.write().await;
-        handlers.insert(protocol.to_string(), Arc::from(handler));
+        handlers.insert(protocol.to_vec(), Arc::from(handler));
         Ok(())
     }
 
@@ -212,7 +212,7 @@ impl Connection for IrohConnectionWrapper {
             .map_err(|e| NetworkError::Connection(format!("Failed to read data: {}", e)))?;
 
         // Get protocol from ALPN
-        let protocol = String::from_utf8_lossy(&self.conn.alpn()).to_string();
+        let protocol = self.conn.alpn().to_vec();
 
         // Send acknowledgment (optional)
         send.write_all(b"OK")

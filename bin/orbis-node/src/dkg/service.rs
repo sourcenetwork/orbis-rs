@@ -4,7 +4,8 @@ use crate::crypto_service::{
 };
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::messages::DkgMessage;
-use crate::{constants::ALPNDKG, helpers::helpers::connect_to_peers};
+use crate::helpers::helpers::connect_to_peers;
+use network::iroh::router::alpn::DKG;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -113,7 +114,7 @@ impl CryptoService for CryptoServiceImpl {
         if !req.peer_ids.is_empty() {
             let requested_peers = req.peer_ids.len();
             let connection_summary =
-                connect_to_peers(&self.state.network, req.peer_ids.clone(), ALPNDKG).await;
+                connect_to_peers(&self.state.network, req.peer_ids.clone(), DKG).await;
 
             // Check if we successfully connected to all requested peers
             if connection_summary.successful < requested_peers {

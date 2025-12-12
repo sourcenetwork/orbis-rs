@@ -1,6 +1,5 @@
 // Include the generated proto code
 pub mod app_state;
-pub mod constants;
 pub mod dkg;
 pub mod helpers;
 
@@ -8,8 +7,8 @@ use crate::dkg::service::CryptoServiceImpl;
 use app_state::AppState;
 use clap::Parser;
 use network::Network;
-use std::net::SocketAddr;
 use rand::Rng;
+use std::net::SocketAddr;
 
 pub mod crypto_service {
     tonic::include_proto!("crypto_service");
@@ -55,11 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  node_id: {}", node_id);
 
     // Create shared application state (needed for router)
-    let app_state = AppState::new(
-        node_id,
-        args.addr.clone(),
-        network_arc.clone(),
-    );
+    let app_state = AppState::new(node_id, args.addr.clone(), network_arc.clone());
     let app_state_arc = std::sync::Arc::new(app_state.clone());
 
     // Start the iroh router in the background with DKG protocol handler
