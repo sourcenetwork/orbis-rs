@@ -3,7 +3,6 @@
 //! This module provides a router that can compose multiple protocols
 //! using iroh's ALPN (Application-Layer Protocol Negotiation) support.
 
-use anyhow::Error as AnyError;
 use iroh::protocol::Router as IrohRouter;
 use iroh::Endpoint;
 use std::sync::Arc;
@@ -38,6 +37,7 @@ impl Router {
         RouterBuilder {
             endpoint,
             handlers: Vec::new(),
+            max_message_size: 1024 * 1024, // 1MB default
         }
     }
 
@@ -54,6 +54,7 @@ impl Router {
 pub struct RouterBuilder {
     endpoint: Endpoint,
     handlers: Vec<(Vec<u8>, Arc<dyn ProtocolHandler>)>,
+    max_message_size: usize,
 }
 
 impl RouterBuilder {
@@ -63,12 +64,22 @@ impl RouterBuilder {
         self
     }
 
+    /// Set the maximum message size for connections
+    pub fn max_message_size(mut self, size: usize) -> Self {
+        self.max_message_size = size;
+        self
+    }
+
     /// Spawn the router with all registered handlers
     pub fn spawn(self) -> Router {
         let mut builder = IrohRouter::builder(self.endpoint.clone());
+        let max_message_size = self.max_message_size;
 
         for (alpn, handler) in self.handlers {
-            let handler_wrapper = IrohProtocolHandlerWrapper { handler };
+            let handler_wrapper = IrohProtocolHandlerWrapper {
+                handler,
+                max_message_size,
+            };
             builder = builder.accept(alpn, Arc::new(handler_wrapper));
         }
 
@@ -80,12 +91,14 @@ impl RouterBuilder {
 /// Wrapper to adapt our ProtocolHandler to iroh's ProtocolHandler
 struct IrohProtocolHandlerWrapper {
     handler: Arc<dyn ProtocolHandler>,
+    max_message_size: usize,
 }
 
 impl std::fmt::Debug for IrohProtocolHandlerWrapper {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IrohProtocolHandlerWrapper")
             .field("handler", &"<ProtocolHandler>")
+            .field("max_message_size", &self.max_message_size)
             .finish()
     }
 }
@@ -98,9 +111,10 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
     ) -> impl std::future::Future<Output = std::result::Result<(), iroh::protocol::AcceptError>> + Send
     {
         let handler = Arc::clone(&self.handler);
+        let max_message_size = self.max_message_size;
         async move {
             // Convert iroh connection to our Connection trait
-            let conn = IrohConnectionWrapper::new(connection);
+            let conn = IrohConnectionWrapper::new(connection, max_message_size);
 
             // Call our handler
             handler.handle(Box::new(conn)).await.map_err(|e| {

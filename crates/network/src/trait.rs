@@ -5,14 +5,20 @@
 
 use crate::error::Result;
 use async_trait::async_trait;
+use bytes::Bytes;
+use std::sync::Arc;
 
 /// A peer identifier in the network
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PeerId(pub Vec<u8>);
+pub struct PeerId(Arc<[u8]>);
 
 impl PeerId {
-    pub fn new(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+    pub fn new(bytes: impl Into<Arc<[u8]>>) -> Self {
+        Self(bytes.into())
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self(Arc::from(bytes))
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -23,15 +29,22 @@ impl PeerId {
 /// A network message that can be sent between peers
 #[derive(Debug, Clone)]
 pub struct Message {
-    pub data: Vec<u8>,
-    pub protocol: Vec<u8>,
+    pub data: Bytes,
+    pub protocol: Arc<[u8]>,
 }
 
 impl Message {
-    pub fn new(data: Vec<u8>, protocol: impl Into<Vec<u8>>) -> Self {
+    pub fn new(data: impl Into<Bytes>, protocol: impl Into<Arc<[u8]>>) -> Self {
         Self {
-            data,
+            data: data.into(),
             protocol: protocol.into(),
+        }
+    }
+
+    pub fn with_vec(data: Vec<u8>, protocol: Vec<u8>) -> Self {
+        Self {
+            data: Bytes::from(data),
+            protocol: Arc::from(protocol.into_boxed_slice()),
         }
     }
 }
@@ -40,13 +53,17 @@ impl Message {
 #[async_trait]
 pub trait Connection: Send + Sync {
     /// Send a message over this connection
-    async fn send(&mut self, message: Message) -> Result<()>;
+    ///
+    /// Takes `&self` to allow concurrent sends from multiple tasks
+    async fn send(&self, message: Message) -> Result<()>;
 
     /// Receive a message from this connection
-    async fn recv(&mut self) -> Result<Message>;
+    ///
+    /// Takes `&self` to allow concurrent receives from multiple tasks
+    async fn recv(&self) -> Result<Message>;
 
     /// Close the connection
-    async fn close(&mut self) -> Result<()>;
+    async fn close(&self) -> Result<()>;
 
     /// Get the peer ID of the remote peer
     fn peer_id(&self) -> &PeerId;

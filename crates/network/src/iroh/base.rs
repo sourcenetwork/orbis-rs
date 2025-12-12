@@ -3,7 +3,7 @@
 //! This module implements the Network trait using iroh's QUIC-based networking.
 
 use async_trait::async_trait;
-use futures::StreamExt;
+use bytes::Bytes;
 use iroh::endpoint::Connection as IrohConnection;
 use iroh::{Endpoint, EndpointAddr};
 use std::collections::HashMap;
@@ -13,28 +13,38 @@ use tokio::sync::RwLock;
 use crate::error::{NetworkError, Result};
 use crate::r#trait::{Connection, Message, Network, PeerId, ProtocolHandler};
 
+/// Configuration for IrohNetwork
+#[derive(Debug, Clone)]
+pub struct IrohNetworkConfig {
+    /// Maximum size for receiving messages (in bytes)
+    pub max_message_size: usize,
+}
+
+impl Default for IrohNetworkConfig {
+    fn default() -> Self {
+        Self {
+            max_message_size: 1024 * 1024, // 1MB default
+        }
+    }
+}
+
 /// Iroh-based network implementation
 pub struct IrohNetwork {
     endpoint: Endpoint,
     local_peer_id: PeerId,
+    config: IrohNetworkConfig,
     handlers: Arc<RwLock<HashMap<Vec<u8>, Arc<dyn ProtocolHandler>>>>,
 }
 
 impl IrohNetwork {
-    /// Create a new Iroh network instance
+    /// Create a new builder for IrohNetwork
+    pub fn builder() -> IrohNetworkBuilder {
+        IrohNetworkBuilder::default()
+    }
+
+    /// Create a new Iroh network instance with default configuration
     pub async fn new() -> Result<Self> {
-        let endpoint = Endpoint::bind()
-            .await
-            .map_err(|e| NetworkError::Connection(format!("Failed to bind endpoint: {}", e)))?;
-
-        let node_id = endpoint.id();
-        let peer_id = PeerId::new(node_id.as_bytes().to_vec());
-
-        Ok(Self {
-            endpoint,
-            local_peer_id: peer_id,
-            handlers: Arc::new(RwLock::new(HashMap::new())),
-        })
+        Self::builder().build().await
     }
 
     /// Get a reference to the underlying iroh endpoint
@@ -42,48 +52,40 @@ impl IrohNetwork {
         &self.endpoint
     }
 
-    /// Start accepting incoming connections
-    pub async fn start_accept_loop(&self) -> Result<()> {
-        let handlers = Arc::clone(&self.handlers);
-        // Clone endpoint to move into spawn
-        let endpoint = self.endpoint.clone();
+    /// Get the configuration
+    pub fn config(&self) -> &IrohNetworkConfig {
+        &self.config
+    }
+}
 
-        tokio::spawn(async move {
-            let mut incoming = endpoint.accept();
+/// Builder for IrohNetwork
+#[derive(Default)]
+pub struct IrohNetworkBuilder {
+    config: IrohNetworkConfig,
+}
 
-            // TODO: Fix Accept stream iteration
-            // Accept doesn't implement Stream directly - need to check iroh 0.95 docs
-            // for correct usage (may need to use a different method or trait)
-            // Placeholder implementation - this will not compile until fixed
-            #[allow(unused)]
-            let _incoming = incoming;
-            // TODO: Implement proper connection acceptance loop
-            // Example (needs verification):
-            // while let Some(conn_result) = /* correct stream method */ {
-            //     match conn_result {
-            //         Ok(conn) => {
-            //             let alpn = conn.alpn();
-            //             let protocol = String::from_utf8_lossy(&alpn).to_string();
-            //
-            //             let handlers_read = handlers.read().await;
-            //             if let Some(handler) = handlers_read.get(&protocol) {
-            //                 let handler = Arc::clone(handler);
-            //                 drop(handlers_read);
-            //
-            //                 tokio::spawn(async move {
-            //                     let connection = IrohConnectionWrapper::new(conn);
-            //                     if let Err(e) = handler.handle(Box::new(connection)).await {
-            //                         eprintln!("Error handling connection: {:?}", e);
-            //                     }
-            //                 });
-            //             }
-            //         }
-            //         Err(e) => eprintln!("Error: {:?}", e),
-            //     }
-            // }
-        });
+impl IrohNetworkBuilder {
+    /// Set the maximum message size
+    pub fn max_message_size(mut self, size: usize) -> Self {
+        self.config.max_message_size = size;
+        self
+    }
 
-        Ok(())
+    /// Build the IrohNetwork instance
+    pub async fn build(self) -> Result<IrohNetwork> {
+        let endpoint = Endpoint::bind()
+            .await
+            .map_err(|e| NetworkError::Connection(format!("Failed to bind endpoint: {}", e)))?;
+
+        let node_id = endpoint.id();
+        let peer_id = PeerId::from_bytes(node_id.as_bytes());
+
+        Ok(IrohNetwork {
+            endpoint,
+            local_peer_id: peer_id,
+            config: self.config,
+            handlers: Arc::new(RwLock::new(HashMap::new())),
+        })
     }
 }
 
@@ -136,7 +138,10 @@ impl Network for IrohNetwork {
             .await
             .map_err(|e| NetworkError::Connection(format!("Failed to connect: {}", e)))?;
 
-        Ok(Box::new(IrohConnectionWrapper::new(conn)))
+        Ok(Box::new(IrohConnectionWrapper::new(
+            conn,
+            self.config.max_message_size,
+        )))
     }
 
     async fn listen(&mut self, protocol: &[u8], handler: Box<dyn ProtocolHandler>) -> Result<()> {
@@ -157,74 +162,90 @@ impl Network for IrohNetwork {
 }
 
 /// Wrapper around iroh Connection to implement our Connection trait
+///
+/// Uses QUIC's bidirectional stream multiplexing with acknowledgments.
+/// Each message uses a new bi-directional stream where:
+/// - Sender writes data and waits for ack (keeps connection alive)
+/// - Receiver reads data and sends ack
 pub struct IrohConnectionWrapper {
     conn: IrohConnection,
     peer_id: PeerId,
+    protocol: Arc<[u8]>,
+    max_message_size: usize,
 }
 
 impl IrohConnectionWrapper {
-    pub fn new(conn: IrohConnection) -> Self {
+    pub fn new(conn: IrohConnection, max_message_size: usize) -> Self {
         // remote_id() returns a PublicKey
         let node_id = conn.remote_id();
-        let peer_id = PeerId::new(node_id.as_bytes().to_vec());
-        Self { conn, peer_id }
+        let peer_id = PeerId::from_bytes(node_id.as_bytes());
+
+        // Get protocol from ALPN - cache it since it won't change
+        let protocol = Arc::from(conn.alpn());
+
+        Self {
+            conn,
+            peer_id,
+            protocol,
+            max_message_size,
+        }
     }
 }
 
 #[async_trait]
 impl Connection for IrohConnectionWrapper {
-    async fn send(&mut self, message: Message) -> Result<()> {
-        // Use bidirectional stream for reliable message delivery
+    async fn send(&self, message: Message) -> Result<()> {
+        // Open a new bidirectional stream for this message
         let (mut send, mut recv) = self
             .conn
             .open_bi()
             .await
             .map_err(|e| NetworkError::Connection(format!("Failed to open stream: {}", e)))?;
 
-        // Send message data
-        use tokio::io::AsyncWriteExt;
+        // Write message data
         send.write_all(&message.data)
             .await
             .map_err(|e| NetworkError::Io(e.into()))?;
+
+        // Finish the send side to signal completion
         send.finish()
             .map_err(|e| NetworkError::Connection(format!("Failed to finish stream: {}", e)))?;
 
-        // Wait for response (optional - could be made configurable)
-        // iroh's read_to_end takes a size limit (usize), not a buffer
-        let _ = recv.read_to_end(1024).await;
+        // Wait for acknowledgment (keeps connection alive until receiver processes message)
+        // This prevents connection closure before the receiver can read the data
+        let _ = recv.read_to_end(64).await; // Small buffer for ack
 
         Ok(())
     }
 
-    async fn recv(&mut self) -> Result<Message> {
-        // Accept incoming bidirectional stream
+    async fn recv(&self) -> Result<Message> {
+        // Accept an incoming bidirectional stream
         let (mut send, mut recv) = self
             .conn
             .accept_bi()
             .await
             .map_err(|e| NetworkError::Connection(format!("Failed to accept stream: {}", e)))?;
 
-        // Read message data
-        // iroh's read_to_end takes a size limit (usize) and returns Vec<u8>
+        // Read all data from the stream (up to max_message_size)
         let buffer = recv
-            .read_to_end(1024 * 1024) // 1MB limit
+            .read_to_end(self.max_message_size)
             .await
             .map_err(|e| NetworkError::Connection(format!("Failed to read data: {}", e)))?;
 
-        // Get protocol from ALPN
-        let protocol = self.conn.alpn().to_vec();
+        // Send acknowledgment to signal successful receipt
+        let _ = send.write_all(&[1u8]).await; // Simple 1-byte ack
+        let _ = send.finish();
 
-        // Send acknowledgment (optional)
-        send.write_all(b"OK")
-            .await
-            .map_err(|e| NetworkError::Io(e.into()))?;
-        send.finish()
-            .map_err(|e| NetworkError::Connection(format!("Failed to finish stream: {}", e)))?;
+        // Convert to Bytes for zero-copy efficiency
+        let data = Bytes::from(buffer);
 
-        Ok(Message::new(buffer, protocol))
+        Ok(Message {
+            data,
+            protocol: Arc::clone(&self.protocol),
+        })
     }
 
-    async fn close(&mut self) -> Result<()> {
+    async fn close(&self) -> Result<()> {
         self.conn.close(0u32.into(), b"Goodbye");
         Ok(())
     }
