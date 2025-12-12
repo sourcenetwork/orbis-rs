@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
 };
+#[derive(Default, Clone)]
 pub struct MemoryStorage {
     pub store: Arc<RwLock<HashMap<LocalStorageKeys, Vec<u8>>>>,
 }

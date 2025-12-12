@@ -6,6 +6,7 @@ pub mod helpers;
 use crate::dkg::service::CryptoServiceImpl;
 use app_state::AppState;
 use clap::Parser;
+use local_storage::memory::MemoryStorage as LocalStorage;
 use network::Network;
 use rand::Rng;
 use std::net::SocketAddr;
@@ -38,6 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let network = network::IrohNetwork::new()
         .await
         .map_err(|e| format!("Failed to initialize iroh network: {}", e))?;
+    let local_storage = LocalStorage::default();
 
     // Get the local peer ID and address before wrapping in Arc
     let local_peer_id = network.local_peer_id();
@@ -54,7 +56,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  node_id: {}", node_id);
 
     // Create shared application state (needed for router)
-    let app_state = AppState::new(node_id, args.addr.clone(), network_arc.clone());
+    let app_state = AppState::new(
+        node_id,
+        args.addr.clone(),
+        network_arc.clone(),
+        local_storage,
+    );
     let app_state_arc = std::sync::Arc::new(app_state.clone());
 
     // Start the iroh router in the background with DKG protocol handler

@@ -1,4 +1,5 @@
 use crypto::bls12_381::dkg::DKGNode;
+use local_storage::memory::MemoryStorage as LocalStorage;
 use network::IrohNetwork;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,6 +17,8 @@ pub struct AppState {
     pub config: ServerConfig,
     /// Iroh network for node-to-node communication
     pub network: Arc<IrohNetwork>,
+    /// Local Storage implementation for storing items locally
+    pub local_storage: LocalStorage,
 }
 
 /// Encryption key data
@@ -36,7 +39,12 @@ pub struct ServerConfig {
 
 impl AppState {
     /// Create a new AppState instance
-    pub fn new(node_id: u32, bind_address: String, network: Arc<IrohNetwork>) -> Self {
+    pub fn new(
+        node_id: u32,
+        bind_address: String,
+        network: Arc<IrohNetwork>,
+        local_storage: LocalStorage,
+    ) -> Self {
         Self {
             dkg_sessions: Arc::new(RwLock::new(HashMap::new())),
             encryption_keys: Arc::new(RwLock::new(HashMap::new())),
@@ -45,6 +53,7 @@ impl AppState {
                 bind_address,
             },
             network,
+            local_storage,
         }
     }
 

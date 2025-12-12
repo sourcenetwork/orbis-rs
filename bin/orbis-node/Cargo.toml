@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 network = { path = "../../crates/network" }
 crypto = { path = "../../crates/crypto" }
+local-storage = { path = "../../crates/local-storage" }
 tonic = "0.14.2"
 tonic-prost = "0.14"
 prost = "0.14.1"

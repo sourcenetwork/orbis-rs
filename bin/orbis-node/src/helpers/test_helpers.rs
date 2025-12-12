@@ -5,6 +5,7 @@
 use crate::app_state::AppState;
 use crate::dkg::protocol_handler;
 use hex;
+use local_storage::memory::MemoryStorage as LocalStorage;
 use network::IrohRouter;
 use std::sync::Arc;
 
@@ -39,9 +40,10 @@ pub async fn create_test_app_state(node_id: Option<u32>, bind_address: Option<St
         .expect("Failed to initialize iroh network for testing");
 
     let network_arc = Arc::new(network);
+    let local_storage = LocalStorage::default();
 
     // Create AppState with the network
-    AppState::new(node_id, bind_address, network_arc)
+    AppState::new(node_id, bind_address, network_arc, local_storage)
 }
 
 /// Create a test AppState with default values
