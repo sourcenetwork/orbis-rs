@@ -7,7 +7,7 @@ members = [
     # "crates/local-db",
     # "crates/orbis-types",
     # "crates/orbis-core",
-    "bin/orbis-node", "crates/crypto",
+    "bin/orbis-node", "crates/crypto", "crates/local-storage",
 ]
 
 [workspace.package]
