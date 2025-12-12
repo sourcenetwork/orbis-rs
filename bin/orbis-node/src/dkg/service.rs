@@ -1,14 +1,11 @@
 use crate::app_state::AppState;
 use crate::crypto_service::{
-    crypto_service_server::CryptoService, EncryptionRequest, EncryptionResponse, StartDkgRequest,
-    StartDkgResponse,
+    crypto_service_server::CryptoService, StartDkgRequest, StartDkgResponse,
 };
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::messages::DkgMessage;
 use crate::{constants::ALPNDKG, helpers::helpers::connect_to_peers};
-use crypto::bls12_381::dkg::DKGNode;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -136,7 +133,6 @@ impl CryptoService for CryptoServiceImpl {
             // Include all peer_ids (including our own) so non-initiators know who to send messages to
             // First, get our own peer ID and add it to the list
             use network::Network;
-            let our_peer_id = self.state.network.local_peer_id();
             let our_address = self
                 .state
                 .network

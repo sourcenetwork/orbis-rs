@@ -3,7 +3,7 @@
 //! This module tracks the state of DKG sessions including active connections,
 //! protocol phases, and peer information.
 
-use network::{Connection, PeerId};
+use network::Connection;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -29,9 +29,10 @@ pub enum DkgPhase {
 pub struct DkgSessionState {
     /// Current protocol phase
     pub phase: DkgPhase,
-    /// Active connections to peers: peer_id_string -> connection
-    pub connections: HashMap<String, Box<dyn Connection>>,
-    /// Mapping of node IDs to peer IDs
+    /// Connection pool: peer_id_string -> connection
+    /// Connections are reused for the duration of the session
+    pub connections: HashMap<String, Arc<RwLock<Box<dyn Connection>>>>,
+    /// Mapping of node IDs to peer IDs for efficient routing
     pub node_id_to_peer_id: HashMap<u32, String>,
     /// Mapping of peer IDs to node IDs
     pub peer_id_to_node_id: HashMap<String, u32>,
@@ -43,6 +44,8 @@ pub struct DkgSessionState {
     pub commitments_received: usize,
     /// Number of shares received
     pub shares_received: usize,
+    /// Processed message IDs for deduplication (session_id, from_node_id, message_type_discriminant)
+    pub processed_messages: std::collections::HashSet<(u64, u32, String)>,
 }
 
 impl DkgSessionState {
@@ -56,6 +59,7 @@ impl DkgSessionState {
             total_participants,
             commitments_received: 0,
             shares_received: 0,
+            processed_messages: std::collections::HashSet::new(),
         }
     }
 
@@ -85,11 +89,22 @@ impl SessionStateManager {
         }
     }
 
-    pub async fn get_state(&self, session_id: &u64) -> Option<DkgSessionState> {
+    /// Execute a function with read-only access to a session state
+    pub async fn with_state<F, R>(&self, session_id: &u64, f: F) -> Option<R>
+    where
+        F: FnOnce(&DkgSessionState) -> R,
+    {
         let states = self.states.read().await;
-        // Note: We can't clone Box<dyn Connection>, so we'll need a different approach
-        // For now, return None and we'll handle this differently
-        None
+        states.get(session_id).map(f)
+    }
+
+    /// Execute a function with mutable access to a session state
+    pub async fn with_state_mut<F, R>(&self, session_id: &u64, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut DkgSessionState) -> R,
+    {
+        let mut states = self.states.write().await;
+        states.get_mut(session_id).map(f)
     }
 
     pub async fn create_session(&self, session_id: u64, total_participants: usize) {
@@ -109,6 +124,7 @@ impl SessionStateManager {
         states.get(session_id).map(|s| s.peer_ids.clone())
     }
 
+    /// Add a connection to the pool for a session
     pub async fn add_connection(
         &self,
         session_id: &u64,
@@ -117,17 +133,85 @@ impl SessionStateManager {
     ) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
-            state.connections.insert(peer_id_str, connection);
+            state
+                .connections
+                .insert(peer_id_str, Arc::new(RwLock::new(connection)));
         }
     }
 
+    /// Get a connection from the pool (returns Arc to avoid removing from pool)
     pub async fn get_connection(
         &self,
         session_id: &u64,
         peer_id_str: &str,
-    ) -> Option<Box<dyn Connection>> {
+    ) -> Option<Arc<RwLock<Box<dyn Connection>>>> {
+        let states = self.states.read().await;
+        states
+            .get(session_id)?
+            .connections
+            .get(peer_id_str)
+            .cloned()
+    }
+
+    /// Set node_id to peer_id mappings for efficient routing
+    pub async fn set_node_peer_mappings(
+        &self,
+        session_id: &u64,
+        node_id_to_peer_id: HashMap<u32, String>,
+    ) {
         let mut states = self.states.write().await;
-        states.get_mut(session_id)?.connections.remove(peer_id_str)
+        if let Some(state) = states.get_mut(session_id) {
+            state.node_id_to_peer_id = node_id_to_peer_id.clone();
+            // Build reverse mapping
+            state.peer_id_to_node_id = node_id_to_peer_id
+                .into_iter()
+                .map(|(k, v)| (v, k))
+                .collect();
+        }
+    }
+
+    /// Get peer_id for a node_id
+    pub async fn get_peer_id_for_node(&self, session_id: &u64, node_id: u32) -> Option<String> {
+        let states = self.states.read().await;
+        states
+            .get(session_id)?
+            .node_id_to_peer_id
+            .get(&node_id)
+            .cloned()
+    }
+
+    /// Check if a message has already been processed (for deduplication)
+    pub async fn is_message_processed(
+        &self,
+        session_id: &u64,
+        from_node_id: u32,
+        message_type: &str,
+    ) -> bool {
+        let states = self.states.read().await;
+        if let Some(state) = states.get(session_id) {
+            state.processed_messages.contains(&(
+                *session_id,
+                from_node_id,
+                message_type.to_string(),
+            ))
+        } else {
+            false
+        }
+    }
+
+    /// Mark a message as processed
+    pub async fn mark_message_processed(
+        &self,
+        session_id: &u64,
+        from_node_id: u32,
+        message_type: String,
+    ) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state
+                .processed_messages
+                .insert((*session_id, from_node_id, message_type));
+        }
     }
 
     pub async fn update_phase(&self, session_id: &u64, phase: DkgPhase) {

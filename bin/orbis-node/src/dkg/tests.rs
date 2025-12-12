@@ -381,8 +381,9 @@ mod tests {
 
             // Try to get the session and check if we can compute aggregate key (indicates Phase 4 complete)
             if let Some(session) = alice_coordinator.get_session(&session_id).await {
+                let session_guard = session.read().await;
                 // If we can compute aggregate key, Phase 4 is complete
-                if session.compute_aggregate_public_key().is_ok() {
+                if session_guard.compute_aggregate_public_key().is_ok() {
                     println!("DKG completed successfully! Aggregate public key computed.");
                     break;
                 }

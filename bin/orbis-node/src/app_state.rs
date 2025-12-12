@@ -7,8 +7,9 @@ use tokio::sync::RwLock;
 /// Shared application state accessible by all gRPC endpoints
 #[derive(Clone)]
 pub struct AppState {
-    /// Active DKG sessions: session_id -> session metadata
-    pub dkg_sessions: Arc<RwLock<HashMap<u64, DKGNode>>>,
+    /// Active DKG sessions: session_id -> Arc<RwLock<session>>
+    /// Using Arc<RwLock> to avoid cloning and allow concurrent mutable access
+    pub dkg_sessions: Arc<RwLock<HashMap<u64, Arc<RwLock<DKGNode>>>>>,
     /// Encryption keys: key_id -> key data
     pub encryption_keys: Arc<RwLock<HashMap<String, EncryptionKey>>>,
     /// Server configuration
@@ -47,16 +48,40 @@ impl AppState {
         }
     }
 
-    /// Get a DKG session by ID
-    pub async fn get_dkg_session(&self, session_id: &u64) -> Option<DKGNode> {
+    /// Get a DKG session Arc by ID (returns shared reference, no cloning)
+    pub async fn get_dkg_session(&self, session_id: &u64) -> Option<Arc<RwLock<DKGNode>>> {
         let sessions = self.dkg_sessions.read().await;
         sessions.get(session_id).cloned()
     }
 
-    /// Store a DKG session
+    /// Store a DKG session (wraps in Arc<RwLock> if needed)
     pub async fn store_dkg_session(&self, session: DKGNode) {
         let mut sessions = self.dkg_sessions.write().await;
-        sessions.insert(session.session_id.clone(), session);
+        let session_id = session.session_id;
+        sessions.insert(session_id, Arc::new(RwLock::new(session)));
+    }
+
+    /// Execute a function with mutable access to a DKG session
+    /// This is more efficient than get + modify + store
+    pub async fn with_dkg_session_mut<F, R>(&self, session_id: &u64, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut DKGNode) -> R,
+    {
+        let sessions = self.dkg_sessions.read().await;
+        let session_lock = sessions.get(session_id)?;
+        let mut session = session_lock.write().await;
+        Some(f(&mut *session))
+    }
+
+    /// Execute a function with read-only access to a DKG session
+    pub async fn with_dkg_session<F, R>(&self, session_id: &u64, f: F) -> Option<R>
+    where
+        F: FnOnce(&DKGNode) -> R,
+    {
+        let sessions = self.dkg_sessions.read().await;
+        let session_lock = sessions.get(session_id)?;
+        let session = session_lock.read().await;
+        Some(f(&*session))
     }
 
     /// Get an encryption key by ID
