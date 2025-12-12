@@ -92,18 +92,6 @@ impl AppState {
         let session = session_lock.read().await;
         Some(f(&*session))
     }
-
-    /// Get an encryption key by ID
-    pub async fn get_encryption_key(&self, key_id: &str) -> Option<EncryptionKey> {
-        let keys = self.encryption_keys.read().await;
-        keys.get(key_id).cloned()
-    }
-
-    /// Store an encryption key
-    pub async fn store_encryption_key(&self, key: EncryptionKey) {
-        let mut keys = self.encryption_keys.write().await;
-        keys.insert(key.key_id.clone(), key);
-    }
 }
 
 impl std::fmt::Debug for AppState {

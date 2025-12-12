@@ -2,7 +2,9 @@ use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Eq, Hash, PartialEq)]
-pub enum LocalStorageKeys {}
+pub enum LocalStorageKeys {
+    RingKey(String),
+}
 
 pub trait LocalStorage {
     /// Get an item from your local store

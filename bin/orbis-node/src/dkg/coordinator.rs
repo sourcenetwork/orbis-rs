@@ -26,6 +26,7 @@ use crypto::bls12_381::common::PolynomialCommitment;
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::r#trait::DistributedShare;
 use crypto::r#trait::Dkg;
+use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::Message as NetworkMessage;
 use network::PeerId;
 use std::sync::Arc;
@@ -730,7 +731,7 @@ impl DkgCoordinator {
         );
 
         // Compute final secret share and aggregate public key
-        let (node_id, aggregate_pk) = self
+        let (node_id, aggregate_pk, final_share_bytes) = self
             .app_state
             .with_dkg_session(&session_id, |session| {
                 println!(
@@ -739,7 +740,7 @@ impl DkgCoordinator {
                 );
 
                 // Compute final secret share
-                let _final_share = session
+                let final_share = session
                     .compute_secret_share()
                     .map_err(|e| format!("Failed to compute secret share: {}", e))?;
 
@@ -758,10 +759,37 @@ impl DkgCoordinator {
                     session.id
                 );
 
-                Ok::<_, String>((session.id, aggregate_pk))
+                // Serialize the final share for storage
+                // PriShare has fields: i (u32) and v (Fr)
+                let mut final_share_bytes = Vec::new();
+
+                // Serialize the index (4 bytes for u32)
+                final_share_bytes.extend_from_slice(&final_share.i.to_le_bytes());
+
+                // Serialize the share value (Fr)
+                final_share
+                    .v
+                    .serialize_compressed(&mut final_share_bytes)
+                    .map_err(|e| format!("Failed to serialize final share value: {}", e))?;
+
+                Ok::<_, String>((session.id, aggregate_pk, final_share_bytes))
             })
             .await
             .ok_or_else(|| format!("DKG session {} not found", session_id))??;
+
+        // Store the serialized final share in local storage
+        self.app_state
+            .local_storage
+            .set_encrypted(
+                LocalStorageKeys::RingKey(aggregate_pk.to_string()),
+                final_share_bytes.clone(),
+            )
+            .map_err(|e| format!("Failed to store final share: {}", e))?;
+
+        println!(
+            "DKG Coordinator: Stored final share for session {} in local storage",
+            session_id
+        );
 
         // Update phase
         self.session_state
@@ -773,7 +801,6 @@ impl DkgCoordinator {
             aggregate_pk, node_id
         );
 
-        // TODO: Store the final share and aggregate PK somewhere (maybe in AppState)
         Ok(())
     }
 }
