@@ -133,6 +133,9 @@ pub trait ThresholdDealer {
     type ReencryptReply;
     type PubPoly: PubPoly<PublicKey = Self::PublicKey>;
 
+    fn new() -> Self;
+    fn name(&self) -> &str;
+
     /// Re-encrypt a secret share using the receiver's public key.
     ///
     /// Input:
