@@ -6,11 +6,16 @@ use crate::{
         PubPoly as PubPolyTrait, PubShare, ReencryptReply, Secret, ThresholdDealer,
     },
 };
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::{AffineRepr, Group};
 use ark_ff::{Field, One, PrimeField, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{vec::Vec, UniformRand};
+use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -109,6 +114,84 @@ impl ThresholdDealer for ThresholdDealerNode {
         }
 
         Self::recover_commit(xnc_ski, t, n)
+    }
+    fn encrypt_secret(
+        dkg_pk: &Self::PublicKey,
+        data: &[u8],
+    ) -> Result<(Self::PublicKey, Self::Secret)> {
+        let mut rng = OsRng;
+        // Generate random r
+        let r = Fr::rand(&mut rng);
+        let enc_cmt: G1Affine = (G1Projective::generator() * r).into(); // rG
+        let rs_g: G1Affine = (G1Projective::from(*dkg_pk) * r).into(); // rsG
+
+        // Derive AES key from rsG
+        let aes_key = Self::derive_key_from_point(&rs_g)?;
+        let cipher = Aes256Gcm::new(&aes_key.into());
+
+        // Generate nonce using cryptographically secure RNG
+        let mut nonce_bytes = [0u8; 12];
+        rng.fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        // Encrypt data
+        let ciphertext = cipher
+            .encrypt(nonce, data)
+            .map_err(|_| CryptoError::ElGamalError("Encryption failed".to_string()))?;
+
+        let mut enc_cmt_bytes = Vec::new();
+        enc_cmt.serialize_compressed(&mut enc_cmt_bytes)?;
+
+        Ok((
+            enc_cmt,
+            Secret {
+                enc_cmt: enc_cmt_bytes,
+                encrypted_data: ciphertext,
+                nonce: nonce_bytes.to_vec(),
+                auth_tag: Vec::new(), // Included in ciphertext with AES-GCM
+            },
+        ))
+    }
+    fn decrypt_secret(
+        dkg_pk: &Self::PublicKey,
+        xnc_cmt: &Self::PublicKey, // Recovered from re-encryption
+        rdr_sk: &Self::ShareValue,
+        secret: &Self::Secret,
+    ) -> Result<Vec<u8>> {
+        // Input validation
+        if secret.nonce.len() != 12 {
+            return Err(CryptoError::ElGamalError(
+                "Invalid nonce length: must be exactly 12 bytes".to_string(),
+            ));
+        }
+
+        if secret.encrypted_data.is_empty() {
+            return Err(CryptoError::ElGamalError(
+                "Empty encrypted data".to_string(),
+            ));
+        }
+
+        if secret.enc_cmt.is_empty() {
+            return Err(CryptoError::ElGamalError("Empty commitment".to_string()));
+        }
+
+        // Recover rsG
+        let xs_g = G1Projective::from(*dkg_pk) * rdr_sk; // xsG = x * sG
+        let rs_g: G1Affine = (G1Projective::from(*xnc_cmt) - xs_g).into(); // rsG
+
+        // Derive AES key
+        let aes_key = Self::derive_key_from_point(&rs_g)?;
+        let cipher = Aes256Gcm::new(&aes_key.into());
+
+        // Decrypt
+        let nonce = Nonce::from_slice(&secret.nonce);
+        let plaintext = cipher
+            .decrypt(nonce, secret.encrypted_data.as_ref())
+            .map_err(|_| {
+                CryptoError::ElGamalError("Decryption failed - authentication failed".to_string())
+            })?;
+
+        Ok(plaintext)
     }
 }
 
@@ -268,5 +351,18 @@ impl ThresholdDealerNode {
         output.copy_from_slice(&result);
 
         Ok(output)
+    }
+
+    /// Derive AES key from elliptic curve point
+    fn derive_key_from_point(point: &G1Affine) -> Result<[u8; 32]> {
+        let mut point_bytes = Vec::new();
+        point.serialize_compressed(&mut point_bytes)?;
+
+        let hkdf = Hkdf::<Sha256>::new(None, &point_bytes);
+        let mut key = [0u8; 32];
+        hkdf.expand(b"elgamal-aes-key-v1", &mut key)
+            .map_err(|_| CryptoError::ElGamalError("HKDF expansion failed".to_string()))?;
+
+        Ok(key)
     }
 }
