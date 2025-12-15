@@ -23,6 +23,36 @@ pub struct PriShare<ShareValue> {
     pub v: ShareValue,
 }
 
+/// Public share containing an index and a point value
+#[derive(Clone, Debug)]
+pub struct PubShare<PublicKey> {
+    pub i: u32,
+    pub v: PublicKey,
+}
+
+/// Distributed key share
+#[derive(Clone, Debug)]
+pub struct DistKeyShare<ShareValue> {
+    pub pri_share: PriShare<ShareValue>,
+}
+
+/// Secret structure
+#[derive(Clone, Debug)]
+pub struct Secret {
+    pub enc_cmt: Vec<u8>,        // rG - Schnorr commitment
+    pub encrypted_data: Vec<u8>, // AES-GCM encrypted data
+    pub nonce: Vec<u8>,          // AES-GCM nonce (12 bytes)
+    pub auth_tag: Vec<u8>,       // Authentication tag
+}
+
+/// Re-encryption reply
+#[derive(Clone, Debug)]
+pub struct ReencryptReply<ShareValue, PublicKey> {
+    pub share: PubShare<PublicKey>,
+    pub challenge: ShareValue,
+    pub proof: ShareValue,
+}
+
 pub trait PubPoly: Clone + Debug + Send + Sync {
     type PublicKey;
     /// Evaluate the public polynomial at index i
@@ -102,7 +132,6 @@ pub trait ThresholdDealer {
     type ShareValue;
     type ReencryptReply;
     type PubPoly: PubPoly<PublicKey = Self::PublicKey>;
-    type PubShare;
 
     /// Re-encrypt a secret share using the receiver's public key.
     ///
@@ -142,7 +171,7 @@ pub trait ThresholdDealer {
     /// Recover the re-encrypted commitment from shares
     fn recover(
         &self,
-        xnc_ski: &[Self::PubShare],
+        xnc_ski: &[PubShare<Self::PublicKey>],
         t: usize,
         n: usize,
     ) -> Result<Option<Self::PublicKey>>;

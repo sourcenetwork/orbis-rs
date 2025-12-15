@@ -5,6 +5,10 @@ use thiserror::Error;
 pub enum CryptoError {
     #[error("Dkg error: {0}")]
     DKGError(String),
+    #[error("Dkg error: {0}")]
+    ElGamalError(String),
+    #[error("Serilization error: {0}")]
+    SerializationError(#[from] ark_serialize::SerializationError),
 }
 
 /// Result type for network operations
