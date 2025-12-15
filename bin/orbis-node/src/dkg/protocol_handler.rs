@@ -43,7 +43,7 @@ impl DkgProtocolHandler {
 
 #[async_trait]
 impl ProtocolHandler for DkgProtocolHandler {
-    async fn handle(&self, mut connection: Box<dyn Connection>) -> NetworkResult<()> {
+    async fn handle(&self, connection: Box<dyn Connection>) -> NetworkResult<()> {
         let peer_id = connection.peer_id().clone();
         // TODO: Authentic nodes?
         println!("DKG Protocol: Accepted connection from peer: {:?}", peer_id);

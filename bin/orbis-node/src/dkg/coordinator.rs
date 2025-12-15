@@ -408,7 +408,7 @@ impl DkgCoordinator {
         use crate::helpers::helpers::connect_to_peer;
 
         // Connect to peer
-        let mut connection = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
+        let connection = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
             .await
             .map_err(|e| format!("Failed to connect to peer {}: {}", peer_id_str, e))?;
 

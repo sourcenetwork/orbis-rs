@@ -90,7 +90,7 @@ pub async fn connect_to_peers<N: Network>(
 
         // Connect to the peer using the specified protocol
         match network.connect(&peer_id, protocol).await {
-            Ok(mut connection) => {
+            Ok(_connection) => {
                 println!("  ✓ Connected to peer: {}", peer_id_str);
                 successful += 1;
                 results.push(PeerConnectionResult {

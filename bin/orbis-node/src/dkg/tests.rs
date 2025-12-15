@@ -1,4 +1,3 @@
-
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::helpers::test_helpers::{
     create_test_app_state, create_test_app_state_default, setup_three_node_network,
@@ -8,9 +7,7 @@ use crate::{
     CryptoServiceImpl,
 };
 use crypto::r#trait::Dkg;
-use hex;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
-use serial_test::serial;
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
     hash::{Hash, Hasher},
