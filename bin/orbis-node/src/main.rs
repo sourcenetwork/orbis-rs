@@ -48,6 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to get local address: {}", e))?;
 
     let network_arc = std::sync::Arc::new(network);
+    // TODO: node_id can be local_peer_id or local_address
     let node_id = args.node_id.unwrap_or_else(|| rand::thread_rng().gen());
 
     println!("Iroh network initialized:");

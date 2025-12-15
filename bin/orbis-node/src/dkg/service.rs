@@ -41,7 +41,7 @@ impl CryptoService for CryptoServiceImpl {
     ) -> Result<Response<StartDkgResponse>, Status> {
         let req = request.into_inner();
         // TODO: Authentication, is user allowed to create a ring
-
+        // TODO: Authenticate request info, fail if bad info ex: threshold > total_participants, participant_ids.len() != total_participants, duplicate participant IDs
         println!("Received StartDkg request:");
         println!("  Session ID: {}", req.session_id);
         println!("  Threshold: {}", req.threshold);
