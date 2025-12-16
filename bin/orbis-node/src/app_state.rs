@@ -1,4 +1,5 @@
 use crate::dkg::session_state::SessionStateManager;
+use crate::pre::messages::PreMessage;
 use crypto::bls12_381::dkg::DKGNode;
 use local_storage::{
     memory::MemoryStorage as LocalStorage,
@@ -8,6 +9,10 @@ use network::IrohNetwork;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+/// Shared PRE response storage for collecting re-encryption responses
+/// request_id -> (responses, expected_count)
+pub type PreResponseStorage = Arc<RwLock<HashMap<String, (Vec<PreMessage>, usize)>>>;
 
 /// Shared application state accessible by all gRPC endpoints
 #[derive(Clone)]
@@ -23,6 +28,8 @@ pub struct AppState {
     pub local_storage: LocalStorage,
     /// Shared DKG session state manager for tracking protocol progress
     pub dkg_session_state: Arc<SessionStateManager>,
+    /// Shared PRE response storage for collecting re-encryption responses
+    pub pre_responses: PreResponseStorage,
 }
 
 /// Encryption key data
@@ -58,6 +65,7 @@ impl AppState {
             network,
             local_storage,
             dkg_session_state: Arc::new(SessionStateManager::new()),
+            pre_responses: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 

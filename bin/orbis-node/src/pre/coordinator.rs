@@ -13,6 +13,7 @@
 use crate::app_state::AppState;
 use crate::pre::error::{PreError, Result};
 use crate::pre::messages::PreMessage;
+use crate::helpers::helpers::connect_to_peer;
 use ark_bls12_381::{Fr, G1Affine};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use crypto::bls12_381::pre::ThresholdDealerNode;
@@ -22,9 +23,7 @@ use network::iroh::router::alpn::REENCRYPT;
 use network::Message as NetworkMessage;
 use network::PeerId;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Response structure containing reencrypted commitment and original secret
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,18 +41,12 @@ pub struct PreResponse {
 /// decentralized with each node managing its own state.
 pub struct PreCoordinator {
     app_state: Arc<AppState>,
-    /// Storage for collecting reencryption responses
-    /// request_id -> (responses, expected_count)
-    responses: Arc<RwLock<HashMap<String, (Vec<PreMessage>, usize)>>>,
 }
 
 impl PreCoordinator {
     /// Create a new PRE coordinator for this node
     pub fn new(app_state: Arc<AppState>) -> Self {
-        Self {
-            app_state,
-            responses: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self { app_state }
     }
 
     /// Handle an incoming PRE message
@@ -141,25 +134,26 @@ impl PreCoordinator {
             })?;
 
         // 5. Deserialize final share
-        let final_share: Fr = Fr::deserialize_compressed(&final_share_bytes[..]).map_err(|e| {
+        // The stored format is: [4 bytes node_id (u32 LE)] + [32 bytes Fr compressed]
+        if final_share_bytes.len() < 4 {
+            return Err(PreError::Deserialization(
+                "Final share bytes too short - missing node_id".to_string(),
+            ));
+        }
+
+        // Extract node_id from the first 4 bytes
+        let node_id = u32::from_le_bytes(
+            final_share_bytes[..4]
+                .try_into()
+                .map_err(|_| PreError::Deserialization("Failed to extract node_id".to_string()))?,
+        );
+
+        // Deserialize the Fr value from the remaining bytes
+        let final_share: Fr = Fr::deserialize_compressed(&final_share_bytes[4..]).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize final share: {}", e))
         })?;
 
-        // 6. Get node ID from DKG session
-        let dkg_session = self
-            .app_state
-            .get_dkg_session_by_ring_pk(&ring_pk_bytes)
-            .await
-            .ok_or_else(|| {
-                PreError::SessionNotFound("DKG session not found for ring_pk".to_string())
-            })?;
-
-        let node_id = {
-            let session = dkg_session.read().await;
-            session.id
-        };
-
-        // 7. Create distributed key share
+        // 6. Create distributed key share
         let dist_key_share = DistKeyShare {
             pri_share: PriShare {
                 i: node_id,
@@ -167,13 +161,13 @@ impl PreCoordinator {
             },
         };
 
-        // 8. Perform reencryption
+        // 7. Perform reencryption
         let dealer = ThresholdDealerNode::new();
         let reply = dealer
             .reencrypt(&dist_key_share, &secret, &rdr_pk)
             .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;
 
-        // 9. Serialize the reply components
+        // 8. Serialize the reply components
         let mut share_bytes = Vec::new();
         reply
             .share
@@ -195,7 +189,7 @@ impl PreCoordinator {
             .serialize_compressed(&mut proof_bytes)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize proof: {}", e)))?;
 
-        // 10. Create response message
+        // 9. Create response message
         let response = PreMessage::ReencryptResponse {
             request_id: request_id.clone(),
             from_node_id: node_id,
@@ -245,6 +239,61 @@ impl PreCoordinator {
         Ok(())
     }
 
+    /// Send a PRE request to a peer and wait for the response
+    ///
+    /// This method sends a request and waits for the response on the same connection,
+    /// storing the response for later collection.
+    pub async fn send_request_and_receive_response(
+        &self,
+        peer_id_str: &str,
+        message: PreMessage,
+        _request_id: &str,
+    ) -> Result<()> {
+        // Connect to peer
+        let connection =
+            connect_to_peer(&self.app_state.network, peer_id_str.to_string(), REENCRYPT)
+                .await
+                .map_err(|e| {
+                    PreError::NetworkConnection(format!(
+                        "Failed to connect to peer {}: {}",
+                        peer_id_str, e
+                    ))
+                })?;
+
+        // Serialize message
+        let message_data = serde_json::to_vec(&message)
+            .map_err(|e| PreError::Serialization(format!("Failed to serialize message: {}", e)))?;
+
+        // Send message
+        connection
+            .send(NetworkMessage::new(message_data, REENCRYPT))
+            .await
+            .map_err(|e| {
+                PreError::NetworkCommunication(format!(
+                    "Failed to send message to peer {}: {}",
+                    peer_id_str, e
+                ))
+            })?;
+
+        // Wait for response on the same connection
+        let response_msg = connection.recv().await.map_err(|e| {
+            PreError::NetworkCommunication(format!(
+                "Failed to receive response from peer {}: {}",
+                peer_id_str, e
+            ))
+        })?;
+
+        // Deserialize response
+        let response: PreMessage = serde_json::from_slice(&response_msg.data).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize response: {}", e))
+        })?;
+
+        // Store the response
+        self.store_response(response).await;
+
+        Ok(())
+    }
+
     /// Initiate reencryption (initiator side)
     ///
     /// Sends reencryption requests to all ring nodes, collects responses,
@@ -272,13 +321,13 @@ impl PreCoordinator {
                 PreError::SessionNotFound("DKG session not found for ring_pk".to_string())
             })?;
 
-        let (threshold, total_participants, pub_poly_commits) = {
+        let (threshold, total_participants, pub_poly) = {
+            use crypto::r#trait::Dkg;
             let session = dkg_session.read().await;
-            (
-                session.threshold,
-                session.total_nodes,
-                session.commitment.coefficients.clone(),
-            )
+            let pub_poly = session.compute_public_polynomial().map_err(|e| {
+                PreError::Crypto(format!("Failed to compute public polynomial: {}", e))
+            })?;
+            (session.threshold, session.total_nodes, pub_poly)
         };
 
         // 2. Deserialize reader public key
@@ -297,12 +346,14 @@ impl PreCoordinator {
 
         // 4. Initialize response collection
         {
-            let mut responses = self.responses.write().await;
+            let mut responses = self.app_state.pre_responses.write().await;
             responses.insert(request_id.clone(), (Vec::new(), peer_ids.len()));
         }
 
-        // 5. Send reencryption requests to all peers
+        // 5. Send reencryption requests to all peers concurrently and receive responses
         let node_id = self.app_state.config.node_id;
+        let mut handles = Vec::new();
+
         for peer_id_str in peer_ids {
             let request = PreMessage::ReencryptRequest {
                 request_id: request_id.clone(),
@@ -312,27 +363,52 @@ impl PreCoordinator {
                 ring_pk: ring_pk_bytes.clone(),
             };
 
-            if let Err(e) = self.send_message_to_peer(peer_id_str, request).await {
-                eprintln!(
-                    "Failed to send reencryption request to peer {}: {}",
-                    peer_id_str, e
-                );
+            let peer_id = peer_id_str.clone();
+            let req_id = request_id.clone();
+            let app_state = self.app_state.clone();
+
+            // Spawn a task for each peer to send request and receive response
+            let handle = tokio::spawn(async move {
+                let coordinator = PreCoordinator::new(app_state);
+                coordinator
+                    .send_request_and_receive_response(&peer_id, request, &req_id)
+                    .await
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all responses
+        for handle in handles {
+            if let Err(e) = handle.await {
+                eprintln!("Task failed: {:?}", e);
             }
         }
 
-        // 6. Wait for and collect responses
-        // Note: In production, this should use proper async coordination with timeouts
-        // For now, we'll use a simple polling approach
-        let collected_responses = self.collect_responses(&request_id, threshold).await?;
+        // 6. Collect the stored responses
+        let collected_responses = {
+            let responses = self.app_state.pre_responses.read().await;
+            if let Some((resps, _)) = responses.get(&request_id) {
+                resps.clone()
+            } else {
+                return Err(PreError::Timeout(format!(
+                    "No responses found for request {}",
+                    request_id
+                )));
+            }
+        };
+
+        // Check if we have enough responses
+        if collected_responses.len() < threshold {
+            return Err(PreError::Timeout(format!(
+                "Insufficient responses: got {}, need {}",
+                collected_responses.len(),
+                threshold
+            )));
+        }
 
         // 7. Verify and extract shares
         let dealer = ThresholdDealerNode::new();
         let mut verified_shares: Vec<PubShare<G1Affine>> = Vec::new();
-
-        // Create pub_poly for verification
-        let pub_poly = crypto::bls12_381::common::PubPoly {
-            commits: pub_poly_commits,
-        };
 
         for response in collected_responses {
             if let PreMessage::ReencryptResponse {
@@ -424,7 +500,7 @@ impl PreCoordinator {
 
         // 14. Cleanup
         {
-            let mut responses = self.responses.write().await;
+            let mut responses = self.app_state.pre_responses.write().await;
             responses.remove(&request_id);
         }
 
@@ -436,51 +512,10 @@ impl PreCoordinator {
         Ok(response_bytes)
     }
 
-    /// Collect responses for a request
-    ///
-    /// This is a simplified implementation that polls for responses.
-    /// In production, this should use proper async channels with timeouts.
-    async fn collect_responses(
-        &self,
-        request_id: &str,
-        threshold: usize,
-    ) -> Result<Vec<PreMessage>> {
-        use tokio::time::{sleep, Duration};
-
-        let max_wait_seconds = 30;
-        let poll_interval_ms = 100;
-        let max_polls = (max_wait_seconds * 1000) / poll_interval_ms;
-
-        for _ in 0..max_polls {
-            {
-                let responses = self.responses.read().await;
-                if let Some((collected, _expected)) = responses.get(request_id) {
-                    if collected.len() >= threshold {
-                        return Ok(collected.clone());
-                    }
-                }
-            }
-            sleep(Duration::from_millis(poll_interval_ms as u64)).await;
-        }
-
-        // Timeout - return what we have
-        let responses = self.responses.read().await;
-        if let Some((collected, _expected)) = responses.get(request_id) {
-            if !collected.is_empty() {
-                return Ok(collected.clone());
-            }
-        }
-
-        Err(PreError::Timeout(format!(
-            "Timeout waiting for reencryption responses for request {}",
-            request_id
-        )))
-    }
-
     /// Store a received response (called by protocol handler)
     pub async fn store_response(&self, message: PreMessage) {
         let request_id = message.request_id().to_string();
-        let mut responses = self.responses.write().await;
+        let mut responses = self.app_state.pre_responses.write().await;
 
         if let Some((collected, _expected)) = responses.get_mut(&request_id) {
             collected.push(message);

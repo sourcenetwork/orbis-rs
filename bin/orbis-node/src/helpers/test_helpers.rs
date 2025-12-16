@@ -4,6 +4,7 @@
 
 use crate::app_state::AppState;
 use crate::dkg::protocol_handler;
+use crate::dkg::protocol_handler::create_router_with_handlers;
 use hex;
 use local_storage::memory::MemoryStorage as LocalStorage;
 use network::IrohRouter;
@@ -262,6 +263,133 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
         println!("Starting router for Charlie...");
         let charlie_app_state = Arc::new(charlie_state.clone());
         Some(protocol_handler::create_router_with_dkg_handler(
+            charlie_state.network.endpoint().clone(),
+            charlie_app_state,
+        ))
+    } else {
+        None
+    };
+
+    ThreeNodeNetwork {
+        alice: TestNode {
+            app_state: alice_state,
+            peer_id: alice_peer_id,
+            address: alice_peer_id_with_addr,
+            router: alice_router,
+        },
+        bob: TestNode {
+            app_state: bob_state,
+            peer_id: bob_peer_id,
+            address: bob_peer_id_with_addr,
+            router: bob_router,
+        },
+        charlie: TestNode {
+            app_state: charlie_state,
+            peer_id: charlie_peer_id,
+            address: charlie_peer_id_with_addr,
+            router: charlie_router,
+        },
+    }
+}
+
+/// Set up a three-node test network with both DKG and PRE protocol handlers
+///
+/// This function creates three nodes (Alice, Bob, Charlie), initializes their networks,
+/// gets their peer IDs and addresses, and optionally starts routers for all nodes
+/// to accept incoming connections for both DKG and PRE protocols.
+///
+/// # Arguments
+/// * `start_routers` - If true, starts routers for all nodes to accept connections
+///
+/// # Returns
+/// A `ThreeNodeNetwork` containing all three nodes with their information
+pub async fn setup_three_node_network_with_pre(start_routers: bool) -> ThreeNodeNetwork {
+    use network::Network;
+
+    println!("Setting up three-node test network with DKG and PRE handlers...");
+
+    // Create three nodes: Alice, Bob, and Charlie
+    let alice_state = create_test_app_state(Some(1), Some("127.0.0.1:0".to_string())).await;
+    let bob_state = create_test_app_state(Some(2), Some("127.0.0.1:0".to_string())).await;
+    let charlie_state = create_test_app_state(Some(3), Some("127.0.0.1:0".to_string())).await;
+
+    // Get peer IDs and addresses for each node
+    let alice_peer_id = alice_state.network.local_peer_id();
+    let alice_address = alice_state
+        .network
+        .local_address()
+        .expect("Failed to get Alice's address");
+    let alice_sockets = alice_state.network.endpoint().bound_sockets();
+    let alice_socket_addr = alice_sockets
+        .first()
+        .expect("Alice endpoint should have at least one bound socket");
+    let alice_peer_id_with_addr = format!("{}@{}", alice_address, alice_socket_addr);
+
+    let bob_peer_id = bob_state.network.local_peer_id();
+    let bob_address = bob_state
+        .network
+        .local_address()
+        .expect("Failed to get Bob's address");
+    let bob_sockets = bob_state.network.endpoint().bound_sockets();
+    let bob_socket_addr = bob_sockets
+        .first()
+        .expect("Bob endpoint should have at least one bound socket");
+    let bob_peer_id_with_addr = format!("{}@{}", bob_address, bob_socket_addr);
+
+    let charlie_peer_id = charlie_state.network.local_peer_id();
+    let charlie_address = charlie_state
+        .network
+        .local_address()
+        .expect("Failed to get Charlie's address");
+    let charlie_sockets = charlie_state.network.endpoint().bound_sockets();
+    let charlie_socket_addr = charlie_sockets
+        .first()
+        .expect("Charlie endpoint should have at least one bound socket");
+    let charlie_peer_id_with_addr = format!("{}@{}", charlie_address, charlie_socket_addr);
+
+    println!(
+        "Alice - Peer ID: {}, Address: {}",
+        hex::encode(alice_peer_id.as_bytes()),
+        alice_address
+    );
+    println!(
+        "Bob - Peer ID: {}, Address: {}",
+        hex::encode(bob_peer_id.as_bytes()),
+        bob_address
+    );
+    println!(
+        "Charlie - Peer ID: {}, Address: {}",
+        hex::encode(charlie_peer_id.as_bytes()),
+        charlie_address
+    );
+
+    // Start routers for all nodes with both DKG and PRE protocol handlers
+    let alice_router = if start_routers {
+        println!("Starting router for Alice with DKG and PRE handlers...");
+        let alice_app_state = Arc::new(alice_state.clone());
+        Some(create_router_with_handlers(
+            alice_state.network.endpoint().clone(),
+            alice_app_state,
+        ))
+    } else {
+        None
+    };
+
+    let bob_router = if start_routers {
+        println!("Starting router for Bob with DKG and PRE handlers...");
+        let bob_app_state = Arc::new(bob_state.clone());
+        Some(create_router_with_handlers(
+            bob_state.network.endpoint().clone(),
+            bob_app_state,
+        ))
+    } else {
+        None
+    };
+
+    let charlie_router = if start_routers {
+        println!("Starting router for Charlie with DKG and PRE handlers...");
+        let charlie_app_state = Arc::new(charlie_state.clone());
+        Some(create_router_with_handlers(
             charlie_state.network.endpoint().clone(),
             charlie_app_state,
         ))
