@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::helpers::helpers::connect_to_peers;
 use crate::pre::coordinator::PreCoordinator;
+use crate::pre::error::PreError;
 use crate::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
 use network::iroh::router::alpn::REENCRYPT;
 use std::sync::Arc;
@@ -41,25 +42,25 @@ impl PreService for PreServiceImpl {
 
         // 1. Parse JSON and hex inputs
         // ring_pk: hex-encoded compressed G1Affine bytes
-        let ring_pk = hex::decode(&req.ring_pk).map_err(|e| {
-            Status::invalid_argument(format!("Invalid ring_pk hex encoding: {}", e))
-        })?;
+        let ring_pk = hex::decode(&req.ring_pk)
+            .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
 
         // secret: JSON-serialized Secret struct
         let secret: crypto::r#trait::Secret = serde_json::from_str(&req.secret)
-            .map_err(|e| Status::invalid_argument(format!("Invalid secret JSON: {}", e)))?;
+            .map_err(|e| PreError::InvalidInput(format!("Invalid secret JSON: {}", e)))?;
         let secret_bytes = serde_json::to_vec(&secret)
-            .map_err(|e| Status::internal(format!("Failed to serialize secret: {}", e)))?;
+            .map_err(|e| PreError::Serialization(format!("Failed to serialize secret: {}", e)))?;
 
         // rdr_pk: hex-encoded compressed G1Affine bytes
         let rdr_pk = hex::decode(&req.rdr_pk)
-            .map_err(|e| Status::invalid_argument(format!("Invalid rdr_pk hex encoding: {}", e)))?;
+            .map_err(|e| PreError::InvalidInput(format!("Invalid rdr_pk hex encoding: {}", e)))?;
 
         // 2. Validate we have peers
         if req.peer_ids.is_empty() {
-            return Err(Status::invalid_argument(
-                "No peer IDs provided for reencryption",
-            ));
+            return Err(PreError::InvalidInput(
+                "No peer IDs provided for reencryption".to_string(),
+            )
+            .into());
         }
 
         // 3. Generate unique request ID
@@ -79,7 +80,7 @@ impl PreService for PreServiceImpl {
                 connection_summary.failed
             );
             eprintln!("Error: {}", error_msg);
-            return Err(Status::failed_precondition(error_msg));
+            return Err(PreError::NetworkConnection(error_msg).into());
         }
 
         println!(
@@ -91,15 +92,14 @@ impl PreService for PreServiceImpl {
         let coordinator = PreCoordinator::new(Arc::new(self.state.clone()));
         let result = coordinator
             .initiate_reencryption(request_id, ring_pk, secret_bytes, rdr_pk, &req.peer_ids)
-            .await
-            .map_err(|e| Status::internal(format!("Reencryption failed: {}", e)))?;
+            .await?;
 
         // 6. Parse result as PreResponse and encode as JSON
         let pre_response: crate::pre::coordinator::PreResponse = serde_json::from_slice(&result)
-            .map_err(|e| Status::internal(format!("Failed to parse PRE result: {}", e)))?;
+            .map_err(|e| PreError::Deserialization(format!("Failed to parse PRE result: {}", e)))?;
 
         let encrypted_secret = serde_json::to_string(&pre_response)
-            .map_err(|e| Status::internal(format!("Failed to serialize response: {}", e)))?;
+            .map_err(|e| PreError::Serialization(format!("Failed to serialize response: {}", e)))?;
 
         let response = StartPreResponse {
             status: "completed".to_string(),

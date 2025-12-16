@@ -111,7 +111,7 @@ impl ProtocolHandler for PreProtocolHandler {
                     // Send error response
                     let error_msg = PreMessage::Error {
                         request_id: String::from("unknown"),
-                        error: e,
+                        error: e.to_string(),
                     };
                     if let Ok(error_data) = serde_json::to_vec(&error_msg) {
                         let _ = connection

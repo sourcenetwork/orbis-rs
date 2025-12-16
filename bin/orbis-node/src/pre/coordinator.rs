@@ -11,6 +11,7 @@
 //! - Manages reencryption share collection and recovery
 
 use crate::app_state::AppState;
+use crate::pre::error::{PreError, Result};
 use crate::pre::messages::PreMessage;
 use ark_bls12_381::{Fr, G1Affine};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -62,7 +63,7 @@ impl PreCoordinator {
         &self,
         _peer_id: &PeerId,
         message: PreMessage,
-    ) -> Result<Option<PreMessage>, String> {
+    ) -> Result<Option<PreMessage>> {
         match message {
             PreMessage::ReencryptRequest {
                 request_id,
@@ -106,18 +107,21 @@ impl PreCoordinator {
         secret_bytes: Vec<u8>,
         rdr_pk_bytes: Vec<u8>,
         ring_pk_bytes: Vec<u8>,
-    ) -> Result<Option<PreMessage>, String> {
+    ) -> Result<Option<PreMessage>> {
         // 1. Deserialize the secret
-        let secret: Secret = serde_json::from_slice(&secret_bytes)
-            .map_err(|e| format!("Failed to deserialize secret: {}", e))?;
+        let secret: Secret = serde_json::from_slice(&secret_bytes).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
+        })?;
 
         // 2. Deserialize reader public key
-        let rdr_pk = G1Affine::deserialize_compressed(&rdr_pk_bytes[..])
-            .map_err(|e| format!("Failed to deserialize reader public key: {}", e))?;
+        let rdr_pk = G1Affine::deserialize_compressed(&rdr_pk_bytes[..]).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize reader public key: {}", e))
+        })?;
 
         // 3. Deserialize ring public key to get the storage key
-        let ring_pk = G1Affine::deserialize_compressed(&ring_pk_bytes[..])
-            .map_err(|e| format!("Failed to deserialize ring public key: {}", e))?;
+        let ring_pk = G1Affine::deserialize_compressed(&ring_pk_bytes[..]).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
+        })?;
 
         // 4. Retrieve final share from local storage
         let final_share_bytes = self
@@ -126,19 +130,29 @@ impl PreCoordinator {
             .get_encrypted(local_storage::r#trait::LocalStorageKeys::RingKey(
                 ring_pk.to_string(),
             ))
-            .map_err(|e| format!("Failed to retrieve final share from storage: {}", e))?
-            .ok_or_else(|| format!("Final share not found in storage for ring_pk"))?;
+            .map_err(|e| {
+                PreError::Storage(format!(
+                    "Failed to retrieve final share from storage: {}",
+                    e
+                ))
+            })?
+            .ok_or_else(|| {
+                PreError::Storage("Final share not found in storage for ring_pk".to_string())
+            })?;
 
         // 5. Deserialize final share
-        let final_share: Fr = Fr::deserialize_compressed(&final_share_bytes[..])
-            .map_err(|e| format!("Failed to deserialize final share: {}", e))?;
+        let final_share: Fr = Fr::deserialize_compressed(&final_share_bytes[..]).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize final share: {}", e))
+        })?;
 
         // 6. Get node ID from DKG session
         let dkg_session = self
             .app_state
             .get_dkg_session_by_ring_pk(&ring_pk_bytes)
             .await
-            .ok_or_else(|| format!("DKG session not found for ring_pk"))?;
+            .ok_or_else(|| {
+                PreError::SessionNotFound("DKG session not found for ring_pk".to_string())
+            })?;
 
         let node_id = {
             let session = dkg_session.read().await;
@@ -157,7 +171,7 @@ impl PreCoordinator {
         let dealer = ThresholdDealerNode::new();
         let reply = dealer
             .reencrypt(&dist_key_share, &secret, &rdr_pk)
-            .map_err(|e| format!("Reencryption failed: {}", e))?;
+            .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;
 
         // 9. Serialize the reply components
         let mut share_bytes = Vec::new();
@@ -165,19 +179,21 @@ impl PreCoordinator {
             .share
             .v
             .serialize_compressed(&mut share_bytes)
-            .map_err(|e| format!("Failed to serialize share: {}", e))?;
+            .map_err(|e| PreError::Serialization(format!("Failed to serialize share: {}", e)))?;
 
         let mut challenge_bytes = Vec::new();
         reply
             .challenge
             .serialize_compressed(&mut challenge_bytes)
-            .map_err(|e| format!("Failed to serialize challenge: {}", e))?;
+            .map_err(|e| {
+                PreError::Serialization(format!("Failed to serialize challenge: {}", e))
+            })?;
 
         let mut proof_bytes = Vec::new();
         reply
             .proof
             .serialize_compressed(&mut proof_bytes)
-            .map_err(|e| format!("Failed to serialize proof: {}", e))?;
+            .map_err(|e| PreError::Serialization(format!("Failed to serialize proof: {}", e)))?;
 
         // 10. Create response message
         let response = PreMessage::ReencryptResponse {
@@ -197,28 +213,34 @@ impl PreCoordinator {
     }
 
     /// Send a PRE message to a peer
-    pub async fn send_message_to_peer(
-        &self,
-        peer_id_str: &str,
-        message: PreMessage,
-    ) -> Result<(), String> {
+    pub async fn send_message_to_peer(&self, peer_id_str: &str, message: PreMessage) -> Result<()> {
         use crate::helpers::helpers::connect_to_peer;
 
         // Connect to peer
         let connection =
             connect_to_peer(&self.app_state.network, peer_id_str.to_string(), REENCRYPT)
                 .await
-                .map_err(|e| format!("Failed to connect to peer {}: {}", peer_id_str, e))?;
+                .map_err(|e| {
+                    PreError::NetworkConnection(format!(
+                        "Failed to connect to peer {}: {}",
+                        peer_id_str, e
+                    ))
+                })?;
 
         // Serialize message
         let message_data = serde_json::to_vec(&message)
-            .map_err(|e| format!("Failed to serialize message: {}", e))?;
+            .map_err(|e| PreError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
         // Send message
         connection
             .send(NetworkMessage::new(message_data, REENCRYPT))
             .await
-            .map_err(|e| format!("Failed to send message to peer {}: {}", peer_id_str, e))?;
+            .map_err(|e| {
+                PreError::NetworkCommunication(format!(
+                    "Failed to send message to peer {}: {}",
+                    peer_id_str, e
+                ))
+            })?;
 
         Ok(())
     }
@@ -234,7 +256,7 @@ impl PreCoordinator {
         secret_bytes: Vec<u8>,
         rdr_pk_bytes: Vec<u8>,
         peer_ids: &[String],
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Vec<u8>> {
         println!(
             "PRE Coordinator: Initiating reencryption for request {} with {} peers",
             request_id,
@@ -246,7 +268,9 @@ impl PreCoordinator {
             .app_state
             .get_dkg_session_by_ring_pk(&ring_pk_bytes)
             .await
-            .ok_or_else(|| format!("DKG session not found for ring_pk"))?;
+            .ok_or_else(|| {
+                PreError::SessionNotFound("DKG session not found for ring_pk".to_string())
+            })?;
 
         let (threshold, total_participants, pub_poly_commits) = {
             let session = dkg_session.read().await;
@@ -258,15 +282,18 @@ impl PreCoordinator {
         };
 
         // 2. Deserialize reader public key
-        let rdr_pk = G1Affine::deserialize_compressed(&rdr_pk_bytes[..])
-            .map_err(|e| format!("Failed to deserialize reader public key: {}", e))?;
+        let rdr_pk = G1Affine::deserialize_compressed(&rdr_pk_bytes[..]).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize reader public key: {}", e))
+        })?;
 
         // 3. Deserialize secret to get enc_cmt
-        let secret: Secret = serde_json::from_slice(&secret_bytes)
-            .map_err(|e| format!("Failed to deserialize secret: {}", e))?;
+        let secret: Secret = serde_json::from_slice(&secret_bytes).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
+        })?;
 
-        let enc_cmt = G1Affine::deserialize_compressed(&secret.enc_cmt[..])
-            .map_err(|e| format!("Failed to deserialize enc_cmt: {}", e))?;
+        let enc_cmt = G1Affine::deserialize_compressed(&secret.enc_cmt[..]).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e))
+        })?;
 
         // 4. Initialize response collection
         {
@@ -317,14 +344,17 @@ impl PreCoordinator {
             } = response
             {
                 // Deserialize components
-                let share_v = G1Affine::deserialize_compressed(&share_bytes[..])
-                    .map_err(|e| format!("Failed to deserialize share: {}", e))?;
+                let share_v = G1Affine::deserialize_compressed(&share_bytes[..]).map_err(|e| {
+                    PreError::Deserialization(format!("Failed to deserialize share: {}", e))
+                })?;
 
-                let challenge = Fr::deserialize_compressed(&challenge_bytes[..])
-                    .map_err(|e| format!("Failed to deserialize challenge: {}", e))?;
+                let challenge = Fr::deserialize_compressed(&challenge_bytes[..]).map_err(|e| {
+                    PreError::Deserialization(format!("Failed to deserialize challenge: {}", e))
+                })?;
 
-                let proof = Fr::deserialize_compressed(&proof_bytes[..])
-                    .map_err(|e| format!("Failed to deserialize proof: {}", e))?;
+                let proof = Fr::deserialize_compressed(&proof_bytes[..]).map_err(|e| {
+                    PreError::Deserialization(format!("Failed to deserialize proof: {}", e))
+                })?;
 
                 // Create ReencryptReply for verification
                 let reply = ReencryptReply {
@@ -354,30 +384,33 @@ impl PreCoordinator {
 
         // 8. Check if we have enough verified shares
         if verified_shares.len() < threshold {
-            return Err(format!(
-                "Insufficient verified shares: got {}, need {}",
-                verified_shares.len(),
-                threshold
-            ));
+            return Err(PreError::InsufficientShares {
+                got: verified_shares.len(),
+                need: threshold,
+            });
         }
 
         // 9. Recover the reencrypted commitment
         let xnc_cmt_opt = dealer
             .recover(&verified_shares, threshold, total_participants)
-            .map_err(|e| format!("Failed to recover commitment: {}", e))?;
+            .map_err(|e| {
+                PreError::RecoveryFailed(format!("Failed to recover commitment: {}", e))
+            })?;
 
-        let xnc_cmt = xnc_cmt_opt.ok_or_else(|| "Recovery returned None".to_string())?;
+        let xnc_cmt = xnc_cmt_opt
+            .ok_or_else(|| PreError::RecoveryFailed("Recovery returned None".to_string()))?;
 
         // 10. Serialize xnc_cmt to bytes then hex
         let mut xnc_cmt_bytes = Vec::new();
         xnc_cmt
             .serialize_compressed(&mut xnc_cmt_bytes)
-            .map_err(|e| format!("Failed to serialize xnc_cmt: {}", e))?;
+            .map_err(|e| PreError::Serialization(format!("Failed to serialize xnc_cmt: {}", e)))?;
         let xnc_cmt_hex = hex::encode(&xnc_cmt_bytes);
 
         // 11. Deserialize secret from bytes
-        let secret: Secret = serde_json::from_slice(&secret_bytes)
-            .map_err(|e| format!("Failed to deserialize secret: {}", e))?;
+        let secret: Secret = serde_json::from_slice(&secret_bytes).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
+        })?;
 
         // 12. Create response structure
         let pre_response = PreResponse {
@@ -387,7 +420,7 @@ impl PreCoordinator {
 
         // 13. Serialize response to JSON bytes
         let response_bytes = serde_json::to_vec(&pre_response)
-            .map_err(|e| format!("Failed to serialize response: {}", e))?;
+            .map_err(|e| PreError::Serialization(format!("Failed to serialize response: {}", e)))?;
 
         // 14. Cleanup
         {
@@ -411,7 +444,7 @@ impl PreCoordinator {
         &self,
         request_id: &str,
         threshold: usize,
-    ) -> Result<Vec<PreMessage>, String> {
+    ) -> Result<Vec<PreMessage>> {
         use tokio::time::{sleep, Duration};
 
         let max_wait_seconds = 30;
@@ -438,10 +471,10 @@ impl PreCoordinator {
             }
         }
 
-        Err(format!(
+        Err(PreError::Timeout(format!(
             "Timeout waiting for reencryption responses for request {}",
             request_id
-        ))
+        )))
     }
 
     /// Store a received response (called by protocol handler)
