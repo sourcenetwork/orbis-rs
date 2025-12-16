@@ -120,7 +120,7 @@ impl ProtocolHandler for DkgProtocolHandler {
                     // Send error response
                     let error_msg = DkgMessage::Error {
                         session_id: 0, // Could extract from failed message if needed
-                        error: e,
+                        error: e.to_string(),
                     };
                     if let Ok(error_data) = serde_json::to_vec(&error_msg) {
                         let _ = connection

@@ -3,6 +3,7 @@ use crate::crypto_service::{
     crypto_service_server::CryptoService, StartDkgRequest, StartDkgResponse,
 };
 use crate::dkg::coordinator::DkgCoordinator;
+use crate::dkg::error::DkgError;
 use crate::dkg::messages::DkgMessage;
 use crate::helpers::helpers::connect_to_peers;
 use network::{iroh::router::alpn::DKG, Network};
@@ -60,10 +61,11 @@ impl CryptoService for CryptoServiceImpl {
 
         // Validate threshold and total_participants
         if req.threshold as usize > req.total_participants as usize {
-            return Err(Status::invalid_argument(format!(
+            return Err(DkgError::InvalidInput(format!(
                 "Threshold ({}) cannot be greater than total participants ({})",
                 req.threshold, req.total_participants
-            )));
+            ))
+            .into());
         }
 
         // Handle edge case: empty participants (for testing)
@@ -92,8 +94,7 @@ impl CryptoService for CryptoServiceImpl {
                 req.threshold as usize,
                 req.total_participants as usize,
             )
-            .await
-            .map_err(|e| Status::internal(format!("Failed to create DKG session: {}", e)))?;
+            .await?;
 
         // Store peer IDs in session state for later use (needed for Phase 2)
         coordinator
@@ -119,7 +120,7 @@ impl CryptoService for CryptoServiceImpl {
                 eprintln!("Error: {}", error_msg);
 
                 // Return gRPC error and end execution
-                return Err(Status::failed_precondition(error_msg));
+                return Err(DkgError::NetworkConnection(error_msg).into());
             }
 
             // Send SessionInit message to all peers
@@ -167,10 +168,7 @@ impl CryptoService for CryptoServiceImpl {
                 .await
             {
                 eprintln!("Failed to initiate Phase 1: {}", e);
-                return Err(Status::internal(format!(
-                    "Failed to initiate Phase 1: {}",
-                    e
-                )));
+                return Err(e.into());
             }
 
             println!("DKG Protocol: Phase 1 initiated, commitments broadcasted");

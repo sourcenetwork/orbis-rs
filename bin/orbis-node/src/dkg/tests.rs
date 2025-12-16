@@ -283,7 +283,7 @@ async fn test_start_dkg_fails_on_connection_failure() {
     let status = result.unwrap_err();
     assert_eq!(
         status.code(),
-        tonic::Code::FailedPrecondition,
+        tonic::Code::Unavailable,
         "Error code should be FailedPrecondition"
     );
     assert!(
