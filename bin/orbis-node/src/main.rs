@@ -1,8 +1,8 @@
 // Include the generated proto code
 pub mod app_state;
 pub mod dkg;
-pub mod pre;
 pub mod helpers;
+pub mod pre;
 
 use crate::dkg::service::CryptoServiceImpl;
 use app_state::AppState;
