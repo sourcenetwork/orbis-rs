@@ -45,11 +45,8 @@ impl PreService for PreServiceImpl {
         let ring_pk = hex::decode(&req.ring_pk)
             .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
 
-        // secret: JSON-serialized Secret struct
-        let secret: crypto::r#trait::Secret = serde_json::from_str(&req.secret)
-            .map_err(|e| PreError::InvalidInput(format!("Invalid secret JSON: {}", e)))?;
-        let secret_bytes = serde_json::to_vec(&secret)
-            .map_err(|e| PreError::Serialization(format!("Failed to serialize secret: {}", e)))?;
+        // Use original string bytes instead of re-serializing
+        let secret_bytes = req.secret.as_bytes().to_vec();
 
         // rdr_pk: hex-encoded compressed G1Affine bytes
         let rdr_pk = hex::decode(&req.rdr_pk)

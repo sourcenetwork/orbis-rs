@@ -25,6 +25,17 @@ pub enum DkgPhase {
     Error,
 }
 
+/// DKG Message Type for deduplication (more efficient than String)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DkgMessageType {
+    Commitment,
+    Share,
+    Complaint,
+    SessionInit,
+    Ack,
+    Error,
+}
+
 /// State for a DKG session including connections and phase tracking
 pub struct DkgSessionState {
     /// Current protocol phase
@@ -44,8 +55,8 @@ pub struct DkgSessionState {
     pub commitments_received: usize,
     /// Number of shares received
     pub shares_received: usize,
-    /// Processed message IDs for deduplication (session_id, from_node_id, message_type_discriminant)
-    pub processed_messages: std::collections::HashSet<(u64, u32, String)>,
+    /// Processed message IDs for deduplication (session_id, from_node_id, message_type)
+    pub processed_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
 }
 
 impl DkgSessionState {
@@ -161,12 +172,15 @@ impl SessionStateManager {
     ) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
-            state.node_id_to_peer_id = node_id_to_peer_id.clone();
-            // Build reverse mapping
-            state.peer_id_to_node_id = node_id_to_peer_id
-                .into_iter()
-                .map(|(k, v)| (v, k))
-                .collect();
+            // Build both maps in a single pass to avoid cloning
+            let mut node_to_peer = HashMap::new();
+            let mut peer_to_node = HashMap::new();
+            for (node_id, peer_id) in node_id_to_peer_id {
+                node_to_peer.insert(node_id, peer_id.clone());
+                peer_to_node.insert(peer_id, node_id);
+            }
+            state.node_id_to_peer_id = node_to_peer;
+            state.peer_id_to_node_id = peer_to_node;
         }
     }
 
@@ -185,15 +199,13 @@ impl SessionStateManager {
         &self,
         session_id: &u64,
         from_node_id: u32,
-        message_type: &str,
+        message_type: DkgMessageType,
     ) -> bool {
         let states = self.states.read().await;
         if let Some(state) = states.get(session_id) {
-            state.processed_messages.contains(&(
-                *session_id,
-                from_node_id,
-                message_type.to_string(),
-            ))
+            state
+                .processed_messages
+                .contains(&(*session_id, from_node_id, message_type))
         } else {
             false
         }
@@ -204,7 +216,7 @@ impl SessionStateManager {
         &self,
         session_id: &u64,
         from_node_id: u32,
-        message_type: String,
+        message_type: DkgMessageType,
     ) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {

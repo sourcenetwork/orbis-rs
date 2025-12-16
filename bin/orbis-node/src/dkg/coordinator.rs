@@ -17,7 +17,7 @@
 use crate::app_state::AppState;
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::DkgMessage;
-use crate::dkg::session_state::{DkgPhase, SessionStateManager};
+use crate::dkg::session_state::{DkgMessageType, DkgPhase, SessionStateManager};
 use network::iroh::router::alpn::DKG;
 // TODO: any crypto specific things should be generalized and come from crypto::bls12_381
 use ark_bls12_381::{Fr, G1Affine};
@@ -78,25 +78,29 @@ impl DkgCoordinator {
         let session_id = message.session_id();
 
         // Get message type and from_node_id for deduplication
-        let (message_type_str, from_node_id_opt) = match &message {
-            DkgMessage::Commitment { from_node_id, .. } => ("Commitment", Some(*from_node_id)),
-            DkgMessage::Share { from_node_id, .. } => ("Share", Some(*from_node_id)),
-            DkgMessage::Complaint { from_node_id, .. } => ("Complaint", Some(*from_node_id)),
-            DkgMessage::SessionInit { .. } => ("SessionInit", None),
-            DkgMessage::Ack { .. } => ("Ack", None),
-            DkgMessage::Error { .. } => ("Error", None),
+        let (message_type, from_node_id_opt) = match &message {
+            DkgMessage::Commitment { from_node_id, .. } => {
+                (DkgMessageType::Commitment, Some(*from_node_id))
+            }
+            DkgMessage::Share { from_node_id, .. } => (DkgMessageType::Share, Some(*from_node_id)),
+            DkgMessage::Complaint { from_node_id, .. } => {
+                (DkgMessageType::Complaint, Some(*from_node_id))
+            }
+            DkgMessage::SessionInit { .. } => (DkgMessageType::SessionInit, None),
+            DkgMessage::Ack { .. } => (DkgMessageType::Ack, None),
+            DkgMessage::Error { .. } => (DkgMessageType::Error, None),
         };
 
         // Check for duplicate messages (except SessionInit, Ack, Error)
         if let Some(from_node_id) = from_node_id_opt {
             if self
                 .session_state
-                .is_message_processed(&session_id, from_node_id, message_type_str)
+                .is_message_processed(&session_id, from_node_id, message_type)
                 .await
             {
                 println!(
-                    "DKG Coordinator: Ignoring duplicate {} from node {} for session {}",
-                    message_type_str, from_node_id, session_id
+                    "DKG Coordinator: Ignoring duplicate {:?} from node {} for session {}",
+                    message_type, from_node_id, session_id
                 );
                 return Ok(None);
             }
@@ -251,7 +255,7 @@ impl DkgCoordinator {
 
                 // Mark message as processed
                 self.session_state
-                    .mark_message_processed(&session_id, from_node_id, "Commitment".to_string())
+                    .mark_message_processed(&session_id, from_node_id, DkgMessageType::Commitment)
                     .await;
 
                 // Track that we received it
@@ -302,12 +306,14 @@ impl DkgCoordinator {
                                 ))
                             })??;
 
+                        // Use Arc to share commitment bytes across all peers (cheap clone)
+                        let commitment_bytes_arc = Arc::new(commitment_bytes);
                         let mut sent_count = 0;
                         for peer_id_str in &peer_ids {
                             let commitment_msg = DkgMessage::Commitment {
                                 session_id,
                                 from_node_id: node_id,
-                                commitment: commitment_bytes.clone(),
+                                commitment: commitment_bytes_arc.as_ref().clone(),
                             };
 
                             match self.send_message_to_peer(peer_id_str, commitment_msg).await {
@@ -414,7 +420,7 @@ impl DkgCoordinator {
 
                 // Mark message as processed
                 self.session_state
-                    .mark_message_processed(&session_id, from_node_id, "Share".to_string())
+                    .mark_message_processed(&session_id, from_node_id, DkgMessageType::Share)
                     .await;
 
                 // Track share received
@@ -576,11 +582,13 @@ impl DkgCoordinator {
             .update_phase(&session_id, DkgPhase::Phase1Commitments)
             .await;
 
+        // Use Arc to share commitment bytes across all peers (cheap clone)
+        let commitment_bytes_arc = Arc::new(commitment_bytes);
         for peer_id_str in peer_ids {
             let commitment_msg = DkgMessage::Commitment {
                 session_id,
                 from_node_id: node_id,
-                commitment: commitment_bytes.clone(),
+                commitment: commitment_bytes_arc.as_ref().clone(),
             };
 
             if let Err(e) = self.send_message_to_peer(peer_id_str, commitment_msg).await {
@@ -719,13 +727,8 @@ impl DkgCoordinator {
                     DkgError::Serialization(format!("Failed to serialize share value: {}", e))
                 })?;
 
-            let share_msg = DkgMessage::Share {
-                session_id,
-                from_node_id: node_id,
-                to_node_id: share.to_id,
-                share_value: share_value_bytes,
-                nonce: share.nonce,
-            };
+            // Use Arc to share bytes if we need to broadcast (cheap clone)
+            let share_value_bytes_arc = Arc::new(share_value_bytes);
 
             // Try to get specific peer_id for this node_id (O(1) lookup)
             if let Some(target_peer_id) = self
@@ -734,6 +737,13 @@ impl DkgCoordinator {
                 .await
             {
                 // Direct routing: O(n) total for all shares
+                let share_msg = DkgMessage::Share {
+                    session_id,
+                    from_node_id: node_id,
+                    to_node_id: share.to_id,
+                    share_value: share_value_bytes_arc.as_ref().clone(),
+                    nonce: share.nonce,
+                };
                 match self.send_message_to_peer(&target_peer_id, share_msg).await {
                     Ok(_) => {
                         shares_sent += 1;
@@ -753,8 +763,15 @@ impl DkgCoordinator {
                 // Fallback: broadcast to all peers (only if mapping not set up)
                 let mut sent_count = 0;
                 for peer_id_str in peer_ids {
+                    let broadcast_share_msg = DkgMessage::Share {
+                        session_id,
+                        from_node_id: node_id,
+                        to_node_id: share.to_id,
+                        share_value: share_value_bytes_arc.as_ref().clone(),
+                        nonce: share.nonce,
+                    };
                     match self
-                        .send_message_to_peer(peer_id_str, share_msg.clone())
+                        .send_message_to_peer(peer_id_str, broadcast_share_msg)
                         .await
                     {
                         Ok(_) => {

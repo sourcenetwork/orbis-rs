@@ -233,6 +233,9 @@ pub async fn connect_to_peers<N: Network>(
     );
 
     for peer_id_str in peer_ids {
+        // Clone once for result storage (used in both success and error cases)
+        let peer_id_for_result = peer_id_str.clone();
+
         // Convert peer ID string to PeerId
         // The network.connect() method will parse this as UTF-8 and then as iroh PublicKey
         let peer_id = PeerId::new(peer_id_str.as_bytes().to_vec());
@@ -243,7 +246,7 @@ pub async fn connect_to_peers<N: Network>(
                 println!("  ✓ Connected to peer: {}", peer_id_str);
                 successful += 1;
                 results.push(PeerConnectionResult {
-                    peer_id: peer_id_str.clone(),
+                    peer_id: peer_id_for_result,
                     success: true,
                     error: None,
                 });
@@ -256,7 +259,7 @@ pub async fn connect_to_peers<N: Network>(
                 );
                 failed += 1;
                 results.push(PeerConnectionResult {
-                    peer_id: peer_id_str.clone(),
+                    peer_id: peer_id_for_result,
                     success: false,
                     error: Some(error_msg),
                 });

@@ -345,9 +345,11 @@ impl PreCoordinator {
         })?;
 
         // 4. Initialize response collection (with limit checking)
+        // Clone request_id before moving into Arc (we need it later)
+        let request_id_for_storage = request_id.clone();
         if !self
             .app_state
-            .init_pre_response(request_id.clone(), peer_ids.len())
+            .init_pre_response(request_id_for_storage, peer_ids.len())
             .await
         {
             return Err(PreError::ProtocolError(
@@ -359,20 +361,29 @@ impl PreCoordinator {
         let node_id = self.app_state.config.node_id;
         let mut handles = Vec::new();
 
+        // Use Arc to share byte vectors across all tasks (cheap clone)
+        // Clone secret_bytes before moving into Arc (we need it later for deserialization)
+        let secret_bytes_for_later = secret_bytes.clone();
+        let secret_bytes_arc = Arc::new(secret_bytes);
+        let rdr_pk_bytes_arc = Arc::new(rdr_pk_bytes);
+        let ring_pk_bytes_arc = Arc::new(ring_pk_bytes);
+        let request_id_arc = Arc::new(request_id);
+
         for peer_id_str in peer_ids {
             let request = PreMessage::ReencryptRequest {
-                request_id: request_id.clone(),
+                request_id: request_id_arc.as_ref().clone(),
                 from_node_id: node_id,
-                secret: secret_bytes.clone(),
-                rdr_pk: rdr_pk_bytes.clone(),
-                ring_pk: ring_pk_bytes.clone(),
+                secret: secret_bytes_arc.as_ref().clone(),
+                rdr_pk: rdr_pk_bytes_arc.as_ref().clone(),
+                ring_pk: ring_pk_bytes_arc.as_ref().clone(),
             };
 
             let peer_id = peer_id_str.clone();
-            let req_id = request_id.clone();
+            let req_id = request_id_arc.as_ref().clone();
             let app_state = self.app_state.clone();
 
             // Spawn a task for each peer to send request and receive response
+            // Note: Creating new coordinator is cheap (just holds Arc<AppState>)
             let handle = tokio::spawn(async move {
                 let coordinator = PreCoordinator::new(app_state);
                 coordinator
@@ -392,10 +403,13 @@ impl PreCoordinator {
         // 6. Collect the stored responses
         let collected_responses = self
             .app_state
-            .get_pre_responses(&request_id)
+            .get_pre_responses(request_id_arc.as_ref())
             .await
             .ok_or_else(|| {
-                PreError::Timeout(format!("No responses found for request {}", request_id))
+                PreError::Timeout(format!(
+                    "No responses found for request {}",
+                    request_id_arc.as_ref()
+                ))
             })?;
 
         // Check if we have enough responses
@@ -484,8 +498,8 @@ impl PreCoordinator {
             .map_err(|e| PreError::Serialization(format!("Failed to serialize xnc_cmt: {}", e)))?;
         let xnc_cmt_hex = hex::encode(&xnc_cmt_bytes);
 
-        // 11. Deserialize secret from bytes
-        let secret: Secret = serde_json::from_slice(&secret_bytes).map_err(|e| {
+        // 11. Deserialize secret from bytes (use cloned version)
+        let secret: Secret = serde_json::from_slice(&secret_bytes_for_later).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
         })?;
 
@@ -500,11 +514,13 @@ impl PreCoordinator {
             .map_err(|e| PreError::Serialization(format!("Failed to serialize response: {}", e)))?;
 
         // 14. Cleanup
-        self.app_state.remove_pre_response(&request_id).await;
+        self.app_state
+            .remove_pre_response(request_id_arc.as_ref())
+            .await;
 
         println!(
             "PRE Coordinator: Successfully recovered reencrypted commitment for request {}",
-            request_id
+            request_id_arc.as_ref()
         );
 
         Ok(response_bytes)

@@ -55,9 +55,8 @@ impl CryptoService for CryptoServiceImpl {
         req.session_id.hash(&mut hasher);
         let session_id = hasher.finish();
 
-        // Create DKG coordinator
-        let app_state_arc = Arc::new(self.state.clone());
-        let coordinator = DkgCoordinator::new(app_state_arc);
+        // Create DKG coordinator (AppState clone is cheap - contains Arc types internally)
+        let coordinator = DkgCoordinator::new(Arc::new(self.state.clone()));
 
         // Validate threshold and total_participants
         if req.threshold as usize > req.total_participants as usize {
