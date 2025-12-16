@@ -37,7 +37,7 @@ pub struct DistKeyShare<ShareValue> {
 }
 
 /// Secret structure
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Secret {
     pub enc_cmt: Vec<u8>,        // rG - Schnorr commitment
     pub encrypted_data: Vec<u8>, // AES-GCM encrypted data

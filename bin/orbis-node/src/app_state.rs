@@ -1,6 +1,9 @@
 use crate::dkg::session_state::SessionStateManager;
 use crypto::bls12_381::dkg::DKGNode;
-use local_storage::memory::MemoryStorage as LocalStorage;
+use local_storage::{
+    memory::MemoryStorage as LocalStorage,
+    r#trait::{LocalStorage as OtherLocalStorage, LocalStorageKeys},
+};
 use network::IrohNetwork;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -95,6 +98,60 @@ impl AppState {
         let session_lock = sessions.get(session_id)?;
         let session = session_lock.read().await;
         Some(f(&*session))
+    }
+
+    /// Get a DKG session by ring public key (for PRE)
+    ///
+    /// Looks up the session ID from local storage, then retrieves the session
+    pub async fn get_dkg_session_by_ring_pk(&self, ring_pk: &[u8]) -> Option<Arc<RwLock<DKGNode>>> {
+        // Convert ring_pk bytes to hex string for storage key
+        let ring_pk_hex = hex::encode(ring_pk);
+
+        // Retrieve session_id from local storage
+        let session_id_bytes = self
+            .local_storage
+            .get(LocalStorageKeys::RingPkMapping(ring_pk_hex))
+            .ok()??;
+
+        // Deserialize session_id (stored as 8 bytes, u64)
+        if session_id_bytes.len() != 8 {
+            eprintln!(
+                "Invalid session_id length in storage: expected 8, got {}",
+                session_id_bytes.len()
+            );
+            return None;
+        }
+
+        let session_id = u64::from_le_bytes(session_id_bytes.try_into().unwrap());
+        self.get_dkg_session(&session_id).await
+    }
+
+    /// Store a mapping from ring public key to DKG session ID (for PRE)
+    ///
+    /// This should be called after DKG completion to enable PRE lookups
+    /// Stores the mapping in local storage for persistence
+    pub async fn store_ring_pk_mapping(&self, ring_pk: Vec<u8>, session_id: u64) {
+        // Convert ring_pk bytes to hex string for storage key
+        let ring_pk_hex = hex::encode(&ring_pk);
+
+        // Serialize session_id as 8 bytes (u64 little-endian)
+        let session_id_bytes = session_id.to_le_bytes().to_vec();
+
+        // Store in local storage
+        if let Err(e) = self.local_storage.set(
+            LocalStorageKeys::RingPkMapping(ring_pk_hex),
+            session_id_bytes,
+        ) {
+            eprintln!(
+                "Failed to store ring_pk mapping for session {}: {}",
+                session_id, e
+            );
+        } else {
+            println!(
+                "Stored ring_pk mapping for session {} in local storage",
+                session_id
+            );
+        }
     }
 }
 

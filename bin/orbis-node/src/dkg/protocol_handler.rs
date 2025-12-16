@@ -17,6 +17,7 @@
 use crate::app_state::AppState;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::messages::DkgMessage;
+use crate::pre::protocol_handler::PreProtocolHandler;
 use async_trait::async_trait;
 use network::error::Result as NetworkResult;
 use network::{Connection, Message, ProtocolHandler};
@@ -150,5 +151,26 @@ pub fn create_router_with_dkg_handler(
     let dkg_handler = Arc::new(DkgProtocolHandler::new(app_state));
     network::IrohRouter::builder(endpoint)
         .accept(network::iroh::router::alpn::DKG.to_vec(), dkg_handler)
+        .spawn()
+}
+
+/// Create an iroh router with both DKG and PRE protocol handlers
+///
+/// This is the recommended function for setting up a full node that supports
+/// both DKG and PRE protocols.
+///
+/// # Arguments
+/// * `endpoint` - The iroh endpoint to use
+/// * `app_state` - The application state (needed for coordinators)
+pub fn create_router_with_handlers(
+    endpoint: iroh::Endpoint,
+    app_state: Arc<AppState>,
+) -> network::IrohRouter {
+    let dkg_handler = Arc::new(DkgProtocolHandler::new(app_state.clone()));
+    let pre_handler = Arc::new(PreProtocolHandler::new(app_state));
+
+    network::IrohRouter::builder(endpoint)
+        .accept(network::iroh::router::alpn::DKG.to_vec(), dkg_handler)
+        .accept(network::iroh::router::alpn::REENCRYPT.to_vec(), pre_handler)
         .spawn()
 }

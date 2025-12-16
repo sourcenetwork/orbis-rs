@@ -5,6 +5,7 @@ pub mod helpers;
 pub mod pre;
 
 use crate::dkg::service::CryptoServiceImpl;
+use crate::pre::service::PreServiceImpl;
 use app_state::AppState;
 use clap::Parser;
 use local_storage::memory::MemoryStorage as LocalStorage;
@@ -71,24 +72,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let app_state_arc = std::sync::Arc::new(app_state.clone());
 
-    // Start the iroh router in the background with DKG protocol handler
+    // Start the iroh router in the background with DKG and PRE protocol handlers
     // The router will handle incoming connections automatically
     let endpoint = network_arc.endpoint().clone();
-    let router = dkg::protocol_handler::create_router_with_dkg_handler(endpoint, app_state_arc);
+    let router = dkg::protocol_handler::create_router_with_handlers(endpoint, app_state_arc);
 
-    println!("Iroh router started with DKG protocol handler and ready to accept connections");
+    println!(
+        "Iroh router started with DKG and PRE protocol handlers and ready to accept connections"
+    );
 
     println!("Starting CryptoService gRPC server on {}", addr);
     println!("Server is ready to accept connections...");
     println!("  gRPC: {} (for user clients)", addr);
     println!("  Iroh: {} (for node-to-node communication)", local_address);
 
-    // Initialize service with shared state
-    let service = CryptoServiceImpl::new(app_state.clone());
+    // Initialize services with shared state
+    let crypto_service = CryptoServiceImpl::new(app_state.clone());
+    let pre_service = PreServiceImpl::new(app_state.clone());
 
-    // Start gRPC server
+    // Start gRPC server with both DKG and PRE services
     let grpc_server = tonic::transport::Server::builder()
-        .add_service(CryptoServiceServer::new(service))
+        .add_service(CryptoServiceServer::new(crypto_service))
+        .add_service(PreServiceServer::new(pre_service))
         .serve(addr);
 
     // Run gRPC server (router runs in background automatically)

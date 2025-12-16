@@ -800,6 +800,15 @@ impl DkgCoordinator {
             .update_phase(&session_id, DkgPhase::Phase4Complete)
             .await;
 
+        // Store ring_pk -> session_id mapping for PRE
+        let mut ring_pk_bytes = Vec::new();
+        aggregate_pk
+            .serialize_compressed(&mut ring_pk_bytes)
+            .map_err(|e| format!("Failed to serialize aggregate public key: {}", e))?;
+        self.app_state
+            .store_ring_pk_mapping(ring_pk_bytes, session_id)
+            .await;
+
         println!(
             "Phase 4: DKG complete! Final share computed, aggregate PK: {:?} (node {})",
             aggregate_pk, node_id
