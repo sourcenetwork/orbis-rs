@@ -15,8 +15,6 @@ pub struct AppState {
     /// Active DKG sessions: session_id -> Arc<RwLock<session>>
     /// Using Arc<RwLock> to avoid cloning and allow concurrent mutable access
     pub dkg_sessions: Arc<RwLock<HashMap<u64, Arc<RwLock<DKGNode>>>>>,
-    /// Encryption keys: key_id -> key data
-    pub encryption_keys: Arc<RwLock<HashMap<String, EncryptionKey>>>,
     /// Server configuration
     pub config: ServerConfig,
     /// Iroh network for node-to-node communication
@@ -53,7 +51,6 @@ impl AppState {
     ) -> Self {
         Self {
             dkg_sessions: Arc::new(RwLock::new(HashMap::new())),
-            encryption_keys: Arc::new(RwLock::new(HashMap::new())),
             config: ServerConfig {
                 node_id,
                 bind_address,
@@ -159,7 +156,6 @@ impl std::fmt::Debug for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppState")
             .field("dkg_sessions", &"<HashMap>")
-            .field("encryption_keys", &"<HashMap>")
             .field("config", &self.config)
             .field("network", &"<IrohNetwork>")
             .finish()
