@@ -25,14 +25,6 @@ impl CryptoServiceImpl {
     }
 }
 
-impl Default for CryptoServiceImpl {
-    fn default() -> Self {
-        // Default implementation requires async initialization, so this is a placeholder
-        // In practice, use CryptoServiceImpl::new() with a properly initialized AppState
-        panic!("Default implementation not supported. Use CryptoServiceImpl::new() with initialized AppState")
-    }
-}
-
 #[tonic::async_trait]
 impl CryptoService for CryptoServiceImpl {
     async fn start_dkg(

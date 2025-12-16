@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package pre_service;
+
+service PreService {
+  rpc StartPre(StartPreRequest) returns (StartPreResponse);
+}
+
+message StartPreRequest {
+  string session_id = 1;
+  repeated string participant_ids = 2;
+  repeated string peer_ids = 3;  // Iroh peer IDs that this node needs to connect to
+  map<string, string> parameters = 4;
+}
+
+message StartPreResponse {
+  string session_id = 1;
+  string status = 2;
+  string message = 3;
+  int64 created_at = 4;
+}

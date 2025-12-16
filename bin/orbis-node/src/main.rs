@@ -1,6 +1,7 @@
 // Include the generated proto code
 pub mod app_state;
 pub mod dkg;
+pub mod pre;
 pub mod helpers;
 
 use crate::dkg::service::CryptoServiceImpl;
@@ -15,7 +16,12 @@ pub mod crypto_service {
     tonic::include_proto!("crypto_service");
 }
 
+pub mod pre_service {
+    tonic::include_proto!("pre_service");
+}
+
 use crypto_service::crypto_service_server::CryptoServiceServer;
+use pre_service::pre_service_server::PreServiceServer;
 
 #[derive(Parser, Debug)]
 #[command(name = "orbis-node")]

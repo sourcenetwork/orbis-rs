@@ -21,18 +21,3 @@ message StartDkgResponse {
   string message = 3;
   int64 created_at = 4;
 }
-
-message EncryptionRequest {
-  string key_id = 1;
-  bytes plaintext = 2;
-  string encryption_algorithm = 3;
-  map<string, string> metadata = 4;
-}
-
-message EncryptionResponse {
-  string request_id = 1;
-  bytes ciphertext = 2;
-  bytes nonce = 3;
-  string algorithm_used = 4;
-  int64 encrypted_at = 5;
-}
