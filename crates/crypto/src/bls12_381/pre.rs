@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 const NAME: &str = "elgamal";
+const PROTOCOL: &[u8; 30] = b"elgamal-reencrypt-challenge-v1";
 
 #[derive(Clone, Debug)]
 pub struct ThresholdDealerNode {}
@@ -373,7 +374,7 @@ impl ThresholdDealerNode {
         let mut hasher = Sha256::new();
 
         // Add domain separation to prevent cross-protocol attacks
-        hasher.update(b"elgamal-reencrypt-challenge-v1");
+        hasher.update(PROTOCOL);
 
         // Reuse buffer to avoid allocating for each point
         // Compressed G1 points are 48 bytes
