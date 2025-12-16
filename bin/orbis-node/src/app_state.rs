@@ -71,7 +71,6 @@ pub struct EncryptionKey {
 /// Server configuration
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
-    pub node_id: u32,
     pub bind_address: String,
 }
 
@@ -97,7 +96,6 @@ impl std::error::Error for SessionLimitError {}
 impl AppState {
     /// Create a new AppState instance
     pub fn new(
-        node_id: u32,
         bind_address: String,
         network: Arc<IrohNetwork>,
         local_storage: LocalStorage,
@@ -105,7 +103,6 @@ impl AppState {
         Self {
             dkg_sessions: Arc::new(RwLock::new(HashMap::new())),
             config: ServerConfig {
-                node_id,
                 bind_address,
             },
             network,

@@ -10,7 +10,6 @@ use app_state::AppState;
 use clap::Parser;
 use local_storage::memory::MemoryStorage as LocalStorage;
 use network::Network;
-use rand::Rng;
 use std::{net::SocketAddr, sync::Arc};
 
 pub mod crypto_service {
@@ -31,9 +30,6 @@ struct Args {
     /// Address to bind the server to
     #[arg(short, long, default_value = "[::1]:50051")]
     addr: String,
-
-    #[arg(short, long)]
-    node_id: Option<u32>,
 }
 
 #[tokio::main]
@@ -55,17 +51,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to get local address: {}", e))?;
 
     let network_arc = Arc::new(network);
-    // TODO: node_id can be local_peer_id or local_address
-    let node_id = args.node_id.unwrap_or_else(|| rand::thread_rng().gen());
 
     println!("Iroh network initialized:");
     println!("  Local Peer ID: {}", hex::encode(local_peer_id.as_bytes()));
     println!("  Local Address: {}", local_address);
-    println!("  node_id: {}", node_id);
 
     // Create shared application state (needed for router)
     let app_state = AppState::new(
-        node_id,
         args.addr.clone(),
         network_arc.clone(),
         local_storage,

@@ -82,14 +82,41 @@ impl CryptoService for CryptoServiceImpl {
             return Ok(Response::new(response));
         }
 
-        // Get node_id from config
-        let node_id = self.state.config.node_id;
+        // As the initiator, assign node_ids to all participants based on sorted peer list
+        // This ensures all nodes agree on who has which node_id
+        let our_peer_id_hex = hex::encode(self.state.network.local_peer_id().as_bytes());
+        let mut all_peer_ids_for_assignments = vec![our_peer_id_hex.clone()];
+        all_peer_ids_for_assignments.extend_from_slice(&req.peer_ids);
+        
+        // Build node_id assignments: peer_id -> node_id (1-indexed based on sorted order)
+        let mut node_id_assignments = std::collections::HashMap::new();
+        let mut sorted_peer_ids = all_peer_ids_for_assignments.clone();
+        sorted_peer_ids.sort();
+        
+        for (idx, peer_id) in sorted_peer_ids.iter().enumerate() {
+            let assigned_node_id = (idx + 1) as u32;
+            // Extract just the hex part (before @) for consistent lookup
+            let peer_id_key = peer_id.split('@').next().unwrap_or(peer_id).to_string();
+            node_id_assignments.insert(peer_id_key, assigned_node_id);
+        }
+        
+        // Get our assigned node_id
+        let our_peer_id_key = our_peer_id_hex.split('@').next().unwrap_or(&our_peer_id_hex).to_string();
+        let our_assigned_node_id = node_id_assignments.get(&our_peer_id_key)
+            .ok_or_else(|| {
+                DkgError::InvalidInput("Could not determine our node_id from assignments".to_string())
+            })?;
 
-        // Create DKG session
+        println!(
+            "DKG Service (Initiator): Assigned node_ids - our node_id: {} (from {} total participants)",
+            our_assigned_node_id, req.total_participants
+        );
+
+        // Create DKG session with assigned node_id
         coordinator
             .create_session(
                 session_id,
-                node_id,
+                *our_assigned_node_id,
                 req.threshold as usize,
                 req.total_participants as usize,
             )
@@ -99,6 +126,10 @@ impl CryptoService for CryptoServiceImpl {
         coordinator
             .set_peer_ids(&session_id, req.peer_ids.clone())
             .await;
+        
+        // Store node_id to peer_id mappings for efficient routing
+        // We'll do this after sending SessionInit, but for now the coordinator will handle it
+        // when it processes the message (for consistency)
 
         // Connect to peer nodes using iroh network
         // Peer IDs should be in iroh PublicKey format: either "node_id" or "node_id@ip:port"
@@ -133,21 +164,23 @@ impl CryptoService for CryptoServiceImpl {
 
             // Send SessionInit message to all peers
             // Include all peer_ids (including our own) so non-initiators know who to send messages to
-            // First, get our own peer ID and add it to the list
-            let our_address = self
-                .state
-                .network
-                .local_address()
-                .expect("Failed to get local address");
-            let our_sockets = self.state.network.endpoint().bound_sockets();
-            let our_socket_addr = our_sockets
-                .first()
-                .expect("Endpoint should have at least one bound socket");
-            let our_peer_id_with_addr = format!("{}@{}", our_address, our_socket_addr);
-
-            // Combine our peer ID with the provided peer_ids for SessionInit
-            let mut all_peer_ids = vec![our_peer_id_with_addr];
+            // Get our own peer ID (hex-encoded)
+            let mut all_peer_ids = vec![our_peer_id_hex.clone()];
             all_peer_ids.extend_from_slice(&req.peer_ids);
+
+            // Store node_id to peer_id mappings for the initiator (we don't receive our own SessionInit)
+            let mut node_id_to_peer_id = std::collections::HashMap::new();
+            for (peer_id_key, node_id) in &node_id_assignments {
+                // Find the full peer_id (with @address if present) from all_peer_ids
+                let full_peer_id = all_peer_ids.iter()
+                    .find(|pid| pid.split('@').next().unwrap_or(pid) == peer_id_key)
+                    .cloned()
+                    .unwrap_or_else(|| peer_id_key.clone());
+                node_id_to_peer_id.insert(*node_id, full_peer_id);
+            }
+            self.state.dkg_session_state
+                .set_node_peer_mappings(&session_id, node_id_to_peer_id)
+                .await;
 
             let participant_ids: Vec<u32> = (1..=req.total_participants as u32).collect();
             let session_init_msg = DkgMessage::SessionInit {
@@ -156,6 +189,7 @@ impl CryptoService for CryptoServiceImpl {
                 total_participants: req.total_participants,
                 participant_ids: participant_ids.clone(),
                 peer_ids: all_peer_ids.clone(), // Include all peer_ids (including our own) so receivers know all participants
+                node_id_assignments: node_id_assignments.clone(), // Assignments made by initiator
             };
 
             // Send SessionInit to all peers (they will create their sessions and start Phase 1)

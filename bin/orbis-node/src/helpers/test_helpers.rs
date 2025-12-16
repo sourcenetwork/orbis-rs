@@ -27,12 +27,11 @@ use std::sync::Arc;
 /// ```rust
 /// #[tokio::test]
 /// async fn test_my_feature() {
-///     let app_state = create_test_app_state(None, None).await;
+///     let app_state = create_test_app_state(None).await;
 ///     // Use app_state in your test...
 /// }
 /// ```
-pub async fn create_test_app_state(node_id: Option<u32>, bind_address: Option<String>) -> AppState {
-    let node_id = node_id.unwrap_or(1);
+pub async fn create_test_app_state(bind_address: Option<String>) -> AppState {
     let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
 
     // Initialize iroh network for testing
@@ -43,8 +42,8 @@ pub async fn create_test_app_state(node_id: Option<u32>, bind_address: Option<St
     let network_arc = Arc::new(network);
     let local_storage = LocalStorage::default();
 
-    // Create AppState with the network
-    AppState::new(node_id, bind_address, network_arc, local_storage)
+    // Create AppState with the network (node_id is no longer needed - it's session-specific)
+    AppState::new(bind_address, network_arc, local_storage)
 }
 
 /// Create a test AppState with default values
@@ -61,7 +60,7 @@ pub async fn create_test_app_state(node_id: Option<u32>, bind_address: Option<St
 /// }
 /// ```
 pub async fn create_test_app_state_default() -> AppState {
-    create_test_app_state(None, None).await
+    create_test_app_state(None).await
 }
 
 /// Information about a node in a test network
@@ -180,9 +179,9 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
     println!("Setting up three-node test network...");
 
     // Create three nodes: Alice, Bob, and Charlie
-    let alice_state = create_test_app_state(Some(1), Some("127.0.0.1:0".to_string())).await;
-    let bob_state = create_test_app_state(Some(2), Some("127.0.0.1:0".to_string())).await;
-    let charlie_state = create_test_app_state(Some(3), Some("127.0.0.1:0".to_string())).await;
+    let alice_state = create_test_app_state(Some("127.0.0.1:0".to_string())).await;
+    let bob_state = create_test_app_state(Some("127.0.0.1:0".to_string())).await;
+    let charlie_state = create_test_app_state(Some("127.0.0.1:0".to_string())).await;
 
     // Get peer IDs and addresses for each node
     let alice_peer_id = alice_state.network.local_peer_id();
@@ -309,9 +308,9 @@ pub async fn setup_three_node_network_with_pre(start_routers: bool) -> ThreeNode
     println!("Setting up three-node test network with DKG and PRE handlers...");
 
     // Create three nodes: Alice, Bob, and Charlie
-    let alice_state = create_test_app_state(Some(1), Some("127.0.0.1:0".to_string())).await;
-    let bob_state = create_test_app_state(Some(2), Some("127.0.0.1:0".to_string())).await;
-    let charlie_state = create_test_app_state(Some(3), Some("127.0.0.1:0".to_string())).await;
+    let alice_state = create_test_app_state(Some("127.0.0.1:0".to_string())).await;
+    let bob_state = create_test_app_state(Some("127.0.0.1:0".to_string())).await;
+    let charlie_state = create_test_app_state(Some("127.0.0.1:0".to_string())).await;
 
     // Get peer IDs and addresses for each node
     let alice_peer_id = alice_state.network.local_peer_id();

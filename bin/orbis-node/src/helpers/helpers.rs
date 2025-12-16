@@ -3,6 +3,8 @@
 //! This module provides utility functions used across the codebase.
 
 use network::{Network, PeerId};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -314,4 +316,66 @@ pub async fn connect_to_peer<N: Network>(
 ) -> Result<Box<dyn network::Connection>, network::error::NetworkError> {
     let peer_id_obj = PeerId::new(peer_id.as_bytes().to_vec());
     network.connect(&peer_id_obj, protocol).await
+}
+
+/// Derive a stable u32 identifier from a peer ID
+///
+/// This function hashes the peer ID bytes to produce a deterministic u32.
+/// The peer ID should be the iroh PublicKey (hex-encoded or raw bytes).
+///
+/// # Arguments
+/// * `peer_id_bytes` - The peer ID bytes (iroh PublicKey)
+///
+/// # Returns
+/// A u32 hash of the peer ID
+pub fn derive_node_id_from_peer_id_bytes(peer_id_bytes: &[u8]) -> u32 {
+    let mut hasher = DefaultHasher::new();
+    peer_id_bytes.hash(&mut hasher);
+    hasher.finish() as u32
+}
+
+/// Derive a stable u32 identifier from a peer ID string
+///
+/// This function hashes the peer ID string to produce a deterministic u32.
+pub fn derive_node_id_from_peer_id(peer_id: &str) -> u32 {
+    let mut hasher = DefaultHasher::new();
+    peer_id.hash(&mut hasher);
+    hasher.finish() as u32
+}
+
+/// Determine node_id for a DKG session based on sorted peer_ids
+///
+/// In a DKG session, node_id must be between 1 and total_nodes.
+/// This function sorts all peer_ids and returns the 1-indexed position
+/// of the given peer_id in that sorted list.
+///
+/// # Arguments
+/// * `our_peer_id` - Our own peer ID (hex-encoded, may include @address)
+/// * `all_peer_ids` - All peer IDs participating in the session (including ours)
+///
+/// # Returns
+/// The node_id (1-indexed) for this peer in the session, or None if peer_id not found
+pub fn determine_session_node_id(our_peer_id: &str, all_peer_ids: &[String]) -> Option<u32> {
+    // Extract just the node_id part (before @) for consistent sorting
+    // This handles both "hex_string" and "hex_string@address" formats
+    fn extract_node_part(peer_id: &str) -> String {
+        peer_id.split('@').next().unwrap_or(peer_id).to_string()
+    }
+
+    // Normalize all peer_ids to just the hex part for comparison
+    let our_node_part = extract_node_part(our_peer_id);
+    
+    // Sort peer_ids by their node_id part (hex string comparison)
+    let mut sorted_peer_ids: Vec<String> = all_peer_ids
+        .iter()
+        .map(|pid| extract_node_part(pid))
+        .collect();
+    sorted_peer_ids.sort();
+    sorted_peer_ids.dedup(); // Remove duplicates if any
+
+    // Find our position (1-indexed)
+    sorted_peer_ids
+        .iter()
+        .position(|pid| *pid == our_node_part)
+        .map(|idx| (idx + 1) as u32)
 }

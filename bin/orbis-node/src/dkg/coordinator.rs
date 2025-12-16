@@ -28,8 +28,7 @@ use crypto::bls12_381::dkg::DKGNode;
 use crypto::r#trait::DistributedShare;
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
-use network::Message as NetworkMessage;
-use network::PeerId;
+use network::{Message as NetworkMessage, Network, PeerId};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -112,17 +111,36 @@ impl DkgCoordinator {
             total_participants,
             participant_ids: _,
             peer_ids,
+            node_id_assignments,
             ..
         } = &message
         {
-            // If session doesn't exist, create it
-            // Use the node_id from config (now u32)
-            let node_id = self.app_state.config.node_id;
+            // Get our assigned node_id from the initiator's assignments
+            let our_peer_id_hex = hex::encode(
+                self.app_state.network.local_peer_id().as_bytes()
+            );
+            // Extract just the hex part (before @) for lookup
+            let our_peer_id_key = our_peer_id_hex.split('@').next().unwrap_or(&our_peer_id_hex).to_string();
+            
+            let assigned_node_id = node_id_assignments.get(&our_peer_id_key)
+                .ok_or_else(|| {
+                    DkgError::InvalidInput(format!(
+                        "Could not find our node_id assignment in SessionInit. Our peer_id: {}, Available assignments: {:?}",
+                        our_peer_id_key,
+                        node_id_assignments.keys().collect::<Vec<_>>()
+                    ))
+                })?;
 
+            println!(
+                "DKG Coordinator: Received SessionInit - assigned node_id: {} (from initiator)",
+                assigned_node_id
+            );
+
+            // If session doesn't exist, create it with assigned node_id
             if self.app_state.get_dkg_session(&session_id).await.is_none() {
                 self.create_session(
                     session_id,
-                    node_id,
+                    *assigned_node_id,
                     *threshold as usize,
                     *total_participants as usize,
                 )
@@ -131,10 +149,24 @@ impl DkgCoordinator {
 
             // Store peer_ids for this session (needed for sending messages)
             self.set_peer_ids(&session_id, peer_ids.clone()).await;
+            
+            // Store node_id to peer_id mappings for efficient routing
+            let mut node_id_to_peer_id = std::collections::HashMap::new();
+            for (peer_id_key, node_id) in node_id_assignments {
+                // Find the full peer_id (with @address if present) from peer_ids list
+                let full_peer_id = peer_ids.iter()
+                    .find(|pid| pid.split('@').next().unwrap_or(pid) == peer_id_key)
+                    .cloned()
+                    .unwrap_or_else(|| peer_id_key.clone());
+                node_id_to_peer_id.insert(*node_id, full_peer_id);
+            }
+            self.session_state
+                .set_node_peer_mappings(&session_id, node_id_to_peer_id)
+                .await;
 
             println!(
-                "DKG Coordinator: Session init for session {}: threshold={}, participants={}, peer_ids={}",
-                session_id, threshold, total_participants, peer_ids.len()
+                "DKG Coordinator: Session init for session {}: threshold={}, participants={}, peer_ids={}, our node_id={}",
+                session_id, threshold, total_participants, peer_ids.len(), assigned_node_id
             );
 
             // For non-initiator nodes, they should start Phase 1 after receiving SessionInit
@@ -372,7 +404,14 @@ impl DkgCoordinator {
                 }
 
                 // Validate this share is intended for us
-                let our_node_id = self.app_state.config.node_id;
+                // Get our node_id from the session (session-specific)
+                let our_node_id = self
+                    .app_state
+                    .with_dkg_session(&session_id, |session| session.id)
+                    .await
+                    .ok_or_else(|| {
+                        DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
+                    })?;
                 if to_node_id != our_node_id {
                     return Err(DkgError::ShareVerificationFailed(format!(
                         "Share intended for node {}, but we are node {}",

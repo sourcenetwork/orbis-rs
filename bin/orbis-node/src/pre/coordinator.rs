@@ -321,13 +321,13 @@ impl PreCoordinator {
                 PreError::SessionNotFound("DKG session not found for ring_pk".to_string())
             })?;
 
-        let (threshold, total_participants, pub_poly) = {
+        let (threshold, total_participants, pub_poly, node_id) = {
             use crypto::r#trait::Dkg;
             let session = dkg_session.read().await;
             let pub_poly = session.compute_public_polynomial().map_err(|e| {
                 PreError::Crypto(format!("Failed to compute public polynomial: {}", e))
             })?;
-            (session.threshold, session.total_nodes, pub_poly)
+            (session.threshold, session.total_nodes, pub_poly, session.id)
         };
 
         // 2. Deserialize reader public key
@@ -358,7 +358,7 @@ impl PreCoordinator {
         }
 
         // 5. Send reencryption requests to all peers concurrently and receive responses
-        let node_id = self.app_state.config.node_id;
+        // node_id is already obtained from DKG session above
         let mut handles = Vec::new();
 
         // Use Arc to share byte vectors across all tasks (cheap clone)

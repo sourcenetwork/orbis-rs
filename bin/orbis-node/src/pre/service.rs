@@ -3,7 +3,7 @@ use crate::helpers::helpers::{connect_to_peers, validate_all_peer_ids};
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
 use crate::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
-use network::iroh::router::alpn::REENCRYPT;
+use network::{iroh::router::alpn::REENCRYPT, Network};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
@@ -69,8 +69,14 @@ impl PreService for PreServiceImpl {
             .into());
         }
 
-        // 3. Generate unique request ID
-        let request_id = format!("{}-{}", self.state.config.node_id, created_at);
+        // 3. Generate unique request ID (use peer_id hash instead of node_id since node_id is session-specific)
+        let peer_id_hash = {
+            use crate::helpers::helpers;
+            helpers::derive_node_id_from_peer_id_bytes(
+                self.state.network.local_peer_id().as_bytes()
+            )
+        };
+        let request_id = format!("{}-{}", peer_id_hash, created_at);
 
         // 4. Connect to peer nodes using iroh network
         let requested_peers = req.peer_ids.len();
