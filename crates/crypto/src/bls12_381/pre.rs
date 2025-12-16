@@ -6,14 +6,14 @@ use crate::{
     },
 };
 use aes_gcm::{
-    aead::{Aead, KeyInit},
+    aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::{AffineRepr, Group};
 use ark_ff::{Field, One, PrimeField, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::{vec::Vec, UniformRand};
+use ark_std::{collections::HashSet, vec::Vec, UniformRand};
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
@@ -143,13 +143,18 @@ impl ThresholdDealer for ThresholdDealerNode {
         rng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        // Encrypt data
-        let ciphertext = cipher
-            .encrypt(nonce, data)
-            .map_err(|_| CryptoError::ElGamalError("Encryption failed".to_string()))?;
-
+        // Serialize commitment for use as AAD
         let mut enc_cmt_bytes = Vec::new();
         enc_cmt.serialize_compressed(&mut enc_cmt_bytes)?;
+
+        // Encrypt data with commitment as AAD to bind ciphertext to commitment
+        let payload = Payload {
+            msg: data,
+            aad: &enc_cmt_bytes,
+        };
+        let ciphertext = cipher
+            .encrypt(nonce, payload)
+            .map_err(|_| CryptoError::ElGamalError("Encryption failed".to_string()))?;
 
         Ok((
             enc_cmt,
@@ -192,23 +197,35 @@ impl ThresholdDealer for ThresholdDealerNode {
         let aes_key = Self::derive_key_from_point(&rs_g)?;
         let cipher = Aes256Gcm::new(&aes_key.into());
 
-        // Decrypt
+        // Decrypt with commitment as AAD (must match encryption)
         let nonce = Nonce::from_slice(&secret.nonce);
-        let plaintext = cipher
-            .decrypt(nonce, secret.encrypted_data.as_ref())
-            .map_err(|_| {
-                CryptoError::ElGamalError("Decryption failed - authentication failed".to_string())
-            })?;
+        let payload = Payload {
+            msg: secret.encrypted_data.as_ref(),
+            aad: &secret.enc_cmt,
+        };
+        let plaintext = cipher.decrypt(nonce, payload).map_err(|_| {
+            CryptoError::ElGamalError("Decryption failed - authentication failed".to_string())
+        })?;
 
         Ok(plaintext)
     }
 }
 
 impl ThresholdDealerNode {
-    /// Decompress a point from bytes
+    /// Decompress a point from bytes and validate it's not the identity element
     fn decompress_point(bytes: &[u8]) -> Result<G1Affine> {
-        G1Affine::deserialize_compressed(bytes)
-            .map_err(|e| CryptoError::ElGamalError(format!("failed to decompress point: {:?}", e)))
+        let point = G1Affine::deserialize_compressed(bytes).map_err(|e| {
+            CryptoError::ElGamalError(format!("failed to decompress point: {:?}", e))
+        })?;
+
+        // Verify point is not the identity element (security check)
+        if point.is_zero() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid point: cannot be the identity element".to_string(),
+            ));
+        }
+
+        Ok(point)
     }
 
     fn reencrypt(
@@ -216,6 +233,18 @@ impl ThresholdDealerNode {
         rdr_pk: &G1Affine,
         enc_cmt: &G1Affine,
     ) -> Result<(G1Affine, Fr, Fr)> {
+        // Validate inputs are not zero points
+        if rdr_pk.is_zero() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid reader public key: cannot be zero point".to_string(),
+            ));
+        }
+        if enc_cmt.is_zero() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid commitment: cannot be zero point".to_string(),
+            ));
+        }
+
         // Re-encrypted secret share (Ui)
         let xr_g = G1Projective::from(*rdr_pk) + G1Projective::from(*enc_cmt); // xrG = xG + rG
         let xnc_ski = (xr_g * dkg_ski).into(); // Ui = ski * (xG + rG)
@@ -261,23 +290,17 @@ impl ThresholdDealerNode {
         let chlg = Fr::from_le_bytes_mod_order(&challenge_hash);
 
         // Verify local challenge using constant-time comparison
-        // Serialize both field elements to fixed-size byte arrays for constant-time comparison
-        let mut chlg_bytes = Vec::new();
-        let mut chlgi_bytes = Vec::new();
-        chlg.serialize_compressed(&mut chlg_bytes)
+        // Fr serializes to exactly 32 bytes for BLS12-381
+        let mut chlg_bytes = [0u8; 32];
+        let mut chlgi_bytes = [0u8; 32];
+        chlg.serialize_compressed(&mut &mut chlg_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
         chlgi
-            .serialize_compressed(&mut chlgi_bytes)
+            .serialize_compressed(&mut &mut chlgi_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
 
-        // Pad to same length for constant-time comparison
-        let max_len = chlg_bytes.len().max(chlgi_bytes.len());
-        let mut chlg_padded = vec![0u8; max_len];
-        let mut chlgi_padded = vec![0u8; max_len];
-        chlg_padded[..chlg_bytes.len()].copy_from_slice(&chlg_bytes);
-        chlgi_padded[..chlgi_bytes.len()].copy_from_slice(&chlgi_bytes);
-
-        if chlg_padded.ct_ne(&chlgi_padded).into() {
+        // Constant-time comparison
+        if chlg_bytes.ct_ne(&chlgi_bytes).into() {
             return Err(CryptoError::ElGamalError(
                 "Cryptographic verification failed".to_string(),
             ));
@@ -292,25 +315,25 @@ impl ThresholdDealerNode {
         n: usize,
     ) -> Result<Option<G1Affine>> {
         let shares_to_use = &shares[..t];
-        // Validate all share indices are distinct and in valid range
-        let mut indices: Vec<u32> = shares_to_use.iter().map(|s| s.i).collect();
-        indices.sort();
-        // Check for duplicates
-        for i in 1..indices.len() {
-            if indices[i] == indices[i - 1] {
-                return Err(CryptoError::ElGamalError(format!(
-                    "Duplicate share index: {}",
-                    indices[i]
-                )));
-            }
-        }
 
-        // Validate indices are in valid range [1, n]
-        for &idx in &indices {
+        // Validate all share indices are distinct
+        let mut seen_indices = HashSet::new();
+        for share in shares_to_use {
+            let idx = share.i;
+
+            // Validate index is in valid range [1, n]
             if idx < 1 || idx > n as u32 {
                 return Err(CryptoError::ElGamalError(format!(
                     "Invalid share index: {} (must be in range [1, {}])",
                     idx, n
+                )));
+            }
+
+            // Check for duplicates
+            if !seen_indices.insert(idx) {
+                return Err(CryptoError::ElGamalError(format!(
+                    "Duplicate share index: {}",
+                    idx
                 )));
             }
         }
@@ -345,12 +368,18 @@ impl ThresholdDealerNode {
         Ok(Some(result.into()))
     }
 
-    /// Hash multiple points together
+    /// Hash multiple points together with domain separation
     fn hash_points(points: &[G1Affine]) -> Result<[u8; 32]> {
         let mut hasher = Sha256::new();
 
+        // Add domain separation to prevent cross-protocol attacks
+        hasher.update(b"elgamal-reencrypt-challenge-v1");
+
+        // Reuse buffer to avoid allocating for each point
+        // Compressed G1 points are 48 bytes
+        let mut bytes = Vec::with_capacity(48);
         for point in points {
-            let mut bytes = Vec::new();
+            bytes.clear();
             point.serialize_compressed(&mut bytes)?;
             hasher.update(&bytes);
         }
