@@ -5,7 +5,7 @@ use crate::crypto_service::{
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::messages::DkgMessage;
 use crate::helpers::helpers::connect_to_peers;
-use network::iroh::router::alpn::DKG;
+use network::{iroh::router::alpn::DKG, Network};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -125,7 +125,6 @@ impl CryptoService for CryptoServiceImpl {
             // Send SessionInit message to all peers
             // Include all peer_ids (including our own) so non-initiators know who to send messages to
             // First, get our own peer ID and add it to the list
-            use network::Network;
             let our_address = self
                 .state
                 .network

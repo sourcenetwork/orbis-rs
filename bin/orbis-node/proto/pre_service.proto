@@ -7,15 +7,15 @@ service PreService {
 }
 
 message StartPreRequest {
-  string session_id = 1;
-  repeated string participant_ids = 2;
-  repeated string peer_ids = 3;  // Iroh peer IDs that this node needs to connect to
-  map<string, string> parameters = 4;
+  string ring_pk = 1;
+  string secret = 2;
+  string rdr_pk = 3;
+  repeated string peer_ids = 5;  // Iroh peer IDs that this node needs to connect to
 }
 
 message StartPreResponse {
-  string session_id = 1;
   string status = 2;
   string message = 3;
   int64 created_at = 4;
+  string encrypted_secret = 5;
 }
