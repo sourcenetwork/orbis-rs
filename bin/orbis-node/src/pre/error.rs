@@ -55,6 +55,10 @@ pub enum PreError {
     #[error("Invalid state: {0}")]
     InvalidState(String),
 
+    /// Protocol error (violations of protocol rules)
+    #[error("Protocol error: {0}")]
+    ProtocolError(String),
+
     /// Generic PRE error
     #[error("PRE error: {0}")]
     Generic(String),

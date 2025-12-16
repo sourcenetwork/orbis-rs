@@ -3,7 +3,156 @@
 //! This module provides utility functions used across the codebase.
 
 use network::{Network, PeerId};
+use std::net::SocketAddr;
 use std::sync::Arc;
+
+/// Maximum allowed length for peer ID strings (prevents DoS via oversized inputs)
+pub const MAX_PEER_ID_LENGTH: usize = 256;
+
+/// Minimum length for a valid iroh public key
+/// Ed25519 public key is 32 bytes = 64 hex chars
+pub const MIN_NODE_ID_LENGTH: usize = 64;
+
+/// Expected length for hex-encoded Ed25519 public key
+pub const EXPECTED_HEX_NODE_ID_LENGTH: usize = 64;
+
+/// Error type for peer ID validation
+#[derive(Debug, Clone)]
+pub enum PeerIdValidationError {
+    /// Peer ID string is empty
+    Empty,
+    /// Peer ID string exceeds maximum length
+    TooLong { length: usize, max: usize },
+    /// Invalid format - missing or malformed node ID
+    InvalidFormat(String),
+    /// Invalid socket address in peer ID
+    InvalidSocketAddr(String),
+    /// Node ID part has incorrect length
+    InvalidNodeIdLength { length: usize, expected: usize },
+    /// Node ID contains invalid characters
+    InvalidCharacters(String),
+}
+
+impl std::fmt::Display for PeerIdValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PeerIdValidationError::Empty => write!(f, "Peer ID cannot be empty"),
+            PeerIdValidationError::TooLong { length, max } => {
+                write!(f, "Peer ID too long: {} bytes, maximum is {}", length, max)
+            }
+            PeerIdValidationError::InvalidFormat(msg) => {
+                write!(f, "Invalid peer ID format: {}", msg)
+            }
+            PeerIdValidationError::InvalidSocketAddr(msg) => {
+                write!(f, "Invalid socket address in peer ID: {}", msg)
+            }
+            PeerIdValidationError::InvalidNodeIdLength { length, expected } => {
+                write!(
+                    f,
+                    "Invalid node ID length: {} chars, expected {}",
+                    length, expected
+                )
+            }
+            PeerIdValidationError::InvalidCharacters(msg) => {
+                write!(f, "Node ID contains invalid characters: {}", msg)
+            }
+        }
+    }
+}
+
+impl std::error::Error for PeerIdValidationError {}
+
+/// Validate a peer ID string
+///
+/// Valid formats:
+/// - `node_id` - Just the iroh public key (hex-encoded, 64 chars for Ed25519)
+/// - `node_id@ip:port` - Node ID with socket address
+///
+/// # Arguments
+/// * `peer_id` - The peer ID string to validate
+///
+/// # Returns
+/// * `Ok(())` if valid
+/// * `Err(PeerIdValidationError)` if invalid
+pub fn validate_peer_id(peer_id: &str) -> Result<(), PeerIdValidationError> {
+    // Check for empty string
+    if peer_id.is_empty() {
+        return Err(PeerIdValidationError::Empty);
+    }
+
+    // Check maximum length
+    if peer_id.len() > MAX_PEER_ID_LENGTH {
+        return Err(PeerIdValidationError::TooLong {
+            length: peer_id.len(),
+            max: MAX_PEER_ID_LENGTH,
+        });
+    }
+
+    // Split by '@' to separate node_id from optional socket address
+    let parts: Vec<&str> = peer_id.splitn(2, '@').collect();
+    let node_id = parts[0];
+
+    // Validate node_id part - should be hex-encoded Ed25519 public key (64 chars)
+    if node_id.len() != EXPECTED_HEX_NODE_ID_LENGTH {
+        return Err(PeerIdValidationError::InvalidNodeIdLength {
+            length: node_id.len(),
+            expected: EXPECTED_HEX_NODE_ID_LENGTH,
+        });
+    }
+
+    // Check that node_id contains only valid hex characters
+    if !node_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(PeerIdValidationError::InvalidCharacters(format!(
+            "Node ID must contain only hexadecimal characters (0-9, a-f, A-F), got: {}",
+            &node_id[..node_id.len().min(20)]
+        )));
+    }
+
+    // If there's a socket address part, validate it
+    if parts.len() == 2 {
+        let addr_str = parts[1];
+        if addr_str.is_empty() {
+            return Err(PeerIdValidationError::InvalidFormat(
+                "Socket address after '@' cannot be empty".to_string(),
+            ));
+        }
+
+        // Try to parse as a socket address
+        if addr_str.parse::<SocketAddr>().is_err() {
+            return Err(PeerIdValidationError::InvalidSocketAddr(format!(
+                "Cannot parse '{}' as a valid socket address (expected ip:port)",
+                addr_str
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate multiple peer IDs and return detailed results
+///
+/// # Returns
+/// A vector of (peer_id, Result) pairs
+pub fn validate_peer_ids(peer_ids: &[String]) -> Vec<(&String, Result<(), PeerIdValidationError>)> {
+    peer_ids
+        .iter()
+        .map(|id| (id, validate_peer_id(id)))
+        .collect()
+}
+
+/// Validate all peer IDs and return an error if any are invalid
+///
+/// # Returns
+/// * `Ok(())` if all peer IDs are valid
+/// * `Err` with details about the first invalid peer ID
+pub fn validate_all_peer_ids(peer_ids: &[String]) -> Result<(), (String, PeerIdValidationError)> {
+    for peer_id in peer_ids {
+        if let Err(e) = validate_peer_id(peer_id) {
+            return Err((peer_id.clone(), e));
+        }
+    }
+    Ok(())
+}
 
 /// Result of connecting to a peer
 #[derive(Debug, Clone)]

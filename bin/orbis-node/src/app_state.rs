@@ -8,18 +8,45 @@ use local_storage::{
 use network::IrohNetwork;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
+/// Maximum number of concurrent DKG sessions allowed per node
+pub const MAX_DKG_SESSIONS: usize = 100;
+
+/// Session TTL - sessions older than this are eligible for cleanup (1 hour)
+pub const SESSION_TTL: Duration = Duration::from_secs(3600);
+
+/// PRE response TTL - responses older than this are cleaned up (5 minutes)
+pub const PRE_RESPONSE_TTL: Duration = Duration::from_secs(300);
+
+/// Maximum number of pending PRE responses
+pub const MAX_PRE_RESPONSES: usize = 1000;
+
+/// DKG session with metadata for lifecycle management
+pub struct DkgSessionEntry {
+    pub session: Arc<RwLock<DKGNode>>,
+    pub created_at: Instant,
+    pub completed: bool,
+}
+
+/// PRE response entry with timestamp for cleanup
+pub struct PreResponseEntry {
+    pub responses: Vec<PreMessage>,
+    pub expected_count: usize,
+    pub created_at: Instant,
+}
+
 /// Shared PRE response storage for collecting re-encryption responses
-/// request_id -> (responses, expected_count)
-pub type PreResponseStorage = Arc<RwLock<HashMap<String, (Vec<PreMessage>, usize)>>>;
+/// request_id -> PreResponseEntry
+pub type PreResponseStorage = Arc<RwLock<HashMap<String, PreResponseEntry>>>;
 
 /// Shared application state accessible by all gRPC endpoints
 #[derive(Clone)]
 pub struct AppState {
-    /// Active DKG sessions: session_id -> Arc<RwLock<session>>
+    /// Active DKG sessions: session_id -> DkgSessionEntry (with metadata)
     /// Using Arc<RwLock> to avoid cloning and allow concurrent mutable access
-    pub dkg_sessions: Arc<RwLock<HashMap<u64, Arc<RwLock<DKGNode>>>>>,
+    pub dkg_sessions: Arc<RwLock<HashMap<u64, DkgSessionEntry>>>,
     /// Server configuration
     pub config: ServerConfig,
     /// Iroh network for node-to-node communication
@@ -48,6 +75,25 @@ pub struct ServerConfig {
     pub bind_address: String,
 }
 
+/// Error type for session limit exceeded
+#[derive(Debug, Clone)]
+pub struct SessionLimitError {
+    pub current_count: usize,
+    pub max_allowed: usize,
+}
+
+impl std::fmt::Display for SessionLimitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Session limit exceeded: {} sessions active, maximum is {}",
+            self.current_count, self.max_allowed
+        )
+    }
+}
+
+impl std::error::Error for SessionLimitError {}
+
 impl AppState {
     /// Create a new AppState instance
     pub fn new(
@@ -72,14 +118,83 @@ impl AppState {
     /// Get a DKG session Arc by ID (returns shared reference, no cloning)
     pub async fn get_dkg_session(&self, session_id: &u64) -> Option<Arc<RwLock<DKGNode>>> {
         let sessions = self.dkg_sessions.read().await;
-        sessions.get(session_id).cloned()
+        sessions.get(session_id).map(|entry| entry.session.clone())
     }
 
-    /// Store a DKG session (wraps in Arc<RwLock> if needed)
-    pub async fn store_dkg_session(&self, session: DKGNode) {
+    /// Store a DKG session with limit checking and automatic cleanup
+    ///
+    /// Returns an error if the session limit is exceeded after cleanup.
+    pub async fn store_dkg_session(&self, session: DKGNode) -> Result<(), SessionLimitError> {
         let mut sessions = self.dkg_sessions.write().await;
         let session_id = session.session_id;
-        sessions.insert(session_id, Arc::new(RwLock::new(session)));
+
+        // Run cleanup before checking limits
+        Self::cleanup_sessions_internal(&mut sessions);
+
+        // Check session limit
+        if sessions.len() >= MAX_DKG_SESSIONS {
+            return Err(SessionLimitError {
+                current_count: sessions.len(),
+                max_allowed: MAX_DKG_SESSIONS,
+            });
+        }
+
+        sessions.insert(
+            session_id,
+            DkgSessionEntry {
+                session: Arc::new(RwLock::new(session)),
+                created_at: Instant::now(),
+                completed: false,
+            },
+        );
+        Ok(())
+    }
+
+    /// Mark a DKG session as completed
+    pub async fn mark_session_completed(&self, session_id: &u64) {
+        let mut sessions = self.dkg_sessions.write().await;
+        if let Some(entry) = sessions.get_mut(session_id) {
+            entry.completed = true;
+        }
+    }
+
+    /// Clean up expired sessions (internal helper, requires write lock held)
+    fn cleanup_sessions_internal(sessions: &mut HashMap<u64, DkgSessionEntry>) {
+        let now = Instant::now();
+        let before_count = sessions.len();
+
+        sessions.retain(|session_id, entry| {
+            let age = now.duration_since(entry.created_at);
+            let should_keep = age < SESSION_TTL;
+            if !should_keep {
+                println!(
+                    "Cleaning up expired DKG session {} (age: {:?})",
+                    session_id, age
+                );
+            }
+            should_keep
+        });
+
+        let removed = before_count - sessions.len();
+        if removed > 0 {
+            println!(
+                "Cleaned up {} expired DKG sessions, {} remaining",
+                removed,
+                sessions.len()
+            );
+        }
+    }
+
+    /// Manually trigger session cleanup
+    pub async fn cleanup_expired_sessions(&self) {
+        let mut sessions = self.dkg_sessions.write().await;
+        Self::cleanup_sessions_internal(&mut sessions);
+    }
+
+    /// Get current session count
+    pub async fn session_count(&self) -> usize {
+        let sessions = self.dkg_sessions.read().await;
+        sessions.len()
     }
 
     /// Execute a function with mutable access to a DKG session
@@ -89,8 +204,8 @@ impl AppState {
         F: FnOnce(&mut DKGNode) -> R,
     {
         let sessions = self.dkg_sessions.read().await;
-        let session_lock = sessions.get(session_id)?;
-        let mut session = session_lock.write().await;
+        let entry = sessions.get(session_id)?;
+        let mut session = entry.session.write().await;
         Some(f(&mut *session))
     }
 
@@ -100,9 +215,94 @@ impl AppState {
         F: FnOnce(&DKGNode) -> R,
     {
         let sessions = self.dkg_sessions.read().await;
-        let session_lock = sessions.get(session_id)?;
-        let session = session_lock.read().await;
+        let entry = sessions.get(session_id)?;
+        let session = entry.session.read().await;
         Some(f(&*session))
+    }
+
+    /// Initialize PRE response collection with limit checking
+    ///
+    /// Returns false if the limit is exceeded
+    pub async fn init_pre_response(&self, request_id: String, expected_count: usize) -> bool {
+        let mut responses = self.pre_responses.write().await;
+
+        // Cleanup expired responses first
+        Self::cleanup_pre_responses_internal(&mut responses);
+
+        // Check limit
+        if responses.len() >= MAX_PRE_RESPONSES {
+            eprintln!(
+                "PRE response limit exceeded: {} pending, max {}",
+                responses.len(),
+                MAX_PRE_RESPONSES
+            );
+            return false;
+        }
+
+        responses.insert(
+            request_id,
+            PreResponseEntry {
+                responses: Vec::new(),
+                expected_count,
+                created_at: Instant::now(),
+            },
+        );
+        true
+    }
+
+    /// Store a PRE response
+    pub async fn store_pre_response(&self, request_id: &str, message: PreMessage) {
+        let mut responses = self.pre_responses.write().await;
+        if let Some(entry) = responses.get_mut(request_id) {
+            entry.responses.push(message);
+        }
+    }
+
+    /// Get collected PRE responses
+    pub async fn get_pre_responses(&self, request_id: &str) -> Option<Vec<PreMessage>> {
+        let responses = self.pre_responses.read().await;
+        responses
+            .get(request_id)
+            .map(|entry| entry.responses.clone())
+    }
+
+    /// Remove PRE response entry (cleanup after completion)
+    pub async fn remove_pre_response(&self, request_id: &str) {
+        let mut responses = self.pre_responses.write().await;
+        responses.remove(request_id);
+    }
+
+    /// Clean up expired PRE responses (internal helper)
+    fn cleanup_pre_responses_internal(responses: &mut HashMap<String, PreResponseEntry>) {
+        let now = Instant::now();
+        let before_count = responses.len();
+
+        responses.retain(|request_id, entry| {
+            let age = now.duration_since(entry.created_at);
+            let should_keep = age < PRE_RESPONSE_TTL;
+            if !should_keep {
+                println!(
+                    "Cleaning up expired PRE response {} (age: {:?})",
+                    request_id, age
+                );
+            }
+            should_keep
+        });
+
+        let removed = before_count - responses.len();
+        if removed > 0 {
+            println!(
+                "Cleaned up {} expired PRE responses, {} remaining",
+                removed,
+                responses.len()
+            );
+        }
+    }
+
+    /// Manually trigger PRE response cleanup
+    pub async fn cleanup_expired_pre_responses(&self) {
+        let mut responses = self.pre_responses.write().await;
+        Self::cleanup_pre_responses_internal(&mut responses);
     }
 
     /// Get a DKG session by ring public key (for PRE)

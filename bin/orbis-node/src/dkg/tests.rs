@@ -237,8 +237,8 @@ async fn test_three_nodes_connect() {
 
 /// Test: Verify that StartDkg fails when unable to connect to all requested peers
 ///
-/// This test verifies that if a node cannot connect to all requested peer IDs,
-/// the gRPC service returns an error and stops execution.
+/// This test verifies that if a node receives invalid peer IDs,
+/// the gRPC service validates them and returns an error before attempting connections.
 #[tokio::test]
 async fn test_start_dkg_fails_on_connection_failure() {
     // Create only Alice node
@@ -247,8 +247,8 @@ async fn test_start_dkg_fails_on_connection_failure() {
     // Create Alice's service
     let alice_service = CryptoServiceImpl::new(alice_state);
 
-    // Create a request with invalid peer IDs that won't connect
-    // Using obviously invalid peer IDs that won't resolve
+    // Create a request with invalid peer IDs that fail validation
+    // Using obviously invalid peer IDs (not valid hex-encoded Ed25519 public keys)
     let request = StartDkgRequest {
         session_id: "failure-test-session".to_string(),
         threshold: 2,
@@ -274,27 +274,22 @@ async fn test_start_dkg_fails_on_connection_failure() {
     let tonic_request = Request::new(request);
     let result = alice_service.start_dkg(tonic_request).await;
 
-    // Verify that the request fails with a gRPC error
+    // Verify that the request fails with a gRPC error due to invalid peer ID format
     assert!(
         result.is_err(),
-        "start_dkg should fail when unable to connect to all peers"
+        "start_dkg should fail when peer IDs are invalid"
     );
 
     let status = result.unwrap_err();
     assert_eq!(
         status.code(),
-        tonic::Code::Unavailable,
-        "Error code should be FailedPrecondition"
+        tonic::Code::InvalidArgument,
+        "Error code should be InvalidArgument for invalid peer IDs"
     );
     assert!(
-        status
-            .message()
-            .contains("Failed to connect to all required peers"),
-        "Error message should indicate connection failure"
-    );
-    assert!(
-        status.message().contains("Connected to 0/2 peers"),
-        "Error message should show connection statistics"
+        status.message().contains("Invalid peer ID"),
+        "Error message should indicate invalid peer ID: {}",
+        status.message()
     );
 
     println!("Test passed: Service correctly returned error for failed connections");

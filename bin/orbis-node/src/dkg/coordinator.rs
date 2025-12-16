@@ -164,25 +164,67 @@ impl DkgCoordinator {
                     commitment.len()
                 );
 
-                // Deserialize commitment
-                use ark_serialize::CanonicalDeserialize;
-                let mut commitment_coeffs = Vec::new();
-                let mut offset = 0;
-                // TODO: generalize this
-                // Each G1Affine is 48 bytes when compressed
-                while offset < commitment.len() {
-                    if offset + 48 > commitment.len() {
-                        break;
-                    }
-                    let coeff = G1Affine::deserialize_compressed(&commitment[offset..offset + 48])
-                        .map_err(|e| {
+                // Validate commitment byte length
+                const G1_COMPRESSED_SIZE: usize = 48;
+                const MAX_COMMITMENT_COEFFICIENTS: usize = 256; // Reasonable upper bound
+
+                // Check that commitment is not empty
+                if commitment.is_empty() {
+                    return Err(DkgError::CommitmentVerificationFailed(
+                        "Commitment cannot be empty".to_string(),
+                    ));
+                }
+
+                // Check that commitment length is a multiple of G1 compressed size
+                if commitment.len() % G1_COMPRESSED_SIZE != 0 {
+                    return Err(DkgError::CommitmentVerificationFailed(format!(
+                        "Invalid commitment length: {} bytes is not a multiple of {} (G1 compressed size)",
+                        commitment.len(),
+                        G1_COMPRESSED_SIZE
+                    )));
+                }
+
+                let num_coefficients = commitment.len() / G1_COMPRESSED_SIZE;
+
+                // Check reasonable bounds on number of coefficients
+                if num_coefficients > MAX_COMMITMENT_COEFFICIENTS {
+                    return Err(DkgError::CommitmentVerificationFailed(format!(
+                        "Too many commitment coefficients: {} exceeds maximum {}",
+                        num_coefficients, MAX_COMMITMENT_COEFFICIENTS
+                    )));
+                }
+
+                // Get threshold from session to validate coefficient count
+                let threshold = self
+                    .app_state
+                    .with_dkg_session(&session_id, |session| session.threshold)
+                    .await
+                    .ok_or_else(|| {
+                        DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
+                    })?;
+
+                // Polynomial commitment should have exactly threshold coefficients
+                // (degree t-1 polynomial has t coefficients)
+                if num_coefficients != threshold {
+                    return Err(DkgError::CommitmentVerificationFailed(format!(
+                        "Invalid number of commitment coefficients: got {}, expected {} (threshold)",
+                        num_coefficients, threshold
+                    )));
+                }
+
+                // Deserialize commitment with pre-allocated vector
+                let mut commitment_coeffs = Vec::with_capacity(num_coefficients);
+                for i in 0..num_coefficients {
+                    let start = i * G1_COMPRESSED_SIZE;
+                    let end = start + G1_COMPRESSED_SIZE;
+                    let coeff =
+                        G1Affine::deserialize_compressed(&commitment[start..end]).map_err(|e| {
                             DkgError::Deserialization(format!(
-                                "Failed to deserialize commitment coefficient: {}",
-                                e
+                                "Failed to deserialize commitment coefficient {}: {}",
+                                i, e
                             ))
                         })?;
                     commitment_coeffs.push(coeff);
-                    offset += 48;
                 }
 
                 let polynomial_commitment = PolynomialCommitment {
@@ -305,8 +347,34 @@ impl DkgCoordinator {
                 ..
             } => {
                 // Phase 2: Receive and verify share
+                // Validate share value byte length
+                // TODO: generalize the size into crypto crate
+                const FR_COMPRESSED_SIZE: usize = 32; // Fr element is 32 bytes compressed
+
+                if share_value.is_empty() {
+                    return Err(DkgError::ShareVerificationFailed(
+                        "Share value cannot be empty".to_string(),
+                    ));
+                }
+
+                if share_value.len() != FR_COMPRESSED_SIZE {
+                    return Err(DkgError::ShareVerificationFailed(format!(
+                        "Invalid share value length: {} bytes, expected {}",
+                        share_value.len(),
+                        FR_COMPRESSED_SIZE
+                    )));
+                }
+
+                // Validate this share is intended for us
+                let our_node_id = self.app_state.config.node_id;
+                if to_node_id != our_node_id {
+                    return Err(DkgError::ShareVerificationFailed(format!(
+                        "Share intended for node {}, but we are node {}",
+                        to_node_id, our_node_id
+                    )));
+                }
+
                 // Deserialize share value
-                // TODO: Genralize FR?
                 let share_val =
                     Fr::deserialize_compressed(share_value.as_slice()).map_err(|e| {
                         DkgError::Deserialization(format!(
@@ -414,8 +482,11 @@ impl DkgCoordinator {
         // Set the session_id to the one we want (DKGNode::new generates a random one)
         dkg_node.session_id = session_id;
 
-        // Store the session
-        self.app_state.store_dkg_session(*dkg_node).await;
+        // Store the session (with limit checking)
+        self.app_state
+            .store_dkg_session(*dkg_node)
+            .await
+            .map_err(|e| DkgError::ProtocolError(e.to_string()))?;
 
         // Initialize session state
         self.session_state

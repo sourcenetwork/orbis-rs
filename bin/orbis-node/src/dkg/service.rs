@@ -5,7 +5,7 @@ use crate::crypto_service::{
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::DkgMessage;
-use crate::helpers::helpers::connect_to_peers;
+use crate::helpers::helpers::{connect_to_peers, validate_all_peer_ids};
 use network::{iroh::router::alpn::DKG, Network};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -105,6 +105,15 @@ impl CryptoService for CryptoServiceImpl {
         // Peer IDs should be in iroh PublicKey format: either "node_id" or "node_id@ip:port"
         // where node_id is the iroh public key string representation
         if !req.peer_ids.is_empty() {
+            // Validate all peer IDs before attempting connections
+            if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&req.peer_ids) {
+                return Err(DkgError::InvalidInput(format!(
+                    "Invalid peer ID '{}': {}",
+                    invalid_peer_id, validation_error
+                ))
+                .into());
+            }
+
             let requested_peers = req.peer_ids.len();
             let connection_summary =
                 connect_to_peers(&self.state.network, req.peer_ids.clone(), DKG).await;

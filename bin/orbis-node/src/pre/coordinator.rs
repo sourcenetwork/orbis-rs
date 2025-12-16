@@ -11,9 +11,9 @@
 //! - Manages reencryption share collection and recovery
 
 use crate::app_state::AppState;
+use crate::helpers::helpers::connect_to_peer;
 use crate::pre::error::{PreError, Result};
 use crate::pre::messages::PreMessage;
-use crate::helpers::helpers::connect_to_peer;
 use ark_bls12_381::{Fr, G1Affine};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use crypto::bls12_381::pre::ThresholdDealerNode;
@@ -344,10 +344,15 @@ impl PreCoordinator {
             PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e))
         })?;
 
-        // 4. Initialize response collection
+        // 4. Initialize response collection (with limit checking)
+        if !self
+            .app_state
+            .init_pre_response(request_id.clone(), peer_ids.len())
+            .await
         {
-            let mut responses = self.app_state.pre_responses.write().await;
-            responses.insert(request_id.clone(), (Vec::new(), peer_ids.len()));
+            return Err(PreError::ProtocolError(
+                "PRE response limit exceeded, too many pending requests".to_string(),
+            ));
         }
 
         // 5. Send reencryption requests to all peers concurrently and receive responses
@@ -385,17 +390,13 @@ impl PreCoordinator {
         }
 
         // 6. Collect the stored responses
-        let collected_responses = {
-            let responses = self.app_state.pre_responses.read().await;
-            if let Some((resps, _)) = responses.get(&request_id) {
-                resps.clone()
-            } else {
-                return Err(PreError::Timeout(format!(
-                    "No responses found for request {}",
-                    request_id
-                )));
-            }
-        };
+        let collected_responses = self
+            .app_state
+            .get_pre_responses(&request_id)
+            .await
+            .ok_or_else(|| {
+                PreError::Timeout(format!("No responses found for request {}", request_id))
+            })?;
 
         // Check if we have enough responses
         if collected_responses.len() < threshold {
@@ -499,10 +500,7 @@ impl PreCoordinator {
             .map_err(|e| PreError::Serialization(format!("Failed to serialize response: {}", e)))?;
 
         // 14. Cleanup
-        {
-            let mut responses = self.app_state.pre_responses.write().await;
-            responses.remove(&request_id);
-        }
+        self.app_state.remove_pre_response(&request_id).await;
 
         println!(
             "PRE Coordinator: Successfully recovered reencrypted commitment for request {}",
@@ -515,15 +513,12 @@ impl PreCoordinator {
     /// Store a received response (called by protocol handler)
     pub async fn store_response(&self, message: PreMessage) {
         let request_id = message.request_id().to_string();
-        let mut responses = self.app_state.pre_responses.write().await;
-
-        if let Some((collected, _expected)) = responses.get_mut(&request_id) {
-            collected.push(message);
-            println!(
-                "PRE Coordinator: Stored response for request {}, total: {}",
-                request_id,
-                collected.len()
-            );
-        }
+        self.app_state
+            .store_pre_response(&request_id, message)
+            .await;
+        println!(
+            "PRE Coordinator: Stored response for request {}",
+            request_id
+        );
     }
 }

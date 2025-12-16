@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::helpers::helpers::connect_to_peers;
+use crate::helpers::helpers::{connect_to_peers, validate_all_peer_ids};
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
 use crate::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
@@ -60,6 +60,15 @@ impl PreService for PreServiceImpl {
             return Err(PreError::InvalidInput(
                 "No peer IDs provided for reencryption".to_string(),
             )
+            .into());
+        }
+
+        // 2b. Validate all peer IDs before attempting connections
+        if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&req.peer_ids) {
+            return Err(PreError::InvalidInput(format!(
+                "Invalid peer ID '{}': {}",
+                invalid_peer_id, validation_error
+            ))
             .into());
         }
 
