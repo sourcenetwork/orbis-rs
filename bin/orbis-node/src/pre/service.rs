@@ -27,6 +27,7 @@ impl PreService for PreServiceImpl {
         request: Request<StartPreRequest>,
     ) -> Result<Response<StartPreResponse>, Status> {
         let req = request.into_inner();
+        // TODO: Authenticate with ACP
         println!("Received StartPre request:");
         println!("  Ring PK: {}", req.ring_pk);
         println!("  Reader PK: {}", req.rdr_pk);
@@ -38,20 +39,21 @@ impl PreService for PreServiceImpl {
             .map_err(|e| Status::internal(format!("Failed to get timestamp: {}", e)))?
             .as_secs() as i64;
 
-        // 1. Decode base64-encoded inputs
-        let ring_pk = base64::engine::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &req.ring_pk,
-        )
-        .map_err(|e| Status::invalid_argument(format!("Invalid ring_pk encoding: {}", e)))?;
+        // 1. Parse JSON and hex inputs
+        // ring_pk: hex-encoded compressed G1Affine bytes
+        let ring_pk = hex::decode(&req.ring_pk).map_err(|e| {
+            Status::invalid_argument(format!("Invalid ring_pk hex encoding: {}", e))
+        })?;
 
-        let secret =
-            base64::engine::Engine::decode(&base64::engine::general_purpose::STANDARD, &req.secret)
-                .map_err(|e| Status::invalid_argument(format!("Invalid secret encoding: {}", e)))?;
+        // secret: JSON-serialized Secret struct
+        let secret: crypto::r#trait::Secret = serde_json::from_str(&req.secret)
+            .map_err(|e| Status::invalid_argument(format!("Invalid secret JSON: {}", e)))?;
+        let secret_bytes = serde_json::to_vec(&secret)
+            .map_err(|e| Status::internal(format!("Failed to serialize secret: {}", e)))?;
 
-        let rdr_pk =
-            base64::engine::Engine::decode(&base64::engine::general_purpose::STANDARD, &req.rdr_pk)
-                .map_err(|e| Status::invalid_argument(format!("Invalid rdr_pk encoding: {}", e)))?;
+        // rdr_pk: hex-encoded compressed G1Affine bytes
+        let rdr_pk = hex::decode(&req.rdr_pk)
+            .map_err(|e| Status::invalid_argument(format!("Invalid rdr_pk hex encoding: {}", e)))?;
 
         // 2. Validate we have peers
         if req.peer_ids.is_empty() {
@@ -88,13 +90,16 @@ impl PreService for PreServiceImpl {
         // 5. Create coordinator and initiate reencryption
         let coordinator = PreCoordinator::new(Arc::new(self.state.clone()));
         let result = coordinator
-            .initiate_reencryption(request_id, ring_pk, secret, rdr_pk, &req.peer_ids)
+            .initiate_reencryption(request_id, ring_pk, secret_bytes, rdr_pk, &req.peer_ids)
             .await
             .map_err(|e| Status::internal(format!("Reencryption failed: {}", e)))?;
 
-        // 6. Encode result as base64
-        let encrypted_secret =
-            base64::engine::Engine::encode(&base64::engine::general_purpose::STANDARD, &result);
+        // 6. Parse result as PreResponse and encode as JSON
+        let pre_response: crate::pre::coordinator::PreResponse = serde_json::from_slice(&result)
+            .map_err(|e| Status::internal(format!("Failed to parse PRE result: {}", e)))?;
+
+        let encrypted_secret = serde_json::to_string(&pre_response)
+            .map_err(|e| Status::internal(format!("Failed to serialize response: {}", e)))?;
 
         let response = StartPreResponse {
             status: "completed".to_string(),

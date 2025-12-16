@@ -28,10 +28,10 @@ use tokio::sync::RwLock;
 /// Response structure containing reencrypted commitment and original secret
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreResponse {
-    /// Recovered reencrypted commitment (xnc_cmt)
-    pub xnc_cmt: Vec<u8>,
-    /// Original encrypted secret (for Bob to decrypt)
-    pub secret: Vec<u8>,
+    /// Recovered reencrypted commitment (xnc_cmt) as hex string
+    pub xnc_cmt: String,
+    /// Original encrypted secret (for Bob to decrypt) as JSON
+    pub secret: Secret,
 }
 
 /// PRE Coordinator
@@ -368,23 +368,28 @@ impl PreCoordinator {
 
         let xnc_cmt = xnc_cmt_opt.ok_or_else(|| "Recovery returned None".to_string())?;
 
-        // 10. Serialize xnc_cmt
+        // 10. Serialize xnc_cmt to bytes then hex
         let mut xnc_cmt_bytes = Vec::new();
         xnc_cmt
             .serialize_compressed(&mut xnc_cmt_bytes)
             .map_err(|e| format!("Failed to serialize xnc_cmt: {}", e))?;
+        let xnc_cmt_hex = hex::encode(&xnc_cmt_bytes);
 
-        // 11. Create response structure
+        // 11. Deserialize secret from bytes
+        let secret: Secret = serde_json::from_slice(&secret_bytes)
+            .map_err(|e| format!("Failed to deserialize secret: {}", e))?;
+
+        // 12. Create response structure
         let pre_response = PreResponse {
-            xnc_cmt: xnc_cmt_bytes,
-            secret: secret_bytes,
+            xnc_cmt: xnc_cmt_hex,
+            secret,
         };
 
-        // 12. Serialize response
+        // 13. Serialize response to JSON bytes
         let response_bytes = serde_json::to_vec(&pre_response)
             .map_err(|e| format!("Failed to serialize response: {}", e))?;
 
-        // 13. Cleanup
+        // 14. Cleanup
         {
             let mut responses = self.responses.write().await;
             responses.remove(&request_id);
