@@ -7,8 +7,8 @@ use crate::dkg::coordinator::DkgCoordinator;
 use crate::helpers::test_helpers::setup_three_node_network_with_pre;
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::{
-    crypto_service::{crypto_service_server::CryptoService, StartDkgRequest},
-    CryptoServiceImpl,
+    dkg_service::{dkg_service_server::DkgService, StartDkgRequest},
+    DkgServiceImpl,
 };
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::Group;
@@ -53,7 +53,7 @@ async fn test_dkg_then_pre_end_to_end() {
     println!("\nStep 2: Running DKG protocol...");
 
     // Create node1's service (initiator)
-    let node1_service = CryptoServiceImpl::new(network.alice.app_state.clone());
+    let node1_service = DkgServiceImpl::new(network.alice.app_state.clone());
 
     // Generate a unique session ID
     let session_id_str = format!(
@@ -300,7 +300,7 @@ async fn test_pre_with_large_secret() {
     let peer_ids = network.get_peer_ids_for_connection();
 
     // Run DKG
-    let node1_service = CryptoServiceImpl::new(network.alice.app_state.clone());
+    let node1_service = DkgServiceImpl::new(network.alice.app_state.clone());
     let session_id_str = format!(
         "pre-large-test-{}",
         std::time::SystemTime::now()
@@ -405,7 +405,7 @@ async fn test_pre_fails_with_wrong_key() {
     let peer_ids = network.get_peer_ids_for_connection();
 
     // Run DKG
-    let node1_service = CryptoServiceImpl::new(network.alice.app_state.clone());
+    let node1_service = DkgServiceImpl::new(network.alice.app_state.clone());
     let session_id_str = format!(
         "pre-fail-test-{}",
         std::time::SystemTime::now()

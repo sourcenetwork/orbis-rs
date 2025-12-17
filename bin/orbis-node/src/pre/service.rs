@@ -73,7 +73,7 @@ impl PreService for PreServiceImpl {
         let peer_id_hash = {
             use crate::helpers::helpers;
             helpers::derive_node_id_from_peer_id_bytes(
-                self.state.network.local_peer_id().as_bytes()
+                self.state.network.local_peer_id().as_bytes(),
             )
         };
         let request_id = format!("{}-{}", peer_id_hash, created_at);

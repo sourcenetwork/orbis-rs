@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package crypto_service;
+package dkg_service;
 
-service CryptoService {
+service DkgService {
   rpc StartDkg(StartDkgRequest) returns (StartDkgResponse);
 }
 

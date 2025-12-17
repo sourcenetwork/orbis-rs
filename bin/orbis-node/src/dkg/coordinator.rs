@@ -116,12 +116,14 @@ impl DkgCoordinator {
         } = &message
         {
             // Get our assigned node_id from the initiator's assignments
-            let our_peer_id_hex = hex::encode(
-                self.app_state.network.local_peer_id().as_bytes()
-            );
+            let our_peer_id_hex = hex::encode(self.app_state.network.local_peer_id().as_bytes());
             // Extract just the hex part (before @) for lookup
-            let our_peer_id_key = our_peer_id_hex.split('@').next().unwrap_or(&our_peer_id_hex).to_string();
-            
+            let our_peer_id_key = our_peer_id_hex
+                .split('@')
+                .next()
+                .unwrap_or(&our_peer_id_hex)
+                .to_string();
+
             let assigned_node_id = node_id_assignments.get(&our_peer_id_key)
                 .ok_or_else(|| {
                     DkgError::InvalidInput(format!(
@@ -149,12 +151,13 @@ impl DkgCoordinator {
 
             // Store peer_ids for this session (needed for sending messages)
             self.set_peer_ids(&session_id, peer_ids.clone()).await;
-            
+
             // Store node_id to peer_id mappings for efficient routing
             let mut node_id_to_peer_id = std::collections::HashMap::new();
             for (peer_id_key, node_id) in node_id_assignments {
                 // Find the full peer_id (with @address if present) from peer_ids list
-                let full_peer_id = peer_ids.iter()
+                let full_peer_id = peer_ids
+                    .iter()
                     .find(|pid| pid.split('@').next().unwrap_or(pid) == peer_id_key)
                     .cloned()
                     .unwrap_or_else(|| peer_id_key.clone());

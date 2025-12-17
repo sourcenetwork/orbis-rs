@@ -102,9 +102,7 @@ impl AppState {
     ) -> Self {
         Self {
             dkg_sessions: Arc::new(RwLock::new(HashMap::new())),
-            config: ServerConfig {
-                bind_address,
-            },
+            config: ServerConfig { bind_address },
             network,
             local_storage,
             dkg_session_state: Arc::new(SessionStateManager::new()),

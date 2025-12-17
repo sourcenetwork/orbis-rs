@@ -1,10 +1,8 @@
 use crate::app_state::AppState;
-use crate::crypto_service::{
-    crypto_service_server::CryptoService, StartDkgRequest, StartDkgResponse,
-};
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::DkgMessage;
+use crate::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
 use crate::helpers::helpers::{connect_to_peers, validate_all_peer_ids};
 use network::{iroh::router::alpn::DKG, Network};
 use std::collections::hash_map::DefaultHasher;
@@ -13,21 +11,21 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
-/// Implementation of the CryptoService
+/// Implementation of the DkgService
 #[derive(Debug)]
-pub struct CryptoServiceImpl {
+pub struct DkgServiceImpl {
     pub state: AppState,
 }
 
-impl CryptoServiceImpl {
-    /// Create a new CryptoServiceImpl with shared application state
+impl DkgServiceImpl {
+    /// Create a new DkgServiceImpl with shared application state
     pub fn new(state: AppState) -> Self {
         Self { state }
     }
 }
 
 #[tonic::async_trait]
-impl CryptoService for CryptoServiceImpl {
+impl DkgService for DkgServiceImpl {
     async fn start_dkg(
         &self,
         request: Request<StartDkgRequest>,
@@ -87,25 +85,28 @@ impl CryptoService for CryptoServiceImpl {
         let our_peer_id_hex = hex::encode(self.state.network.local_peer_id().as_bytes());
         let mut all_peer_ids_for_assignments = vec![our_peer_id_hex.clone()];
         all_peer_ids_for_assignments.extend_from_slice(&req.peer_ids);
-        
+
         // Build node_id assignments: peer_id -> node_id (1-indexed based on sorted order)
         let mut node_id_assignments = std::collections::HashMap::new();
         let mut sorted_peer_ids = all_peer_ids_for_assignments.clone();
         sorted_peer_ids.sort();
-        
+
         for (idx, peer_id) in sorted_peer_ids.iter().enumerate() {
             let assigned_node_id = (idx + 1) as u32;
             // Extract just the hex part (before @) for consistent lookup
             let peer_id_key = peer_id.split('@').next().unwrap_or(peer_id).to_string();
             node_id_assignments.insert(peer_id_key, assigned_node_id);
         }
-        
+
         // Get our assigned node_id
-        let our_peer_id_key = our_peer_id_hex.split('@').next().unwrap_or(&our_peer_id_hex).to_string();
-        let our_assigned_node_id = node_id_assignments.get(&our_peer_id_key)
-            .ok_or_else(|| {
-                DkgError::InvalidInput("Could not determine our node_id from assignments".to_string())
-            })?;
+        let our_peer_id_key = our_peer_id_hex
+            .split('@')
+            .next()
+            .unwrap_or(&our_peer_id_hex)
+            .to_string();
+        let our_assigned_node_id = node_id_assignments.get(&our_peer_id_key).ok_or_else(|| {
+            DkgError::InvalidInput("Could not determine our node_id from assignments".to_string())
+        })?;
 
         println!(
             "DKG Service (Initiator): Assigned node_ids - our node_id: {} (from {} total participants)",
@@ -126,7 +127,7 @@ impl CryptoService for CryptoServiceImpl {
         coordinator
             .set_peer_ids(&session_id, req.peer_ids.clone())
             .await;
-        
+
         // Store node_id to peer_id mappings for efficient routing
         // We'll do this after sending SessionInit, but for now the coordinator will handle it
         // when it processes the message (for consistency)
@@ -172,13 +173,15 @@ impl CryptoService for CryptoServiceImpl {
             let mut node_id_to_peer_id = std::collections::HashMap::new();
             for (peer_id_key, node_id) in &node_id_assignments {
                 // Find the full peer_id (with @address if present) from all_peer_ids
-                let full_peer_id = all_peer_ids.iter()
+                let full_peer_id = all_peer_ids
+                    .iter()
                     .find(|pid| pid.split('@').next().unwrap_or(pid) == peer_id_key)
                     .cloned()
                     .unwrap_or_else(|| peer_id_key.clone());
                 node_id_to_peer_id.insert(*node_id, full_peer_id);
             }
-            self.state.dkg_session_state
+            self.state
+                .dkg_session_state
                 .set_node_peer_mappings(&session_id, node_id_to_peer_id)
                 .await;
 

@@ -364,7 +364,7 @@ pub fn determine_session_node_id(our_peer_id: &str, all_peer_ids: &[String]) -> 
 
     // Normalize all peer_ids to just the hex part for comparison
     let our_node_part = extract_node_part(our_peer_id);
-    
+
     // Sort peer_ids by their node_id part (hex string comparison)
     let mut sorted_peer_ids: Vec<String> = all_peer_ids
         .iter()
