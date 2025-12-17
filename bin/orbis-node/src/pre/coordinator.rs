@@ -20,7 +20,6 @@ use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{DistKeyShare, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer};
 use local_storage::r#trait::LocalStorage;
 use network::Message as NetworkMessage;
-use network::PeerId;
 use network::REENCRYPT;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -52,11 +51,7 @@ impl PreCoordinator {
     /// Handle an incoming PRE message
     ///
     /// Routes the message to the appropriate handler based on message type.
-    pub async fn handle_message(
-        &self,
-        _peer_id: &PeerId,
-        message: PreMessage,
-    ) -> Result<Option<PreMessage>> {
+    pub async fn handle_message(&self, message: PreMessage) -> Result<Option<PreMessage>> {
         match message {
             PreMessage::ReencryptRequest {
                 request_id,

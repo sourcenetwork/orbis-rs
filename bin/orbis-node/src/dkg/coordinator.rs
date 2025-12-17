@@ -29,7 +29,7 @@ use crypto::bls12_381::dkg::DKGNode;
 use crypto::r#trait::DistributedShare;
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
-use network::{Message as NetworkMessage, PeerId};
+use network::Message as NetworkMessage;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -70,11 +70,7 @@ impl DkgCoordinator {
     ///
     /// Routes the message to the appropriate session and processes it
     /// according to the DKG protocol phase.
-    pub async fn handle_message(
-        &self,
-        _peer_id: &PeerId,
-        message: DkgMessage,
-    ) -> Result<Option<DkgMessage>> {
+    pub async fn handle_message(&self, message: DkgMessage) -> Result<Option<DkgMessage>> {
         let session_id = message.session_id();
 
         // Get message type and from_node_id for deduplication

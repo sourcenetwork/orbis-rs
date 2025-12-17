@@ -94,7 +94,7 @@ impl ProtocolHandler for DkgProtocolHandler {
             );
 
             // Route message to coordinator
-            match self.coordinator.handle_message(&peer_id, dkg_message).await {
+            match self.coordinator.handle_message(dkg_message).await {
                 Ok(Some(response)) => {
                     // Send response back
                     if let Ok(response_data) = serde_json::to_vec(&response) {

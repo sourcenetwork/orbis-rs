@@ -91,7 +91,7 @@ impl ProtocolHandler for PreProtocolHandler {
             }
 
             // Route message to coordinator
-            match self.coordinator.handle_message(&peer_id, pre_message).await {
+            match self.coordinator.handle_message(pre_message).await {
                 Ok(Some(response)) => {
                     // Send response back
                     if let Ok(response_data) = serde_json::to_vec(&response) {
