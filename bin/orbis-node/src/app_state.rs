@@ -1,3 +1,4 @@
+use crate::constants::{MAX_DKG_SESSIONS, MAX_PRE_RESPONSES, PRE_RESPONSE_TTL, SESSION_TTL};
 use crate::dkg::session_state::SessionStateManager;
 use crate::pre::messages::PreMessage;
 use crypto::bls12_381::dkg::DKGNode;
@@ -8,20 +9,8 @@ use local_storage::{
 use network::IrohNetwork;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::RwLock;
-
-/// Maximum number of concurrent DKG sessions allowed per node
-pub const MAX_DKG_SESSIONS: usize = 100;
-
-/// Session TTL - sessions older than this are eligible for cleanup (1 hour)
-pub const SESSION_TTL: Duration = Duration::from_secs(3600);
-
-/// PRE response TTL - responses older than this are cleaned up (5 minutes)
-pub const PRE_RESPONSE_TTL: Duration = Duration::from_secs(300);
-
-/// Maximum number of pending PRE responses
-pub const MAX_PRE_RESPONSES: usize = 1000;
 
 /// DKG session with metadata for lifecycle management
 pub struct DkgSessionEntry {

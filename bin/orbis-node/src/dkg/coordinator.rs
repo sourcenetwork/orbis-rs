@@ -15,6 +15,7 @@
 //! All nodes participate equally in the protocol.
 
 use crate::app_state::AppState;
+use crate::constants::{FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE, MAX_COMMITMENT_COEFFICIENTS};
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::DkgMessage;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase, SessionStateManager};
@@ -204,9 +205,6 @@ impl DkgCoordinator {
                 );
 
                 // Validate commitment byte length
-                const G1_COMPRESSED_SIZE: usize = 48;
-                const MAX_COMMITMENT_COEFFICIENTS: usize = 256; // Reasonable upper bound
-
                 // Check that commitment is not empty
                 if commitment.is_empty() {
                     return Err(DkgError::CommitmentVerificationFailed(
@@ -389,9 +387,6 @@ impl DkgCoordinator {
             } => {
                 // Phase 2: Receive and verify share
                 // Validate share value byte length
-                // TODO: generalize the size into crypto crate
-                const FR_COMPRESSED_SIZE: usize = 32; // Fr element is 32 bytes compressed
-
                 if share_value.is_empty() {
                     return Err(DkgError::ShareVerificationFailed(
                         "Share value cannot be empty".to_string(),

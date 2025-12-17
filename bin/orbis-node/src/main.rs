@@ -1,5 +1,6 @@
 // Include the generated proto code
 pub mod app_state;
+pub mod constants;
 pub mod dkg;
 pub mod helpers;
 pub mod pre;

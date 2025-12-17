@@ -2,21 +2,12 @@
 //!
 //! This module provides utility functions used across the codebase.
 
+use crate::constants::{EXPECTED_HEX_NODE_ID_LENGTH, MAX_PEER_ID_LENGTH};
 use network::{Network, PeerId};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::Arc;
-
-/// Maximum allowed length for peer ID strings (prevents DoS via oversized inputs)
-pub const MAX_PEER_ID_LENGTH: usize = 256;
-
-/// Minimum length for a valid iroh public key
-/// Ed25519 public key is 32 bytes = 64 hex chars
-pub const MIN_NODE_ID_LENGTH: usize = 64;
-
-/// Expected length for hex-encoded Ed25519 public key
-pub const EXPECTED_HEX_NODE_ID_LENGTH: usize = 64;
 
 /// Error type for peer ID validation
 #[derive(Debug, Clone)]
