@@ -3,6 +3,7 @@
 //! This module provides a router that can compose multiple protocols
 //! using iroh's ALPN (Application-Layer Protocol Negotiation) support.
 
+use async_trait::async_trait;
 use iroh::protocol::Router as IrohRouter;
 use iroh::Endpoint;
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use std::sync::Arc;
 use crate::error::Result;
 use crate::iroh::base::IrohConnectionWrapper;
 use crate::r#trait::ProtocolHandler;
+use crate::r#trait::{Router as RouterTrait, RouterBuilder as RouterBuilderTrait};
 
 /// ALPN protocol identifiers for Orbis
 pub mod alpn {
@@ -27,22 +29,13 @@ pub mod alpn {
 ///
 /// This router uses iroh's Router builder to handle multiple protocols
 /// via ALPN negotiation. Each protocol can have its own handler.
-pub struct Router {
+pub struct IrohRouterWrapper {
     router: IrohRouter,
 }
 
-impl Router {
-    /// Create a new router builder from an endpoint
-    pub fn builder(endpoint: Endpoint) -> RouterBuilder {
-        RouterBuilder {
-            endpoint,
-            handlers: Vec::new(),
-            max_message_size: 1024 * 1024, // 1MB default
-        }
-    }
-
-    /// Shutdown the router
-    pub async fn shutdown(self) -> Result<()> {
+#[async_trait]
+impl RouterTrait for IrohRouterWrapper {
+    async fn shutdown(self: Box<Self>) -> Result<()> {
         self.router.shutdown().await.map_err(|e| {
             crate::error::NetworkError::Protocol(format!("Failed to shutdown router: {}", e))
         })?;
@@ -51,27 +44,28 @@ impl Router {
 }
 
 /// Builder for creating a router with multiple protocol handlers
-pub struct RouterBuilder {
+pub struct IrohRouterBuilder {
     endpoint: Endpoint,
     handlers: Vec<(Vec<u8>, Arc<dyn ProtocolHandler>)>,
     max_message_size: usize,
 }
 
-impl RouterBuilder {
-    /// Register a protocol handler for a specific ALPN
-    pub fn accept(mut self, alpn: Vec<u8>, handler: Arc<dyn ProtocolHandler>) -> Self {
-        self.handlers.push((alpn, handler));
-        self
+impl RouterBuilderTrait for IrohRouterBuilder {
+    fn accept(
+        mut self: Box<Self>,
+        protocol: Vec<u8>,
+        handler: Arc<dyn ProtocolHandler>,
+    ) -> Box<dyn RouterBuilderTrait> {
+        self.handlers.push((protocol, handler));
+        Box::new(*self)
     }
 
-    /// Set the maximum message size for connections
-    pub fn max_message_size(mut self, size: usize) -> Self {
+    fn max_message_size(mut self: Box<Self>, size: usize) -> Box<dyn RouterBuilderTrait> {
         self.max_message_size = size;
-        self
+        Box::new(*self)
     }
 
-    /// Spawn the router with all registered handlers
-    pub fn spawn(self) -> Router {
+    fn spawn(self: Box<Self>) -> Result<Box<dyn RouterTrait>> {
         let mut builder = IrohRouter::builder(self.endpoint.clone());
         let max_message_size = self.max_message_size;
 
@@ -84,7 +78,18 @@ impl RouterBuilder {
         }
 
         let router = builder.spawn();
-        Router { router }
+        Ok(Box::new(IrohRouterWrapper { router }))
+    }
+}
+
+impl IrohRouterBuilder {
+    /// Create a new router builder from an endpoint
+    pub fn new(endpoint: Endpoint) -> Self {
+        Self {
+            endpoint,
+            handlers: Vec::new(),
+            max_message_size: 1024 * 1024, // 1MB default
+        }
     }
 }
 

@@ -38,44 +38,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let addr: SocketAddr = args.addr.parse()?;
 
-    // Initialize iroh network for node-to-node communication
-    println!("Initializing iroh network...");
-    let network = network::IrohNetwork::new()
-        .await
-        .map_err(|e| format!("Failed to initialize iroh network: {}", e))?;
+    // Initialize network for node-to-node communication
+    println!("Initializing network...");
+    let network: Arc<dyn Network> = Arc::new(
+        network::IrohNetwork::new()
+            .await
+            .map_err(|e| format!("Failed to initialize network: {}", e))?,
+    );
     let local_storage = LocalStorage::default();
 
-    // Get the local peer ID and address before wrapping in Arc
+    // Get the local peer ID and address
     let local_peer_id = network.local_peer_id();
     let local_address = network
         .local_address()
         .map_err(|e| format!("Failed to get local address: {}", e))?;
 
-    let network_arc = Arc::new(network);
-
-    println!("Iroh network initialized:");
+    println!("Network initialized:");
     println!("  Local Peer ID: {}", hex::encode(local_peer_id.as_bytes()));
     println!("  Local Address: {}", local_address);
 
     // Create shared application state (needed for router)
-    let app_state = AppState::new(args.addr.clone(), network_arc.clone(), local_storage);
+    let app_state = AppState::new(args.addr.clone(), network.clone(), local_storage);
     // Wrap in Arc once, then clone Arc (cheap) for sharing
     let app_state_arc = Arc::new(app_state);
 
-    // Start the iroh router in the background with DKG and PRE protocol handlers
+    // Start the router in the background with DKG and PRE protocol handlers
     // The router will handle incoming connections automatically
-    let endpoint = network_arc.endpoint().clone();
     let router =
-        dkg::protocol_handler::create_router_with_handlers(endpoint, app_state_arc.clone());
+        dkg::protocol_handler::create_router_with_handlers(&network, app_state_arc.clone())
+            .map_err(|e| format!("Failed to create router: {}", e))?;
 
-    println!(
-        "Iroh router started with DKG and PRE protocol handlers and ready to accept connections"
-    );
+    println!("Router started with DKG and PRE protocol handlers and ready to accept connections");
 
     println!("Starting DkgService gRPC server on {}", addr);
     println!("Server is ready to accept connections...");
     println!("  gRPC: {} (for user clients)", addr);
-    println!("  Iroh: {} (for node-to-node communication)", local_address);
+    println!("  P2P: {} (for node-to-node communication)", local_address);
 
     // Initialize services with shared state (clone Arc, not AppState)
     let dkg_service = DkgServiceImpl::new((*app_state_arc).clone());
@@ -100,7 +98,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Clean shutdown of router
     println!("Shutting down router...");
-    router.shutdown().await?;
+    router
+        .shutdown()
+        .await
+        .map_err(|e| format!("Failed to shutdown router: {}", e))?;
 
     result?;
 

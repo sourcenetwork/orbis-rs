@@ -6,7 +6,7 @@ use local_storage::{
     memory::MemoryStorage as LocalStorage,
     r#trait::{LocalStorage as OtherLocalStorage, LocalStorageKeys},
 };
-use network::IrohNetwork;
+use network::Network;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -38,8 +38,8 @@ pub struct AppState {
     pub dkg_sessions: Arc<RwLock<HashMap<u64, DkgSessionEntry>>>,
     /// Server configuration
     pub config: ServerConfig,
-    /// Iroh network for node-to-node communication
-    pub network: Arc<IrohNetwork>,
+    /// Network for node-to-node communication
+    pub network: Arc<dyn Network>,
     /// Local Storage implementation for storing items locally
     pub local_storage: LocalStorage,
     /// Shared DKG session state manager for tracking protocol progress
@@ -86,7 +86,7 @@ impl AppState {
     /// Create a new AppState instance
     pub fn new(
         bind_address: String,
-        network: Arc<IrohNetwork>,
+        network: Arc<dyn Network>,
         local_storage: LocalStorage,
     ) -> Self {
         Self {

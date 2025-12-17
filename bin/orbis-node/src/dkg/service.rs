@@ -4,7 +4,7 @@ use crate::dkg::error::DkgError;
 use crate::dkg::messages::DkgMessage;
 use crate::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
 use crate::helpers::helpers::{connect_to_peers, validate_all_peer_ids};
-use network::{iroh::router::alpn::DKG, Network};
+use network::iroh::router::alpn::DKG;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;

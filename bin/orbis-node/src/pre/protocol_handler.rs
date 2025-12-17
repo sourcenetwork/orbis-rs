@@ -15,7 +15,7 @@ use crate::pre::coordinator::PreCoordinator;
 use crate::pre::messages::PreMessage;
 use async_trait::async_trait;
 use network::error::Result as NetworkResult;
-use network::{Connection, Message, ProtocolHandler};
+use network::{Connection, Message, ProtocolHandler, Router};
 use std::sync::Arc;
 
 /// PRE Protocol Handler
@@ -130,13 +130,14 @@ impl ProtocolHandler for PreProtocolHandler {
     }
 }
 
-/// Create an iroh router with PRE protocol handler
+/// Create a router with PRE protocol handler
 pub fn create_router_with_pre_handler(
-    endpoint: iroh::Endpoint,
+    network: &Arc<dyn network::Network>,
     app_state: Arc<AppState>,
-) -> network::IrohRouter {
+) -> NetworkResult<Box<dyn Router>> {
     let pre_handler = Arc::new(PreProtocolHandler::new(app_state));
-    network::IrohRouter::builder(endpoint)
-        .accept(network::iroh::router::alpn::REENCRYPT.to_vec(), pre_handler)
-        .spawn()
+    let mut router_builder = network.create_router_builder()?;
+    router_builder =
+        router_builder.accept(network::iroh::router::alpn::REENCRYPT.to_vec(), pre_handler);
+    router_builder.spawn()
 }

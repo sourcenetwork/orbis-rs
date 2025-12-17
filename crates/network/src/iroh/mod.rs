@@ -6,4 +6,4 @@ pub mod base;
 pub mod router;
 
 pub use base::IrohNetwork;
-pub use router::Router;
+pub use router::{IrohRouterBuilder, IrohRouterWrapper};

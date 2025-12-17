@@ -7,7 +7,7 @@ use crate::dkg::protocol_handler;
 use crate::dkg::protocol_handler::create_router_with_handlers;
 use hex;
 use local_storage::memory::MemoryStorage as LocalStorage;
-use network::IrohRouter;
+use network::Router;
 use std::sync::Arc;
 
 /// Create a test AppState with an initialized iroh network
@@ -34,16 +34,16 @@ use std::sync::Arc;
 pub async fn create_test_app_state(bind_address: Option<String>) -> AppState {
     let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
 
-    // Initialize iroh network for testing
-    let network = network::IrohNetwork::new()
-        .await
-        .expect("Failed to initialize iroh network for testing");
-
-    let network_arc = Arc::new(network);
+    // Initialize network for testing
+    let network: Arc<dyn network::Network> = Arc::new(
+        network::IrohNetwork::new()
+            .await
+            .expect("Failed to initialize network for testing"),
+    );
     let local_storage = LocalStorage::default();
 
     // Create AppState with the network (node_id is no longer needed - it's session-specific)
-    AppState::new(bind_address, network_arc, local_storage)
+    AppState::new(bind_address, network, local_storage)
 }
 
 /// Create a test AppState with default values
@@ -72,7 +72,7 @@ pub struct TestNode {
     /// The node's address (iroh PublicKey string)
     pub address: String,
     /// The node's router (if started)
-    pub router: Option<IrohRouter>,
+    pub router: Option<Box<dyn Router>>,
 }
 
 impl std::fmt::Debug for TestNode {
@@ -84,7 +84,7 @@ impl std::fmt::Debug for TestNode {
             .field(
                 "router",
                 &if self.router.is_some() {
-                    "Some(<IrohRouter>)"
+                    "Some(<Router>)"
                 } else {
                     "None"
                 },
@@ -174,8 +174,6 @@ impl ThreeNodeNetwork {
 /// }
 /// ```
 pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
-    use network::Network;
-
     println!("Setting up three-node test network...");
 
     // Create three nodes: Alice, Bob, and Charlie
@@ -189,10 +187,14 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
         .network
         .local_address()
         .expect("Failed to get Alice's address");
-    let alice_sockets = alice_state.network.endpoint().bound_sockets();
-    let alice_socket_addr = alice_sockets
+    // Get socket address for peer ID formatting
+    let alice_socket_addr = alice_state
+        .network
+        .bound_addresses()
         .first()
-        .expect("Alice endpoint should have at least one bound socket");
+        .copied()
+        .map(|addr| format!("{}", addr))
+        .unwrap_or_else(|| "127.0.0.1:0".to_string());
     let alice_peer_id_with_addr = format!("{}@{}", alice_address, alice_socket_addr);
 
     let bob_peer_id = bob_state.network.local_peer_id();
@@ -200,10 +202,13 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
         .network
         .local_address()
         .expect("Failed to get Bob's address");
-    let bob_sockets = bob_state.network.endpoint().bound_sockets();
-    let bob_socket_addr = bob_sockets
+    let bob_socket_addr = bob_state
+        .network
+        .bound_addresses()
         .first()
-        .expect("Bob endpoint should have at least one bound socket");
+        .copied()
+        .map(|addr| format!("{}", addr))
+        .unwrap_or_else(|| "127.0.0.1:0".to_string());
     let bob_peer_id_with_addr = format!("{}@{}", bob_address, bob_socket_addr);
 
     let charlie_peer_id = charlie_state.network.local_peer_id();
@@ -211,10 +216,13 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
         .network
         .local_address()
         .expect("Failed to get Charlie's address");
-    let charlie_sockets = charlie_state.network.endpoint().bound_sockets();
-    let charlie_socket_addr = charlie_sockets
+    let charlie_socket_addr = charlie_state
+        .network
+        .bound_addresses()
         .first()
-        .expect("Charlie endpoint should have at least one bound socket");
+        .copied()
+        .map(|addr| format!("{}", addr))
+        .unwrap_or_else(|| "127.0.0.1:0".to_string());
     let charlie_peer_id_with_addr = format!("{}@{}", charlie_address, charlie_socket_addr);
 
     println!(
@@ -239,10 +247,10 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
     let alice_router = if start_routers {
         println!("Starting router for Alice...");
         let alice_app_state = Arc::new(alice_state.clone());
-        Some(protocol_handler::create_router_with_dkg_handler(
-            alice_state.network.endpoint().clone(),
-            alice_app_state,
-        ))
+        Some(
+            protocol_handler::create_router_with_dkg_handler(&alice_state.network, alice_app_state)
+                .expect("Failed to create router for Alice"),
+        )
     } else {
         None
     };
@@ -250,10 +258,10 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
     let bob_router = if start_routers {
         println!("Starting router for Bob...");
         let bob_app_state = Arc::new(bob_state.clone());
-        Some(protocol_handler::create_router_with_dkg_handler(
-            bob_state.network.endpoint().clone(),
-            bob_app_state,
-        ))
+        Some(
+            protocol_handler::create_router_with_dkg_handler(&bob_state.network, bob_app_state)
+                .expect("Failed to create router for Bob"),
+        )
     } else {
         None
     };
@@ -261,10 +269,13 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
     let charlie_router = if start_routers {
         println!("Starting router for Charlie...");
         let charlie_app_state = Arc::new(charlie_state.clone());
-        Some(protocol_handler::create_router_with_dkg_handler(
-            charlie_state.network.endpoint().clone(),
-            charlie_app_state,
-        ))
+        Some(
+            protocol_handler::create_router_with_dkg_handler(
+                &charlie_state.network,
+                charlie_app_state,
+            )
+            .expect("Failed to create router for Charlie"),
+        )
     } else {
         None
     };
@@ -303,8 +314,6 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
 /// # Returns
 /// A `ThreeNodeNetwork` containing all three nodes with their information
 pub async fn setup_three_node_network_with_pre(start_routers: bool) -> ThreeNodeNetwork {
-    use network::Network;
-
     println!("Setting up three-node test network with DKG and PRE handlers...");
 
     // Create three nodes: Alice, Bob, and Charlie
@@ -318,10 +327,14 @@ pub async fn setup_three_node_network_with_pre(start_routers: bool) -> ThreeNode
         .network
         .local_address()
         .expect("Failed to get Alice's address");
-    let alice_sockets = alice_state.network.endpoint().bound_sockets();
-    let alice_socket_addr = alice_sockets
+    // Get socket address for peer ID formatting
+    let alice_socket_addr = alice_state
+        .network
+        .bound_addresses()
         .first()
-        .expect("Alice endpoint should have at least one bound socket");
+        .copied()
+        .map(|addr| format!("{}", addr))
+        .unwrap_or_else(|| "127.0.0.1:0".to_string());
     let alice_peer_id_with_addr = format!("{}@{}", alice_address, alice_socket_addr);
 
     let bob_peer_id = bob_state.network.local_peer_id();
@@ -329,10 +342,13 @@ pub async fn setup_three_node_network_with_pre(start_routers: bool) -> ThreeNode
         .network
         .local_address()
         .expect("Failed to get Bob's address");
-    let bob_sockets = bob_state.network.endpoint().bound_sockets();
-    let bob_socket_addr = bob_sockets
+    let bob_socket_addr = bob_state
+        .network
+        .bound_addresses()
         .first()
-        .expect("Bob endpoint should have at least one bound socket");
+        .copied()
+        .map(|addr| format!("{}", addr))
+        .unwrap_or_else(|| "127.0.0.1:0".to_string());
     let bob_peer_id_with_addr = format!("{}@{}", bob_address, bob_socket_addr);
 
     let charlie_peer_id = charlie_state.network.local_peer_id();
@@ -340,10 +356,13 @@ pub async fn setup_three_node_network_with_pre(start_routers: bool) -> ThreeNode
         .network
         .local_address()
         .expect("Failed to get Charlie's address");
-    let charlie_sockets = charlie_state.network.endpoint().bound_sockets();
-    let charlie_socket_addr = charlie_sockets
+    let charlie_socket_addr = charlie_state
+        .network
+        .bound_addresses()
         .first()
-        .expect("Charlie endpoint should have at least one bound socket");
+        .copied()
+        .map(|addr| format!("{}", addr))
+        .unwrap_or_else(|| "127.0.0.1:0".to_string());
     let charlie_peer_id_with_addr = format!("{}@{}", charlie_address, charlie_socket_addr);
 
     println!(
@@ -366,10 +385,10 @@ pub async fn setup_three_node_network_with_pre(start_routers: bool) -> ThreeNode
     let alice_router = if start_routers {
         println!("Starting router for Alice with DKG and PRE handlers...");
         let alice_app_state = Arc::new(alice_state.clone());
-        Some(create_router_with_handlers(
-            alice_state.network.endpoint().clone(),
-            alice_app_state,
-        ))
+        Some(
+            create_router_with_handlers(&alice_state.network, alice_app_state)
+                .expect("Failed to create router for Alice"),
+        )
     } else {
         None
     };
@@ -377,10 +396,10 @@ pub async fn setup_three_node_network_with_pre(start_routers: bool) -> ThreeNode
     let bob_router = if start_routers {
         println!("Starting router for Bob with DKG and PRE handlers...");
         let bob_app_state = Arc::new(bob_state.clone());
-        Some(create_router_with_handlers(
-            bob_state.network.endpoint().clone(),
-            bob_app_state,
-        ))
+        Some(
+            create_router_with_handlers(&bob_state.network, bob_app_state)
+                .expect("Failed to create router for Bob"),
+        )
     } else {
         None
     };
@@ -388,10 +407,10 @@ pub async fn setup_three_node_network_with_pre(start_routers: bool) -> ThreeNode
     let charlie_router = if start_routers {
         println!("Starting router for Charlie with DKG and PRE handlers...");
         let charlie_app_state = Arc::new(charlie_state.clone());
-        Some(create_router_with_handlers(
-            charlie_state.network.endpoint().clone(),
-            charlie_app_state,
-        ))
+        Some(
+            create_router_with_handlers(&charlie_state.network, charlie_app_state)
+                .expect("Failed to create router for Charlie"),
+        )
     } else {
         None
     };

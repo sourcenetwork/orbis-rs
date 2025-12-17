@@ -9,6 +9,5 @@ pub mod iroh;
 pub mod r#trait;
 
 pub use error::{NetworkError, Result};
-pub use iroh::router::Router as IrohRouter;
-pub use iroh::IrohNetwork;
-pub use r#trait::{Connection, Message, Network, PeerId, ProtocolHandler};
+pub use iroh::{IrohNetwork, IrohRouterBuilder, IrohRouterWrapper};
+pub use r#trait::{Connection, Message, Network, PeerId, ProtocolHandler, Router, RouterBuilder};

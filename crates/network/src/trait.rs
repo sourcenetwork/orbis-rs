@@ -76,6 +76,29 @@ pub trait ProtocolHandler: Send + Sync {
     async fn handle(&self, connection: Box<dyn Connection>) -> Result<()>;
 }
 
+/// Router builder for registering multiple protocol handlers
+pub trait RouterBuilder: Send + Sync {
+    /// Register a protocol handler for a specific protocol identifier
+    fn accept(
+        self: Box<Self>,
+        protocol: Vec<u8>,
+        handler: Arc<dyn ProtocolHandler>,
+    ) -> Box<dyn RouterBuilder>;
+
+    /// Set the maximum message size for connections
+    fn max_message_size(self: Box<Self>, size: usize) -> Box<dyn RouterBuilder>;
+
+    /// Build and spawn the router with all registered handlers
+    fn spawn(self: Box<Self>) -> Result<Box<dyn Router>>;
+}
+
+/// Router for managing multiple protocol handlers
+#[async_trait]
+pub trait Router: Send + Sync {
+    /// Shutdown the router gracefully
+    async fn shutdown(self: Box<Self>) -> Result<()>;
+}
+
 /// Network trait for establishing connections and listening
 #[async_trait]
 pub trait Network: Send + Sync {
@@ -90,4 +113,21 @@ pub trait Network: Send + Sync {
 
     /// Get the local address/endpoint
     fn local_address(&self) -> Result<String>;
+
+    /// Get bound socket addresses (if available)
+    ///
+    /// Returns a vector of socket addresses that this network is bound to.
+    /// Some network implementations may not support this, in which case they
+    /// should return an empty vector.
+    ///
+    /// This is primarily useful for testing and peer discovery.
+    fn bound_addresses(&self) -> Vec<std::net::SocketAddr> {
+        Vec::new() // Default implementation returns empty
+    }
+
+    /// Create a router builder for this network
+    ///
+    /// This allows registering multiple protocol handlers that will handle
+    /// incoming connections based on protocol negotiation (e.g., ALPN).
+    fn create_router_builder(&self) -> Result<Box<dyn RouterBuilder>>;
 }

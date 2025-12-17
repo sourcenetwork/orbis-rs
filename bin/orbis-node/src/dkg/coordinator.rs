@@ -29,7 +29,7 @@ use crypto::bls12_381::dkg::DKGNode;
 use crypto::r#trait::DistributedShare;
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
-use network::{Message as NetworkMessage, Network, PeerId};
+use network::{Message as NetworkMessage, PeerId};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 

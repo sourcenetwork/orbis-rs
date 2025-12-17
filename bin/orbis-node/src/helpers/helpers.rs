@@ -200,8 +200,8 @@ pub struct PeerConnectionSummary {
 ///
 /// println!("Connected to {}/{} peers", summary.successful, summary.total);
 /// ```
-pub async fn connect_to_peers<N: Network>(
-    network: &Arc<N>,
+pub async fn connect_to_peers(
+    network: &Arc<dyn Network>,
     peer_ids: Vec<String>,
     protocol: &[u8],
 ) -> PeerConnectionSummary {
@@ -300,8 +300,8 @@ pub async fn connect_to_peers<N: Network>(
 ///     }
 /// }
 /// ```
-pub async fn connect_to_peer<N: Network>(
-    network: &Arc<N>,
+pub async fn connect_to_peer(
+    network: &Arc<dyn Network>,
     peer_id: String,
     protocol: &[u8],
 ) -> Result<Box<dyn network::Connection>, network::error::NetworkError> {

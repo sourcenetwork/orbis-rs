@@ -11,7 +11,10 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::error::{NetworkError, Result};
-use crate::r#trait::{Connection, Message, Network, PeerId, ProtocolHandler};
+use crate::iroh::router::IrohRouterBuilder;
+use crate::r#trait::{
+    Connection, Message, Network, PeerId, ProtocolHandler, RouterBuilder as RouterBuilderTrait,
+};
 
 /// Configuration for IrohNetwork
 #[derive(Debug, Clone)]
@@ -158,6 +161,14 @@ impl Network for IrohNetwork {
         // Get the node ID as the address identifier
         let node_id = self.endpoint.id();
         Ok(format!("{}", node_id))
+    }
+
+    fn bound_addresses(&self) -> Vec<std::net::SocketAddr> {
+        self.endpoint.bound_sockets()
+    }
+
+    fn create_router_builder(&self) -> Result<Box<dyn RouterBuilderTrait>> {
+        Ok(Box::new(IrohRouterBuilder::new(self.endpoint.clone())))
     }
 }
 
