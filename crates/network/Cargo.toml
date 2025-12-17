@@ -24,3 +24,7 @@ gossip = ["dep:iroh-gossip"]
 version = "0.95"
 optional = true
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+bytes = "1.5"
+serial_test = "3.2.0"

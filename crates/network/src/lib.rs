@@ -13,3 +13,6 @@ pub use error::{NetworkError, Result};
 pub use iroh::{IrohNetwork, IrohRouterBuilder, IrohRouterWrapper};
 pub use protocol::{DKG, REENCRYPT};
 pub use r#trait::{Connection, Message, Network, PeerId, ProtocolHandler, Router, RouterBuilder};
+
+#[cfg(test)]
+mod tests;

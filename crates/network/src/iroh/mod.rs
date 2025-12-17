@@ -7,3 +7,6 @@ pub mod router;
 
 pub use base::IrohNetwork;
 pub use router::{IrohRouterBuilder, IrohRouterWrapper};
+
+#[cfg(test)]
+mod tests;
