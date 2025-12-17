@@ -3,7 +3,7 @@ use crate::helpers::helpers::{connect_to_peers, validate_all_peer_ids};
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
 use crate::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
-use network::iroh::router::alpn::REENCRYPT;
+use network::REENCRYPT;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};

@@ -6,8 +6,10 @@
 
 pub mod error;
 pub mod iroh;
+pub mod protocol;
 pub mod r#trait;
 
 pub use error::{NetworkError, Result};
 pub use iroh::{IrohNetwork, IrohRouterBuilder, IrohRouterWrapper};
+pub use protocol::{DKG, REENCRYPT};
 pub use r#trait::{Connection, Message, Network, PeerId, ProtocolHandler, Router, RouterBuilder};

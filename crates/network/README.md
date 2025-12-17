@@ -63,9 +63,6 @@ alpn::DKG  // "orbis/dkg/0"
 
 // Re-encryption requests (Bob → Ring nodes)
 alpn::REENCRYPT  // "orbis/reencrypt/0"
-
-// Ring node coordination
-alpn::COORD  // "orbis/coord/0"
 ```
 
 ## Architecture

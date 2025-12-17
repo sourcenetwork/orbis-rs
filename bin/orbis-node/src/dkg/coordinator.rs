@@ -19,7 +19,7 @@ use crate::constants::{FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE, MAX_COMMITMENT_CO
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::DkgMessage;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase, SessionStateManager};
-use network::iroh::router::alpn::DKG;
+use network::DKG;
 // TODO: any crypto specific things should be generalized and come from crypto::bls12_381
 use ark_bls12_381::{Fr, G1Affine};
 use ark_serialize::CanonicalDeserialize;

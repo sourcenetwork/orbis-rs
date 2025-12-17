@@ -19,9 +19,9 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{DistKeyShare, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer};
 use local_storage::r#trait::LocalStorage;
-use network::iroh::router::alpn::REENCRYPT;
 use network::Message as NetworkMessage;
 use network::PeerId;
+use network::REENCRYPT;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

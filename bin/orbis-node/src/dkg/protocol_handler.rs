@@ -20,7 +20,7 @@ use crate::dkg::messages::DkgMessage;
 use crate::pre::protocol_handler::PreProtocolHandler;
 use async_trait::async_trait;
 use network::error::Result as NetworkResult;
-use network::{Connection, Message, ProtocolHandler, Router};
+use network::{Connection, Message, ProtocolHandler, Router, DKG, REENCRYPT};
 use std::sync::Arc;
 
 /// DKG Protocol Handler
@@ -150,7 +150,7 @@ pub fn create_router_with_dkg_handler(
 ) -> NetworkResult<Box<dyn Router>> {
     let dkg_handler = Arc::new(DkgProtocolHandler::new(app_state));
     let mut router_builder = network.create_router_builder()?;
-    router_builder = router_builder.accept(network::iroh::router::alpn::DKG.to_vec(), dkg_handler);
+    router_builder = router_builder.accept(DKG.to_vec(), dkg_handler);
     router_builder.spawn()
 }
 
@@ -170,8 +170,7 @@ pub fn create_router_with_handlers(
     let pre_handler = Arc::new(PreProtocolHandler::new(app_state));
 
     let mut router_builder = network.create_router_builder()?;
-    router_builder = router_builder.accept(network::iroh::router::alpn::DKG.to_vec(), dkg_handler);
-    router_builder =
-        router_builder.accept(network::iroh::router::alpn::REENCRYPT.to_vec(), pre_handler);
+    router_builder = router_builder.accept(DKG.to_vec(), dkg_handler);
+    router_builder = router_builder.accept(REENCRYPT.to_vec(), pre_handler);
     router_builder.spawn()
 }

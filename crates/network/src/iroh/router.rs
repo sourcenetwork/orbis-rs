@@ -13,18 +13,6 @@ use crate::iroh::base::IrohConnectionWrapper;
 use crate::r#trait::ProtocolHandler;
 use crate::r#trait::{Router as RouterTrait, RouterBuilder as RouterBuilderTrait};
 
-/// ALPN protocol identifiers for Orbis
-pub mod alpn {
-    /// DKG protocol between ring nodes
-    pub const DKG: &[u8] = b"orbis/dkg/0";
-
-    /// Re-encryption requests (Bob → Ring nodes)
-    pub const REENCRYPT: &[u8] = b"orbis/reencrypt/0";
-
-    /// Ring node coordination
-    pub const COORD: &[u8] = b"orbis/coord/0";
-}
-
 /// Router for composing multiple protocols over a single iroh endpoint
 ///
 /// This router uses iroh's Router builder to handle multiple protocols
