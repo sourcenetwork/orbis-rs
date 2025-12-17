@@ -3,26 +3,55 @@ use crate::helpers::helpers::{connect_to_peers, validate_all_peer_ids};
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
 use crate::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
+use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
 use network::REENCRYPT;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
-
 /// Implementation of the PreService
 #[derive(Debug)]
-pub struct PreServiceImpl {
-    pub state: AppState,
+pub struct PreServiceImpl<D, T>
+where
+    D: Dkg + Clone,
+    T: ThresholdDealer,
+{
+    pub state: AppState<D>,
+    _phantom: std::marker::PhantomData<T>,
 }
 
-impl PreServiceImpl {
+impl<D, T> PreServiceImpl<D, T>
+where
+    D: Dkg + Clone,
+    T: ThresholdDealer,
+{
     /// Create a new PreServiceImpl with shared application state
-    pub fn new(state: AppState) -> Self {
-        Self { state }
+    pub fn new(state: AppState<D>) -> Self {
+        Self {
+            state,
+            _phantom: std::marker::PhantomData,
+        }
     }
 }
 
 #[tonic::async_trait]
-impl PreService for PreServiceImpl {
+impl<D, T> PreService for PreServiceImpl<D, T>
+where
+    D: Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    T: ThresholdDealer<
+            ShareValue = ark_bls12_381::Fr,
+            PublicKey = ark_bls12_381::G1Affine,
+            DistKeyShare = DistKeyShare<ark_bls12_381::Fr>,
+            Secret = Secret,
+            ReencryptReply = ReencryptReply<ark_bls12_381::Fr, ark_bls12_381::G1Affine>,
+            PubPoly = D::PubPoly,
+        > + Send
+        + Sync
+        + 'static,
+{
     async fn start_pre(
         &self,
         request: Request<StartPreRequest>,
@@ -101,7 +130,7 @@ impl PreService for PreServiceImpl {
         );
 
         // 5. Create coordinator and initiate reencryption
-        let coordinator = PreCoordinator::new(Arc::new(self.state.clone()));
+        let coordinator = PreCoordinator::<D, T>::new(Arc::new(self.state.clone()));
         let result = coordinator
             .initiate_reencryption(request_id, ring_pk, secret_bytes, rdr_pk, &req.peer_ids)
             .await?;

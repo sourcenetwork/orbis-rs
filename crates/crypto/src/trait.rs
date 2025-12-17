@@ -122,6 +122,24 @@ pub trait Dkg: Send + Sync {
     ///
     /// This is used for verification in the re-encryption protocol
     fn compute_public_polynomial(&self) -> Result<Self::PubPoly>;
+
+    /// Get the node ID
+    fn node_id(&self) -> u32;
+
+    /// Get the threshold value
+    fn threshold(&self) -> usize;
+
+    /// Get the total number of nodes
+    fn total_nodes(&self) -> usize;
+
+    /// Get a reference to the polynomial commitment
+    fn commitment(&self) -> &Self::PolynomialCommitment;
+
+    /// Set the session ID for this DKG instance
+    ///
+    /// This must be called after creating a new DKG node to ensure all nodes
+    /// use the same session ID for share verification.
+    fn set_session_id(&mut self, session_id: u64);
 }
 
 /// Trait for PRE

@@ -295,6 +295,26 @@ impl Dkg for DKGNode {
             commits: aggregated_coeffs,
         })
     }
+
+    fn node_id(&self) -> u32 {
+        self.id
+    }
+
+    fn threshold(&self) -> usize {
+        self.threshold
+    }
+
+    fn total_nodes(&self) -> usize {
+        self.total_nodes
+    }
+
+    fn commitment(&self) -> &Self::PolynomialCommitment {
+        &self.commitment
+    }
+
+    fn set_session_id(&mut self, session_id: u64) {
+        self.session_id = session_id;
+    }
 }
 
 impl DKGNode {
@@ -320,14 +340,6 @@ impl DKGNode {
 impl crate::test_helper::TestDkgNode for DKGNode {
     fn id(&self) -> u32 {
         self.id
-    }
-
-    fn commitment(&self) -> Self::PolynomialCommitment {
-        self.commitment.clone()
-    }
-
-    fn set_session_id(&mut self, session_id: u64) {
-        self.session_id = session_id;
     }
 }
 

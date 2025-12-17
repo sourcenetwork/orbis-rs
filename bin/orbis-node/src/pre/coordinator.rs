@@ -14,10 +14,12 @@ use crate::app_state::AppState;
 use crate::helpers::helpers::connect_to_peer;
 use crate::pre::error::{PreError, Result};
 use crate::pre::messages::PreMessage;
+// TODO: Serialization should be generalized via trait methods
 use ark_bls12_381::{Fr, G1Affine};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use crypto::bls12_381::pre::ThresholdDealerNode;
-use crypto::r#trait::{DistKeyShare, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer};
+use crypto::r#trait::{
+    DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
+};
 use local_storage::r#trait::LocalStorage;
 use network::Message as NetworkMessage;
 use network::REENCRYPT;
@@ -38,14 +40,39 @@ pub struct PreResponse {
 /// Each node has its own instance that manages this node's participation
 /// in PRE sessions. This is NOT a central coordinator - the protocol is
 /// decentralized with each node managing its own state.
-pub struct PreCoordinator {
-    app_state: Arc<AppState>,
+///
+/// Type parameters:
+/// - D: DKG implementation (must use Fr and G1Affine)
+/// - T: ThresholdDealer implementation (must use compatible types)
+pub struct PreCoordinator<D, T>
+where
+    D: Dkg + Clone,
+    T: ThresholdDealer,
+{
+    app_state: Arc<AppState<D>>,
+    _phantom: std::marker::PhantomData<T>,
 }
 
-impl PreCoordinator {
+impl<D, T> PreCoordinator<D, T>
+where
+    D: Dkg<ShareValue = Fr, PublicKey = G1Affine> + Clone + Send + Sync + 'static,
+    T: ThresholdDealer<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            DistKeyShare = DistKeyShare<Fr>,
+            Secret = Secret,
+            ReencryptReply = ReencryptReply<Fr, G1Affine>,
+            PubPoly = D::PubPoly,
+        > + Send
+        + Sync
+        + 'static,
+{
     /// Create a new PRE coordinator for this node
-    pub fn new(app_state: Arc<AppState>) -> Self {
-        Self { app_state }
+    pub fn new(app_state: Arc<AppState<D>>) -> Self {
+        Self {
+            app_state,
+            _phantom: std::marker::PhantomData,
+        }
     }
 
     /// Handle an incoming PRE message
@@ -157,7 +184,7 @@ impl PreCoordinator {
         };
 
         // 7. Perform reencryption
-        let dealer = ThresholdDealerNode::new();
+        let dealer = T::new();
         let reply = dealer
             .reencrypt(&dist_key_share, &secret, &rdr_pk)
             .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;
@@ -317,12 +344,16 @@ impl PreCoordinator {
             })?;
 
         let (threshold, total_participants, pub_poly, node_id) = {
-            use crypto::r#trait::Dkg;
             let session = dkg_session.read().await;
             let pub_poly = session.compute_public_polynomial().map_err(|e| {
                 PreError::Crypto(format!("Failed to compute public polynomial: {}", e))
             })?;
-            (session.threshold, session.total_nodes, pub_poly, session.id)
+            (
+                session.threshold(),
+                session.total_nodes(),
+                pub_poly,
+                session.node_id(),
+            )
         };
 
         // 2. Deserialize reader public key
@@ -380,7 +411,7 @@ impl PreCoordinator {
             // Spawn a task for each peer to send request and receive response
             // Note: Creating new coordinator is cheap (just holds Arc<AppState>)
             let handle = tokio::spawn(async move {
-                let coordinator = PreCoordinator::new(app_state);
+                let coordinator = PreCoordinator::<D, T>::new(app_state);
                 coordinator
                     .send_request_and_receive_response(&peer_id, request, &req_id)
                     .await
@@ -417,7 +448,7 @@ impl PreCoordinator {
         }
 
         // 7. Verify and extract shares
-        let dealer = ThresholdDealerNode::new();
+        let dealer = T::new();
         let mut verified_shares: Vec<PubShare<G1Affine>> = Vec::new();
 
         for response in collected_responses {

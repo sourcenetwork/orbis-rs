@@ -22,20 +22,64 @@ use std::sync::Arc;
 ///
 /// Network layer handler that accepts connections and routes messages
 /// to this node's PRE coordinator for processing.
-pub struct PreProtocolHandler {
-    coordinator: Arc<PreCoordinator>,
+pub struct PreProtocolHandler<D, T>
+where
+    D: crypto::r#trait::Dkg + Clone,
+    T: crypto::r#trait::ThresholdDealer,
+{
+    coordinator: Arc<PreCoordinator<D, T>>,
 }
 
-impl PreProtocolHandler {
+impl<D, T> PreProtocolHandler<D, T>
+where
+    D: crypto::r#trait::Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    T: crypto::r#trait::ThresholdDealer<
+            ShareValue = ark_bls12_381::Fr,
+            PublicKey = ark_bls12_381::G1Affine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            Secret = crypto::r#trait::Secret,
+            ReencryptReply = crypto::r#trait::ReencryptReply<
+                ark_bls12_381::Fr,
+                ark_bls12_381::G1Affine,
+            >,
+            PubPoly = D::PubPoly,
+        > + Send
+        + Sync
+        + 'static,
+{
     /// Create a new PRE protocol handler with access to app state
-    pub fn new(app_state: Arc<AppState>) -> Self {
+    pub fn new(app_state: Arc<AppState<D>>) -> Self {
         let coordinator = Arc::new(PreCoordinator::new(app_state));
         Self { coordinator }
     }
 }
 
 #[async_trait]
-impl ProtocolHandler for PreProtocolHandler {
+impl<D, T> ProtocolHandler for PreProtocolHandler<D, T>
+where
+    D: crypto::r#trait::Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    T: crypto::r#trait::ThresholdDealer<
+            ShareValue = ark_bls12_381::Fr,
+            PublicKey = ark_bls12_381::G1Affine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            Secret = crypto::r#trait::Secret,
+            ReencryptReply = crypto::r#trait::ReencryptReply<
+                ark_bls12_381::Fr,
+                ark_bls12_381::G1Affine,
+            >,
+            PubPoly = D::PubPoly,
+        > + Send
+        + Sync
+        + 'static,
+{
     async fn handle(&self, connection: Box<dyn Connection>) -> NetworkResult<()> {
         let peer_id = connection.peer_id().clone();
         println!("PRE Protocol: Accepted connection from peer: {:?}", peer_id);
@@ -131,11 +175,31 @@ impl ProtocolHandler for PreProtocolHandler {
 }
 
 /// Create a router with PRE protocol handler
-pub fn create_router_with_pre_handler(
+pub fn create_router_with_pre_handler<D, T>(
     network: &Arc<dyn network::Network>,
-    app_state: Arc<AppState>,
-) -> NetworkResult<Box<dyn Router>> {
-    let pre_handler = Arc::new(PreProtocolHandler::new(app_state));
+    app_state: Arc<AppState<D>>,
+) -> NetworkResult<Box<dyn Router>>
+where
+    D: crypto::r#trait::Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    T: crypto::r#trait::ThresholdDealer<
+            ShareValue = ark_bls12_381::Fr,
+            PublicKey = ark_bls12_381::G1Affine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            Secret = crypto::r#trait::Secret,
+            ReencryptReply = crypto::r#trait::ReencryptReply<
+                ark_bls12_381::Fr,
+                ark_bls12_381::G1Affine,
+            >,
+            PubPoly = D::PubPoly,
+        > + Send
+        + Sync
+        + 'static,
+{
+    let pre_handler = Arc::new(PreProtocolHandler::<D, T>::new(app_state));
     let mut router_builder = network.create_router_builder()?;
     router_builder = router_builder.accept(REENCRYPT.to_vec(), pre_handler);
     router_builder.spawn()

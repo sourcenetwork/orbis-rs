@@ -14,6 +14,7 @@ use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::Group;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::UniformRand;
+use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{Dkg, ThresholdDealer};
 use rand_core::OsRng;
@@ -24,6 +25,10 @@ use std::{
 };
 use tokio::time::{sleep, Duration};
 use tonic::Request;
+
+// Type aliases for tests
+type DkgImpl = DKGNode;
+type PreImpl = ThresholdDealerNode;
 
 /// End-to-end test: DKG → Alice encrypts → PRE to Bob → Bob decrypts
 ///
@@ -53,7 +58,7 @@ async fn test_dkg_then_pre_end_to_end() {
     println!("\nStep 2: Running DKG protocol...");
 
     // Create node1's service (initiator)
-    let node1_service = DkgServiceImpl::new(network.alice.app_state.clone());
+    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
 
     // Generate a unique session ID
     let session_id_str = format!(
@@ -158,7 +163,8 @@ async fn test_dkg_then_pre_end_to_end() {
     println!("\nStep 5: Initiating PRE (proxy re-encryption) to Bob's public key...");
 
     // Create a PRE coordinator using node1's app state
-    let pre_coordinator = PreCoordinator::new(Arc::new(network.alice.app_state.clone()));
+    let pre_coordinator =
+        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
 
     // Generate a unique request ID
     let request_id = format!(
@@ -251,16 +257,17 @@ async fn wait_for_dkg_completion(
 
     loop {
         // Check if node1's session has completed Phase 4
-        let node1_coordinator = DkgCoordinator::new(Arc::new(network.alice.app_state.clone()));
+        let node1_coordinator =
+            DkgCoordinator::<DkgImpl>::new(Arc::new(network.alice.app_state.clone()));
 
         if let Some(session) = node1_coordinator.get_session(&session_id).await {
             let session_guard = session.read().await;
             if let Ok(aggregate_key) = session_guard.compute_aggregate_public_key() {
                 // Verify all nodes have the same aggregate key
                 let node2_coordinator =
-                    DkgCoordinator::new(Arc::new(network.bob.app_state.clone()));
+                    DkgCoordinator::<DkgImpl>::new(Arc::new(network.bob.app_state.clone()));
                 let node3_coordinator =
-                    DkgCoordinator::new(Arc::new(network.charlie.app_state.clone()));
+                    DkgCoordinator::<DkgImpl>::new(Arc::new(network.charlie.app_state.clone()));
 
                 let node2_session = node2_coordinator.get_session(&session_id).await;
                 let node3_session = node3_coordinator.get_session(&session_id).await;
@@ -300,7 +307,7 @@ async fn test_pre_with_large_secret() {
     let peer_ids = network.get_peer_ids_for_connection();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::new(network.alice.app_state.clone());
+    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let session_id_str = format!(
         "pre-large-test-{}",
         std::time::SystemTime::now()
@@ -356,7 +363,8 @@ async fn test_pre_with_large_secret() {
         .unwrap();
 
     // PRE
-    let pre_coordinator = PreCoordinator::new(Arc::new(network.alice.app_state.clone()));
+    let pre_coordinator =
+        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
 
     let pre_response_bytes = pre_coordinator
@@ -405,7 +413,7 @@ async fn test_pre_fails_with_wrong_key() {
     let peer_ids = network.get_peer_ids_for_connection();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::new(network.alice.app_state.clone());
+    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let session_id_str = format!(
         "pre-fail-test-{}",
         std::time::SystemTime::now()
@@ -461,7 +469,8 @@ async fn test_pre_fails_with_wrong_key() {
     let eve_sk = Fr::rand(&mut rng);
 
     // PRE to Bob's public key
-    let pre_coordinator = PreCoordinator::new(Arc::new(network.alice.app_state.clone()));
+    let pre_coordinator =
+        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
 
     let pre_response_bytes = pre_coordinator

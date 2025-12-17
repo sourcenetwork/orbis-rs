@@ -10,6 +10,14 @@ use local_storage::memory::MemoryStorage as LocalStorage;
 use network::Router;
 use std::sync::Arc;
 
+// Concrete crypto implementations for tests
+use crypto::bls12_381::dkg::DKGNode;
+use crypto::bls12_381::pre::ThresholdDealerNode;
+
+// Type aliases matching main.rs
+type DkgImpl = DKGNode;
+type PreImpl = ThresholdDealerNode;
+
 /// Create a test AppState with an initialized iroh network
 ///
 /// This function initializes a new iroh network and creates an AppState
@@ -31,7 +39,7 @@ use std::sync::Arc;
 ///     // Use app_state in your test...
 /// }
 /// ```
-pub async fn create_test_app_state(bind_address: Option<String>) -> AppState {
+pub async fn create_test_app_state(bind_address: Option<String>) -> AppState<DkgImpl> {
     let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
 
     // Initialize network for testing
@@ -43,7 +51,7 @@ pub async fn create_test_app_state(bind_address: Option<String>) -> AppState {
     let local_storage = LocalStorage::default();
 
     // Create AppState with the network (node_id is no longer needed - it's session-specific)
-    AppState::new(bind_address, network, local_storage)
+    AppState::<DkgImpl>::new(bind_address, network, local_storage)
 }
 
 /// Create a test AppState with default values
@@ -59,14 +67,14 @@ pub async fn create_test_app_state(bind_address: Option<String>) -> AppState {
 ///     // Use app_state in your test...
 /// }
 /// ```
-pub async fn create_test_app_state_default() -> AppState {
+pub async fn create_test_app_state_default() -> AppState<DkgImpl> {
     create_test_app_state(None).await
 }
 
 /// Information about a node in a test network
 pub struct TestNode {
     /// The node's AppState
-    pub app_state: AppState,
+    pub app_state: AppState<DkgImpl>,
     /// The node's peer ID (iroh PublicKey bytes)
     pub peer_id: network::PeerId,
     /// The node's address (iroh PublicKey string)
@@ -248,8 +256,11 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
         println!("Starting router for Alice...");
         let alice_app_state = Arc::new(alice_state.clone());
         Some(
-            protocol_handler::create_router_with_dkg_handler(&alice_state.network, alice_app_state)
-                .expect("Failed to create router for Alice"),
+            protocol_handler::create_router_with_dkg_handler::<DkgImpl>(
+                &alice_state.network,
+                alice_app_state,
+            )
+            .expect("Failed to create router for Alice"),
         )
     } else {
         None
@@ -259,8 +270,11 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
         println!("Starting router for Bob...");
         let bob_app_state = Arc::new(bob_state.clone());
         Some(
-            protocol_handler::create_router_with_dkg_handler(&bob_state.network, bob_app_state)
-                .expect("Failed to create router for Bob"),
+            protocol_handler::create_router_with_dkg_handler::<DkgImpl>(
+                &bob_state.network,
+                bob_app_state,
+            )
+            .expect("Failed to create router for Bob"),
         )
     } else {
         None
@@ -270,7 +284,7 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
         println!("Starting router for Charlie...");
         let charlie_app_state = Arc::new(charlie_state.clone());
         Some(
-            protocol_handler::create_router_with_dkg_handler(
+            protocol_handler::create_router_with_dkg_handler::<DkgImpl>(
                 &charlie_state.network,
                 charlie_app_state,
             )
@@ -386,7 +400,7 @@ pub async fn setup_three_node_network_with_pre(start_routers: bool) -> ThreeNode
         println!("Starting router for Alice with DKG and PRE handlers...");
         let alice_app_state = Arc::new(alice_state.clone());
         Some(
-            create_router_with_handlers(&alice_state.network, alice_app_state)
+            create_router_with_handlers::<DkgImpl, PreImpl>(&alice_state.network, alice_app_state)
                 .expect("Failed to create router for Alice"),
         )
     } else {
@@ -397,7 +411,7 @@ pub async fn setup_three_node_network_with_pre(start_routers: bool) -> ThreeNode
         println!("Starting router for Bob with DKG and PRE handlers...");
         let bob_app_state = Arc::new(bob_state.clone());
         Some(
-            create_router_with_handlers(&bob_state.network, bob_app_state)
+            create_router_with_handlers::<DkgImpl, PreImpl>(&bob_state.network, bob_app_state)
                 .expect("Failed to create router for Bob"),
         )
     } else {
@@ -408,8 +422,11 @@ pub async fn setup_three_node_network_with_pre(start_routers: bool) -> ThreeNode
         println!("Starting router for Charlie with DKG and PRE handlers...");
         let charlie_app_state = Arc::new(charlie_state.clone());
         Some(
-            create_router_with_handlers(&charlie_state.network, charlie_app_state)
-                .expect("Failed to create router for Charlie"),
+            create_router_with_handlers::<DkgImpl, PreImpl>(
+                &charlie_state.network,
+                charlie_app_state,
+            )
+            .expect("Failed to create router for Charlie"),
         )
     } else {
         None

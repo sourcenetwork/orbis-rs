@@ -13,6 +13,14 @@ use local_storage::memory::MemoryStorage as LocalStorage;
 use network::Network;
 use std::{net::SocketAddr, sync::Arc};
 
+// Concrete crypto implementations
+use crypto::bls12_381::dkg::DKGNode;
+use crypto::bls12_381::pre::ThresholdDealerNode;
+
+// Type aliases for concrete implementations
+type DkgImpl = DKGNode;
+type PreImpl = ThresholdDealerNode;
+
 pub mod dkg_service {
     tonic::include_proto!("dkg_service");
 }
@@ -58,15 +66,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Local Address: {}", local_address);
 
     // Create shared application state (needed for router)
-    let app_state = AppState::new(args.addr.clone(), network.clone(), local_storage);
+    let app_state = AppState::<DkgImpl>::new(args.addr.clone(), network.clone(), local_storage);
     // Wrap in Arc once, then clone Arc (cheap) for sharing
     let app_state_arc = Arc::new(app_state);
 
     // Start the router in the background with DKG and PRE protocol handlers
     // The router will handle incoming connections automatically
-    let router =
-        dkg::protocol_handler::create_router_with_handlers(&network, app_state_arc.clone())
-            .map_err(|e| format!("Failed to create router: {}", e))?;
+    let router = dkg::protocol_handler::create_router_with_handlers::<DkgImpl, PreImpl>(
+        &network,
+        app_state_arc.clone(),
+    )
+    .map_err(|e| format!("Failed to create router: {}", e))?;
 
     println!("Router started with DKG and PRE protocol handlers and ready to accept connections");
 
@@ -76,8 +86,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  P2P: {} (for node-to-node communication)", local_address);
 
     // Initialize services with shared state (clone Arc, not AppState)
-    let dkg_service = DkgServiceImpl::new((*app_state_arc).clone());
-    let pre_service = PreServiceImpl::new((*app_state_arc).clone());
+    let dkg_service = DkgServiceImpl::<DkgImpl>::new((*app_state_arc).clone());
+    let pre_service = PreServiceImpl::<DkgImpl, PreImpl>::new((*app_state_arc).clone());
 
     // Start gRPC server with both DKG and PRE services
     let grpc_server = tonic::transport::Server::builder()

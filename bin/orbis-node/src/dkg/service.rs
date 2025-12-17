@@ -13,19 +13,35 @@ use tonic::{Request, Response, Status};
 
 /// Implementation of the DkgService
 #[derive(Debug)]
-pub struct DkgServiceImpl {
-    pub state: AppState,
+pub struct DkgServiceImpl<D>
+where
+    D: crypto::r#trait::Dkg + Clone,
+{
+    pub state: AppState<D>,
 }
 
-impl DkgServiceImpl {
+impl<D> DkgServiceImpl<D>
+where
+    D: crypto::r#trait::Dkg + Clone,
+{
     /// Create a new DkgServiceImpl with shared application state
-    pub fn new(state: AppState) -> Self {
+    pub fn new(state: AppState<D>) -> Self {
         Self { state }
     }
 }
 
 #[tonic::async_trait]
-impl DkgService for DkgServiceImpl {
+impl<D> DkgService for DkgServiceImpl<D>
+where
+    D: crypto::r#trait::Dkg<
+            ShareValue = ark_bls12_381::Fr,
+            PublicKey = ark_bls12_381::G1Affine,
+            PolynomialCommitment = crypto::bls12_381::common::PolynomialCommitment,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
     async fn start_dkg(
         &self,
         request: Request<StartDkgRequest>,

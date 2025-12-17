@@ -16,12 +16,6 @@ use subtle::ConstantTimeEq;
 pub trait TestDkgNode: Dkg {
     /// Get the node's ID
     fn id(&self) -> u32;
-
-    /// Get the node's commitment (must be called after `generate_polynomial`)
-    fn commitment(&self) -> Self::PolynomialCommitment;
-
-    /// Set the session ID for this node
-    fn set_session_id(&mut self, session_id: u64);
 }
 
 /// Coordinator for running a complete DKG ceremony
@@ -112,7 +106,7 @@ where
         let commitments: Vec<(u32, Node::PolynomialCommitment)> = self
             .nodes
             .iter()
-            .map(|node| (node.id(), node.commitment()))
+            .map(|node| (node.id(), node.commitment().clone()))
             .collect();
 
         for node in &mut self.nodes {
@@ -350,7 +344,7 @@ pub mod generic_tests {
         let mut node = *node_factory(1, 2, 3)?;
         node.generate_polynomial()?;
 
-        let commitment = node.commitment();
+        let commitment = node.commitment().clone();
 
         // Get a valid share by generating shares and taking one
         let shares = node.generate_shares()?;
@@ -439,7 +433,7 @@ pub mod generic_tests {
         node2.generate_polynomial()?;
 
         // Node 2 receives node 1's commitment
-        node2.receive_commitment(1, node1.commitment())?;
+        node2.receive_commitment(1, node1.commitment().clone())?;
 
         // Node 1 generates shares
         let shares = node1.generate_shares()?;
@@ -457,7 +451,7 @@ pub mod generic_tests {
         // Create a fresh node2 to test the tampered share
         let mut node2_fresh = *node_factory(2, 2, 3)?;
         node2_fresh.set_session_id(session_id);
-        node2_fresh.receive_commitment(1, node1.commitment())?;
+        node2_fresh.receive_commitment(1, node1.commitment().clone())?;
 
         // Create a tampered share
         let tampered_share = create_invalid_share(1, 2, session_id);

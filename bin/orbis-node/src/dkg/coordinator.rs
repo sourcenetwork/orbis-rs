@@ -20,12 +20,11 @@ use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::DkgMessage;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase, SessionStateManager};
 use network::DKG;
-// TODO: any crypto specific things should be generalized and come from crypto::bls12_381
+// TODO: Serialization should be generalized via trait methods
 use ark_bls12_381::{Fr, G1Affine};
 use ark_serialize::CanonicalDeserialize;
 use ark_serialize::CanonicalSerialize;
 use crypto::bls12_381::common::PolynomialCommitment;
-use crypto::bls12_381::dkg::DKGNode;
 use crypto::r#trait::DistributedShare;
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -43,13 +42,23 @@ use tokio::sync::RwLock;
 /// - Manage this node's DKG session state
 /// - Handle incoming DKG protocol messages
 /// - Coordinate this node's protocol phases
-/// - Use DKGNode for cryptographic operations
-pub struct DkgCoordinator {
-    app_state: Arc<AppState>,
+/// - Use generic Dkg implementation for cryptographic operations
+///
+/// Type parameter D must implement Dkg with ShareValue = Fr and PublicKey = G1Affine
+/// for compatibility with the current serialization code.
+pub struct DkgCoordinator<D>
+where
+    D: Dkg + Clone,
+{
+    app_state: Arc<AppState<D>>,
     session_state: Arc<SessionStateManager>,
 }
 
-impl DkgCoordinator {
+impl<D> DkgCoordinator<D>
+where
+    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
+        + Clone,
+{
     /// Create a new DKG session manager for this node
     ///
     /// Each node creates its own instance to manage its participation
@@ -58,7 +67,7 @@ impl DkgCoordinator {
     ///
     /// The session_state is shared from AppState to ensure all coordinators
     /// (service, protocol handler, etc.) use the same state.
-    pub fn new(app_state: Arc<AppState>) -> Self {
+    pub fn new(app_state: Arc<AppState<D>>) -> Self {
         let session_state = app_state.dkg_session_state.clone();
         Self {
             app_state,
@@ -230,7 +239,7 @@ impl DkgCoordinator {
                 // Get threshold from session to validate coefficient count
                 let threshold = self
                     .app_state
-                    .with_dkg_session(&session_id, |session| session.threshold)
+                    .with_dkg_session(&session_id, |session| session.threshold())
                     .await
                     .ok_or_else(|| {
                         DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
@@ -260,6 +269,8 @@ impl DkgCoordinator {
                     commitment_coeffs.push(coeff);
                 }
 
+                // Create polynomial commitment
+                // D is constrained to use PolynomialCommitment, so this works directly
                 let polynomial_commitment = PolynomialCommitment {
                     coefficients: commitment_coeffs,
                 };
@@ -275,7 +286,7 @@ impl DkgCoordinator {
                             })?;
 
                         // Check if we need to generate our polynomial
-                        Ok::<_, DkgError>(session.commitment.coefficients.is_empty())
+                        Ok::<_, DkgError>(session.commitment().coefficients.is_empty())
                     })
                     .await
                     .ok_or_else(|| {
@@ -317,7 +328,7 @@ impl DkgCoordinator {
                             .app_state
                             .with_dkg_session(&session_id, |session| {
                                 let mut bytes = Vec::new();
-                                for coeff in &session.commitment.coefficients {
+                                for coeff in &session.commitment().coefficients {
                                     coeff.serialize_compressed(&mut bytes).map_err(|e| {
                                         DkgError::Serialization(format!(
                                             "Failed to serialize commitment: {}",
@@ -325,7 +336,7 @@ impl DkgCoordinator {
                                         ))
                                     })?;
                                 }
-                                Ok::<_, DkgError>((bytes, session.id))
+                                Ok::<_, DkgError>((bytes, session.node_id()))
                             })
                             .await
                             .ok_or_else(|| {
@@ -401,7 +412,7 @@ impl DkgCoordinator {
                 // Get our node_id from the session (session-specific)
                 let our_node_id = self
                     .app_state
-                    .with_dkg_session(&session_id, |session| session.id)
+                    .with_dkg_session(&session_id, |session| session.node_id())
                     .await
                     .ok_or_else(|| {
                         DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
@@ -500,7 +511,7 @@ impl DkgCoordinator {
     }
 
     /// Get the DKG session Arc for a given session ID
-    pub async fn get_session(&self, session_id: &u64) -> Option<Arc<RwLock<DKGNode>>> {
+    pub async fn get_session(&self, session_id: &u64) -> Option<Arc<RwLock<D>>> {
         self.app_state.get_dkg_session(session_id).await
     }
 
@@ -514,16 +525,16 @@ impl DkgCoordinator {
         threshold: usize,
         total_nodes: usize,
     ) -> Result<()> {
-        // Create a new DKGNode for this session
-        let mut dkg_node = DKGNode::new(node_id, threshold, total_nodes)
+        // Create a new DKG node for this session using the generic Dkg trait
+        let mut dkg_node = D::new(node_id, threshold, total_nodes)
             .map_err(|e| DkgError::Crypto(format!("Failed to create DKG node: {}", e)))?;
 
-        // Set the session_id to the one we want (DKGNode::new generates a random one)
-        dkg_node.session_id = session_id;
+        // Set the session ID so all nodes use the same session ID for verification
+        dkg_node.set_session_id(session_id);
 
         // Store the session (with limit checking)
         self.app_state
-            .store_dkg_session(*dkg_node)
+            .store_dkg_session(session_id, *dkg_node)
             .await
             .map_err(|e| DkgError::ProtocolError(e.to_string()))?;
 
@@ -594,7 +605,7 @@ impl DkgCoordinator {
 
                 // Serialize commitment
                 let mut bytes = Vec::new();
-                for coeff in &session.commitment.coefficients {
+                for coeff in &session.commitment().coefficients {
                     coeff.serialize_compressed(&mut bytes).map_err(|e| {
                         DkgError::Serialization(format!(
                             "Failed to serialize commitment coefficient: {}",
@@ -603,7 +614,7 @@ impl DkgCoordinator {
                     })?;
                 }
 
-                Ok::<_, DkgError>((bytes, session.id))
+                Ok::<_, DkgError>((bytes, session.node_id()))
             })
             .await
             .ok_or_else(|| {
@@ -650,9 +661,9 @@ impl DkgCoordinator {
             .app_state
             .with_dkg_session(&session_id, |session| {
                 (
-                    !session.commitment.coefficients.is_empty(),
-                    session.total_nodes - 1, // Excluding self
-                    session.id,
+                    !session.commitment().coefficients.is_empty(),
+                    session.total_nodes() - 1, // Excluding self
+                    session.node_id(),
                 )
             })
             .await
@@ -698,10 +709,10 @@ impl DkgCoordinator {
             .app_state
             .with_dkg_session_mut(&session_id, |session| {
                 // Make sure we've generated our polynomial
-                if session.commitment.coefficients.is_empty() {
+                if session.commitment().coefficients.is_empty() {
                     println!(
                         "DKG Coordinator: Generating polynomial before Phase 2 (node {})",
-                        session.id
+                        session.node_id()
                     );
                     session.generate_polynomial().map_err(|e| {
                         DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
@@ -711,14 +722,15 @@ impl DkgCoordinator {
                 // Generate shares for all nodes
                 println!(
                     "DKG Coordinator: Generating shares for node {} (session {})",
-                    session.id, session_id
+                    session.node_id(),
+                    session_id
                 );
                 let shares = session
                     .generate_shares()
                     .map_err(|e| DkgError::Crypto(format!("Failed to generate shares: {}", e)))?;
 
                 println!("DKG Coordinator: Generated {} shares", shares.len());
-                Ok::<_, DkgError>((shares, session.id))
+                Ok::<_, DkgError>((shares, session.node_id()))
             })
             .await
             .ok_or_else(|| {
@@ -849,7 +861,7 @@ impl DkgCoordinator {
         // Get expected shares count
         let expected_shares = self
             .app_state
-            .with_dkg_session(&session_id, |session| session.total_nodes - 1)
+            .with_dkg_session(&session_id, |session| session.total_nodes() - 1)
             .await
             .ok_or_else(|| {
                 DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
@@ -911,7 +923,7 @@ impl DkgCoordinator {
             .with_dkg_session(&session_id, |session| {
                 println!(
                     "DKG Coordinator: Computing secret share for node {}...",
-                    session.id
+                    session.node_id()
                 );
 
                 // Compute final secret share
@@ -921,7 +933,7 @@ impl DkgCoordinator {
 
                 println!(
                     "DKG Coordinator: Successfully computed secret share for node {}",
-                    session.id
+                    session.node_id()
                 );
 
                 // Compute aggregate public key
@@ -931,7 +943,7 @@ impl DkgCoordinator {
 
                 println!(
                     "DKG Coordinator: Computed aggregate public key for node {}",
-                    session.id
+                    session.node_id()
                 );
 
                 // Serialize the final share for storage
@@ -952,7 +964,7 @@ impl DkgCoordinator {
                         ))
                     })?;
 
-                Ok::<_, DkgError>((session.id, aggregate_pk, final_share_bytes))
+                Ok::<_, DkgError>((session.node_id(), aggregate_pk, final_share_bytes))
             })
             .await
             .ok_or_else(|| {

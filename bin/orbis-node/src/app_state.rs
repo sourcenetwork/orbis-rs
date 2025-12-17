@@ -1,7 +1,7 @@
 use crate::constants::{MAX_DKG_SESSIONS, MAX_PRE_RESPONSES, PRE_RESPONSE_TTL, SESSION_TTL};
 use crate::dkg::session_state::SessionStateManager;
 use crate::pre::messages::PreMessage;
-use crypto::bls12_381::dkg::DKGNode;
+use crypto::r#trait::Dkg;
 use local_storage::{
     memory::MemoryStorage as LocalStorage,
     r#trait::{LocalStorage as OtherLocalStorage, LocalStorageKeys},
@@ -13,8 +13,8 @@ use std::time::Instant;
 use tokio::sync::RwLock;
 
 /// DKG session with metadata for lifecycle management
-pub struct DkgSessionEntry {
-    pub session: Arc<RwLock<DKGNode>>,
+pub struct DkgSessionEntry<D: Dkg> {
+    pub session: Arc<RwLock<D>>,
     pub created_at: Instant,
     pub completed: bool,
 }
@@ -32,10 +32,13 @@ pub type PreResponseStorage = Arc<RwLock<HashMap<String, PreResponseEntry>>>;
 
 /// Shared application state accessible by all gRPC endpoints
 #[derive(Clone)]
-pub struct AppState {
+pub struct AppState<D>
+where
+    D: Dkg + Clone,
+{
     /// Active DKG sessions: session_id -> DkgSessionEntry (with metadata)
     /// Using Arc<RwLock> to avoid cloning and allow concurrent mutable access
-    pub dkg_sessions: Arc<RwLock<HashMap<u64, DkgSessionEntry>>>,
+    pub dkg_sessions: Arc<RwLock<HashMap<u64, DkgSessionEntry<D>>>>,
     /// Server configuration
     pub config: ServerConfig,
     /// Network for node-to-node communication
@@ -82,7 +85,10 @@ impl std::fmt::Display for SessionLimitError {
 
 impl std::error::Error for SessionLimitError {}
 
-impl AppState {
+impl<D> AppState<D>
+where
+    D: Dkg + Clone,
+{
     /// Create a new AppState instance
     pub fn new(
         bind_address: String,
@@ -100,7 +106,7 @@ impl AppState {
     }
 
     /// Get a DKG session Arc by ID (returns shared reference, no cloning)
-    pub async fn get_dkg_session(&self, session_id: &u64) -> Option<Arc<RwLock<DKGNode>>> {
+    pub async fn get_dkg_session(&self, session_id: &u64) -> Option<Arc<RwLock<D>>> {
         let sessions = self.dkg_sessions.read().await;
         sessions.get(session_id).map(|entry| entry.session.clone())
     }
@@ -108,9 +114,12 @@ impl AppState {
     /// Store a DKG session with limit checking and automatic cleanup
     ///
     /// Returns an error if the session limit is exceeded after cleanup.
-    pub async fn store_dkg_session(&self, session: DKGNode) -> Result<(), SessionLimitError> {
+    pub async fn store_dkg_session(
+        &self,
+        session_id: u64,
+        session: D,
+    ) -> Result<(), SessionLimitError> {
         let mut sessions = self.dkg_sessions.write().await;
-        let session_id = session.session_id;
 
         // Run cleanup before checking limits
         Self::cleanup_sessions_internal(&mut sessions);
@@ -143,7 +152,7 @@ impl AppState {
     }
 
     /// Clean up expired sessions (internal helper, requires write lock held)
-    fn cleanup_sessions_internal(sessions: &mut HashMap<u64, DkgSessionEntry>) {
+    fn cleanup_sessions_internal(sessions: &mut HashMap<u64, DkgSessionEntry<D>>) {
         let now = Instant::now();
         let before_count = sessions.len();
 
@@ -185,7 +194,7 @@ impl AppState {
     /// This is more efficient than get + modify + store
     pub async fn with_dkg_session_mut<F, R>(&self, session_id: &u64, f: F) -> Option<R>
     where
-        F: FnOnce(&mut DKGNode) -> R,
+        F: FnOnce(&mut D) -> R,
     {
         let sessions = self.dkg_sessions.read().await;
         let entry = sessions.get(session_id)?;
@@ -196,7 +205,7 @@ impl AppState {
     /// Execute a function with read-only access to a DKG session
     pub async fn with_dkg_session<F, R>(&self, session_id: &u64, f: F) -> Option<R>
     where
-        F: FnOnce(&DKGNode) -> R,
+        F: FnOnce(&D) -> R,
     {
         let sessions = self.dkg_sessions.read().await;
         let entry = sessions.get(session_id)?;
@@ -292,7 +301,7 @@ impl AppState {
     /// Get a DKG session by ring public key (for PRE)
     ///
     /// Looks up the session ID from local storage, then retrieves the session
-    pub async fn get_dkg_session_by_ring_pk(&self, ring_pk: &[u8]) -> Option<Arc<RwLock<DKGNode>>> {
+    pub async fn get_dkg_session_by_ring_pk(&self, ring_pk: &[u8]) -> Option<Arc<RwLock<D>>> {
         // Convert ring_pk bytes to hex string for storage key
         let ring_pk_hex = hex::encode(ring_pk);
 
@@ -344,7 +353,10 @@ impl AppState {
     }
 }
 
-impl std::fmt::Debug for AppState {
+impl<D> std::fmt::Debug for AppState<D>
+where
+    D: Dkg + Clone,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppState")
             .field("dkg_sessions", &"<HashMap>")
