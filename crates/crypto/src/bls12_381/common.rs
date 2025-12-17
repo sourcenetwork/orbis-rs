@@ -1,8 +1,62 @@
-use crate::r#trait::{PolynomialCommitment as PolynomialCommitmentTrait, PubPoly as PubPolyTrait};
+use crate::error::Result;
+use crate::r#trait::{
+    CryptoDeserialize, CryptoSerialize, PolynomialCommitment as PolynomialCommitmentTrait,
+    PubPoly as PubPolyTrait,
+};
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::{AffineRepr, Group};
-use ark_serialize::CanonicalSerialize;
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use subtle::ConstantTimeEq;
+
+// ============================================================================
+// Constants for serialized sizes
+// ============================================================================
+
+/// Size of a compressed G1Affine point in bytes (BLS12-381)
+pub const G1_COMPRESSED_SIZE: usize = 48;
+
+/// Size of a compressed Fr scalar in bytes (BLS12-381)
+pub const FR_COMPRESSED_SIZE: usize = 32;
+
+// ============================================================================
+// CryptoSerialize/CryptoDeserialize implementations for BLS12-381 types
+// ============================================================================
+
+impl CryptoSerialize for Fr {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(FR_COMPRESSED_SIZE);
+        self.serialize_compressed(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    fn serialized_size() -> usize {
+        FR_COMPRESSED_SIZE
+    }
+}
+
+impl CryptoDeserialize for Fr {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        Ok(Fr::deserialize_compressed(bytes)?)
+    }
+}
+
+impl CryptoSerialize for G1Affine {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(G1_COMPRESSED_SIZE);
+        self.serialize_compressed(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    fn serialized_size() -> usize {
+        G1_COMPRESSED_SIZE
+    }
+}
+
+impl CryptoDeserialize for G1Affine {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        Ok(G1Affine::deserialize_compressed(bytes)?)
+    }
+}
 
 /// Public polynomial for commitments
 #[derive(Clone, Debug)]
@@ -84,5 +138,107 @@ impl PolynomialCommitmentTrait for PolynomialCommitment {
 
         // Constant-time comparison
         expected_padded.ct_eq(&actual_padded).into()
+    }
+}
+
+// ============================================================================
+// CryptoSerialize/CryptoDeserialize implementations for polynomial types
+// ============================================================================
+
+impl CryptoSerialize for PubPoly {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        // Format: num_commits (4 bytes) + commits (each G1_COMPRESSED_SIZE bytes)
+        let mut bytes = Vec::with_capacity(4 + self.commits.len() * G1_COMPRESSED_SIZE);
+        bytes.extend_from_slice(&(self.commits.len() as u32).to_le_bytes());
+        for commit in &self.commits {
+            commit.serialize_compressed(&mut bytes)?;
+        }
+        Ok(bytes)
+    }
+
+    fn serialized_size() -> usize {
+        // Variable size, return minimum (just the length field)
+        4
+    }
+}
+
+impl CryptoDeserialize for PubPoly {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        use crate::error::CryptoError;
+
+        if bytes.len() < 4 {
+            return Err(CryptoError::DKGError("PubPoly bytes too short".to_string()));
+        }
+
+        let num_commits = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let expected_len = 4 + num_commits * G1_COMPRESSED_SIZE;
+
+        if bytes.len() < expected_len {
+            return Err(CryptoError::DKGError(format!(
+                "PubPoly bytes too short: expected {}, got {}",
+                expected_len,
+                bytes.len()
+            )));
+        }
+
+        let mut commits = Vec::with_capacity(num_commits);
+        for i in 0..num_commits {
+            let start = 4 + i * G1_COMPRESSED_SIZE;
+            let end = start + G1_COMPRESSED_SIZE;
+            let commit = G1Affine::deserialize_compressed(&bytes[start..end])?;
+            commits.push(commit);
+        }
+
+        Ok(Self { commits })
+    }
+}
+
+impl CryptoSerialize for PolynomialCommitment {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        // Format: num_coefficients (4 bytes) + coefficients (each G1_COMPRESSED_SIZE bytes)
+        let mut bytes = Vec::with_capacity(4 + self.coefficients.len() * G1_COMPRESSED_SIZE);
+        bytes.extend_from_slice(&(self.coefficients.len() as u32).to_le_bytes());
+        for coeff in &self.coefficients {
+            coeff.serialize_compressed(&mut bytes)?;
+        }
+        Ok(bytes)
+    }
+
+    fn serialized_size() -> usize {
+        // Variable size, return minimum (just the length field)
+        4
+    }
+}
+
+impl CryptoDeserialize for PolynomialCommitment {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        use crate::error::CryptoError;
+
+        if bytes.len() < 4 {
+            return Err(CryptoError::DKGError(
+                "PolynomialCommitment bytes too short".to_string(),
+            ));
+        }
+
+        let num_coefficients = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let expected_len = 4 + num_coefficients * G1_COMPRESSED_SIZE;
+
+        if bytes.len() < expected_len {
+            return Err(CryptoError::DKGError(format!(
+                "PolynomialCommitment bytes too short: expected {}, got {}",
+                expected_len,
+                bytes.len()
+            )));
+        }
+
+        let mut coefficients = Vec::with_capacity(num_coefficients);
+        for i in 0..num_coefficients {
+            let start = 4 + i * G1_COMPRESSED_SIZE;
+            let end = start + G1_COMPRESSED_SIZE;
+            let coeff = G1Affine::deserialize_compressed(&bytes[start..end])?;
+            coefficients.push(coeff);
+        }
+
+        Ok(Self { coefficients })
     }
 }

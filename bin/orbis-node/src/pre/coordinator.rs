@@ -14,12 +14,11 @@ use crate::app_state::AppState;
 use crate::helpers::helpers::connect_to_peer;
 use crate::pre::error::{PreError, Result};
 use crate::pre::messages::PreMessage;
-// TODO: Serialization should be generalized via trait methods
 use ark_bls12_381::{Fr, G1Affine};
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use crypto::r#trait::{
     DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
 };
+use crypto::{CryptoDeserialize, CryptoSerialize};
 use local_storage::r#trait::LocalStorage;
 use network::Message as NetworkMessage;
 use network::REENCRYPT;
@@ -129,12 +128,12 @@ where
         })?;
 
         // 2. Deserialize reader public key
-        let rdr_pk = G1Affine::deserialize_compressed(&rdr_pk_bytes[..]).map_err(|e| {
+        let rdr_pk = <D::PublicKey>::from_bytes(&rdr_pk_bytes[..]).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize reader public key: {}", e))
         })?;
 
         // 3. Deserialize ring public key to get the storage key
-        let ring_pk = G1Affine::deserialize_compressed(&ring_pk_bytes[..]).map_err(|e| {
+        let ring_pk = <D::PublicKey>::from_bytes(&ring_pk_bytes[..]).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
         })?;
 
@@ -155,33 +154,15 @@ where
                 PreError::Storage("Final share not found in storage for ring_pk".to_string())
             })?;
 
-        // 5. Deserialize final share
-        // The stored format is: [4 bytes node_id (u32 LE)] + [32 bytes Fr compressed]
-        if final_share_bytes.len() < 4 {
-            return Err(PreError::Deserialization(
-                "Final share bytes too short - missing node_id".to_string(),
-            ));
-        }
-
-        // Extract node_id from the first 4 bytes
-        let node_id = u32::from_le_bytes(
-            final_share_bytes[..4]
-                .try_into()
-                .map_err(|_| PreError::Deserialization("Failed to extract node_id".to_string()))?,
-        );
-
-        // Deserialize the Fr value from the remaining bytes
-        let final_share: Fr = Fr::deserialize_compressed(&final_share_bytes[4..]).map_err(|e| {
-            PreError::Deserialization(format!("Failed to deserialize final share: {}", e))
-        })?;
+        // 5. Deserialize final share using trait method
+        let pri_share: PriShare<D::ShareValue> =
+            PriShare::from_bytes(&final_share_bytes).map_err(|e| {
+                PreError::Deserialization(format!("Failed to deserialize final share: {}", e))
+            })?;
+        let node_id = pri_share.i;
 
         // 6. Create distributed key share
-        let dist_key_share = DistKeyShare {
-            pri_share: PriShare {
-                i: node_id,
-                v: final_share,
-            },
-        };
+        let dist_key_share = DistKeyShare { pri_share };
 
         // 7. Perform reencryption
         let dealer = T::new();
@@ -189,26 +170,19 @@ where
             .reencrypt(&dist_key_share, &secret, &rdr_pk)
             .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;
 
-        // 8. Serialize the reply components
-        let mut share_bytes = Vec::new();
-        reply
-            .share
-            .v
-            .serialize_compressed(&mut share_bytes)
-            .map_err(|e| PreError::Serialization(format!("Failed to serialize share: {}", e)))?;
-
-        let mut challenge_bytes = Vec::new();
-        reply
-            .challenge
-            .serialize_compressed(&mut challenge_bytes)
-            .map_err(|e| {
-                PreError::Serialization(format!("Failed to serialize challenge: {}", e))
+        // 8. Serialize the reply components using trait methods
+        let share_bytes =
+            reply.share.v.to_bytes().map_err(|e| {
+                PreError::Serialization(format!("Failed to serialize share: {}", e))
             })?;
 
-        let mut proof_bytes = Vec::new();
-        reply
+        let challenge_bytes = reply.challenge.to_bytes().map_err(|e| {
+            PreError::Serialization(format!("Failed to serialize challenge: {}", e))
+        })?;
+
+        let proof_bytes = reply
             .proof
-            .serialize_compressed(&mut proof_bytes)
+            .to_bytes()
             .map_err(|e| PreError::Serialization(format!("Failed to serialize proof: {}", e)))?;
 
         // 9. Create response message
@@ -357,7 +331,7 @@ where
         };
 
         // 2. Deserialize reader public key
-        let rdr_pk = G1Affine::deserialize_compressed(&rdr_pk_bytes[..]).map_err(|e| {
+        let rdr_pk = <D::PublicKey>::from_bytes(&rdr_pk_bytes[..]).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize reader public key: {}", e))
         })?;
 
@@ -366,7 +340,7 @@ where
             PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
         })?;
 
-        let enc_cmt = G1Affine::deserialize_compressed(&secret.enc_cmt[..]).map_err(|e| {
+        let enc_cmt = <D::PublicKey>::from_bytes(&secret.enc_cmt[..]).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e))
         })?;
 
@@ -449,7 +423,7 @@ where
 
         // 7. Verify and extract shares
         let dealer = T::new();
-        let mut verified_shares: Vec<PubShare<G1Affine>> = Vec::new();
+        let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
 
         for response in collected_responses {
             if let PreMessage::ReencryptResponse {
@@ -460,16 +434,16 @@ where
                 ..
             } = response
             {
-                // Deserialize components
-                let share_v = G1Affine::deserialize_compressed(&share_bytes[..]).map_err(|e| {
+                // Deserialize components using trait methods
+                let share_v = <D::PublicKey>::from_bytes(&share_bytes[..]).map_err(|e| {
                     PreError::Deserialization(format!("Failed to deserialize share: {}", e))
                 })?;
 
-                let challenge = Fr::deserialize_compressed(&challenge_bytes[..]).map_err(|e| {
+                let challenge = <D::ShareValue>::from_bytes(&challenge_bytes[..]).map_err(|e| {
                     PreError::Deserialization(format!("Failed to deserialize challenge: {}", e))
                 })?;
 
-                let proof = Fr::deserialize_compressed(&proof_bytes[..]).map_err(|e| {
+                let proof = <D::ShareValue>::from_bytes(&proof_bytes[..]).map_err(|e| {
                     PreError::Deserialization(format!("Failed to deserialize proof: {}", e))
                 })?;
 
@@ -517,10 +491,9 @@ where
         let xnc_cmt = xnc_cmt_opt
             .ok_or_else(|| PreError::RecoveryFailed("Recovery returned None".to_string()))?;
 
-        // 10. Serialize xnc_cmt to bytes then hex
-        let mut xnc_cmt_bytes = Vec::new();
-        xnc_cmt
-            .serialize_compressed(&mut xnc_cmt_bytes)
+        // 10. Serialize xnc_cmt to bytes then hex using trait method
+        let xnc_cmt_bytes = xnc_cmt
+            .to_bytes()
             .map_err(|e| PreError::Serialization(format!("Failed to serialize xnc_cmt: {}", e)))?;
         let xnc_cmt_hex = hex::encode(&xnc_cmt_bytes);
 

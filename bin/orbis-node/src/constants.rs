@@ -9,20 +9,6 @@ use std::time::Duration;
 // Cryptographic Constants
 // ============================================================================
 
-/// Size of a compressed G1 point in bytes (BLS12-381 curve)
-///
-/// In BLS12-381, G1 points are elements of the first group. When compressed,
-/// they occupy 48 bytes. This is used for validating commitment messages in
-/// the DKG protocol, where commitments are serialized as sequences of G1 points.
-pub const G1_COMPRESSED_SIZE: usize = 48;
-
-/// Size of a compressed Fr (scalar field) element in bytes (BLS12-381 curve)
-///
-/// Fr is the scalar field of BLS12-381, used for secret shares and other
-/// scalar values. When compressed, Fr elements occupy 32 bytes. This is used
-/// for validating share values in the DKG protocol.
-pub const FR_COMPRESSED_SIZE: usize = 32;
-
 /// Maximum number of coefficients allowed in a polynomial commitment
 ///
 /// This sets an upper bound on the degree of polynomials used in DKG sessions.

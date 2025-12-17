@@ -15,20 +15,18 @@
 //! All nodes participate equally in the protocol.
 
 use crate::app_state::AppState;
-use crate::constants::{FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE, MAX_COMMITMENT_COEFFICIENTS};
+use crate::constants::MAX_COMMITMENT_COEFFICIENTS;
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::DkgMessage;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase, SessionStateManager};
-use network::DKG;
-// TODO: Serialization should be generalized via trait methods
 use ark_bls12_381::{Fr, G1Affine};
-use ark_serialize::CanonicalDeserialize;
-use ark_serialize::CanonicalSerialize;
-use crypto::bls12_381::common::PolynomialCommitment;
+use crypto::bls12_381::common::{PolynomialCommitment, FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE};
 use crypto::r#trait::DistributedShare;
 use crypto::r#trait::Dkg;
+use crypto::{CryptoDeserialize, CryptoSerialize};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::Message as NetworkMessage;
+use network::DKG;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -260,7 +258,7 @@ where
                     let start = i * G1_COMPRESSED_SIZE;
                     let end = start + G1_COMPRESSED_SIZE;
                     let coeff =
-                        G1Affine::deserialize_compressed(&commitment[start..end]).map_err(|e| {
+                        <D::PublicKey>::from_bytes(&commitment[start..end]).map_err(|e| {
                             DkgError::Deserialization(format!(
                                 "Failed to deserialize commitment coefficient {}: {}",
                                 i, e
@@ -329,12 +327,13 @@ where
                             .with_dkg_session(&session_id, |session| {
                                 let mut bytes = Vec::new();
                                 for coeff in &session.commitment().coefficients {
-                                    coeff.serialize_compressed(&mut bytes).map_err(|e| {
+                                    let coeff_bytes = coeff.to_bytes().map_err(|e| {
                                         DkgError::Serialization(format!(
                                             "Failed to serialize commitment: {}",
                                             e
                                         ))
                                     })?;
+                                    bytes.extend_from_slice(&coeff_bytes);
                                 }
                                 Ok::<_, DkgError>((bytes, session.node_id()))
                             })
@@ -426,7 +425,7 @@ where
 
                 // Deserialize share value
                 let share_val =
-                    Fr::deserialize_compressed(share_value.as_slice()).map_err(|e| {
+                    <D::ShareValue>::from_bytes(share_value.as_slice()).map_err(|e| {
                         DkgError::Deserialization(format!(
                             "Failed to deserialize share value: {}",
                             e
@@ -606,12 +605,13 @@ where
                 // Serialize commitment
                 let mut bytes = Vec::new();
                 for coeff in &session.commitment().coefficients {
-                    coeff.serialize_compressed(&mut bytes).map_err(|e| {
+                    let coeff_bytes = coeff.to_bytes().map_err(|e| {
                         DkgError::Serialization(format!(
                             "Failed to serialize commitment coefficient: {}",
                             e
                         ))
                     })?;
+                    bytes.extend_from_slice(&coeff_bytes);
                 }
 
                 Ok::<_, DkgError>((bytes, session.node_id()))
@@ -764,13 +764,9 @@ where
             }
 
             // Serialize share value
-            let mut share_value_bytes = Vec::new();
-            share
-                .value
-                .serialize_compressed(&mut share_value_bytes)
-                .map_err(|e| {
-                    DkgError::Serialization(format!("Failed to serialize share value: {}", e))
-                })?;
+            let share_value_bytes = share.value.to_bytes().map_err(|e| {
+                DkgError::Serialization(format!("Failed to serialize share value: {}", e))
+            })?;
 
             // Use Arc to share bytes if we need to broadcast (cheap clone)
             let share_value_bytes_arc = Arc::new(share_value_bytes);
@@ -946,23 +942,10 @@ where
                     session.node_id()
                 );
 
-                // Serialize the final share for storage
-                // PriShare has fields: i (u32) and v (Fr)
-                let mut final_share_bytes = Vec::new();
-
-                // Serialize the index (4 bytes for u32)
-                final_share_bytes.extend_from_slice(&final_share.i.to_le_bytes());
-
-                // Serialize the share value (Fr)
-                final_share
-                    .v
-                    .serialize_compressed(&mut final_share_bytes)
-                    .map_err(|e| {
-                        DkgError::Serialization(format!(
-                            "Failed to serialize final share value: {}",
-                            e
-                        ))
-                    })?;
+                // Serialize the final share for storage using trait method
+                let final_share_bytes = final_share.to_bytes().map_err(|e| {
+                    DkgError::Serialization(format!("Failed to serialize final share: {}", e))
+                })?;
 
                 Ok::<_, DkgError>((session.node_id(), aggregate_pk, final_share_bytes))
             })
@@ -991,12 +974,9 @@ where
             .await;
 
         // Store ring_pk -> session_id mapping for PRE
-        let mut ring_pk_bytes = Vec::new();
-        aggregate_pk
-            .serialize_compressed(&mut ring_pk_bytes)
-            .map_err(|e| {
-                DkgError::Serialization(format!("Failed to serialize aggregate public key: {}", e))
-            })?;
+        let ring_pk_bytes = aggregate_pk.to_bytes().map_err(|e| {
+            DkgError::Serialization(format!("Failed to serialize aggregate public key: {}", e))
+        })?;
         self.app_state
             .store_ring_pk_mapping(ring_pk_bytes, session_id)
             .await;

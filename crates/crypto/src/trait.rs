@@ -6,6 +6,28 @@ use crate::error::Result;
 use std::collections::HashMap;
 use std::fmt::Debug;
 
+/// Trait for types that can be serialized to bytes.
+///
+/// This provides a generic interface for crypto type serialization,
+/// allowing implementations to use any serialization format (e.g., ark-serialize).
+pub trait CryptoSerialize: Sized {
+    /// Serialize this value to bytes (compressed format preferred).
+    fn to_bytes(&self) -> Result<Vec<u8>>;
+
+    /// Returns the size in bytes of the serialized representation.
+    /// This can be used for pre-allocation and validation.
+    fn serialized_size() -> usize;
+}
+
+/// Trait for types that can be deserialized from bytes.
+///
+/// This provides a generic interface for crypto type deserialization,
+/// allowing implementations to use any serialization format (e.g., ark-serialize).
+pub trait CryptoDeserialize: Sized {
+    /// Deserialize a value from bytes.
+    fn from_bytes(bytes: &[u8]) -> Result<Self>;
+}
+
 /// A share distributed by one participant to another
 #[derive(Clone, Debug)]
 pub struct DistributedShare<ShareValue> {
@@ -53,15 +75,250 @@ pub struct ReencryptReply<ShareValue, PublicKey> {
     pub proof: ShareValue,
 }
 
-pub trait PubPoly: Clone + Debug + Send + Sync {
-    type PublicKey;
+// ============================================================================
+// Serialization implementations for generic structs
+// ============================================================================
+
+impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoSerialize
+    for DistributedShare<ShareValue>
+{
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        let value_bytes = self.value.to_bytes()?;
+        let value_len = value_bytes.len() as u32;
+
+        // Format: from_id (4) + to_id (4) + session_id (8) + nonce (16) + value_len (4) + value
+        let mut bytes = Vec::with_capacity(4 + 4 + 8 + 16 + 4 + value_bytes.len());
+        bytes.extend_from_slice(&self.from_id.to_le_bytes());
+        bytes.extend_from_slice(&self.to_id.to_le_bytes());
+        bytes.extend_from_slice(&self.session_id.to_le_bytes());
+        bytes.extend_from_slice(&self.nonce);
+        bytes.extend_from_slice(&value_len.to_le_bytes());
+        bytes.extend_from_slice(&value_bytes);
+        Ok(bytes)
+    }
+
+    fn serialized_size() -> usize {
+        // 4 + 4 + 8 + 16 + 4 + ShareValue::serialized_size()
+        36 + ShareValue::serialized_size()
+    }
+}
+
+impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoDeserialize
+    for DistributedShare<ShareValue>
+{
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        use crate::error::CryptoError;
+
+        if bytes.len() < 36 {
+            return Err(CryptoError::DKGError(
+                "DistributedShare bytes too short".to_string(),
+            ));
+        }
+
+        let from_id = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let to_id = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        let session_id = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
+        let nonce: [u8; 16] = bytes[16..32].try_into().unwrap();
+        let value_len = u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
+
+        if bytes.len() < 36 + value_len {
+            return Err(CryptoError::DKGError(
+                "DistributedShare bytes too short for value".to_string(),
+            ));
+        }
+
+        let value = ShareValue::from_bytes(&bytes[36..36 + value_len])?;
+
+        Ok(Self {
+            from_id,
+            to_id,
+            value,
+            nonce,
+            session_id,
+        })
+    }
+}
+
+impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoSerialize for PriShare<ShareValue> {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        let value_bytes = self.v.to_bytes()?;
+
+        // Format: i (4) + value
+        let mut bytes = Vec::with_capacity(4 + value_bytes.len());
+        bytes.extend_from_slice(&self.i.to_le_bytes());
+        bytes.extend_from_slice(&value_bytes);
+        Ok(bytes)
+    }
+
+    fn serialized_size() -> usize {
+        4 + ShareValue::serialized_size()
+    }
+}
+
+impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoDeserialize for PriShare<ShareValue> {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        use crate::error::CryptoError;
+
+        if bytes.len() < 4 {
+            return Err(CryptoError::DKGError(
+                "PriShare bytes too short".to_string(),
+            ));
+        }
+
+        let i = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let v = ShareValue::from_bytes(&bytes[4..])?;
+
+        Ok(Self { i, v })
+    }
+}
+
+impl<PublicKey: CryptoSerialize + CryptoDeserialize> CryptoSerialize for PubShare<PublicKey> {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        let value_bytes = self.v.to_bytes()?;
+
+        // Format: i (4) + value
+        let mut bytes = Vec::with_capacity(4 + value_bytes.len());
+        bytes.extend_from_slice(&self.i.to_le_bytes());
+        bytes.extend_from_slice(&value_bytes);
+        Ok(bytes)
+    }
+
+    fn serialized_size() -> usize {
+        4 + PublicKey::serialized_size()
+    }
+}
+
+impl<PublicKey: CryptoSerialize + CryptoDeserialize> CryptoDeserialize for PubShare<PublicKey> {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        use crate::error::CryptoError;
+
+        if bytes.len() < 4 {
+            return Err(CryptoError::DKGError(
+                "PubShare bytes too short".to_string(),
+            ));
+        }
+
+        let i = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let v = PublicKey::from_bytes(&bytes[4..])?;
+
+        Ok(Self { i, v })
+    }
+}
+
+impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoSerialize for DistKeyShare<ShareValue> {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        self.pri_share.to_bytes()
+    }
+
+    fn serialized_size() -> usize {
+        PriShare::<ShareValue>::serialized_size()
+    }
+}
+
+impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoDeserialize
+    for DistKeyShare<ShareValue>
+{
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let pri_share = PriShare::from_bytes(bytes)?;
+        Ok(Self { pri_share })
+    }
+}
+
+impl<
+        ShareValue: CryptoSerialize + CryptoDeserialize,
+        PublicKey: CryptoSerialize + CryptoDeserialize,
+    > CryptoSerialize for ReencryptReply<ShareValue, PublicKey>
+{
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        let share_bytes = self.share.to_bytes()?;
+        let challenge_bytes = self.challenge.to_bytes()?;
+        let proof_bytes = self.proof.to_bytes()?;
+
+        // Format: share_len (4) + share + challenge_len (4) + challenge + proof_len (4) + proof
+        let mut bytes =
+            Vec::with_capacity(12 + share_bytes.len() + challenge_bytes.len() + proof_bytes.len());
+        bytes.extend_from_slice(&(share_bytes.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&share_bytes);
+        bytes.extend_from_slice(&(challenge_bytes.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&challenge_bytes);
+        bytes.extend_from_slice(&(proof_bytes.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&proof_bytes);
+        Ok(bytes)
+    }
+
+    fn serialized_size() -> usize {
+        // 4 + PubShare size + 4 + ShareValue size + 4 + ShareValue size
+        12 + PubShare::<PublicKey>::serialized_size()
+            + ShareValue::serialized_size()
+            + ShareValue::serialized_size()
+    }
+}
+
+impl<
+        ShareValue: CryptoSerialize + CryptoDeserialize,
+        PublicKey: CryptoSerialize + CryptoDeserialize,
+    > CryptoDeserialize for ReencryptReply<ShareValue, PublicKey>
+{
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        use crate::error::CryptoError;
+
+        if bytes.len() < 12 {
+            return Err(CryptoError::DKGError(
+                "ReencryptReply bytes too short".to_string(),
+            ));
+        }
+
+        let mut offset = 0;
+
+        let share_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+        if bytes.len() < offset + share_len + 8 {
+            return Err(CryptoError::DKGError(
+                "ReencryptReply bytes too short for share".to_string(),
+            ));
+        }
+        let share = PubShare::from_bytes(&bytes[offset..offset + share_len])?;
+        offset += share_len;
+
+        let challenge_len =
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+        if bytes.len() < offset + challenge_len + 4 {
+            return Err(CryptoError::DKGError(
+                "ReencryptReply bytes too short for challenge".to_string(),
+            ));
+        }
+        let challenge = ShareValue::from_bytes(&bytes[offset..offset + challenge_len])?;
+        offset += challenge_len;
+
+        let proof_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+        if bytes.len() < offset + proof_len {
+            return Err(CryptoError::DKGError(
+                "ReencryptReply bytes too short for proof".to_string(),
+            ));
+        }
+        let proof = ShareValue::from_bytes(&bytes[offset..offset + proof_len])?;
+
+        Ok(Self {
+            share,
+            challenge,
+            proof,
+        })
+    }
+}
+
+pub trait PubPoly: Clone + Debug + Send + Sync + CryptoSerialize + CryptoDeserialize {
+    type PublicKey: CryptoSerialize + CryptoDeserialize;
     /// Evaluate the public polynomial at index i
     fn eval(&self, i: u32) -> Self::PublicKey;
 }
 
-pub trait PolynomialCommitment: Clone + Debug + Send + Sync {
-    type PublicKey;
-    type ShareValue;
+pub trait PolynomialCommitment:
+    Clone + Debug + Send + Sync + CryptoSerialize + CryptoDeserialize
+{
+    type PublicKey: CryptoSerialize + CryptoDeserialize;
+    type ShareValue: CryptoSerialize + CryptoDeserialize;
     /// Evaluate the polynomial commitment at index i
     fn eval(&self, i: u32) -> Self::PublicKey;
     /// Verify a share against this commitment using constant-time comparison
@@ -69,8 +326,8 @@ pub trait PolynomialCommitment: Clone + Debug + Send + Sync {
 }
 /// Trait for DKG
 pub trait Dkg: Send + Sync {
-    type ShareValue;
-    type PublicKey;
+    type ShareValue: CryptoSerialize + CryptoDeserialize + Clone;
+    type PublicKey: CryptoSerialize + CryptoDeserialize + Clone;
     type PubPoly: PubPoly<PublicKey = Self::PublicKey>;
     type PolynomialCommitment: PolynomialCommitment<
         PublicKey = Self::PublicKey,
@@ -146,8 +403,8 @@ pub trait Dkg: Send + Sync {
 pub trait ThresholdDealer {
     type DistKeyShare;
     type Secret;
-    type PublicKey;
-    type ShareValue;
+    type PublicKey: CryptoSerialize + CryptoDeserialize + Clone;
+    type ShareValue: CryptoSerialize + CryptoDeserialize + Clone;
     type ReencryptReply;
     type PubPoly: PubPoly<PublicKey = Self::PublicKey>;
 

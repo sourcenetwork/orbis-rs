@@ -7,6 +7,8 @@ pub mod r#trait;
 
 pub mod bls12_381;
 
+pub use r#trait::{CryptoDeserialize, CryptoSerialize};
+
 #[cfg(test)]
 pub mod test_helper;
 
