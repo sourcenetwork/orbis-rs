@@ -11,6 +11,9 @@ pub struct MemoryStorage {
     pub store: Arc<RwLock<HashMap<LocalStorageKeys, Vec<u8>>>>,
 }
 
+#[cfg(test)]
+mod tests;
+
 impl LocalStorage for MemoryStorage {
     // TODO: determine how to handle poisoned mutex
 
