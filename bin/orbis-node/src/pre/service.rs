@@ -52,6 +52,7 @@ where
         + Sync
         + 'static,
 {
+    #[tracing::instrument(skip_all, fields(request))]
     async fn start_pre(
         &self,
         request: Request<StartPreRequest>,

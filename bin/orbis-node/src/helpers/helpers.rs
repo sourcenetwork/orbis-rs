@@ -2,6 +2,8 @@
 //!
 //! This module provides utility functions used across the codebase.
 
+use clap::ValueEnum;
+
 use crate::constants::{
     EXPECTED_HEX_NODE_ID_LENGTH, MAX_PEER_ID_LENGTH, PASSWORD_ENV_VAR, PASSWORD_FILE_NAME,
 };
@@ -422,4 +424,31 @@ fn prompt_for_password() -> Result<(String, PasswordSource), PasswordError> {
 
     println!("Password entered interactively");
     Ok((password, PasswordSource::Interactive))
+}
+
+// ============================================================================
+// Log Level Configuration
+// ============================================================================
+
+/// Log level for tracing subscriber configuration
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    #[default]
+    Info,
+    Warn,
+    Error,
+}
+
+impl From<LogLevel> for tracing::Level {
+    fn from(level: LogLevel) -> Self {
+        match level {
+            LogLevel::Trace => tracing::Level::TRACE,
+            LogLevel::Debug => tracing::Level::DEBUG,
+            LogLevel::Info => tracing::Level::INFO,
+            LogLevel::Warn => tracing::Level::WARN,
+            LogLevel::Error => tracing::Level::ERROR,
+        }
+    }
 }

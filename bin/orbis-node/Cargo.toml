@@ -28,6 +28,8 @@ rand = "0.9.2"
 base64 = "0.22.1"
 dirs = "5.0"
 rpassword = "7.3"
+tracing-subscriber = { version = "0.3", features = ["tracing-log", "fmt"] }
+tracing = { version = "0.1.16"}
 
 [dev-dependencies]
 serial_test = "3.2.0"

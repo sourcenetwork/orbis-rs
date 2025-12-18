@@ -10,7 +10,7 @@ pub mod pre;
 mod tests;
 
 use crate::dkg::service::DkgServiceImpl;
-use crate::helpers::helpers::get_password;
+use crate::helpers::helpers::{get_password, LogLevel};
 use crate::pre::service::PreServiceImpl;
 use app_state::AppState;
 use clap::Parser;
@@ -45,6 +45,10 @@ pub struct Args {
     /// Address to bind the server to
     #[arg(short, long, default_value = "[::1]:50051")]
     pub addr: String,
+
+    /// Log level for tracing
+    #[arg(short, long, default_value = "info")]
+    pub log_level: LogLevel,
 }
 
 /// Configuration for running the node, allowing dependency injection for testing
@@ -105,12 +109,16 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
 
 /// Run the gRPC server with the initialized node
 pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Starting DkgService gRPC server on {}", node.grpc_addr);
     println!("Server is ready to accept connections...");
-    println!("  gRPC: {} (for user clients)", node.grpc_addr);
     println!(
         "  P2P: {} (for node-to-node communication)",
         node.local_address
+    );
+
+    tracing::info!(message = "Starting server.", %node.grpc_addr);
+    tracing::info!(
+        message = "P2P: (for node-to-node communication)",
+        %node.local_address
     );
 
     // Initialize services with shared state
@@ -148,6 +156,11 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
 
 /// Full run function that initializes and runs the server
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::from(args.log_level))
+        .init();
+
     // Initialize network for node-to-node communication
     println!("Initializing network...");
     let network: Arc<dyn Network> = Arc::new(
