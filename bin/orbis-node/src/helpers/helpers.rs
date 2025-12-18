@@ -2,7 +2,9 @@
 //!
 //! This module provides utility functions used across the codebase.
 
-use crate::constants::{EXPECTED_HEX_NODE_ID_LENGTH, MAX_PEER_ID_LENGTH, PASSWORD_ENV_VAR, PASSWORD_FILE_NAME};
+use crate::constants::{
+    EXPECTED_HEX_NODE_ID_LENGTH, MAX_PEER_ID_LENGTH, PASSWORD_ENV_VAR, PASSWORD_FILE_NAME,
+};
 use crate::error::{PasswordError, PasswordSource, PeerIdValidationError};
 use network::{Network, PeerId};
 use std::collections::hash_map::DefaultHasher;
@@ -354,7 +356,9 @@ pub fn get_password_file_path() -> PathBuf {
 ///
 /// # Returns
 /// A tuple of (password, source) on success, or an error
-pub fn get_password(custom_file_path: Option<PathBuf>) -> Result<(String, PasswordSource), PasswordError> {
+pub fn get_password(
+    custom_file_path: Option<PathBuf>,
+) -> Result<(String, PasswordSource), PasswordError> {
     // 1. Check password file first
     let file_path = custom_file_path.unwrap_or_else(get_password_file_path);
     if file_path.exists() {
@@ -371,7 +375,11 @@ pub fn get_password(custom_file_path: Option<PathBuf>) -> Result<(String, Passwo
             }
             Err(e) => {
                 // Log warning but continue to next source
-                eprintln!("Warning: Could not read password file {}: {}", file_path.display(), e);
+                eprintln!(
+                    "Warning: Could not read password file {}: {}",
+                    file_path.display(),
+                    e
+                );
             }
         }
     }
@@ -380,10 +388,16 @@ pub fn get_password(custom_file_path: Option<PathBuf>) -> Result<(String, Passwo
     if let Ok(password) = env::var(PASSWORD_ENV_VAR) {
         let password = password.trim().to_string();
         if !password.is_empty() {
-            println!("Password loaded from environment variable {}", PASSWORD_ENV_VAR);
+            println!(
+                "Password loaded from environment variable {}",
+                PASSWORD_ENV_VAR
+            );
             return Ok((password, PasswordSource::Environment));
         }
-        println!("Warning: Environment variable {} is set but empty, prompting for password...", PASSWORD_ENV_VAR);
+        println!(
+            "Warning: Environment variable {} is set but empty, prompting for password...",
+            PASSWORD_ENV_VAR
+        );
     }
 
     // 3. Prompt for password interactively

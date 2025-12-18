@@ -6,6 +6,9 @@ pub mod error;
 pub mod helpers;
 pub mod pre;
 
+#[cfg(test)]
+mod tests;
+
 use crate::dkg::service::DkgServiceImpl;
 use crate::helpers::helpers::get_password;
 use crate::pre::service::PreServiceImpl;
@@ -13,7 +16,7 @@ use app_state::AppState;
 use clap::Parser;
 use local_storage::memory::MemoryStorage;
 use local_storage::r#trait::LocalStorage;
-use network::Network;
+use network::{Network, Router};
 use std::{net::SocketAddr, sync::Arc};
 
 // Concrete crypto implementations
@@ -21,8 +24,8 @@ use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
 
 // Type aliases for concrete implementations
-type DkgImpl = DKGNode;
-type PreImpl = ThresholdDealerNode;
+pub type DkgImpl = DKGNode;
+pub type PreImpl = ThresholdDealerNode;
 
 pub mod dkg_service {
     tonic::include_proto!("dkg_service");
@@ -35,36 +38,39 @@ pub mod pre_service {
 use dkg_service::dkg_service_server::DkgServiceServer;
 use pre_service::pre_service_server::PreServiceServer;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "orbis-node")]
 #[command(about = "Orbis DkgService gRPC server")]
-struct Args {
+pub struct Args {
     /// Address to bind the server to
     #[arg(short, long, default_value = "[::1]:50051")]
-    addr: String,
+    pub addr: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
-    let addr: SocketAddr = args.addr.parse()?;
+/// Configuration for running the node, allowing dependency injection for testing
+pub struct NodeConfig {
+    pub args: Args,
+    pub network: Arc<dyn Network>,
+    pub local_storage: MemoryStorage,
+}
 
-    // Initialize network for node-to-node communication
-    println!("Initializing network...");
-    let network: Arc<dyn Network> = Arc::new(
-        network::IrohNetwork::new()
-            .await
-            .map_err(|e| format!("Failed to initialize network: {}", e))?,
-    );
-    // Get password for encrypting ring key shares
-    // Priority: 1) Password file (~/.orbis_password), 2) ORBIS_PASSWORD env var, 3) Interactive prompt
-    let (password, _source) = get_password(None)
-        .map_err(|e| format!("Failed to get password: {}", e))?;
-    let local_storage = MemoryStorage::new(Some(password));
+/// Result of initializing the node (before starting the server)
+pub struct InitializedNode {
+    pub app_state: Arc<AppState<DkgImpl>>,
+    pub router: Box<dyn Router>,
+    pub grpc_addr: SocketAddr,
+    pub local_address: String,
+}
+
+/// Initialize the node without starting the gRPC server
+/// This is useful for testing the initialization logic
+pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn std::error::Error>> {
+    let grpc_addr: SocketAddr = config.args.addr.parse()?;
 
     // Get the local peer ID and address
-    let local_peer_id = network.local_peer_id();
-    let local_address = network
+    let local_peer_id = config.network.local_peer_id();
+    let local_address = config
+        .network
         .local_address()
         .map_err(|e| format!("Failed to get local address: {}", e))?;
 
@@ -73,34 +79,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Local Address: {}", local_address);
 
     // Create shared application state (needed for router)
-    let app_state = AppState::<DkgImpl>::new(args.addr.clone(), network.clone(), local_storage);
-    // Wrap in Arc once, then clone Arc (cheap) for sharing
+    let app_state = AppState::<DkgImpl>::new(
+        config.args.addr.clone(),
+        config.network.clone(),
+        config.local_storage,
+    );
     let app_state_arc = Arc::new(app_state);
 
     // Start the router in the background with DKG and PRE protocol handlers
-    // The router will handle incoming connections automatically
     let router = dkg::protocol_handler::create_router_with_handlers::<DkgImpl, PreImpl>(
-        &network,
+        &config.network,
         app_state_arc.clone(),
     )
     .map_err(|e| format!("Failed to create router: {}", e))?;
 
     println!("Router started with DKG and PRE protocol handlers and ready to accept connections");
 
-    println!("Starting DkgService gRPC server on {}", addr);
-    println!("Server is ready to accept connections...");
-    println!("  gRPC: {} (for user clients)", addr);
-    println!("  P2P: {} (for node-to-node communication)", local_address);
+    Ok(InitializedNode {
+        app_state: app_state_arc,
+        router,
+        grpc_addr,
+        local_address,
+    })
+}
 
-    // Initialize services with shared state (clone Arc, not AppState)
-    let dkg_service = DkgServiceImpl::<DkgImpl>::new((*app_state_arc).clone());
-    let pre_service = PreServiceImpl::<DkgImpl, PreImpl>::new((*app_state_arc).clone());
+/// Run the gRPC server with the initialized node
+pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Starting DkgService gRPC server on {}", node.grpc_addr);
+    println!("Server is ready to accept connections...");
+    println!("  gRPC: {} (for user clients)", node.grpc_addr);
+    println!(
+        "  P2P: {} (for node-to-node communication)",
+        node.local_address
+    );
+
+    // Initialize services with shared state
+    let dkg_service = DkgServiceImpl::<DkgImpl>::new((*node.app_state).clone());
+    let pre_service = PreServiceImpl::<DkgImpl, PreImpl>::new((*node.app_state).clone());
 
     // Start gRPC server with both DKG and PRE services
     let grpc_server = tonic::transport::Server::builder()
         .add_service(DkgServiceServer::new(dkg_service))
         .add_service(PreServiceServer::new(pre_service))
-        .serve(addr);
+        .serve(node.grpc_addr);
 
     // Run gRPC server (router runs in background automatically)
     let result = tokio::select! {
@@ -115,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Clean shutdown of router
     println!("Shutting down router...");
-    router
+    node.router
         .shutdown()
         .await
         .map_err(|e| format!("Failed to shutdown router: {}", e))?;
@@ -123,4 +144,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     result?;
 
     Ok(())
+}
+
+/// Full run function that initializes and runs the server
+pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize network for node-to-node communication
+    println!("Initializing network...");
+    let network: Arc<dyn Network> = Arc::new(
+        network::IrohNetwork::new()
+            .await
+            .map_err(|e| format!("Failed to initialize network: {}", e))?,
+    );
+
+    // Get password for encrypting ring key shares
+    let (password, _source) =
+        get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
+    let local_storage = MemoryStorage::new(Some(password));
+
+    let config = NodeConfig {
+        args,
+        network,
+        local_storage,
+    };
+
+    let node = init_node(config).await?;
+    run_server(node).await
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    run(args).await
 }
