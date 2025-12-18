@@ -181,9 +181,10 @@ pub async fn connect_to_peers(
     }
 
     let protocol_str = std::str::from_utf8(protocol).unwrap_or("<invalid-utf8>");
-    println!(
-        "Connecting to {} peer nodes using protocol '{}'...",
-        total, protocol_str
+    tracing::info!(
+        peer_count = total,
+        protocol = protocol_str,
+        "Connecting to peer nodes"
     );
 
     for peer_id_str in peer_ids {
@@ -197,7 +198,7 @@ pub async fn connect_to_peers(
         // Connect to the peer using the specified protocol
         match network.connect(&peer_id, protocol).await {
             Ok(_connection) => {
-                println!("  ✓ Connected to peer: {}", peer_id_str);
+                tracing::info!(peer_id = %peer_id_str, "Connected to peer");
                 successful += 1;
                 results.push(PeerConnectionResult {
                     peer_id: peer_id_for_result,
@@ -207,9 +208,10 @@ pub async fn connect_to_peers(
             }
             Err(e) => {
                 let error_msg = format!("{}", e);
-                eprintln!(
-                    "  ✗ Failed to connect to peer {}: {}",
-                    peer_id_str, error_msg
+                tracing::error!(
+                    peer_id = %peer_id_str,
+                    error = %error_msg,
+                    "Failed to connect to peer"
                 );
                 failed += 1;
                 results.push(PeerConnectionResult {
@@ -221,9 +223,11 @@ pub async fn connect_to_peers(
         }
     }
 
-    println!(
-        "Connection summary: {}/{} successful, {}/{} failed",
-        successful, total, failed, total
+    tracing::info!(
+        successful = successful,
+        failed = failed,
+        total = total,
+        "Connection summary"
     );
 
     PeerConnectionSummary {
@@ -369,18 +373,20 @@ pub fn get_password(
                 let password = content.trim().to_string();
                 if password.is_empty() {
                     // File exists but is empty, continue to next source
-                    println!("Warning: Password file exists but is empty, checking environment variable...");
+                    tracing::warn!(
+                        "Password file exists but is empty, checking environment variable"
+                    );
                 } else {
-                    println!("Password loaded from file: {}", file_path.display());
+                    tracing::info!(path = %file_path.display(), "Password loaded from file");
                     return Ok((password, PasswordSource::File(file_path)));
                 }
             }
             Err(e) => {
                 // Log warning but continue to next source
-                eprintln!(
-                    "Warning: Could not read password file {}: {}",
-                    file_path.display(),
-                    e
+                tracing::warn!(
+                    path = %file_path.display(),
+                    error = %e,
+                    "Could not read password file"
                 );
             }
         }
@@ -390,15 +396,15 @@ pub fn get_password(
     if let Ok(password) = env::var(PASSWORD_ENV_VAR) {
         let password = password.trim().to_string();
         if !password.is_empty() {
-            println!(
-                "Password loaded from environment variable {}",
-                PASSWORD_ENV_VAR
+            tracing::info!(
+                env_var = PASSWORD_ENV_VAR,
+                "Password loaded from environment variable"
             );
             return Ok((password, PasswordSource::Environment));
         }
-        println!(
-            "Warning: Environment variable {} is set but empty, prompting for password...",
-            PASSWORD_ENV_VAR
+        tracing::warn!(
+            env_var = PASSWORD_ENV_VAR,
+            "Environment variable is set but empty, prompting for password"
         );
     }
 
@@ -422,7 +428,7 @@ fn prompt_for_password() -> Result<(String, PasswordSource), PasswordError> {
         return Err(PasswordError::EmptyPassword);
     }
 
-    println!("Password entered interactively");
+    tracing::info!("Password entered interactively");
     Ok((password, PasswordSource::Interactive))
 }
 

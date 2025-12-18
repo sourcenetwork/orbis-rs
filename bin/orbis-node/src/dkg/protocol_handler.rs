@@ -67,7 +67,7 @@ where
     async fn handle(&self, connection: Box<dyn Connection>) -> NetworkResult<()> {
         let peer_id = connection.peer_id().clone();
         // TODO: Authentic nodes?
-        println!("DKG Protocol: Accepted connection from peer: {:?}", peer_id);
+        tracing::info!(peer_id = ?peer_id, "DKG Protocol: Accepted connection from peer");
 
         // Read messages from the connection and route them to the coordinator
         loop {
@@ -76,9 +76,10 @@ where
                 Ok(msg) => msg,
                 Err(e) => {
                     // Connection closed or error
-                    println!(
-                        "DKG Protocol: Connection closed or error from peer {:?}: {}",
-                        peer_id, e
+                    tracing::debug!(
+                        peer_id = ?peer_id,
+                        error = %e,
+                        "DKG Protocol: Connection closed or error from peer"
                     );
                     break;
                 }
@@ -88,9 +89,10 @@ where
             let dkg_message: DkgMessage = match serde_json::from_slice(&network_message.data) {
                 Ok(msg) => msg,
                 Err(e) => {
-                    eprintln!(
-                        "DKG Protocol: Failed to deserialize message from peer {:?}: {}",
-                        peer_id, e
+                    tracing::error!(
+                        peer_id = ?peer_id,
+                        error = %e,
+                        "DKG Protocol: Failed to deserialize message from peer"
                     );
                     // Send error response
                     let error_msg = DkgMessage::Error {
@@ -106,11 +108,11 @@ where
                 }
             };
 
-            println!(
-                "DKG Protocol: Received message type {:?} for session {} from peer {:?}",
-                std::mem::discriminant(&dkg_message),
-                dkg_message.session_id(),
-                peer_id
+            tracing::debug!(
+                message_type = ?std::mem::discriminant(&dkg_message),
+                session_id = dkg_message.session_id(),
+                peer_id = ?peer_id,
+                "DKG Protocol: Received message"
             );
 
             // Route message to coordinator
@@ -122,9 +124,10 @@ where
                             .send(Message::new(response_data, network_message.protocol))
                             .await
                         {
-                            eprintln!(
-                                "DKG Protocol: Failed to send response to peer {:?}: {}",
-                                peer_id, e
+                            tracing::error!(
+                                peer_id = ?peer_id,
+                                error = %e,
+                                "DKG Protocol: Failed to send response to peer"
                             );
                         }
                     }
@@ -133,9 +136,10 @@ where
                     // No response needed
                 }
                 Err(e) => {
-                    eprintln!(
-                        "DKG Protocol: Coordinator error for peer {:?}: {}",
-                        peer_id, e
+                    tracing::error!(
+                        peer_id = ?peer_id,
+                        error = %e,
+                        "DKG Protocol: Coordinator error"
                     );
                     // Send error response
                     let error_msg = DkgMessage::Error {
@@ -151,7 +155,7 @@ where
             }
         }
 
-        println!("DKG Protocol: Connection closed with peer: {:?}", peer_id);
+        tracing::debug!(peer_id = ?peer_id, "DKG Protocol: Connection closed with peer");
         Ok(())
     }
 }

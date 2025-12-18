@@ -78,9 +78,9 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
         .local_address()
         .map_err(|e| format!("Failed to get local address: {}", e))?;
 
-    println!("Network initialized:");
-    println!("  Local Peer ID: {}", hex::encode(local_peer_id.as_bytes()));
-    println!("  Local Address: {}", local_address);
+    tracing::info!("Network initialized");
+    tracing::info!(peer_id = %hex::encode(local_peer_id.as_bytes()), "Local Peer ID");
+    tracing::info!(address = %local_address, "Local Address");
 
     // Create shared application state (needed for router)
     let app_state = AppState::<DkgImpl>::new(
@@ -97,7 +97,9 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
     )
     .map_err(|e| format!("Failed to create router: {}", e))?;
 
-    println!("Router started with DKG and PRE protocol handlers and ready to accept connections");
+    tracing::info!(
+        "Router started with DKG and PRE protocol handlers and ready to accept connections"
+    );
 
     Ok(InitializedNode {
         app_state: app_state_arc,
@@ -109,17 +111,9 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
 
 /// Run the gRPC server with the initialized node
 pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Server is ready to accept connections...");
-    println!(
-        "  P2P: {} (for node-to-node communication)",
-        node.local_address
-    );
-
-    tracing::info!(message = "Starting server.", %node.grpc_addr);
-    tracing::info!(
-        message = "P2P: (for node-to-node communication)",
-        %node.local_address
-    );
+    tracing::info!("Server is ready to accept connections");
+    tracing::info!(grpc_addr = %node.grpc_addr, "Starting gRPC server");
+    tracing::info!(p2p_addr = %node.local_address, "P2P address for node-to-node communication");
 
     // Initialize services with shared state
     let dkg_service = DkgServiceImpl::<DkgImpl>::new((*node.app_state).clone());
@@ -137,13 +131,13 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
             result
         }
         _ = tokio::signal::ctrl_c() => {
-            println!("Received shutdown signal...");
+            tracing::info!("Received shutdown signal");
             Ok(())
         }
     };
 
     // Clean shutdown of router
-    println!("Shutting down router...");
+    tracing::info!("Shutting down router");
     node.router
         .shutdown()
         .await
@@ -162,7 +156,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     // Initialize network for node-to-node communication
-    println!("Initializing network...");
+    tracing::info!("Initializing network");
     let network: Arc<dyn Network> = Arc::new(
         network::IrohNetwork::new()
             .await

@@ -1,5 +1,4 @@
 use crate::error::Result;
-use aes_gcm::Aes256Gcm;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Eq, Hash, PartialEq)]

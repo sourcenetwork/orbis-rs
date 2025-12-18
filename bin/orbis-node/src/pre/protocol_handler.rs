@@ -82,7 +82,7 @@ where
 {
     async fn handle(&self, connection: Box<dyn Connection>) -> NetworkResult<()> {
         let peer_id = connection.peer_id().clone();
-        println!("PRE Protocol: Accepted connection from peer: {:?}", peer_id);
+        tracing::info!(peer_id = ?peer_id, "PRE Protocol: Accepted connection from peer");
 
         // Read messages from the connection and route them to the coordinator
         loop {
@@ -91,9 +91,10 @@ where
                 Ok(msg) => msg,
                 Err(e) => {
                     // Connection closed or error
-                    println!(
-                        "PRE Protocol: Connection closed or error from peer {:?}: {}",
-                        peer_id, e
+                    tracing::debug!(
+                        peer_id = ?peer_id,
+                        error = %e,
+                        "PRE Protocol: Connection closed or error from peer"
                     );
                     break;
                 }
@@ -103,9 +104,10 @@ where
             let pre_message: PreMessage = match serde_json::from_slice(&network_message.data) {
                 Ok(msg) => msg,
                 Err(e) => {
-                    eprintln!(
-                        "PRE Protocol: Failed to deserialize message from peer {:?}: {}",
-                        peer_id, e
+                    tracing::error!(
+                        peer_id = ?peer_id,
+                        error = %e,
+                        "PRE Protocol: Failed to deserialize message from peer"
                     );
                     // Send error response
                     let error_msg = PreMessage::Error {
@@ -121,11 +123,11 @@ where
                 }
             };
 
-            println!(
-                "PRE Protocol: Received message type {:?} for request {} from peer {:?}",
-                std::mem::discriminant(&pre_message),
-                pre_message.request_id(),
-                peer_id
+            tracing::debug!(
+                message_type = ?std::mem::discriminant(&pre_message),
+                request_id = %pre_message.request_id(),
+                peer_id = ?peer_id,
+                "PRE Protocol: Received message"
             );
 
             // Special handling for responses - store them for the initiator
@@ -143,7 +145,7 @@ where
                             .send(Message::new(response_data, network_message.protocol))
                             .await
                         {
-                            eprintln!("PRE Protocol: Failed to send response: {}", e);
+                            tracing::error!(error = %e, "PRE Protocol: Failed to send response");
                         }
                     }
                 }
@@ -151,7 +153,7 @@ where
                     // No response needed
                 }
                 Err(e) => {
-                    eprintln!("PRE Protocol: Error handling message: {}", e);
+                    tracing::error!(error = %e, "PRE Protocol: Error handling message");
                     // Send error response
                     let error_msg = PreMessage::Error {
                         request_id: String::from("unknown"),
@@ -166,10 +168,7 @@ where
             }
         }
 
-        println!(
-            "PRE Protocol: Connection handler finished for peer: {:?}",
-            peer_id
-        );
+        tracing::debug!(peer_id = ?peer_id, "PRE Protocol: Connection handler finished for peer");
         Ok(())
     }
 }

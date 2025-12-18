@@ -101,9 +101,11 @@ where
                 .is_message_processed(&session_id, from_node_id, message_type)
                 .await
             {
-                println!(
-                    "DKG Coordinator: Ignoring duplicate {:?} from node {} for session {}",
-                    message_type, from_node_id, session_id
+                tracing::debug!(
+                    message_type = ?message_type,
+                    from_node_id = from_node_id,
+                    session_id = session_id,
+                    "DKG Coordinator: Ignoring duplicate message"
                 );
                 return Ok(None);
             }
@@ -137,9 +139,9 @@ where
                     ))
                 })?;
 
-            println!(
-                "DKG Coordinator: Received SessionInit - assigned node_id: {} (from initiator)",
-                assigned_node_id
+            tracing::info!(
+                assigned_node_id = assigned_node_id,
+                "DKG Coordinator: Received SessionInit - assigned node_id from initiator"
             );
 
             // If session doesn't exist, create it with assigned node_id
@@ -171,9 +173,13 @@ where
                 .set_node_peer_mappings(&session_id, node_id_to_peer_id)
                 .await;
 
-            println!(
-                "DKG Coordinator: Session init for session {}: threshold={}, participants={}, peer_ids={}, our node_id={}",
-                session_id, threshold, total_participants, peer_ids.len(), assigned_node_id
+            tracing::info!(
+                session_id = session_id,
+                threshold = threshold,
+                total_participants = total_participants,
+                peer_count = peer_ids.len(),
+                our_node_id = assigned_node_id,
+                "DKG Coordinator: Session init"
             );
 
             // For non-initiator nodes, they should start Phase 1 after receiving SessionInit
@@ -200,11 +206,11 @@ where
                 ..
             } => {
                 // Phase 1: Receive and store commitment
-                println!(
-                    "DKG Coordinator: Received commitment from node {} for session {} ({} bytes)",
-                    from_node_id,
-                    session_id,
-                    commitment.len()
+                tracing::debug!(
+                    from_node_id = from_node_id,
+                    session_id = session_id,
+                    commitment_bytes = commitment.len(),
+                    "DKG Coordinator: Received commitment"
                 );
 
                 // Validate commitment byte length
@@ -302,7 +308,7 @@ where
                 // If this is the first commitment we receive and we haven't generated our polynomial yet,
                 // we need to generate it and send our commitment
                 if need_to_generate_polynomial {
-                    println!("DKG Coordinator: First commitment received, generating our polynomial and sending commitment");
+                    tracing::info!("DKG Coordinator: First commitment received, generating our polynomial and sending commitment");
 
                     // Generate polynomial
                     self.app_state
@@ -361,17 +367,18 @@ where
                                     if e.to_string().contains("ourself") {
                                         continue;
                                     }
-                                    eprintln!(
-                                        "Failed to send commitment to peer {}: {}",
-                                        peer_id_str, e
+                                    tracing::error!(
+                                        peer_id = %peer_id_str,
+                                        error = %e,
+                                        "Failed to send commitment to peer"
                                     );
                                 }
                             }
                         }
-                        println!(
-                            "DKG Coordinator: Sent our commitment to {}/{} peers",
-                            sent_count,
-                            peer_ids.len()
+                        tracing::info!(
+                            sent = sent_count,
+                            total = peer_ids.len(),
+                            "DKG Coordinator: Sent our commitment to peers"
                         );
                     }
                 }
@@ -456,9 +463,11 @@ where
                         DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
                     })??;
 
-                println!(
-                    "DKG Coordinator: Received and verified share from node {} to node {} for session {}",
-                    from_node_id, to_node_id, session_id
+                tracing::debug!(
+                    from_node_id = from_node_id,
+                    to_node_id = to_node_id,
+                    session_id = session_id,
+                    "DKG Coordinator: Received and verified share"
                 );
 
                 // Mark message as processed
@@ -481,22 +490,25 @@ where
                 ..
             } => {
                 // Phase 3: Handle complaint
-                println!(
-                    "DKG Coordinator: Received complaint from node {} about node {}: {}",
-                    from_node_id, accused_node_id, reason
+                tracing::warn!(
+                    from_node_id = from_node_id,
+                    accused_node_id = accused_node_id,
+                    reason = %reason,
+                    "DKG Coordinator: Received complaint"
                 );
                 None // For now, no response needed
             }
             DkgMessage::Ack { .. } => {
                 // Acknowledgment received
-                println!("DKG Coordinator: Received ACK for session {}", session_id);
+                tracing::debug!(session_id = session_id, "DKG Coordinator: Received ACK");
                 None
             }
             DkgMessage::Error { error, .. } => {
                 // Error received
-                eprintln!(
-                    "DKG Coordinator: Received error for session {}: {}",
-                    session_id, error
+                tracing::error!(
+                    session_id = session_id,
+                    error = %error,
+                    "DKG Coordinator: Received error"
                 );
                 None
             }
@@ -636,14 +648,14 @@ where
             };
 
             if let Err(e) = self.send_message_to_peer(peer_id_str, commitment_msg).await {
-                eprintln!("Failed to send commitment to peer {}: {}", peer_id_str, e);
+                tracing::error!(peer_id = %peer_id_str, error = %e, "Failed to send commitment to peer");
                 // Continue with other peers even if one fails
             }
         }
 
-        println!(
-            "Phase 1: Broadcasted commitment to {} peers",
-            peer_ids.len()
+        tracing::info!(
+            peer_count = peer_ids.len(),
+            "Phase 1: Broadcasted commitment to peers"
         );
         Ok(())
     }
@@ -685,15 +697,19 @@ where
             .unwrap_or(0);
 
         if received_commitments >= expected_commitments {
-            println!(
-                "Phase 1 complete: Received {}/{} commitments, starting Phase 2 (node {})",
-                received_commitments, expected_commitments, node_id
+            tracing::info!(
+                received = received_commitments,
+                expected = expected_commitments,
+                node_id = node_id,
+                "Phase 1 complete: Starting Phase 2"
             );
             self.initiate_phase2_shares(session_id, peer_ids).await?;
         } else {
-            println!(
-                "Phase 1 not complete yet: Received {}/{} commitments (node {})",
-                received_commitments, expected_commitments, node_id
+            tracing::debug!(
+                received = received_commitments,
+                expected = expected_commitments,
+                node_id = node_id,
+                "Phase 1 not complete yet"
             );
         }
 
@@ -710,9 +726,9 @@ where
             .with_dkg_session_mut(&session_id, |session| {
                 // Make sure we've generated our polynomial
                 if session.commitment().coefficients.is_empty() {
-                    println!(
-                        "DKG Coordinator: Generating polynomial before Phase 2 (node {})",
-                        session.node_id()
+                    tracing::debug!(
+                        node_id = session.node_id(),
+                        "DKG Coordinator: Generating polynomial before Phase 2"
                     );
                     session.generate_polynomial().map_err(|e| {
                         DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
@@ -720,16 +736,19 @@ where
                 }
 
                 // Generate shares for all nodes
-                println!(
-                    "DKG Coordinator: Generating shares for node {} (session {})",
-                    session.node_id(),
-                    session_id
+                tracing::debug!(
+                    node_id = session.node_id(),
+                    session_id = session_id,
+                    "DKG Coordinator: Generating shares"
                 );
                 let shares = session
                     .generate_shares()
                     .map_err(|e| DkgError::Crypto(format!("Failed to generate shares: {}", e)))?;
 
-                println!("DKG Coordinator: Generated {} shares", shares.len());
+                tracing::debug!(
+                    share_count = shares.len(),
+                    "DKG Coordinator: Generated shares"
+                );
                 Ok::<_, DkgError>((shares, session.node_id()))
             })
             .await
@@ -743,14 +762,14 @@ where
             .await;
 
         if peer_ids.is_empty() {
-            eprintln!("DKG Coordinator: WARNING - No peer_ids available to send shares to!");
+            tracing::warn!("DKG Coordinator: No peer_ids available to send shares to");
             return Ok(());
         }
 
-        println!(
-            "DKG Coordinator: Sending {} shares to peers (node {})",
-            shares.len(),
-            node_id
+        tracing::debug!(
+            share_count = shares.len(),
+            node_id = node_id,
+            "DKG Coordinator: Sending shares to peers"
         );
 
         // Send shares to peers using O(n) routing with node_id → peer_id mapping
@@ -788,15 +807,19 @@ where
                 match self.send_message_to_peer(&target_peer_id, share_msg).await {
                     Ok(_) => {
                         shares_sent += 1;
-                        println!(
-                            "DKG Coordinator: Sent share from node {} to node {} via peer {}",
-                            node_id, share.to_id, target_peer_id
+                        tracing::debug!(
+                            from_node = node_id,
+                            to_node = share.to_id,
+                            peer_id = %target_peer_id,
+                            "DKG Coordinator: Sent share"
                         );
                     }
                     Err(e) => {
-                        eprintln!(
-                            "Failed to send share to node {} via peer {}: {}",
-                            share.to_id, target_peer_id, e
+                        tracing::error!(
+                            to_node = share.to_id,
+                            peer_id = %target_peer_id,
+                            error = %e,
+                            "Failed to send share"
                         );
                     }
                 }
@@ -817,35 +840,38 @@ where
                     {
                         Ok(_) => {
                             sent_count += 1;
-                            println!(
-                                "DKG Coordinator: Sent share from node {} to node {} via peer {} (broadcast)",
-                                node_id, share.to_id, peer_id_str
+                            tracing::debug!(
+                                from_node = node_id,
+                                to_node = share.to_id,
+                                peer_id = %peer_id_str,
+                                "DKG Coordinator: Sent share (broadcast)"
                             );
                         }
                         Err(e) => {
                             if e.to_string().contains("ourself") {
                                 continue;
                             }
-                            eprintln!("Failed to send share to peer {}: {}", peer_id_str, e);
+                            tracing::error!(peer_id = %peer_id_str, error = %e, "Failed to send share to peer");
                         }
                     }
                 }
                 if sent_count > 0 {
                     shares_sent += 1;
                 } else {
-                    eprintln!(
-                        "DKG Coordinator: Failed to send share from node {} to node {} to any peer",
-                        node_id, share.to_id
+                    tracing::error!(
+                        from_node = node_id,
+                        to_node = share.to_id,
+                        "DKG Coordinator: Failed to send share to any peer"
                     );
                 }
             }
         }
 
-        println!(
-            "Phase 2: Sent {}/{} shares to peers (node {})",
-            shares_sent,
-            shares.len() - 1,
-            node_id
+        tracing::info!(
+            sent = shares_sent,
+            total = shares.len() - 1,
+            node_id = node_id,
+            "Phase 2: Sent shares to peers"
         );
         Ok(())
     }
@@ -871,9 +897,10 @@ where
             .unwrap_or(0);
 
         if received_shares >= expected_shares {
-            println!(
-                "Phase 2 complete: Received {}/{} shares, proceeding to Phase 4",
-                received_shares, expected_shares
+            tracing::info!(
+                received = received_shares,
+                expected = expected_shares,
+                "Phase 2 complete: Proceeding to Phase 4"
             );
 
             // Verify we have all commitments before proceeding
@@ -888,15 +915,15 @@ where
                 })?;
 
             if !has_all_commitments {
-                println!(
+                tracing::warn!(
                     "DKG Coordinator: Not all commitments received yet, cannot proceed to Phase 4"
                 );
                 return Ok(());
             }
 
-            println!(
-                "DKG Coordinator: All commitments verified, initiating Phase 4 for session {}",
-                session_id
+            tracing::info!(
+                session_id = session_id,
+                "DKG Coordinator: All commitments verified, initiating Phase 4"
             );
             self.initiate_phase4_completion(session_id).await?;
         }
@@ -908,18 +935,18 @@ where
     ///
     /// This is triggered when all shares have been received and verified.
     pub async fn initiate_phase4_completion(&self, session_id: u64) -> Result<()> {
-        println!(
-            "DKG Coordinator: Starting Phase 4 completion for session {}",
-            session_id
+        tracing::info!(
+            session_id = session_id,
+            "DKG Coordinator: Starting Phase 4 completion"
         );
 
         // Compute final secret share and aggregate public key
         let (node_id, aggregate_pk, final_share_bytes) = self
             .app_state
             .with_dkg_session(&session_id, |session| {
-                println!(
-                    "DKG Coordinator: Computing secret share for node {}...",
-                    session.node_id()
+                tracing::debug!(
+                    node_id = session.node_id(),
+                    "DKG Coordinator: Computing secret share"
                 );
 
                 // Compute final secret share
@@ -927,9 +954,9 @@ where
                     DkgError::Crypto(format!("Failed to compute secret share: {}", e))
                 })?;
 
-                println!(
-                    "DKG Coordinator: Successfully computed secret share for node {}",
-                    session.node_id()
+                tracing::debug!(
+                    node_id = session.node_id(),
+                    "DKG Coordinator: Successfully computed secret share"
                 );
 
                 // Compute aggregate public key
@@ -937,9 +964,9 @@ where
                     DkgError::Crypto(format!("Failed to compute aggregate public key: {}", e))
                 })?;
 
-                println!(
-                    "DKG Coordinator: Computed aggregate public key for node {}",
-                    session.node_id()
+                tracing::debug!(
+                    node_id = session.node_id(),
+                    "DKG Coordinator: Computed aggregate public key"
                 );
 
                 // Serialize the final share for storage using trait method
@@ -963,9 +990,9 @@ where
             )
             .map_err(|e| DkgError::Storage(format!("Failed to store final share: {}", e)))?;
 
-        println!(
-            "DKG Coordinator: Stored final share for session {} in local storage",
-            session_id
+        tracing::debug!(
+            session_id = session_id,
+            "DKG Coordinator: Stored final share in local storage"
         );
 
         // Update phase
@@ -981,9 +1008,10 @@ where
             .store_ring_pk_mapping(ring_pk_bytes, session_id)
             .await;
 
-        println!(
-            "Phase 4: DKG complete! Final share computed, aggregate PK: {:?} (node {})",
-            aggregate_pk, node_id
+        tracing::info!(
+            aggregate_pk = ?aggregate_pk,
+            node_id = node_id,
+            "Phase 4: DKG complete! Final share computed"
         );
 
         Ok(())

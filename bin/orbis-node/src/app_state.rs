@@ -160,9 +160,10 @@ where
             let age = now.duration_since(entry.created_at);
             let should_keep = age < SESSION_TTL;
             if !should_keep {
-                println!(
-                    "Cleaning up expired DKG session {} (age: {:?})",
-                    session_id, age
+                tracing::debug!(
+                    session_id = session_id,
+                    age = ?age,
+                    "Cleaning up expired DKG session"
                 );
             }
             should_keep
@@ -170,10 +171,10 @@ where
 
         let removed = before_count - sessions.len();
         if removed > 0 {
-            println!(
-                "Cleaned up {} expired DKG sessions, {} remaining",
-                removed,
-                sessions.len()
+            tracing::info!(
+                removed = removed,
+                remaining = sessions.len(),
+                "Cleaned up expired DKG sessions"
             );
         }
     }
@@ -224,10 +225,10 @@ where
 
         // Check limit
         if responses.len() >= MAX_PRE_RESPONSES {
-            eprintln!(
-                "PRE response limit exceeded: {} pending, max {}",
-                responses.len(),
-                MAX_PRE_RESPONSES
+            tracing::error!(
+                pending = responses.len(),
+                max = MAX_PRE_RESPONSES,
+                "PRE response limit exceeded"
             );
             return false;
         }
@@ -274,9 +275,10 @@ where
             let age = now.duration_since(entry.created_at);
             let should_keep = age < PRE_RESPONSE_TTL;
             if !should_keep {
-                println!(
-                    "Cleaning up expired PRE response {} (age: {:?})",
-                    request_id, age
+                tracing::debug!(
+                    request_id = %request_id,
+                    age = ?age,
+                    "Cleaning up expired PRE response"
                 );
             }
             should_keep
@@ -284,10 +286,10 @@ where
 
         let removed = before_count - responses.len();
         if removed > 0 {
-            println!(
-                "Cleaned up {} expired PRE responses, {} remaining",
-                removed,
-                responses.len()
+            tracing::info!(
+                removed = removed,
+                remaining = responses.len(),
+                "Cleaned up expired PRE responses"
             );
         }
     }
@@ -313,9 +315,10 @@ where
 
         // Deserialize session_id (stored as 8 bytes, u64)
         if session_id_bytes.len() != 8 {
-            eprintln!(
-                "Invalid session_id length in storage: expected 8, got {}",
-                session_id_bytes.len()
+            tracing::error!(
+                expected = 8,
+                got = session_id_bytes.len(),
+                "Invalid session_id length in storage"
             );
             return None;
         }
@@ -340,14 +343,15 @@ where
             LocalStorageKeys::RingPkMapping(ring_pk_hex),
             session_id_bytes,
         ) {
-            eprintln!(
-                "Failed to store ring_pk mapping for session {}: {}",
-                session_id, e
+            tracing::error!(
+                session_id = session_id,
+                error = %e,
+                "Failed to store ring_pk mapping"
             );
         } else {
-            println!(
-                "Stored ring_pk mapping for session {} in local storage",
-                session_id
+            tracing::debug!(
+                session_id = session_id,
+                "Stored ring_pk mapping in local storage"
             );
         }
     }

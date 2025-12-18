@@ -50,13 +50,15 @@ where
         let req = request.into_inner();
         // TODO: Authentication, is user allowed to create a ring
         // TODO: Authenticate request info, fail if bad info ex: threshold > total_participants, participant_ids.len() != total_participants, duplicate participant IDs
-        println!("Received StartDkg request:");
-        println!("  Session ID: {}", req.session_id);
-        println!("  Threshold: {}", req.threshold);
-        println!("  Total Participants: {}", req.total_participants);
-        println!("  Participant IDs: {:?}", req.participant_ids);
-        println!("  Peer IDs: {:?}", req.peer_ids);
-        println!("  Parameters: {:?}", req.parameters);
+        tracing::info!(
+            session_id = %req.session_id,
+            threshold = req.threshold,
+            total_participants = req.total_participants,
+            participant_ids = ?req.participant_ids,
+            peer_ids = ?req.peer_ids,
+            parameters = ?req.parameters,
+            "Received StartDkg request"
+        );
 
         // Get current timestamp
         let created_at = SystemTime::now()
@@ -125,9 +127,10 @@ where
             DkgError::InvalidInput("Could not determine our node_id from assignments".to_string())
         })?;
 
-        println!(
-            "DKG Service (Initiator): Assigned node_ids - our node_id: {} (from {} total participants)",
-            our_assigned_node_id, req.total_participants
+        tracing::info!(
+            our_node_id = our_assigned_node_id,
+            total_participants = req.total_participants,
+            "DKG Service (Initiator): Assigned node_ids"
         );
 
         // Create DKG session with assigned node_id
@@ -174,7 +177,7 @@ where
                     requested_peers,
                     connection_summary.failed
                 );
-                eprintln!("Error: {}", error_msg);
+                tracing::error!(error = %error_msg, "Failed to connect to all peers");
 
                 // Return gRPC error and end execution
                 return Err(DkgError::NetworkConnection(error_msg).into());
@@ -218,7 +221,7 @@ where
                     .send_message_to_peer(peer_id_str, session_init_msg.clone())
                     .await
                 {
-                    eprintln!("Failed to send SessionInit to peer {}: {}", peer_id_str, e);
+                    tracing::error!(peer_id = %peer_id_str, error = %e, "Failed to send SessionInit to peer");
                     // Continue with other peers
                 }
             }
@@ -229,11 +232,11 @@ where
                 .initiate_phase1_commitments(session_id, &req.peer_ids)
                 .await
             {
-                eprintln!("Failed to initiate Phase 1: {}", e);
+                tracing::error!(error = %e, "Failed to initiate Phase 1");
                 return Err(e.into());
             }
 
-            println!("DKG Protocol: Phase 1 initiated, commitments broadcasted");
+            tracing::info!("DKG Protocol: Phase 1 initiated, commitments broadcasted");
         }
 
         let response = StartDkgResponse {

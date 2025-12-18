@@ -59,10 +59,12 @@ where
     ) -> Result<Response<StartPreResponse>, Status> {
         let req = request.into_inner();
         // TODO: Authenticate with ACP
-        println!("Received StartPre request:");
-        println!("  Ring PK: {}", req.ring_pk);
-        println!("  Reader PK: {}", req.rdr_pk);
-        println!("  Peer IDs: {:?}", req.peer_ids);
+        tracing::info!(
+            ring_pk = %req.ring_pk,
+            reader_pk = %req.rdr_pk,
+            peer_ids = ?req.peer_ids,
+            "Received StartPre request"
+        );
 
         // Get current timestamp
         let created_at = SystemTime::now()
@@ -121,13 +123,14 @@ where
                 requested_peers,
                 connection_summary.failed
             );
-            eprintln!("Error: {}", error_msg);
+            tracing::error!(error = %error_msg, "Failed to connect to all peers");
             return Err(PreError::NetworkConnection(error_msg).into());
         }
 
-        println!(
-            "PRE Service: Connected to {}/{} peers",
-            connection_summary.successful, requested_peers
+        tracing::info!(
+            connected = connection_summary.successful,
+            total = requested_peers,
+            "PRE Service: Connected to peers"
         );
 
         // 5. Create coordinator and initiate reencryption

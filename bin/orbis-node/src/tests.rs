@@ -2,7 +2,7 @@
 //!
 //! These tests verify the node initialization and configuration logic.
 
-use crate::{init_node, Args, NodeConfig};
+use crate::{init_node, Args, LogLevel, NodeConfig};
 use local_storage::memory::MemoryStorage;
 use local_storage::r#trait::LocalStorage;
 use network::Network;
@@ -21,6 +21,7 @@ async fn test_init_node_success() {
     let config = NodeConfig {
         args: Args {
             addr: "127.0.0.1:0".to_string(), // Use port 0 to let OS assign
+            log_level: LogLevel::Info,
         },
         network,
         local_storage: MemoryStorage::new(None),
@@ -56,6 +57,7 @@ async fn test_init_node_invalid_address() {
     let config = NodeConfig {
         args: Args {
             addr: "not-a-valid-address".to_string(),
+            log_level: LogLevel::Info,
         },
         network,
         local_storage: MemoryStorage::new(None),
@@ -81,6 +83,7 @@ async fn test_init_node_app_state_configuration() {
     let config = NodeConfig {
         args: Args {
             addr: bind_addr.clone(),
+            log_level: LogLevel::Info,
         },
         network,
         local_storage: MemoryStorage::new(None),
@@ -125,6 +128,7 @@ async fn test_init_multiple_nodes() {
     let config1 = NodeConfig {
         args: Args {
             addr: "127.0.0.1:0".to_string(),
+            log_level: LogLevel::Info,
         },
         network: network1,
         local_storage: MemoryStorage::new(None),
@@ -133,6 +137,7 @@ async fn test_init_multiple_nodes() {
     let config2 = NodeConfig {
         args: Args {
             addr: "127.0.0.1:0".to_string(),
+            log_level: LogLevel::Info,
         },
         network: network2,
         local_storage: MemoryStorage::new(None),
@@ -206,6 +211,7 @@ async fn test_init_node_with_encrypted_storage() {
     let config = NodeConfig {
         args: Args {
             addr: "127.0.0.1:0".to_string(),
+            log_level: LogLevel::Info,
         },
         network,
         local_storage,

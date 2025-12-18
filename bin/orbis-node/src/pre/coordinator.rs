@@ -86,9 +86,10 @@ where
                 rdr_pk,
                 ring_pk,
             } => {
-                println!(
-                    "PRE Coordinator: Received ReencryptRequest {} from node {}",
-                    request_id, from_node_id
+                tracing::info!(
+                    request_id = %request_id,
+                    from_node_id = from_node_id,
+                    "PRE Coordinator: Received ReencryptRequest"
                 );
 
                 // Handle the reencryption request
@@ -96,17 +97,18 @@ where
                     .await
             }
             PreMessage::ReencryptResponse { .. } => {
-                println!(
-                    "PRE Coordinator: Received ReencryptResponse for request {}",
-                    message.request_id()
+                tracing::debug!(
+                    request_id = %message.request_id(),
+                    "PRE Coordinator: Received ReencryptResponse"
                 );
                 // Responses are collected by initiate_reencryption, not here
                 Ok(None)
             }
             PreMessage::Error { request_id, error } => {
-                eprintln!(
-                    "PRE Coordinator: Received error for request {}: {}",
-                    request_id, error
+                tracing::error!(
+                    request_id = %request_id,
+                    error = %error,
+                    "PRE Coordinator: Received error"
                 );
                 Ok(None)
             }
@@ -194,9 +196,10 @@ where
             proof: proof_bytes,
         };
 
-        println!(
-            "PRE Coordinator: Sending ReencryptResponse for request {} to node {}",
-            request_id, from_node_id
+        tracing::debug!(
+            request_id = %request_id,
+            to_node_id = from_node_id,
+            "PRE Coordinator: Sending ReencryptResponse"
         );
 
         Ok(Some(response))
@@ -302,10 +305,10 @@ where
         rdr_pk_bytes: Vec<u8>,
         peer_ids: &[String],
     ) -> Result<Vec<u8>> {
-        println!(
-            "PRE Coordinator: Initiating reencryption for request {} with {} peers",
-            request_id,
-            peer_ids.len()
+        tracing::info!(
+            request_id = %request_id,
+            peer_count = peer_ids.len(),
+            "PRE Coordinator: Initiating reencryption"
         );
 
         // 1. Find DKG session to get threshold and public polynomial
@@ -396,7 +399,7 @@ where
         // Wait for all responses
         for handle in handles {
             if let Err(e) = handle.await {
-                eprintln!("Task failed: {:?}", e);
+                tracing::error!(error = ?e, "Task failed");
             }
         }
 
@@ -460,13 +463,17 @@ where
                 // Verify the reply
                 match dealer.verify(&rdr_pk, &pub_poly, &enc_cmt, &reply) {
                     Ok(_) => {
-                        println!("PRE Coordinator: Verified share from node {}", from_node_id);
+                        tracing::debug!(
+                            from_node_id = from_node_id,
+                            "PRE Coordinator: Verified share"
+                        );
                         verified_shares.push(reply.share);
                     }
                     Err(e) => {
-                        eprintln!(
-                            "PRE Coordinator: Failed to verify share from node {}: {}",
-                            from_node_id, e
+                        tracing::error!(
+                            from_node_id = from_node_id,
+                            error = %e,
+                            "PRE Coordinator: Failed to verify share"
                         );
                     }
                 }
@@ -517,9 +524,9 @@ where
             .remove_pre_response(request_id_arc.as_ref())
             .await;
 
-        println!(
-            "PRE Coordinator: Successfully recovered reencrypted commitment for request {}",
-            request_id_arc.as_ref()
+        tracing::info!(
+            request_id = %request_id_arc.as_ref(),
+            "PRE Coordinator: Successfully recovered reencrypted commitment"
         );
 
         Ok(response_bytes)
@@ -531,9 +538,6 @@ where
         self.app_state
             .store_pre_response(&request_id, message)
             .await;
-        println!(
-            "PRE Coordinator: Stored response for request {}",
-            request_id
-        );
+        tracing::debug!(request_id = %request_id, "PRE Coordinator: Stored response");
     }
 }
