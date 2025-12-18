@@ -54,6 +54,10 @@ pub enum DkgError {
     /// Generic DKG error
     #[error("DKG error: {0}")]
     Generic(String),
+
+    /// Hash conversion error
+    #[error("Hash conversion error: {0}")]
+    HashConversion(#[from] std::array::TryFromSliceError),
 }
 
 /// Result type for DKG operations

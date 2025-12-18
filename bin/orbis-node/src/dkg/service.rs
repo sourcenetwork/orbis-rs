@@ -5,8 +5,7 @@ use crate::dkg::messages::DkgMessage;
 use crate::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
 use crate::helpers::helpers::{connect_to_peers, validate_all_peer_ids};
 use network::DKG;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
@@ -66,11 +65,12 @@ where
             .map_err(|e| Status::internal(format!("Failed to get timestamp: {}", e)))?
             .as_secs() as i64;
 
-        // Convert session_id string to u64 by hashing it
+        // Convert session_id string to u64 using SHA-256 (cryptographic hash)
         // This allows string session IDs from the proto while DKGNode uses u64
-        let mut hasher = DefaultHasher::new();
-        req.session_id.hash(&mut hasher);
-        let session_id = hasher.finish();
+        // Using SHA-256 prevents collision attacks that would be possible with DefaultHasher
+        let hash = Sha256::digest(req.session_id.as_bytes());
+        let session_id =
+            u64::from_le_bytes(hash[..8].try_into().map_err(DkgError::HashConversion)?);
 
         // Create DKG coordinator (AppState clone is cheap - contains Arc types internally)
         let coordinator = DkgCoordinator::new(Arc::new(self.state.clone()));
