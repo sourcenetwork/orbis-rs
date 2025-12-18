@@ -9,7 +9,8 @@ use crate::dkg::service::DkgServiceImpl;
 use crate::pre::service::PreServiceImpl;
 use app_state::AppState;
 use clap::Parser;
-use local_storage::memory::MemoryStorage as LocalStorage;
+use local_storage::memory::MemoryStorage;
+use local_storage::r#trait::LocalStorage;
 use network::Network;
 use std::{net::SocketAddr, sync::Arc};
 
@@ -53,7 +54,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|e| format!("Failed to initialize network: {}", e))?,
     );
-    let local_storage = LocalStorage::default();
+    // TODO: obviously fix
+    let test_password = "test".to_string();
+    let local_storage = MemoryStorage::new(Some(test_password));
 
     // Get the local peer ID and address
     let local_peer_id = network.local_peer_id();

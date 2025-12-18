@@ -1,4 +1,5 @@
 use crate::error::Result;
+use aes_gcm::Aes256Gcm;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Eq, Hash, PartialEq)]
@@ -9,6 +10,7 @@ pub enum LocalStorageKeys {
 }
 
 pub trait LocalStorage {
+    fn new(password: Option<String>) -> Self;
     /// Get an item from your local store
     fn get(&self, key: LocalStorageKeys) -> Result<Option<Vec<u8>>>;
     /// Set an item into your local store

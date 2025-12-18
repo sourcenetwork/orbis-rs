@@ -6,7 +6,8 @@ use crate::app_state::AppState;
 use crate::dkg::protocol_handler;
 use crate::dkg::protocol_handler::create_router_with_handlers;
 use hex;
-use local_storage::memory::MemoryStorage as LocalStorage;
+use local_storage::memory::MemoryStorage;
+use local_storage::r#trait::LocalStorage;
 use network::Router;
 use std::sync::Arc;
 
@@ -48,7 +49,7 @@ pub async fn create_test_app_state(bind_address: Option<String>) -> AppState<Dkg
             .await
             .expect("Failed to initialize network for testing"),
     );
-    let local_storage = LocalStorage::default();
+    let local_storage = MemoryStorage::new(None);
 
     // Create AppState with the network (node_id is no longer needed - it's session-specific)
     AppState::<DkgImpl>::new(bind_address, network, local_storage)
