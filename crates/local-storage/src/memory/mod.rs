@@ -9,6 +9,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
 };
+use zeroize::Zeroizing;
 
 #[derive(Clone)]
 pub struct MemoryStorage {
@@ -32,13 +33,15 @@ impl LocalStorage for MemoryStorage {
                 let salt = SaltString::generate(&mut rng);
                 let argon2 = Argon2::default();
 
-                let mut key_bytes = [0u8; 32];
+                // Use Zeroizing wrapper to ensure key bytes are zeroed on drop
+                let mut key_bytes = Zeroizing::new([0u8; 32]);
                 let salt_bytes = salt.as_salt().as_str().as_bytes();
                 argon2
-                    .hash_password_into(password.as_bytes(), salt_bytes, &mut key_bytes)
+                    .hash_password_into(password.as_bytes(), salt_bytes, key_bytes.as_mut())
                     .expect("argon2 key derivation failed");
 
-                let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+                let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key_bytes.as_ref()));
+                // key_bytes is automatically zeroed when it goes out of scope here
 
                 Self {
                     store,
@@ -48,10 +51,12 @@ impl LocalStorage for MemoryStorage {
             }
             None => {
                 let mut rng = OsRng;
-                let mut key_bytes = [0u8; 32];
-                rng.fill_bytes(&mut key_bytes);
+                // Use Zeroizing wrapper to ensure key bytes are zeroed on drop
+                let mut key_bytes = Zeroizing::new([0u8; 32]);
+                rng.fill_bytes(key_bytes.as_mut());
 
-                let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+                let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key_bytes.as_ref()));
+                // key_bytes is automatically zeroed when it goes out of scope here
 
                 Self {
                     store,
