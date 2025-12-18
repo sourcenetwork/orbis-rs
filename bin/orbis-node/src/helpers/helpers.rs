@@ -2,58 +2,15 @@
 //!
 //! This module provides utility functions used across the codebase.
 
-use crate::constants::{EXPECTED_HEX_NODE_ID_LENGTH, MAX_PEER_ID_LENGTH};
+use crate::constants::{EXPECTED_HEX_NODE_ID_LENGTH, MAX_PEER_ID_LENGTH, PASSWORD_ENV_VAR, PASSWORD_FILE_NAME};
+use crate::error::{PasswordError, PasswordSource, PeerIdValidationError};
 use network::{Network, PeerId};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
-
-/// Error type for peer ID validation
-#[derive(Debug, Clone)]
-pub enum PeerIdValidationError {
-    /// Peer ID string is empty
-    Empty,
-    /// Peer ID string exceeds maximum length
-    TooLong { length: usize, max: usize },
-    /// Invalid format - missing or malformed node ID
-    InvalidFormat(String),
-    /// Invalid socket address in peer ID
-    InvalidSocketAddr(String),
-    /// Node ID part has incorrect length
-    InvalidNodeIdLength { length: usize, expected: usize },
-    /// Node ID contains invalid characters
-    InvalidCharacters(String),
-}
-
-impl std::fmt::Display for PeerIdValidationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PeerIdValidationError::Empty => write!(f, "Peer ID cannot be empty"),
-            PeerIdValidationError::TooLong { length, max } => {
-                write!(f, "Peer ID too long: {} bytes, maximum is {}", length, max)
-            }
-            PeerIdValidationError::InvalidFormat(msg) => {
-                write!(f, "Invalid peer ID format: {}", msg)
-            }
-            PeerIdValidationError::InvalidSocketAddr(msg) => {
-                write!(f, "Invalid socket address in peer ID: {}", msg)
-            }
-            PeerIdValidationError::InvalidNodeIdLength { length, expected } => {
-                write!(
-                    f,
-                    "Invalid node ID length: {} chars, expected {}",
-                    length, expected
-                )
-            }
-            PeerIdValidationError::InvalidCharacters(msg) => {
-                write!(f, "Node ID contains invalid characters: {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for PeerIdValidationError {}
+use std::{env, fs};
 
 /// Validate a peer ID string
 ///
@@ -369,4 +326,86 @@ pub fn determine_session_node_id(our_peer_id: &str, all_peer_ids: &[String]) -> 
         .iter()
         .position(|pid| *pid == our_node_part)
         .map(|idx| (idx + 1) as u32)
+}
+
+// ============================================================================
+// Password Retrieval Functions
+// ============================================================================
+
+/// Get the default password file path
+///
+/// Returns the path to the password file in the user's home directory.
+/// Falls back to current directory if home directory cannot be determined.
+pub fn get_password_file_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(PASSWORD_FILE_NAME)
+}
+
+/// Retrieve the encryption password following precedence order:
+/// 1. Password file (highest priority)
+/// 2. Environment variable
+/// 3. Interactive prompt (lowest priority)
+///
+/// This is used for encrypting ring key shares in local storage.
+///
+/// # Arguments
+/// * `custom_file_path` - Optional custom path to password file. If None, uses default location.
+///
+/// # Returns
+/// A tuple of (password, source) on success, or an error
+pub fn get_password(custom_file_path: Option<PathBuf>) -> Result<(String, PasswordSource), PasswordError> {
+    // 1. Check password file first
+    let file_path = custom_file_path.unwrap_or_else(get_password_file_path);
+    if file_path.exists() {
+        match fs::read_to_string(&file_path) {
+            Ok(content) => {
+                let password = content.trim().to_string();
+                if password.is_empty() {
+                    // File exists but is empty, continue to next source
+                    println!("Warning: Password file exists but is empty, checking environment variable...");
+                } else {
+                    println!("Password loaded from file: {}", file_path.display());
+                    return Ok((password, PasswordSource::File(file_path)));
+                }
+            }
+            Err(e) => {
+                // Log warning but continue to next source
+                eprintln!("Warning: Could not read password file {}: {}", file_path.display(), e);
+            }
+        }
+    }
+
+    // 2. Check environment variable
+    if let Ok(password) = env::var(PASSWORD_ENV_VAR) {
+        let password = password.trim().to_string();
+        if !password.is_empty() {
+            println!("Password loaded from environment variable {}", PASSWORD_ENV_VAR);
+            return Ok((password, PasswordSource::Environment));
+        }
+        println!("Warning: Environment variable {} is set but empty, prompting for password...", PASSWORD_ENV_VAR);
+    }
+
+    // 3. Prompt for password interactively
+    prompt_for_password()
+}
+
+/// Prompt the user for a password interactively
+///
+/// This function reads a password from stdin with echo disabled for security.
+///
+/// # Returns
+/// A tuple of (password, PasswordSource::Interactive) on success
+fn prompt_for_password() -> Result<(String, PasswordSource), PasswordError> {
+    let password = rpassword::prompt_password("Enter encryption password for ring key share: ")
+        .map_err(PasswordError::StdinError)?;
+
+    let password = password.trim().to_string();
+
+    if password.is_empty() {
+        return Err(PasswordError::EmptyPassword);
+    }
+
+    println!("Password entered interactively");
+    Ok((password, PasswordSource::Interactive))
 }

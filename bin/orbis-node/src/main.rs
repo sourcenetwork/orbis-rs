@@ -2,10 +2,12 @@
 pub mod app_state;
 pub mod constants;
 pub mod dkg;
+pub mod error;
 pub mod helpers;
 pub mod pre;
 
 use crate::dkg::service::DkgServiceImpl;
+use crate::helpers::helpers::get_password;
 use crate::pre::service::PreServiceImpl;
 use app_state::AppState;
 use clap::Parser;
@@ -54,9 +56,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|e| format!("Failed to initialize network: {}", e))?,
     );
-    // TODO: obviously fix
-    let test_password = "test".to_string();
-    let local_storage = MemoryStorage::new(Some(test_password));
+    // Get password for encrypting ring key shares
+    // Priority: 1) Password file (~/.orbis_password), 2) ORBIS_PASSWORD env var, 3) Interactive prompt
+    let (password, _source) = get_password(None)
+        .map_err(|e| format!("Failed to get password: {}", e))?;
+    let local_storage = MemoryStorage::new(Some(password));
 
     // Get the local peer ID and address
     let local_peer_id = network.local_peer_id();

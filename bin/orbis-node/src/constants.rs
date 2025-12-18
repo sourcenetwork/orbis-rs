@@ -83,3 +83,21 @@ pub const MIN_NODE_ID_LENGTH: usize = 64;
 /// This constant is used to validate that peer IDs contain properly formatted
 /// node IDs.
 pub const EXPECTED_HEX_NODE_ID_LENGTH: usize = 64;
+
+// ============================================================================
+// Password Configuration Constants
+// ============================================================================
+
+/// Default filename for the password file
+///
+/// The password file stores the encryption password used for encrypting
+/// ring key shares in local storage. This file should have restricted
+/// permissions (0600) and be located in a secure directory.
+pub const PASSWORD_FILE_NAME: &str = ".orbis_password";
+
+/// Environment variable name for the encryption password
+///
+/// If set, this environment variable takes precedence over password file
+/// but not over the password file (file has highest priority).
+/// This allows for secure password injection in containerized environments.
+pub const PASSWORD_ENV_VAR: &str = "ORBIS_PASSWORD";

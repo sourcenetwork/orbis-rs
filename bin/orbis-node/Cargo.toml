@@ -26,6 +26,8 @@ ark-serialize = "0.4"
 ark-bls12-381 = "0.4"
 rand = "0.9.2"
 base64 = "0.22.1"
+dirs = "5.0"
+rpassword = "7.3"
 
 [dev-dependencies]
 serial_test = "3.2.0"
