@@ -78,9 +78,17 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
         .local_address()
         .map_err(|e| format!("Failed to get local address: {}", e))?;
 
+    // Get the bound socket address (host:port) for the connection string
+    let bound_addrs = config.network.bound_addresses();
+    let socket_addr = bound_addrs
+        .first()
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|| "127.0.0.1:0".to_string());
+
     tracing::info!("Network initialized");
-    tracing::info!(peer_id = %hex::encode(local_peer_id.as_bytes()), "Local Peer ID");
-    tracing::info!(address = %local_address, "Local Address");
+    let peer_id_hex = hex::encode(local_peer_id.as_bytes());
+    let connection_string = format!("{}@{}", peer_id_hex, socket_addr);
+    tracing::info!(connection = %connection_string, "Iroh connection string (peer_id@host:port)");
 
     // Create shared application state (needed for router)
     let app_state = AppState::<DkgImpl>::new(

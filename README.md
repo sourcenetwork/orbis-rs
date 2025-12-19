@@ -156,6 +156,9 @@ cargo check
 
 # Run with tracing
 RUST_LOG=debug cargo run -p orbis-node
+
+# Docker 3 node network (for testing only)
+docker compose -f docker/docker-compose.3-node.yml up
 ```
 
 ## Documentation
