@@ -1,4 +1,5 @@
 use crate::dkg::coordinator::DkgCoordinator;
+use crate::helpers::helpers::session_id_string_to_u64;
 use crate::helpers::test_helpers::{
     create_test_app_state, create_test_app_state_default, setup_three_node_network,
 };
@@ -9,13 +10,13 @@ use crate::{
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
-    hash::{Hash, Hasher},
+    collections::HashMap,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::time::{sleep, Duration};
 use tonic::{Request, Response};
+use tracing_subscriber;
 
 // Concrete crypto implementations for tests
 use crypto::bls12_381::dkg::DKGNode;
@@ -31,18 +32,13 @@ async fn test_start_dkg_unit() {
         session_id: "test-session-123".to_string(),
         threshold: 2,
         total_participants: 3,
-        participant_ids: vec![
-            "participant-1".to_string(),
-            "participant-2".to_string(),
-            "participant-3".to_string(),
-        ],
+        peer_ids: vec![], // Empty for unit tests - no actual connections needed
         parameters: {
             let mut map = HashMap::new();
             map.insert("key_type".to_string(), "BLS12_381".to_string());
             map.insert("curve".to_string(), "bls12_381".to_string());
             map
         },
-        peer_ids: vec![], // Empty for unit tests - no actual connections needed
     };
 
     let tonic_request = Request::new(request.clone());
@@ -83,9 +79,8 @@ async fn test_start_dkg_minimal() {
         session_id: "minimal-session".to_string(),
         threshold: 1,
         total_participants: 1,
-        participant_ids: vec!["single-participant".to_string()],
-        parameters: HashMap::new(),
         peer_ids: vec![], // Empty for unit tests - no actual connections needed
+        parameters: HashMap::new(),
     };
 
     let tonic_request = Request::new(request.clone());
@@ -115,9 +110,8 @@ async fn test_start_dkg_empty_participants() {
         session_id: "empty-session".to_string(),
         threshold: 0,
         total_participants: 0,
-        participant_ids: vec![],
-        parameters: HashMap::new(),
         peer_ids: vec![], // Empty for unit tests - no actual connections needed
+        parameters: HashMap::new(),
     };
 
     let tonic_request = Request::new(request.clone());
@@ -150,15 +144,8 @@ async fn test_start_dkg_with_parameters() {
         session_id: "parameterized-session".to_string(),
         threshold: 3,
         total_participants: 5,
-        participant_ids: vec![
-            "p1".to_string(),
-            "p2".to_string(),
-            "p3".to_string(),
-            "p4".to_string(),
-            "p5".to_string(),
-        ],
-        parameters: parameters.clone(),
         peer_ids: vec![], // Empty for unit tests - no actual connections needed
+        parameters: parameters.clone(),
     };
 
     let tonic_request = Request::new(request.clone());
@@ -197,11 +184,6 @@ async fn test_three_nodes_connect() {
         session_id: "three-node-session".to_string(),
         threshold: 2,
         total_participants: 3,
-        participant_ids: vec![
-            "alice".to_string(),
-            "bob".to_string(),
-            "charlie".to_string(),
-        ],
         peer_ids,
         parameters: {
             let mut map = HashMap::new();
@@ -257,11 +239,6 @@ async fn test_start_dkg_fails_on_connection_failure() {
         session_id: "failure-test-session".to_string(),
         threshold: 2,
         total_participants: 3,
-        participant_ids: vec![
-            "alice".to_string(),
-            "bob".to_string(),
-            "charlie".to_string(),
-        ],
         peer_ids: vec![
             "invalid-peer-id-1".to_string(),
             "invalid-peer-id-2".to_string(),
@@ -305,6 +282,12 @@ async fn test_start_dkg_fails_on_connection_failure() {
 /// the gRPC service succeeds.
 #[tokio::test]
 async fn test_start_dkg_succeeds_on_all_connections() {
+    // Initialize tracing for debugging
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .try_init();
+
     // Set up three-node network with routers started for Bob and Charlie
     let mut network = setup_three_node_network(true).await;
 
@@ -320,11 +303,6 @@ async fn test_start_dkg_succeeds_on_all_connections() {
         session_id: "success-test-session".to_string(),
         threshold: 2,
         total_participants: 3,
-        participant_ids: vec![
-            "alice".to_string(),
-            "bob".to_string(),
-            "charlie".to_string(),
-        ],
         peer_ids,
         parameters: {
             let mut map = HashMap::new();
@@ -354,22 +332,33 @@ async fn test_start_dkg_succeeds_on_all_connections() {
 
     // Wait for DKG to complete (all nodes should reach Phase 4)
     // Convert session_id string to u64 (same as in service.rs)
-    let mut hasher = DefaultHasher::new();
-    request.session_id.hash(&mut hasher);
-    let session_id = hasher.finish();
+    let session_id =
+        session_id_string_to_u64(&request.session_id).expect("Failed to convert session_id to u64");
 
     // Wait up to 10 seconds for DKG to complete
     let check_interval = Duration::from_millis(1000);
     let max_wait = Duration::from_secs(50);
 
     let start = std::time::Instant::now();
+    println!("Looking for session_id: {}", session_id);
     loop {
         // Check if Alice's session has completed Phase 4
         // We can check by trying to get the session and see if we can compute the aggregate key
         let alice_coordinator = DkgCoordinator::new(Arc::new(network.alice.app_state.clone()));
 
+        // Debug: check session count
+        let session_count = network.alice.app_state.session_count().await;
+        if start.elapsed().as_secs() % 5 == 0 {
+            println!(
+                "Session count: {}, elapsed: {:?}",
+                session_count,
+                start.elapsed()
+            );
+        }
+
         // Try to get the session and check if we can compute aggregate key (indicates Phase 4 complete)
         if let Some(session) = alice_coordinator.get_session(&session_id).await {
+            println!("Found session!");
             let session_guard = session.read().await;
             let key = session_guard.compute_aggregate_public_key();
             // If we can compute aggregate key, Phase 4 is complete

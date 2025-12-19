@@ -3,6 +3,7 @@
 //! This module provides utility functions used across the codebase.
 
 use clap::ValueEnum;
+use sha2::{Digest, Sha256};
 
 use crate::constants::{
     EXPECTED_HEX_NODE_ID_LENGTH, MAX_PEER_ID_LENGTH, PASSWORD_ENV_VAR, PASSWORD_FILE_NAME,
@@ -334,6 +335,31 @@ pub fn determine_session_node_id(our_peer_id: &str, all_peer_ids: &[String]) -> 
         .iter()
         .position(|pid| *pid == our_node_part)
         .map(|idx| (idx + 1) as u32)
+}
+
+/// Convert session_id string to u64 using SHA-256 (cryptographic hash)
+///
+/// This function allows string session IDs from the proto while DKGNode uses u64.
+/// Using SHA-256 prevents collision attacks that would be possible with DefaultHasher.
+///
+/// # Arguments
+/// * `session_id_str` - The session ID string to convert
+///
+/// # Returns
+/// * `Ok(u64)` - The session ID as a u64
+/// * `Err(std::array::TryFromSliceError)` - If the hash conversion fails
+///
+/// # Example
+/// ```rust
+/// use crate::helpers::helpers::session_id_string_to_u64;
+///
+/// let session_id = session_id_string_to_u64("test-session-123")?;
+/// ```
+pub fn session_id_string_to_u64(
+    session_id_str: &str,
+) -> Result<u64, std::array::TryFromSliceError> {
+    let hash = Sha256::digest(session_id_str.as_bytes());
+    Ok(u64::from_le_bytes(hash[..8].try_into()?))
 }
 
 // ============================================================================

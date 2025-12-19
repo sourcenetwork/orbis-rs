@@ -4,7 +4,9 @@
 //! These tests verify the complete flow: DKG → Alice encrypts → PRE to Bob → Bob decrypts.
 
 use crate::dkg::coordinator::DkgCoordinator;
-use crate::helpers::test_helpers::setup_three_node_network_with_pre;
+use crate::helpers::{
+    helpers::session_id_string_to_u64, test_helpers::setup_three_node_network_with_pre,
+};
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::{
     dkg_service::{dkg_service_server::DkgService, StartDkgRequest},
@@ -18,11 +20,7 @@ use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{Dkg, ThresholdDealer};
 use rand_core::OsRng;
-use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use tokio::time::{sleep, Duration};
 use tonic::Request;
 
@@ -74,11 +72,6 @@ async fn test_dkg_then_pre_end_to_end() {
         session_id: session_id_str.clone(),
         threshold: 2,
         total_participants: 3,
-        participant_ids: vec![
-            "node1".to_string(),
-            "node2".to_string(),
-            "node3".to_string(),
-        ],
         peer_ids,
         parameters: {
             let mut map = HashMap::new();
@@ -98,9 +91,8 @@ async fn test_dkg_then_pre_end_to_end() {
     );
 
     // Convert session_id string to u64 (same as in service.rs)
-    let mut hasher = DefaultHasher::new();
-    session_id_str.hash(&mut hasher);
-    let session_id = hasher.finish();
+    let session_id =
+        session_id_string_to_u64(&session_id_str).expect("Failed to convert session_id to u64");
 
     // Wait for DKG to complete and get the aggregate public key
     println!("Waiting for DKG to complete...");
@@ -320,11 +312,6 @@ async fn test_pre_with_large_secret() {
         session_id: session_id_str.clone(),
         threshold: 2,
         total_participants: 3,
-        participant_ids: vec![
-            "node1".to_string(),
-            "node2".to_string(),
-            "node3".to_string(),
-        ],
         peer_ids,
         parameters: {
             let mut map = HashMap::new();
@@ -336,9 +323,8 @@ async fn test_pre_with_large_secret() {
     let result = node1_service.start_dkg(Request::new(request)).await;
     assert!(result.is_ok());
 
-    let mut hasher = DefaultHasher::new();
-    session_id_str.hash(&mut hasher);
-    let session_id = hasher.finish();
+    let session_id =
+        session_id_string_to_u64(&session_id_str).expect("Failed to convert session_id to u64");
 
     let aggregate_pk = wait_for_dkg_completion(&network, session_id).await;
 
@@ -426,11 +412,6 @@ async fn test_pre_fails_with_wrong_key() {
         session_id: session_id_str.clone(),
         threshold: 2,
         total_participants: 3,
-        participant_ids: vec![
-            "node1".to_string(),
-            "node2".to_string(),
-            "node3".to_string(),
-        ],
         peer_ids,
         parameters: {
             let mut map = HashMap::new();
@@ -442,10 +423,8 @@ async fn test_pre_fails_with_wrong_key() {
     let result = node1_service.start_dkg(Request::new(request)).await;
     assert!(result.is_ok());
 
-    let mut hasher = DefaultHasher::new();
-    session_id_str.hash(&mut hasher);
-    let session_id = hasher.finish();
-
+    let session_id =
+        session_id_string_to_u64(&session_id_str).expect("Failed to convert session_id to u64");
     let aggregate_pk = wait_for_dkg_completion(&network, session_id).await;
 
     // Alice encrypts

@@ -3,9 +3,8 @@ use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::DkgMessage;
 use crate::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
-use crate::helpers::helpers::{connect_to_peers, validate_all_peer_ids};
+use crate::helpers::helpers::{connect_to_peers, session_id_string_to_u64, validate_all_peer_ids};
 use network::DKG;
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
@@ -53,7 +52,6 @@ where
             session_id = %req.session_id,
             threshold = req.threshold,
             total_participants = req.total_participants,
-            participant_ids = ?req.participant_ids,
             peer_ids = ?req.peer_ids,
             parameters = ?req.parameters,
             "Received StartDkg request"
@@ -65,12 +63,9 @@ where
             .map_err(|e| Status::internal(format!("Failed to get timestamp: {}", e)))?
             .as_secs() as i64;
 
-        // Convert session_id string to u64 using SHA-256 (cryptographic hash)
-        // This allows string session IDs from the proto while DKGNode uses u64
-        // Using SHA-256 prevents collision attacks that would be possible with DefaultHasher
-        let hash = Sha256::digest(req.session_id.as_bytes());
+        // Convert session_id string to u64 using SHA-256
         let session_id =
-            u64::from_le_bytes(hash[..8].try_into().map_err(DkgError::HashConversion)?);
+            session_id_string_to_u64(&req.session_id).map_err(DkgError::HashConversion)?;
 
         // Create DKG coordinator (AppState clone is cheap - contains Arc types internally)
         let coordinator = DkgCoordinator::new(Arc::new(self.state.clone()));
@@ -205,12 +200,10 @@ where
                 .set_node_peer_mappings(&session_id, node_id_to_peer_id)
                 .await;
 
-            let participant_ids: Vec<u32> = (1..=req.total_participants as u32).collect();
             let session_init_msg = DkgMessage::SessionInit {
                 session_id,
                 threshold: req.threshold,
                 total_participants: req.total_participants,
-                participant_ids: participant_ids.clone(),
                 peer_ids: all_peer_ids.clone(), // Include all peer_ids (including our own) so receivers know all participants
                 node_id_assignments: node_id_assignments.clone(), // Assignments made by initiator
             };

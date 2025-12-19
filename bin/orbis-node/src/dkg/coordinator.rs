@@ -115,7 +115,6 @@ where
         if let DkgMessage::SessionInit {
             threshold,
             total_participants,
-            participant_ids: _,
             peer_ids,
             node_id_assignments,
             ..
