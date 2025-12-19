@@ -1,0 +1,46 @@
+services:
+  node1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: orbis-node-1
+    environment:
+      - ORBIS_PASSWORD=testpassword123
+      - RUST_LOG=info
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info"]
+    ports:
+      - "50051:50051"
+    networks:
+      - orbis-network
+
+  node2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: orbis-node-2
+    environment:
+      - ORBIS_PASSWORD=testpassword123
+      - RUST_LOG=info
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info"]
+    ports:
+      - "50052:50051"
+    networks:
+      - orbis-network
+
+  node3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: orbis-node-3
+    environment:
+      - ORBIS_PASSWORD=testpassword123
+      - RUST_LOG=info
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info"]
+    ports:
+      - "50053:50051"
+    networks:
+      - orbis-network
+
+networks:
+  orbis-network:
+    driver: bridge

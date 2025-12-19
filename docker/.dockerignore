@@ -1,0 +1,10 @@
+target/
+.git/
+.gitignore
+.claude/
+.cursor/
+docs/
+README.md
+*.md
+Dockerfile
+.dockerignore
