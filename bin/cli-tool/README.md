@@ -153,9 +153,10 @@ Perform PRE with 3 participating nodes:
 
 ```bash
 cli-tool pre \
-  --ring-pk <ring_pk_from_dkg> \
-  --secret "sensitive-data-123" \
-  --reader-pk <reader_public_key> \
+ --ring-pk <hex from DKG> \   
+ --secret "Plaintext" \
+  --reader-pk <hex from generate-reader-key> \
+  --reader-sk <hex from generate-reader-key> \    
   --peer-ids node1@127.0.0.1:8080 node2@127.0.0.1:8081 node3@127.0.0.1:8082
 ```
 

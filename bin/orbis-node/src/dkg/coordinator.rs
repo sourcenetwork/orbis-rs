@@ -1004,11 +1004,12 @@ where
             DkgError::Serialization(format!("Failed to serialize aggregate public key: {}", e))
         })?;
         self.app_state
-            .store_ring_pk_mapping(ring_pk_bytes, session_id)
+            .store_ring_pk_mapping(ring_pk_bytes.clone(), session_id)
             .await;
 
         tracing::info!(
             aggregate_pk = ?aggregate_pk,
+            ring_key_hex = hex::encode(ring_pk_bytes),
             node_id = node_id,
             "Phase 4: DKG complete! Final share computed"
         );
