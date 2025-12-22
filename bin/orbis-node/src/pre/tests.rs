@@ -4,9 +4,7 @@
 //! These tests verify the complete flow: DKG → Alice encrypts → PRE to Bob → Bob decrypts.
 
 use crate::dkg::coordinator::DkgCoordinator;
-use crate::helpers::{
-    helpers::session_id_string_to_u64, test_helpers::setup_three_node_network_with_pre,
-};
+use crate::helpers::test_helpers::setup_three_node_network_with_pre;
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::{
     dkg_service::{dkg_service_server::DkgService, StartDkgRequest},
@@ -58,18 +56,8 @@ async fn test_dkg_then_pre_end_to_end() {
     // Create node1's service (initiator)
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
 
-    // Generate a unique session ID
-    let session_id_str = format!(
-        "pre-e2e-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-    );
-
     // node1 sends StartDkgRequest to initiate the protocol
     let request = StartDkgRequest {
-        session_id: session_id_str.clone(),
         threshold: 2,
         peer_ids,
     };
@@ -83,13 +71,13 @@ async fn test_dkg_then_pre_end_to_end() {
         result.err()
     );
 
-    // Convert session_id string to u64 (same as in service.rs)
-    let session_id =
-        session_id_string_to_u64(&session_id_str).expect("Failed to convert session_id to u64");
-
     // Wait for DKG to complete and get the aggregate public key
     println!("Waiting for DKG to complete...");
-    let aggregate_pk = wait_for_dkg_completion(&network, session_id).await;
+    let aggregate_pk = wait_for_dkg_completion(
+        &network,
+        result.unwrap().into_inner().session_id.parse().unwrap(),
+    )
+    .await;
     println!("DKG completed! Aggregate public key: {:?}", aggregate_pk);
 
     // =========================================================================
@@ -293,16 +281,8 @@ async fn test_pre_with_large_secret() {
 
     // Run DKG
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
-    let session_id_str = format!(
-        "pre-large-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-    );
 
     let request = StartDkgRequest {
-        session_id: session_id_str.clone(),
         threshold: 2,
         peer_ids,
     };
@@ -310,10 +290,11 @@ async fn test_pre_with_large_secret() {
     let result = node1_service.start_dkg(Request::new(request)).await;
     assert!(result.is_ok());
 
-    let session_id =
-        session_id_string_to_u64(&session_id_str).expect("Failed to convert session_id to u64");
-
-    let aggregate_pk = wait_for_dkg_completion(&network, session_id).await;
+    let aggregate_pk = wait_for_dkg_completion(
+        &network,
+        result.unwrap().into_inner().session_id.parse().unwrap(),
+    )
+    .await;
 
     // Create a large secret (1KB)
     let large_secret: Vec<u8> = (0..1024).map(|i| (i % 256) as u8).collect();
@@ -387,16 +368,8 @@ async fn test_pre_fails_with_wrong_key() {
 
     // Run DKG
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
-    let session_id_str = format!(
-        "pre-fail-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-    );
 
     let request = StartDkgRequest {
-        session_id: session_id_str.clone(),
         threshold: 2,
         peer_ids,
     };
@@ -404,9 +377,11 @@ async fn test_pre_fails_with_wrong_key() {
     let result = node1_service.start_dkg(Request::new(request)).await;
     assert!(result.is_ok());
 
-    let session_id =
-        session_id_string_to_u64(&session_id_str).expect("Failed to convert session_id to u64");
-    let aggregate_pk = wait_for_dkg_completion(&network, session_id).await;
+    let aggregate_pk = wait_for_dkg_completion(
+        &network,
+        result.unwrap().into_inner().session_id.parse().unwrap(),
+    )
+    .await;
 
     // Alice encrypts
     let secret_message = b"Secret that should not be decrypted with wrong key";

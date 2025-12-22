@@ -3,10 +3,9 @@ use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::DkgMessage;
 use crate::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
-use crate::helpers::helpers::{
-    connect_to_peers, extract_node_part, session_id_string_to_u64, validate_all_peer_ids,
-};
+use crate::helpers::helpers::{connect_to_peers, extract_node_part, validate_all_peer_ids};
 use network::DKG;
+use rand;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
@@ -62,9 +61,8 @@ where
             .map_err(|e| Status::internal(format!("Failed to get timestamp: {}", e)))?
             .as_secs() as i64;
 
-        // Convert session_id string to u64 using SHA-256
-        let session_id =
-            session_id_string_to_u64(&req.session_id).map_err(DkgError::HashConversion)?;
+        // Generate random session id
+        let session_id: u64 = rand::random();
 
         // Create DKG coordinator (AppState clone is cheap - contains Arc types internally)
         let coordinator = DkgCoordinator::new(Arc::new(self.state.clone()));
@@ -239,7 +237,7 @@ where
         }
 
         let response = StartDkgResponse {
-            session_id: req.session_id.clone(),
+            session_id: session_id.to_string(),
             status: "started".to_string(),
             message: format!(
                 "DKG session started with threshold {} and {} participants",

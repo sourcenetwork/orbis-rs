@@ -48,10 +48,6 @@ pub enum SubCommands {
         #[clap(short, long)]
         threshold: u32,
 
-        /// Optional session ID (generated if not provided)
-        #[clap(short, long)]
-        session_id: Option<String>,
-
         /// Peer IDs for P2P connections (required)
         #[clap(long, required = true, num_args = 1..)]
         peer_ids: Vec<String>,
@@ -112,10 +108,9 @@ async fn main() -> Result<()> {
         SubCommands::Dkg {
             endpoint,
             threshold,
-            session_id,
             peer_ids,
         } => {
-            do_dkg(endpoint, threshold, session_id, peer_ids).await?;
+            do_dkg(endpoint, threshold, peer_ids).await?;
         }
         SubCommands::Pre {
             endpoint,
@@ -142,12 +137,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-pub async fn do_dkg(
-    endpoint: String,
-    threshold: u32,
-    session_id: Option<String>,
-    peer_ids: Vec<String>,
-) -> Result<()> {
+pub async fn do_dkg(endpoint: String, threshold: u32, peer_ids: Vec<String>) -> Result<()> {
     // Total nodes = peers + the node we're connecting to
     let total_nodes = peer_ids.len() as u32;
 
@@ -159,11 +149,8 @@ pub async fn do_dkg(
         ));
     }
 
-    let session_id = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
     println!("Starting DKG session:");
     println!("  Endpoint: {}", endpoint);
-    println!("  Session ID: {}", session_id);
     println!("  Threshold: {}/{}", threshold, total_nodes);
     println!("  Peer IDs: {:?}", peer_ids);
     println!();
@@ -175,7 +162,6 @@ pub async fn do_dkg(
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
     let request = tonic::Request::new(dkg_service::StartDkgRequest {
-        session_id: session_id.clone(),
         threshold,
         peer_ids,
     });
@@ -189,7 +175,6 @@ pub async fn do_dkg(
 
     println!("DKG Result:");
     println!("{}", "=".repeat(60));
-    println!("  Session ID: {}", response.session_id);
     println!("  Status: {}", response.status);
     println!("  Message: {}", response.message);
 

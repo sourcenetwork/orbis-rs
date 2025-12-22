@@ -1,5 +1,4 @@
 use crate::dkg::coordinator::DkgCoordinator;
-use crate::helpers::helpers::session_id_string_to_u64;
 use crate::helpers::test_helpers::{
     create_test_app_state, create_test_app_state_default, setup_three_node_network,
 };
@@ -25,7 +24,6 @@ async fn test_start_dkg_empty_participants() {
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
     let request = StartDkgRequest {
-        session_id: "empty-session".to_string(),
         threshold: 0,
         peer_ids: vec![], // Empty - should result in error
     };
@@ -56,7 +54,6 @@ async fn test_three_nodes_connect() {
 
     // Alice sends StartDkgRequest with Bob and Charlie's peer IDs
     let request = StartDkgRequest {
-        session_id: "three-node-session".to_string(),
         threshold: 2,
         peer_ids,
     };
@@ -71,7 +68,6 @@ async fn test_three_nodes_connect() {
     let inner = response.into_inner();
 
     // Verify response
-    assert_eq!(inner.session_id, request.session_id);
     assert_eq!(inner.status, "started");
     assert!(inner.message.contains("DKG session started"));
 
@@ -104,7 +100,6 @@ async fn test_start_dkg_fails_on_connection_failure() {
     // Create a request with invalid peer IDs that fail validation
     // Using obviously invalid peer IDs (not valid hex-encoded Ed25519 public keys)
     let request = StartDkgRequest {
-        session_id: "failure-test-session".to_string(),
         threshold: 2,
         peer_ids: vec![
             "invalid-peer-id-1".to_string(),
@@ -161,7 +156,6 @@ async fn test_start_dkg_succeeds_on_all_connections() {
 
     // Alice sends StartDkgRequest with all peer IDs (including herself)
     let request = StartDkgRequest {
-        session_id: "success-test-session".to_string(),
         threshold: 2,
         peer_ids,
     };
@@ -180,21 +174,14 @@ async fn test_start_dkg_succeeds_on_all_connections() {
     let inner = response.into_inner();
 
     // Verify response
-    assert_eq!(inner.session_id, request.session_id);
     assert_eq!(inner.status, "started");
     assert!(inner.message.contains("DKG session started"));
-
-    // Wait for DKG to complete (all nodes should reach Phase 4)
-    // Convert session_id string to u64 (same as in service.rs)
-    let session_id =
-        session_id_string_to_u64(&request.session_id).expect("Failed to convert session_id to u64");
 
     // Wait up to 10 seconds for DKG to complete
     let check_interval = Duration::from_millis(1000);
     let max_wait = Duration::from_secs(50);
 
     let start = std::time::Instant::now();
-    println!("Looking for session_id: {}", session_id);
     loop {
         // Check if Alice's session has completed Phase 4
         // We can check by trying to get the session and see if we can compute the aggregate key
@@ -211,7 +198,10 @@ async fn test_start_dkg_succeeds_on_all_connections() {
         }
 
         // Try to get the session and check if we can compute aggregate key (indicates Phase 4 complete)
-        if let Some(session) = alice_coordinator.get_session(&session_id).await {
+        if let Some(session) = alice_coordinator
+            .get_session(&inner.session_id.parse().unwrap())
+            .await
+        {
             println!("Found session!");
             let session_guard = session.read().await;
             let key = session_guard.compute_aggregate_public_key();
@@ -224,8 +214,12 @@ async fn test_start_dkg_succeeds_on_all_connections() {
                 let charlie_coordinator =
                     DkgCoordinator::new(Arc::new(network.charlie.app_state.clone()));
 
-                let bob_session = bob_coordinator.get_session(&session_id).await;
-                let charlie_session = charlie_coordinator.get_session(&session_id).await;
+                let bob_session = bob_coordinator
+                    .get_session(&inner.session_id.parse().unwrap())
+                    .await;
+                let charlie_session = charlie_coordinator
+                    .get_session(&inner.session_id.parse().unwrap())
+                    .await;
 
                 if let (Some(bob_sess), Some(charlie_sess)) = (bob_session, charlie_session) {
                     let bob_guard = bob_sess.read().await;
