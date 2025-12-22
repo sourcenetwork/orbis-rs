@@ -11,7 +11,7 @@
 //! - Manages reencryption share collection and recovery
 
 use crate::app_state::AppState;
-use crate::helpers::helpers::connect_to_peer;
+use crate::helpers::helpers::{connect_to_peer, is_self_peer_id};
 use crate::pre::error::{PreError, Result};
 use crate::pre::messages::PreMessage;
 use ark_bls12_381::{Fr, G1Affine};
@@ -305,9 +305,20 @@ where
         rdr_pk_bytes: Vec<u8>,
         peer_ids: &[String],
     ) -> Result<Vec<u8>> {
+        // Count how many peers we'll actually contact (excluding self)
+        let self_in_list = peer_ids
+            .iter()
+            .any(|pid| is_self_peer_id(&self.app_state.network, pid));
+        let actual_peer_count = if self_in_list {
+            peer_ids.len() - 1
+        } else {
+            peer_ids.len()
+        };
+
         tracing::info!(
             request_id = %request_id,
-            peer_count = peer_ids.len(),
+            peer_count = actual_peer_count,
+            self_in_list = self_in_list,
             "PRE Coordinator: Initiating reencryption"
         );
 
@@ -333,6 +344,21 @@ where
             )
         };
 
+        // Validate we have enough potential shares to meet threshold
+        // If we're in the list, we can contribute our own share locally
+        let potential_shares = if self_in_list {
+            actual_peer_count + 1 // peers + our local share
+        } else {
+            actual_peer_count
+        };
+
+        if potential_shares < threshold {
+            return Err(PreError::InsufficientShares {
+                got: potential_shares,
+                need: threshold,
+            });
+        }
+
         // 2. Deserialize reader public key
         let rdr_pk = <D::PublicKey>::from_bytes(&rdr_pk_bytes[..]).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize reader public key: {}", e))
@@ -352,7 +378,7 @@ where
         let request_id_for_storage = request_id.clone();
         if !self
             .app_state
-            .init_pre_response(request_id_for_storage, peer_ids.len())
+            .init_pre_response(request_id_for_storage, actual_peer_count)
             .await
         {
             return Err(PreError::ProtocolError(
@@ -373,6 +399,12 @@ where
         let request_id_arc = Arc::new(request_id);
 
         for peer_id_str in peer_ids {
+            // Skip self - don't try to connect to ourselves
+            if is_self_peer_id(&self.app_state.network, peer_id_str) {
+                tracing::debug!(peer_id = %peer_id_str, "Skipping self when sending reencrypt request");
+                continue;
+            }
+
             let request = PreMessage::ReencryptRequest {
                 request_id: request_id_arc.as_ref().clone(),
                 from_node_id: node_id,
@@ -415,18 +447,69 @@ where
                 ))
             })?;
 
-        // Check if we have enough responses
-        if collected_responses.len() < threshold {
+        // Check if we have enough responses (accounting for local share if self is participating)
+        let min_needed_from_network = if self_in_list {
+            threshold.saturating_sub(1) // We'll contribute our own share locally
+        } else {
+            threshold
+        };
+
+        if collected_responses.len() < min_needed_from_network {
             return Err(PreError::Timeout(format!(
-                "Insufficient responses: got {}, need {}",
+                "Insufficient responses: got {}, need at least {}",
                 collected_responses.len(),
-                threshold
+                min_needed_from_network
             )));
         }
 
         // 7. Verify and extract shares
         let dealer = T::new();
         let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
+
+        // If we're in the peer list (self_in_list), compute our own share locally
+        if self_in_list {
+            // Try to get our local share and compute reencryption
+            let ring_pk = <D::PublicKey>::from_bytes(&ring_pk_bytes_arc[..]).map_err(|e| {
+                PreError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
+            })?;
+
+            if let Ok(Some(final_share_bytes)) = self.app_state.local_storage.get_encrypted(
+                local_storage::r#trait::LocalStorageKeys::RingKey(ring_pk.to_string()),
+            ) {
+                // We have a local share, compute our reencryption
+                if let Ok(pri_share) = PriShare::<D::ShareValue>::from_bytes(&final_share_bytes) {
+                    let dist_key_share = DistKeyShare { pri_share };
+
+                    // Perform local reencryption
+                    match dealer.reencrypt(&dist_key_share, &secret, &rdr_pk) {
+                        Ok(reply) => {
+                            // Verify our own share (should always pass)
+                            match dealer.verify(&rdr_pk, &pub_poly, &enc_cmt, &reply) {
+                                Ok(_) => {
+                                    tracing::debug!(
+                                        from_node_id = reply.share.i,
+                                        "PRE Coordinator: Added local share"
+                                    );
+                                    verified_shares.push(reply.share);
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        error = %e,
+                                        "PRE Coordinator: Local share verification failed"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "PRE Coordinator: Local reencryption failed"
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         for response in collected_responses {
             if let PreMessage::ReencryptResponse {

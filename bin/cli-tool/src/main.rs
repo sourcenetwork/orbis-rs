@@ -8,7 +8,6 @@ use crypto::r#trait::{Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use rand_core::OsRng;
 use serde::Deserialize;
-use std::collections::HashMap;
 
 /// Response structure from PRE server
 #[derive(Debug, Deserialize)]
@@ -150,7 +149,7 @@ pub async fn do_dkg(
     peer_ids: Vec<String>,
 ) -> Result<()> {
     // Total nodes = peers + the node we're connecting to
-    let total_nodes = (peer_ids.len() + 1) as u32;
+    let total_nodes = peer_ids.len() as u32;
 
     if threshold > total_nodes {
         return Err(anyhow!(
@@ -178,9 +177,7 @@ pub async fn do_dkg(
     let request = tonic::Request::new(dkg_service::StartDkgRequest {
         session_id: session_id.clone(),
         threshold,
-        total_participants: total_nodes,
         peer_ids,
-        parameters: HashMap::new(),
     });
 
     let response = client

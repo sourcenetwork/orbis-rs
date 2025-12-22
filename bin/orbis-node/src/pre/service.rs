@@ -1,5 +1,7 @@
 use crate::app_state::AppState;
-use crate::helpers::helpers::{connect_to_peers, validate_all_peer_ids};
+use crate::helpers::helpers::{
+    connect_to_peers, derive_node_id_from_peer_id_bytes, validate_all_peer_ids,
+};
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
 use crate::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
@@ -102,25 +104,20 @@ where
         }
 
         // 3. Generate unique request ID (use peer_id hash instead of node_id since node_id is session-specific)
-        let peer_id_hash = {
-            use crate::helpers::helpers;
-            helpers::derive_node_id_from_peer_id_bytes(
-                self.state.network.local_peer_id().as_bytes(),
-            )
-        };
+        let peer_id_hash =
+            derive_node_id_from_peer_id_bytes(self.state.network.local_peer_id().as_bytes());
         let request_id = format!("{}-{}", peer_id_hash, created_at);
 
         // 4. Connect to peer nodes using iroh network
-        let requested_peers = req.peer_ids.len();
         let connection_summary =
             connect_to_peers(&self.state.network, req.peer_ids.clone(), REENCRYPT).await;
 
         // Check if we successfully connected to all requested peers
-        if connection_summary.successful < requested_peers {
+        if connection_summary.failed > 0 {
             let error_msg = format!(
                 "Failed to connect to all required peers. Connected to {}/{} peers. Failed connections: {}",
                 connection_summary.successful,
-                requested_peers,
+                connection_summary.total,
                 connection_summary.failed
             );
             tracing::error!(error = %error_msg, "Failed to connect to all peers");
@@ -129,7 +126,7 @@ where
 
         tracing::info!(
             connected = connection_summary.successful,
-            total = requested_peers,
+            total = connection_summary.total,
             "PRE Service: Connected to peers"
         );
 
@@ -148,7 +145,10 @@ where
 
         let response = StartPreResponse {
             status: "completed".to_string(),
-            message: format!("PRE completed successfully with {} peers", requested_peers),
+            message: format!(
+                "PRE completed successfully with {} peers",
+                connection_summary.successful
+            ),
             created_at,
             encrypted_secret,
         };

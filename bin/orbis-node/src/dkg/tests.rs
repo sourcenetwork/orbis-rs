@@ -9,11 +9,7 @@ use crate::{
 };
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tonic::{Request, Response};
 use tracing_subscriber;
@@ -22,85 +18,7 @@ use tracing_subscriber;
 use crypto::bls12_381::dkg::DKGNode;
 type DkgImpl = DKGNode;
 
-/// Unit test: Test start_dkg directly
-#[tokio::test]
-async fn test_start_dkg_unit() {
-    let app_state = create_test_app_state_default().await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
-
-    let request = StartDkgRequest {
-        session_id: "test-session-123".to_string(),
-        threshold: 2,
-        total_participants: 3,
-        peer_ids: vec![], // Empty for unit tests - no actual connections needed
-        parameters: {
-            let mut map = HashMap::new();
-            map.insert("key_type".to_string(), "BLS12_381".to_string());
-            map.insert("curve".to_string(), "bls12_381".to_string());
-            map
-        },
-    };
-
-    let tonic_request = Request::new(request.clone());
-    let result = service.start_dkg(tonic_request).await;
-
-    assert!(result.is_ok(), "start_dkg should succeed");
-
-    let response: Response<_> = result.unwrap();
-    let inner = response.into_inner();
-
-    // Verify response fields
-    assert_eq!(inner.session_id, request.session_id);
-    assert_eq!(inner.status, "started");
-    assert!(inner.message.contains("DKG session started"));
-    assert!(inner.message.contains("threshold 2"));
-    assert!(inner.message.contains("3 participants"));
-
-    // Verify timestamp is reasonable (within last minute)
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-    assert!(
-        inner.created_at <= now && inner.created_at >= now - 60,
-        "created_at should be recent, got: {}, now: {}",
-        inner.created_at,
-        now
-    );
-}
-
-/// Unit test: Test start_dkg with minimal request
-#[tokio::test]
-async fn test_start_dkg_minimal() {
-    let app_state = create_test_app_state_default().await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
-
-    let request = StartDkgRequest {
-        session_id: "minimal-session".to_string(),
-        threshold: 1,
-        total_participants: 1,
-        peer_ids: vec![], // Empty for unit tests - no actual connections needed
-        parameters: HashMap::new(),
-    };
-
-    let tonic_request = Request::new(request.clone());
-    let result = service.start_dkg(tonic_request).await;
-
-    assert!(
-        result.is_ok(),
-        "start_dkg should succeed with minimal request"
-    );
-
-    let response: Response<_> = result.unwrap();
-    let inner = response.into_inner();
-
-    assert_eq!(inner.session_id, request.session_id);
-    assert_eq!(inner.status, "started");
-    assert!(inner.message.contains("threshold 1"));
-    assert!(inner.message.contains("1 participants"));
-}
-
-/// Unit test: Test start_dkg with empty participant list
+/// Unit test: Test start_dkg with empty participant list returns error
 #[tokio::test]
 async fn test_start_dkg_empty_participants() {
     let app_state = create_test_app_state_default().await;
@@ -109,71 +27,28 @@ async fn test_start_dkg_empty_participants() {
     let request = StartDkgRequest {
         session_id: "empty-session".to_string(),
         threshold: 0,
-        total_participants: 0,
-        peer_ids: vec![], // Empty for unit tests - no actual connections needed
-        parameters: HashMap::new(),
+        peer_ids: vec![], // Empty - should result in error
     };
 
     let tonic_request = Request::new(request.clone());
     let result = service.start_dkg(tonic_request).await;
 
-    // Should still succeed even with empty participants
-    assert!(result.is_ok(), "start_dkg should handle empty participants");
-
-    let response: Response<_> = result.unwrap();
-    let inner = response.into_inner();
-
-    assert_eq!(inner.session_id, request.session_id);
-    assert_eq!(inner.status, "started");
-    assert!(inner.message.contains("threshold 0"));
-    assert!(inner.message.contains("0 participants"));
-}
-
-/// Unit test: Test start_dkg with custom parameters
-#[tokio::test]
-async fn test_start_dkg_with_parameters() {
-    let app_state = create_test_app_state_default().await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
-
-    let mut parameters = HashMap::new();
-    parameters.insert("algorithm".to_string(), "ECDSA".to_string());
-    parameters.insert("key_size".to_string(), "256".to_string());
-    parameters.insert("curve".to_string(), "secp256k1".to_string());
-
-    let request = StartDkgRequest {
-        session_id: "parameterized-session".to_string(),
-        threshold: 3,
-        total_participants: 5,
-        peer_ids: vec![], // Empty for unit tests - no actual connections needed
-        parameters: parameters.clone(),
-    };
-
-    let tonic_request = Request::new(request.clone());
-    let result = service.start_dkg(tonic_request).await;
-
-    assert!(result.is_ok(), "start_dkg should succeed with parameters");
-
-    let response: Response<_> = result.unwrap();
-    let inner = response.into_inner();
-
-    assert_eq!(inner.session_id, request.session_id);
-    assert_eq!(inner.status, "started");
-    assert!(inner.message.contains("threshold 3"));
-    assert!(inner.message.contains("5 participants"));
+    // Should fail with 0 participants (validation error)
+    assert!(result.is_err(), "start_dkg should fail with 0 participants");
 }
 
 /// Integration test: Three nodes connect to each other
 ///
-/// This test spins up three nodes (Alice, Bob, Charlie), starts routers for Bob and Charlie,
-/// and has Alice send a StartDkgRequest with Bob and Charlie's peer IDs so they can all
-/// establish connections to each other.
+/// This test spins up three nodes (Alice, Bob, Charlie), starts routers for all,
+/// and has Alice send a StartDkgRequest including all peer IDs so they can all
+/// participate in the DKG.
 #[tokio::test]
 async fn test_three_nodes_connect() {
-    // Set up three-node network with routers started for Bob and Charlie
+    // Set up three-node network with routers started for all nodes
     let mut network = setup_three_node_network(true).await;
 
-    // Get peer IDs for connection (Bob and Charlie)
-    let peer_ids = network.get_peer_ids_for_connection();
+    // Get all peer IDs (including Alice) for participation
+    let peer_ids = network.get_all_peer_ids();
     println!("Peer IDs for connection: {:?}", peer_ids);
 
     // Create Alice's service (clone app_state to avoid move)
@@ -183,14 +58,7 @@ async fn test_three_nodes_connect() {
     let request = StartDkgRequest {
         session_id: "three-node-session".to_string(),
         threshold: 2,
-        total_participants: 3,
         peer_ids,
-        parameters: {
-            let mut map = HashMap::new();
-            map.insert("key_type".to_string(), "BLS12_381".to_string());
-            map.insert("curve".to_string(), "bls12_381".to_string());
-            map
-        },
     };
 
     println!("Alice sending StartDkgRequest with peer IDs...");
@@ -238,17 +106,10 @@ async fn test_start_dkg_fails_on_connection_failure() {
     let request = StartDkgRequest {
         session_id: "failure-test-session".to_string(),
         threshold: 2,
-        total_participants: 3,
         peer_ids: vec![
             "invalid-peer-id-1".to_string(),
             "invalid-peer-id-2".to_string(),
         ],
-        parameters: {
-            let mut map = HashMap::new();
-            map.insert("key_type".to_string(), "BLS12_381".to_string());
-            map.insert("curve".to_string(), "bls12_381".to_string());
-            map
-        },
     };
 
     println!("Alice sending StartDkgRequest with invalid peer IDs...");
@@ -288,28 +149,21 @@ async fn test_start_dkg_succeeds_on_all_connections() {
         .with_test_writer()
         .try_init();
 
-    // Set up three-node network with routers started for Bob and Charlie
+    // Set up three-node network with routers started for all nodes
     let mut network = setup_three_node_network(true).await;
 
-    // Get peer IDs for connection (Bob and Charlie)
-    let peer_ids = network.get_peer_ids_for_connection();
+    // Get all peer IDs (including Alice) for participation
+    let peer_ids = network.get_all_peer_ids();
     println!("Peer IDs for connection: {:?}", peer_ids);
 
     // Create Alice's service
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
 
-    // Alice sends StartDkgRequest with Bob and Charlie's peer IDs
+    // Alice sends StartDkgRequest with all peer IDs (including herself)
     let request = StartDkgRequest {
         session_id: "success-test-session".to_string(),
         threshold: 2,
-        total_participants: 3,
         peer_ids,
-        parameters: {
-            let mut map = HashMap::new();
-            map.insert("key_type".to_string(), "BLS12_381".to_string());
-            map.insert("curve".to_string(), "bls12_381".to_string());
-            map
-        },
     };
 
     println!("Alice sending StartDkgRequest with valid peer IDs...");

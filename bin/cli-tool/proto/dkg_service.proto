@@ -9,9 +9,7 @@ service DkgService {
 message StartDkgRequest {
   string session_id = 1;
   uint32 threshold = 2;
-  uint32 total_participants = 3;
-  repeated string peer_ids = 4;  // Iroh peer IDs that this node needs to connect to
-  map<string, string> parameters = 5;
+  repeated string peer_ids = 3;  // Iroh peer IDs that this node needs to connect to
 }
 
 message StartDkgResponse {

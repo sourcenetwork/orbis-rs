@@ -19,6 +19,7 @@ use crate::constants::MAX_COMMITMENT_COEFFICIENTS;
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::DkgMessage;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase, SessionStateManager};
+use crate::helpers::helpers::is_self_peer_id;
 use ark_bls12_381::{Fr, G1Affine};
 use crypto::bls12_381::common::{PolynomialCommitment, FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE};
 use crypto::r#trait::DistributedShare;
@@ -354,6 +355,11 @@ where
                         let commitment_bytes_arc = Arc::new(commitment_bytes);
                         let mut sent_count = 0;
                         for peer_id_str in &peer_ids {
+                            // Skip self - don't try to connect to ourselves
+                            if is_self_peer_id(&self.app_state.network, peer_id_str) {
+                                continue;
+                            }
+
                             let commitment_msg = DkgMessage::Commitment {
                                 session_id,
                                 from_node_id: node_id,
@@ -363,9 +369,6 @@ where
                             match self.send_message_to_peer(peer_id_str, commitment_msg).await {
                                 Ok(_) => sent_count += 1,
                                 Err(e) => {
-                                    if e.to_string().contains("ourself") {
-                                        continue;
-                                    }
                                     tracing::error!(
                                         peer_id = %peer_id_str,
                                         error = %e,
@@ -376,7 +379,6 @@ where
                         }
                         tracing::info!(
                             sent = sent_count,
-                            total = peer_ids.len(),
                             "DKG Coordinator: Sent our commitment to peers"
                         );
                     }
@@ -639,7 +641,14 @@ where
 
         // Use Arc to share commitment bytes across all peers (cheap clone)
         let commitment_bytes_arc = Arc::new(commitment_bytes);
+        let mut peers_sent = 0;
         for peer_id_str in peer_ids {
+            // Skip self - don't try to connect to ourselves
+            if is_self_peer_id(&self.app_state.network, peer_id_str) {
+                tracing::debug!(peer_id = %peer_id_str, "Skipping self when broadcasting commitment");
+                continue;
+            }
+
             let commitment_msg = DkgMessage::Commitment {
                 session_id,
                 from_node_id: node_id,
@@ -649,11 +658,14 @@ where
             if let Err(e) = self.send_message_to_peer(peer_id_str, commitment_msg).await {
                 tracing::error!(peer_id = %peer_id_str, error = %e, "Failed to send commitment to peer");
                 // Continue with other peers even if one fails
+            } else {
+                peers_sent += 1;
             }
         }
 
         tracing::info!(
-            peer_count = peer_ids.len(),
+            peers_sent = peers_sent,
+            total_peers = peer_ids.len(),
             "Phase 1: Broadcasted commitment to peers"
         );
         Ok(())
@@ -826,6 +838,11 @@ where
                 // Fallback: broadcast to all peers (only if mapping not set up)
                 let mut sent_count = 0;
                 for peer_id_str in peer_ids {
+                    // Skip self - don't try to connect to ourselves
+                    if is_self_peer_id(&self.app_state.network, peer_id_str) {
+                        continue;
+                    }
+
                     let broadcast_share_msg = DkgMessage::Share {
                         session_id,
                         from_node_id: node_id,
@@ -847,9 +864,6 @@ where
                             );
                         }
                         Err(e) => {
-                            if e.to_string().contains("ourself") {
-                                continue;
-                            }
                             tracing::error!(peer_id = %peer_id_str, error = %e, "Failed to send share to peer");
                         }
                     }

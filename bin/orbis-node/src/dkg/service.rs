@@ -3,7 +3,9 @@ use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::DkgMessage;
 use crate::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
-use crate::helpers::helpers::{connect_to_peers, session_id_string_to_u64, validate_all_peer_ids};
+use crate::helpers::helpers::{
+    connect_to_peers, extract_node_part, session_id_string_to_u64, validate_all_peer_ids,
+};
 use network::DKG;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,11 +51,8 @@ where
         // TODO: Authentication, is user allowed to create a ring
         // TODO: Authenticate request info, fail if bad info ex: threshold > total_participants, participant_ids.len() != total_participants, duplicate participant IDs
         tracing::info!(
-            session_id = %req.session_id,
             threshold = req.threshold,
-            total_participants = req.total_participants,
             peer_ids = ?req.peer_ids,
-            parameters = ?req.parameters,
             "Received StartDkg request"
         );
 
@@ -71,34 +70,33 @@ where
         let coordinator = DkgCoordinator::new(Arc::new(self.state.clone()));
 
         // Validate threshold and total_participants
-        if req.threshold as usize > req.total_participants as usize {
+        if req.threshold as usize > req.peer_ids.len() as usize {
             return Err(DkgError::InvalidInput(format!(
                 "Threshold ({}) cannot be greater than total participants ({})",
-                req.threshold, req.total_participants
+                req.threshold,
+                req.peer_ids.len()
             ))
             .into());
         }
 
-        // Handle edge case: empty participants (for testing)
-        // Return early without creating DKG session
-        if req.total_participants == 0 {
-            let response = StartDkgResponse {
-                session_id: req.session_id.clone(),
-                status: "started".to_string(),
-                message: format!(
-                    "DKG session started with threshold {} and {} participants",
-                    req.threshold, req.total_participants
-                ),
-                created_at,
-            };
-            return Ok(Response::new(response));
+        if req.peer_ids.len() == 0 {
+            return Err(DkgError::InvalidInput(format!("Not enough participants",)).into());
         }
 
         // As the initiator, assign node_ids to all participants based on sorted peer list
         // This ensures all nodes agree on who has which node_id
         let our_peer_id_hex = hex::encode(self.state.network.local_peer_id().as_bytes());
-        let mut all_peer_ids_for_assignments = vec![our_peer_id_hex.clone()];
-        all_peer_ids_for_assignments.extend_from_slice(&req.peer_ids);
+        let our_peer_id_key = extract_node_part(&our_peer_id_hex);
+
+        // Check if we're included in the peer_ids list
+        // We only participate if explicitly included - otherwise we just coordinate
+        let self_included = req
+            .peer_ids
+            .iter()
+            .any(|pid| extract_node_part(pid) == our_peer_id_key);
+
+        // Use the peer_ids exactly as given - don't auto-add ourselves
+        let all_peer_ids_for_assignments: Vec<String> = req.peer_ids.clone();
 
         // Build node_id assignments: peer_id -> node_id (1-indexed based on sorted order)
         let mut node_id_assignments = std::collections::HashMap::new();
@@ -108,35 +106,42 @@ where
         for (idx, peer_id) in sorted_peer_ids.iter().enumerate() {
             let assigned_node_id = (idx + 1) as u32;
             // Extract just the hex part (before @) for consistent lookup
-            let peer_id_key = peer_id.split('@').next().unwrap_or(peer_id).to_string();
+            let peer_id_key = extract_node_part(peer_id);
             node_id_assignments.insert(peer_id_key, assigned_node_id);
         }
 
-        // Get our assigned node_id
-        let our_peer_id_key = our_peer_id_hex
-            .split('@')
-            .next()
-            .unwrap_or(&our_peer_id_hex)
-            .to_string();
-        let our_assigned_node_id = node_id_assignments.get(&our_peer_id_key).ok_or_else(|| {
-            DkgError::InvalidInput("Could not determine our node_id from assignments".to_string())
-        })?;
+        // Calculate actual total participants
+        let actual_total_participants = all_peer_ids_for_assignments.len();
+
+        // Get our assigned node_id (only if we're participating)
+        let our_assigned_node_id = if self_included {
+            Some(*node_id_assignments.get(&our_peer_id_key).ok_or_else(|| {
+                DkgError::InvalidInput(
+                    "Could not determine our node_id from assignments".to_string(),
+                )
+            })?)
+        } else {
+            None
+        };
 
         tracing::info!(
-            our_node_id = our_assigned_node_id,
-            total_participants = req.total_participants,
-            "DKG Service (Initiator): Assigned node_ids"
+            our_node_id = ?our_assigned_node_id,
+            total_participants = actual_total_participants,
+            self_participating = self_included,
+            "DKG Service (Coordinator): Assigned node_ids"
         );
 
-        // Create DKG session with assigned node_id
-        coordinator
-            .create_session(
-                session_id,
-                *our_assigned_node_id,
-                req.threshold as usize,
-                req.total_participants as usize,
-            )
-            .await?;
+        // Create DKG session only if we're participating
+        if let Some(node_id) = our_assigned_node_id {
+            coordinator
+                .create_session(
+                    session_id,
+                    node_id,
+                    req.threshold as usize,
+                    actual_total_participants,
+                )
+                .await?;
+        }
 
         // Store peer IDs in session state for later use (needed for Phase 2)
         coordinator
@@ -160,16 +165,16 @@ where
                 .into());
             }
 
-            let requested_peers = req.peer_ids.len();
             let connection_summary =
                 connect_to_peers(&self.state.network, req.peer_ids.clone(), DKG).await;
 
             // Check if we successfully connected to all requested peers
-            if connection_summary.successful < requested_peers {
+            // Note: connection_summary.total excludes self (which is skipped by connect_to_peers)
+            if connection_summary.successful < connection_summary.total {
                 let error_msg = format!(
                     "Failed to connect to all required peers. Connected to {}/{} peers. Failed connections: {}",
                     connection_summary.successful,
-                    requested_peers,
+                    connection_summary.total,
                     connection_summary.failed
                 );
                 tracing::error!(error = %error_msg, "Failed to connect to all peers");
@@ -180,9 +185,8 @@ where
 
             // Send SessionInit message to all peers
             // Include all peer_ids (including our own) so non-initiators know who to send messages to
-            // Get our own peer ID (hex-encoded)
-            let mut all_peer_ids = vec![our_peer_id_hex.clone()];
-            all_peer_ids.extend_from_slice(&req.peer_ids);
+            // Use the deduplicated list we already built
+            let all_peer_ids = all_peer_ids_for_assignments.clone();
 
             // Store node_id to peer_id mappings for the initiator (we don't receive our own SessionInit)
             let mut node_id_to_peer_id = std::collections::HashMap::new();
@@ -190,7 +194,7 @@ where
                 // Find the full peer_id (with @address if present) from all_peer_ids
                 let full_peer_id = all_peer_ids
                     .iter()
-                    .find(|pid| pid.split('@').next().unwrap_or(pid) == peer_id_key)
+                    .find(|pid| extract_node_part(pid) == *peer_id_key)
                     .cloned()
                     .unwrap_or_else(|| peer_id_key.clone());
                 node_id_to_peer_id.insert(*node_id, full_peer_id);
@@ -203,7 +207,7 @@ where
             let session_init_msg = DkgMessage::SessionInit {
                 session_id,
                 threshold: req.threshold,
-                total_participants: req.total_participants,
+                total_participants: actual_total_participants as u32,
                 peer_ids: all_peer_ids.clone(), // Include all peer_ids (including our own) so receivers know all participants
                 node_id_assignments: node_id_assignments.clone(), // Assignments made by initiator
             };
@@ -219,17 +223,19 @@ where
                 }
             }
 
-            // Initiate Phase 1: Generate polynomial and broadcast commitment
-            // This happens for the initiator (Alice)
-            if let Err(e) = coordinator
-                .initiate_phase1_commitments(session_id, &req.peer_ids)
-                .await
-            {
-                tracing::error!(error = %e, "Failed to initiate Phase 1");
-                return Err(e.into());
+            // Initiate Phase 1 only if we're participating
+            if self_included {
+                if let Err(e) = coordinator
+                    .initiate_phase1_commitments(session_id, &req.peer_ids)
+                    .await
+                {
+                    tracing::error!(error = %e, "Failed to initiate Phase 1");
+                    return Err(e.into());
+                }
+                tracing::info!("DKG Protocol: Phase 1 initiated, commitments broadcasted");
+            } else {
+                tracing::info!("DKG Protocol: SessionInit sent to participants (coordinator not participating)");
             }
-
-            tracing::info!("DKG Protocol: Phase 1 initiated, commitments broadcasted");
         }
 
         let response = StartDkgResponse {
@@ -237,7 +243,7 @@ where
             status: "started".to_string(),
             message: format!(
                 "DKG session started with threshold {} and {} participants",
-                req.threshold, req.total_participants
+                req.threshold, actual_total_participants
             ),
             created_at,
         };

@@ -20,7 +20,7 @@ use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{Dkg, ThresholdDealer};
 use rand_core::OsRng;
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tonic::Request;
 
@@ -46,8 +46,8 @@ async fn test_dkg_then_pre_end_to_end() {
     println!("Step 1: Setting up three-node network...");
     let mut network = setup_three_node_network_with_pre(true).await;
 
-    // Get peer IDs for connection
-    let peer_ids = network.get_peer_ids_for_connection();
+    // Get all peer IDs (including initiator) for participation
+    let peer_ids = network.get_all_peer_ids();
     println!("Peer IDs for connection: {:?}", peer_ids);
 
     // =========================================================================
@@ -71,14 +71,7 @@ async fn test_dkg_then_pre_end_to_end() {
     let request = StartDkgRequest {
         session_id: session_id_str.clone(),
         threshold: 2,
-        total_participants: 3,
         peer_ids,
-        parameters: {
-            let mut map = HashMap::new();
-            map.insert("key_type".to_string(), "BLS12_381".to_string());
-            map.insert("curve".to_string(), "bls12_381".to_string());
-            map
-        },
     };
 
     println!("Node1 sending StartDkgRequest...");
@@ -296,7 +289,7 @@ async fn test_pre_with_large_secret() {
 
     // Setup network
     let mut network = setup_three_node_network_with_pre(true).await;
-    let peer_ids = network.get_peer_ids_for_connection();
+    let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
@@ -311,13 +304,7 @@ async fn test_pre_with_large_secret() {
     let request = StartDkgRequest {
         session_id: session_id_str.clone(),
         threshold: 2,
-        total_participants: 3,
         peer_ids,
-        parameters: {
-            let mut map = HashMap::new();
-            map.insert("key_type".to_string(), "BLS12_381".to_string());
-            map
-        },
     };
 
     let result = node1_service.start_dkg(Request::new(request)).await;
@@ -396,7 +383,7 @@ async fn test_pre_fails_with_wrong_key() {
 
     // Setup network
     let mut network = setup_three_node_network_with_pre(true).await;
-    let peer_ids = network.get_peer_ids_for_connection();
+    let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
@@ -411,13 +398,7 @@ async fn test_pre_fails_with_wrong_key() {
     let request = StartDkgRequest {
         session_id: session_id_str.clone(),
         threshold: 2,
-        total_participants: 3,
         peer_ids,
-        parameters: {
-            let mut map = HashMap::new();
-            map.insert("key_type".to_string(), "BLS12_381".to_string());
-            map
-        },
     };
 
     let result = node1_service.start_dkg(Request::new(request)).await;

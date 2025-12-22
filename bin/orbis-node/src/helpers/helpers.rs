@@ -188,7 +188,18 @@ pub async fn connect_to_peers(
         "Connecting to peer nodes"
     );
 
+    // Get our local peer ID to skip self-connections
+    let our_peer_id_hex = hex::encode(network.local_peer_id().as_bytes());
+    let mut skipped_self = 0;
+
     for peer_id_str in peer_ids {
+        // Skip connecting to ourselves
+        if extract_node_part(&peer_id_str) == our_peer_id_hex {
+            tracing::debug!(peer_id = %peer_id_str, "Skipping self-connection");
+            skipped_self += 1;
+            continue;
+        }
+
         // Clone once for result storage (used in both success and error cases)
         let peer_id_for_result = peer_id_str.clone();
 
@@ -224,15 +235,19 @@ pub async fn connect_to_peers(
         }
     }
 
+    // Adjust total to exclude self-connections
+    let actual_total = total - skipped_self;
+
     tracing::info!(
         successful = successful,
         failed = failed,
-        total = total,
+        total = actual_total,
+        skipped_self = skipped_self,
         "Connection summary"
     );
 
     PeerConnectionSummary {
-        total,
+        total: actual_total,
         successful,
         failed,
         results,
@@ -300,6 +315,37 @@ pub fn derive_node_id_from_peer_id(peer_id: &str) -> u32 {
     hasher.finish() as u32
 }
 
+/// Extract just the node_id part (before @) from a peer_id string
+///
+/// This handles both "hex_string" and "hex_string@address" formats.
+///
+/// # Arguments
+/// * `peer_id` - The peer ID string (may include @address suffix)
+///
+/// # Returns
+/// The node_id part (hex string without @address suffix)
+pub fn extract_node_part(peer_id: &str) -> String {
+    peer_id.split('@').next().unwrap_or(peer_id).to_string()
+}
+
+/// Check if a peer_id string matches our local peer_id
+///
+/// This handles both "hex_string" and "hex_string@address" formats by
+/// comparing just the node_id part (before @).
+///
+/// # Arguments
+/// * `network` - The network instance to get our local peer_id from
+/// * `peer_id_str` - The peer ID string to check
+///
+/// # Returns
+/// `true` if the peer_id matches our local peer_id, `false` otherwise
+pub fn is_self_peer_id(network: &Arc<dyn Network>, peer_id_str: &str) -> bool {
+    let our_peer_id = network.local_peer_id();
+    let our_peer_id_hex = hex::encode(our_peer_id.as_bytes());
+    let peer_node_part = extract_node_part(peer_id_str);
+    our_peer_id_hex == peer_node_part
+}
+
 /// Determine node_id for a DKG session based on sorted peer_ids
 ///
 /// In a DKG session, node_id must be between 1 and total_nodes.
@@ -313,12 +359,6 @@ pub fn derive_node_id_from_peer_id(peer_id: &str) -> u32 {
 /// # Returns
 /// The node_id (1-indexed) for this peer in the session, or None if peer_id not found
 pub fn determine_session_node_id(our_peer_id: &str, all_peer_ids: &[String]) -> Option<u32> {
-    // Extract just the node_id part (before @) for consistent sorting
-    // This handles both "hex_string" and "hex_string@address" formats
-    fn extract_node_part(peer_id: &str) -> String {
-        peer_id.split('@').next().unwrap_or(peer_id).to_string()
-    }
-
     // Normalize all peer_ids to just the hex part for comparison
     let our_node_part = extract_node_part(our_peer_id);
 
