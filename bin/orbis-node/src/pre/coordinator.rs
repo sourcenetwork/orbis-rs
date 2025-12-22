@@ -483,22 +483,11 @@ where
                     // Perform local reencryption
                     match dealer.reencrypt(&dist_key_share, &secret, &rdr_pk) {
                         Ok(reply) => {
-                            // Verify our own share (should always pass)
-                            match dealer.verify(&rdr_pk, &pub_poly, &enc_cmt, &reply) {
-                                Ok(_) => {
-                                    tracing::debug!(
-                                        from_node_id = reply.share.i,
-                                        "PRE Coordinator: Added local share"
-                                    );
-                                    verified_shares.push(reply.share);
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        error = %e,
-                                        "PRE Coordinator: Local share verification failed"
-                                    );
-                                }
-                            }
+                            tracing::debug!(
+                                from_node_id = reply.share.i,
+                                "PRE Coordinator: Added local share"
+                            );
+                            verified_shares.push(reply.share);
                         }
                         Err(e) => {
                             tracing::error!(
