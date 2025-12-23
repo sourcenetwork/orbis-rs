@@ -11,3 +11,8 @@ did-key = "0.2.1"
 thiserror = { workspace = true }
 # Enable alloc feature to fix form_urlencoded compatibility with did-key
 form_urlencoded = { workspace = true }
+serde = { workspace = true }
+jsonwebtoken = "9"
+
+[dev-dependencies]
+jwt-simple = "0.12"

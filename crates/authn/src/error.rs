@@ -5,6 +5,8 @@ use thiserror::Error;
 pub enum AuthNError {
     #[error("DID Error: {0}")]
     DidError(String),
+    #[error("JWT Error: {0}")]
+    JwtError(String),
 }
 
 /// Result type for network operations

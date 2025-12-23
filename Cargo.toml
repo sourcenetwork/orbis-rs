@@ -24,6 +24,7 @@ thiserror = "1.0"
 async-trait = "0.1"
 hex = "0.4"
 futures = "0.3"
+sha2 = "0.10"
 
 # Networking
 iroh = "0.95"
