@@ -75,7 +75,7 @@ pub fn resolve_jwt_did(token_str: &str, current_time: u64) -> Result<BearerToken
         ));
     }
 
-    // Check that issued_time is before expiration_time (sanity check)
+    // Check that issued_time is before expiration_time
     if bearer_token.issued_time > bearer_token.expiration_time {
         return Err(AuthNError::JwtError(
             "Invalid token: issued after expiration".to_string(),
