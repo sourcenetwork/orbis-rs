@@ -5,7 +5,7 @@ members = [
     "bin/orbis-node", 
     "crates/crypto", 
     "crates/local-storage", 
-    "bin/cli-tool",
+    "bin/cli-tool", "crates/authn",
 ]
 
 [workspace.package]
@@ -28,3 +28,7 @@ futures = "0.3"
 # Networking
 iroh = "0.95"
 iroh-gossip = "0.95"
+
+# Enable alloc feature for form_urlencoded to fix compatibility with did-key
+form_urlencoded = { version = "1.2", features = ["alloc"] }
+
