@@ -4,7 +4,7 @@ use crate::helpers::helpers::{
 };
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
-use crate::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
+use proto::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
 use network::REENCRYPT;
 use std::sync::Arc;

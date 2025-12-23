@@ -6,10 +6,8 @@
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::helpers::test_helpers::setup_three_node_network_with_pre;
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
-use crate::{
-    dkg_service::{dkg_service_server::DkgService, StartDkgRequest},
-    DkgServiceImpl,
-};
+use crate::DkgServiceImpl;
+use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::Group;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};

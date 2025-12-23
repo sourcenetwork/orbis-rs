@@ -2,7 +2,7 @@ use crate::app_state::AppState;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::DkgMessage;
-use crate::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
+use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
 use crate::helpers::helpers::{connect_to_peers, extract_node_part, validate_all_peer_ids};
 use network::DKG;
 use rand;

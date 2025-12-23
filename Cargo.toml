@@ -1,11 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/network", 
-    "bin/orbis-node", 
-    "crates/crypto", 
-    "crates/local-storage", 
-    "bin/cli-tool", "crates/authn",
+    "crates/network",
+    "crates/proto",
+    "bin/orbis-node",
+    "crates/crypto",
+    "crates/local-storage",
+    "bin/cli-tool",
+    "crates/authn",
 ]
 
 [workspace.package]

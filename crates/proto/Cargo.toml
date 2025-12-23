@@ -1,0 +1,16 @@
+[package]
+name = "proto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tonic = "0.14.2"
+tonic-prost = "0.14"
+prost = "0.14.1"
+
+[build-dependencies]
+tonic-build = "0.14.2"
+tonic-prost-build = "0.14"

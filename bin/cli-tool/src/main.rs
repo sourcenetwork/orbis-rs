@@ -18,16 +18,8 @@ struct PreResponse {
     secret: Secret,
 }
 
-pub mod dkg_service {
-    tonic::include_proto!("dkg_service");
-}
-
-pub mod pre_service {
-    tonic::include_proto!("pre_service");
-}
-
-use dkg_service::dkg_service_client::DkgServiceClient;
-use pre_service::pre_service_client::PreServiceClient;
+use proto::dkg_service::dkg_service_client::DkgServiceClient;
+use proto::pre_service::pre_service_client::PreServiceClient;
 
 #[derive(Parser, Debug, Clone)]
 #[clap(version, about = "CLI tool for interacting with an orbis network")]
@@ -161,7 +153,7 @@ pub async fn do_dkg(endpoint: String, threshold: u32, peer_ids: Vec<String>) -> 
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
-    let request = tonic::Request::new(dkg_service::StartDkgRequest {
+    let request = tonic::Request::new(proto::dkg_service::StartDkgRequest {
         threshold,
         peer_ids,
     });
@@ -232,7 +224,7 @@ pub async fn do_pre(
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
-    let request = tonic::Request::new(pre_service::StartPreRequest {
+    let request = tonic::Request::new(proto::pre_service::StartPreRequest {
         ring_pk: ring_pk.clone(),
         secret: encrypted_secret_json,
         rdr_pk: reader_pk,

@@ -27,16 +27,8 @@ use crypto::bls12_381::pre::ThresholdDealerNode;
 pub type DkgImpl = DKGNode;
 pub type PreImpl = ThresholdDealerNode;
 
-pub mod dkg_service {
-    tonic::include_proto!("dkg_service");
-}
-
-pub mod pre_service {
-    tonic::include_proto!("pre_service");
-}
-
-use dkg_service::dkg_service_server::DkgServiceServer;
-use pre_service::pre_service_server::PreServiceServer;
+use proto::dkg_service::dkg_service_server::DkgServiceServer;
+use proto::pre_service::pre_service_server::PreServiceServer;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "orbis-node")]

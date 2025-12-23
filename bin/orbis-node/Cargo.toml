@@ -10,9 +10,8 @@ rust-version.workspace = true
 network = { path = "../../crates/network" }
 crypto = { path = "../../crates/crypto" }
 local-storage = { path = "../../crates/local-storage" }
+proto = { path = "../../crates/proto" }
 tonic = "0.14.2"
-tonic-prost = "0.14"
-prost = "0.14.1"
 iroh = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
@@ -38,6 +37,3 @@ ark-ec = "0.4"
 ark-std = "0.4"
 rand_core = "0.6"
 
-[build-dependencies]
-tonic-build = "0.14.2"
-tonic-prost-build = "0.14"

@@ -777,14 +777,12 @@ dependencies = [
  "crypto",
  "futures",
  "hex",
- "prost",
+ "proto",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
  "tokio",
  "tonic",
- "tonic-prost",
- "tonic-prost-build",
  "uuid",
 ]
 
@@ -3410,7 +3408,7 @@ dependencies = [
  "iroh",
  "local-storage",
  "network",
- "prost",
+ "proto",
  "rand 0.9.2",
  "rand_core 0.6.4",
  "rpassword",
@@ -3421,9 +3419,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tonic",
- "tonic-build",
- "tonic-prost",
- "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
 ]
@@ -3872,6 +3867,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9b4db3d6da204ed77bb26ba83b6122a73aeb2e87e25fbf7ad2e84c4ccbf8f72"
 dependencies = [
  "prost",
+]
+
+[[package]]
+name = "proto"
+version = "0.0.1"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-build",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]
