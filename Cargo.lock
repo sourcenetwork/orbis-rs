@@ -774,6 +774,7 @@ dependencies = [
  "ark-bls12-381",
  "ark-ec",
  "ark-std",
+ "authn",
  "clap",
  "crypto",
  "futures",

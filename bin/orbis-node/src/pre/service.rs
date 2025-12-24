@@ -115,8 +115,8 @@ where
             .as_secs();
 
         // 1. Authenticate: Extract and validate JWT
-        let token_str = extract_bearer_token(&request)
-            .map_err(|e| PreError::Unauthorized(e.to_string()))?;
+        let token_str =
+            extract_bearer_token(&request).map_err(|e| PreError::Unauthorized(e.to_string()))?;
         let token: BearerToken<PreClaims> = resolve_jwt_did(token_str, current_time)
             .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 

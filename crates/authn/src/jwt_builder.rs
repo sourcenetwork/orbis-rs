@@ -58,8 +58,7 @@ impl JwtSigner {
         T: Serialize + DeserializeOwned,
     {
         let signing_key = self.get_signing_key();
-        let jwt_claims =
-            Claims::with_custom_claims(claims, duration).with_issuer(&self.did_uri);
+        let jwt_claims = Claims::with_custom_claims(claims, duration).with_issuer(&self.did_uri);
         signing_key
             .sign(jwt_claims)
             .map_err(|e| AuthNError::JwtError(format!("Failed to sign JWT: {}", e)))
@@ -90,7 +89,12 @@ impl JwtSigner {
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour
-    pub fn create_pre_jwt(&self, rdr_pk: &str, ring_pk: &str, peer_ids: &[String]) -> Result<String> {
+    pub fn create_pre_jwt(
+        &self,
+        rdr_pk: &str,
+        ring_pk: &str,
+        peer_ids: &[String],
+    ) -> Result<String> {
         let claims = PreClaims {
             rdr_pk: rdr_pk.to_string(),
             ring_pk: ring_pk.to_string(),
@@ -133,7 +137,9 @@ pub fn extract_bearer_token<T>(request: &Request<T>) -> Result<&str> {
         .get("authorization")
         .ok_or_else(|| AuthNError::Unauthorized("Missing authorization header".to_string()))?
         .to_str()
-        .map_err(|_| AuthNError::Unauthorized("Invalid authorization header encoding".to_string()))?;
+        .map_err(|_| {
+            AuthNError::Unauthorized("Invalid authorization header encoding".to_string())
+        })?;
 
     auth_header
         .strip_prefix("Bearer ")

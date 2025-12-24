@@ -1,4 +1,3 @@
-
 use super::*;
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint, KeyMaterial};
 use jwt_simple::prelude::*;

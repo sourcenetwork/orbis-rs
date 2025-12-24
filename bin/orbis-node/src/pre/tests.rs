@@ -63,7 +63,9 @@ async fn test_dkg_then_pre_end_to_end() {
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("Failed to create JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
 
     println!("Node1 sending StartDkgRequest...");
     let tonic_request = create_authenticated_request(request, &token);
@@ -292,7 +294,9 @@ async fn test_pre_with_large_secret() {
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("Failed to create JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
 
     let result = node1_service
         .start_dkg(create_authenticated_request(request, &token))
@@ -385,7 +389,9 @@ async fn test_pre_fails_with_wrong_key() {
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("Failed to create JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
 
     let result = node1_service
         .start_dkg(create_authenticated_request(request, &token))

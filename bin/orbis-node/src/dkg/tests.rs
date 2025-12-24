@@ -30,7 +30,9 @@ async fn test_start_dkg_empty_participants() {
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(0, &peer_ids).expect("Failed to create JWT");
+    let token = test_keys
+        .create_dkg_jwt(0, &peer_ids)
+        .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token);
 
     let result = service.start_dkg(tonic_request).await;
@@ -64,7 +66,9 @@ async fn test_three_nodes_connect() {
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("Failed to create JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with peer IDs...");
     let tonic_request = create_authenticated_request(request, &token);
@@ -118,7 +122,9 @@ async fn test_start_dkg_fails_on_connection_failure() {
 
     // Create authenticated request (even with invalid peer_ids, JWT should match request)
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("Failed to create JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with invalid peer IDs...");
     let tonic_request = create_authenticated_request(request, &token);
@@ -175,7 +181,9 @@ async fn test_start_dkg_succeeds_on_all_connections() {
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("Failed to create JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with valid peer IDs...");
     let tonic_request = create_authenticated_request(request, &token);

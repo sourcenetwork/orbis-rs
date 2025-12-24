@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::Group;
 use ark_std::UniformRand;
+pub use authn::{add_auth_header, create_authenticated_request, JwtSigner};
 use clap::{Parser, Subcommand};
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{Secret, ThresholdDealer};
@@ -153,13 +154,20 @@ pub async fn do_dkg(endpoint: String, threshold: u32, peer_ids: Vec<String>) -> 
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
-    let request = tonic::Request::new(proto::dkg_service::StartDkgRequest {
+    let request = proto::dkg_service::StartDkgRequest {
         threshold,
-        peer_ids,
-    });
+        peer_ids: peer_ids.clone(),
+    };
+
+    // JWT work
+    let jwt_signer = JwtSigner::new();
+    let token = jwt_signer
+        .create_dkg_jwt(threshold, &peer_ids)
+        .expect("Failed to create JWT");
+    let tonic_request = create_authenticated_request(request, &token);
 
     let response = client
-        .start_dkg(request)
+        .start_dkg(tonic_request)
         .await
         .map_err(|e| anyhow!("DKG request failed: {}", e))?;
 
@@ -224,15 +232,22 @@ pub async fn do_pre(
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
-    let request = tonic::Request::new(proto::pre_service::StartPreRequest {
+    let request = proto::pre_service::StartPreRequest {
         ring_pk: ring_pk.clone(),
         secret: encrypted_secret_json,
-        rdr_pk: reader_pk,
-        peer_ids,
-    });
+        rdr_pk: reader_pk.clone(),
+        peer_ids: peer_ids.clone(),
+    };
+
+    // JWT work
+    let jwt_signer = JwtSigner::new();
+    let token = jwt_signer
+        .create_pre_jwt(&reader_pk, &ring_pk, &peer_ids)
+        .expect("Failed to create JWT");
+    let tonic_request = create_authenticated_request(request, &token);
 
     let response = client
-        .start_pre(request)
+        .start_pre(tonic_request)
         .await
         .map_err(|e| anyhow!("PRE request failed: {}", e))?;
 
