@@ -3,9 +3,9 @@ use crate::helpers::test_helpers::{
     create_test_app_state, create_test_app_state_default, setup_three_node_network,
 };
 use crate::DkgServiceImpl;
-use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tonic::{Request, Response};
