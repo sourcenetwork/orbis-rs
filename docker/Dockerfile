@@ -1,8 +1,16 @@
 # Build stage
 FROM rust:1.85-bookworm AS builder
 
-# Install protobuf compiler (required for tonic-build)
-RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+# Install build dependencies
+# - protobuf-compiler: required for tonic-build
+# - cmake, golang, build-essential, libclang-dev: required for boring-sys (BoringSSL bindings)
+RUN apt-get update && apt-get install -y \
+    protobuf-compiler \
+    cmake \
+    golang \
+    build-essential \
+    libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
