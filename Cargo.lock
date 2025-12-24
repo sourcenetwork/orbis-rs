@@ -354,6 +354,7 @@ dependencies = [
  "jwt-simple",
  "serde",
  "thiserror 1.0.69",
+ "tonic",
 ]
 
 [[package]]
@@ -3400,6 +3401,7 @@ dependencies = [
  "ark-serialize",
  "ark-std",
  "async-trait",
+ "authn",
  "base64 0.22.1",
  "clap",
  "crypto",

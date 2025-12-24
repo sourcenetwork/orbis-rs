@@ -3,6 +3,10 @@ use thiserror::Error;
 /// PRE (Proxy Re-Encryption) related errors
 #[derive(Error, Debug)]
 pub enum PreError {
+    /// Authentication/authorization error
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     /// Serialization error
     #[error("Serialization error: {0}")]
     Serialization(String),
@@ -72,6 +76,9 @@ impl From<PreError> for tonic::Status {
     fn from(error: PreError) -> Self {
         use tonic::Code;
         match error {
+            PreError::Unauthorized(_) => {
+                tonic::Status::new(Code::Unauthenticated, error.to_string())
+            }
             PreError::InvalidInput(_) => {
                 tonic::Status::new(Code::InvalidArgument, error.to_string())
             }

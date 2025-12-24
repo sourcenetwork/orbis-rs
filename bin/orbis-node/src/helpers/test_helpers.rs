@@ -19,6 +19,12 @@ use crypto::bls12_381::pre::ThresholdDealerNode;
 type DkgImpl = DKGNode;
 type PreImpl = ThresholdDealerNode;
 
+// Re-export JWT utilities from authn for test convenience
+pub use authn::{add_auth_header, create_authenticated_request, JwtSigner};
+
+/// Type alias for backward compatibility - use JwtSigner instead
+pub type TestKeyPair = JwtSigner;
+
 /// Create a test AppState with an initialized iroh network
 ///
 /// This function initializes a new iroh network and creates an AppState

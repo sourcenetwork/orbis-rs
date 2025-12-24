@@ -1,9 +1,16 @@
 pub mod error;
+pub mod jwt_builder;
+
 use did_key::{resolve, KeyMaterial};
 use error::{AuthNError, Result};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fmt::Debug;
+
+// Re-export commonly used items from jwt_builder
+pub use jwt_builder::{
+    add_auth_header, create_authenticated_request, extract_bearer_token, JwtSigner,
+};
 
 #[cfg(test)]
 mod tests;

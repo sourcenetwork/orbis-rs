@@ -3,6 +3,10 @@ use thiserror::Error;
 /// DKG (Distributed Key Generation) related errors
 #[derive(Error, Debug)]
 pub enum DkgError {
+    /// Authentication/authorization error
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     /// Serialization error
     #[error("Serialization error: {0}")]
     Serialization(String),
@@ -68,6 +72,9 @@ impl From<DkgError> for tonic::Status {
     fn from(error: DkgError) -> Self {
         use tonic::Code;
         match error {
+            DkgError::Unauthorized(_) => {
+                tonic::Status::new(Code::Unauthenticated, error.to_string())
+            }
             DkgError::InvalidInput(_) => {
                 tonic::Status::new(Code::InvalidArgument, error.to_string())
             }

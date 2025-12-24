@@ -1,6 +1,7 @@
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::helpers::test_helpers::{
-    create_test_app_state, create_test_app_state_default, setup_three_node_network,
+    create_authenticated_request, create_test_app_state, create_test_app_state_default,
+    setup_three_node_network, TestKeyPair,
 };
 use crate::DkgServiceImpl;
 use crypto::r#trait::Dkg;
@@ -8,7 +9,7 @@ use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
-use tonic::{Request, Response};
+use tonic::Response;
 use tracing_subscriber;
 
 // Concrete crypto implementations for tests
@@ -21,12 +22,17 @@ async fn test_start_dkg_empty_participants() {
     let app_state = create_test_app_state_default().await;
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
+    let peer_ids: Vec<String> = vec![]; // Empty - should result in error
     let request = StartDkgRequest {
         threshold: 0,
-        peer_ids: vec![], // Empty - should result in error
+        peer_ids: peer_ids.clone(),
     };
 
-    let tonic_request = Request::new(request.clone());
+    // Create authenticated request
+    let test_keys = TestKeyPair::new();
+    let token = test_keys.create_dkg_jwt(0, &peer_ids).expect("Failed to create JWT");
+    let tonic_request = create_authenticated_request(request, &token);
+
     let result = service.start_dkg(tonic_request).await;
 
     // Should fail with 0 participants (validation error)
@@ -53,11 +59,15 @@ async fn test_three_nodes_connect() {
     // Alice sends StartDkgRequest with Bob and Charlie's peer IDs
     let request = StartDkgRequest {
         threshold: 2,
-        peer_ids,
+        peer_ids: peer_ids.clone(),
     };
 
+    // Create authenticated request
+    let test_keys = TestKeyPair::new();
+    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("Failed to create JWT");
+
     println!("Alice sending StartDkgRequest with peer IDs...");
-    let tonic_request = Request::new(request.clone());
+    let tonic_request = create_authenticated_request(request, &token);
     let result = alice_service.start_dkg(tonic_request).await;
 
     assert!(result.is_ok(), "start_dkg should succeed");
@@ -97,16 +107,21 @@ async fn test_start_dkg_fails_on_connection_failure() {
 
     // Create a request with invalid peer IDs that fail validation
     // Using obviously invalid peer IDs (not valid hex-encoded Ed25519 public keys)
+    let peer_ids = vec![
+        "invalid-peer-id-1".to_string(),
+        "invalid-peer-id-2".to_string(),
+    ];
     let request = StartDkgRequest {
         threshold: 2,
-        peer_ids: vec![
-            "invalid-peer-id-1".to_string(),
-            "invalid-peer-id-2".to_string(),
-        ],
+        peer_ids: peer_ids.clone(),
     };
 
+    // Create authenticated request (even with invalid peer_ids, JWT should match request)
+    let test_keys = TestKeyPair::new();
+    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("Failed to create JWT");
+
     println!("Alice sending StartDkgRequest with invalid peer IDs...");
-    let tonic_request = Request::new(request);
+    let tonic_request = create_authenticated_request(request, &token);
     let result = alice_service.start_dkg(tonic_request).await;
 
     // Verify that the request fails with a gRPC error due to invalid peer ID format
@@ -155,11 +170,15 @@ async fn test_start_dkg_succeeds_on_all_connections() {
     // Alice sends StartDkgRequest with all peer IDs (including herself)
     let request = StartDkgRequest {
         threshold: 2,
-        peer_ids,
+        peer_ids: peer_ids.clone(),
     };
 
+    // Create authenticated request
+    let test_keys = TestKeyPair::new();
+    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("Failed to create JWT");
+
     println!("Alice sending StartDkgRequest with valid peer IDs...");
-    let tonic_request = Request::new(request.clone());
+    let tonic_request = create_authenticated_request(request, &token);
     let result = alice_service.start_dkg(tonic_request).await;
 
     // Verify that the request succeeds when all connections are successful

@@ -4,12 +4,61 @@ use crate::helpers::helpers::{
 };
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
+use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, PreClaims};
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
 use network::REENCRYPT;
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
+
+/// Validates JWT claims against the PRE request
+fn validate_pre_claims(
+    token: &BearerToken<PreClaims>,
+    req: &StartPreRequest,
+) -> Result<(), PreError> {
+    // Validate rdr_pk matches
+    if token.claims.rdr_pk != req.rdr_pk {
+        return Err(PreError::Unauthorized(format!(
+            "Token rdr_pk '{}' does not match request rdr_pk '{}'",
+            token.claims.rdr_pk, req.rdr_pk
+        )));
+    }
+
+    // Validate ring_pk matches
+    if token.claims.ring_pk != req.ring_pk {
+        return Err(PreError::Unauthorized(format!(
+            "Token ring_pk '{}' does not match request ring_pk '{}'",
+            token.claims.ring_pk, req.ring_pk
+        )));
+    }
+
+    // Validate peer_ids match (token has comma-separated, request has Vec)
+    let token_peer_ids: Vec<&str> = token.claims.peer_ids.split(',').collect();
+    let req_peer_ids: Vec<&str> = req.peer_ids.iter().map(|s| s.as_str()).collect();
+
+    if token_peer_ids.len() != req_peer_ids.len() {
+        return Err(PreError::Unauthorized(format!(
+            "Token peer_ids count ({}) does not match request peer_ids count ({})",
+            token_peer_ids.len(),
+            req_peer_ids.len()
+        )));
+    }
+
+    // Check all peer_ids match (order-independent)
+    let mut sorted_token: Vec<&str> = token_peer_ids.clone();
+    let mut sorted_req: Vec<&str> = req_peer_ids.clone();
+    sorted_token.sort();
+    sorted_req.sort();
+
+    if sorted_token != sorted_req {
+        return Err(PreError::Unauthorized(
+            "Token peer_ids do not match request peer_ids".to_string(),
+        ));
+    }
+
+    Ok(())
+}
 /// Implementation of the PreService
 #[derive(Debug)]
 pub struct PreServiceImpl<D, T>
@@ -59,20 +108,32 @@ where
         &self,
         request: Request<StartPreRequest>,
     ) -> Result<Response<StartPreResponse>, Status> {
+        // Get current timestamp (needed for both auth and response)
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| Status::internal(format!("Failed to get timestamp: {}", e)))?
+            .as_secs();
+
+        // 1. Authenticate: Extract and validate JWT
+        let token_str = extract_bearer_token(&request)
+            .map_err(|e| PreError::Unauthorized(e.to_string()))?;
+        let token: BearerToken<PreClaims> = resolve_jwt_did(token_str, current_time)
+            .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+
         let req = request.into_inner();
-        // TODO: Authenticate with ACP
+
+        // 2. Authorize: Validate JWT claims match request fields
+        validate_pre_claims(&token, &req)?;
+
         tracing::info!(
             ring_pk = %req.ring_pk,
             reader_pk = %req.rdr_pk,
             peer_ids = ?req.peer_ids,
-            "Received StartPre request"
+            issuer = %token.issuer_id,
+            "Authenticated StartPre request"
         );
 
-        // Get current timestamp
-        let created_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| Status::internal(format!("Failed to get timestamp: {}", e)))?
-            .as_secs() as i64;
+        let created_at = current_time as i64;
 
         // 1. Parse JSON and hex inputs
         // ring_pk: hex-encoded compressed G1Affine bytes

@@ -4,7 +4,9 @@
 //! These tests verify the complete flow: DKG → Alice encrypts → PRE to Bob → Bob decrypts.
 
 use crate::dkg::coordinator::DkgCoordinator;
-use crate::helpers::test_helpers::setup_three_node_network_with_pre;
+use crate::helpers::test_helpers::{
+    create_authenticated_request, setup_three_node_network_with_pre, TestKeyPair,
+};
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::DkgServiceImpl;
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
@@ -18,7 +20,6 @@ use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use rand_core::OsRng;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
-use tonic::Request;
 
 // Type aliases for tests
 type DkgImpl = DKGNode;
@@ -57,11 +58,15 @@ async fn test_dkg_then_pre_end_to_end() {
     // node1 sends StartDkgRequest to initiate the protocol
     let request = StartDkgRequest {
         threshold: 2,
-        peer_ids,
+        peer_ids: peer_ids.clone(),
     };
 
+    // Create authenticated request
+    let test_keys = TestKeyPair::new();
+    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("Failed to create JWT");
+
     println!("Node1 sending StartDkgRequest...");
-    let tonic_request = Request::new(request.clone());
+    let tonic_request = create_authenticated_request(request, &token);
     let result = node1_service.start_dkg(tonic_request).await;
     assert!(
         result.is_ok(),
@@ -282,10 +287,16 @@ async fn test_pre_with_large_secret() {
 
     let request = StartDkgRequest {
         threshold: 2,
-        peer_ids,
+        peer_ids: peer_ids.clone(),
     };
 
-    let result = node1_service.start_dkg(Request::new(request)).await;
+    // Create authenticated request
+    let test_keys = TestKeyPair::new();
+    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("Failed to create JWT");
+
+    let result = node1_service
+        .start_dkg(create_authenticated_request(request, &token))
+        .await;
     assert!(result.is_ok());
 
     let aggregate_pk = wait_for_dkg_completion(
@@ -369,10 +380,16 @@ async fn test_pre_fails_with_wrong_key() {
 
     let request = StartDkgRequest {
         threshold: 2,
-        peer_ids,
+        peer_ids: peer_ids.clone(),
     };
 
-    let result = node1_service.start_dkg(Request::new(request)).await;
+    // Create authenticated request
+    let test_keys = TestKeyPair::new();
+    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("Failed to create JWT");
+
+    let result = node1_service
+        .start_dkg(create_authenticated_request(request, &token))
+        .await;
     assert!(result.is_ok());
 
     let aggregate_pk = wait_for_dkg_completion(
