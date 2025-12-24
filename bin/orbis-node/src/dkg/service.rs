@@ -98,7 +98,7 @@ where
             extract_bearer_token(&request).map_err(|e| DkgError::Unauthorized(e.to_string()))?;
         let token: BearerToken<DkgClaims> = resolve_jwt_did(token_str, current_time)
             .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-
+        // TODO: use token.issuer_id as AuthZ check
         let req = request.into_inner();
 
         // 2. Authorize: Validate JWT claims match request fields
