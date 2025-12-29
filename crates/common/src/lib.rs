@@ -1,7 +1,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-const DOCKER_COMPOSE_FILE: &str = "docker/docker-sourcehub-test.yml";
+const DOCKER_COMPOSE_FILE: &str = "docker/docker-compose-sourcehub-test.yml";
 const SOURCEHUB_RPC_URL: &str = "http://localhost:26657";
 const SOURCEHUB_API_URL: &str = "http://localhost:1317";
 
