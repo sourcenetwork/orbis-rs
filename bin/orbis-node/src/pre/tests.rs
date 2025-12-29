@@ -11,16 +11,11 @@ use crate::helpers::test_helpers::{
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::pre::service::PreServiceImpl;
 use crate::DkgServiceImpl;
-use ark_bls12_381::{Fr, G1Affine, G1Projective};
-use ark_ec::Group;
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::UniformRand;
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
-use crypto::r#trait::{Dkg, ThresholdDealer};
+use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, ThresholdDealer};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest};
-use rand_core::OsRng;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tonic::Request;
@@ -120,23 +115,19 @@ async fn test_dkg_then_pre_end_to_end() {
     // =========================================================================
     println!("\nStep 4: Bob generates his keypair...");
 
-    let mut rng = OsRng;
-    let bob_sk = Fr::rand(&mut rng);
-    let bob_pk: G1Affine = (G1Projective::generator() * bob_sk).into();
+    let (bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
 
     println!("Bob's keypair generated!");
     println!("  - Bob's public key: {:?}", bob_pk);
 
-    // Serialize Bob's public key
-    let mut bob_pk_bytes = Vec::new();
-    bob_pk
-        .serialize_compressed(&mut bob_pk_bytes)
+    // Serialize Bob's public key using trait method
+    let bob_pk_bytes = bob_pk
+        .to_bytes()
         .expect("Failed to serialize Bob's public key");
 
-    // Serialize the ring (DKG) public key
-    let mut ring_pk_bytes = Vec::new();
-    aggregate_pk
-        .serialize_compressed(&mut ring_pk_bytes)
+    // Serialize the ring (DKG) public key using trait method
+    let ring_pk_bytes = aggregate_pk
+        .to_bytes()
         .expect("Failed to serialize ring public key");
 
     // =========================================================================
@@ -190,14 +181,14 @@ async fn test_dkg_then_pre_end_to_end() {
     // =========================================================================
     println!("\nStep 6: Bob decrypts the secret...");
 
-    // Deserialize the xnc_cmt from hex
+    // Deserialize the xnc_cmt from hex using trait method
     let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).expect("Failed to decode xnc_cmt hex");
-    let xnc_cmt = G1Affine::deserialize_compressed(&xnc_cmt_bytes[..])
+    let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes)
         .expect("Failed to deserialize xnc_cmt");
 
     // Bob decrypts using his private key
     let decrypted_message =
-        ThresholdDealerNode::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret)
+        PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret)
             .expect("Decryption should succeed");
 
     println!(
@@ -232,7 +223,7 @@ async fn test_dkg_then_pre_end_to_end() {
 async fn wait_for_dkg_completion(
     network: &crate::helpers::test_helpers::ThreeNodeNetwork,
     session_id: u64,
-) -> G1Affine {
+) -> <DkgImpl as Dkg>::PublicKey {
     let check_interval = Duration::from_millis(500);
     let max_wait = Duration::from_secs(60);
     let start = std::time::Instant::now();
@@ -318,20 +309,14 @@ async fn test_pre_with_large_secret() {
     println!("Large secret size: {} bytes", large_secret.len());
 
     // Alice encrypts
-    let (_, encrypted_secret) = ThresholdDealerNode::encrypt_secret(&aggregate_pk, &large_secret)
+    let (_, encrypted_secret) = PreImpl::encrypt_secret(&aggregate_pk, &large_secret)
         .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
-    // Bob's keys
-    let mut rng = OsRng;
-    let bob_sk = Fr::rand(&mut rng);
-    let bob_pk: G1Affine = (G1Projective::generator() * bob_sk).into();
-    let mut bob_pk_bytes = Vec::new();
-    bob_pk.serialize_compressed(&mut bob_pk_bytes).unwrap();
-    let mut ring_pk_bytes = Vec::new();
-    aggregate_pk
-        .serialize_compressed(&mut ring_pk_bytes)
-        .unwrap();
+    // Bob's keys using trait method
+    let (bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
+    let bob_pk_bytes = bob_pk.to_bytes().unwrap();
+    let ring_pk_bytes = aggregate_pk.to_bytes().unwrap();
 
     // PRE
     let pre_coordinator =
@@ -351,12 +336,12 @@ async fn test_pre_with_large_secret() {
 
     let pre_response: PreResponse = serde_json::from_slice(&pre_response_bytes).unwrap();
 
-    // Bob decrypts
+    // Bob decrypts using trait methods
     let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).unwrap();
-    let xnc_cmt = G1Affine::deserialize_compressed(&xnc_cmt_bytes[..]).unwrap();
+    let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes).unwrap();
 
     let decrypted =
-        ThresholdDealerNode::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret)
+        PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret)
             .expect("Decryption should succeed");
 
     assert_eq!(
@@ -410,23 +395,17 @@ async fn test_pre_fails_with_wrong_key() {
 
     // Alice encrypts
     let secret_message = b"Secret that should not be decrypted with wrong key";
-    let (_, encrypted_secret) = ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret_message)
+    let (_, encrypted_secret) = PreImpl::encrypt_secret(&aggregate_pk, secret_message)
         .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's real keys
-    let mut rng = OsRng;
-    let bob_sk = Fr::rand(&mut rng);
-    let bob_pk: G1Affine = (G1Projective::generator() * bob_sk).into();
-    let mut bob_pk_bytes = Vec::new();
-    bob_pk.serialize_compressed(&mut bob_pk_bytes).unwrap();
-    let mut ring_pk_bytes = Vec::new();
-    aggregate_pk
-        .serialize_compressed(&mut ring_pk_bytes)
-        .unwrap();
+    let (_bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
+    let bob_pk_bytes = bob_pk.to_bytes().unwrap();
+    let ring_pk_bytes = aggregate_pk.to_bytes().unwrap();
 
     // Wrong private key (Eve trying to decrypt)
-    let eve_sk = Fr::rand(&mut rng);
+    let (eve_sk, _eve_pk) = ThresholdDealerNode::generate_keypair();
 
     // PRE to Bob's public key
     let pre_coordinator =
@@ -446,11 +425,11 @@ async fn test_pre_fails_with_wrong_key() {
 
     let pre_response: PreResponse = serde_json::from_slice(&pre_response_bytes).unwrap();
 
-    // Eve tries to decrypt with her key
+    // Eve tries to decrypt with her key using trait methods
     let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).unwrap();
-    let xnc_cmt = G1Affine::deserialize_compressed(&xnc_cmt_bytes[..]).unwrap();
+    let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes).unwrap();
 
-    let decrypt_result = ThresholdDealerNode::decrypt_secret(
+    let decrypt_result = PreImpl::decrypt_secret(
         &aggregate_pk,
         &xnc_cmt,
         &eve_sk, // Wrong key!

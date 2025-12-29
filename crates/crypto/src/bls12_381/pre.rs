@@ -213,6 +213,15 @@ impl ThresholdDealer for ThresholdDealerNode {
 }
 
 impl ThresholdDealerNode {
+    /// Generate a new keypair for encryption/decryption (test-only).
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn generate_keypair() -> (Fr, G1Affine) {
+        let mut rng = OsRng;
+        let sk = Fr::rand(&mut rng);
+        let pk: G1Affine = (G1Projective::generator() * sk).into();
+        (sk, pk)
+    }
+
     /// Decompress a point from bytes and validate it's not the identity element
     fn decompress_point(bytes: &[u8]) -> Result<G1Affine> {
         let point = G1Affine::deserialize_compressed(bytes).map_err(|e| {

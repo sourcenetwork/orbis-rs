@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+test-helpers = []
+
 [dependencies]
 thiserror = { workspace = true }
 anyhow = { workspace = true }
