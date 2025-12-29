@@ -5,9 +5,11 @@
 
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::helpers::test_helpers::{
-    create_authenticated_request, setup_three_node_network_with_pre, TestKeyPair,
+    create_authenticated_request, create_test_app_state_default, setup_three_node_network_with_pre,
+    TestKeyPair,
 };
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
+use crate::pre::service::PreServiceImpl;
 use crate::DkgServiceImpl;
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::Group;
@@ -17,9 +19,11 @@ use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{Dkg, ThresholdDealer};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
+use proto::pre_service::{pre_service_server::PreService, StartPreRequest};
 use rand_core::OsRng;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
+use tonic::Request;
 
 // Type aliases for tests
 type DkgImpl = DKGNode;
@@ -463,4 +467,123 @@ async fn test_pre_fails_with_wrong_key() {
         .shutdown_routers()
         .await
         .expect("Failed to shutdown");
+}
+
+#[tokio::test]
+async fn test_start_pre_fails_missing_auth_header() {
+    let app_state = create_test_app_state_default().await;
+    let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
+
+    let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
+    let request = StartPreRequest {
+        ring_pk: "abc123".to_string(),
+        secret: "secret_data".to_string(),
+        rdr_pk: "def456".to_string(),
+        peer_ids,
+    };
+
+    // Create request WITHOUT authentication header
+    let tonic_request = Request::new(request);
+
+    let result = service.start_pre(tonic_request).await;
+
+    assert!(
+        result.is_err(),
+        "start_pre should fail when Authorization header is missing"
+    );
+
+    let status = result.unwrap_err();
+    assert_eq!(
+        status.code(),
+        tonic::Code::Unauthenticated,
+        "Error code should be Unauthenticated for missing auth header"
+    );
+
+    assert!(
+        status.message().contains("Unauthorized"),
+        "Error message should indicate missing authorization: {}",
+        status.message()
+    );
+}
+
+#[tokio::test]
+async fn test_start_pre_fails_malformed_jwt() {
+    let app_state = create_test_app_state_default().await;
+    let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
+
+    let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
+    let request = StartPreRequest {
+        ring_pk: "abc123".to_string(),
+        secret: "secret_data".to_string(),
+        rdr_pk: "def456".to_string(),
+        peer_ids,
+    };
+
+    // Create request with malformed JWT (not a valid JWT structure)
+    let tonic_request = create_authenticated_request(request, "not-a-valid-jwt-token");
+
+    let result = service.start_pre(tonic_request).await;
+
+    assert!(
+        result.is_err(),
+        "start_pre should fail with malformed JWT token"
+    );
+
+    let status = result.unwrap_err();
+    assert_eq!(
+        status.code(),
+        tonic::Code::Unauthenticated,
+        "Error code should be Unauthenticated for malformed JWT"
+    );
+}
+
+#[tokio::test]
+async fn test_start_pre_fails_wrong_signature() {
+    let app_state = create_test_app_state_default().await;
+    let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
+
+    let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
+
+    // Create a valid JWT with key_pair_1
+    let key_pair_1 = TestKeyPair::new();
+    let valid_token = key_pair_1
+        .create_pre_jwt("def456", "abc123", &peer_ids)
+        .expect("Failed to create JWT");
+
+    // Tamper with the signature by changing a character
+    // JWT format: header.payload.signature
+    let parts: Vec<&str> = valid_token.split('.').collect();
+    assert_eq!(parts.len(), 3, "JWT should have 3 parts");
+
+    // Modify the signature portion to invalidate it
+    let mut tampered_sig = parts[2].to_string();
+    if let Some(c) = tampered_sig.pop() {
+        // Change the last character to invalidate the signature
+        let new_char = if c == 'A' { 'B' } else { 'A' };
+        tampered_sig.push(new_char);
+    }
+    let tampered_token = format!("{}.{}.{}", parts[0], parts[1], tampered_sig);
+
+    let request = StartPreRequest {
+        ring_pk: "abc123".to_string(),
+        secret: "secret_data".to_string(),
+        rdr_pk: "def456".to_string(),
+        peer_ids,
+    };
+
+    let tonic_request = create_authenticated_request(request, &tampered_token);
+
+    let result = service.start_pre(tonic_request).await;
+
+    assert!(
+        result.is_err(),
+        "start_pre should fail with tampered JWT signature"
+    );
+
+    let status = result.unwrap_err();
+    assert_eq!(
+        status.code(),
+        tonic::Code::Unauthenticated,
+        "Error code should be Unauthenticated for invalid signature"
+    );
 }
