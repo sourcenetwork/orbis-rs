@@ -36,16 +36,20 @@ pub struct BearerToken<T = ()> {
 /// Claims for PRE (Proxy Re-Encryption) endpoints
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PreClaims {
-    /// Reader's public key - validated against request
+    /// Reader's public key
     pub rdr_pk: String,
+    /// Ring's public key
     pub ring_pk: String,
+    /// Peer Id of nodes in ring
     pub peer_ids: String,
 }
 
 /// Claims for DKG endpoints
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct DkgClaims {
+    /// Threshold to be set
     pub threshold: u32,
+    /// Peer Id of nodes in ring
     pub peer_ids: String,
 }
 
