@@ -309,8 +309,8 @@ async fn test_pre_with_large_secret() {
     println!("Large secret size: {} bytes", large_secret.len());
 
     // Alice encrypts
-    let (_, encrypted_secret) = PreImpl::encrypt_secret(&aggregate_pk, &large_secret)
-        .expect("Encryption should succeed");
+    let (_, encrypted_secret) =
+        PreImpl::encrypt_secret(&aggregate_pk, &large_secret).expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys using trait method
@@ -340,9 +340,8 @@ async fn test_pre_with_large_secret() {
     let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).unwrap();
     let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes).unwrap();
 
-    let decrypted =
-        PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret)
-            .expect("Decryption should succeed");
+    let decrypted = PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret)
+        .expect("Decryption should succeed");
 
     assert_eq!(
         decrypted, large_secret,
@@ -395,8 +394,8 @@ async fn test_pre_fails_with_wrong_key() {
 
     // Alice encrypts
     let secret_message = b"Secret that should not be decrypted with wrong key";
-    let (_, encrypted_secret) = PreImpl::encrypt_secret(&aggregate_pk, secret_message)
-        .expect("Encryption should succeed");
+    let (_, encrypted_secret) =
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message).expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's real keys
