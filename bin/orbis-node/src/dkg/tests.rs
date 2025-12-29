@@ -9,7 +9,7 @@ use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
-use tonic::Response;
+use tonic::{Request, Response};
 use tracing_subscriber;
 
 // Concrete crypto implementations for tests
@@ -325,5 +325,118 @@ async fn test_start_dkg_succeeds_on_all_connections() {
 
     println!(
         "Test passed: Service correctly succeeded when all connections worked and DKG completed"
+    );
+}
+
+#[tokio::test]
+async fn test_start_dkg_fails_missing_auth_header() {
+    let app_state = create_test_app_state_default().await;
+    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+
+    let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
+    let request = StartDkgRequest {
+        threshold: 2,
+        peer_ids,
+    };
+
+    // Create request WITHOUT authentication header
+    let tonic_request = Request::new(request);
+
+    let result = service.start_dkg(tonic_request).await;
+
+    assert!(
+        result.is_err(),
+        "start_dkg should fail when Authorization header is missing"
+    );
+
+    let status = result.unwrap_err();
+    assert_eq!(
+        status.code(),
+        tonic::Code::Unauthenticated,
+        "Error code should be Unauthenticated for missing auth header"
+    );
+
+    assert!(
+        status.message().contains("Unauthorized"),
+        "Error message should indicate missing authorization: {}",
+        status.message()
+    );
+}
+
+#[tokio::test]
+async fn test_start_dkg_fails_malformed_jwt() {
+    let app_state = create_test_app_state_default().await;
+    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+
+    let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
+    let request = StartDkgRequest {
+        threshold: 2,
+        peer_ids,
+    };
+
+    // Create request with malformed JWT (not a valid JWT structure)
+    let tonic_request = create_authenticated_request(request, "not-a-valid-jwt-token");
+
+    let result = service.start_dkg(tonic_request).await;
+
+    assert!(
+        result.is_err(),
+        "start_dkg should fail with malformed JWT token"
+    );
+
+    let status = result.unwrap_err();
+    assert_eq!(
+        status.code(),
+        tonic::Code::Unauthenticated,
+        "Error code should be Unauthenticated for malformed JWT"
+    );
+}
+
+#[tokio::test]
+async fn test_start_dkg_fails_wrong_signature() {
+    let app_state = create_test_app_state_default().await;
+    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+
+    let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
+
+    // Create a valid JWT with key_pair_1
+    let key_pair_1 = TestKeyPair::new();
+    let valid_token = key_pair_1
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
+
+    // Tamper with the signature by changing a character
+    // JWT format: header.payload.signature
+    let parts: Vec<&str> = valid_token.split('.').collect();
+    assert_eq!(parts.len(), 3, "JWT should have 3 parts");
+
+    // Modify the signature portion to invalidate it
+    let mut tampered_sig = parts[2].to_string();
+    if let Some(c) = tampered_sig.pop() {
+        // Change the last character to invalidate the signature
+        let new_char = if c == 'A' { 'B' } else { 'A' };
+        tampered_sig.push(new_char);
+    }
+    let tampered_token = format!("{}.{}.{}", parts[0], parts[1], tampered_sig);
+
+    let request = StartDkgRequest {
+        threshold: 2,
+        peer_ids,
+    };
+
+    let tonic_request = create_authenticated_request(request, &tampered_token);
+
+    let result = service.start_dkg(tonic_request).await;
+
+    assert!(
+        result.is_err(),
+        "start_dkg should fail with tampered JWT signature"
+    );
+
+    let status = result.unwrap_err();
+    assert_eq!(
+        status.code(),
+        tonic::Code::Unauthenticated,
+        "Error code should be Unauthenticated for invalid signature"
     );
 }
