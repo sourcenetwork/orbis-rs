@@ -8,7 +8,8 @@ members = [
     "crates/local-storage",
     "bin/cli-tool",
     "crates/authn", 
-    "crates/authz",
+    "crates/authz", 
+    "crates/common",
 ]
 
 [workspace.package]

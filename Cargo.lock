@@ -361,7 +361,9 @@ dependencies = [
 name = "authz"
 version = "0.0.1"
 dependencies = [
+ "common",
  "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]
@@ -839,6 +841,10 @@ dependencies = [
  "bytes",
  "memchr",
 ]
+
+[[package]]
+name = "common"
+version = "0.0.1"
 
 [[package]]
 name = "const-oid"
