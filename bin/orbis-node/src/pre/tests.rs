@@ -360,6 +360,7 @@ async fn test_pre_with_large_secret() {
 
 /// Test that PRE fails with wrong Bob private key
 #[tokio::test]
+#[serial_test::serial]
 async fn test_pre_fails_with_wrong_key() {
     println!("=== Starting PRE Failure Test (Wrong Key) ===\n");
 

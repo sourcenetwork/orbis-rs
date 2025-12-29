@@ -38,4 +38,6 @@ ark-ec = "0.4"
 ark-std = "0.4"
 rand_core = "0.6"
 crypto = { path = "../../crates/crypto", features = ["test-helpers"] }
+cli-tool = { path = "../cli-tool" }
+tokio-stream = "0.1"
 

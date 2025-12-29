@@ -1,6 +1,7 @@
 //! Tests for the orbis-node main module
 //!
-//! These tests verify the node initialization and configuration logic.
+//! These tests verify the node initialization and configuration logic,
+//! as well as compatibility with cli-tool.
 
 use crate::{init_node, Args, LogLevel, NodeConfig};
 use local_storage::memory::MemoryStorage;
@@ -228,4 +229,134 @@ async fn test_init_node_with_encrypted_storage() {
         .shutdown()
         .await
         .expect("Router shutdown failed");
+}
+
+// ============================================================================
+// CLI-TOOL INTEGRATION TESTS
+// ============================================================================
+// These tests spin up real orbis-node servers and call cli-tool functions
+// against them. If orbis-node changes break cli-tool, these tests will fail.
+
+mod cli_tool_integration {
+    use crate::dkg::service::DkgServiceImpl;
+    use crate::helpers::test_helpers::setup_three_node_network_with_pre;
+    use crate::pre::service::PreServiceImpl;
+    use crate::{DkgImpl, PreImpl};
+    use proto::dkg_service::dkg_service_server::DkgServiceServer;
+    use proto::pre_service::pre_service_server::PreServiceServer;
+    use std::net::SocketAddr;
+    use tokio::time::{sleep, Duration};
+
+    /// End-to-end test: Run DKG, then call cli-tool's do_pre function
+    ///
+    /// This tests the full user workflow:
+    /// 1. Run DKG to generate distributed keys
+    /// 2. Run PRE to re-encrypt a secret
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_cli_calls_dkg_and_pre_endpoint() {
+        use crate::dkg::coordinator::DkgCoordinator;
+        use ark_bls12_381::{Fr, G1Affine, G1Projective};
+        use ark_ec::Group;
+        use ark_std::UniformRand;
+        use crypto::r#trait::Dkg;
+        use crypto::CryptoSerialize;
+        use rand_core::OsRng;
+        use std::sync::Arc;
+
+        // Set up three nodes
+        let mut network = setup_three_node_network_with_pre(true).await;
+        let peer_ids = network.get_all_peer_ids();
+
+        // Start gRPC server for Alice
+        let alice_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let dkg_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+        let pre_service = PreServiceImpl::<DkgImpl, PreImpl>::new(network.alice.app_state.clone());
+
+        let listener = tokio::net::TcpListener::bind(alice_addr).await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+        let endpoint = format!("http://{}", server_addr);
+
+        let server_handle = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(DkgServiceServer::new(dkg_service))
+                .add_service(PreServiceServer::new(pre_service))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+        });
+
+        sleep(Duration::from_millis(100)).await;
+
+        // Step 1: Run DKG via CLI to get a ring public key
+        let dkg_result = cli_tool::do_dkg(endpoint.clone(), 2, peer_ids.clone()).await;
+        assert!(
+            dkg_result.is_ok(),
+            "DKG should succeed: {:?}",
+            dkg_result.err()
+        );
+        let dkg_response = dkg_result.unwrap();
+        let session_id: u64 = dkg_response.session_id.parse().expect("parse session_id");
+
+        // Wait for DKG to complete and get the ring public key
+        let max_wait = Duration::from_secs(30);
+        let start = std::time::Instant::now();
+        let mut ring_pk_hex = String::new();
+
+        let alice_coordinator = DkgCoordinator::new(Arc::new(network.alice.app_state.clone()));
+
+        while start.elapsed() < max_wait {
+            if let Some(session) = alice_coordinator.get_session(&session_id).await {
+                let session_guard = session.read().await;
+                if let Ok(agg_key) = session_guard.compute_aggregate_public_key() {
+                    // Serialize to bytes then hex (same format cli-tool uses)
+                    let ring_pk_bytes = agg_key.to_bytes().expect("serialize ring pk");
+                    ring_pk_hex = hex::encode(&ring_pk_bytes);
+                    println!(
+                        "DKG completed! Ring PK: {}...",
+                        &ring_pk_hex[..40.min(ring_pk_hex.len())]
+                    );
+                    break;
+                }
+            }
+            sleep(Duration::from_millis(500)).await;
+        }
+
+        assert!(
+            !ring_pk_hex.is_empty(),
+            "Should have ring public key after DKG"
+        );
+
+        // Step 2: Generate reader keypair (same as cli-tool generate-reader-key)
+        let mut rng = OsRng;
+        let reader_sk = Fr::rand(&mut rng);
+        let reader_pk: G1Affine = (G1Projective::generator() * reader_sk).into();
+
+        let reader_sk_bytes = reader_sk.to_bytes().expect("serialize reader sk");
+        let reader_pk_bytes = reader_pk.to_bytes().expect("serialize reader pk");
+        let reader_sk_hex = hex::encode(&reader_sk_bytes);
+        let reader_pk_hex = hex::encode(&reader_pk_bytes);
+
+        // Step 3: Run PRE via CLI
+        let secret = "Hello from CLI integration test!";
+        let pre_result = cli_tool::do_pre(
+            endpoint.clone(),
+            ring_pk_hex,
+            secret.to_string(),
+            reader_pk_hex,
+            reader_sk_hex,
+            peer_ids,
+        )
+        .await;
+
+        // The key test: CLI do_pre should succeed against orbis-node
+        assert!(
+            pre_result.is_ok(),
+            "cli-tool do_pre should succeed against orbis-node: {:?}",
+            pre_result.err()
+        );
+
+        // Clean up
+        server_handle.abort();
+        network.shutdown_routers().await.unwrap();
+    }
 }
