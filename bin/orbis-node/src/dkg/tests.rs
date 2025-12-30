@@ -440,3 +440,173 @@ async fn test_start_dkg_fails_wrong_signature() {
         "Error code should be Unauthenticated for invalid signature"
     );
 }
+
+/// Test: Verify that SessionInit with invalid JWT token is rejected by peer nodes
+///
+/// This test verifies that when a peer node receives a SessionInit message
+/// with an invalid JWT token, it rejects the session initialization.
+#[tokio::test]
+async fn test_dkg_session_init_fails_with_invalid_jwt() {
+    use crate::dkg::messages::DkgMessage;
+
+    // Create a node to receive the SessionInit
+    let app_state = create_test_app_state_default().await;
+    let coordinator = DkgCoordinator::new(Arc::new(app_state));
+
+    // Create a SessionInit message with an invalid JWT token
+    let session_init = DkgMessage::SessionInit {
+        session_id: 12345,
+        threshold: 2,
+        total_participants: 3,
+        peer_ids: vec![
+            "peer1".to_string(),
+            "peer2".to_string(),
+            "peer3".to_string(),
+        ],
+        node_id_assignments: std::collections::HashMap::from([
+            ("peer1".to_string(), 1),
+            ("peer2".to_string(), 2),
+            ("peer3".to_string(), 3),
+        ]),
+        token_string: "not-a-valid-jwt-token".to_string(), // Invalid JWT
+    };
+
+    // Try to handle the message - should fail due to invalid JWT
+    let result = coordinator.handle_message(session_init).await;
+
+    assert!(
+        result.is_err(),
+        "SessionInit with invalid JWT should be rejected"
+    );
+
+    let error = result.unwrap_err();
+    println!("SessionInit correctly rejected with error: {}", error);
+    assert!(
+        error.to_string().contains("Unauthorized")
+            || error.to_string().contains("JWT")
+            || error.to_string().contains("validation"),
+        "Error should indicate authentication failure: {}",
+        error
+    );
+
+    println!("SUCCESS! SessionInit with invalid JWT was correctly rejected");
+}
+
+/// Test: Verify that SessionInit with mismatched JWT claims is rejected
+///
+/// This test verifies that when a peer node receives a SessionInit message
+/// with a JWT token that has claims that don't match the SessionInit fields,
+/// it rejects the session initialization.
+#[tokio::test]
+async fn test_dkg_session_init_fails_with_mismatched_claims() {
+    use crate::dkg::messages::DkgMessage;
+
+    // Create a node to receive the SessionInit
+    let app_state = create_test_app_state_default().await;
+    let coordinator = DkgCoordinator::new(Arc::new(app_state));
+
+    // Create a valid JWT but with WRONG claims (threshold mismatch)
+    let test_keys = TestKeyPair::new();
+    let peer_ids = vec![
+        "peer1".to_string(),
+        "peer2".to_string(),
+        "peer3".to_string(),
+    ];
+
+    // Create JWT with threshold=3, but SessionInit will have threshold=2
+    let mismatched_token = test_keys
+        .create_dkg_jwt(3, &peer_ids) // Wrong threshold!
+        .expect("Failed to create JWT");
+
+    // Create a SessionInit message with threshold=2 (doesn't match JWT's threshold=3)
+    let session_init = DkgMessage::SessionInit {
+        session_id: 12345,
+        threshold: 2, // Doesn't match JWT claim of 3
+        total_participants: 3,
+        peer_ids: peer_ids.clone(),
+        node_id_assignments: std::collections::HashMap::from([
+            ("peer1".to_string(), 1),
+            ("peer2".to_string(), 2),
+            ("peer3".to_string(), 3),
+        ]),
+        token_string: mismatched_token,
+    };
+
+    // Try to handle the message - should fail due to claim mismatch
+    let result = coordinator.handle_message(session_init).await;
+
+    assert!(
+        result.is_err(),
+        "SessionInit with mismatched JWT claims should be rejected"
+    );
+
+    let error = result.unwrap_err();
+    println!("SessionInit correctly rejected with error: {}", error);
+    assert!(
+        error.to_string().contains("match"),
+        "Error should indicate claim mismatch: {}",
+        error
+    );
+}
+
+/// Test: Verify that SessionInit with mismatched peer_ids in JWT is rejected
+#[tokio::test]
+async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
+    use crate::dkg::messages::DkgMessage;
+
+    // Create a node to receive the SessionInit
+    let app_state = create_test_app_state_default().await;
+    let coordinator = DkgCoordinator::new(Arc::new(app_state));
+
+    // Create a valid JWT with different peer_ids than what's in SessionInit
+    let test_keys = TestKeyPair::new();
+    let jwt_peer_ids = vec![
+        "different_peer1".to_string(),
+        "different_peer2".to_string(),
+        "different_peer3".to_string(),
+    ];
+
+    let mismatched_token = test_keys
+        .create_dkg_jwt(2, &jwt_peer_ids)
+        .expect("Failed to create JWT");
+
+    // SessionInit has different peer_ids than the JWT
+    let session_peer_ids = vec![
+        "peer1".to_string(),
+        "peer2".to_string(),
+        "peer3".to_string(),
+    ];
+
+    let session_init = DkgMessage::SessionInit {
+        session_id: 12345,
+        threshold: 2,
+        total_participants: 3,
+        peer_ids: session_peer_ids,
+        node_id_assignments: std::collections::HashMap::from([
+            ("peer1".to_string(), 1),
+            ("peer2".to_string(), 2),
+            ("peer3".to_string(), 3),
+        ]),
+        token_string: mismatched_token,
+    };
+
+    // Try to handle the message - should fail due to peer_ids mismatch
+    let result = coordinator.handle_message(session_init).await;
+
+    assert!(
+        result.is_err(),
+        "SessionInit with mismatched peer_ids should be rejected"
+    );
+
+    let error = result.unwrap_err();
+    println!("SessionInit correctly rejected with error: {}", error);
+    assert!(
+        error.to_string().contains("Unauthorized")
+            || error.to_string().contains("peer_ids")
+            || error.to_string().contains("match"),
+        "Error should indicate peer_ids mismatch: {}",
+        error
+    );
+
+    println!("SUCCESS! SessionInit with mismatched peer_ids was correctly rejected");
+}
