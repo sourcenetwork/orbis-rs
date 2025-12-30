@@ -1,3 +1,5 @@
+pub mod blockchain;
+
 use std::process::Command;
 use std::time::Duration;
 
@@ -54,14 +56,30 @@ impl SourceHubTestContainer {
 
     pub fn is_healthy(&self) -> bool {
         // Check if the RPC endpoint is responding
-        let output = Command::new("curl")
+        let rpc_healthy = Command::new("curl")
             .args(["-sf", &format!("{}/health", SOURCEHUB_RPC_URL)])
-            .output();
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
 
-        match output {
-            Ok(output) => output.status.success(),
-            Err(_) => false,
+        if !rpc_healthy {
+            return false;
         }
+
+        // Also check if the REST API is responding
+        let rest_healthy = Command::new("curl")
+            .args([
+                "-sf",
+                &format!(
+                    "{}/cosmos/base/tendermint/v1beta1/node_info",
+                    SOURCEHUB_API_URL
+                ),
+            ])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        rest_healthy
     }
 
     pub fn rpc_url(&self) -> &'static str {

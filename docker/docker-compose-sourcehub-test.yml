@@ -9,7 +9,10 @@ services:
         rm -rf /home/node/.sourcehub/*
         sourcehubd init local-node --chain-id sourcehub-localnet --home /home/node/.sourcehub
         sourcehubd keys add validator --keyring-backend test --home /home/node/.sourcehub
+        # Add a test account with known mnemonic for integration testing
+        echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | sourcehubd keys add test --recover --keyring-backend test --home /home/node/.sourcehub
         sourcehubd genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
+        sourcehubd genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
         sourcehubd genesis gentx validator 10000000000uopen --keyring-backend test --chain-id sourcehub-localnet --home /home/node/.sourcehub
         sourcehubd genesis collect-gentxs --home /home/node/.sourcehub
         exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
