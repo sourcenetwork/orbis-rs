@@ -15,7 +15,6 @@ fn create_test_jwt_with_pre_claims(
 
     let custom = PreClaims {
         rdr_pk: token.claims.rdr_pk.clone(),
-        peer_ids: "".to_string(),
         ring_pk: "".to_string(),
     };
 
@@ -63,7 +62,6 @@ fn test_resolve_jwt_did_with_pre_claims() {
         expiration_time: 2000,
         claims: PreClaims {
             rdr_pk: "test_rdr_pk".to_string(),
-            peer_ids: "".to_string(),
             ring_pk: "".to_string(),
         },
     };
@@ -112,7 +110,6 @@ fn test_resolve_jwt_did_expired() {
         expiration_time: 2000,
         claims: PreClaims {
             rdr_pk: "test_rdr_pk".to_string(),
-            peer_ids: "".to_string(),
             ring_pk: "".to_string(),
         },
     };
@@ -136,7 +133,6 @@ fn test_resolve_jwt_did_future_issued_time() {
         expiration_time: 2000,
         claims: PreClaims {
             rdr_pk: "test_rdr_pk".to_string(),
-            peer_ids: "".to_string(),
             ring_pk: "".to_string(),
         },
     };
@@ -161,7 +157,6 @@ fn test_resolve_jwt_did_invalid_signature() {
         expiration_time: 2000,
         claims: PreClaims {
             rdr_pk: "test_rdr_pk".to_string(),
-            peer_ids: "".to_string(),
             ring_pk: "".to_string(),
         },
     };

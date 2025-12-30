@@ -13,3 +13,7 @@ impl Authz for SourceHubAuth {
         Ok(true)
     }
 }
+
+impl SourceHubAuth {
+    pub fn get_policy() {}
+}

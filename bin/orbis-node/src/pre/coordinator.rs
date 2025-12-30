@@ -14,7 +14,9 @@ use crate::app_state::AppState;
 use crate::helpers::helpers::{connect_to_peer, is_self_peer_id};
 use crate::pre::error::{PreError, Result};
 use crate::pre::messages::PreMessage;
+use crate::pre::service::validate_pre_claims;
 use ark_bls12_381::{Fr, G1Affine};
+use authn::{resolve_jwt_did, BearerToken, PreClaims};
 use crypto::r#trait::{
     DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
 };
@@ -24,7 +26,7 @@ use network::Message as NetworkMessage;
 use network::REENCRYPT;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-
+use std::time::{SystemTime, UNIX_EPOCH};
 /// Response structure containing reencrypted commitment and original secret
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreResponse {
@@ -85,6 +87,7 @@ where
                 secret,
                 rdr_pk,
                 ring_pk,
+                token_string,
             } => {
                 tracing::info!(
                     request_id = %request_id,
@@ -93,8 +96,15 @@ where
                 );
 
                 // Handle the reencryption request
-                self.handle_reencrypt_request(request_id, from_node_id, secret, rdr_pk, ring_pk)
-                    .await
+                self.handle_reencrypt_request(
+                    request_id,
+                    from_node_id,
+                    secret,
+                    rdr_pk,
+                    ring_pk,
+                    token_string,
+                )
+                .await
             }
             PreMessage::ReencryptResponse { .. } => {
                 tracing::debug!(
@@ -123,7 +133,24 @@ where
         secret_bytes: Vec<u8>,
         rdr_pk_bytes: Vec<u8>,
         ring_pk_bytes: Vec<u8>,
+        token_string: String,
     ) -> Result<Option<PreMessage>> {
+        // Get current timestamp (needed for both auth and response)
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| PreError::Generic(format!("Failed to get timestamp: {}", e)))?
+            .as_secs();
+
+        let token: BearerToken<PreClaims> = resolve_jwt_did(&token_string, current_time)
+            .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+        // TODO: use token.issuer_id as AuthZ check
+
+        // 2. Authorize: Validate JWT claims match request fields
+        validate_pre_claims(
+            &token,
+            &hex::encode(&rdr_pk_bytes),
+            &hex::encode(&ring_pk_bytes),
+        )?;
         // 1. Deserialize the secret
         let secret: Secret = serde_json::from_slice(&secret_bytes).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
@@ -304,6 +331,7 @@ where
         secret_bytes: Vec<u8>,
         rdr_pk_bytes: Vec<u8>,
         peer_ids: &[String],
+        token_string: String,
     ) -> Result<Vec<u8>> {
         // Count how many peers we'll actually contact (excluding self)
         let self_in_list = peer_ids
@@ -411,6 +439,7 @@ where
                 secret: secret_bytes_arc.as_ref().clone(),
                 rdr_pk: rdr_pk_bytes_arc.as_ref().clone(),
                 ring_pk: ring_pk_bytes_arc.as_ref().clone(),
+                token_string: token_string.clone(),
             };
 
             let peer_id = peer_id_str.clone();

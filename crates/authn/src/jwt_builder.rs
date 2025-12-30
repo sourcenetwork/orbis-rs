@@ -98,7 +98,6 @@ impl JwtSigner {
         let claims = PreClaims {
             rdr_pk: rdr_pk.to_string(),
             ring_pk: ring_pk.to_string(),
-            peer_ids: peer_ids.join(","),
         };
         self.sign(claims, Duration::from_hours(1))
     }

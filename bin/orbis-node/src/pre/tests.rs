@@ -153,6 +153,15 @@ async fn test_dkg_then_pre_end_to_end() {
 
     println!("Sending PRE requests to peers: {:?}", pre_peer_ids);
 
+    // Create PRE JWT token
+    let pre_token = test_keys
+        .create_pre_jwt(
+            &hex::encode(&bob_pk_bytes),
+            &hex::encode(&ring_pk_bytes),
+            &pre_peer_ids,
+        )
+        .expect("Failed to create PRE JWT");
+
     // Initiate re-encryption
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
@@ -161,6 +170,7 @@ async fn test_dkg_then_pre_end_to_end() {
             secret_bytes.clone(),
             bob_pk_bytes.clone(),
             &pre_peer_ids,
+            pre_token,
         )
         .await
         .expect("PRE should succeed");
@@ -323,6 +333,15 @@ async fn test_pre_with_large_secret() {
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
 
+    // Create PRE JWT token
+    let pre_token = test_keys
+        .create_pre_jwt(
+            &hex::encode(&bob_pk_bytes),
+            &hex::encode(&ring_pk_bytes),
+            &pre_peer_ids,
+        )
+        .expect("Failed to create PRE JWT");
+
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
             "large-pre-request".to_string(),
@@ -330,6 +349,7 @@ async fn test_pre_with_large_secret() {
             secret_bytes,
             bob_pk_bytes,
             &pre_peer_ids,
+            pre_token,
         )
         .await
         .expect("PRE should succeed");
@@ -412,6 +432,15 @@ async fn test_pre_fails_with_wrong_key() {
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
 
+    // Create PRE JWT token
+    let pre_token = test_keys
+        .create_pre_jwt(
+            &hex::encode(&bob_pk_bytes),
+            &hex::encode(&ring_pk_bytes),
+            &pre_peer_ids,
+        )
+        .expect("Failed to create PRE JWT");
+
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
             "wrong-key-pre-request".to_string(),
@@ -419,6 +448,7 @@ async fn test_pre_fails_with_wrong_key() {
             secret_bytes,
             bob_pk_bytes,
             &pre_peer_ids,
+            pre_token,
         )
         .await
         .expect("PRE should succeed");
@@ -441,6 +471,188 @@ async fn test_pre_fails_with_wrong_key() {
         "Decryption with wrong key should fail"
     );
     println!("SUCCESS! Decryption correctly failed with wrong private key");
+
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
+}
+
+/// Test that PRE fails when an invalid JWT token is sent to peer nodes
+#[tokio::test]
+#[serial_test::serial]
+async fn test_pre_fails_with_invalid_jwt_token() {
+    println!("=== Starting PRE Failure Test (Invalid JWT Token) ===\n");
+
+    // Setup network
+    let mut network = setup_three_node_network_with_pre(true).await;
+    let peer_ids = network.get_all_peer_ids();
+
+    // Run DKG
+    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+
+    let request = StartDkgRequest {
+        threshold: 2,
+        peer_ids: peer_ids.clone(),
+    };
+
+    // Create authenticated request
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
+
+    let result = node1_service
+        .start_dkg(create_authenticated_request(request, &token))
+        .await;
+    assert!(result.is_ok());
+
+    let aggregate_pk = wait_for_dkg_completion(
+        &network,
+        result.unwrap().into_inner().session_id.parse().unwrap(),
+    )
+    .await;
+
+    // Alice encrypts
+    let secret_message = b"Secret that should not be re-encrypted with bad token";
+    let (_, encrypted_secret) =
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message).expect("Encryption should succeed");
+    let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
+
+    // Bob's keys
+    let (_bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
+    let bob_pk_bytes = bob_pk.to_bytes().unwrap();
+    let ring_pk_bytes = aggregate_pk.to_bytes().unwrap();
+
+    // PRE with invalid token
+    let pre_coordinator =
+        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
+
+    // Use a completely invalid JWT token
+    let invalid_token = "not-a-valid-jwt-token".to_string();
+
+    let pre_result = pre_coordinator
+        .initiate_reencryption(
+            "invalid-token-pre-request".to_string(),
+            ring_pk_bytes,
+            secret_bytes,
+            bob_pk_bytes,
+            &pre_peer_ids,
+            invalid_token,
+        )
+        .await;
+
+    assert!(
+        pre_result.is_err(),
+        "PRE should fail with invalid JWT token"
+    );
+
+    let error = pre_result.unwrap_err();
+    println!("PRE correctly failed with error: {}", error);
+    assert!(
+        error.to_string().contains("Unauthorized")
+            || error.to_string().contains("JWT")
+            || error.to_string().contains("validation"),
+        "Error should indicate authentication failure: {}",
+        error
+    );
+
+    println!("SUCCESS! PRE correctly rejected invalid JWT token");
+
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
+}
+
+/// Test that PRE fails when JWT claims don't match the request parameters
+#[tokio::test]
+#[serial_test::serial]
+async fn test_pre_fails_with_mismatched_jwt_claims() {
+    println!("=== Starting PRE Failure Test (Mismatched JWT Claims) ===\n");
+
+    // Setup network
+    let mut network = setup_three_node_network_with_pre(true).await;
+    let peer_ids = network.get_all_peer_ids();
+
+    // Run DKG
+    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+
+    let request = StartDkgRequest {
+        threshold: 2,
+        peer_ids: peer_ids.clone(),
+    };
+
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
+
+    let result = node1_service
+        .start_dkg(create_authenticated_request(request, &token))
+        .await;
+    assert!(result.is_ok());
+
+    let aggregate_pk = wait_for_dkg_completion(
+        &network,
+        result.unwrap().into_inner().session_id.parse().unwrap(),
+    )
+    .await;
+
+    // Alice encrypts
+    let secret_message = b"Secret with mismatched claims";
+    let (_, encrypted_secret) =
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message).expect("Encryption should succeed");
+    let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
+
+    // Bob's keys
+    let (_bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
+    let bob_pk_bytes = bob_pk.to_bytes().unwrap();
+    let ring_pk_bytes = aggregate_pk.to_bytes().unwrap();
+
+    // PRE with token that has WRONG claims (different rdr_pk)
+    let pre_coordinator =
+        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
+
+    // Create a valid JWT but with wrong rdr_pk claim
+    let wrong_rdr_pk = "0000000000000000000000000000000000000000000000000000000000000000";
+    let mismatched_token = test_keys
+        .create_pre_jwt(
+            wrong_rdr_pk, // Wrong rdr_pk - doesn't match bob_pk_bytes
+            &hex::encode(&ring_pk_bytes),
+            &pre_peer_ids,
+        )
+        .expect("Failed to create JWT");
+
+    let pre_result = pre_coordinator
+        .initiate_reencryption(
+            "mismatched-claims-pre-request".to_string(),
+            ring_pk_bytes,
+            secret_bytes,
+            bob_pk_bytes, // Actual rdr_pk doesn't match JWT claim
+            &pre_peer_ids,
+            mismatched_token,
+        )
+        .await;
+
+    assert!(
+        pre_result.is_err(),
+        "PRE should fail when JWT claims don't match request"
+    );
+
+    let error = pre_result.unwrap_err();
+    println!("PRE correctly failed with error: {}", error);
+    assert!(
+        error.to_string().contains("Unauthorized")
+            || error.to_string().contains("rdr_pk")
+            || error.to_string().contains("match"),
+        "Error should indicate claim mismatch: {}",
+        error
+    );
+
+    println!("SUCCESS! PRE correctly rejected mismatched JWT claims");
 
     network
         .shutdown_routers()

@@ -12,9 +12,10 @@ pub enum PreMessage {
     ReencryptRequest {
         request_id: String,
         from_node_id: u32,
-        secret: Vec<u8>,  // Serialized Secret
-        rdr_pk: Vec<u8>,  // Serialized reader public key (G1Affine)
-        ring_pk: Vec<u8>, // Ring's aggregate public key (for identifying DKG session)
+        secret: Vec<u8>,      // Serialized Secret
+        rdr_pk: Vec<u8>,      // Serialized reader public key (G1Affine)
+        ring_pk: Vec<u8>,     // Ring's aggregate public key (for identifying DKG session)
+        token_string: String, // Client's token passed to ring nodes for auth
     },
     /// Response from ring node to coordinator with reencryption share
     ReencryptResponse {

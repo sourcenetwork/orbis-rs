@@ -12,53 +12,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
-/// Validates JWT claims against the PRE request
-fn validate_pre_claims(
-    token: &BearerToken<PreClaims>,
-    req: &StartPreRequest,
-) -> Result<(), PreError> {
-    // Validate rdr_pk matches
-    if token.claims.rdr_pk != req.rdr_pk {
-        return Err(PreError::Unauthorized(format!(
-            "Token rdr_pk '{}' does not match request rdr_pk '{}'",
-            token.claims.rdr_pk, req.rdr_pk
-        )));
-    }
-
-    // Validate ring_pk matches
-    if token.claims.ring_pk != req.ring_pk {
-        return Err(PreError::Unauthorized(format!(
-            "Token ring_pk '{}' does not match request ring_pk '{}'",
-            token.claims.ring_pk, req.ring_pk
-        )));
-    }
-
-    // Validate peer_ids match (token has comma-separated, request has Vec)
-    let token_peer_ids: Vec<&str> = token.claims.peer_ids.split(',').collect();
-    let req_peer_ids: Vec<&str> = req.peer_ids.iter().map(|s| s.as_str()).collect();
-
-    if token_peer_ids.len() != req_peer_ids.len() {
-        return Err(PreError::Unauthorized(format!(
-            "Token peer_ids count ({}) does not match request peer_ids count ({})",
-            token_peer_ids.len(),
-            req_peer_ids.len()
-        )));
-    }
-
-    // Check all peer_ids match (order-independent)
-    let mut sorted_token: Vec<&str> = token_peer_ids.clone();
-    let mut sorted_req: Vec<&str> = req_peer_ids.clone();
-    sorted_token.sort();
-    sorted_req.sort();
-
-    if sorted_token != sorted_req {
-        return Err(PreError::Unauthorized(
-            "Token peer_ids do not match request peer_ids".to_string(),
-        ));
-    }
-
-    Ok(())
-}
 /// Implementation of the PreService
 #[derive(Debug)]
 pub struct PreServiceImpl<D, T>
@@ -115,16 +68,17 @@ where
             .as_secs();
 
         // 1. Authenticate: Extract and validate JWT
-        let token_str =
-            extract_bearer_token(&request).map_err(|e| PreError::Unauthorized(e.to_string()))?;
-        let token: BearerToken<PreClaims> = resolve_jwt_did(token_str, current_time)
+        let token_str = extract_bearer_token(&request)
+            .map_err(|e| PreError::Unauthorized(e.to_string()))?
+            .to_string();
+        let token: BearerToken<PreClaims> = resolve_jwt_did(&token_str, current_time)
             .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
         // TODO: use token.issuer_id as AuthZ check
 
         let req = request.into_inner();
 
         // 2. Authorize: Validate JWT claims match request fields
-        validate_pre_claims(&token, &req)?;
+        validate_pre_claims(&token, &req.rdr_pk, &req.ring_pk)?;
 
         tracing::info!(
             ring_pk = %req.ring_pk,
@@ -195,7 +149,14 @@ where
         // 5. Create coordinator and initiate reencryption
         let coordinator = PreCoordinator::<D, T>::new(Arc::new(self.state.clone()));
         let result = coordinator
-            .initiate_reencryption(request_id, ring_pk, secret_bytes, rdr_pk, &req.peer_ids)
+            .initiate_reencryption(
+                request_id,
+                ring_pk,
+                secret_bytes,
+                rdr_pk,
+                &req.peer_ids,
+                token_str.to_string(),
+            )
             .await?;
 
         // 6. Parse result as PreResponse and encode as JSON
@@ -217,4 +178,29 @@ where
 
         Ok(Response::new(response))
     }
+}
+
+/// Validates JWT claims against the PRE request
+pub fn validate_pre_claims(
+    token: &BearerToken<PreClaims>,
+    rdr_pk: &String,
+    ring_pk: &String,
+) -> Result<(), PreError> {
+    // Validate rdr_pk matches
+    if token.claims.rdr_pk != *rdr_pk {
+        return Err(PreError::Unauthorized(format!(
+            "Token rdr_pk '{}' does not match request rdr_pk '{}'",
+            token.claims.rdr_pk, rdr_pk
+        )));
+    }
+
+    // Validate ring_pk matches
+    if token.claims.ring_pk != *ring_pk {
+        return Err(PreError::Unauthorized(format!(
+            "Token ring_pk '{}' does not match request ring_pk '{}'",
+            token.claims.ring_pk, ring_pk
+        )));
+    }
+
+    Ok(())
 }

@@ -40,8 +40,6 @@ pub struct PreClaims {
     pub rdr_pk: String,
     /// Ring's public key
     pub ring_pk: String,
-    /// Peer Id of nodes in ring
-    pub peer_ids: String,
 }
 
 /// Claims for DKG endpoints

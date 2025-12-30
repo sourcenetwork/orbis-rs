@@ -46,7 +46,10 @@ impl SourceHubTestContainer {
             std::thread::sleep(delay);
         }
 
-        panic!("SourceHub failed to become healthy after {} attempts", max_attempts);
+        panic!(
+            "SourceHub failed to become healthy after {} attempts",
+            max_attempts
+        );
     }
 
     pub fn is_healthy(&self) -> bool {
