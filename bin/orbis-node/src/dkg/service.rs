@@ -54,15 +54,16 @@ where
             .as_secs();
 
         // 1. Authenticate: Extract and validate JWT
-        let token_str =
-            extract_bearer_token(&request).map_err(|e| DkgError::Unauthorized(e.to_string()))?;
-        let token: BearerToken<DkgClaims> = resolve_jwt_did(token_str, current_time)
+        let token_str = extract_bearer_token(&request)
+            .map_err(|e| DkgError::Unauthorized(e.to_string()))?
+            .to_string();
+        let token: BearerToken<DkgClaims> = resolve_jwt_did(&token_str, current_time)
             .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
         // TODO: use token.issuer_id as AuthZ check
         let req = request.into_inner();
 
         // 2. Authorize: Validate JWT claims match request fields
-        validate_dkg_claims(&token, &req)?;
+        validate_dkg_claims(&token, req.threshold, &req.peer_ids)?;
 
         tracing::info!(
             threshold = req.threshold,
@@ -220,6 +221,7 @@ where
                 total_participants: actual_total_participants as u32,
                 peer_ids: all_peer_ids.clone(), // Include all peer_ids (including our own) so receivers know all participants
                 node_id_assignments: node_id_assignments.clone(), // Assignments made by initiator
+                token_string: token_str.clone(), // Pass JWT to peer nodes for authentication
             };
 
             // Send SessionInit to all peers (they will create their sessions and start Phase 1)
@@ -263,21 +265,22 @@ where
 }
 
 /// Validates JWT claims against the DKG request
-fn validate_dkg_claims(
+pub fn validate_dkg_claims(
     token: &BearerToken<DkgClaims>,
-    req: &StartDkgRequest,
+    threshold: u32,
+    peer_ids: &[String],
 ) -> Result<(), DkgError> {
     // Validate threshold matches
-    if token.claims.threshold != req.threshold {
+    if token.claims.threshold != threshold {
         return Err(DkgError::Unauthorized(format!(
             "Token threshold ({}) does not match request threshold ({})",
-            token.claims.threshold, req.threshold
+            token.claims.threshold, threshold
         )));
     }
 
     // Validate peer_ids match (token has comma-separated, request has Vec)
     let token_peer_ids: Vec<&str> = token.claims.peer_ids.split(',').collect();
-    let req_peer_ids: Vec<&str> = req.peer_ids.iter().map(|s| s.as_str()).collect();
+    let req_peer_ids: Vec<&str> = peer_ids.iter().map(|s| s.as_str()).collect();
 
     if token_peer_ids.len() != req_peer_ids.len() {
         return Err(DkgError::Unauthorized(format!(

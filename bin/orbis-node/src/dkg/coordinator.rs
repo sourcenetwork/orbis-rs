@@ -18,9 +18,11 @@ use crate::app_state::AppState;
 use crate::constants::MAX_COMMITMENT_COEFFICIENTS;
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::DkgMessage;
+use crate::dkg::service::validate_dkg_claims;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase, SessionStateManager};
 use crate::helpers::helpers::is_self_peer_id;
 use ark_bls12_381::{Fr, G1Affine};
+use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use crypto::bls12_381::common::{PolynomialCommitment, FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE};
 use crypto::r#trait::DistributedShare;
 use crypto::r#trait::Dkg;
@@ -29,6 +31,7 @@ use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::Message as NetworkMessage;
 use network::DKG;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 /// DKG Session Manager
@@ -118,9 +121,28 @@ where
             total_participants,
             peer_ids,
             node_id_assignments,
+            token_string,
             ..
         } = &message
         {
+            // 1. Authenticate: Validate JWT token
+            let current_time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
+                .as_secs();
+
+            let token: BearerToken<DkgClaims> = resolve_jwt_did(token_string, current_time)
+                .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+            // TODO: use token.issuer_id as AuthZ check
+            // 2. Authorize: Validate JWT claims match SessionInit fields
+            validate_dkg_claims(&token, *threshold, peer_ids)?;
+
+            tracing::info!(
+                issuer = %token.issuer_id,
+                threshold = threshold,
+                "DKG Coordinator: SessionInit JWT validated successfully"
+            );
+
             // Get our assigned node_id from the initiator's assignments
             let our_peer_id_hex = hex::encode(self.app_state.network.local_peer_id().as_bytes());
             // Extract just the hex part (before @) for lookup

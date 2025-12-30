@@ -36,6 +36,7 @@ pub enum DkgMessage {
         total_participants: u32,
         peer_ids: Vec<String>, // Peer IDs for all participants (so non-initiators know who to send to)
         node_id_assignments: std::collections::HashMap<String, u32>, // peer_id -> node_id mapping assigned by initiator
+        token_string: String, // JWT token for authentication - validated by receiving nodes
     },
     /// Acknowledgment message
     Ack {
