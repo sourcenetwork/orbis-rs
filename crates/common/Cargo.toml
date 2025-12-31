@@ -23,6 +23,7 @@ reqwest = { workspace = true }
 bip32 = { workspace = true }
 k256 = { workspace = true }
 prost = { workspace = true }
+tonic = { workspace = true }
 rand = { workspace = true }
 
 [dev-dependencies]

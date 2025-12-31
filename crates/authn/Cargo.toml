@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-did-key = "0.2.1"
+did-key = { workspace = true }
 thiserror = { workspace = true }
 # Enable alloc feature to fix form_urlencoded compatibility with did-key
 form_urlencoded = { workspace = true }

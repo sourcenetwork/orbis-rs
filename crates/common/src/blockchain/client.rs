@@ -1,6 +1,8 @@
 //! SourceHub blockchain client.
 
 use crate::blockchain::{BlockchainError, ChainConfig, Result, TxSigner};
+use cosmrs::Any;
+use prost::Message;
 use reqwest::Client as HttpClient;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tendermint_rpc::{Client, HttpClient as TendermintClient};
@@ -90,6 +92,74 @@ impl SourceHubClient {
             account_number: account.account_number.parse().unwrap_or(0),
             sequence: account.sequence.parse().unwrap_or(0),
         })
+    }
+
+    /// Broadcast a protobuf-encoded message as a transaction.
+    pub async fn broadcast_proto_msg<T: Message>(
+        &self,
+        type_url: &str,
+        msg: &T,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+
+        // Get account info for sequence number
+        let account_info = self.get_account(&signer.address()).await?;
+
+        // Encode message as protobuf
+        let msg_bytes = msg.encode_to_vec();
+
+        let any_msg = Any {
+            type_url: type_url.to_string(),
+            value: msg_bytes,
+        };
+
+        // Sign the transaction
+        let tx_bytes = signer.sign_tx(
+            vec![any_msg],
+            account_info.account_number,
+            account_info.sequence,
+            None, // Use default gas
+            None, // No memo
+        )?;
+
+        // Broadcast
+        self.broadcast_tx_commit(tx_bytes).await
+    }
+
+    /// Broadcast a JSON-encoded message as a transaction (for messages not yet migrated to prost).
+    pub async fn broadcast_json_msg<T: Serialize>(
+        &self,
+        type_url: &str,
+        msg: &T,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+
+        // Get account info for sequence number
+        let account_info = self.get_account(&signer.address()).await?;
+
+        // Encode message as JSON bytes
+        let msg_bytes = serde_json::to_vec(msg)?;
+
+        let any_msg = Any {
+            type_url: type_url.to_string(),
+            value: msg_bytes,
+        };
+
+        // Sign the transaction
+        let tx_bytes = signer.sign_tx(
+            vec![any_msg],
+            account_info.account_number,
+            account_info.sequence,
+            None, // Use default gas
+            None, // No memo
+        )?;
+
+        // Broadcast
+        self.broadcast_tx_commit(tx_bytes).await
     }
 
     /// Broadcast a signed transaction and wait for it to be committed.
