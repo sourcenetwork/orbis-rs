@@ -151,7 +151,7 @@ pub async fn do_pre(
     // JWT work
     let jwt_signer = JwtSigner::new();
     let token = jwt_signer
-        .create_pre_jwt(&reader_pk, &ring_pk, &peer_ids)
+        .create_pre_jwt(&reader_pk, &ring_pk)
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token);
 
