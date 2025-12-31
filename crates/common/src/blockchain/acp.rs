@@ -303,7 +303,11 @@ impl Policy {
     /// Supports union expressions like "owner + reader".
     ///
     /// Returns None if the resource or permission is not found.
-    pub fn get_relations_for_permission(&self, resource: &str, permission: &str) -> Option<Vec<String>> {
+    pub fn get_relations_for_permission(
+        &self,
+        resource: &str,
+        permission: &str,
+    ) -> Option<Vec<String>> {
         // Find the resource
         let res = self.resources.iter().find(|r| r.name == resource)?;
 
@@ -611,7 +615,9 @@ impl SourceHubClient {
 
         // Decode the protobuf response
         let response = QueryFilterRelationshipsResponse::decode(response_bytes.as_slice())
-            .map_err(|e| BlockchainError::Serialization(format!("Failed to decode response: {}", e)))?;
+            .map_err(|e| {
+                BlockchainError::Serialization(format!("Failed to decode response: {}", e))
+            })?;
 
         Ok(response)
     }
