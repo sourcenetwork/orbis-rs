@@ -148,14 +148,14 @@ async fn main() -> Result<()> {
             do_generate_reader_key()?;
         }
         SubCommands::AddPolicyToChain => {
-            add_policy_to_chain()?;
+            add_policy_to_chain().await?;
         }
         SubCommands::RegisterObjectToChain {
             policy_id,
             project_id,
             resource,
         } => {
-            register_object_to_chain()?;
+            register_object_to_chain(policy_id, project_id, resource).await?;
         }
         SubCommands::SetRelationshipOnChain {
             policy_id,
@@ -164,7 +164,7 @@ async fn main() -> Result<()> {
             relation,
             admin_id,
         } => {
-            set_relationship_on_chain()?;
+            set_relationship_on_chain(policy_id, project_id, resource, relation, admin_id).await?;
         }
         SubCommands::Info { endpoint } => {
             println!("Querying node at: {}", endpoint);

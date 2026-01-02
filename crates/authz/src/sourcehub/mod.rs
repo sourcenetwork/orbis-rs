@@ -52,7 +52,7 @@ impl AccessCheckRequest {
 }
 
 pub struct SourceHubAuth {
-    chain_client: SourceHubClient,
+    pub chain_client: SourceHubClient,
 }
 
 #[async_trait]

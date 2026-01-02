@@ -8,6 +8,7 @@ use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::Group;
 use ark_std::UniformRand;
 use authn::{create_authenticated_request, JwtSigner};
+use authz::sourcehub::SourceHubAuth;
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, CryptoSerialize};
@@ -267,12 +268,62 @@ pub fn do_generate_reader_key() -> Result<()> {
     Ok(())
 }
 
-pub fn add_policy_to_chain() -> Result<()> {
+const TEST_POLICY_YAML: &str = r#"
+name: test-policy
+resources:
+  document:
+    relations:
+      owner:
+        types:
+          - actor
+      reader:
+        types:
+          - actor
+    permissions:
+      read:
+        expr: owner + reader
+      write:
+        expr: owner
+actor:
+  name: actor
+"#;
+
+pub async fn add_policy_to_chain() -> Result<String> {
+    let authz = SourceHubAuth::new()
+        .await
+        .map_err(|e| anyhow!("Failed to initialize authz: {}", e))?;
+    let _result = authz
+        .chain_client
+        .acp_create_policy(TEST_POLICY_YAML, 1)
+        .await
+        .expect("Failed to create policy");
+    // TODO: This is dumb grabs the only policy id that exists, fine for now but fix later by grabbing policy id from event or something
+    let policy_ids = authz
+        .chain_client
+        .acp_list_policy_ids()
+        .await
+        .expect("Failed to list policy IDs");
+    Ok(policy_ids.ids[0].clone())
+}
+pub async fn register_object_to_chain(
+    policy_id: String,
+    project_id: String,
+    resource: String,
+) -> Result<()> {
+    let authz = SourceHubAuth::new()
+        .await
+        .map_err(|e| anyhow!("Failed to initialize authz: {}", e))?;
     Ok(())
 }
-pub fn register_object_to_chain() -> Result<()> {
-    Ok(())
-}
-pub fn set_relationship_on_chain() -> Result<()> {
+pub async fn set_relationship_on_chain(
+    policy_id: String,
+    project_id: String,
+    resource: String,
+    relation: String,
+    admin_id: String,
+) -> Result<()> {
+    let authz = SourceHubAuth::new()
+        .await
+        .map_err(|e| anyhow!("Failed to initialize authz: {}", e))?;
     Ok(())
 }

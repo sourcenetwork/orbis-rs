@@ -16,6 +16,7 @@ futures = { workspace = true }
 uuid = { version = "1.0", features = ["v4"] }
 crypto = { path = "../../crates/crypto" }
 authn = { path = "../../crates/authn" }
+authz = { path = "../../crates/authz" }
 hex = { workspace = true }
 serde = { workspace = true }
 serde_json = "1.0"

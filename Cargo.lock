@@ -834,6 +834,7 @@ dependencies = [
  "ark-ec",
  "ark-std",
  "authn",
+ "authz",
  "clap",
  "crypto",
  "futures",
