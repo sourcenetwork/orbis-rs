@@ -25,4 +25,5 @@ ark-bls12-381 = "0.4"
 ark-ec = "0.4"
 ark-std = "0.4"
 rand_core = "0.6"
+did-key = { workspace = true }
 

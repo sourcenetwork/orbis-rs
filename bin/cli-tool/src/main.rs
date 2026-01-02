@@ -57,6 +57,18 @@ pub enum SubCommands {
         /// Peer IDs of nodes to participate (required)
         #[clap(long, required = true, num_args = 1..)]
         peer_ids: Vec<String>,
+        #[clap(long)]
+        policy_id: String,
+        /// Id of object
+        #[clap(long)]
+        object_id: String,
+        #[clap(long)]
+        resource: String,
+        #[clap(long)]
+        permission: String,
+        /// A private key to generate a reader did
+        #[clap(long)]
+        reader_did_pk: Option<String>,
     },
     /// Encrypts a secret to the ring public key (from DKG)
     EncryptSecret {
@@ -79,7 +91,7 @@ pub enum SubCommands {
         policy_id: String,
         /// Id of object
         #[clap(long)]
-        project_id: String,
+        object_id: String,
         #[clap(long)]
         resource: String,
     },
@@ -90,13 +102,14 @@ pub enum SubCommands {
         policy_id: String,
         /// Id of object
         #[clap(long)]
-        project_id: String,
+        object_id: String,
         #[clap(long)]
         resource: String,
         #[clap(long)]
         relation: String,
+        /// A private key to generate a reader did
         #[clap(long)]
-        reader_did: String,
+        reader_did_pk: Option<String>,
     },
 
     /// Query node info
@@ -126,6 +139,11 @@ async fn main() -> Result<()> {
             reader_pk,
             reader_sk,
             peer_ids,
+            policy_id,
+            resource,
+            object_id,
+            permission,
+            reader_did_pk,
         } => {
             do_pre(
                 endpoint,
@@ -134,10 +152,11 @@ async fn main() -> Result<()> {
                 reader_pk,
                 reader_sk,
                 peer_ids,
-                "".to_string(),
-                "".to_string(),
-                "".to_string(),
-                "".to_string(),
+                policy_id,
+                resource,
+                object_id,
+                permission,
+                reader_did_pk,
             )
             .await?;
         }
@@ -152,19 +171,19 @@ async fn main() -> Result<()> {
         }
         SubCommands::RegisterObjectToChain {
             policy_id,
-            project_id,
+            object_id,
             resource,
         } => {
-            register_object_to_chain(policy_id, project_id, resource).await?;
+            register_object_to_chain(policy_id, object_id, resource).await?;
         }
         SubCommands::SetRelationshipOnChain {
             policy_id,
-            project_id,
+            object_id,
             resource,
             relation,
-            reader_did,
+            reader_did_pk,
         } => {
-            set_relationship_on_chain(policy_id, project_id, resource, relation, reader_did)
+            set_relationship_on_chain(policy_id, object_id, resource, relation, reader_did_pk)
                 .await?;
         }
         SubCommands::Info { endpoint } => {

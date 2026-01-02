@@ -838,6 +838,7 @@ dependencies = [
  "clap",
  "common",
  "crypto",
+ "did-key",
  "futures",
  "hex",
  "proto",

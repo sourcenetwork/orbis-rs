@@ -8,11 +8,14 @@ use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::Group;
 use ark_std::UniformRand;
 use authn::{create_authenticated_request, JwtSigner};
-use authz::sourcehub::SourceHubAuth;
-use common::blockchain::acp::{Actor, Object, Relationship, Subject, SubjectKind};
+use common::blockchain::{
+    acp::{Actor, Object, Relationship, Subject, SubjectKind},
+    ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+};
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, CryptoSerialize};
+use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
 use rand_core::OsRng;
 use serde::Deserialize;
 
@@ -103,13 +106,13 @@ pub async fn do_pre(
     resource: String,
     object_id: String,
     permission: String,
+    reader_did_pk: Option<String>,
 ) -> Result<()> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
     println!("  Ring PK: {}...", &ring_pk[..ring_pk.len().min(20)]);
     println!("  Reader PK: {}...", &reader_pk[..reader_pk.len().min(20)]);
     println!("  Peer IDs: {:?}", peer_ids);
-    println!();
 
     // Parse the ring public key
     let ring_pk_bytes =
@@ -158,8 +161,10 @@ pub async fn do_pre(
         permission,
     };
 
-    // JWT work
-    let jwt_signer = JwtSigner::new();
+    // JWT work use determinitic key_pair for now
+    let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
+    let key_pair = generate::<DidEd25519KeyPair>(Some(reader_did_pk.as_bytes()));
+    let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
         .create_pre_jwt(&reader_pk, &ring_pk)
         .expect("Failed to create JWT");
@@ -290,18 +295,20 @@ actor:
 "#;
 
 pub async fn add_policy_to_chain() -> Result<String> {
-    let authz = SourceHubAuth::new()
-        .await
-        .map_err(|e| anyhow!("Failed to initialize authz: {}", e))?;
-    let _result = authz
-        .chain_client
+    let client = SourceHubClient::with_signer(
+        ChainConfig::local(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
+    )
+    .await
+    .expect("client builder issue");
+
+    let _result = client
         .acp_create_policy(TEST_POLICY_YAML, 1)
         .await
         .map_err(|e| anyhow!("Failed to create policy: {}", e))?;
 
     // TODO: This is dumb grabs the only policy id that exists, fine for now but fix later by grabbing policy id from event or something
-    let policy_ids = authz
-        .chain_client
+    let policy_ids = client
         .acp_list_policy_ids()
         .await
         .map_err(|e| anyhow!("Failed to list policy IDs: {}", e))?;
@@ -309,19 +316,22 @@ pub async fn add_policy_to_chain() -> Result<String> {
 }
 pub async fn register_object_to_chain(
     policy_id: String,
-    project_id: String,
+    object_id: String,
     resource: String,
 ) -> Result<()> {
-    let authz = SourceHubAuth::new()
-        .await
-        .map_err(|e| anyhow!("Failed to initialize authz: {}", e))?;
+    let client = SourceHubClient::with_signer(
+        ChainConfig::local(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
+    )
+    .await
+    .expect("client builder issue");
 
     let document = Object {
         resource,
-        id: project_id,
+        id: object_id,
     };
-    let _result = authz
-        .chain_client
+    dbg!(&document);
+    let _result = client
         .acp_register_object(&policy_id, document)
         .await
         .map_err(|e| anyhow!("Failed to register object: {}", e))?;
@@ -330,32 +340,36 @@ pub async fn register_object_to_chain(
 }
 pub async fn set_relationship_on_chain(
     policy_id: String,
-    project_id: String,
+    object_id: String,
     resource: String,
     relation: String,
-    reader_did: String,
+    reader_did_pk: Option<String>,
 ) -> Result<()> {
-    let authz = SourceHubAuth::new()
-        .await
-        .map_err(|e| anyhow!("Failed to initialize authz: {}", e))?;
+    let client = SourceHubClient::with_signer(
+        ChainConfig::local(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
+    )
+    .await
+    .expect("client builder issue");
 
     let document = Object {
         resource,
-        id: project_id,
+        id: object_id,
     };
+
+    let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
+    let key_pair = generate::<DidEd25519KeyPair>(Some(reader_did_pk.as_bytes()));
+    let did_uri = format!("did:key:{}", key_pair.fingerprint());
 
     let reader_relationship = Relationship {
         object: Some(document),
         relation,
         subject: Some(Subject {
-            kind: Some(SubjectKind::Actor(Actor {
-                id: reader_did.clone(),
-            })),
+            kind: Some(SubjectKind::Actor(Actor { id: did_uri })),
         }),
     };
 
-    let _result = authz
-        .chain_client
+    let _result = client
         .acp_set_relationship(&policy_id, reader_relationship)
         .await
         .map_err(|e| anyhow!("Failed to set reader relationship: {}", e))?;

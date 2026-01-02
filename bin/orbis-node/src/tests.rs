@@ -381,8 +381,29 @@ mod cli_tool_integration {
         let reader_sk_hex = hex::encode(&reader_sk_bytes);
         let reader_pk_hex = hex::encode(&reader_pk_bytes);
 
+        let resource = "document".to_string();
+        let object_id = "object_id-123".to_string();
+        let relation = "reader".to_string();
+        let permission = "read".to_string();
+        let did_pk_string = "test_did_secret".to_string();
+        let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
+
+        cli_tool::register_object_to_chain(policy_id.clone(), object_id.clone(), resource.clone())
+            .await
+            .expect("register_object_to_chain");
+
+        cli_tool::set_relationship_on_chain(
+            policy_id.clone(),
+            object_id.clone(),
+            resource.clone(),
+            relation.clone(),
+            Some(did_pk_string.clone()),
+        )
+        .await
+        .expect("set_relationship_on_chain");
         // Step 3: Run PRE via CLI
         let secret = "Hello from CLI integration test!";
+
         let pre_result = cli_tool::do_pre(
             endpoint.clone(),
             ring_pk_hex,
@@ -390,10 +411,11 @@ mod cli_tool_integration {
             reader_pk_hex,
             reader_sk_hex,
             peer_ids,
-            "".to_string(),
-            "".to_string(),
-            "".to_string(),
-            "".to_string(),
+            policy_id,
+            resource,
+            object_id,
+            permission,
+            Some(did_pk_string),
         )
         .await;
 
