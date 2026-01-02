@@ -96,7 +96,7 @@ pub enum SubCommands {
         #[clap(long)]
         relation: String,
         #[clap(long)]
-        admin_id: String,
+        reader_did: String,
     },
 
     /// Query node info
@@ -162,9 +162,10 @@ async fn main() -> Result<()> {
             project_id,
             resource,
             relation,
-            admin_id,
+            reader_did,
         } => {
-            set_relationship_on_chain(policy_id, project_id, resource, relation, admin_id).await?;
+            set_relationship_on_chain(policy_id, project_id, resource, relation, reader_did)
+                .await?;
         }
         SubCommands::Info { endpoint } => {
             println!("Querying node at: {}", endpoint);

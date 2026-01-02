@@ -9,6 +9,7 @@ use ark_ec::Group;
 use ark_std::UniformRand;
 use authn::{create_authenticated_request, JwtSigner};
 use authz::sourcehub::SourceHubAuth;
+use common::blockchain::acp::{Actor, Object, Relationship, Subject, SubjectKind};
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, CryptoSerialize};
@@ -296,13 +297,14 @@ pub async fn add_policy_to_chain() -> Result<String> {
         .chain_client
         .acp_create_policy(TEST_POLICY_YAML, 1)
         .await
-        .expect("Failed to create policy");
+        .map_err(|e| anyhow!("Failed to create policy: {}", e))?;
+
     // TODO: This is dumb grabs the only policy id that exists, fine for now but fix later by grabbing policy id from event or something
     let policy_ids = authz
         .chain_client
         .acp_list_policy_ids()
         .await
-        .expect("Failed to list policy IDs");
+        .map_err(|e| anyhow!("Failed to list policy IDs: {}", e))?;
     Ok(policy_ids.ids[0].clone())
 }
 pub async fn register_object_to_chain(
@@ -313,6 +315,17 @@ pub async fn register_object_to_chain(
     let authz = SourceHubAuth::new()
         .await
         .map_err(|e| anyhow!("Failed to initialize authz: {}", e))?;
+
+    let document = Object {
+        resource,
+        id: project_id,
+    };
+    let _result = authz
+        .chain_client
+        .acp_register_object(&policy_id, document)
+        .await
+        .map_err(|e| anyhow!("Failed to register object: {}", e))?;
+
     Ok(())
 }
 pub async fn set_relationship_on_chain(
@@ -320,10 +333,32 @@ pub async fn set_relationship_on_chain(
     project_id: String,
     resource: String,
     relation: String,
-    admin_id: String,
+    reader_did: String,
 ) -> Result<()> {
     let authz = SourceHubAuth::new()
         .await
         .map_err(|e| anyhow!("Failed to initialize authz: {}", e))?;
+
+    let document = Object {
+        resource,
+        id: project_id,
+    };
+
+    let reader_relationship = Relationship {
+        object: Some(document),
+        relation,
+        subject: Some(Subject {
+            kind: Some(SubjectKind::Actor(Actor {
+                id: reader_did.clone(),
+            })),
+        }),
+    };
+
+    let _result = authz
+        .chain_client
+        .acp_set_relationship(&policy_id, reader_relationship)
+        .await
+        .map_err(|e| anyhow!("Failed to set reader relationship: {}", e))?;
+
     Ok(())
 }

@@ -836,6 +836,7 @@ dependencies = [
  "authn",
  "authz",
  "clap",
+ "common",
  "crypto",
  "futures",
  "hex",
