@@ -3680,6 +3680,7 @@ dependencies = [
  "ark-std",
  "async-trait",
  "authn",
+ "authz",
  "base64 0.22.1",
  "clap",
  "cli-tool",

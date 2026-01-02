@@ -98,11 +98,13 @@ impl Authz for SourceHubAuth {
 }
 
 impl SourceHubAuth {
-    pub async fn new() -> Self {
-        // TODO just for testing for now
-        SourceHubAuth {
-            chain_client: SourceHubClient::new(ChainConfig::local()).await.unwrap(),
-        }
+    pub async fn new() -> Result<Self> {
+        // TODO just for testing for now fix chainconfig local
+        Ok(SourceHubAuth {
+            chain_client: SourceHubClient::new(ChainConfig::local())
+                .await
+                .map_err(|e| AuthZError::ChainError(e.to_string()))?,
+        })
     }
 
     pub async fn get_policy(&self, policy_id: String) -> Result<Policy> {

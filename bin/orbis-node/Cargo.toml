@@ -12,6 +12,7 @@ crypto = { path = "../../crates/crypto" }
 local-storage = { path = "../../crates/local-storage" }
 proto = { path = "../../crates/proto" }
 authn = { path = "../../crates/authn" }
+authz = { path = "../../crates/authz" }
 tonic = "0.14.2"
 iroh = { workspace = true }
 tokio = { workspace = true }

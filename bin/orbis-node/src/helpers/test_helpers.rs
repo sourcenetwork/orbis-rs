@@ -5,6 +5,8 @@
 use crate::app_state::AppState;
 use crate::dkg::protocol_handler;
 use crate::dkg::protocol_handler::create_router_with_handlers;
+use authz::r#trait::Authz;
+use authz::sourcehub::SourceHubAuth;
 use hex;
 use local_storage::memory::MemoryStorage;
 use local_storage::r#trait::LocalStorage;
@@ -56,9 +58,14 @@ pub async fn create_test_app_state(bind_address: Option<String>) -> AppState<Dkg
             .expect("Failed to initialize network for testing"),
     );
     let local_storage = MemoryStorage::new(None);
+    let authz: Arc<dyn Authz> = Arc::new(
+        SourceHubAuth::new()
+            .await
+            .expect("Failed to initialize Authz"),
+    );
 
     // Create AppState with the network (node_id is no longer needed - it's session-specific)
-    AppState::<DkgImpl>::new(bind_address, network, local_storage)
+    AppState::<DkgImpl>::new(bind_address, network, local_storage, authz)
 }
 
 /// Create a test AppState with default values

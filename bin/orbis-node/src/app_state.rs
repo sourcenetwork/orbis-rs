@@ -1,6 +1,7 @@
 use crate::constants::{MAX_DKG_SESSIONS, MAX_PRE_RESPONSES, PRE_RESPONSE_TTL, SESSION_TTL};
 use crate::dkg::session_state::SessionStateManager;
 use crate::pre::messages::PreMessage;
+use authz::r#trait::Authz;
 use crypto::r#trait::Dkg;
 use local_storage::{
     memory::MemoryStorage as LocalStorage,
@@ -49,6 +50,8 @@ where
     pub dkg_session_state: Arc<SessionStateManager>,
     /// Shared PRE response storage for collecting re-encryption responses
     pub pre_responses: PreResponseStorage,
+    /// Authz implementation
+    pub authz: Arc<dyn Authz + Send + Sync>,
 }
 
 /// Encryption key data
@@ -94,6 +97,7 @@ where
         bind_address: String,
         network: Arc<dyn Network>,
         local_storage: LocalStorage,
+        authz: Arc<dyn Authz + Send + Sync>,
     ) -> Self {
         Self {
             dkg_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -102,6 +106,7 @@ where
             local_storage,
             dkg_session_state: Arc::new(SessionStateManager::new()),
             pre_responses: Arc::new(RwLock::new(HashMap::new())),
+            authz,
         }
     }
 

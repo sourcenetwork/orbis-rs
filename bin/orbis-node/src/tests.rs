@@ -4,6 +4,8 @@
 //! as well as compatibility with cli-tool.
 
 use crate::{init_node, Args, LogLevel, NodeConfig};
+use authz::r#trait::Authz;
+use authz::sourcehub::SourceHubAuth;
 use local_storage::memory::MemoryStorage;
 use local_storage::r#trait::LocalStorage;
 use network::Network;
@@ -19,6 +21,12 @@ async fn test_init_node_success() {
             .expect("Failed to create network"),
     );
 
+    let authz: Arc<dyn Authz> = Arc::new(
+        SourceHubAuth::new()
+            .await
+            .expect("Failed to initialize Authz"),
+    );
+
     let config = NodeConfig {
         args: Args {
             addr: "127.0.0.1:0".to_string(), // Use port 0 to let OS assign
@@ -26,6 +34,7 @@ async fn test_init_node_success() {
         },
         network,
         local_storage: MemoryStorage::new(None),
+        authz,
     };
 
     let result = init_node(config).await;
@@ -55,6 +64,12 @@ async fn test_init_node_invalid_address() {
             .expect("Failed to create network"),
     );
 
+    let authz: Arc<dyn Authz> = Arc::new(
+        SourceHubAuth::new()
+            .await
+            .expect("Failed to initialize Authz"),
+    );
+
     let config = NodeConfig {
         args: Args {
             addr: "not-a-valid-address".to_string(),
@@ -62,6 +77,7 @@ async fn test_init_node_invalid_address() {
         },
         network,
         local_storage: MemoryStorage::new(None),
+        authz,
     };
 
     let result = init_node(config).await;
@@ -80,6 +96,12 @@ async fn test_init_node_app_state_configuration() {
             .expect("Failed to create network"),
     );
 
+    let authz: Arc<dyn Authz> = Arc::new(
+        SourceHubAuth::new()
+            .await
+            .expect("Failed to initialize Authz"),
+    );
+
     let bind_addr = "127.0.0.1:0".to_string();
     let config = NodeConfig {
         args: Args {
@@ -88,6 +110,7 @@ async fn test_init_node_app_state_configuration() {
         },
         network,
         local_storage: MemoryStorage::new(None),
+        authz,
     };
 
     let node = init_node(config).await.expect("Node initialization failed");
@@ -126,6 +149,17 @@ async fn test_init_multiple_nodes() {
             .expect("Failed to create network 2"),
     );
 
+    let authz1: Arc<dyn Authz> = Arc::new(
+        SourceHubAuth::new()
+            .await
+            .expect("Failed to initialize Authz"),
+    );
+    let authz2: Arc<dyn Authz> = Arc::new(
+        SourceHubAuth::new()
+            .await
+            .expect("Failed to initialize Authz"),
+    );
+
     let config1 = NodeConfig {
         args: Args {
             addr: "127.0.0.1:0".to_string(),
@@ -133,6 +167,7 @@ async fn test_init_multiple_nodes() {
         },
         network: network1,
         local_storage: MemoryStorage::new(None),
+        authz: authz1,
     };
 
     let config2 = NodeConfig {
@@ -142,6 +177,7 @@ async fn test_init_multiple_nodes() {
         },
         network: network2,
         local_storage: MemoryStorage::new(None),
+        authz: authz2,
     };
 
     let node1 = init_node(config1)
@@ -208,6 +244,11 @@ async fn test_init_node_with_encrypted_storage() {
     // Create storage with a password
     let password = "test-password-123".to_string();
     let local_storage = MemoryStorage::new(Some(password));
+    let authz: Arc<dyn Authz> = Arc::new(
+        SourceHubAuth::new()
+            .await
+            .expect("Failed to initialize Authz"),
+    );
 
     let config = NodeConfig {
         args: Args {
@@ -216,6 +257,7 @@ async fn test_init_node_with_encrypted_storage() {
         },
         network,
         local_storage,
+        authz,
     };
 
     let result = init_node(config).await;

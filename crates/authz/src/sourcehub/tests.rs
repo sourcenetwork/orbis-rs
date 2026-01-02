@@ -81,7 +81,7 @@ async fn test_create_and_query_policy() {
     let policy_id = &policy_ids.ids[0];
 
     // 5. Test SourceHubAuth.get_policy()
-    let auth = SourceHubAuth::new().await;
+    let auth = SourceHubAuth::new().await.unwrap();
     let policy = auth
         .get_policy(policy_id.clone())
         .await
@@ -339,7 +339,7 @@ async fn test_complex_policy_permissions() {
     assert_eq!(result.code, 0);
 
     // 7. Test permissions using SourceHubAuth
-    let auth = SourceHubAuth::new().await;
+    let auth = SourceHubAuth::new().await.unwrap();
 
     // Verify the policy was parsed correctly
     let policy = auth

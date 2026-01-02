@@ -13,12 +13,13 @@ use crate::dkg::service::DkgServiceImpl;
 use crate::helpers::helpers::{get_password, LogLevel};
 use crate::pre::service::PreServiceImpl;
 use app_state::AppState;
+use authz::r#trait::Authz;
+use authz::sourcehub::SourceHubAuth;
 use clap::Parser;
 use local_storage::memory::MemoryStorage;
 use local_storage::r#trait::LocalStorage;
 use network::{Network, Router};
 use std::{net::SocketAddr, sync::Arc};
-
 // Concrete crypto implementations
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
@@ -41,6 +42,9 @@ pub struct Args {
     /// Log level for tracing
     #[arg(short, long, default_value = "info")]
     pub log_level: LogLevel,
+    // /// AuthZ GRPC
+    // #[arg(short, long, default_value = "http://localhost:9090")]
+    // pub authz_grpc: String, // TODO: add config option for Authz ChainConfig
 }
 
 /// Configuration for running the node, allowing dependency injection for testing
@@ -48,6 +52,7 @@ pub struct NodeConfig {
     pub args: Args,
     pub network: Arc<dyn Network>,
     pub local_storage: MemoryStorage,
+    pub authz: Arc<dyn Authz>,
 }
 
 /// Result of initializing the node (before starting the server)
@@ -87,6 +92,7 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
         config.args.addr.clone(),
         config.network.clone(),
         config.local_storage,
+        config.authz,
     );
     let app_state_arc = Arc::new(app_state);
 
@@ -168,10 +174,18 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
     let local_storage = MemoryStorage::new(Some(password));
 
+    let authz: Arc<dyn Authz> = Arc::new(
+        // TODO: fix chainconfig local in the new() function of sourcehubauth
+        SourceHubAuth::new()
+            .await
+            .map_err(|e| format!("Failed to initialize authz: {}", e))?,
+    );
+
     let config = NodeConfig {
         args,
         network,
         local_storage,
+        authz,
     };
 
     let node = init_node(config).await?;
