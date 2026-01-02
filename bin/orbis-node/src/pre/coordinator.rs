@@ -17,6 +17,7 @@ use crate::pre::messages::PreMessage;
 use crate::pre::service::validate_pre_claims;
 use ark_bls12_381::{Fr, G1Affine};
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
+use authz::sourcehub::AccessCheckRequest;
 use crypto::r#trait::{
     DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
 };
@@ -87,6 +88,10 @@ where
                 secret,
                 rdr_pk,
                 ring_pk,
+                policy_id,
+                resource,
+                object_id,
+                permission,
                 token_string,
             } => {
                 tracing::info!(
@@ -102,6 +107,10 @@ where
                     secret,
                     rdr_pk,
                     ring_pk,
+                    policy_id,
+                    resource,
+                    object_id,
+                    permission,
                     token_string,
                 )
                 .await
@@ -133,6 +142,10 @@ where
         secret_bytes: Vec<u8>,
         rdr_pk_bytes: Vec<u8>,
         ring_pk_bytes: Vec<u8>,
+        policy_id: String,
+        resource: String,
+        object_id: String,
+        permission: String,
         token_string: String,
     ) -> Result<Option<PreMessage>> {
         // Get current timestamp (needed for both auth and response)
@@ -151,6 +164,15 @@ where
             &hex::encode(&rdr_pk_bytes),
             &hex::encode(&ring_pk_bytes),
         )?;
+
+        let permission_bytes = AccessCheckRequest::new(policy_id, resource, object_id, permission)
+            .to_bytes()
+            .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
+        self.app_state
+            .authz
+            .check(permission_bytes, &token.issuer_id)
+            .await
+            .map_err(|e| PreError::AuthZ(format!("Error in Authz request: {}", e)))?;
         // 1. Deserialize the secret
         let secret: Secret = serde_json::from_slice(&secret_bytes).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
@@ -331,6 +353,10 @@ where
         secret_bytes: Vec<u8>,
         rdr_pk_bytes: Vec<u8>,
         peer_ids: &[String],
+        policy_id: String,
+        resource: String,
+        object_id: String,
+        permission: String,
         token_string: String,
     ) -> Result<Vec<u8>> {
         // Count how many peers we'll actually contact (excluding self)
@@ -439,6 +465,10 @@ where
                 secret: secret_bytes_arc.as_ref().clone(),
                 rdr_pk: rdr_pk_bytes_arc.as_ref().clone(),
                 ring_pk: ring_pk_bytes_arc.as_ref().clone(),
+                policy_id: policy_id.clone(),
+                resource: resource.clone(),
+                object_id: object_id.clone(),
+                permission: permission.clone(),
                 token_string: token_string.clone(),
             };
 

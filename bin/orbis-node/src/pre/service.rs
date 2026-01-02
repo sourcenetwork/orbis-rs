@@ -75,10 +75,14 @@ where
         let token: BearerToken<PreClaims> = resolve_jwt_did(&token_str, current_time)
             .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
         let req = request.into_inner();
-        let permission =
-            AccessCheckRequest::new(req.policy_id, req.resource, req.object_id, req.permission)
-                .to_bytes()
-                .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
+        let permission = AccessCheckRequest::new(
+            req.policy_id.clone(),
+            req.resource.clone(),
+            req.object_id.clone(),
+            req.permission.clone(),
+        )
+        .to_bytes()
+        .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
         self.state
             .authz
             .check(permission, &token.issuer_id)
@@ -164,6 +168,10 @@ where
                 secret_bytes,
                 rdr_pk,
                 &req.peer_ids,
+                req.policy_id,
+                req.resource,
+                req.object_id,
+                req.permission,
                 token_str.to_string(),
             )
             .await?;

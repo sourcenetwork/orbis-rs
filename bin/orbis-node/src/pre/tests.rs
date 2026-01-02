@@ -166,6 +166,10 @@ async fn test_dkg_then_pre_end_to_end() {
             secret_bytes.clone(),
             bob_pk_bytes.clone(),
             &pre_peer_ids,
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
             pre_token,
         )
         .await
@@ -341,6 +345,10 @@ async fn test_pre_with_large_secret() {
             secret_bytes,
             bob_pk_bytes,
             &pre_peer_ids,
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
             pre_token,
         )
         .await
@@ -436,6 +444,10 @@ async fn test_pre_fails_with_wrong_key() {
             secret_bytes,
             bob_pk_bytes,
             &pre_peer_ids,
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
             pre_token,
         )
         .await
@@ -527,6 +539,10 @@ async fn test_pre_fails_with_invalid_jwt_token() {
             secret_bytes,
             bob_pk_bytes,
             &pre_peer_ids,
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
             invalid_token,
         )
         .await;
@@ -623,6 +639,10 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             secret_bytes,
             bob_pk_bytes, // Actual rdr_pk doesn't match JWT claim
             &pre_peer_ids,
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
             mismatched_token,
         )
         .await;
