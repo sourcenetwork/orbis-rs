@@ -266,3 +266,13 @@ pub fn do_generate_reader_key() -> Result<()> {
 
     Ok(())
 }
+
+pub fn add_policy_to_chain() -> Result<()> {
+    Ok(())
+}
+pub fn register_object_to_chain() -> Result<()> {
+    Ok(())
+}
+pub fn set_relationship_on_chain() -> Result<()> {
+    Ok(())
+}

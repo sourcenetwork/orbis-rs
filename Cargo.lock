@@ -3684,6 +3684,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "cli-tool",
+ "common",
  "crypto",
  "dirs",
  "hex",

@@ -3,7 +3,10 @@ mod commands;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-pub use commands::{do_dkg, do_encrypt_secret, do_generate_reader_key, do_pre};
+pub use commands::{
+    add_policy_to_chain, do_dkg, do_encrypt_secret, do_generate_reader_key, do_pre,
+    register_object_to_chain, set_relationship_on_chain,
+};
 
 #[derive(Parser, Debug, Clone)]
 #[clap(version, about = "CLI tool for interacting with an orbis network")]
@@ -67,6 +70,34 @@ pub enum SubCommands {
 
     /// Generate a reader keypair for PRE decryption
     GenerateReaderKey,
+    /// Add a policy to the chain
+    AddPolicyToChain,
+    /// Register object to the chain
+    RegisterObjectToChain {
+        /// Policy to add object to
+        #[clap(long)]
+        policy_id: String,
+        /// Id of object
+        #[clap(long)]
+        project_id: String,
+        #[clap(long)]
+        resource: String,
+    },
+    /// Set an object relationship on chain
+    SetRelationshipOnChain {
+        /// Policy to set relationship to
+        #[clap(long)]
+        policy_id: String,
+        /// Id of object
+        #[clap(long)]
+        project_id: String,
+        #[clap(long)]
+        resource: String,
+        #[clap(long)]
+        relation: String,
+        #[clap(long)]
+        admin_id: String,
+    },
 
     /// Query node info
     Info {
@@ -115,6 +146,25 @@ async fn main() -> Result<()> {
         }
         SubCommands::GenerateReaderKey => {
             do_generate_reader_key()?;
+        }
+        SubCommands::AddPolicyToChain => {
+            add_policy_to_chain()?;
+        }
+        SubCommands::RegisterObjectToChain {
+            policy_id,
+            project_id,
+            resource,
+        } => {
+            register_object_to_chain()?;
+        }
+        SubCommands::SetRelationshipOnChain {
+            policy_id,
+            project_id,
+            resource,
+            relation,
+            admin_id,
+        } => {
+            set_relationship_on_chain()?;
         }
         SubCommands::Info { endpoint } => {
             println!("Querying node at: {}", endpoint);

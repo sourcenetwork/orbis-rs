@@ -280,16 +280,25 @@ async fn test_init_node_with_encrypted_storage() {
 // against them. If orbis-node changes break cli-tool, these tests will fail.
 
 mod cli_tool_integration {
+    use crate::dkg::coordinator::DkgCoordinator;
     use crate::dkg::service::DkgServiceImpl;
     use crate::helpers::test_helpers::setup_three_node_network_with_pre;
     use crate::pre::service::PreServiceImpl;
     use crate::{DkgImpl, PreImpl};
+    use ark_bls12_381::{Fr, G1Affine, G1Projective};
+    use ark_ec::Group;
+    use ark_std::UniformRand;
+    use common::SourceHubTestContainer;
+    use crypto::r#trait::Dkg;
+    use crypto::CryptoSerialize;
     use proto::dkg_service::dkg_service_server::DkgServiceServer;
     use proto::pre_service::pre_service_server::PreServiceServer;
+    use rand_core::OsRng;
     use std::net::SocketAddr;
+    use std::sync::Arc;
     use tokio::time::{sleep, Duration};
-
     /// End-to-end test: Run DKG, then call cli-tool's do_pre function
+    /// Tests cli-tool and just full integration test
     ///
     /// This tests the full user workflow:
     /// 1. Run DKG to generate distributed keys
@@ -297,17 +306,11 @@ mod cli_tool_integration {
     #[tokio::test]
     #[serial_test::serial]
     async fn test_cli_calls_dkg_and_pre_endpoint() {
-        use crate::dkg::coordinator::DkgCoordinator;
-        use ark_bls12_381::{Fr, G1Affine, G1Projective};
-        use ark_ec::Group;
-        use ark_std::UniformRand;
-        use crypto::r#trait::Dkg;
-        use crypto::CryptoSerialize;
-        use rand_core::OsRng;
-        use std::sync::Arc;
-
+        // Spin up SourceHub container
+        let _container = SourceHubTestContainer::new();
         // Set up three nodes
         let mut network = setup_three_node_network_with_pre(true).await;
+
         let peer_ids = network.get_all_peer_ids();
 
         // Start gRPC server for Alice
