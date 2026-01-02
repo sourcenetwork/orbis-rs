@@ -66,6 +66,10 @@ pub enum PreError {
     /// Generic PRE error
     #[error("PRE error: {0}")]
     Generic(String),
+
+    /// AuthZ error
+    #[error("Authz error: {0}")]
+    AuthZ(String),
 }
 
 /// Result type for PRE operations
@@ -93,6 +97,7 @@ impl From<PreError> for tonic::Status {
             PreError::VerificationFailed(_) => {
                 tonic::Status::new(Code::InvalidArgument, error.to_string())
             }
+            PreError::AuthZ(_) => tonic::Status::new(Code::Unauthenticated, error.to_string()),
             _ => tonic::Status::new(Code::Internal, error.to_string()),
         }
     }

@@ -96,7 +96,19 @@ async fn main() -> Result<()> {
             reader_sk,
             peer_ids,
         } => {
-            do_pre(endpoint, ring_pk, secret, reader_pk, reader_sk, peer_ids).await?;
+            do_pre(
+                endpoint,
+                ring_pk,
+                secret,
+                reader_pk,
+                reader_sk,
+                peer_ids,
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+            )
+            .await?;
         }
         SubCommands::EncryptSecret { secret, ring_pk } => {
             do_encrypt_secret(ring_pk, secret).await?;

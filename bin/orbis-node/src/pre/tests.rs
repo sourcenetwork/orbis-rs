@@ -664,6 +664,10 @@ async fn test_start_pre_fails_missing_auth_header() {
         secret: "secret_data".to_string(),
         rdr_pk: "def456".to_string(),
         peer_ids,
+        policy_id: "".to_string(),
+        resource: "".to_string(),
+        object_id: "".to_string(),
+        permission: "".to_string(),
     };
 
     // Create request WITHOUT authentication header
@@ -701,6 +705,10 @@ async fn test_start_pre_fails_malformed_jwt() {
         secret: "secret_data".to_string(),
         rdr_pk: "def456".to_string(),
         peer_ids,
+        policy_id: "".to_string(),
+        resource: "".to_string(),
+        object_id: "".to_string(),
+        permission: "".to_string(),
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -753,6 +761,10 @@ async fn test_start_pre_fails_wrong_signature() {
         secret: "secret_data".to_string(),
         rdr_pk: "def456".to_string(),
         peer_ids,
+        policy_id: "".to_string(),
+        resource: "".to_string(),
+        object_id: "".to_string(),
+        permission: "".to_string(),
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token);

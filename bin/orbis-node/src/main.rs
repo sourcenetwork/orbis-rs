@@ -176,6 +176,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let authz: Arc<dyn Authz> = Arc::new(
         // TODO: fix chainconfig local in the new() function of sourcehubauth
+        // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
         SourceHubAuth::new()
             .await
             .map_err(|e| format!("Failed to initialize authz: {}", e))?,

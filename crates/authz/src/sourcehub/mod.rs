@@ -57,7 +57,7 @@ pub struct SourceHubAuth {
 
 #[async_trait]
 impl Authz for SourceHubAuth {
-    async fn check(&self, permission: Vec<u8>, subject: String) -> Result<bool> {
+    async fn check(&self, permission: Vec<u8>, subject: &String) -> Result<bool> {
         // Decode the access check request from bytes
         let request = AccessCheckRequest::from_bytes(&permission)?;
 

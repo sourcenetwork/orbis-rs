@@ -97,6 +97,10 @@ pub async fn do_pre(
     reader_pk: String,
     reader_sk: String,
     peer_ids: Vec<String>,
+    policy_id: String,
+    resource: String,
+    object_id: String,
+    permission: String,
 ) -> Result<()> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
@@ -146,6 +150,10 @@ pub async fn do_pre(
         secret: encrypted_secret_json,
         rdr_pk: reader_pk.clone(),
         peer_ids: peer_ids.clone(),
+        policy_id,
+        resource,
+        object_id,
+        permission,
     };
 
     // JWT work

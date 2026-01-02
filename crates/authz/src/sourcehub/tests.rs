@@ -107,7 +107,7 @@ async fn test_create_and_query_policy() {
         "read".to_string(),
     );
     let is_authorized = auth
-        .check(access_request.to_bytes().unwrap(), reader_did.clone())
+        .check(access_request.to_bytes().unwrap(), &reader_did.clone())
         .await
         .unwrap();
     assert!(!is_authorized);
@@ -144,7 +144,7 @@ async fn test_create_and_query_policy() {
     let access_request = AccessCheckRequest::new(policy_id.clone(), "document", "doc-123", "read");
 
     let is_authorized = auth
-        .check(access_request.to_bytes().unwrap(), reader_did.clone())
+        .check(access_request.to_bytes().unwrap(), &reader_did.clone())
         .await
         .expect("Failed to check access");
 
@@ -161,7 +161,7 @@ async fn test_create_and_query_policy() {
     let write_request = AccessCheckRequest::new(policy_id.clone(), "document", "doc-123", "write");
 
     let can_write = auth
-        .check(write_request.to_bytes().unwrap(), reader_did.clone())
+        .check(write_request.to_bytes().unwrap(), &reader_did.clone())
         .await
         .expect("Failed to check write access");
 
@@ -425,7 +425,7 @@ async fn test_complex_policy_permissions() {
     // Admin can view
     let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "view");
     let can_view = auth
-        .check(req.to_bytes().unwrap(), admin_did.clone())
+        .check(req.to_bytes().unwrap(), &admin_did.clone())
         .await
         .unwrap();
     println!("Admin can view: {}", can_view);
@@ -434,7 +434,7 @@ async fn test_complex_policy_permissions() {
     // Editor can view
     let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "view");
     let can_view = auth
-        .check(req.to_bytes().unwrap(), editor_did.clone())
+        .check(req.to_bytes().unwrap(), &editor_did.clone())
         .await
         .unwrap();
     println!("Editor can view: {}", can_view);
@@ -443,7 +443,7 @@ async fn test_complex_policy_permissions() {
     // Viewer can view
     let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "view");
     let can_view = auth
-        .check(req.to_bytes().unwrap(), viewer_did.clone())
+        .check(req.to_bytes().unwrap(), &viewer_did.clone())
         .await
         .unwrap();
     println!("Viewer can view: {}", can_view);
@@ -452,7 +452,7 @@ async fn test_complex_policy_permissions() {
     // Outsider cannot view
     let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "view");
     let can_view = auth
-        .check(req.to_bytes().unwrap(), outsider_did.clone())
+        .check(req.to_bytes().unwrap(), &outsider_did.clone())
         .await
         .unwrap();
     println!("Outsider can view: {}", can_view);
@@ -464,7 +464,7 @@ async fn test_complex_policy_permissions() {
     // Admin can edit
     let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "edit");
     let can_edit = auth
-        .check(req.to_bytes().unwrap(), admin_did.clone())
+        .check(req.to_bytes().unwrap(), &admin_did.clone())
         .await
         .unwrap();
     println!("Admin can edit: {}", can_edit);
@@ -473,7 +473,7 @@ async fn test_complex_policy_permissions() {
     // Editor can edit
     let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "edit");
     let can_edit = auth
-        .check(req.to_bytes().unwrap(), editor_did.clone())
+        .check(req.to_bytes().unwrap(), &editor_did.clone())
         .await
         .unwrap();
     println!("Editor can edit: {}", can_edit);
@@ -482,7 +482,7 @@ async fn test_complex_policy_permissions() {
     // Viewer CANNOT edit
     let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "edit");
     let can_edit = auth
-        .check(req.to_bytes().unwrap(), viewer_did.clone())
+        .check(req.to_bytes().unwrap(), &viewer_did.clone())
         .await
         .unwrap();
     println!("Viewer can edit: {}", can_edit);
@@ -494,7 +494,7 @@ async fn test_complex_policy_permissions() {
     // Admin can manage
     let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "manage");
     let can_manage = auth
-        .check(req.to_bytes().unwrap(), admin_did.clone())
+        .check(req.to_bytes().unwrap(), &admin_did.clone())
         .await
         .unwrap();
     println!("Admin can manage: {}", can_manage);
@@ -503,7 +503,7 @@ async fn test_complex_policy_permissions() {
     // Editor CANNOT manage
     let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "manage");
     let can_manage = auth
-        .check(req.to_bytes().unwrap(), editor_did.clone())
+        .check(req.to_bytes().unwrap(), &editor_did.clone())
         .await
         .unwrap();
     println!("Editor can manage: {}", can_manage);
@@ -512,7 +512,7 @@ async fn test_complex_policy_permissions() {
     // Viewer CANNOT manage
     let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "manage");
     let can_manage = auth
-        .check(req.to_bytes().unwrap(), viewer_did.clone())
+        .check(req.to_bytes().unwrap(), &viewer_did.clone())
         .await
         .unwrap();
     println!("Viewer can manage: {}", can_manage);

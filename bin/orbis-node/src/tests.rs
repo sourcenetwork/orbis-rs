@@ -387,6 +387,10 @@ mod cli_tool_integration {
             reader_pk_hex,
             reader_sk_hex,
             peer_ids,
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
         )
         .await;
 

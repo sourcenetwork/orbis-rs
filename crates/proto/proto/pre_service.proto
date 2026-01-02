@@ -10,7 +10,12 @@ message StartPreRequest {
   string ring_pk = 1;
   string secret = 2;
   string rdr_pk = 3;
-  repeated string peer_ids = 5;  // Iroh peer IDs that this node needs to connect to
+  repeated string peer_ids = 4;  // Iroh peer IDs that this node needs to connect to
+  // below are secret info that will be replaced by getting from bulletin
+  string policy_id = 5;
+  string resource = 6;
+  string object_id = 7;
+  string permission = 8;  
 }
 
 message StartPreResponse {

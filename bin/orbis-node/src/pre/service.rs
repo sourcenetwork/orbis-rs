@@ -5,6 +5,7 @@ use crate::helpers::helpers::{
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, PreClaims};
+use authz::sourcehub::AccessCheckRequest;
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
 use network::REENCRYPT;
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
@@ -73,9 +74,17 @@ where
             .to_string();
         let token: BearerToken<PreClaims> = resolve_jwt_did(&token_str, current_time)
             .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-        // TODO: use token.issuer_id as AuthZ check
-
         let req = request.into_inner();
+        let permission =
+            AccessCheckRequest::new(req.policy_id, req.resource, req.object_id, req.permission)
+                .to_bytes()
+                .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
+        self.state
+            .authz
+            .check(permission, &token.issuer_id)
+            .await
+            .map_err(|e| PreError::AuthZ(format!("Error in Authz request: {}", e)))?;
+        // TODO: use token.issuer_id as AuthZ check
 
         // 2. Authorize: Validate JWT claims match request fields
         validate_pre_claims(&token, &req.rdr_pk, &req.ring_pk)?;
