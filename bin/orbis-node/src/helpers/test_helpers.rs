@@ -5,6 +5,7 @@
 use crate::app_state::AppState;
 use crate::dkg::protocol_handler;
 use crate::dkg::protocol_handler::create_router_with_handlers;
+use authz::dummy::DummyAuthZ;
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
 use hex;
@@ -48,7 +49,10 @@ pub type TestKeyPair = JwtSigner;
 ///     // Use app_state in your test...
 /// }
 /// ```
-pub async fn create_test_app_state(bind_address: Option<String>) -> AppState<DkgImpl> {
+pub async fn create_test_app_state(
+    bind_address: Option<String>,
+    dummy_authz: bool,
+) -> AppState<DkgImpl> {
     let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
 
     // Initialize network for testing
@@ -58,11 +62,19 @@ pub async fn create_test_app_state(bind_address: Option<String>) -> AppState<Dkg
             .expect("Failed to initialize network for testing"),
     );
     let local_storage = MemoryStorage::new(None);
-    let authz: Arc<dyn Authz> = Arc::new(
+    let mut authz: Arc<dyn Authz> = Arc::new(
         SourceHubAuth::new()
             .await
             .expect("Failed to initialize Authz"),
     );
+
+    if dummy_authz {
+        authz = Arc::new(
+            DummyAuthZ::new()
+                .await
+                .expect("Failed to initialize dummy Authz"),
+        )
+    }
 
     // Create AppState with the network (node_id is no longer needed - it's session-specific)
     AppState::<DkgImpl>::new(bind_address, network, local_storage, authz)
@@ -82,7 +94,7 @@ pub async fn create_test_app_state(bind_address: Option<String>) -> AppState<Dkg
 /// }
 /// ```
 pub async fn create_test_app_state_default() -> AppState<DkgImpl> {
-    create_test_app_state(None).await
+    create_test_app_state(None, true).await
 }
 
 /// Information about a node in a test network
@@ -199,9 +211,9 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
     println!("Setting up three-node test network...");
 
     // Create three nodes: Alice, Bob, and Charlie
-    let alice_state = create_test_app_state(Some("127.0.0.1:0".to_string())).await;
-    let bob_state = create_test_app_state(Some("127.0.0.1:0".to_string())).await;
-    let charlie_state = create_test_app_state(Some("127.0.0.1:0".to_string())).await;
+    let alice_state = create_test_app_state(Some("127.0.0.1:0".to_string()), true).await;
+    let bob_state = create_test_app_state(Some("127.0.0.1:0".to_string()), true).await;
+    let charlie_state = create_test_app_state(Some("127.0.0.1:0".to_string()), true).await;
 
     // Get peer IDs and addresses for each node
     let alice_peer_id = alice_state.network.local_peer_id();
@@ -341,13 +353,16 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
 ///
 /// # Returns
 /// A `ThreeNodeNetwork` containing all three nodes with their information
-pub async fn setup_three_node_network_with_pre(start_routers: bool) -> ThreeNodeNetwork {
+pub async fn setup_three_node_network_with_pre(
+    start_routers: bool,
+    dummy_authz: bool,
+) -> ThreeNodeNetwork {
     println!("Setting up three-node test network with DKG and PRE handlers...");
 
     // Create three nodes: Alice, Bob, and Charlie
-    let alice_state = create_test_app_state(Some("127.0.0.1:0".to_string())).await;
-    let bob_state = create_test_app_state(Some("127.0.0.1:0".to_string())).await;
-    let charlie_state = create_test_app_state(Some("127.0.0.1:0".to_string())).await;
+    let alice_state = create_test_app_state(Some("127.0.0.1:0".to_string()), dummy_authz).await;
+    let bob_state = create_test_app_state(Some("127.0.0.1:0".to_string()), dummy_authz).await;
+    let charlie_state = create_test_app_state(Some("127.0.0.1:0".to_string()), dummy_authz).await;
 
     // Get peer IDs and addresses for each node
     let alice_peer_id = alice_state.network.local_peer_id();

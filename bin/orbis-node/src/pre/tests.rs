@@ -40,7 +40,7 @@ async fn test_dkg_then_pre_end_to_end() {
     // Step 1: Setup the three-node network with both DKG and PRE handlers
     // =========================================================================
     println!("Step 1: Setting up three-node network...");
-    let mut network = setup_three_node_network_with_pre(true).await;
+    let mut network = setup_three_node_network_with_pre(true, true).await;
 
     // Get all peer IDs (including initiator) for participation
     let peer_ids = network.get_all_peer_ids();
@@ -286,7 +286,7 @@ async fn test_pre_with_large_secret() {
     println!("=== Starting PRE Test with Large Secret ===\n");
 
     // Setup network
-    let mut network = setup_three_node_network_with_pre(true).await;
+    let mut network = setup_three_node_network_with_pre(true, true).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -385,7 +385,7 @@ async fn test_pre_fails_with_wrong_key() {
     println!("=== Starting PRE Failure Test (Wrong Key) ===\n");
 
     // Setup network
-    let mut network = setup_three_node_network_with_pre(true).await;
+    let mut network = setup_three_node_network_with_pre(true, true).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -485,7 +485,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     println!("=== Starting PRE Failure Test (Invalid JWT Token) ===\n");
 
     // Setup network
-    let mut network = setup_three_node_network_with_pre(true).await;
+    let mut network = setup_three_node_network_with_pre(true, true).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -580,7 +580,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     println!("=== Starting PRE Failure Test (Mismatched JWT Claims) ===\n");
 
     // Setup network
-    let mut network = setup_three_node_network_with_pre(true).await;
+    let mut network = setup_three_node_network_with_pre(true, true).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG

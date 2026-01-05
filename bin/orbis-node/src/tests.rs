@@ -309,7 +309,7 @@ mod cli_tool_integration {
         // Spin up SourceHub container
         let _container = SourceHubTestContainer::new();
         // Set up three nodes
-        let mut network = setup_three_node_network_with_pre(true).await;
+        let mut network = setup_three_node_network_with_pre(true, false).await;
 
         let peer_ids = network.get_all_peer_ids();
 

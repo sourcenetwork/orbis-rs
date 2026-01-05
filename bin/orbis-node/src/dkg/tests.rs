@@ -104,7 +104,7 @@ async fn test_three_nodes_connect() {
 #[tokio::test]
 async fn test_start_dkg_fails_on_connection_failure() {
     // Create only Alice node
-    let alice_state = create_test_app_state(Some("127.0.0.1:0".to_string())).await;
+    let alice_state = create_test_app_state(Some("127.0.0.1:0".to_string()), true).await;
 
     // Create Alice's service
     let alice_service = DkgServiceImpl::<DkgImpl>::new(alice_state);
