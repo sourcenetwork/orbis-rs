@@ -37,6 +37,9 @@ pub enum BlockchainError {
 
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
+
+    #[error("Parse Int: {0}")]
+    ParseInt(#[from] std::num::ParseIntError),
 }
 
 impl From<serde_json::Error> for BlockchainError {

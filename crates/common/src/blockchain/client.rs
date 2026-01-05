@@ -89,8 +89,8 @@ impl SourceHubClient {
 
         Ok(AccountInfo {
             address: account.address,
-            account_number: account.account_number.parse().unwrap_or(0),
-            sequence: account.sequence.parse().unwrap_or(0),
+            account_number: account.account_number.parse()?,
+            sequence: account.sequence.parse()?,
         })
     }
 
