@@ -127,7 +127,8 @@ where
         let mut sessions = self.dkg_sessions.write().await;
 
         // Run cleanup before checking limits
-        Self::cleanup_sessions_internal(&mut sessions);
+        // TODO: Removed for now currently keep all sessions locally, bulletin will fix this
+        // Self::cleanup_sessions_internal(&mut sessions);
 
         // Check session limit
         if sessions.len() >= MAX_DKG_SESSIONS {
