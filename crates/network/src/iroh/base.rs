@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use iroh::endpoint::Connection as IrohConnection;
-use iroh::{Endpoint, EndpointAddr};
+use iroh::{Endpoint, EndpointAddr, SecretKey};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -65,6 +65,7 @@ impl IrohNetwork {
 #[derive(Default)]
 pub struct IrohNetworkBuilder {
     config: IrohNetworkConfig,
+    secret_key: Option<SecretKey>,
 }
 
 impl IrohNetworkBuilder {
@@ -74,9 +75,26 @@ impl IrohNetworkBuilder {
         self
     }
 
+    /// Set the secret key for deterministic peer ID
+    ///
+    /// If not set, a random key will be generated on each startup.
+    /// To persist identity across restarts, store the secret key bytes
+    /// and pass them here on subsequent startups.
+    pub fn secret_key(mut self, key: SecretKey) -> Self {
+        self.secret_key = Some(key);
+        self
+    }
+
     /// Build the IrohNetwork instance
     pub async fn build(self) -> Result<IrohNetwork> {
-        let endpoint = Endpoint::bind()
+        let mut builder = Endpoint::builder();
+
+        if let Some(key) = self.secret_key {
+            builder = builder.secret_key(key);
+        }
+
+        let endpoint = builder
+            .bind()
             .await
             .map_err(|e| NetworkError::Connection(format!("Failed to bind endpoint: {}", e)))?;
 

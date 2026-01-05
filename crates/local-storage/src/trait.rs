@@ -6,6 +6,8 @@ pub enum LocalStorageKeys {
     RingKey(String),
     /// Maps ring public key (serialized G1Affine bytes as hex) to DKG session ID
     RingPkMapping(String),
+    /// The node's iroh secret key for deterministic peer identity
+    NodeSecretKey,
 }
 
 pub trait LocalStorage {

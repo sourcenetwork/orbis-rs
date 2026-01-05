@@ -5,7 +5,8 @@
 pub mod base;
 pub mod router;
 
-pub use base::IrohNetwork;
+pub use base::{IrohNetwork, IrohNetworkBuilder};
+pub use iroh::SecretKey;
 pub use router::{IrohRouterBuilder, IrohRouterWrapper};
 
 #[cfg(test)]
