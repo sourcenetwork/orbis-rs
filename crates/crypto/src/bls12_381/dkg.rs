@@ -3,13 +3,16 @@ use ark_ec::{AffineRepr, Group};
 use ark_ff::Zero;
 use ark_std::{vec::Vec, UniformRand};
 use rand_core::{OsRng, RngCore};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::common::{PolynomialCommitment, PubPoly};
 use crate::{
     error::{CryptoError, Result},
     r#trait::{DistributedShare, Dkg, PolynomialCommitment as PolynomialCommitmentTrait, PriShare},
 };
+
+/// Maximum number of nonces to store per node to prevent memory exhaustion
+const MAX_NONCES_PER_NODE: usize = 1000;
 
 /// Complete DKG state for a single node
 #[derive(Clone, Debug)]
@@ -33,8 +36,8 @@ pub struct DKGNode {
     // Session ID for this DKG run (prevents replay attacks)
     pub session_id: u64,
 
-    // Track received nonces to prevent replay
-    received_nonces: HashMap<u32, Vec<[u8; 16]>>, // from_id -> list of nonces
+    // Track received nonces to prevent replay (HashSet for O(1) lookup)
+    received_nonces: HashMap<u32, HashSet<[u8; 16]>>, // from_id -> set of nonces
 
     // Track complaints about malicious nodes
     complaints: HashMap<u32, Vec<u32>>, // complainer_id -> list of accused_ids
@@ -153,7 +156,15 @@ impl Dkg for DKGNode {
         let nonces = self
             .received_nonces
             .entry(share.from_id)
-            .or_insert_with(Vec::new);
+            .or_insert_with(HashSet::new);
+
+        // Limit nonces per node to prevent memory exhaustion
+        if nonces.len() >= MAX_NONCES_PER_NODE {
+            return Err(CryptoError::DKGError(
+                "Nonce limit exceeded - possible DoS attack".to_string(),
+            ));
+        }
+
         if nonces.contains(&share.nonce) {
             return Err(CryptoError::DKGError(
                 "Duplicate nonce detected - possible replay attack".to_string(),
@@ -185,7 +196,7 @@ impl Dkg for DKGNode {
         }
 
         // Store the nonce to prevent replay
-        nonces.push(share.nonce);
+        nonces.insert(share.nonce);
 
         // Store the verified share
         self.received_shares.insert(share.from_id, share.value);
