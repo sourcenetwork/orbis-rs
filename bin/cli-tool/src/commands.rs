@@ -300,7 +300,7 @@ pub async fn add_policy_to_chain() -> Result<String> {
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
     )
     .await
-    .expect("client builder issue");
+    .map_err(|e| anyhow!("client builder issue: {}", e))?;
 
     let _result = client
         .acp_create_policy(TEST_POLICY_YAML, 1)
