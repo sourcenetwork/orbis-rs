@@ -101,3 +101,21 @@ pub const PASSWORD_FILE_NAME: &str = ".orbis_password";
 /// but not over the password file (file has highest priority).
 /// This allows for secure password injection in containerized environments.
 pub const PASSWORD_ENV_VAR: &str = "ORBIS_PASSWORD";
+
+// ============================================================================
+// Secret Key (Peer Identity) Configuration Constants
+// ============================================================================
+
+/// Default filename for the secret key file
+///
+/// The secret key file stores the encrypted iroh secret key used for
+/// deterministic peer identity. This file is encrypted using the same
+/// password as ring key shares.
+pub const SECRET_KEY_FILE_NAME: &str = ".orbis_secret_key";
+
+/// Environment variable name for the secret key (hex-encoded)
+///
+/// If set, this environment variable provides the secret key bytes as
+/// a hex-encoded string. The key will be stored encrypted in the secret
+/// key file for future use.
+pub const SECRET_KEY_ENV_VAR: &str = "ORBIS_SECRET_KEY";

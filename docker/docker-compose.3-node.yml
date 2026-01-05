@@ -6,6 +6,7 @@ services:
     container_name: orbis-node-1
     environment:
       - ORBIS_PASSWORD=testpassword123
+      - ORBIS_SECRET_KEY=testsecret1testsecret1
       - RUST_LOG=info
     command: ["--addr", "0.0.0.0:50051", "--log-level", "info"]
     ports:
@@ -20,6 +21,7 @@ services:
     container_name: orbis-node-2
     environment:
       - ORBIS_PASSWORD=testpassword123
+      - ORBIS_SECRET_KEY=testsecret2testsecret2
       - RUST_LOG=info
     command: ["--addr", "0.0.0.0:50051", "--log-level", "info"]
     ports:
@@ -34,6 +36,7 @@ services:
     container_name: orbis-node-3
     environment:
       - ORBIS_PASSWORD=testpassword123
+      - ORBIS_SECRET_KEY=testsecret3testsecret3
       - RUST_LOG=info
     command: ["--addr", "0.0.0.0:50051", "--log-level", "info"]
     ports:

@@ -10,12 +10,13 @@ pub mod pre;
 mod tests;
 
 use crate::dkg::service::DkgServiceImpl;
-use crate::helpers::helpers::{get_password, LogLevel};
+use crate::helpers::helpers::{derive_secret_key_bytes, get_password, LogLevel};
 use crate::pre::service::PreServiceImpl;
 use app_state::AppState;
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
 use clap::Parser;
+use helpers::helpers::get_network_key_secret;
 use local_storage::memory::MemoryStorage;
 use local_storage::r#trait::LocalStorage;
 use network::{Network, Router};
@@ -161,19 +162,28 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(tracing::Level::from(args.log_level))
         .init();
 
-    // Initialize network for node-to-node communication
-    tracing::info!("Initializing network");
-    let network: Arc<dyn Network> = Arc::new(
-        network::IrohNetwork::new()
-            .await
-            .map_err(|e| format!("Failed to initialize network: {}", e))?,
-    );
-
     // Get password for encrypting ring key shares
     let (password, _source) =
         get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
     let local_storage = MemoryStorage::new(Some(password));
+    // Get node secret hex for netwokring
+    let node_secret_hex = get_network_key_secret(None, local_storage.clone())
+        .map_err(|e| format!("Failed to get node secret: {}", e))?;
 
+    // Derive 32-byte key from input (supports hex or passphrase)
+    let secret_key_bytes = derive_secret_key_bytes(&node_secret_hex)
+        .map_err(|e| format!("Invalid node secret: {}", e))?;
+    let secret_key = network::SecretKey::from_bytes(&secret_key_bytes);
+
+    // Initialize network for node-to-node communication
+    tracing::info!("Initializing network");
+    let network: Arc<dyn Network> = Arc::new(
+        network::IrohNetwork::builder()
+            .secret_key(secret_key)
+            .build()
+            .await
+            .map_err(|e| format!("Failed to initialize network: {}", e))?,
+    );
     let authz: Arc<dyn Authz> = Arc::new(
         // TODO: fix chainconfig local in the new() function of sourcehubauth
         // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
