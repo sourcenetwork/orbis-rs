@@ -328,7 +328,7 @@ where
             return None;
         }
 
-        let session_id = u64::from_le_bytes(session_id_bytes.try_into().unwrap());
+        let session_id = u64::from_le_bytes(session_id_bytes.try_into().ok()?);
         self.get_dkg_session(&session_id).await
     }
 

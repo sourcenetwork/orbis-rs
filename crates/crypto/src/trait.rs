@@ -115,11 +115,29 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoDeserialize
             ));
         }
 
-        let from_id = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-        let to_id = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-        let session_id = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
-        let nonce: [u8; 16] = bytes[16..32].try_into().unwrap();
-        let value_len = u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
+        let from_id = u32::from_le_bytes(
+            bytes[0..4]
+                .try_into()
+                .map_err(|_| CryptoError::DKGError("Invalid from_id bytes".to_string()))?,
+        );
+        let to_id = u32::from_le_bytes(
+            bytes[4..8]
+                .try_into()
+                .map_err(|_| CryptoError::DKGError("Invalid to_id bytes".to_string()))?,
+        );
+        let session_id = u64::from_le_bytes(
+            bytes[8..16]
+                .try_into()
+                .map_err(|_| CryptoError::DKGError("Invalid session_id bytes".to_string()))?,
+        );
+        let nonce: [u8; 16] = bytes[16..32]
+            .try_into()
+            .map_err(|_| CryptoError::DKGError("Invalid nonce bytes".to_string()))?;
+        let value_len = u32::from_le_bytes(
+            bytes[32..36]
+                .try_into()
+                .map_err(|_| CryptoError::DKGError("Invalid value_len bytes".to_string()))?,
+        ) as usize;
 
         if bytes.len() < 36 + value_len {
             return Err(CryptoError::DKGError(
@@ -165,7 +183,11 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoDeserialize for PriS
             ));
         }
 
-        let i = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let i = u32::from_le_bytes(
+            bytes[0..4]
+                .try_into()
+                .map_err(|_| CryptoError::DKGError("Invalid PriShare index bytes".to_string()))?,
+        );
         let v = ShareValue::from_bytes(&bytes[4..])?;
 
         Ok(Self { i, v })
@@ -198,7 +220,11 @@ impl<PublicKey: CryptoSerialize + CryptoDeserialize> CryptoDeserialize for PubSh
             ));
         }
 
-        let i = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let i = u32::from_le_bytes(
+            bytes[0..4]
+                .try_into()
+                .map_err(|_| CryptoError::DKGError("Invalid PubShare index bytes".to_string()))?,
+        );
         let v = PublicKey::from_bytes(&bytes[4..])?;
 
         Ok(Self { i, v })
@@ -270,7 +296,11 @@ impl<
 
         let mut offset = 0;
 
-        let share_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        let share_len = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .map_err(|_| CryptoError::DKGError("Invalid share_len bytes".to_string()))?,
+        ) as usize;
         offset += 4;
         if bytes.len() < offset + share_len + 8 {
             return Err(CryptoError::DKGError(
@@ -280,8 +310,11 @@ impl<
         let share = PubShare::from_bytes(&bytes[offset..offset + share_len])?;
         offset += share_len;
 
-        let challenge_len =
-            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        let challenge_len = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .map_err(|_| CryptoError::DKGError("Invalid challenge_len bytes".to_string()))?,
+        ) as usize;
         offset += 4;
         if bytes.len() < offset + challenge_len + 4 {
             return Err(CryptoError::DKGError(
@@ -291,7 +324,11 @@ impl<
         let challenge = ShareValue::from_bytes(&bytes[offset..offset + challenge_len])?;
         offset += challenge_len;
 
-        let proof_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        let proof_len = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .map_err(|_| CryptoError::DKGError("Invalid proof_len bytes".to_string()))?,
+        ) as usize;
         offset += 4;
         if bytes.len() < offset + proof_len {
             return Err(CryptoError::DKGError(

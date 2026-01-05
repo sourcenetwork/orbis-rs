@@ -170,7 +170,11 @@ impl CryptoDeserialize for PubPoly {
             return Err(CryptoError::DKGError("PubPoly bytes too short".to_string()));
         }
 
-        let num_commits = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let num_commits = u32::from_le_bytes(
+            bytes[0..4]
+                .try_into()
+                .map_err(|_| CryptoError::DKGError("Invalid num_commits bytes".to_string()))?,
+        ) as usize;
         let expected_len = 4 + num_commits * G1_COMPRESSED_SIZE;
 
         if bytes.len() < expected_len {
@@ -220,7 +224,11 @@ impl CryptoDeserialize for PolynomialCommitment {
             ));
         }
 
-        let num_coefficients = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let num_coefficients = u32::from_le_bytes(
+            bytes[0..4]
+                .try_into()
+                .map_err(|_| CryptoError::DKGError("Invalid num_coefficients bytes".to_string()))?,
+        ) as usize;
         let expected_len = 4 + num_coefficients * G1_COMPRESSED_SIZE;
 
         if bytes.len() < expected_len {
