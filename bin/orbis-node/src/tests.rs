@@ -3,7 +3,10 @@
 //! These tests verify the node initialization and configuration logic,
 //! as well as compatibility with cli-tool.
 
-use crate::{helpers::helpers::derive_secret_key_bytes, init_node, Args, LogLevel, NodeConfig};
+use crate::{
+    helpers::launch::{derive_secret_key_bytes, LogLevel},
+    init_node, Args, NodeConfig,
+};
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
 use local_storage::memory::MemoryStorage;

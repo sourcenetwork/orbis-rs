@@ -10,13 +10,14 @@ pub mod pre;
 mod tests;
 
 use crate::dkg::service::DkgServiceImpl;
-use crate::helpers::helpers::{derive_secret_key_bytes, get_password, LogLevel};
+use crate::helpers::launch::{
+    derive_secret_key_bytes, get_network_key_secret, get_password, LogLevel,
+};
 use crate::pre::service::PreServiceImpl;
 use app_state::AppState;
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
 use clap::Parser;
-use helpers::helpers::get_network_key_secret;
 use local_storage::memory::MemoryStorage;
 use local_storage::r#trait::LocalStorage;
 use network::{Network, Router};
