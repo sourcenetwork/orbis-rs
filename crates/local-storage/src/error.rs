@@ -13,6 +13,8 @@ pub enum LocalStorageError {
     NotFound,
     #[error("Courrupted Data")]
     CorruptData,
+    #[error("Unique DB Error: {0}")]
+    UniqueDBError(String),
 }
 
 /// Result type for local storage operations

@@ -38,7 +38,7 @@ async fn test_init_node_success() {
             authz_grpc: None,
         },
         network,
-        local_storage: MemoryStorage::new(None),
+        local_storage: MemoryStorage::new(None).expect("Failed to create local storage"),
         authz,
     };
 
@@ -82,7 +82,7 @@ async fn test_init_node_invalid_address() {
             authz_grpc: None,
         },
         network,
-        local_storage: MemoryStorage::new(None),
+        local_storage: MemoryStorage::new(None).expect("Failed to create local storage"),
         authz,
     };
 
@@ -116,7 +116,7 @@ async fn test_init_node_app_state_configuration() {
             authz_grpc: None,
         },
         network,
-        local_storage: MemoryStorage::new(None),
+        local_storage: MemoryStorage::new(None).expect("Failed to create local storage"),
         authz,
     };
 
@@ -174,7 +174,7 @@ async fn test_init_multiple_nodes() {
             authz_grpc: None,
         },
         network: network1,
-        local_storage: MemoryStorage::new(None),
+        local_storage: MemoryStorage::new(None).expect("Failed to create local storage"),
         authz: authz1,
     };
 
@@ -185,7 +185,7 @@ async fn test_init_multiple_nodes() {
             authz_grpc: None,
         },
         network: network2,
-        local_storage: MemoryStorage::new(None),
+        local_storage: MemoryStorage::new(None).expect("Failed to create local storage"),
         authz: authz2,
     };
 
@@ -252,7 +252,7 @@ async fn test_init_node_with_encrypted_storage() {
 
     // Create storage with a password
     let password = "test-password-123".to_string();
-    let local_storage = MemoryStorage::new(Some(password));
+    let local_storage = MemoryStorage::new(Some(password)).expect("Failed to create local storage");
     let authz: Arc<dyn Authz> = Arc::new(
         SourceHubAuth::new(ChainConfigBuilder::default())
             .await

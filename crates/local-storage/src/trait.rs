@@ -11,7 +11,9 @@ pub enum LocalStorageKeys {
 }
 
 pub trait LocalStorage {
-    fn new(password: Option<String>) -> Self;
+    fn new(password: Option<String>) -> Result<Self>
+    where
+        Self: Sized;
     /// Get an item from your local store
     fn get(&self, key: LocalStorageKeys) -> Result<Option<Vec<u8>>>;
     /// Set an item into your local store

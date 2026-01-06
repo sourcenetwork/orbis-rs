@@ -5,6 +5,7 @@ use crate::{
 use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
 use argon2::{password_hash::SaltString, Argon2};
 use rand_core::{OsRng, RngCore};
+use redb::{Database, Error, ReadableDatabase, TableDefinition};
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
@@ -12,8 +13,8 @@ use std::{
 use zeroize::Zeroizing;
 
 #[derive(Clone)]
-pub struct MemoryStorage {
-    pub store: Arc<RwLock<HashMap<LocalStorageKeys, Vec<u8>>>>,
+pub struct RedbStorage {
+    pub store: Arc<Database>,
     pub cipher: Aes256Gcm,
     pub salt: Option<Vec<u8>>,
 }
@@ -21,11 +22,12 @@ pub struct MemoryStorage {
 #[cfg(test)]
 mod tests;
 
-impl LocalStorage for MemoryStorage {
-    // TODO: determine how to handle poisoned mutex
-
+impl LocalStorage for RedbStorage {
     fn new(password: Option<String>) -> Result<Self> {
-        let store = Arc::new(RwLock::new(HashMap::new()));
+        // TODO: pass in path
+        let db = Database::create("my_db.redb").map_err(|e| {
+            LocalStorageError::UniqueDBError(format!("Failed to create database: {}", e))
+        })?;
 
         match password {
             Some(password) => {
@@ -44,7 +46,7 @@ impl LocalStorage for MemoryStorage {
                 // key_bytes is automatically zeroed when it goes out of scope here
 
                 Ok(Self {
-                    store,
+                    store: db.into(),
                     cipher,
                     salt: Some(salt.as_salt().as_str().as_bytes().to_vec()),
                 })
@@ -59,94 +61,29 @@ impl LocalStorage for MemoryStorage {
                 // key_bytes is automatically zeroed when it goes out of scope here
 
                 Ok(Self {
-                    store,
+                    store: db.into(),
                     cipher,
                     salt: None,
                 })
             }
         }
     }
-
     fn get(&self, key: LocalStorageKeys) -> Result<Option<Vec<u8>>> {
-        let store = self
-            .store
-            .read()
-            .map_err(|e| LocalStorageError::PosionError(e.to_string()))?;
-        Ok(store.get(&key).cloned())
+        todo!()
     }
-
     fn set(&self, key: LocalStorageKeys, value: Vec<u8>) -> Result<()> {
-        let mut store = self
-            .store
-            .write()
-            .map_err(|e| LocalStorageError::PosionError(e.to_string()))?;
-        store.insert(key, value);
-        Ok(())
+        todo!()
     }
-
     fn delete(&self, key: LocalStorageKeys) -> Result<()> {
-        let mut store = self
-            .store
-            .write()
-            .map_err(|e| LocalStorageError::PosionError(e.to_string()))?;
-        store.remove(&key);
-        Ok(())
+        todo!()
     }
-
     fn contains(&self, key: LocalStorageKeys) -> Result<bool> {
-        let store = self
-            .store
-            .read()
-            .map_err(|e| LocalStorageError::PosionError(e.to_string()))?;
-        Ok(store.contains_key(&key))
+        todo!()
     }
     fn get_encrypted(&self, key: LocalStorageKeys) -> Result<Option<Vec<u8>>> {
-        let store = self
-            .store
-            .read()
-            .map_err(|e| LocalStorageError::PosionError(e.to_string()))?;
-
-        let stored = store.get(&key).ok_or(LocalStorageError::NotFound)?;
-
-        if stored.len() < 12 {
-            return Err(LocalStorageError::CorruptData);
-        }
-
-        let (nonce_bytes, ciphertext) = stored.split_at(12);
-        let nonce = Nonce::from_slice(nonce_bytes);
-
-        let plaintext = self
-            .cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|_| LocalStorageError::DecryptionError)?;
-
-        Ok(Some(plaintext))
+        todo!()
     }
-
     fn set_encrypted(&self, key: LocalStorageKeys, value: Vec<u8>) -> Result<()> {
-        // generate random nonce
-        let mut rng = OsRng;
-        let mut nonce_bytes = [0u8; 12];
-        rng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-
-        // encrypt
-        let ciphertext = self
-            .cipher
-            .encrypt(nonce, value.as_ref())
-            .map_err(|_| LocalStorageError::EncryptionError)?;
-
-        // store nonce and ciphertext
-        let mut store_value = Vec::with_capacity(12 + ciphertext.len());
-        store_value.extend_from_slice(&nonce_bytes);
-        store_value.extend_from_slice(&ciphertext);
-
-        let mut store = self
-            .store
-            .write()
-            .map_err(|e| LocalStorageError::PosionError(e.to_string()))?;
-
-        store.insert(key, store_value);
-        Ok(())
+        todo!()
     }
 }
