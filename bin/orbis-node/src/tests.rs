@@ -3,7 +3,7 @@
 //! These tests verify the node initialization and configuration logic,
 //! as well as compatibility with cli-tool.
 
-use crate::{init_node, Args, LogLevel, NodeConfig};
+use crate::{helpers::helpers::derive_secret_key_bytes, init_node, Args, LogLevel, NodeConfig};
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
 use local_storage::memory::MemoryStorage;
@@ -430,4 +430,77 @@ mod cli_tool_integration {
         server_handle.abort();
         network.shutdown_routers().await.unwrap();
     }
+}
+
+// ============================================================================
+// derive_secret_key_bytes tests
+// ============================================================================
+#[test]
+fn test_valid_hex_input() {
+    // 64-char hex (32 bytes) should be decoded directly
+    let hex_input = "a".repeat(64);
+    let result = derive_secret_key_bytes(&hex_input);
+    assert!(result.is_ok());
+
+    let bytes = result.unwrap();
+    assert_eq!(bytes, [0xaa; 32]);
+}
+
+#[test]
+fn test_valid_passphrase() {
+    // 16+ char passphrase should be hashed
+    let passphrase = "this-is-a-valid-passphrase";
+    let result = derive_secret_key_bytes(passphrase);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().len(), 32);
+}
+
+#[test]
+fn test_short_passphrase_rejected() {
+    // Less than 16 chars should fail
+    let short = "tooshort";
+    let result = derive_secret_key_bytes(short);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("at least 16 characters"));
+}
+
+#[test]
+fn test_deterministic_output() {
+    // Same input should always produce same output
+    let input = "my-deterministic-secret";
+    let result1 = derive_secret_key_bytes(input).unwrap();
+    let result2 = derive_secret_key_bytes(input).unwrap();
+    assert_eq!(result1, result2);
+}
+
+#[tokio::test]
+async fn test_deterministic_peer_id_from_secret() {
+    // Same secret should produce same peer ID across network instances
+    let secret = "my-deterministic-node-identity";
+    let secret_key_bytes = derive_secret_key_bytes(secret).unwrap();
+
+    // Create first network with secret key
+    let secret_key1 = network::SecretKey::from_bytes(&secret_key_bytes);
+    let network1 = network::IrohNetwork::builder()
+        .secret_key(secret_key1)
+        .build()
+        .await
+        .expect("Failed to create first network");
+    let peer_id1 = network1.local_peer_id();
+
+    // Create second network with same secret key
+    let secret_key2 = network::SecretKey::from_bytes(&secret_key_bytes);
+    let network2 = network::IrohNetwork::builder()
+        .secret_key(secret_key2)
+        .build()
+        .await
+        .expect("Failed to create second network");
+    let peer_id2 = network2.local_peer_id();
+
+    // Peer IDs should be identical
+    assert_eq!(
+        peer_id1.as_bytes(),
+        peer_id2.as_bytes(),
+        "Same secret should produce same peer ID"
+    );
 }
