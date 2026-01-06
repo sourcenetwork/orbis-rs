@@ -33,6 +33,7 @@ rpassword = "7.3"
 tracing-subscriber = { version = "0.3", features = ["tracing-log", "fmt"] }
 tracing = { version = "0.1.16"}
 sha2 = {workspace = true}
+common = { path = "../../crates/common" }
 
 [dev-dependencies]
 serial_test = "3.2.0"
@@ -42,5 +43,4 @@ rand_core = "0.6"
 crypto = { path = "../../crates/crypto", features = ["test-helpers"] }
 cli-tool = { path = "../cli-tool" }
 tokio-stream = "0.1"
-common = { path = "../../crates/common" }
 

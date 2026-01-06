@@ -10,14 +10,13 @@ pub mod pre;
 mod tests;
 
 use crate::dkg::service::DkgServiceImpl;
-use crate::helpers::launch::{
-    derive_secret_key_bytes, get_network_key_secret, get_password, LogLevel,
-};
+use crate::helpers::launch::{derive_secret_key_bytes, get_network_key_secret, get_password, Args};
 use crate::pre::service::PreServiceImpl;
 use app_state::AppState;
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
 use clap::Parser;
+use common::blockchain::ChainConfigBuilder;
 use local_storage::memory::MemoryStorage;
 use local_storage::r#trait::LocalStorage;
 use network::{Network, Router};
@@ -32,22 +31,6 @@ pub type PreImpl = ThresholdDealerNode;
 
 use proto::dkg_service::dkg_service_server::DkgServiceServer;
 use proto::pre_service::pre_service_server::PreServiceServer;
-
-#[derive(Parser, Debug, Clone)]
-#[command(name = "orbis-node")]
-#[command(about = "Orbis DkgService gRPC server")]
-pub struct Args {
-    /// Address to bind the server to
-    #[arg(short, long, default_value = "[::1]:50051")]
-    pub addr: String,
-
-    /// Log level for tracing
-    #[arg(short, long, default_value = "info")]
-    pub log_level: LogLevel,
-    // /// AuthZ GRPC
-    // #[arg(short, long, default_value = "http://localhost:9090")]
-    // pub authz_grpc: String, // TODO: add config option for Authz ChainConfig
-}
 
 /// Configuration for running the node, allowing dependency injection for testing
 pub struct NodeConfig {
@@ -184,10 +167,10 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|e| format!("Failed to initialize network: {}", e))?,
     );
+    let chain_config_builder = ChainConfigBuilder::default().grpc_url(args.authz_grpc.clone());
     let authz: Arc<dyn Authz> = Arc::new(
-        // TODO: fix chainconfig local in the new() function of sourcehubauth
         // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
-        SourceHubAuth::new()
+        SourceHubAuth::new(chain_config_builder)
             .await
             .map_err(|e| format!("Failed to initialize authz: {}", e))?,
     );

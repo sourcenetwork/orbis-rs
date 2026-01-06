@@ -8,6 +8,7 @@ use crate::dkg::protocol_handler::create_router_with_handlers;
 use authz::dummy::DummyAuthZ;
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
+use common::blockchain::ChainConfigBuilder;
 use hex;
 use local_storage::memory::MemoryStorage;
 use local_storage::r#trait::LocalStorage;
@@ -63,7 +64,7 @@ pub async fn create_test_app_state(
     );
     let local_storage = MemoryStorage::new(None);
     let mut authz: Arc<dyn Authz> = Arc::new(
-        SourceHubAuth::new()
+        SourceHubAuth::new(ChainConfigBuilder::default())
             .await
             .expect("Failed to initialize Authz"),
     );

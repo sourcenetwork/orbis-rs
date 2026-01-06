@@ -73,11 +73,11 @@ fn test_signer_creation() {
 #[test]
 fn test_chain_config_builder() {
     let config = ChainConfig::builder()
-        .chain_id("my-chain")
-        .rpc_url("http://custom:26657")
-        .rest_url("http://custom:1317")
-        .account_prefix("myprefix")
-        .default_gas_limit(500_000)
+        .chain_id(Some("my-chain".to_string()))
+        .rpc_url(Some("http://custom:26657".to_string()))
+        .rest_url(Some("http://custom:1317".to_string()))
+        .account_prefix(Some("myprefix".to_string()))
+        .default_gas_limit(Some(500_000))
         .build();
 
     assert_eq!(config.chain_id, "my-chain");

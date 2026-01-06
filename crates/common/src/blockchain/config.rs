@@ -83,38 +83,38 @@ pub struct ChainConfigBuilder {
 }
 
 impl ChainConfigBuilder {
-    pub fn chain_id(mut self, chain_id: impl Into<String>) -> Self {
-        self.chain_id = Some(chain_id.into());
+    pub fn chain_id(mut self, chain_id: Option<String>) -> Self {
+        self.chain_id = chain_id;
         self
     }
 
-    pub fn rpc_url(mut self, rpc_url: impl Into<String>) -> Self {
-        self.rpc_url = Some(rpc_url.into());
+    pub fn rpc_url(mut self, rpc_url: Option<String>) -> Self {
+        self.rpc_url = rpc_url;
         self
     }
 
-    pub fn rest_url(mut self, rest_url: impl Into<String>) -> Self {
-        self.rest_url = Some(rest_url.into());
+    pub fn rest_url(mut self, rest_url: Option<String>) -> Self {
+        self.rest_url = rest_url;
         self
     }
 
-    pub fn grpc_url(mut self, grpc_url: impl Into<String>) -> Self {
-        self.grpc_url = Some(grpc_url.into());
+    pub fn grpc_url(mut self, grpc_url: Option<String>) -> Self {
+        self.grpc_url = grpc_url;
         self
     }
 
-    pub fn account_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.account_prefix = Some(prefix.into());
+    pub fn account_prefix(mut self, prefix: Option<String>) -> Self {
+        self.account_prefix = prefix;
         self
     }
 
-    pub fn default_gas_limit(mut self, gas_limit: u64) -> Self {
-        self.default_gas_limit = Some(gas_limit);
+    pub fn default_gas_limit(mut self, gas_limit: Option<u64>) -> Self {
+        self.default_gas_limit = gas_limit;
         self
     }
 
-    pub fn gas_price(mut self, gas_price: GasPrice) -> Self {
-        self.gas_price = Some(gas_price);
+    pub fn gas_price(mut self, gas_price: Option<GasPrice>) -> Self {
+        self.gas_price = gas_price;
         self
     }
 

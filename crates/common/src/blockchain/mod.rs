@@ -13,7 +13,7 @@ mod error;
 mod signer;
 
 pub use client::{AccountInfo, BroadcastResult, SourceHubClient};
-pub use config::{ChainConfig, GasPrice};
+pub use config::{ChainConfig, ChainConfigBuilder, GasPrice};
 pub use error::{BlockchainError, Result};
 pub use signer::TxSigner;
 

@@ -2,12 +2,28 @@ use crate::constants::{
     PASSWORD_ENV_VAR, PASSWORD_FILE_NAME, SECRET_KEY_ENV_VAR, SECRET_KEY_FILE_NAME,
 };
 use crate::error::PasswordError;
-use clap::ValueEnum;
+use clap::{Parser, ValueEnum};
 use local_storage::memory::MemoryStorage;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::{env, fs};
+
+#[derive(Parser, Debug, Clone)]
+#[command(name = "orbis-node")]
+#[command(about = "Orbis DkgService gRPC server")]
+pub struct Args {
+    /// Address to bind the server to
+    #[arg(short, long, default_value = "[::1]:50051")]
+    pub addr: String,
+    /// Log level for tracing
+    #[arg(short, long, default_value = "info")]
+    pub log_level: LogLevel,
+    /// AuthZ GRPC (chain GRPC endpoint probably)
+    #[arg(short = 'g', long, default_value = "http://localhost:9090")]
+    pub authz_grpc: Option<String>,
+}
+
 // ============================================================================
 // Network key Retrieval Functions
 // ============================================================================

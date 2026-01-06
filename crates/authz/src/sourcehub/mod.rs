@@ -3,7 +3,7 @@ use crate::{
     r#trait::Authz,
 };
 use async_trait::async_trait;
-use common::blockchain::{acp::Policy, ChainConfig, SourceHubClient};
+use common::blockchain::{acp::Policy, ChainConfigBuilder, SourceHubClient};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
@@ -98,10 +98,10 @@ impl Authz for SourceHubAuth {
 }
 
 impl SourceHubAuth {
-    pub async fn new() -> Result<Self> {
+    pub async fn new(chain_config_builder: ChainConfigBuilder) -> Result<Self> {
         // TODO just for testing for now fix chainconfig local
         Ok(SourceHubAuth {
-            chain_client: SourceHubClient::new(ChainConfig::local())
+            chain_client: SourceHubClient::new(chain_config_builder.build())
                 .await
                 .map_err(|e| AuthZError::ChainError(e.to_string()))?,
         })
