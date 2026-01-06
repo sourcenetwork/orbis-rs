@@ -5,12 +5,16 @@ use crate::{
 use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
 use argon2::{password_hash::SaltString, Argon2};
 use rand_core::{OsRng, RngCore};
-use redb::{Database, Error, ReadableDatabase, TableDefinition};
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
+use redb::{Database, ReadableDatabase, TableDefinition};
+use std::sync::Arc;
 use zeroize::Zeroizing;
+
+const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("orbis_local");
+
+fn serialize_key(key: &LocalStorageKeys) -> Result<Vec<u8>> {
+    bincode::serialize(key)
+        .map_err(|e| LocalStorageError::UniqueDBError(format!("Failed to serialize key: {}", e)))
+}
 
 #[derive(Clone)]
 pub struct RedbStorage {
@@ -69,13 +73,55 @@ impl LocalStorage for RedbStorage {
         }
     }
     fn get(&self, key: LocalStorageKeys) -> Result<Option<Vec<u8>>> {
-        todo!()
+        let key_bytes = serialize_key(&key)?;
+        let read_txn = self.store.begin_read().map_err(|e| {
+            LocalStorageError::UniqueDBError(format!("Failed to begin read transaction: {}", e))
+        })?;
+        let table = read_txn.open_table(TABLE).map_err(|e| {
+            LocalStorageError::UniqueDBError(format!("Failed to open table: {}", e))
+        })?;
+        let value = table
+            .get(key_bytes.as_slice())
+            .map_err(|e| LocalStorageError::UniqueDBError(format!("Failed to get value: {}", e)))?;
+        Ok(value.map(|v| v.value().to_vec()))
     }
     fn set(&self, key: LocalStorageKeys, value: Vec<u8>) -> Result<()> {
-        todo!()
+        let key_bytes = serialize_key(&key)?;
+        let write_txn = self.store.begin_write().map_err(|e| {
+            LocalStorageError::UniqueDBError(format!("Failed to begin read transaction: {}", e))
+        })?;
+        {
+            let mut table = write_txn.open_table(TABLE).map_err(|e| {
+                LocalStorageError::UniqueDBError(format!("Failed to open table: {}", e))
+            })?;
+            table
+                .insert(key_bytes.as_slice(), value.as_slice())
+                .map_err(|e| {
+                    LocalStorageError::UniqueDBError(format!("Failed to open table: {}", e))
+                })?;
+        }
+        write_txn.commit().map_err(|e| {
+            LocalStorageError::UniqueDBError(format!("Failed to open table: {}", e))
+        })?;
+        Ok(())
     }
     fn delete(&self, key: LocalStorageKeys) -> Result<()> {
-        todo!()
+        let key_bytes = serialize_key(&key)?;
+        let write_txn = self.store.begin_write().map_err(|e| {
+            LocalStorageError::UniqueDBError(format!("Failed to begin read transaction: {}", e))
+        })?;
+        {
+            let mut table = write_txn.open_table(TABLE).map_err(|e| {
+                LocalStorageError::UniqueDBError(format!("Failed to open table: {}", e))
+            })?;
+            table.remove(key_bytes.as_slice()).map_err(|e| {
+                LocalStorageError::UniqueDBError(format!("Failed to open table: {}", e))
+            })?;
+        }
+        write_txn.commit().map_err(|e| {
+            LocalStorageError::UniqueDBError(format!("Failed to open table: {}", e))
+        })?;
+        Ok(())
     }
     fn contains(&self, key: LocalStorageKeys) -> Result<bool> {
         todo!()
