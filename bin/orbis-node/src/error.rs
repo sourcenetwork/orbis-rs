@@ -3,7 +3,6 @@
 //! This module centralizes error types used throughout the codebase.
 
 use std::io;
-use std::path::PathBuf;
 
 // ============================================================================
 // Peer ID Validation Errors
@@ -84,18 +83,3 @@ impl std::fmt::Display for PasswordError {
 }
 
 impl std::error::Error for PasswordError {}
-
-// ============================================================================
-// Password Source
-// ============================================================================
-
-/// Source of the retrieved password
-#[derive(Debug, Clone, PartialEq)]
-pub enum PasswordSource {
-    /// Password was read from a file
-    File(PathBuf),
-    /// Password was read from environment variable
-    Environment,
-    /// Password was entered interactively by the user
-    Interactive,
-}

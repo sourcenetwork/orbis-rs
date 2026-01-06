@@ -1,7 +1,7 @@
 use crate::constants::{
     PASSWORD_ENV_VAR, PASSWORD_FILE_NAME, SECRET_KEY_ENV_VAR, SECRET_KEY_FILE_NAME,
 };
-use crate::error::{PasswordError, PasswordSource};
+use crate::error::PasswordError;
 use clap::ValueEnum;
 use local_storage::memory::MemoryStorage;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -154,10 +154,8 @@ pub fn get_file_path(file_name: String) -> PathBuf {
 /// * `custom_file_path` - Optional custom path to password file. If None, uses default location.
 ///
 /// # Returns
-/// A tuple of (password, source) on success, or an error
-pub fn get_password(
-    custom_file_path: Option<PathBuf>,
-) -> Result<(String, PasswordSource), PasswordError> {
+/// A string of password on success, or an error
+pub fn get_password(custom_file_path: Option<PathBuf>) -> Result<String, PasswordError> {
     // 1. Check password file first
     let file_path =
         custom_file_path.unwrap_or_else(|| get_file_path(PASSWORD_FILE_NAME.to_string()));
@@ -172,7 +170,7 @@ pub fn get_password(
                     );
                 } else {
                     tracing::info!(path = %file_path.display(), "Password loaded from file");
-                    return Ok((password, PasswordSource::File(file_path)));
+                    return Ok(password);
                 }
             }
             Err(e) => {
@@ -194,7 +192,7 @@ pub fn get_password(
                 env_var = PASSWORD_ENV_VAR,
                 "Password loaded from environment variable"
             );
-            return Ok((password, PasswordSource::Environment));
+            return Ok(password);
         }
         tracing::warn!(
             env_var = PASSWORD_ENV_VAR,
@@ -211,8 +209,8 @@ pub fn get_password(
 /// This function reads a password from stdin with echo disabled for security.
 ///
 /// # Returns
-/// A tuple of (password, PasswordSource::Interactive) on success
-fn prompt_for_password() -> Result<(String, PasswordSource), PasswordError> {
+/// A string of password on success
+fn prompt_for_password() -> Result<String, PasswordError> {
     let password = rpassword::prompt_password("Enter encryption password for ring key share: ")
         .map_err(PasswordError::StdinError)?;
 
@@ -223,7 +221,7 @@ fn prompt_for_password() -> Result<(String, PasswordSource), PasswordError> {
     }
 
     tracing::info!("Password entered interactively");
-    Ok((password, PasswordSource::Interactive))
+    Ok(password)
 }
 
 // ============================================================================
