@@ -5,7 +5,7 @@
 
 use crate::r#trait::{Connection, Message, Network, ProtocolHandler};
 use crate::tests as trait_tests;
-use crate::{IrohNetwork, PeerId, Result};
+use crate::{IrohNetwork, PeerId, Result, SecretKey};
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -340,4 +340,68 @@ async fn iroh_connection_close_graceful() {
         .shutdown()
         .await
         .expect("Router should shutdown");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_deterministic_peer_id_from_secret_key() {
+    // Create a fixed 32-byte secret key
+    let secret_bytes: [u8; 32] = [0xaa; 32];
+
+    // Create first network with the secret key
+    let secret_key1 = SecretKey::from_bytes(&secret_bytes);
+    let network1 = IrohNetwork::builder()
+        .secret_key(secret_key1)
+        .build()
+        .await
+        .expect("Should create network 1");
+    let peer_id1 = network1.local_peer_id();
+
+    // Create second network with the same secret key bytes
+    let secret_key2 = SecretKey::from_bytes(&secret_bytes);
+    let network2 = IrohNetwork::builder()
+        .secret_key(secret_key2)
+        .build()
+        .await
+        .expect("Should create network 2");
+    let peer_id2 = network2.local_peer_id();
+
+    // Both networks should have identical peer IDs since they use the same secret key
+    assert_eq!(
+        peer_id1.as_bytes(),
+        peer_id2.as_bytes(),
+        "Same secret key should produce same peer ID"
+    );
+
+    // The peer ID should be non-empty
+    assert!(
+        !peer_id1.as_bytes().is_empty(),
+        "Peer ID should not be empty"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_different_secret_keys_produce_different_peer_ids() {
+    let secret_bytes_a: [u8; 32] = [0xaa; 32];
+    let secret_bytes_b: [u8; 32] = [0xbb; 32];
+
+    let network_a = IrohNetwork::builder()
+        .secret_key(SecretKey::from_bytes(&secret_bytes_a))
+        .build()
+        .await
+        .expect("Should create network A");
+
+    let network_b = IrohNetwork::builder()
+        .secret_key(SecretKey::from_bytes(&secret_bytes_b))
+        .build()
+        .await
+        .expect("Should create network B");
+
+    // Different secret keys should produce different peer IDs
+    assert_ne!(
+        network_a.local_peer_id().as_bytes(),
+        network_b.local_peer_id().as_bytes(),
+        "Different secret keys should produce different peer IDs"
+    );
 }
