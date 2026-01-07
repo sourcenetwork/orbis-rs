@@ -15,6 +15,8 @@ pub enum LocalStorageError {
     CorruptData,
     #[error("Unique DB Error: {0}")]
     UniqueDBError(String),
+    #[error("Invalid password")]
+    InvalidPassword,
 }
 
 /// Result type for local storage operations
