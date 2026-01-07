@@ -7,6 +7,7 @@ use aes_gcm::{Aes256Gcm, Key, KeyInit};
 use argon2::password_hash::SaltString;
 use rand_core::{OsRng, RngCore};
 use redb::{Database, ReadableDatabase, TableDefinition};
+use std::path::Path;
 use std::sync::Arc;
 use zeroize::Zeroizing;
 
@@ -29,6 +30,18 @@ mod tests;
 
 impl LocalStorage for RedbStorage {
     fn new(password: Option<String>, db_path: String) -> Result<Self> {
+        // Create parent directories if they don't exist
+        if let Some(parent) = Path::new(&db_path).parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    LocalStorageError::UniqueDBError(format!(
+                        "Failed to create database directory: {}",
+                        e
+                    ))
+                })?;
+            }
+        }
+
         let db = Database::create(&db_path).map_err(|e| {
             LocalStorageError::UniqueDBError(format!("Failed to create database: {}", e))
         })?;

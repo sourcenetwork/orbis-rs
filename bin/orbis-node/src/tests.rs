@@ -4,14 +4,16 @@
 //! as well as compatibility with cli-tool.
 
 use crate::{
-    helpers::launch::{derive_secret_key_bytes, LogLevel},
+    helpers::{
+        launch::{derive_secret_key_bytes, LogLevel},
+        test_helpers::test_db_path,
+    },
     init_node, Args, NodeConfig,
 };
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
 use common::blockchain::ChainConfigBuilder;
-use local_storage::memory::MemoryStorage;
-use local_storage::r#trait::LocalStorage;
+use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::Network;
 use std::sync::Arc;
 
@@ -38,7 +40,7 @@ async fn test_init_node_success() {
             authz_grpc: None,
         },
         network,
-        local_storage: MemoryStorage::new(None, "".to_string())
+        local_storage: LocalStorageImpl::new(None, test_db_path("test_init_node_success"))
             .expect("Failed to create local storage"),
         authz,
     };
@@ -83,7 +85,7 @@ async fn test_init_node_invalid_address() {
             authz_grpc: None,
         },
         network,
-        local_storage: MemoryStorage::new(None, "".to_string())
+        local_storage: LocalStorageImpl::new(None, test_db_path("test_init_node_invalid_address"))
             .expect("Failed to create local storage"),
         authz,
     };
@@ -118,8 +120,11 @@ async fn test_init_node_app_state_configuration() {
             authz_grpc: None,
         },
         network,
-        local_storage: MemoryStorage::new(None, "".to_string())
-            .expect("Failed to create local storage"),
+        local_storage: LocalStorageImpl::new(
+            None,
+            test_db_path("test_init_node_app_state_configuration"),
+        )
+        .expect("Failed to create local storage"),
         authz,
     };
 
@@ -177,8 +182,11 @@ async fn test_init_multiple_nodes() {
             authz_grpc: None,
         },
         network: network1,
-        local_storage: MemoryStorage::new(None, "".to_string())
-            .expect("Failed to create local storage"),
+        local_storage: LocalStorageImpl::new(
+            None,
+            test_db_path("test_init_node_app_state_configuration"),
+        )
+        .expect("Failed to create local storage"),
         authz: authz1,
     };
 
@@ -189,8 +197,11 @@ async fn test_init_multiple_nodes() {
             authz_grpc: None,
         },
         network: network2,
-        local_storage: MemoryStorage::new(None, "".to_string())
-            .expect("Failed to create local storage"),
+        local_storage: LocalStorageImpl::new(
+            None,
+            test_db_path("test_init_node_app_state_configuration_2"),
+        )
+        .expect("Failed to create local storage"),
         authz: authz2,
     };
 
@@ -257,8 +268,11 @@ async fn test_init_node_with_encrypted_storage() {
 
     // Create storage with a password
     let password = "test-password-123".to_string();
-    let local_storage =
-        MemoryStorage::new(Some(password), "".to_string()).expect("Failed to create local storage");
+    let local_storage = LocalStorageImpl::new(
+        Some(password),
+        test_db_path("test_init_node_with_encrypted_storage"),
+    )
+    .expect("Failed to create local storage");
     let authz: Arc<dyn Authz> = Arc::new(
         SourceHubAuth::new(ChainConfigBuilder::default())
             .await
@@ -325,7 +339,9 @@ mod cli_tool_integration {
         // Spin up SourceHub container
         let _container = SourceHubTestContainer::new();
         // Set up three nodes
-        let mut network = setup_three_node_network_with_pre(true, false).await;
+        let mut network =
+            setup_three_node_network_with_pre(true, false, "test_cli_calls_dkg_and_pre_endpoint")
+                .await;
 
         let peer_ids = network.get_all_peer_ids();
 

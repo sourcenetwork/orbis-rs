@@ -10,10 +10,9 @@ use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
 use common::blockchain::ChainConfigBuilder;
 use hex;
-use local_storage::memory::MemoryStorage;
-use local_storage::r#trait::LocalStorage;
+use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::Router;
-use std::sync::Arc;
+use std::{fs, sync::Arc};
 
 // Concrete crypto implementations for tests
 use crypto::bls12_381::dkg::DKGNode;
@@ -53,6 +52,7 @@ pub type TestKeyPair = JwtSigner;
 pub async fn create_test_app_state(
     bind_address: Option<String>,
     dummy_authz: bool,
+    db_name: &str,
 ) -> AppState<DkgImpl> {
     let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
 
@@ -63,7 +63,7 @@ pub async fn create_test_app_state(
             .expect("Failed to initialize network for testing"),
     );
     let local_storage =
-        MemoryStorage::new(None, "".to_string()).expect("Failed to create local storage");
+        LocalStorageImpl::new(None, test_db_path(db_name)).expect("Failed to create local storage");
     let mut authz: Arc<dyn Authz> = Arc::new(
         SourceHubAuth::new(ChainConfigBuilder::default())
             .await
@@ -95,8 +95,8 @@ pub async fn create_test_app_state(
 ///     // Use app_state in your test...
 /// }
 /// ```
-pub async fn create_test_app_state_default() -> AppState<DkgImpl> {
-    create_test_app_state(None, true).await
+pub async fn create_test_app_state_default(db_name: &str) -> AppState<DkgImpl> {
+    create_test_app_state(None, true, db_name).await
 }
 
 /// Information about a node in a test network
@@ -209,13 +209,28 @@ impl ThreeNodeNetwork {
 ///     network.shutdown_routers().await.unwrap();
 /// }
 /// ```
-pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
+pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> ThreeNodeNetwork {
     println!("Setting up three-node test network...");
 
     // Create three nodes: Alice, Bob, and Charlie
-    let alice_state = create_test_app_state(Some("127.0.0.1:0".to_string()), true).await;
-    let bob_state = create_test_app_state(Some("127.0.0.1:0".to_string()), true).await;
-    let charlie_state = create_test_app_state(Some("127.0.0.1:0".to_string()), true).await;
+    let alice_state = create_test_app_state(
+        Some("127.0.0.1:0".to_string()),
+        true,
+        &format!("{}_1", db_name),
+    )
+    .await;
+    let bob_state = create_test_app_state(
+        Some("127.0.0.1:0".to_string()),
+        true,
+        &format!("{}_2", db_name),
+    )
+    .await;
+    let charlie_state = create_test_app_state(
+        Some("127.0.0.1:0".to_string()),
+        true,
+        &format!("{}_3", db_name),
+    )
+    .await;
 
     // Get peer IDs and addresses for each node
     let alice_peer_id = alice_state.network.local_peer_id();
@@ -358,13 +373,29 @@ pub async fn setup_three_node_network(start_routers: bool) -> ThreeNodeNetwork {
 pub async fn setup_three_node_network_with_pre(
     start_routers: bool,
     dummy_authz: bool,
+    db_name: &str,
 ) -> ThreeNodeNetwork {
     println!("Setting up three-node test network with DKG and PRE handlers...");
 
     // Create three nodes: Alice, Bob, and Charlie
-    let alice_state = create_test_app_state(Some("127.0.0.1:0".to_string()), dummy_authz).await;
-    let bob_state = create_test_app_state(Some("127.0.0.1:0".to_string()), dummy_authz).await;
-    let charlie_state = create_test_app_state(Some("127.0.0.1:0".to_string()), dummy_authz).await;
+    let alice_state = create_test_app_state(
+        Some("127.0.0.1:0".to_string()),
+        dummy_authz,
+        &format!("{}_1", db_name),
+    )
+    .await;
+    let bob_state = create_test_app_state(
+        Some("127.0.0.1:0".to_string()),
+        dummy_authz,
+        &format!("{}_2", db_name),
+    )
+    .await;
+    let charlie_state = create_test_app_state(
+        Some("127.0.0.1:0".to_string()),
+        dummy_authz,
+        &format!("{}_3", db_name),
+    )
+    .await;
 
     // Get peer IDs and addresses for each node
     let alice_peer_id = alice_state.network.local_peer_id();
@@ -483,4 +514,9 @@ pub async fn setup_three_node_network_with_pre(
             router: charlie_router,
         },
     }
+}
+
+pub fn test_db_path(name: &str) -> String {
+    let project_root = project_root::get_project_root().unwrap();
+    format!("{}/test_dbs/{}.redb", project_root.display(), name)
 }

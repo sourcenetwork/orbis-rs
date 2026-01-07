@@ -3,8 +3,10 @@ use crate::constants::{
 };
 use crate::error::PasswordError;
 use clap::{Parser, ValueEnum};
-use local_storage::memory::MemoryStorage;
-use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use local_storage::{
+    r#trait::{LocalStorage, LocalStorageKeys},
+    LocalStorageImpl,
+};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::{env, fs};
@@ -67,7 +69,7 @@ pub fn derive_secret_key_bytes(input: &str) -> Result<[u8; 32], String> {
 
 pub fn get_network_key_secret(
     custom_file_path: Option<PathBuf>,
-    local_storage: MemoryStorage,
+    local_storage: LocalStorageImpl,
 ) -> Result<String, PasswordError> {
     // Check secret_node_key file first
     let file_path =
@@ -265,4 +267,9 @@ impl From<LogLevel> for tracing::Level {
             LogLevel::Error => tracing::Level::ERROR,
         }
     }
+}
+
+pub fn db_path(name: &str) -> String {
+    let project_root = project_root::get_project_root().unwrap();
+    format!("{}/dbs/{}.redb", project_root.display(), name)
 }

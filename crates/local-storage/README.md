@@ -54,11 +54,11 @@ pub enum LocalStorageKeys {
 ### Basic Storage (Unencrypted)
 
 ```rust
-use local_storage::memory::MemoryStorage;
+use local_storage::LocalStorageImpl;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 
 // Create storage without encryption
-let storage = MemoryStorage::new(None, "".to_string());
+let storage = LocalStorageImpl::new(None, "".to_string());
 
 // Store and retrieve data
 storage.set(LocalStorageKeys::RingPkMapping("abc123".into()), vec![1, 2, 3])?;
@@ -68,11 +68,11 @@ let data = storage.get(LocalStorageKeys::RingPkMapping("abc123".into()))?;
 ### Encrypted Storage
 
 ```rust
-use local_storage::memory::MemoryStorage;
+use local_storage::LocalStorageImpl;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 
 // Create storage with password for encryption
-let storage = MemoryStorage::new(Some("my-secret-password".to_string()), "".to_string());
+let storage = LocalStorageImpl::new(Some("my-secret-password".to_string()), "".to_string());
 
 // Store sensitive data encrypted
 let secret_share = vec![/* ... secret bytes ... */];

@@ -1,4 +1,5 @@
 use crate::dkg::coordinator::DkgCoordinator;
+use crate::dkg::messages::DkgMessage;
 use crate::helpers::test_helpers::{
     create_authenticated_request, create_test_app_state, create_test_app_state_default,
     setup_three_node_network, TestKeyPair,
@@ -19,7 +20,7 @@ type DkgImpl = DKGNode;
 /// Unit test: Test start_dkg with empty participant list returns error
 #[tokio::test]
 async fn test_start_dkg_empty_participants() {
-    let app_state = create_test_app_state_default().await;
+    let app_state = create_test_app_state_default("test_start_dkg_empty_participants").await;
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
     let peer_ids: Vec<String> = vec![]; // Empty - should result in error
@@ -49,7 +50,7 @@ async fn test_start_dkg_empty_participants() {
 #[tokio::test]
 async fn test_three_nodes_connect() {
     // Set up three-node network with routers started for all nodes
-    let mut network = setup_three_node_network(true).await;
+    let mut network = setup_three_node_network(true, "test_three_nodes_connect").await;
 
     // Get all peer IDs (including Alice) for participation
     let peer_ids = network.get_all_peer_ids();
@@ -104,7 +105,12 @@ async fn test_three_nodes_connect() {
 #[tokio::test]
 async fn test_start_dkg_fails_on_connection_failure() {
     // Create only Alice node
-    let alice_state = create_test_app_state(Some("127.0.0.1:0".to_string()), true).await;
+    let alice_state = create_test_app_state(
+        Some("127.0.0.1:0".to_string()),
+        true,
+        "test_start_dkg_fails_on_connection_failure",
+    )
+    .await;
 
     // Create Alice's service
     let alice_service = DkgServiceImpl::<DkgImpl>::new(alice_state);
@@ -164,7 +170,8 @@ async fn test_start_dkg_succeeds_on_all_connections() {
         .try_init();
 
     // Set up three-node network with routers started for all nodes
-    let mut network = setup_three_node_network(true).await;
+    let mut network =
+        setup_three_node_network(true, "test_start_dkg_succeeds_on_all_connections").await;
 
     // Get all peer IDs (including Alice) for participation
     let peer_ids = network.get_all_peer_ids();
@@ -330,7 +337,7 @@ async fn test_start_dkg_succeeds_on_all_connections() {
 
 #[tokio::test]
 async fn test_start_dkg_fails_missing_auth_header() {
-    let app_state = create_test_app_state_default().await;
+    let app_state = create_test_app_state_default("test_start_dkg_fails_missing_auth_header").await;
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
     let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
@@ -365,7 +372,7 @@ async fn test_start_dkg_fails_missing_auth_header() {
 
 #[tokio::test]
 async fn test_start_dkg_fails_malformed_jwt() {
-    let app_state = create_test_app_state_default().await;
+    let app_state = create_test_app_state_default("test_start_dkg_fails_malformed_jwt").await;
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
     let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
@@ -394,7 +401,7 @@ async fn test_start_dkg_fails_malformed_jwt() {
 
 #[tokio::test]
 async fn test_start_dkg_fails_wrong_signature() {
-    let app_state = create_test_app_state_default().await;
+    let app_state = create_test_app_state_default("test_start_dkg_fails_wrong_signature").await;
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
     let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
@@ -447,10 +454,9 @@ async fn test_start_dkg_fails_wrong_signature() {
 /// with an invalid JWT token, it rejects the session initialization.
 #[tokio::test]
 async fn test_dkg_session_init_fails_with_invalid_jwt() {
-    use crate::dkg::messages::DkgMessage;
-
     // Create a node to receive the SessionInit
-    let app_state = create_test_app_state_default().await;
+    let app_state =
+        create_test_app_state_default("test_dkg_session_init_fails_with_invalid_jwt").await;
     let coordinator = DkgCoordinator::new(Arc::new(app_state));
 
     // Create a SessionInit message with an invalid JWT token
@@ -499,10 +505,9 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
 /// it rejects the session initialization.
 #[tokio::test]
 async fn test_dkg_session_init_fails_with_mismatched_claims() {
-    use crate::dkg::messages::DkgMessage;
-
     // Create a node to receive the SessionInit
-    let app_state = create_test_app_state_default().await;
+    let app_state =
+        create_test_app_state_default("test_dkg_session_init_fails_with_mismatched_claims").await;
     let coordinator = DkgCoordinator::new(Arc::new(app_state));
 
     // Create a valid JWT but with WRONG claims (threshold mismatch)
@@ -552,10 +557,9 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
 /// Test: Verify that SessionInit with mismatched peer_ids in JWT is rejected
 #[tokio::test]
 async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
-    use crate::dkg::messages::DkgMessage;
-
     // Create a node to receive the SessionInit
-    let app_state = create_test_app_state_default().await;
+    let app_state =
+        create_test_app_state_default("test_dkg_session_init_fails_with_wrong_peer_ids").await;
     let coordinator = DkgCoordinator::new(Arc::new(app_state));
 
     // Create a valid JWT with different peer_ids than what's in SessionInit

@@ -10,15 +10,16 @@ pub mod pre;
 mod tests;
 
 use crate::dkg::service::DkgServiceImpl;
-use crate::helpers::launch::{derive_secret_key_bytes, get_network_key_secret, get_password, Args};
+use crate::helpers::launch::{
+    db_path, derive_secret_key_bytes, get_network_key_secret, get_password, Args,
+};
 use crate::pre::service::PreServiceImpl;
 use app_state::AppState;
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
 use clap::Parser;
 use common::blockchain::ChainConfigBuilder;
-use local_storage::memory::MemoryStorage;
-use local_storage::r#trait::LocalStorage;
+use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, Router};
 use std::{net::SocketAddr, sync::Arc};
 // Concrete crypto implementations
@@ -36,7 +37,7 @@ use proto::pre_service::pre_service_server::PreServiceServer;
 pub struct NodeConfig {
     pub args: Args,
     pub network: Arc<dyn Network>,
-    pub local_storage: MemoryStorage,
+    pub local_storage: LocalStorageImpl,
     pub authz: Arc<dyn Authz>,
 }
 
@@ -148,7 +149,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // Get password for encrypting ring key shares
     let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
-    let local_storage = MemoryStorage::new(Some(password), "".to_string())
+    let local_storage = LocalStorageImpl::new(Some(password), db_path("orbis"))
         .map_err(|e| format!("Failed to create local storage: {}", e))?;
     // Get node secret hex for netwokring
     let node_secret_hex = get_network_key_secret(None, local_storage.clone())

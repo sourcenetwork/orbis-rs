@@ -4,8 +4,8 @@ use crate::pre::messages::PreMessage;
 use authz::r#trait::Authz;
 use crypto::r#trait::Dkg;
 use local_storage::{
-    memory::MemoryStorage as LocalStorage,
     r#trait::{LocalStorage as OtherLocalStorage, LocalStorageKeys},
+    LocalStorageImpl,
 };
 use network::Network;
 use std::collections::HashMap;
@@ -45,7 +45,7 @@ where
     /// Network for node-to-node communication
     pub network: Arc<dyn Network>,
     /// Local Storage implementation for storing items locally
-    pub local_storage: LocalStorage,
+    pub local_storage: LocalStorageImpl,
     /// Shared DKG session state manager for tracking protocol progress
     pub dkg_session_state: Arc<SessionStateManager>,
     /// Shared PRE response storage for collecting re-encryption responses
@@ -96,7 +96,7 @@ where
     pub fn new(
         bind_address: String,
         network: Arc<dyn Network>,
-        local_storage: LocalStorage,
+        local_storage: LocalStorageImpl,
         authz: Arc<dyn Authz + Send + Sync>,
     ) -> Self {
         Self {
