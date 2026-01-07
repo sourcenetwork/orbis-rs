@@ -148,7 +148,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // Get password for encrypting ring key shares
     let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
-    let local_storage = MemoryStorage::new(Some(password))
+    let local_storage = MemoryStorage::new(Some(password), "".to_string())
         .map_err(|e| format!("Failed to create local storage: {}", e))?;
     // Get node secret hex for netwokring
     let node_secret_hex = get_network_key_secret(None, local_storage.clone())

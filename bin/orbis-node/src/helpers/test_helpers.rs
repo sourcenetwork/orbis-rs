@@ -62,7 +62,8 @@ pub async fn create_test_app_state(
             .await
             .expect("Failed to initialize network for testing"),
     );
-    let local_storage = MemoryStorage::new(None).expect("Failed to create local storage");
+    let local_storage =
+        MemoryStorage::new(None, "".to_string()).expect("Failed to create local storage");
     let mut authz: Arc<dyn Authz> = Arc::new(
         SourceHubAuth::new(ChainConfigBuilder::default())
             .await

@@ -11,7 +11,7 @@ pub enum LocalStorageKeys {
 }
 
 pub trait LocalStorage {
-    fn new(password: Option<String>) -> Result<Self>
+    fn new(password: Option<String>, db_path: String) -> Result<Self>
     where
         Self: Sized;
     /// Get an item from your local store

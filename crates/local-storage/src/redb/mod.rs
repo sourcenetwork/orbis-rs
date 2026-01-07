@@ -27,9 +27,9 @@ pub struct RedbStorage {
 mod tests;
 
 impl LocalStorage for RedbStorage {
-    fn new(password: Option<String>) -> Result<Self> {
+    fn new(password: Option<String>, db_path: String) -> Result<Self> {
         // TODO: pass in path
-        let db = Database::create("my_db.redb").map_err(|e| {
+        let db = Database::create(db_path).map_err(|e| {
             LocalStorageError::UniqueDBError(format!("Failed to create database: {}", e))
         })?;
 

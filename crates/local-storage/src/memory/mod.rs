@@ -24,7 +24,7 @@ mod tests;
 impl LocalStorage for MemoryStorage {
     // TODO: determine how to handle poisoned mutex
 
-    fn new(password: Option<String>) -> Result<Self> {
+    fn new(password: Option<String>, _db_path: String) -> Result<Self> {
         let store = Arc::new(RwLock::new(HashMap::new()));
 
         match password {
