@@ -520,3 +520,11 @@ pub fn test_db_path(name: &str) -> String {
     let project_root = project_root::get_project_root().unwrap();
     format!("{}/test_dbs/{}.redb", project_root.display(), name)
 }
+
+/// Clean up a test database file
+///
+/// Call this at the end of each test to remove the database file.
+/// Silently ignores errors (e.g., if file doesn't exist).
+pub fn cleanup_db(path: &str) {
+    let _ = fs::remove_file(path);
+}

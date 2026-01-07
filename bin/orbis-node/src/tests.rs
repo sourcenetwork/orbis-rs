@@ -6,7 +6,7 @@
 use crate::{
     helpers::{
         launch::{derive_secret_key_bytes, LogLevel},
-        test_helpers::test_db_path,
+        test_helpers::{cleanup_db, test_db_path},
     },
     init_node, Args, NodeConfig,
 };
@@ -20,6 +20,8 @@ use std::sync::Arc;
 /// Test that the node initializes successfully with valid configuration
 #[tokio::test]
 async fn test_init_node_success() {
+    let db_path = test_db_path("test_init_node_success");
+
     // Create a real network for testing
     let network: Arc<dyn Network> = Arc::new(
         network::IrohNetwork::new()
@@ -40,7 +42,7 @@ async fn test_init_node_success() {
             authz_grpc: None,
         },
         network,
-        local_storage: LocalStorageImpl::new(None, test_db_path("test_init_node_success"))
+        local_storage: LocalStorageImpl::new(None, db_path.clone())
             .expect("Failed to create local storage"),
         authz,
     };
@@ -61,11 +63,14 @@ async fn test_init_node_success() {
         .shutdown()
         .await
         .expect("Router shutdown failed");
+    cleanup_db(&db_path);
 }
 
 /// Test that the node fails with invalid address
 #[tokio::test]
 async fn test_init_node_invalid_address() {
+    let db_path = test_db_path("test_init_node_invalid_address");
+
     let network: Arc<dyn Network> = Arc::new(
         network::IrohNetwork::new()
             .await
@@ -85,7 +90,7 @@ async fn test_init_node_invalid_address() {
             authz_grpc: None,
         },
         network,
-        local_storage: LocalStorageImpl::new(None, test_db_path("test_init_node_invalid_address"))
+        local_storage: LocalStorageImpl::new(None, db_path.clone())
             .expect("Failed to create local storage"),
         authz,
     };
@@ -95,11 +100,14 @@ async fn test_init_node_invalid_address() {
         result.is_err(),
         "Node initialization should fail with invalid address"
     );
+    cleanup_db(&db_path);
 }
 
 /// Test that AppState is properly configured after initialization
 #[tokio::test]
 async fn test_init_node_app_state_configuration() {
+    let db_path = test_db_path("test_init_node_app_state_configuration");
+
     let network: Arc<dyn Network> = Arc::new(
         network::IrohNetwork::new()
             .await
@@ -120,11 +128,8 @@ async fn test_init_node_app_state_configuration() {
             authz_grpc: None,
         },
         network,
-        local_storage: LocalStorageImpl::new(
-            None,
-            test_db_path("test_init_node_app_state_configuration"),
-        )
-        .expect("Failed to create local storage"),
+        local_storage: LocalStorageImpl::new(None, db_path.clone())
+            .expect("Failed to create local storage"),
         authz,
     };
 
@@ -148,11 +153,15 @@ async fn test_init_node_app_state_configuration() {
         .shutdown()
         .await
         .expect("Router shutdown failed");
+    cleanup_db(&db_path);
 }
 
 /// Test that multiple nodes can be initialized concurrently
 #[tokio::test]
 async fn test_init_multiple_nodes() {
+    let db_path1 = test_db_path("test_init_multiple_nodes_1");
+    let db_path2 = test_db_path("test_init_multiple_nodes_2");
+
     let network1: Arc<dyn Network> = Arc::new(
         network::IrohNetwork::new()
             .await
@@ -182,11 +191,8 @@ async fn test_init_multiple_nodes() {
             authz_grpc: None,
         },
         network: network1,
-        local_storage: LocalStorageImpl::new(
-            None,
-            test_db_path("test_init_node_app_state_configuration"),
-        )
-        .expect("Failed to create local storage"),
+        local_storage: LocalStorageImpl::new(None, db_path1.clone())
+            .expect("Failed to create local storage"),
         authz: authz1,
     };
 
@@ -197,11 +203,8 @@ async fn test_init_multiple_nodes() {
             authz_grpc: None,
         },
         network: network2,
-        local_storage: LocalStorageImpl::new(
-            None,
-            test_db_path("test_init_node_app_state_configuration_2"),
-        )
-        .expect("Failed to create local storage"),
+        local_storage: LocalStorageImpl::new(None, db_path2.clone())
+            .expect("Failed to create local storage"),
         authz: authz2,
     };
 
@@ -229,6 +232,8 @@ async fn test_init_multiple_nodes() {
         .shutdown()
         .await
         .expect("Router 2 shutdown failed");
+    cleanup_db(&db_path1);
+    cleanup_db(&db_path2);
 }
 
 /// Test Args default values
@@ -260,6 +265,8 @@ fn test_args_custom_address() {
 /// Test that encrypted storage works with the node
 #[tokio::test]
 async fn test_init_node_with_encrypted_storage() {
+    let db_path = test_db_path("test_init_node_with_encrypted_storage");
+
     let network: Arc<dyn Network> = Arc::new(
         network::IrohNetwork::new()
             .await
@@ -268,11 +275,8 @@ async fn test_init_node_with_encrypted_storage() {
 
     // Create storage with a password
     let password = "test-password-123".to_string();
-    let local_storage = LocalStorageImpl::new(
-        Some(password),
-        test_db_path("test_init_node_with_encrypted_storage"),
-    )
-    .expect("Failed to create local storage");
+    let local_storage = LocalStorageImpl::new(Some(password), db_path.clone())
+        .expect("Failed to create local storage");
     let authz: Arc<dyn Authz> = Arc::new(
         SourceHubAuth::new(ChainConfigBuilder::default())
             .await
@@ -301,6 +305,7 @@ async fn test_init_node_with_encrypted_storage() {
         .shutdown()
         .await
         .expect("Router shutdown failed");
+    cleanup_db(&db_path);
 }
 
 // ============================================================================
@@ -312,7 +317,9 @@ async fn test_init_node_with_encrypted_storage() {
 mod cli_tool_integration {
     use crate::dkg::coordinator::DkgCoordinator;
     use crate::dkg::service::DkgServiceImpl;
-    use crate::helpers::test_helpers::setup_three_node_network_with_pre;
+    use crate::helpers::test_helpers::{
+        cleanup_db, setup_three_node_network_with_pre, test_db_path,
+    };
     use crate::pre::service::PreServiceImpl;
     use crate::{DkgImpl, PreImpl};
     use ark_bls12_381::{Fr, G1Affine, G1Projective};
@@ -336,12 +343,17 @@ mod cli_tool_integration {
     #[tokio::test]
     #[serial_test::serial]
     async fn test_cli_calls_dkg_and_pre_endpoint() {
+        let db_name = "test_cli_calls_dkg_and_pre_endpoint";
+        let db_paths = [
+            test_db_path(&format!("{}_1", db_name)),
+            test_db_path(&format!("{}_2", db_name)),
+            test_db_path(&format!("{}_3", db_name)),
+        ];
+
         // Spin up SourceHub container
         let _container = SourceHubTestContainer::new();
         // Set up three nodes
-        let mut network =
-            setup_three_node_network_with_pre(true, false, "test_cli_calls_dkg_and_pre_endpoint")
-                .await;
+        let mut network = setup_three_node_network_with_pre(true, false, db_name).await;
 
         let peer_ids = network.get_all_peer_ids();
 
@@ -461,6 +473,9 @@ mod cli_tool_integration {
         // Clean up
         server_handle.abort();
         network.shutdown_routers().await.unwrap();
+        for path in &db_paths {
+            cleanup_db(path);
+        }
     }
 }
 

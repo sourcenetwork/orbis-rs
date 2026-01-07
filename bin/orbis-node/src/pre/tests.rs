@@ -5,8 +5,8 @@
 
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::helpers::test_helpers::{
-    create_authenticated_request, create_test_app_state_default, setup_three_node_network_with_pre,
-    TestKeyPair,
+    cleanup_db, create_authenticated_request, create_test_app_state_default,
+    setup_three_node_network_with_pre, test_db_path, TestKeyPair,
 };
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::pre::service::PreServiceImpl;
@@ -34,14 +34,20 @@ type PreImpl = ThresholdDealerNode;
 /// 5. Bob decrypts the secret using his private key
 #[tokio::test]
 async fn test_dkg_then_pre_end_to_end() {
+    let db_name = "test_dkg_then_pre_end_to_end";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
     println!("=== Starting End-to-End PRE Test ===\n");
 
     // =========================================================================
     // Step 1: Setup the three-node network with both DKG and PRE handlers
     // =========================================================================
     println!("Step 1: Setting up three-node network...");
-    let mut network =
-        setup_three_node_network_with_pre(true, true, "test_dkg_then_pre_end_to_end").await;
+    let mut network = setup_three_node_network_with_pre(true, true, db_name).await;
 
     // Get all peer IDs (including initiator) for participation
     let peer_ids = network.get_all_peer_ids();
@@ -228,6 +234,9 @@ async fn test_dkg_then_pre_end_to_end() {
         .shutdown_routers()
         .await
         .expect("Failed to shutdown routers");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
 }
 
 /// Helper function to wait for DKG completion and return the aggregate public key
@@ -284,11 +293,17 @@ async fn wait_for_dkg_completion(
 /// Test PRE with a larger secret
 #[tokio::test]
 async fn test_pre_with_large_secret() {
+    let db_name = "test_pre_with_large_secret";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
     println!("=== Starting PRE Test with Large Secret ===\n");
 
     // Setup network
-    let mut network =
-        setup_three_node_network_with_pre(true, true, "test_pre_with_large_secret").await;
+    let mut network = setup_three_node_network_with_pre(true, true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -378,17 +393,26 @@ async fn test_pre_with_large_secret() {
         .shutdown_routers()
         .await
         .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
 }
 
 /// Test that PRE fails with wrong Bob private key
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pre_fails_with_wrong_key() {
+    let db_name = "test_pre_fails_with_wrong_key";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
     println!("=== Starting PRE Failure Test (Wrong Key) ===\n");
 
     // Setup network
-    let mut network =
-        setup_three_node_network_with_pre(true, true, "test_pre_fails_with_wrong_key").await;
+    let mut network = setup_three_node_network_with_pre(true, true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -479,18 +503,26 @@ async fn test_pre_fails_with_wrong_key() {
         .shutdown_routers()
         .await
         .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
 }
 
 /// Test that PRE fails when an invalid JWT token is sent to peer nodes
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pre_fails_with_invalid_jwt_token() {
+    let db_name = "test_pre_fails_with_invalid_jwt_token";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
     println!("=== Starting PRE Failure Test (Invalid JWT Token) ===\n");
 
     // Setup network
-    let mut network =
-        setup_three_node_network_with_pre(true, true, "test_pre_fails_with_invalid_jwt_token")
-            .await;
+    let mut network = setup_three_node_network_with_pre(true, true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -576,18 +608,26 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         .shutdown_routers()
         .await
         .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
 }
 
 /// Test that PRE fails when JWT claims don't match the request parameters
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pre_fails_with_mismatched_jwt_claims() {
+    let db_name = "test_pre_fails_with_mismatched_jwt_claims";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
     println!("=== Starting PRE Failure Test (Mismatched JWT Claims) ===\n");
 
     // Setup network
-    let mut network =
-        setup_three_node_network_with_pre(true, true, "test_pre_fails_with_mismatched_jwt_claims")
-            .await;
+    let mut network = setup_three_node_network_with_pre(true, true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -678,11 +718,16 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         .shutdown_routers()
         .await
         .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
 }
 
 #[tokio::test]
 async fn test_start_pre_fails_missing_auth_header() {
-    let app_state = create_test_app_state_default("test_start_pre_fails_missing_auth_header").await;
+    let db_name = "test_start_pre_fails_missing_auth_header";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
     let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
 
     let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
@@ -719,11 +764,14 @@ async fn test_start_pre_fails_missing_auth_header() {
         "Error message should indicate missing authorization: {}",
         status.message()
     );
+    cleanup_db(&db_path);
 }
 
 #[tokio::test]
 async fn test_start_pre_fails_malformed_jwt() {
-    let app_state = create_test_app_state_default("test_start_pre_fails_malformed_jwt").await;
+    let db_name = "test_start_pre_fails_malformed_jwt";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
     let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
 
     let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
@@ -754,11 +802,14 @@ async fn test_start_pre_fails_malformed_jwt() {
         tonic::Code::Unauthenticated,
         "Error code should be Unauthenticated for malformed JWT"
     );
+    cleanup_db(&db_path);
 }
 
 #[tokio::test]
 async fn test_start_pre_fails_wrong_signature() {
-    let app_state = create_test_app_state_default("test_start_pre_fails_wrong_signature").await;
+    let db_name = "test_start_pre_fails_wrong_signature";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
     let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
 
     let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
@@ -809,4 +860,5 @@ async fn test_start_pre_fails_wrong_signature() {
         tonic::Code::Unauthenticated,
         "Error code should be Unauthenticated for invalid signature"
     );
+    cleanup_db(&db_path);
 }

@@ -1,8 +1,8 @@
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::messages::DkgMessage;
 use crate::helpers::test_helpers::{
-    create_authenticated_request, create_test_app_state, create_test_app_state_default,
-    setup_three_node_network, TestKeyPair,
+    cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
+    setup_three_node_network, test_db_path, TestKeyPair,
 };
 use crate::DkgServiceImpl;
 use crypto::r#trait::Dkg;
@@ -20,6 +20,7 @@ type DkgImpl = DKGNode;
 /// Unit test: Test start_dkg with empty participant list returns error
 #[tokio::test]
 async fn test_start_dkg_empty_participants() {
+    let db_path = test_db_path("test_start_dkg_empty_participants");
     let app_state = create_test_app_state_default("test_start_dkg_empty_participants").await;
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
@@ -40,6 +41,7 @@ async fn test_start_dkg_empty_participants() {
 
     // Should fail with 0 participants (validation error)
     assert!(result.is_err(), "start_dkg should fail with 0 participants");
+    cleanup_db(&db_path);
 }
 
 /// Integration test: Three nodes connect to each other
@@ -49,8 +51,15 @@ async fn test_start_dkg_empty_participants() {
 /// participate in the DKG.
 #[tokio::test]
 async fn test_three_nodes_connect() {
+    let db_name = "test_three_nodes_connect";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
     // Set up three-node network with routers started for all nodes
-    let mut network = setup_three_node_network(true, "test_three_nodes_connect").await;
+    let mut network = setup_three_node_network(true, db_name).await;
 
     // Get all peer IDs (including Alice) for participation
     let peer_ids = network.get_all_peer_ids();
@@ -94,6 +103,9 @@ async fn test_three_nodes_connect() {
         .shutdown_routers()
         .await
         .expect("Failed to shutdown routers");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
 
     println!("Test completed successfully!");
 }
@@ -104,13 +116,11 @@ async fn test_three_nodes_connect() {
 /// the gRPC service validates them and returns an error before attempting connections.
 #[tokio::test]
 async fn test_start_dkg_fails_on_connection_failure() {
+    let db_name = "test_start_dkg_fails_on_connection_failure";
+    let db_path = test_db_path(db_name);
+
     // Create only Alice node
-    let alice_state = create_test_app_state(
-        Some("127.0.0.1:0".to_string()),
-        true,
-        "test_start_dkg_fails_on_connection_failure",
-    )
-    .await;
+    let alice_state = create_test_app_state(Some("127.0.0.1:0".to_string()), true, db_name).await;
 
     // Create Alice's service
     let alice_service = DkgServiceImpl::<DkgImpl>::new(alice_state);
@@ -155,6 +165,7 @@ async fn test_start_dkg_fails_on_connection_failure() {
     );
 
     println!("Test passed: Service correctly returned error for failed connections");
+    cleanup_db(&db_path);
 }
 
 /// Test: Verify that StartDkg succeeds when connecting to valid peers
@@ -163,6 +174,13 @@ async fn test_start_dkg_fails_on_connection_failure() {
 /// the gRPC service succeeds.
 #[tokio::test]
 async fn test_start_dkg_succeeds_on_all_connections() {
+    let db_name = "test_start_dkg_succeeds_on_all_connections";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
     // Initialize tracing for debugging
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
@@ -170,8 +188,7 @@ async fn test_start_dkg_succeeds_on_all_connections() {
         .try_init();
 
     // Set up three-node network with routers started for all nodes
-    let mut network =
-        setup_three_node_network(true, "test_start_dkg_succeeds_on_all_connections").await;
+    let mut network = setup_three_node_network(true, db_name).await;
 
     // Get all peer IDs (including Alice) for participation
     let peer_ids = network.get_all_peer_ids();
@@ -329,6 +346,9 @@ async fn test_start_dkg_succeeds_on_all_connections() {
         .shutdown_routers()
         .await
         .expect("Failed to shutdown routers");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
 
     println!(
         "Test passed: Service correctly succeeded when all connections worked and DKG completed"
@@ -337,7 +357,9 @@ async fn test_start_dkg_succeeds_on_all_connections() {
 
 #[tokio::test]
 async fn test_start_dkg_fails_missing_auth_header() {
-    let app_state = create_test_app_state_default("test_start_dkg_fails_missing_auth_header").await;
+    let db_name = "test_start_dkg_fails_missing_auth_header";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
     let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
@@ -368,11 +390,14 @@ async fn test_start_dkg_fails_missing_auth_header() {
         "Error message should indicate missing authorization: {}",
         status.message()
     );
+    cleanup_db(&db_path);
 }
 
 #[tokio::test]
 async fn test_start_dkg_fails_malformed_jwt() {
-    let app_state = create_test_app_state_default("test_start_dkg_fails_malformed_jwt").await;
+    let db_name = "test_start_dkg_fails_malformed_jwt";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
     let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
@@ -397,11 +422,14 @@ async fn test_start_dkg_fails_malformed_jwt() {
         tonic::Code::Unauthenticated,
         "Error code should be Unauthenticated for malformed JWT"
     );
+    cleanup_db(&db_path);
 }
 
 #[tokio::test]
 async fn test_start_dkg_fails_wrong_signature() {
-    let app_state = create_test_app_state_default("test_start_dkg_fails_wrong_signature").await;
+    let db_name = "test_start_dkg_fails_wrong_signature";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
     let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
@@ -446,6 +474,7 @@ async fn test_start_dkg_fails_wrong_signature() {
         tonic::Code::Unauthenticated,
         "Error code should be Unauthenticated for invalid signature"
     );
+    cleanup_db(&db_path);
 }
 
 /// Test: Verify that SessionInit with invalid JWT token is rejected by peer nodes
@@ -454,9 +483,11 @@ async fn test_start_dkg_fails_wrong_signature() {
 /// with an invalid JWT token, it rejects the session initialization.
 #[tokio::test]
 async fn test_dkg_session_init_fails_with_invalid_jwt() {
+    let db_name = "test_dkg_session_init_fails_with_invalid_jwt";
+    let db_path = test_db_path(db_name);
+
     // Create a node to receive the SessionInit
-    let app_state =
-        create_test_app_state_default("test_dkg_session_init_fails_with_invalid_jwt").await;
+    let app_state = create_test_app_state_default(db_name).await;
     let coordinator = DkgCoordinator::new(Arc::new(app_state));
 
     // Create a SessionInit message with an invalid JWT token
@@ -496,6 +527,7 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
     );
 
     println!("SUCCESS! SessionInit with invalid JWT was correctly rejected");
+    cleanup_db(&db_path);
 }
 
 /// Test: Verify that SessionInit with mismatched JWT claims is rejected
@@ -505,9 +537,11 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
 /// it rejects the session initialization.
 #[tokio::test]
 async fn test_dkg_session_init_fails_with_mismatched_claims() {
+    let db_name = "test_dkg_session_init_fails_with_mismatched_claims";
+    let db_path = test_db_path(db_name);
+
     // Create a node to receive the SessionInit
-    let app_state =
-        create_test_app_state_default("test_dkg_session_init_fails_with_mismatched_claims").await;
+    let app_state = create_test_app_state_default(db_name).await;
     let coordinator = DkgCoordinator::new(Arc::new(app_state));
 
     // Create a valid JWT but with WRONG claims (threshold mismatch)
@@ -552,14 +586,17 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
         "Error should indicate claim mismatch: {}",
         error
     );
+    cleanup_db(&db_path);
 }
 
 /// Test: Verify that SessionInit with mismatched peer_ids in JWT is rejected
 #[tokio::test]
 async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
+    let db_name = "test_dkg_session_init_fails_with_wrong_peer_ids";
+    let db_path = test_db_path(db_name);
+
     // Create a node to receive the SessionInit
-    let app_state =
-        create_test_app_state_default("test_dkg_session_init_fails_with_wrong_peer_ids").await;
+    let app_state = create_test_app_state_default(db_name).await;
     let coordinator = DkgCoordinator::new(Arc::new(app_state));
 
     // Create a valid JWT with different peer_ids than what's in SessionInit
@@ -613,4 +650,5 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
     );
 
     println!("SUCCESS! SessionInit with mismatched peer_ids was correctly rejected");
+    cleanup_db(&db_path);
 }

@@ -102,13 +102,13 @@ cargo build --no-default-features --features=<alternative>
 
 ```bash
 # Default: uses redb for persistent storage
-cargo build -p local-storage
+cargo build
 
 # Testing: use in-memory storage (no persistence)
-cargo build -p local-storage --no-default-features --features=memory
+cargo build --no-default-features --features=memory
 
 # Error: cannot enable both
-cargo build -p local-storage --features=memory
+cargo build --features=memory
 # error: Features 'memory' and 'redb' are mutually exclusive.
 ```
 
