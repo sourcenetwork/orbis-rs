@@ -66,6 +66,81 @@ Encrypted local key-value storage for persisting node secrets.
 |-------|-------------|
 | [`LocalStorage`](crates/local-storage/src/trait.rs) | Key-value storage with optional AES-256-GCM encryption |
 
+## Swappable Implementations
+
+Orbis uses a trait-based architecture where core functionality is defined by traits, with multiple interchangeable implementations selectable via Cargo feature flags. This allows you to choose the right backend for your deployment environment.
+
+### Feature Flag Pattern
+
+Each crate with multiple implementations:
+1. Defines a trait for the core functionality
+2. Provides multiple implementations behind feature flags
+3. Exports the selected implementation as a type alias (e.g., `LocalStorageImpl`)
+4. Enforces mutual exclusivity at compile time
+
+```bash
+# Use default implementation
+cargo build
+
+# Use alternative implementation
+cargo build --no-default-features --features=<alternative>
+```
+
+### Available Implementations
+
+| Crate | Feature | Implementation | Description | Default |
+|-------|---------|----------------|-------------|---------|
+| `local-storage` | `redb` | `RedbStorage` | Persistent embedded DB (redb) | Yes |
+| `local-storage` | `memory` | `MemoryStorage` | In-memory HashMap (testing only) | No |
+| `network` | `iroh` | `IrohNetwork` | QUIC-based P2P (iroh) | Yes |
+| `crypto` | `bls` | `Bls12381Impl` | BLS12-381 curve | Yes |
+| `authz` | `sourcehub` | `SourceHubAuth` | SourceHub authorization | Yes |
+| `authz` | `dummy` | `DummyAuthZ` | Permissive (testing only) | No |
+| `bulletin` | *TBD* | *TBD* | Bulletin board backends | - |
+
+### Example: Switching Storage Backend
+
+```bash
+# Default: uses redb for persistent storage
+cargo build -p local-storage
+
+# Testing: use in-memory storage (no persistence)
+cargo build -p local-storage --no-default-features --features=memory
+
+# Error: cannot enable both
+cargo build -p local-storage --features=memory
+# error: Features 'memory' and 'redb' are mutually exclusive.
+```
+
+### Implementing a New Backend
+
+To add a new implementation (e.g., `sqlite` for local-storage):
+
+1. Add the feature to `Cargo.toml`:
+   ```toml
+   [features]
+   default = ["redb"]
+   redb = []
+   memory = []
+   sqlite = []  # new
+   ```
+
+2. Add mutual exclusivity checks and export in `lib.rs`:
+   ```rust
+   #[cfg(feature = "sqlite")]
+   pub mod sqlite;
+
+   #[cfg(all(feature = "sqlite", feature = "redb"))]
+   compile_error!("Features 'sqlite' and 'redb' are mutually exclusive.");
+   #[cfg(all(feature = "sqlite", feature = "memory"))]
+   compile_error!("Features 'sqlite' and 'memory' are mutually exclusive.");
+
+   #[cfg(feature = "sqlite")]
+   pub use sqlite::SqliteStorage as LocalStorageImpl;
+   ```
+
+3. Implement the trait in `src/sqlite/mod.rs`
+
 ## Protocol Flow
 
 ### Phase 1: Ring Setup (DKG)

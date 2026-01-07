@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 network = { path = "../../crates/network" }
 crypto = { path = "../../crates/crypto" }
-local-storage = { path = "../../crates/local-storage" }
+local-storage = { path = "../../crates/local-storage", default-features = false }
 proto = { path = "../../crates/proto" }
 authn = { path = "../../crates/authn" }
 authz = { path = "../../crates/authz" }
