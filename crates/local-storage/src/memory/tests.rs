@@ -3,7 +3,7 @@ use crate::r#trait::LocalStorage;
 use crate::tests::{test_encrypted_functions, test_set_get_contains_delete};
 
 #[test]
-fn test_db_functions() {
+fn test_db_functions_memory() {
     test_set_get_contains_delete::<MemoryStorage>(MemoryStorage::new(None).unwrap());
     test_encrypted_functions::<MemoryStorage>(MemoryStorage::new(None).unwrap());
     test_encrypted_functions::<MemoryStorage>(

@@ -124,12 +124,48 @@ impl LocalStorage for RedbStorage {
         Ok(())
     }
     fn contains(&self, key: LocalStorageKeys) -> Result<bool> {
-        todo!()
+        Ok(self.get(key)?.is_some())
     }
     fn get_encrypted(&self, key: LocalStorageKeys) -> Result<Option<Vec<u8>>> {
-        todo!()
+        let stored = self
+            .get(key)?
+            .ok_or_else(|| LocalStorageError::UniqueDBError("Issue getting value".to_string()))?;
+
+        if stored.len() < 12 {
+            return Err(LocalStorageError::CorruptData);
+        }
+
+        let (nonce_bytes, ciphertext) = stored.split_at(12);
+        let nonce = Nonce::from_slice(nonce_bytes);
+
+        let plaintext = self
+            .cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|_| LocalStorageError::DecryptionError)?;
+
+        Ok(Some(plaintext))
     }
     fn set_encrypted(&self, key: LocalStorageKeys, value: Vec<u8>) -> Result<()> {
-        todo!()
+        // generate random nonce
+        let mut rng = OsRng;
+        let mut nonce_bytes = [0u8; 12];
+        rng.fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        // encrypt
+        let ciphertext = self
+            .cipher
+            .encrypt(nonce, value.as_ref())
+            .map_err(|_| LocalStorageError::EncryptionError)?;
+
+        // store nonce and ciphertext
+        let mut store_value = Vec::with_capacity(12 + ciphertext.len());
+        store_value.extend_from_slice(&nonce_bytes);
+        store_value.extend_from_slice(&ciphertext);
+
+        self.set(key, store_value).map_err(|e| {
+            LocalStorageError::UniqueDBError(format!("Failed to store value: {}", e))
+        })?;
+        Ok(())
     }
 }
