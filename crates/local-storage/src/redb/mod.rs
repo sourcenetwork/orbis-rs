@@ -1,9 +1,10 @@
 use crate::{
+    common::{decrypt_value, derive_cipher, encrypt_value},
     error::{LocalStorageError, Result},
     r#trait::{LocalStorage, LocalStorageKeys},
 };
-use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
-use argon2::{password_hash::SaltString, Argon2};
+use aes_gcm::{Aes256Gcm, Key, KeyInit};
+use argon2::password_hash::SaltString;
 use rand_core::{OsRng, RngCore};
 use redb::{Database, ReadableDatabase, TableDefinition};
 use std::sync::Arc;
@@ -21,16 +22,6 @@ pub struct RedbStorage {
     pub store: Arc<Database>,
     pub cipher: Aes256Gcm,
     pub salt: Option<Vec<u8>>,
-}
-
-impl std::fmt::Debug for RedbStorage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RedbStorage")
-            .field("store", &"<Database>")
-            .field("cipher", &"<Aes256Gcm>")
-            .field("salt", &self.salt.as_ref().map(|_| "<redacted>"))
-            .finish()
-    }
 }
 
 #[cfg(test)]
@@ -179,42 +170,12 @@ fn raw_delete(db: &Database, key: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Encrypt a value with the given cipher
-fn encrypt_value(cipher: &Aes256Gcm, value: &[u8]) -> Result<Vec<u8>> {
-    let mut rng = OsRng;
-    let mut nonce_bytes = [0u8; 12];
-    rng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-
-    let ciphertext = cipher
-        .encrypt(nonce, value)
-        .map_err(|_| LocalStorageError::EncryptionError)?;
-
-    let mut result = Vec::with_capacity(12 + ciphertext.len());
-    result.extend_from_slice(&nonce_bytes);
-    result.extend_from_slice(&ciphertext);
-    Ok(result)
-}
-
-/// Decrypt a value with the given cipher
-fn decrypt_value(cipher: &Aes256Gcm, encrypted: &[u8]) -> Result<Vec<u8>> {
-    if encrypted.len() < 12 {
-        return Err(LocalStorageError::CorruptData);
+impl std::fmt::Debug for RedbStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedbStorage")
+            .field("store", &"<Database>")
+            .field("cipher", &"<Aes256Gcm>")
+            .field("salt", &self.salt.as_ref().map(|_| "<redacted>"))
+            .finish()
     }
-    let (nonce_bytes, ciphertext) = encrypted.split_at(12);
-    let nonce = Nonce::from_slice(nonce_bytes);
-
-    cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|_| LocalStorageError::DecryptionError)
-}
-
-/// Derive cipher from password and salt
-fn derive_cipher(password: &str, salt: &[u8]) -> Aes256Gcm {
-    let argon2 = Argon2::default();
-    let mut key_bytes = Zeroizing::new([0u8; 32]);
-    argon2
-        .hash_password_into(password.as_bytes(), salt, key_bytes.as_mut())
-        .expect("argon2 key derivation failed");
-    Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key_bytes.as_ref()))
 }
