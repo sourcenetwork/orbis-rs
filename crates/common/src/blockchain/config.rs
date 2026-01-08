@@ -59,7 +59,7 @@ impl ChainConfig {
             rest_url: "http://localhost:1317".to_string(),
             grpc_url: "http://localhost:9090".to_string(),
             account_prefix: "source".to_string(),
-            default_gas_limit: 200_000,
+            default_gas_limit: 300_000,
             gas_price: GasPrice::default(),
         }
     }

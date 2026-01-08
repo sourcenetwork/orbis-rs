@@ -272,21 +272,21 @@ pub struct PageResponse {
 /// Proto: sourcehub.bulletin.Post
 #[derive(Clone, Message)]
 pub struct Post {
-    /// Namespace this post belongs to
-    #[prost(string, tag = "1")]
-    pub namespace: String,
     /// Post identifier
-    #[prost(string, tag = "2")]
+    #[prost(string, tag = "1")]
     pub id: String,
+    /// Namespace this post belongs to
+    #[prost(string, tag = "2")]
+    pub namespace: String,
+    /// Creator's DID
+    #[prost(string, tag = "3")]
+    pub creator: String,
     /// Post payload data
-    #[prost(bytes = "vec", tag = "3")]
+    #[prost(bytes = "vec", tag = "4")]
     pub payload: Vec<u8>,
     /// Cryptographic proof
-    #[prost(bytes = "vec", tag = "4")]
+    #[prost(bytes = "vec", tag = "5")]
     pub proof: Vec<u8>,
-    /// Creator's address
-    #[prost(string, tag = "5")]
-    pub creator: String,
 }
 
 /// A namespace in the bulletin module.
