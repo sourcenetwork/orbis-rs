@@ -32,6 +32,9 @@ pub enum BlockchainError {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    #[error("Not found: {0}")]
+    NotFound(String),
+
     #[error("Timeout: {0}")]
     Timeout(String),
 

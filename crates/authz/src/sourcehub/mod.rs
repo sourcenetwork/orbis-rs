@@ -99,7 +99,6 @@ impl Authz for SourceHubAuth {
 
 impl SourceHubAuth {
     pub async fn new(chain_config_builder: ChainConfigBuilder) -> Result<Self> {
-        // TODO just for testing for now fix chainconfig local
         Ok(SourceHubAuth {
             chain_client: SourceHubClient::new(chain_config_builder.build())
                 .await

@@ -9,3 +9,8 @@ rust-version.workspace = true
 [dependencies]
 async-trait = { workspace = true }
 thiserror ={ workspace = true }
+common = { path = "../common" }
+
+[dev-dependencies]
+serial_test = "3.2.0"
+tokio = { workspace = true, features = ["full", "process"] }

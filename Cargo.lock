@@ -704,7 +704,10 @@ name = "bulletin"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "common",
+ "serial_test",
  "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]

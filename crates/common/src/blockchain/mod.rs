@@ -5,8 +5,10 @@
 //! - `SourceHubClient` - Client for queries and transaction broadcasting
 //! - `TxSigner` - Transaction signing using secp256k1
 //! - `acp` - Access Control Policy module types and operations
+//! - `bulletin` - Bulletin board module types and operations
 
 pub mod acp;
+pub mod bulletin;
 mod client;
 mod config;
 mod error;
