@@ -13,6 +13,7 @@ local-storage = { path = "../../crates/local-storage", default-features = false 
 proto = { path = "../../crates/proto" }
 authn = { path = "../../crates/authn" }
 authz = { path = "../../crates/authz" }
+bulletin = { path = "../../crates/bulletin" }
 tonic = "0.14.2"
 iroh = { workspace = true }
 tokio = { workspace = true }

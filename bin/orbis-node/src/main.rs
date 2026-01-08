@@ -17,6 +17,7 @@ use crate::pre::service::PreServiceImpl;
 use app_state::AppState;
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
+use bulletin::{r#trait::Bulletin, BulletinImpl};
 use clap::Parser;
 use common::blockchain::ChainConfigBuilder;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
@@ -39,6 +40,7 @@ pub struct NodeConfig {
     pub network: Arc<dyn Network>,
     pub local_storage: LocalStorageImpl,
     pub authz: Arc<dyn Authz>,
+    pub bulletin: Arc<dyn Bulletin + Send + Sync>,
 }
 
 /// Result of initializing the node (before starting the server)
@@ -79,6 +81,7 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
         config.network.clone(),
         config.local_storage,
         config.authz,
+        config.bulletin,
     );
     let app_state_arc = Arc::new(app_state);
 
@@ -169,12 +172,20 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|e| format!("Failed to initialize network: {}", e))?,
     );
-    let chain_config_builder = ChainConfigBuilder::default().grpc_url(args.authz_grpc.clone());
+    let authz_chain_config = ChainConfigBuilder::default().grpc_url(args.authz_grpc.clone());
+    // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
     let authz: Arc<dyn Authz> = Arc::new(
-        // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
-        SourceHubAuth::new(chain_config_builder)
+        SourceHubAuth::new(authz_chain_config)
             .await
             .map_err(|e| format!("Failed to initialize authz: {}", e))?,
+    );
+
+    let bulletin_chain_config = ChainConfigBuilder::default().grpc_url(args.bulletin_grpc.clone());
+    // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
+    let bulletin: Arc<BulletinImpl> = Arc::new(
+        BulletinImpl::new(bulletin_chain_config)
+            .await
+            .map_err(|e| format!("Failed to initialize bulletin: {}", e))?,
     );
 
     let config = NodeConfig {
@@ -182,6 +193,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         network,
         local_storage,
         authz,
+        bulletin,
     };
 
     let node = init_node(config).await?;

@@ -12,6 +12,7 @@ use crate::{
 };
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
+use bulletin::BulletinImpl;
 use common::blockchain::ChainConfigBuilder;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::Network;
@@ -35,16 +36,24 @@ async fn test_init_node_success() {
             .expect("Failed to initialize Authz"),
     );
 
+    let bulletin: Arc<BulletinImpl> = Arc::new(
+        BulletinImpl::new(ChainConfigBuilder::default())
+            .await
+            .expect("Failed to initialize bulletin"),
+    );
+
     let config = NodeConfig {
         args: Args {
             addr: "127.0.0.1:0".to_string(), // Use port 0 to let OS assign
             log_level: LogLevel::Info,
             authz_grpc: None,
+            bulletin_grpc: None,
         },
         network,
         local_storage: LocalStorageImpl::new(None, db_path.clone())
             .expect("Failed to create local storage"),
         authz,
+        bulletin,
     };
 
     let result = init_node(config).await;
@@ -83,16 +92,24 @@ async fn test_init_node_invalid_address() {
             .expect("Failed to initialize Authz"),
     );
 
+    let bulletin: Arc<BulletinImpl> = Arc::new(
+        BulletinImpl::new(ChainConfigBuilder::default())
+            .await
+            .expect("Failed to initialize bulletin"),
+    );
+
     let config = NodeConfig {
         args: Args {
             addr: "not-a-valid-address".to_string(),
             log_level: LogLevel::Info,
             authz_grpc: None,
+            bulletin_grpc: None,
         },
         network,
         local_storage: LocalStorageImpl::new(None, db_path.clone())
             .expect("Failed to create local storage"),
         authz,
+        bulletin,
     };
 
     let result = init_node(config).await;
@@ -120,17 +137,25 @@ async fn test_init_node_app_state_configuration() {
             .expect("Failed to initialize Authz"),
     );
 
+    let bulletin: Arc<BulletinImpl> = Arc::new(
+        BulletinImpl::new(ChainConfigBuilder::default())
+            .await
+            .expect("Failed to initialize bulletin"),
+    );
+
     let bind_addr = "127.0.0.1:0".to_string();
     let config = NodeConfig {
         args: Args {
             addr: bind_addr.clone(),
             log_level: LogLevel::Info,
             authz_grpc: None,
+            bulletin_grpc: None,
         },
         network,
         local_storage: LocalStorageImpl::new(None, db_path.clone())
             .expect("Failed to create local storage"),
         authz,
+        bulletin,
     };
 
     let node = init_node(config).await.expect("Node initialization failed");
@@ -184,16 +209,30 @@ async fn test_init_multiple_nodes() {
             .expect("Failed to initialize Authz"),
     );
 
+    let bulletin1: Arc<BulletinImpl> = Arc::new(
+        BulletinImpl::new(ChainConfigBuilder::default())
+            .await
+            .expect("Failed to initialize bulletin"),
+    );
+
+    let bulletin2: Arc<BulletinImpl> = Arc::new(
+        BulletinImpl::new(ChainConfigBuilder::default())
+            .await
+            .expect("Failed to initialize bulletin"),
+    );
+
     let config1 = NodeConfig {
         args: Args {
             addr: "127.0.0.1:0".to_string(),
             log_level: LogLevel::Info,
             authz_grpc: None,
+            bulletin_grpc: None,
         },
         network: network1,
         local_storage: LocalStorageImpl::new(None, db_path1.clone())
             .expect("Failed to create local storage"),
         authz: authz1,
+        bulletin: bulletin1,
     };
 
     let config2 = NodeConfig {
@@ -201,11 +240,13 @@ async fn test_init_multiple_nodes() {
             addr: "127.0.0.1:0".to_string(),
             log_level: LogLevel::Info,
             authz_grpc: None,
+            bulletin_grpc: None,
         },
         network: network2,
         local_storage: LocalStorageImpl::new(None, db_path2.clone())
             .expect("Failed to create local storage"),
         authz: authz2,
+        bulletin: bulletin2,
     };
 
     let node1 = init_node(config1)
@@ -283,15 +324,23 @@ async fn test_init_node_with_encrypted_storage() {
             .expect("Failed to initialize Authz"),
     );
 
+    let bulletin: Arc<BulletinImpl> = Arc::new(
+        BulletinImpl::new(ChainConfigBuilder::default())
+            .await
+            .expect("Failed to initialize bulletin"),
+    );
+
     let config = NodeConfig {
         args: Args {
             addr: "127.0.0.1:0".to_string(),
             log_level: LogLevel::Info,
             authz_grpc: None,
+            bulletin_grpc: None,
         },
         network,
         local_storage,
         authz,
+        bulletin,
     };
 
     let result = init_node(config).await;
@@ -353,7 +402,7 @@ mod cli_tool_integration {
         // Spin up SourceHub container
         let _container = SourceHubTestContainer::new();
         // Set up three nodes
-        let mut network = setup_three_node_network_with_pre(true, false, db_name).await;
+        let mut network = setup_three_node_network_with_pre(true, false, false, db_name).await;
 
         let peer_ids = network.get_all_peer_ids();
 

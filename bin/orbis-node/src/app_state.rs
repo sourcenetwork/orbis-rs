@@ -2,6 +2,7 @@ use crate::constants::{MAX_DKG_SESSIONS, MAX_PRE_RESPONSES, PRE_RESPONSE_TTL, SE
 use crate::dkg::session_state::SessionStateManager;
 use crate::pre::messages::PreMessage;
 use authz::r#trait::Authz;
+use bulletin::r#trait::Bulletin;
 use crypto::r#trait::Dkg;
 use local_storage::{
     r#trait::{LocalStorage as OtherLocalStorage, LocalStorageKeys},
@@ -52,6 +53,8 @@ where
     pub pre_responses: PreResponseStorage,
     /// Authz implementation
     pub authz: Arc<dyn Authz + Send + Sync>,
+    /// Bulletin implementation
+    pub bulletin: Arc<dyn Bulletin + Send + Sync>,
 }
 
 /// Encryption key data
@@ -98,6 +101,7 @@ where
         network: Arc<dyn Network>,
         local_storage: LocalStorageImpl,
         authz: Arc<dyn Authz + Send + Sync>,
+        bulletin: Arc<dyn Bulletin + Send + Sync>,
     ) -> Self {
         Self {
             dkg_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -107,6 +111,7 @@ where
             dkg_session_state: Arc::new(SessionStateManager::new()),
             pre_responses: Arc::new(RwLock::new(HashMap::new())),
             authz,
+            bulletin,
         }
     }
 

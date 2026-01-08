@@ -8,6 +8,7 @@ use crate::dkg::protocol_handler::create_router_with_handlers;
 use authz::dummy::DummyAuthZ;
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
+use bulletin::{dummy::DummyBulletin, r#trait::Bulletin, BulletinImpl};
 use common::blockchain::ChainConfigBuilder;
 use hex;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
@@ -52,6 +53,7 @@ pub type TestKeyPair = JwtSigner;
 pub async fn create_test_app_state(
     bind_address: Option<String>,
     dummy_authz: bool,
+    dummy_bulletin: bool,
     db_name: &str,
 ) -> AppState<DkgImpl> {
     let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
@@ -78,8 +80,22 @@ pub async fn create_test_app_state(
         )
     }
 
+    let bulletin: Arc<dyn Bulletin + Send + Sync> = if dummy_bulletin {
+        Arc::new(
+            DummyBulletin::new()
+                .await
+                .expect("Failed to initialize dummy bulletin"),
+        )
+    } else {
+        Arc::new(
+            BulletinImpl::new(ChainConfigBuilder::default())
+                .await
+                .expect("Failed to initialize bulletin"),
+        )
+    };
+
     // Create AppState with the network (node_id is no longer needed - it's session-specific)
-    AppState::<DkgImpl>::new(bind_address, network, local_storage, authz)
+    AppState::<DkgImpl>::new(bind_address, network, local_storage, authz, bulletin)
 }
 
 /// Create a test AppState with default values
@@ -96,7 +112,7 @@ pub async fn create_test_app_state(
 /// }
 /// ```
 pub async fn create_test_app_state_default(db_name: &str) -> AppState<DkgImpl> {
-    create_test_app_state(None, true, db_name).await
+    create_test_app_state(None, true, true, db_name).await
 }
 
 /// Information about a node in a test network
@@ -216,17 +232,20 @@ pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> Thr
     let alice_state = create_test_app_state(
         Some("127.0.0.1:0".to_string()),
         true,
+        true,
         &format!("{}_1", db_name),
     )
     .await;
     let bob_state = create_test_app_state(
         Some("127.0.0.1:0".to_string()),
         true,
+        true,
         &format!("{}_2", db_name),
     )
     .await;
     let charlie_state = create_test_app_state(
         Some("127.0.0.1:0".to_string()),
+        true,
         true,
         &format!("{}_3", db_name),
     )
@@ -373,6 +392,7 @@ pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> Thr
 pub async fn setup_three_node_network_with_pre(
     start_routers: bool,
     dummy_authz: bool,
+    dummy_bulletin: bool,
     db_name: &str,
 ) -> ThreeNodeNetwork {
     println!("Setting up three-node test network with DKG and PRE handlers...");
@@ -381,18 +401,21 @@ pub async fn setup_three_node_network_with_pre(
     let alice_state = create_test_app_state(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
+        dummy_bulletin,
         &format!("{}_1", db_name),
     )
     .await;
     let bob_state = create_test_app_state(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
+        dummy_bulletin,
         &format!("{}_2", db_name),
     )
     .await;
     let charlie_state = create_test_app_state(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
+        dummy_bulletin,
         &format!("{}_3", db_name),
     )
     .await;

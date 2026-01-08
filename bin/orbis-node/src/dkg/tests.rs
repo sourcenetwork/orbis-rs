@@ -120,7 +120,8 @@ async fn test_start_dkg_fails_on_connection_failure() {
     let db_path = test_db_path(db_name);
 
     // Create only Alice node
-    let alice_state = create_test_app_state(Some("127.0.0.1:0".to_string()), true, db_name).await;
+    let alice_state =
+        create_test_app_state(Some("127.0.0.1:0".to_string()), true, true, db_name).await;
 
     // Create Alice's service
     let alice_service = DkgServiceImpl::<DkgImpl>::new(alice_state);

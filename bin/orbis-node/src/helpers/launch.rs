@@ -22,8 +22,11 @@ pub struct Args {
     #[arg(short, long, default_value = "info")]
     pub log_level: LogLevel,
     /// AuthZ GRPC (chain GRPC endpoint probably)
-    #[arg(short = 'g', long, default_value = "http://localhost:9090")]
+    #[arg(short = 'z', long, default_value = "http://localhost:9090")]
     pub authz_grpc: Option<String>,
+    /// Bulletin GRPC (chain GRPC endpoint probably)
+    #[arg(short = 'b', long, default_value = "http://localhost:9090")]
+    pub bulletin_grpc: Option<String>,
 }
 
 // ============================================================================

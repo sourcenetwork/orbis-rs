@@ -1,6 +1,7 @@
 use crate::error::Result;
 use async_trait::async_trait;
 
+#[derive(Default)]
 pub struct BulletinPost {
     pub id: String,
     pub namespace: String,
