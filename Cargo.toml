@@ -9,7 +9,7 @@ members = [
     "bin/cli-tool",
     "crates/authn", 
     "crates/authz", 
-    "crates/common",
+    "crates/common", "crates/bulletin",
 ]
 
 [workspace.package]

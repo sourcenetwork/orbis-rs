@@ -700,6 +700,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bulletin"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
