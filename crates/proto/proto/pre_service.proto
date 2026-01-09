@@ -16,8 +16,8 @@ message StartPreRequest {
 }
 
 message StartPreResponse {
-  string status = 2;
-  string message = 3;
-  int64 created_at = 4;
-  string encrypted_secret = 5;
+  string status = 1;
+  string message = 2;
+  int64 created_at = 3;
+  string encrypted_secret = 4;
 }
