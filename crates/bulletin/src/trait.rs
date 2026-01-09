@@ -2,6 +2,7 @@ use crate::error::{BulletinError, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+/// Struct for posting to the Bulletin
 #[derive(Clone, Default)]
 pub struct BulletinPost {
     pub id: String,
