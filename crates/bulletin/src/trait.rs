@@ -11,7 +11,7 @@ pub struct BulletinPost {
 }
 
 /// Payload for storing a secret on bulletin
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Payload {
     ring_pk: String,
     secret: String,
@@ -25,6 +25,14 @@ impl TryFrom<BulletinPost> for Payload {
 
     fn try_from(post: BulletinPost) -> Result<Self> {
         serde_json::from_slice(&post.payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<Payload> for Vec<u8> {
+    type Error = BulletinError;
+
+    fn try_from(payload: Payload) -> Result<Self> {
+        serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))
     }
 }
 

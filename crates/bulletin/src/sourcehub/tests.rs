@@ -1,10 +1,12 @@
 use super::SourceHubBulletin;
+use crate::r#trait::Payload;
 use common::{
     blockchain::{
         ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
     },
     SourceHubTestContainer,
 };
+use serde::{Deserialize, Serialize};
 
 #[tokio::test]
 #[serial_test::serial]
@@ -24,12 +26,14 @@ async fn test_read_bulletin() {
         .unwrap();
     let namespace = "test_namespace";
     let post = b"test_post";
+    let payload = Payload::default();
+    let serialized_payload: Vec<u8> = payload.clone().try_into().unwrap();
     // TODO: these calls should use bulletin when implemented
     let result_namespace = client.bulletin_register_namespace(namespace).await.unwrap();
     assert_eq!(result_namespace.code, 0, "Transaction should succeed");
 
     let result_post = client
-        .bulletin_create_post_with_proof(namespace, post.to_vec(), vec![0x01])
+        .bulletin_create_post_with_proof(namespace, serialized_payload.clone(), vec![0x01])
         .await
         .unwrap();
     assert_eq!(result_post.code, 0, "Create post should succeed");
@@ -40,7 +44,11 @@ async fn test_read_bulletin() {
     // TODO: fix get dynamically
     let created_post = &posts[0];
     println!("Created post ID: {}", created_post.id);
-    assert_eq!(created_post.payload, post.to_vec(), "Payload should match");
+    assert_eq!(
+        created_post.payload,
+        serialized_payload.clone(),
+        "Payload should match"
+    );
 
     // Now test reading the single post back using the bulletin trait
     // Note: namespace format is "bulletin/{namespace}"
@@ -49,8 +57,8 @@ async fn test_read_bulletin() {
         .await
         .unwrap();
     assert_eq!(
-        read_post.payload,
-        post.to_vec(),
+        serde_json::from_slice::<Payload>(&read_post.payload).unwrap(),
+        payload,
         "Read payload should match"
     );
     assert_eq!(read_post.id, created_post.id, "Post ID should match");
