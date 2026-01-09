@@ -19,6 +19,7 @@ pub struct Payload {
     policy_id: String,
     resource: String,
     permission: String,
+    peer_ids: Vec<String>,
 }
 
 impl TryFrom<BulletinPost> for Payload {

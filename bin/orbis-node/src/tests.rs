@@ -12,7 +12,8 @@ use crate::{
 };
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
-use bulletin::BulletinImpl;
+use bulletin::dummy::DummyBulletin;
+use bulletin::r#trait::Bulletin;
 use common::blockchain::ChainConfigBuilder;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::Network;
@@ -36,8 +37,8 @@ async fn test_init_node_success() {
             .expect("Failed to initialize Authz"),
     );
 
-    let bulletin: Arc<BulletinImpl> = Arc::new(
-        BulletinImpl::new(ChainConfigBuilder::default())
+    let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
             .await
             .expect("Failed to initialize bulletin"),
     );
@@ -92,8 +93,8 @@ async fn test_init_node_invalid_address() {
             .expect("Failed to initialize Authz"),
     );
 
-    let bulletin: Arc<BulletinImpl> = Arc::new(
-        BulletinImpl::new(ChainConfigBuilder::default())
+    let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
             .await
             .expect("Failed to initialize bulletin"),
     );
@@ -137,8 +138,8 @@ async fn test_init_node_app_state_configuration() {
             .expect("Failed to initialize Authz"),
     );
 
-    let bulletin: Arc<BulletinImpl> = Arc::new(
-        BulletinImpl::new(ChainConfigBuilder::default())
+    let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
             .await
             .expect("Failed to initialize bulletin"),
     );
@@ -209,14 +210,14 @@ async fn test_init_multiple_nodes() {
             .expect("Failed to initialize Authz"),
     );
 
-    let bulletin1: Arc<BulletinImpl> = Arc::new(
-        BulletinImpl::new(ChainConfigBuilder::default())
+    let bulletin1: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
             .await
             .expect("Failed to initialize bulletin"),
     );
 
-    let bulletin2: Arc<BulletinImpl> = Arc::new(
-        BulletinImpl::new(ChainConfigBuilder::default())
+    let bulletin2: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
             .await
             .expect("Failed to initialize bulletin"),
     );
@@ -324,8 +325,8 @@ async fn test_init_node_with_encrypted_storage() {
             .expect("Failed to initialize Authz"),
     );
 
-    let bulletin: Arc<BulletinImpl> = Arc::new(
-        BulletinImpl::new(ChainConfigBuilder::default())
+    let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
             .await
             .expect("Failed to initialize bulletin"),
     );

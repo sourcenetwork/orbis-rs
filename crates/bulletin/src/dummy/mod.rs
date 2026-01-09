@@ -23,10 +23,10 @@ impl Bulletin for DummyBulletin {
 }
 
 impl DummyBulletin {
-    pub fn new() -> Self {
-        DummyBulletin {
+    pub async fn new() -> Result<Self> {
+        Ok(DummyBulletin {
             post: Mutex::new(BulletinPost::default()),
-        }
+        })
     }
 
     pub fn set_post(&self, post: BulletinPost) {
