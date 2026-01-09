@@ -18,8 +18,8 @@ pub struct AccessCheckRequest {
     pub resource: String,
     /// Object ID within the resource
     pub object_id: String,
-    /// Permission to check (e.g., "read", "write")
-    pub permission: String,
+    /// Relationship needed to check this document
+    pub relationship: String,
 }
 
 impl AccessCheckRequest {
@@ -27,13 +27,13 @@ impl AccessCheckRequest {
         policy_id: impl Into<String>,
         resource: impl Into<String>,
         object_id: impl Into<String>,
-        permission: impl Into<String>,
+        relationship: impl Into<String>,
     ) -> Self {
         Self {
             policy_id: policy_id.into(),
             resource: resource.into(),
             object_id: object_id.into(),
-            permission: permission.into(),
+            relationship: relationship.into(),
         }
     }
 
@@ -61,39 +61,20 @@ impl Authz for SourceHubAuth {
         // Decode the access check request from bytes
         let request = AccessCheckRequest::from_bytes(&permission)?;
 
-        // Query the policy to get the permission expression
-        let policy = self.get_policy(request.policy_id.clone()).await?;
-
-        // Get the relations that grant this permission from the policy definition
-        let relations_to_check = policy
-            .get_relations_for_permission(&request.resource, &request.permission)
-            .ok_or_else(|| {
-                AuthZError::NotFound(format!(
-                    "Permission '{}' not found for resource '{}' in policy",
-                    request.permission, request.resource
-                ))
-            })?;
-
         // Check if the actor has any of the relations that grant the permission
-        for relation in relations_to_check {
-            let has_relation = self
-                .chain_client
-                .acp_has_relationship(
-                    &request.policy_id,
-                    &subject,
-                    &request.resource,
-                    &request.object_id,
-                    &relation,
-                )
-                .await
-                .map_err(|e| AuthZError::ChainError(e.to_string()))?;
+        let is_authorized = self
+            .chain_client
+            .acp_has_relationship(
+                &request.policy_id,
+                &subject,
+                &request.resource,
+                &request.object_id,
+                &request.relationship,
+            )
+            .await
+            .map_err(|e| AuthZError::ChainError(e.to_string()))?;
 
-            if has_relation {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
+        Ok(is_authorized)
     }
 }
 

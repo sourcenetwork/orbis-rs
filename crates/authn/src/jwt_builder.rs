@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn test_create_pre_jwt() {
         let signer = JwtSigner::new();
-        let token = signer.create_pre_jwt("rdr_pk_value");
+        let token = signer.create_pre_jwt("rdr_pk_value", "namespace", "object_id");
         assert!(token.is_ok());
     }
 }
