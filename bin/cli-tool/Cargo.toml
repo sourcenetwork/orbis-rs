@@ -20,7 +20,7 @@ authz = { path = "../../crates/authz" }
 common = { path = "../../crates/common" }
 hex = { workspace = true }
 serde = { workspace = true }
-serde_json = "1.0"
+serde_json = { workspace = true }
 ark-bls12-381 = "0.4"
 ark-ec = "0.4"
 ark-std = "0.4"

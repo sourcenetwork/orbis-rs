@@ -5,6 +5,8 @@ use thiserror::Error;
 pub enum BulletinError {
     #[error("Chain error: {0}")]
     ChainError(String),
+    #[error("Parsing Error: {0}")]
+    ParseError(String),
 }
 
 /// Result type for local storage operations

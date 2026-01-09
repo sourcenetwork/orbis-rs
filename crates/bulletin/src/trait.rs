@@ -1,12 +1,31 @@
-use crate::error::Result;
+use crate::error::{BulletinError, Result};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct BulletinPost {
     pub id: String,
     pub namespace: String,
     pub payload: Vec<u8>,
     pub proof: Vec<u8>,
+}
+
+/// Payload for storing a secret on bulletin
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct Payload {
+    ring_pk: String,
+    secret: String,
+    policy_id: String,
+    resource: String,
+    permission: String,
+}
+
+impl TryFrom<BulletinPost> for Payload {
+    type Error = BulletinError;
+
+    fn try_from(post: BulletinPost) -> Result<Self> {
+        serde_json::from_slice(&post.payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
 }
 
 #[async_trait]

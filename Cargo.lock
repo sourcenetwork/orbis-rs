@@ -705,6 +705,8 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "common",
+ "serde",
+ "serde_json",
  "serial_test",
  "thiserror 1.0.69",
  "tokio",
