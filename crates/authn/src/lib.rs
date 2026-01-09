@@ -38,8 +38,10 @@ pub struct BearerToken<T = ()> {
 pub struct PreClaims {
     /// Reader's public key
     pub rdr_pk: String,
-    /// Ring's public key
-    pub ring_pk: String,
+    /// Serect object Id to re-encrypt
+    pub object_id: String,
+    /// Serect object namespace
+    pub namespace: String,
 }
 
 /// Claims for DKG endpoints

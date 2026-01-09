@@ -42,10 +42,6 @@ pub enum SubCommands {
         #[clap(long)]
         ring_pk: String,
 
-        /// Plaintext secret to encrypt and re-encrypt
-        #[clap(long)]
-        secret: String,
-
         /// Reader's public key in hex format (from generate-reader-key)
         #[clap(long)]
         reader_pk: String,
@@ -54,18 +50,14 @@ pub enum SubCommands {
         #[clap(long)]
         reader_sk: String,
 
-        /// Peer IDs of nodes to participate (required)
-        #[clap(long, required = true, num_args = 1..)]
-        peer_ids: Vec<String>,
-        #[clap(long)]
-        policy_id: String,
         /// Id of object
         #[clap(long)]
         object_id: String,
+
+        /// Id of object
         #[clap(long)]
-        resource: String,
-        #[clap(long)]
-        permission: String,
+        namespace: String,
+
         /// A private key to generate a reader did
         #[clap(long)]
         reader_did_pk: Option<String>,
@@ -135,28 +127,20 @@ async fn main() -> Result<()> {
         SubCommands::Pre {
             endpoint,
             ring_pk,
-            secret,
             reader_pk,
             reader_sk,
-            peer_ids,
-            policy_id,
-            resource,
             object_id,
-            permission,
             reader_did_pk,
+            namespace,
         } => {
             do_pre(
                 endpoint,
                 ring_pk,
-                secret,
                 reader_pk,
                 reader_sk,
-                peer_ids,
-                policy_id,
-                resource,
                 object_id,
-                permission,
                 reader_did_pk,
+                namespace,
             )
             .await?;
         }

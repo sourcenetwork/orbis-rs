@@ -6,6 +6,7 @@ use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, PreClaims};
 use authz::sourcehub::AccessCheckRequest;
+use bulletin::r#trait::Payload;
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
 use network::REENCRYPT;
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
@@ -74,12 +75,21 @@ where
             .to_string();
         let token: BearerToken<PreClaims> = resolve_jwt_did(&token_str, current_time)
             .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+
         let req = request.into_inner();
+        let object_info = self
+            .state
+            .bulletin
+            .read(req.namespace.clone(), req.object_id.clone())
+            .await
+            .unwrap();
+        let payload = serde_json::from_slice::<Payload>(&object_info.payload).unwrap();
+
         let permission = AccessCheckRequest::new(
-            req.policy_id.clone(),
-            req.resource.clone(),
+            payload.policy_id.clone(),
+            payload.resource.clone(),
             req.object_id.clone(),
-            req.permission.clone(),
+            payload.permission.clone(),
         )
         .to_bytes()
         .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
@@ -91,12 +101,12 @@ where
         // TODO: use token.issuer_id as AuthZ check
 
         // 2. Authorize: Validate JWT claims match request fields
-        validate_pre_claims(&token, &req.rdr_pk, &req.ring_pk)?;
+        validate_pre_claims(&token, &req.rdr_pk, &req.object_id, &req.namespace)?;
 
         tracing::info!(
-            ring_pk = %req.ring_pk,
+            ring_pk = %payload.ring_pk,
             reader_pk = %req.rdr_pk,
-            peer_ids = ?req.peer_ids,
+            peer_ids = ?payload.peer_ids,
             issuer = %token.issuer_id,
             "Authenticated StartPre request"
         );
@@ -105,18 +115,18 @@ where
 
         // 1. Parse JSON and hex inputs
         // ring_pk: hex-encoded compressed G1Affine bytes
-        let ring_pk = hex::decode(&req.ring_pk)
+        let ring_pk = hex::decode(&payload.ring_pk)
             .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
 
         // Use original string bytes instead of re-serializing
-        let secret_bytes = req.secret.as_bytes().to_vec();
+        let secret_bytes = payload.secret.as_bytes().to_vec();
 
         // rdr_pk: hex-encoded compressed G1Affine bytes
         let rdr_pk = hex::decode(&req.rdr_pk)
             .map_err(|e| PreError::InvalidInput(format!("Invalid rdr_pk hex encoding: {}", e)))?;
 
         // 2. Validate we have peers
-        if req.peer_ids.is_empty() {
+        if payload.peer_ids.is_empty() {
             return Err(PreError::InvalidInput(
                 "No peer IDs provided for reencryption".to_string(),
             )
@@ -124,7 +134,7 @@ where
         }
 
         // 2b. Validate all peer IDs before attempting connections
-        if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&req.peer_ids) {
+        if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&payload.peer_ids) {
             return Err(PreError::InvalidInput(format!(
                 "Invalid peer ID '{}': {}",
                 invalid_peer_id, validation_error
@@ -139,7 +149,7 @@ where
 
         // 4. Connect to peer nodes using iroh network
         let connection_summary =
-            connect_to_peers(&self.state.network, req.peer_ids.clone(), REENCRYPT).await;
+            connect_to_peers(&self.state.network, payload.peer_ids.clone(), REENCRYPT).await;
 
         // Check if we successfully connected to all requested peers
         if connection_summary.failed > 0 {
@@ -167,12 +177,13 @@ where
                 ring_pk,
                 secret_bytes,
                 rdr_pk,
-                &req.peer_ids,
-                req.policy_id,
-                req.resource,
+                &payload.peer_ids,
+                payload.policy_id,
+                payload.resource,
                 req.object_id,
-                req.permission,
+                payload.permission,
                 token_str.to_string(),
+                req.namespace,
             )
             .await?;
 
@@ -201,7 +212,8 @@ where
 pub fn validate_pre_claims(
     token: &BearerToken<PreClaims>,
     rdr_pk: &String,
-    ring_pk: &String,
+    object_id: &String,
+    namespace: &String,
 ) -> Result<(), PreError> {
     // Validate rdr_pk matches
     if token.claims.rdr_pk != *rdr_pk {
@@ -211,11 +223,17 @@ pub fn validate_pre_claims(
         )));
     }
 
-    // Validate ring_pk matches
-    if token.claims.ring_pk != *ring_pk {
+    if token.claims.object_id != *object_id {
         return Err(PreError::Unauthorized(format!(
-            "Token ring_pk '{}' does not match request ring_pk '{}'",
-            token.claims.ring_pk, ring_pk
+            "Token object_id '{}' does not match request object_id '{}'",
+            token.claims.object_id, object_id
+        )));
+    }
+
+    if token.claims.namespace != *namespace {
+        return Err(PreError::Unauthorized(format!(
+            "Token namespace '{}' does not match request namespace '{}'",
+            token.claims.namespace, namespace
         )));
     }
 

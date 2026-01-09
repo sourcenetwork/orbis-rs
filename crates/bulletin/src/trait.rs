@@ -14,12 +14,12 @@ pub struct BulletinPost {
 /// Payload for storing a secret on bulletin
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Payload {
-    ring_pk: String,
-    secret: String,
-    policy_id: String,
-    resource: String,
-    permission: String,
-    peer_ids: Vec<String>,
+    pub ring_pk: String,
+    pub secret: String,
+    pub policy_id: String,
+    pub resource: String,
+    pub permission: String, // does the DID have the permission on the policy
+    pub peer_ids: Vec<String>, // TODO: store in a seperate blob for the ring itself
 }
 
 impl TryFrom<BulletinPost> for Payload {

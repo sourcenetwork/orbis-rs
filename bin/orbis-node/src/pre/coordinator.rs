@@ -93,6 +93,7 @@ where
                 object_id,
                 permission,
                 token_string,
+                namespace,
             } => {
                 tracing::info!(
                     request_id = %request_id,
@@ -112,6 +113,7 @@ where
                     object_id,
                     permission,
                     token_string,
+                    namespace,
                 )
                 .await
             }
@@ -147,6 +149,7 @@ where
         object_id: String,
         permission: String,
         token_string: String,
+        namespace: String,
     ) -> Result<Option<PreMessage>> {
         // Get current timestamp (needed for both auth and response)
         let current_time = SystemTime::now()
@@ -159,11 +162,7 @@ where
         // TODO: use token.issuer_id as AuthZ check
 
         // 2. Authorize: Validate JWT claims match request fields
-        validate_pre_claims(
-            &token,
-            &hex::encode(&rdr_pk_bytes),
-            &hex::encode(&ring_pk_bytes),
-        )?;
+        validate_pre_claims(&token, &hex::encode(&rdr_pk_bytes), &object_id, &namespace)?;
 
         let permission_bytes = AccessCheckRequest::new(policy_id, resource, object_id, permission)
             .to_bytes()
@@ -358,6 +357,7 @@ where
         object_id: String,
         permission: String,
         token_string: String,
+        namespace: String,
     ) -> Result<Vec<u8>> {
         // Count how many peers we'll actually contact (excluding self)
         let self_in_list = peer_ids
@@ -470,6 +470,7 @@ where
                 object_id: object_id.clone(),
                 permission: permission.clone(),
                 token_string: token_string.clone(),
+                namespace: namespace.clone(),
             };
 
             let peer_id = peer_id_str.clone();

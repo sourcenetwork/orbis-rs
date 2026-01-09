@@ -7,18 +7,12 @@ service PreService {
 }
 
 message StartPreRequest {
-  // On bulletin
-  string ring_pk = 1;
-  // On bulletin
-  string secret = 2;
-  string rdr_pk = 3;
-  repeated string peer_ids = 4;  // Iroh peer IDs that this node needs to connect to
-  // below are secret info that will be replaced by getting from bulletin
-  string policy_id = 5;
-  string resource = 6;
+  // reader public key
+  string rdr_pk = 1;
   // Object Id should be the only one not on bulletin but passed in here
-  string object_id = 7;
-  string permission = 8;  
+  string object_id = 2;
+  // object's namespace
+  string namespace = 3;
 }
 
 message StartPreResponse {

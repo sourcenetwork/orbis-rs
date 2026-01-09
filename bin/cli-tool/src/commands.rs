@@ -95,30 +95,29 @@ pub async fn do_dkg(endpoint: String, threshold: u32, peer_ids: Vec<String>) -> 
     })
 }
 
+// TODO: Encrypt secret and post it to bulletin to a policy
+//  Step 1: Encrypt the plaintext secret to the ring public key
+// println!("Step 1: Encrypting secret to ring public key...");
+// let (_enc_cmt, encrypted_secret) =
+//     ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret.as_bytes())
+//         .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+
+// // Serialize the encrypted secret to JSON for the PRE request
+// let encrypted_secret_json = serde_json::to_string(&encrypted_secret)
+//     .map_err(|e| anyhow!("Failed to serialize encrypted secret: {}", e))?;
+
 pub async fn do_pre(
     endpoint: String,
     ring_pk: String,
-    secret: String,
     reader_pk: String,
     reader_sk: String,
-    peer_ids: Vec<String>,
-    policy_id: String,
-    resource: String,
     object_id: String,
-    permission: String,
     reader_did_pk: Option<String>,
+    namespace: String,
 ) -> Result<()> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
-    println!("  Ring PK: {}...", &ring_pk[..ring_pk.len().min(20)]);
     println!("  Reader PK: {}...", &reader_pk[..reader_pk.len().min(20)]);
-    println!("  Peer IDs: {:?}", peer_ids);
-
-    // Parse the ring public key
-    let ring_pk_bytes =
-        hex::decode(&ring_pk).map_err(|e| anyhow!("Failed to decode ring_pk hex: {}", e))?;
-    let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
-        .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
     // Parse the reader keys
     let reader_pk_bytes =
@@ -131,16 +130,6 @@ pub async fn do_pre(
     let reader_sk_scalar = Fr::from_bytes(&reader_sk_bytes)
         .map_err(|e| anyhow!("Failed to deserialize reader_sk: {}", e))?;
 
-    // Step 1: Encrypt the plaintext secret to the ring public key
-    println!("Step 1: Encrypting secret to ring public key...");
-    let (_enc_cmt, encrypted_secret) =
-        ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret.as_bytes())
-            .map_err(|e| anyhow!("Encryption failed: {}", e))?;
-
-    // Serialize the encrypted secret to JSON for the PRE request
-    let encrypted_secret_json = serde_json::to_string(&encrypted_secret)
-        .map_err(|e| anyhow!("Failed to serialize encrypted secret: {}", e))?;
-
     println!("  Encrypted secret created");
     println!();
 
@@ -151,14 +140,9 @@ pub async fn do_pre(
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
     let request = proto::pre_service::StartPreRequest {
-        ring_pk: ring_pk.clone(),
-        secret: encrypted_secret_json,
         rdr_pk: reader_pk.clone(),
-        peer_ids: peer_ids.clone(),
-        policy_id,
-        resource,
-        object_id,
-        permission,
+        object_id: object_id.clone(),
+        namespace: namespace.clone(),
     };
 
     // JWT work use determinitic key_pair for now
@@ -166,7 +150,7 @@ pub async fn do_pre(
     let key_pair = generate::<DidEd25519KeyPair>(Some(reader_did_pk.as_bytes()));
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
-        .create_pre_jwt(&reader_pk, &ring_pk)
+        .create_pre_jwt(&reader_pk, &namespace, &object_id)
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token);
 
@@ -196,6 +180,12 @@ pub async fn do_pre(
             .map_err(|e| anyhow!("Failed to decode xnc_cmt hex: {}", e))?;
         let xnc_cmt = G1Affine::from_bytes(&xnc_cmt_bytes)
             .map_err(|e| anyhow!("Failed to deserialize xnc_cmt: {}", e))?;
+
+        // Parse the ring public key
+        let ring_pk_bytes =
+            hex::decode(&ring_pk).map_err(|e| anyhow!("Failed to decode ring_pk hex: {}", e))?;
+        let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
+            .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
         // Decrypt using reader's secret key and the secret from the response
         let decrypted = ThresholdDealerNode::decrypt_secret(

@@ -162,7 +162,7 @@ async fn test_dkg_then_pre_end_to_end() {
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &hex::encode(&ring_pk_bytes))
+        .create_pre_jwt(&hex::encode(&bob_pk_bytes))
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption
@@ -352,7 +352,7 @@ async fn test_pre_with_large_secret() {
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &hex::encode(&ring_pk_bytes))
+        .create_pre_jwt(&hex::encode(&bob_pk_bytes))
         .expect("Failed to create PRE JWT");
 
     let pre_response_bytes = pre_coordinator
@@ -461,7 +461,7 @@ async fn test_pre_fails_with_wrong_key() {
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &hex::encode(&ring_pk_bytes))
+        .create_pre_jwt(&hex::encode(&bob_pk_bytes))
         .expect("Failed to create PRE JWT");
 
     let pre_response_bytes = pre_coordinator
@@ -675,7 +675,6 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     let mismatched_token = test_keys
         .create_pre_jwt(
             wrong_rdr_pk, // Wrong rdr_pk - doesn't match bob_pk_bytes
-            &hex::encode(&ring_pk_bytes),
         )
         .expect("Failed to create JWT");
 
@@ -817,7 +816,7 @@ async fn test_start_pre_fails_wrong_signature() {
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
     let valid_token = key_pair_1
-        .create_pre_jwt("def456", "abc123")
+        .create_pre_jwt("def456")
         .expect("Failed to create JWT");
 
     // Tamper with the signature by changing a character

@@ -84,15 +84,16 @@ impl JwtSigner {
     ///
     /// # Arguments
     /// * `rdr_pk` - Reader's public key
-    /// * `ring_pk` - Ring public key
+    /// * `object_id` - secret id
     /// * `peer_ids` - List of peer IDs (will be joined with commas)
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour
-    pub fn create_pre_jwt(&self, rdr_pk: &str, ring_pk: &str) -> Result<String> {
+    pub fn create_pre_jwt(&self, rdr_pk: &str, namespace: &str, object_id: &str) -> Result<String> {
         let claims = PreClaims {
             rdr_pk: rdr_pk.to_string(),
-            ring_pk: ring_pk.to_string(),
+            object_id: object_id.to_string(),
+            namespace: namespace.to_string(),
         };
         self.sign(claims, Duration::from_hours(1))
     }
@@ -193,7 +194,7 @@ mod tests {
     #[test]
     fn test_create_pre_jwt() {
         let signer = JwtSigner::new();
-        let token = signer.create_pre_jwt("rdr_pk_value", "ring_pk_value");
+        let token = signer.create_pre_jwt("rdr_pk_value");
         assert!(token.is_ok());
     }
 }

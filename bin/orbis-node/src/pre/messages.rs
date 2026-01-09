@@ -20,6 +20,7 @@ pub enum PreMessage {
         object_id: String,
         permission: String,
         token_string: String, // Client's token passed to ring nodes for auth
+        namespace: String,
     },
     /// Response from ring node to coordinator with reencryption share
     ReencryptResponse {
