@@ -1,5 +1,5 @@
 use super::SourceHubBulletin;
-use crate::r#trait::Payload;
+use crate::r#trait::{Bulletin, Payload};
 use common::{
     blockchain::{
         ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
@@ -41,8 +41,11 @@ async fn test_read_bulletin() {
     // Post ID isn't returned in response - query the namespace to find it
     let posts = client.bulletin_list_posts(namespace).await.unwrap();
     assert!(!posts.is_empty(), "Should have at least one post");
-    // TODO: fix get dynamically
-    let created_post = &posts[0];
+
+    let full_namespace = format!("bulletin/{}", namespace);
+    let post_id = SourceHubBulletin::get_post_id(&full_namespace, &serialized_payload).unwrap();
+
+    let created_post = bulletin.read(full_namespace, post_id).await.unwrap();
     println!("Created post ID: {}", created_post.id);
     assert_eq!(
         created_post.payload,

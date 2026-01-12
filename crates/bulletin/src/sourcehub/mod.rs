@@ -4,6 +4,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use common::blockchain::{bulletin::Post, ChainConfigBuilder, SourceHubClient};
+use sha2::{Digest, Sha256};
 
 #[cfg(test)]
 mod tests;
@@ -43,5 +44,15 @@ impl SourceHubBulletin {
                 .await
                 .map_err(|e| BulletinError::ChainError(e.to_string()))?,
         })
+    }
+
+    pub fn get_post_id(namespace: &str, payload: &[u8]) -> Result<String> {
+        let mut hasher = Sha256::new();
+
+        hasher.update(namespace.as_bytes());
+        hasher.update(payload);
+
+        let hash = hasher.finalize();
+        Ok(hex::encode(hash))
     }
 }
