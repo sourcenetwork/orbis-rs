@@ -483,6 +483,8 @@ mod cli_tool_integration {
         let did_pk_string = "test_did_secret".to_string();
         let namespace = "namespace".to_string();
         let full_namespace = format!("bulletin/{}", namespace);
+        let ring_namespace = format!("bulletin/{}", "ring_namespace");
+        let ring_id = "ring_id".to_string();
         let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
 
         // Register bulletin namespace and create post with payload
@@ -501,12 +503,12 @@ mod cli_tool_integration {
             serde_json::to_string(&encrypted_secret).expect("serialize encrypted secret");
 
         let payload = DocumentPayload {
-            ring_pk: ring_pk_hex.clone(),
-            secret: secret_json,
+            ring_id: ring_id.clone(),
+            ring_namespace: ring_namespace.clone(),
+            document: secret_json,
             policy_id: policy_id.clone(),
             resource: resource.clone(),
             permission: permission.clone(),
-            peer_ids: peer_ids.clone(),
         };
         let serialized_payload: Vec<u8> = payload.clone().try_into().expect("serialize payload");
         let proof = vec![0x01];
