@@ -747,7 +747,6 @@ async fn test_start_pre_fails_missing_auth_header() {
     let app_state = create_test_app_state_default(db_name).await;
     let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
 
-    let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
     let request = StartPreRequest {
         rdr_pk: "def456".to_string(),
         namespace: "".to_string(),
@@ -786,7 +785,6 @@ async fn test_start_pre_fails_malformed_jwt() {
     let app_state = create_test_app_state_default(db_name).await;
     let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
 
-    let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
     let request = StartPreRequest {
         rdr_pk: "def456".to_string(),
         namespace: "".to_string(),
@@ -819,7 +817,6 @@ async fn test_start_pre_fails_wrong_signature() {
     let app_state = create_test_app_state_default(db_name).await;
     let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
 
-    let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
     let object_id = "object_id_test".to_string();
     let namespace = "namespace_test".to_string();
 

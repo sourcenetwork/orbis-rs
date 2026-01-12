@@ -3,7 +3,7 @@ use crate::{
     r#trait::{Bulletin, BulletinPost},
 };
 use async_trait::async_trait;
-use common::blockchain::{bulletin::Post, ChainConfigBuilder, SourceHubClient, TxSigner};
+use common::blockchain::{ChainConfigBuilder, SourceHubClient, TxSigner};
 use sha2::{Digest, Sha256};
 
 #[cfg(test)]

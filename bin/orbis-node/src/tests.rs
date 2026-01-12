@@ -13,7 +13,7 @@ use crate::{
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
 use bulletin::dummy::DummyBulletin;
-use bulletin::r#trait::Bulletin;
+use bulletin::r#trait::{Bulletin};
 use common::blockchain::ChainConfigBuilder;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::Network;
@@ -375,9 +375,11 @@ mod cli_tool_integration {
     use ark_bls12_381::{Fr, G1Affine, G1Projective};
     use ark_ec::Group;
     use ark_std::UniformRand;
+    use bulletin::r#trait::Payload;
     use common::SourceHubTestContainer;
-    use crypto::r#trait::Dkg;
-    use crypto::CryptoSerialize;
+    use crypto::bls12_381::pre::ThresholdDealerNode;
+    use crypto::r#trait::{Dkg, ThresholdDealer};
+    use crypto::{CryptoDeserialize, CryptoSerialize};
     use proto::dkg_service::dkg_service_server::DkgServiceServer;
     use proto::pre_service::pre_service_server::PreServiceServer;
     use rand_core::OsRng;
@@ -476,12 +478,44 @@ mod cli_tool_integration {
         let reader_pk_hex = hex::encode(&reader_pk_bytes);
 
         let resource = "document".to_string();
-        let object_id = "object_id-123".to_string();
         let relation = "reader".to_string();
         let permission = "read".to_string();
         let did_pk_string = "test_did_secret".to_string();
         let namespace = "namespace".to_string();
+        let full_namespace = format!("bulletin/{}", namespace);
         let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
+
+        // Register bulletin namespace and create post with payload
+        cli_tool::register_bulletin_namespace(namespace.clone())
+            .await
+            .expect("register_bulletin_namespace");
+
+        // Encrypt a test secret to the ring public key
+        let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
+        let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes).expect("deserialize ring_pk");
+        let test_secret = "Hello from CLI integration test!";
+        let (_enc_cmt, encrypted_secret) =
+            ThresholdDealerNode::encrypt_secret(&ring_pk_point, test_secret.as_bytes())
+                .expect("encrypt secret");
+        let secret_json =
+            serde_json::to_string(&encrypted_secret).expect("serialize encrypted secret");
+
+        let payload = Payload {
+            ring_pk: ring_pk_hex.clone(),
+            secret: secret_json,
+            policy_id: policy_id.clone(),
+            resource: resource.clone(),
+            permission: permission.clone(),
+            peer_ids: peer_ids.clone(),
+        };
+        let serialized_payload: Vec<u8> = payload.clone().try_into().expect("serialize payload");
+        let proof = vec![0x01];
+
+        // The bulletin post ID is the object_id for ACP and PRE
+        let object_id =
+            cli_tool::create_bulletin_post(namespace.clone(), serialized_payload, proof)
+                .await
+                .expect("create_bulletin_post");
 
         cli_tool::register_object_to_chain(policy_id.clone(), object_id.clone(), resource.clone())
             .await
@@ -496,9 +530,9 @@ mod cli_tool_integration {
         )
         .await
         .expect("set_relationship_on_chain");
-        // Step 3: Run PRE via CLI
-        let secret = "Hello from CLI integration test!";
 
+        // Step 3: Run PRE via CLI
+        // Use full_namespace (with bulletin/ prefix) for reading from chain
         let pre_result = cli_tool::do_pre(
             endpoint.clone(),
             ring_pk_hex,
@@ -506,7 +540,7 @@ mod cli_tool_integration {
             reader_sk_hex,
             object_id,
             Some(did_pk_string),
-            namespace,
+            full_namespace,
         )
         .await;
 

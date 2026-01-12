@@ -196,10 +196,8 @@ async fn main() -> Result<()> {
             payload,
             proof,
         } => {
-            let payload_bytes =
-                hex::decode(&payload).expect("Failed to decode payload hex");
-            let proof_bytes =
-                hex::decode(&proof).expect("Failed to decode proof hex");
+            let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
+            let proof_bytes = hex::decode(&proof).expect("Failed to decode proof hex");
             create_bulletin_post(namespace, payload_bytes, proof_bytes).await?;
         }
         SubCommands::Info { endpoint } => {
