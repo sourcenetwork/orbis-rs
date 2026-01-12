@@ -160,9 +160,11 @@ async fn test_dkg_then_pre_end_to_end() {
 
     println!("Sending PRE requests to peers: {:?}", pre_peer_ids);
 
+    let object_id = "object_id_test".to_string();
+    let namespace = "namespace_test".to_string();
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(&hex::encode(&bob_pk_bytes))
+        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id)
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption
@@ -175,9 +177,10 @@ async fn test_dkg_then_pre_end_to_end() {
             &pre_peer_ids,
             "".to_string(),
             "".to_string(),
-            "".to_string(),
+            object_id,
             "".to_string(),
             pre_token,
+            namespace,
         )
         .await
         .expect("PRE should succeed");
@@ -349,10 +352,11 @@ async fn test_pre_with_large_secret() {
     let pre_coordinator =
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
-
+    let object_id = "object_id_test".to_string();
+    let namespace = "namespace_test".to_string();
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(&hex::encode(&bob_pk_bytes))
+        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id)
         .expect("Failed to create PRE JWT");
 
     let pre_response_bytes = pre_coordinator
@@ -364,9 +368,10 @@ async fn test_pre_with_large_secret() {
             &pre_peer_ids,
             "".to_string(),
             "".to_string(),
-            "".to_string(),
+            object_id,
             "".to_string(),
             pre_token,
+            namespace,
         )
         .await
         .expect("PRE should succeed");
@@ -459,9 +464,12 @@ async fn test_pre_fails_with_wrong_key() {
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
 
+    let object_id = "object_id_test".to_string();
+    let namespace = "namespace_test".to_string();
+
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(&hex::encode(&bob_pk_bytes))
+        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id)
         .expect("Failed to create PRE JWT");
 
     let pre_response_bytes = pre_coordinator
@@ -473,9 +481,10 @@ async fn test_pre_fails_with_wrong_key() {
             &pre_peer_ids,
             "".to_string(),
             "".to_string(),
-            "".to_string(),
+            object_id,
             "".to_string(),
             pre_token,
+            namespace,
         )
         .await
         .expect("PRE should succeed");
@@ -568,6 +577,8 @@ async fn test_pre_fails_with_invalid_jwt_token() {
 
     // Use a completely invalid JWT token
     let invalid_token = "not-a-valid-jwt-token".to_string();
+    let object_id = "object_id_test".to_string();
+    let namespace = "namespace_test".to_string();
 
     let pre_result = pre_coordinator
         .initiate_reencryption(
@@ -578,9 +589,10 @@ async fn test_pre_fails_with_invalid_jwt_token() {
             &pre_peer_ids,
             "".to_string(),
             "".to_string(),
-            "".to_string(),
+            object_id,
             "".to_string(),
             invalid_token,
+            namespace,
         )
         .await;
 
@@ -672,9 +684,14 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
 
     // Create a valid JWT but with wrong rdr_pk claim
     let wrong_rdr_pk = "0000000000000000000000000000000000000000000000000000000000000000";
+    let object_id = "object_id_test".to_string();
+    let namespace = "namespace_test".to_string();
+
     let mismatched_token = test_keys
         .create_pre_jwt(
             wrong_rdr_pk, // Wrong rdr_pk - doesn't match bob_pk_bytes
+            &namespace,
+            &object_id,
         )
         .expect("Failed to create JWT");
 
@@ -687,9 +704,10 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             &pre_peer_ids,
             "".to_string(),
             "".to_string(),
-            "".to_string(),
+            object_id,
             "".to_string(),
             mismatched_token,
+            namespace,
         )
         .await;
 
@@ -731,14 +749,9 @@ async fn test_start_pre_fails_missing_auth_header() {
 
     let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
     let request = StartPreRequest {
-        ring_pk: "abc123".to_string(),
-        secret: "secret_data".to_string(),
         rdr_pk: "def456".to_string(),
-        peer_ids,
-        policy_id: "".to_string(),
-        resource: "".to_string(),
+        namespace: "".to_string(),
         object_id: "".to_string(),
-        permission: "".to_string(),
     };
 
     // Create request WITHOUT authentication header
@@ -775,14 +788,9 @@ async fn test_start_pre_fails_malformed_jwt() {
 
     let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
     let request = StartPreRequest {
-        ring_pk: "abc123".to_string(),
-        secret: "secret_data".to_string(),
         rdr_pk: "def456".to_string(),
-        peer_ids,
-        policy_id: "".to_string(),
-        resource: "".to_string(),
+        namespace: "".to_string(),
         object_id: "".to_string(),
-        permission: "".to_string(),
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -812,11 +820,13 @@ async fn test_start_pre_fails_wrong_signature() {
     let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
 
     let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
+    let object_id = "object_id_test".to_string();
+    let namespace = "namespace_test".to_string();
 
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
     let valid_token = key_pair_1
-        .create_pre_jwt("def456")
+        .create_pre_jwt("def456", &namespace, &object_id)
         .expect("Failed to create JWT");
 
     // Tamper with the signature by changing a character
@@ -834,14 +844,9 @@ async fn test_start_pre_fails_wrong_signature() {
     let tampered_token = format!("{}.{}.{}", parts[0], parts[1], tampered_sig);
 
     let request = StartPreRequest {
-        ring_pk: "abc123".to_string(),
-        secret: "secret_data".to_string(),
         rdr_pk: "def456".to_string(),
-        peer_ids,
-        policy_id: "".to_string(),
-        resource: "".to_string(),
+        namespace: "".to_string(),
         object_id: "".to_string(),
-        permission: "".to_string(),
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token);

@@ -480,6 +480,7 @@ mod cli_tool_integration {
         let relation = "reader".to_string();
         let permission = "read".to_string();
         let did_pk_string = "test_did_secret".to_string();
+        let namespace = "namespace".to_string();
         let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
 
         cli_tool::register_object_to_chain(policy_id.clone(), object_id.clone(), resource.clone())
@@ -501,15 +502,11 @@ mod cli_tool_integration {
         let pre_result = cli_tool::do_pre(
             endpoint.clone(),
             ring_pk_hex,
-            secret.to_string(),
             reader_pk_hex,
             reader_sk_hex,
-            peer_ids,
-            policy_id,
-            resource,
             object_id,
-            permission,
             Some(did_pk_string),
+            namespace,
         )
         .await;
 
