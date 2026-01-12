@@ -13,7 +13,7 @@ use crate::{
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
 use bulletin::dummy::DummyBulletin;
-use bulletin::r#trait::{Bulletin};
+use bulletin::r#trait::Bulletin;
 use common::blockchain::ChainConfigBuilder;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::Network;
@@ -375,7 +375,7 @@ mod cli_tool_integration {
     use ark_bls12_381::{Fr, G1Affine, G1Projective};
     use ark_ec::Group;
     use ark_std::UniformRand;
-    use bulletin::r#trait::Payload;
+    use bulletin::r#trait::DocumentPayload;
     use common::SourceHubTestContainer;
     use crypto::bls12_381::pre::ThresholdDealerNode;
     use crypto::r#trait::{Dkg, ThresholdDealer};
@@ -500,7 +500,7 @@ mod cli_tool_integration {
         let secret_json =
             serde_json::to_string(&encrypted_secret).expect("serialize encrypted secret");
 
-        let payload = Payload {
+        let payload = DocumentPayload {
             ring_pk: ring_pk_hex.clone(),
             secret: secret_json,
             policy_id: policy_id.clone(),

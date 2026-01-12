@@ -11,18 +11,36 @@ pub struct BulletinPost {
     pub proof: Vec<u8>,
 }
 
-/// Payload for storing a secret on bulletin
+/// Payload for storing a secret on bulletin document_id => payload
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
-pub struct Payload {
-    pub ring_pk: String,
-    pub secret: String,
+pub struct DocumentPayload {
+    /// Id of the Ring to find other information about the ring
+    pub ring_id: String,
+    /// Namespace of Ring, TODO: maybe hardcode to node, maybe move to req
+    pub ring_namespace: String,
+    /// Encrypted document
+    pub document: String,
+    /// Id of the policy associated with document
     pub policy_id: String,
+    /// Resource type on said policy
     pub resource: String,
-    pub permission: String, // does the DID have the permission on the policy
-    pub peer_ids: Vec<String>, // TODO: store in a seperate blob for the ring itself
+    /// does the DID have this permission on the policy (the policy expected with this document)
+    pub permission: String,
+}
+/// Payload for ring information ring_id => payload
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+pub struct RingPayload {
+    /// Public key of ring
+    pub ring_pk: String,
+    /// Network ids of peers in ring
+    pub peer_ids: Vec<String>,
+    /// Threhsold of ring
+    pub threhsold: u64,
+    /// Public polynomial of ring
+    pub public_polynomial: String,
 }
 
-impl TryFrom<BulletinPost> for Payload {
+impl TryFrom<BulletinPost> for DocumentPayload {
     type Error = BulletinError;
 
     fn try_from(post: BulletinPost) -> Result<Self> {
@@ -30,10 +48,26 @@ impl TryFrom<BulletinPost> for Payload {
     }
 }
 
-impl TryFrom<Payload> for Vec<u8> {
+impl TryFrom<DocumentPayload> for Vec<u8> {
     type Error = BulletinError;
 
-    fn try_from(payload: Payload) -> Result<Self> {
+    fn try_from(payload: DocumentPayload) -> Result<Self> {
+        serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<BulletinPost> for RingPayload {
+    type Error = BulletinError;
+
+    fn try_from(post: BulletinPost) -> Result<Self> {
+        serde_json::from_slice(&post.payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<RingPayload> for Vec<u8> {
+    type Error = BulletinError;
+
+    fn try_from(payload: RingPayload) -> Result<Self> {
         serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))
     }
 }

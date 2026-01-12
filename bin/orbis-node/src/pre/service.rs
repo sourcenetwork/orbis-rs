@@ -6,7 +6,7 @@ use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, PreClaims};
 use authz::sourcehub::AccessCheckRequest;
-use bulletin::r#trait::Payload;
+use bulletin::r#trait::{DocumentPayload, RingPayload};
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
 use network::REENCRYPT;
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
@@ -83,13 +83,27 @@ where
             .read(req.namespace.clone(), req.object_id.clone())
             .await
             .unwrap();
-        let payload = serde_json::from_slice::<Payload>(&object_info.payload).unwrap();
+
+        let document_payload =
+            serde_json::from_slice::<DocumentPayload>(&object_info.payload).unwrap();
+
+        let ring_info = self
+            .state
+            .bulletin
+            .read(
+                document_payload.ring_namespace.clone(),
+                document_payload.ring_id.clone(),
+            )
+            .await
+            .unwrap();
+
+        let ring_payload = serde_json::from_slice::<RingPayload>(&ring_info.payload).unwrap();
 
         let permission = AccessCheckRequest::new(
-            payload.policy_id.clone(),
-            payload.resource.clone(),
+            document_payload.policy_id.clone(),
+            document_payload.resource.clone(),
             req.object_id.clone(),
-            payload.permission.clone(),
+            document_payload.permission.clone(),
         )
         .to_bytes()
         .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
@@ -104,9 +118,10 @@ where
         validate_pre_claims(&token, &req.rdr_pk, &req.object_id, &req.namespace)?;
 
         tracing::info!(
-            ring_pk = %payload.ring_pk,
+            ring_id = %document_payload.ring_id,
+            ring_pk = %ring_payload.ring_pk,
             reader_pk = %req.rdr_pk,
-            peer_ids = ?payload.peer_ids,
+            peer_ids = ?ring_payload.peer_ids,
             issuer = %token.issuer_id,
             "Authenticated StartPre request"
         );
@@ -115,18 +130,18 @@ where
 
         // 1. Parse JSON and hex inputs
         // ring_pk: hex-encoded compressed G1Affine bytes
-        let ring_pk = hex::decode(&payload.ring_pk)
+        let ring_pk = hex::decode(&ring_payload.ring_pk)
             .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
 
         // Use original string bytes instead of re-serializing
-        let secret_bytes = payload.secret.as_bytes().to_vec();
+        let secret_bytes = document_payload.document.as_bytes().to_vec();
 
         // rdr_pk: hex-encoded compressed G1Affine bytes
         let rdr_pk = hex::decode(&req.rdr_pk)
             .map_err(|e| PreError::InvalidInput(format!("Invalid rdr_pk hex encoding: {}", e)))?;
 
         // 2. Validate we have peers
-        if payload.peer_ids.is_empty() {
+        if ring_payload.peer_ids.is_empty() {
             return Err(PreError::InvalidInput(
                 "No peer IDs provided for reencryption".to_string(),
             )
@@ -134,7 +149,9 @@ where
         }
 
         // 2b. Validate all peer IDs before attempting connections
-        if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&payload.peer_ids) {
+        if let Err((invalid_peer_id, validation_error)) =
+            validate_all_peer_ids(&ring_payload.peer_ids)
+        {
             return Err(PreError::InvalidInput(format!(
                 "Invalid peer ID '{}': {}",
                 invalid_peer_id, validation_error
@@ -148,8 +165,12 @@ where
         let request_id = format!("{}-{}", peer_id_hash, created_at);
 
         // 4. Connect to peer nodes using iroh network
-        let connection_summary =
-            connect_to_peers(&self.state.network, payload.peer_ids.clone(), REENCRYPT).await;
+        let connection_summary = connect_to_peers(
+            &self.state.network,
+            ring_payload.peer_ids.clone(),
+            REENCRYPT,
+        )
+        .await;
 
         // Check if we successfully connected to all requested peers
         if connection_summary.failed > 0 {
@@ -177,11 +198,11 @@ where
                 ring_pk,
                 secret_bytes,
                 rdr_pk,
-                &payload.peer_ids,
-                payload.policy_id,
-                payload.resource,
+                &ring_payload.peer_ids,
+                document_payload.policy_id,
+                document_payload.resource,
                 req.object_id,
-                payload.permission,
+                document_payload.permission,
                 token_str.to_string(),
                 req.namespace,
             )

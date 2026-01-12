@@ -1,5 +1,5 @@
 use super::SourceHubBulletin;
-use crate::r#trait::{Bulletin, Payload};
+use crate::r#trait::{Bulletin, DocumentPayload};
 use common::{
     blockchain::{ChainConfig, ChainConfigBuilder, TxSigner, TEST_ACCOUNT_HEX_KEY},
     SourceHubTestContainer,
@@ -19,7 +19,7 @@ async fn test_read_bulletin() {
         .unwrap();
 
     let namespace = "test_namespace";
-    let payload = Payload::default();
+    let payload = DocumentPayload::default();
     let serialized_payload: Vec<u8> = payload.clone().try_into().unwrap();
     let proof = vec![0x01];
 
@@ -42,6 +42,6 @@ async fn test_read_bulletin() {
         "Payload should match"
     );
 
-    let read_payload: Payload = created_post.clone().try_into().unwrap();
+    let read_payload: DocumentPayload = created_post.clone().try_into().unwrap();
     assert_eq!(read_payload, payload, "Read payload should match");
 }
