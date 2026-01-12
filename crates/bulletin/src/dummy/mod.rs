@@ -14,7 +14,7 @@ impl Bulletin for DummyBulletin {
     async fn register(&self, _namespace: String) -> Result<()> {
         Ok(())
     }
-    async fn post(&self, _namespace: String, _id: String, _message: Vec<u8>) -> Result<()> {
+    async fn post(&self, _namespace: String, _payload: Vec<u8>, _proof: Vec<u8>) -> Result<()> {
         Ok(())
     }
     async fn read(&self, _namespace: String, _id: String) -> Result<BulletinPost> {

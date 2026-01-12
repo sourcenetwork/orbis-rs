@@ -43,7 +43,7 @@ pub trait Bulletin {
     /// Register a bulletin instance
     async fn register(&self, namespace: String) -> Result<()>;
     /// Post a message to the bulletin namespace
-    async fn post(&self, namespace: String, id: String, message: Vec<u8>) -> Result<()>;
+    async fn post(&self, namespace: String, payload: Vec<u8>, proof: Vec<u8>) -> Result<()>;
     /// Read a message from the bulletin namespace
     async fn read(&self, namespace: String, id: String) -> Result<BulletinPost>;
 }
