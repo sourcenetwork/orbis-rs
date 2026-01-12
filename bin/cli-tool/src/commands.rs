@@ -8,9 +8,11 @@ use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::Group;
 use ark_std::UniformRand;
 use authn::{create_authenticated_request, JwtSigner};
+use bulletin::r#trait::Bulletin;
+use bulletin::sourcehub::SourceHubBulletin;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
-    ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+    ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{Secret, ThresholdDealer};
@@ -365,4 +367,46 @@ pub async fn set_relationship_on_chain(
         .map_err(|e| anyhow!("Failed to set reader relationship: {}", e))?;
 
     Ok(())
+}
+
+pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+
+    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
+
+    bulletin
+        .register(namespace.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to register namespace: {}", e))?;
+
+    println!("Registered bulletin namespace: {}", namespace);
+    Ok(())
+}
+
+pub async fn create_bulletin_post(
+    namespace: String,
+    payload: Vec<u8>,
+    proof: Vec<u8>,
+) -> Result<String> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+
+    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
+
+    let full_namespace = format!("bulletin/{}", namespace);
+    let post_id = SourceHubBulletin::get_post_id(&full_namespace, &payload)
+        .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
+
+    bulletin
+        .post(namespace, payload, proof)
+        .await
+        .map_err(|e| anyhow!("Failed to create post: {}", e))?;
+
+    println!("Created bulletin post with ID: {}", post_id);
+    Ok(post_id)
 }

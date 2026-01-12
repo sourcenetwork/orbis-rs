@@ -2,10 +2,11 @@ mod commands;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use hex;
 
 pub use commands::{
-    add_policy_to_chain, do_dkg, do_encrypt_secret, do_generate_reader_key, do_pre,
-    register_object_to_chain, set_relationship_on_chain,
+    add_policy_to_chain, create_bulletin_post, do_dkg, do_encrypt_secret, do_generate_reader_key,
+    do_pre, register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
 };
 
 #[derive(Parser, Debug, Clone)]
@@ -103,7 +104,24 @@ pub enum SubCommands {
         #[clap(long)]
         reader_did_pk: Option<String>,
     },
-
+    /// Register a bulletin namespace
+    RegisterBulletinNamespace {
+        /// Namespace to register
+        #[clap(long)]
+        namespace: String,
+    },
+    /// Create a post on the bulletin
+    CreateBulletinPost {
+        /// Namespace to post to
+        #[clap(long)]
+        namespace: String,
+        /// Payload as hex string
+        #[clap(long)]
+        payload: String,
+        /// Proof as hex string
+        #[clap(long)]
+        proof: String,
+    },
     /// Query node info
     Info {
         /// gRPC endpoint of the node
@@ -169,6 +187,20 @@ async fn main() -> Result<()> {
         } => {
             set_relationship_on_chain(policy_id, object_id, resource, relation, reader_did_pk)
                 .await?;
+        }
+        SubCommands::RegisterBulletinNamespace { namespace } => {
+            register_bulletin_namespace(namespace).await?;
+        }
+        SubCommands::CreateBulletinPost {
+            namespace,
+            payload,
+            proof,
+        } => {
+            let payload_bytes =
+                hex::decode(&payload).expect("Failed to decode payload hex");
+            let proof_bytes =
+                hex::decode(&proof).expect("Failed to decode proof hex");
+            create_bulletin_post(namespace, payload_bytes, proof_bytes).await?;
         }
         SubCommands::Info { endpoint } => {
             println!("Querying node at: {}", endpoint);
