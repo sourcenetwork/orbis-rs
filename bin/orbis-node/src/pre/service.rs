@@ -1,4 +1,5 @@
 use crate::app_state::AppState;
+use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::helpers::helpers::{
     connect_to_peers, derive_node_id_from_peer_id_bytes, validate_all_peer_ids,
 };
@@ -91,7 +92,7 @@ where
             .state
             .bulletin
             .read(
-                document_payload.ring_namespace.clone(),
+                BULLETIN_RING_NAMESPACE.to_string(),
                 document_payload.ring_id.clone(),
             )
             .await

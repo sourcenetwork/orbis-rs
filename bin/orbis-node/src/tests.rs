@@ -485,7 +485,7 @@ mod cli_tool_integration {
         let did_pk_string = "test_did_secret".to_string();
         let namespace = "namespace".to_string();
         let full_namespace = format!("bulletin/{}", namespace);
-        let ring_namespace = "ring_namespace".to_string();
+        let ring_namespace = "orbis".to_string();
         let full_ring_namespace = format!("bulletin/{}", ring_namespace);
         let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
         let proof = vec![0x01];
@@ -530,7 +530,6 @@ mod cli_tool_integration {
 
         let payload = DocumentPayload {
             ring_id: ring_id.clone(),
-            ring_namespace: full_ring_namespace.clone(),
             document: secret_json,
             policy_id: policy_id.clone(),
             resource: resource.clone(),

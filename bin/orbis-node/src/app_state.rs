@@ -323,7 +323,6 @@ where
         let mut responses = self.pre_responses.write().await;
         Self::cleanup_pre_responses_internal(&mut responses);
     }
-
 }
 
 impl<D> std::fmt::Debug for AppState<D>

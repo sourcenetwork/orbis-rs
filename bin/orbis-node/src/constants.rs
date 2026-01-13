@@ -129,4 +129,4 @@ pub const SECRET_KEY_ENV_VAR: &str = "ORBIS_SECRET_KEY";
 /// Ring payloads (public key, peer IDs, threshold, public polynomial) are
 /// posted to this namespace after DKG completion. This namespace must be
 /// registered before use.
-pub const BULLETIN_RING_NAMESPACE: &str = "rings";
+pub const BULLETIN_RING_NAMESPACE: &str = "orbis";

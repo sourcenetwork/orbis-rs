@@ -16,8 +16,6 @@ pub struct BulletinPost {
 pub struct DocumentPayload {
     /// Id of the Ring to find other information about the ring
     pub ring_id: String,
-    /// Namespace of Ring, TODO: maybe hardcode to node, maybe move to req
-    pub ring_namespace: String,
     /// Encrypted document
     pub document: String,
     /// Id of the policy associated with document

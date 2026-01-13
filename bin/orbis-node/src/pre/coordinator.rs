@@ -11,6 +11,7 @@
 //! - Manages reencryption share collection and recovery
 
 use crate::app_state::AppState;
+use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::pre::error::{PreError, Result};
 use crate::pre::messages::PreMessage;
@@ -28,6 +29,7 @@ use network::REENCRYPT;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
 /// Response structure containing reencrypted commitment and original secret
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreResponse {
@@ -384,16 +386,10 @@ where
 
         // 1. Deserialize public polynomial from bulletin data
         let pub_poly_bytes = hex::decode(public_polynomial_hex).map_err(|e| {
-            PreError::Deserialization(format!(
-                "Failed to decode public polynomial hex: {}",
-                e
-            ))
+            PreError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
         })?;
         let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
-            PreError::Deserialization(format!(
-                "Failed to deserialize public polynomial: {}",
-                e
-            ))
+            PreError::Deserialization(format!("Failed to deserialize public polynomial: {}", e))
         })?;
 
         // Total participants is derived from peer_ids
