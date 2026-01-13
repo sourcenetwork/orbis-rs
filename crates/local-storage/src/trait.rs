@@ -8,6 +8,8 @@ pub enum LocalStorageKeys {
     RingPkMapping(String),
     /// The node's iroh secret key for deterministic peer identity
     NodeSecretKey,
+    /// The node's secp256k1 signing key for chain transactions
+    NodeSigningKey,
 }
 
 pub trait LocalStorage {

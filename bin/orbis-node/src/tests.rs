@@ -5,7 +5,7 @@
 
 use crate::{
     helpers::{
-        launch::{derive_secret_key_bytes, LogLevel},
+        launch::{create_and_store_node_key, derive_secret_key_bytes, get_node_signer, LogLevel},
         test_helpers::{cleanup_db, test_db_path},
     },
     init_node, Args, NodeConfig,
@@ -658,4 +658,60 @@ async fn test_deterministic_peer_id_from_secret() {
         peer_id2.as_bytes(),
         "Same secret should produce same peer ID"
     );
+}
+
+// ============================================================================
+// create_and_store_node_key tests
+// ============================================================================
+
+#[test]
+fn test_create_and_store_node_key() {
+    use common::blockchain::ChainConfig;
+
+    let db_path = test_db_path("test_create_and_store_node_key");
+    let local_storage = LocalStorageImpl::new(Some("test-password".to_string()), db_path.clone())
+        .expect("Failed to create local storage");
+
+    // First call should create a new key
+    let result = create_and_store_node_key(local_storage.clone());
+    assert!(
+        result.is_ok(),
+        "Should create key successfully: {:?}",
+        result.err()
+    );
+
+    let address1 = result.unwrap();
+    assert!(
+        address1.starts_with("source1"),
+        "Address should be bech32 with source1 prefix, got: {}",
+        address1
+    );
+
+    // Second call should return the same address (idempotent)
+    let result2 = create_and_store_node_key(local_storage.clone());
+    assert!(result2.is_ok(), "Second call should succeed");
+
+    let address2 = result2.unwrap();
+    assert_eq!(
+        address1, address2,
+        "Same key should be returned on subsequent calls"
+    );
+
+    // Verify we can load the signer using get_node_signer
+    let config = ChainConfig::local();
+    let signer_result = get_node_signer(local_storage, config);
+    assert!(
+        signer_result.is_ok(),
+        "Should load signer: {:?}",
+        signer_result.err()
+    );
+
+    let signer = signer_result.unwrap();
+    assert_eq!(
+        signer.address(),
+        address1,
+        "Signer address should match stored address"
+    );
+
+    cleanup_db(&db_path);
 }

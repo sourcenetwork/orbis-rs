@@ -50,6 +50,7 @@ async fn test_start_dkg_empty_participants() {
 /// and has Alice send a StartDkgRequest including all peer IDs so they can all
 /// participate in the DKG.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_three_nodes_connect() {
     let db_name = "test_three_nodes_connect";
     let db_paths = [

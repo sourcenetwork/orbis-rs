@@ -11,7 +11,8 @@ mod tests;
 
 use crate::dkg::service::DkgServiceImpl;
 use crate::helpers::launch::{
-    db_path, derive_secret_key_bytes, get_network_key_secret, get_password, Args,
+    create_and_store_node_key, db_path, derive_secret_key_bytes, get_network_key_secret,
+    get_password, Args,
 };
 use crate::pre::service::PreServiceImpl;
 use app_state::AppState;
@@ -179,6 +180,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|e| format!("Failed to initialize authz: {}", e))?,
     );
+
+    let _ = create_and_store_node_key(local_storage.clone())
+        .map_err(|e| format!("Failed to create or store node key: {}", e))?;
 
     let bulletin_chain_config = ChainConfigBuilder::default().grpc_url(args.bulletin_grpc.clone());
     // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)

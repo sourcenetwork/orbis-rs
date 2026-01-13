@@ -3,6 +3,7 @@ use crate::constants::{
 };
 use crate::error::PasswordError;
 use clap::{Parser, ValueEnum};
+use common::blockchain::{ChainConfig, TxSigner};
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     LocalStorageImpl,
@@ -275,4 +276,95 @@ impl From<LogLevel> for tracing::Level {
 pub fn db_path(name: &str) -> String {
     let project_root = project_root::get_project_root().unwrap();
     format!("{}/dbs/{}.redb", project_root.display(), name)
+}
+
+pub fn create_and_store_node_key(local_storage: LocalStorageImpl) -> Result<String, String> {
+    // Write public key to file in project root
+    let project_root = project_root::get_project_root()
+        .map_err(|e| format!("Failed to get project root: {}", e))?;
+    let public_key_path = project_root.join("public_key.txt");
+
+    // Check if a signing key exists in DB
+    match local_storage.get_encrypted(LocalStorageKeys::NodeSigningKey) {
+        Ok(Some(key_bytes)) => {
+            // Key exists, derive public key and return it
+            let hex_key = String::from_utf8(key_bytes)
+                .map_err(|e| format!("Failed to parse stored key as UTF-8: {}", e))?;
+
+            let config = ChainConfig::local();
+            let signer = TxSigner::from_hex_key(&hex_key, config)
+                .map_err(|e| format!("Failed to create signer from stored key: {}", e))?;
+
+            let public_address = signer.address();
+            tracing::info!(address = %public_address, "Existing signing key loaded from storage");
+            fs::write(&public_key_path, &public_address)
+                .map_err(|e| format!("Failed to write public key to file: {}", e))?;
+            return Ok(public_address);
+        }
+        Ok(None) => {
+            // No key exists, create one
+            tracing::info!("No signing key found, generating new one");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Error reading signing key from storage, generating new one");
+        }
+    }
+
+    // Generate new 32-byte secp256k1 private key
+    let mut key_bytes = [0u8; 32];
+    getrandom::getrandom(&mut key_bytes)
+        .map_err(|e| format!("Failed to generate random bytes: {}", e))?;
+    let hex_key = hex::encode(key_bytes);
+
+    // Create signer to derive public address
+    let config = ChainConfig::local();
+    let signer = TxSigner::from_hex_key(&hex_key, config)
+        .map_err(|e| format!("Failed to create signer: {}", e))?;
+
+    let public_address = signer.address();
+
+    // Store the key encrypted
+    local_storage
+        .set_encrypted(
+            LocalStorageKeys::NodeSigningKey,
+            hex_key.as_bytes().to_vec(),
+        )
+        .map_err(|e| format!("Failed to store signing key: {}", e))?;
+
+    tracing::info!(address = %public_address, "New signing key generated and stored");
+
+    fs::write(&public_key_path, &public_address)
+        .map_err(|e| format!("Failed to write public key to file: {}", e))?;
+
+    tracing::info!(path = %public_key_path.display(), "Public key written to file");
+
+    Ok(public_address)
+}
+
+/// Retrieve the node signing key from storage and create a TxSigner.
+///
+/// This function loads the stored secp256k1 signing key and returns a TxSigner
+/// that can be used with `SourceHubBulletin::with_signer`.
+///
+/// # Arguments
+/// * `local_storage` - The local storage implementation to read from
+/// * `config` - The chain configuration for the signer
+///
+/// # Returns
+/// A TxSigner on success, or an error if the key doesn't exist or is invalid
+pub fn get_node_signer(
+    local_storage: LocalStorageImpl,
+    config: ChainConfig,
+) -> Result<TxSigner, String> {
+    let key_bytes = local_storage
+        .get_encrypted(LocalStorageKeys::NodeSigningKey)
+        .map_err(|e| format!("Failed to read signing key from storage: {}", e))?
+        .ok_or_else(|| {
+            "No signing key found in storage. Run create_and_store_node_key first.".to_string()
+        })?;
+
+    let hex_key = String::from_utf8(key_bytes)
+        .map_err(|e| format!("Failed to parse stored key as UTF-8: {}", e))?;
+
+    TxSigner::from_hex_key(&hex_key, config).map_err(|e| format!("Failed to create signer: {}", e))
 }
