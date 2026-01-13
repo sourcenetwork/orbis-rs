@@ -505,10 +505,13 @@ mod cli_tool_integration {
 
         let serialized_ring_payload: Vec<u8> =
             ring_payload.clone().try_into().expect("serialize payload");
-        let ring_id =
-            cli_tool::create_bulletin_post(ring_namespace.clone(), serialized_ring_payload, proof.clone())
-                .await
-                .expect("create_bulletin_post");
+        let ring_id = cli_tool::create_bulletin_post(
+            ring_namespace.clone(),
+            serialized_ring_payload,
+            proof.clone(),
+        )
+        .await
+        .expect("create_bulletin_post");
 
         // Register bulletin namespace and create post with payload
         cli_tool::register_bulletin_namespace(namespace.clone())
