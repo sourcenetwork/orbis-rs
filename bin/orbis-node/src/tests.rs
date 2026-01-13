@@ -306,6 +306,7 @@ fn test_args_custom_address() {
 
 /// Test that encrypted storage works with the node
 #[tokio::test]
+#[serial_test::serial]
 async fn test_init_node_with_encrypted_storage() {
     let db_path = test_db_path("test_init_node_with_encrypted_storage");
 
@@ -375,7 +376,7 @@ mod cli_tool_integration {
     use ark_bls12_381::{Fr, G1Affine, G1Projective};
     use ark_ec::Group;
     use ark_std::UniformRand;
-    use bulletin::r#trait::DocumentPayload;
+    use bulletin::r#trait::{DocumentPayload, RingPayload};
     use common::SourceHubTestContainer;
     use crypto::bls12_381::pre::ThresholdDealerNode;
     use crypto::r#trait::{Dkg, ThresholdDealer};
@@ -408,6 +409,7 @@ mod cli_tool_integration {
         let mut network = setup_three_node_network_with_pre(true, false, false, db_name).await;
 
         let peer_ids = network.get_all_peer_ids();
+        let threhsold = 2;
 
         // Start gRPC server for Alice
         let alice_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -429,7 +431,7 @@ mod cli_tool_integration {
         sleep(Duration::from_millis(100)).await;
 
         // Step 1: Run DKG via CLI to get a ring public key
-        let dkg_result = cli_tool::do_dkg(endpoint.clone(), 2, peer_ids.clone()).await;
+        let dkg_result = cli_tool::do_dkg(endpoint.clone(), threhsold, peer_ids.clone()).await;
         assert!(
             dkg_result.is_ok(),
             "DKG should succeed: {:?}",
@@ -483,9 +485,30 @@ mod cli_tool_integration {
         let did_pk_string = "test_did_secret".to_string();
         let namespace = "namespace".to_string();
         let full_namespace = format!("bulletin/{}", namespace);
-        let ring_namespace = format!("bulletin/{}", "ring_namespace");
-        let ring_id = "ring_id".to_string();
+        let ring_namespace = "ring_namespace".to_string();
+        let full_ring_namespace = format!("bulletin/{}", ring_namespace);
         let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
+        let proof = vec![0x01];
+
+        // Register ring bulletin space
+        cli_tool::register_bulletin_namespace(ring_namespace.clone())
+            .await
+            .expect("register_bulletin_namespace_ring");
+
+        // TODO: remove this should be set on node dkg level
+        let ring_payload = RingPayload {
+            ring_pk: ring_pk_hex.clone(),
+            peer_ids,
+            threhsold,
+            public_polynomial: "".to_string(),
+        };
+
+        let serialized_ring_payload: Vec<u8> =
+            ring_payload.clone().try_into().expect("serialize payload");
+        let ring_id =
+            cli_tool::create_bulletin_post(ring_namespace.clone(), serialized_ring_payload, proof.clone())
+                .await
+                .expect("create_bulletin_post");
 
         // Register bulletin namespace and create post with payload
         cli_tool::register_bulletin_namespace(namespace.clone())
@@ -504,14 +527,13 @@ mod cli_tool_integration {
 
         let payload = DocumentPayload {
             ring_id: ring_id.clone(),
-            ring_namespace: ring_namespace.clone(),
+            ring_namespace: full_ring_namespace.clone(),
             document: secret_json,
             policy_id: policy_id.clone(),
             resource: resource.clone(),
             permission: permission.clone(),
         };
         let serialized_payload: Vec<u8> = payload.clone().try_into().expect("serialize payload");
-        let proof = vec![0x01];
 
         // The bulletin post ID is the object_id for ACP and PRE
         let object_id =
