@@ -246,6 +246,23 @@ impl SessionStateManager {
             state.shares_received += 1;
         }
     }
+
+    /// Remove a session and clean up all associated resources
+    ///
+    /// This should be called after DKG Phase 4 completes to free memory
+    /// and close connections. The session data is no longer needed since
+    /// the private share is stored in local storage and ring info is on the bulletin.
+    pub async fn remove_session(&self, session_id: &u64) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.remove(session_id) {
+            // Connections will be dropped when state goes out of scope
+            tracing::debug!(
+                session_id = session_id,
+                connections = state.connections.len(),
+                "SessionStateManager: Removed session and closed connections"
+            );
+        }
+    }
 }
 
 impl Default for SessionStateManager {

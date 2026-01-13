@@ -4,10 +4,7 @@ use crate::pre::messages::PreMessage;
 use authz::r#trait::Authz;
 use bulletin::r#trait::Bulletin;
 use crypto::r#trait::Dkg;
-use local_storage::{
-    r#trait::{LocalStorage as OtherLocalStorage, LocalStorageKeys},
-    LocalStorageImpl,
-};
+use local_storage::LocalStorageImpl;
 use network::Network;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -162,6 +159,22 @@ where
         }
     }
 
+    /// Remove a DKG session immediately
+    ///
+    /// This should be called after DKG Phase 4 completes to free memory.
+    /// The session data is no longer needed since the private share is stored
+    /// in local storage and ring info is posted to the bulletin.
+    pub async fn remove_dkg_session(&self, session_id: &u64) {
+        let mut sessions = self.dkg_sessions.write().await;
+        if sessions.remove(session_id).is_some() {
+            tracing::debug!(
+                session_id = session_id,
+                remaining = sessions.len(),
+                "AppState: Removed DKG session"
+            );
+        }
+    }
+
     /// Clean up expired sessions (internal helper, requires write lock held)
     fn cleanup_sessions_internal(sessions: &mut HashMap<u64, DkgSessionEntry<D>>) {
         let now = Instant::now();
@@ -311,61 +324,6 @@ where
         Self::cleanup_pre_responses_internal(&mut responses);
     }
 
-    /// Get a DKG session by ring public key (for PRE)
-    ///
-    /// Looks up the session ID from local storage, then retrieves the session
-    pub async fn get_dkg_session_by_ring_pk(&self, ring_pk: &[u8]) -> Option<Arc<RwLock<D>>> {
-        // Convert ring_pk bytes to hex string for storage key
-        let ring_pk_hex = hex::encode(ring_pk);
-
-        // Retrieve session_id from local storage
-        let session_id_bytes = self
-            .local_storage
-            .get(LocalStorageKeys::RingPkMapping(ring_pk_hex))
-            .ok()??;
-
-        // Deserialize session_id (stored as 8 bytes, u64)
-        if session_id_bytes.len() != 8 {
-            tracing::error!(
-                expected = 8,
-                got = session_id_bytes.len(),
-                "Invalid session_id length in storage"
-            );
-            return None;
-        }
-
-        let session_id = u64::from_le_bytes(session_id_bytes.try_into().ok()?);
-        self.get_dkg_session(&session_id).await
-    }
-
-    /// Store a mapping from ring public key to DKG session ID (for PRE)
-    ///
-    /// This should be called after DKG completion to enable PRE lookups
-    /// Stores the mapping in local storage for persistence
-    pub async fn store_ring_pk_mapping(&self, ring_pk: Vec<u8>, session_id: u64) {
-        // Convert ring_pk bytes to hex string for storage key
-        let ring_pk_hex = hex::encode(&ring_pk);
-
-        // Serialize session_id as 8 bytes (u64 little-endian)
-        let session_id_bytes = session_id.to_le_bytes().to_vec();
-
-        // Store in local storage
-        if let Err(e) = self.local_storage.set(
-            LocalStorageKeys::RingPkMapping(ring_pk_hex),
-            session_id_bytes,
-        ) {
-            tracing::error!(
-                session_id = session_id,
-                error = %e,
-                "Failed to store ring_pk mapping"
-            );
-        } else {
-            tracing::debug!(
-                session_id = session_id,
-                "Stored ring_pk mapping in local storage"
-            );
-        }
-    }
 }
 
 impl<D> std::fmt::Debug for AppState<D>

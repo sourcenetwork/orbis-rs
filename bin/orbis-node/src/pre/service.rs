@@ -199,6 +199,8 @@ where
                 secret_bytes,
                 rdr_pk,
                 &ring_payload.peer_ids,
+                ring_payload.threshold as usize,
+                &ring_payload.public_polynomial,
                 document_payload.policy_id,
                 document_payload.resource,
                 req.object_id,

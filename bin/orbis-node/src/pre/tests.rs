@@ -168,6 +168,9 @@ async fn test_dkg_then_pre_end_to_end() {
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption
+    // TODO: threshold and public_polynomial should come from bulletin in real flow
+    let threshold = 2;
+    let public_polynomial_hex = ""; // Placeholder - tests need to be updated to get this from DKG
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
             request_id.clone(),
@@ -175,6 +178,8 @@ async fn test_dkg_then_pre_end_to_end() {
             secret_bytes.clone(),
             bob_pk_bytes.clone(),
             &pre_peer_ids,
+            threshold,
+            public_polynomial_hex,
             "".to_string(),
             "".to_string(),
             object_id,
@@ -359,6 +364,9 @@ async fn test_pre_with_large_secret() {
         .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id)
         .expect("Failed to create PRE JWT");
 
+    // TODO: threshold and public_polynomial should come from bulletin in real flow
+    let threshold = 2;
+    let public_polynomial_hex = ""; // Placeholder - tests need to be updated to get this from DKG
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
             "large-pre-request".to_string(),
@@ -366,6 +374,8 @@ async fn test_pre_with_large_secret() {
             secret_bytes,
             bob_pk_bytes,
             &pre_peer_ids,
+            threshold,
+            public_polynomial_hex,
             "".to_string(),
             "".to_string(),
             object_id,
@@ -472,6 +482,9 @@ async fn test_pre_fails_with_wrong_key() {
         .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id)
         .expect("Failed to create PRE JWT");
 
+    // TODO: threshold and public_polynomial should come from bulletin in real flow
+    let threshold = 2;
+    let public_polynomial_hex = ""; // Placeholder - tests need to be updated to get this from DKG
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
             "wrong-key-pre-request".to_string(),
@@ -479,6 +492,8 @@ async fn test_pre_fails_with_wrong_key() {
             secret_bytes,
             bob_pk_bytes,
             &pre_peer_ids,
+            threshold,
+            public_polynomial_hex,
             "".to_string(),
             "".to_string(),
             object_id,
@@ -580,6 +595,9 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     let object_id = "object_id_test".to_string();
     let namespace = "namespace_test".to_string();
 
+    // TODO: threshold and public_polynomial should come from bulletin in real flow
+    let threshold = 2;
+    let public_polynomial_hex = ""; // Placeholder - tests need to be updated to get this from DKG
     let pre_result = pre_coordinator
         .initiate_reencryption(
             "invalid-token-pre-request".to_string(),
@@ -587,6 +605,8 @@ async fn test_pre_fails_with_invalid_jwt_token() {
             secret_bytes,
             bob_pk_bytes,
             &pre_peer_ids,
+            threshold,
+            public_polynomial_hex,
             "".to_string(),
             "".to_string(),
             object_id,
@@ -695,6 +715,9 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         )
         .expect("Failed to create JWT");
 
+    // TODO: threshold and public_polynomial should come from bulletin in real flow
+    let threshold = 2;
+    let public_polynomial_hex = ""; // Placeholder - tests need to be updated to get this from DKG
     let pre_result = pre_coordinator
         .initiate_reencryption(
             "mismatched-claims-pre-request".to_string(),
@@ -702,6 +725,8 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             secret_bytes,
             bob_pk_bytes, // Actual rdr_pk doesn't match JWT claim
             &pre_peer_ids,
+            threshold,
+            public_polynomial_hex,
             "".to_string(),
             "".to_string(),
             object_id,

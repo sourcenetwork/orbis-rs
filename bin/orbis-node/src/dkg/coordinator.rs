@@ -15,7 +15,7 @@
 //! All nodes participate equally in the protocol.
 
 use crate::app_state::AppState;
-use crate::constants::MAX_COMMITMENT_COEFFICIENTS;
+use crate::constants::{BULLETIN_RING_NAMESPACE, MAX_COMMITMENT_COEFFICIENTS};
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::DkgMessage;
 use crate::dkg::service::validate_dkg_claims;
@@ -23,6 +23,7 @@ use crate::dkg::session_state::{DkgMessageType, DkgPhase, SessionStateManager};
 use crate::helpers::helpers::is_self_peer_id;
 use ark_bls12_381::{Fr, G1Affine};
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
+use bulletin::r#trait::RingPayload;
 use crypto::bls12_381::common::{PolynomialCommitment, FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE};
 use crypto::r#trait::DistributedShare;
 use crypto::r#trait::Dkg;
@@ -969,14 +970,15 @@ where
     /// Phase 4: Compute final secret share and aggregate public key
     ///
     /// This is triggered when all shares have been received and verified.
+    /// If this node is node_id == 1, it will also post the RingPayload to the bulletin.
     pub async fn initiate_phase4_completion(&self, session_id: u64) -> Result<()> {
         tracing::info!(
             session_id = session_id,
             "DKG Coordinator: Starting Phase 4 completion"
         );
 
-        // Compute final secret share and aggregate public key
-        let (node_id, aggregate_pk, final_share_bytes) = self
+        // Compute final secret share, aggregate public key, and gather data for bulletin
+        let (node_id, aggregate_pk, final_share_bytes, threshold, pub_poly_bytes) = self
             .app_state
             .with_dkg_session(&session_id, |session| {
                 tracing::debug!(
@@ -1009,7 +1011,21 @@ where
                     DkgError::Serialization(format!("Failed to serialize final share: {}", e))
                 })?;
 
-                Ok::<_, DkgError>((session.node_id(), aggregate_pk, final_share_bytes))
+                // Compute and serialize public polynomial for bulletin
+                let pub_poly = session.compute_public_polynomial().map_err(|e| {
+                    DkgError::Crypto(format!("Failed to compute public polynomial: {}", e))
+                })?;
+                let pub_poly_bytes = pub_poly.to_bytes().map_err(|e| {
+                    DkgError::Serialization(format!("Failed to serialize public polynomial: {}", e))
+                })?;
+
+                Ok::<_, DkgError>((
+                    session.node_id(),
+                    aggregate_pk,
+                    final_share_bytes,
+                    session.threshold(),
+                    pub_poly_bytes,
+                ))
             })
             .await
             .ok_or_else(|| {
@@ -1035,19 +1051,64 @@ where
             .update_phase(&session_id, DkgPhase::Phase4Complete)
             .await;
 
-        // Store ring_pk -> session_id mapping for PRE
+        // Serialize ring_pk for logging and bulletin post
         let ring_pk_bytes = aggregate_pk.to_bytes().map_err(|e| {
             DkgError::Serialization(format!("Failed to serialize aggregate public key: {}", e))
         })?;
-        self.app_state
-            .store_ring_pk_mapping(ring_pk_bytes.clone(), session_id)
-            .await;
 
         tracing::info!(
             aggregate_pk = ?aggregate_pk,
-            ring_key_hex = hex::encode(ring_pk_bytes),
+            ring_key_hex = hex::encode(&ring_pk_bytes),
             node_id = node_id,
             "Phase 4: DKG complete! Final share computed"
+        );
+
+        // Node 1 is responsible for posting the RingPayload to the bulletin
+        if node_id == 1 {
+            // Get peer_ids from session state
+            let peer_ids = self
+                .session_state
+                .get_peer_ids(&session_id)
+                .await
+                .unwrap_or_default();
+
+            // Create RingPayload
+            let ring_payload = RingPayload {
+                ring_pk: hex::encode(&ring_pk_bytes),
+                peer_ids,
+                threshold: threshold as u32,
+                public_polynomial: hex::encode(&pub_poly_bytes),
+            };
+
+            // Serialize payload
+            let payload_bytes: Vec<u8> = ring_payload.clone().try_into().map_err(|e| {
+                DkgError::Serialization(format!("Failed to serialize RingPayload: {}", e))
+            })?;
+
+            // Post to bulletin (no proof needed for ring registration)
+            let proof = Vec::new();
+
+            self.app_state
+                .bulletin
+                .post(BULLETIN_RING_NAMESPACE.to_string(), payload_bytes, proof)
+                .await
+                .map_err(|e| DkgError::Bulletin(format!("Failed to post RingPayload: {}", e)))?;
+
+            tracing::info!(
+                ring_pk = %ring_payload.ring_pk,
+                namespace = BULLETIN_RING_NAMESPACE,
+                "DKG Coordinator: Successfully posted RingPayload to bulletin"
+            );
+        }
+
+        // Clean up session data - no longer needed since private share is in local storage
+        // and ring info is on the bulletin
+        self.app_state.remove_dkg_session(&session_id).await;
+        self.session_state.remove_session(&session_id).await;
+
+        tracing::info!(
+            session_id = session_id,
+            "DKG Coordinator: Session cleanup complete"
         );
 
         Ok(())

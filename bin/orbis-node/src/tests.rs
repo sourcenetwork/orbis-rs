@@ -409,7 +409,7 @@ mod cli_tool_integration {
         let mut network = setup_three_node_network_with_pre(true, false, false, db_name).await;
 
         let peer_ids = network.get_all_peer_ids();
-        let threhsold = 2;
+        let threshold = 2;
 
         // Start gRPC server for Alice
         let alice_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -431,7 +431,7 @@ mod cli_tool_integration {
         sleep(Duration::from_millis(100)).await;
 
         // Step 1: Run DKG via CLI to get a ring public key
-        let dkg_result = cli_tool::do_dkg(endpoint.clone(), threhsold, peer_ids.clone()).await;
+        let dkg_result = cli_tool::do_dkg(endpoint.clone(), threshold, peer_ids.clone()).await;
         assert!(
             dkg_result.is_ok(),
             "DKG should succeed: {:?}",
@@ -499,7 +499,7 @@ mod cli_tool_integration {
         let ring_payload = RingPayload {
             ring_pk: ring_pk_hex.clone(),
             peer_ids,
-            threhsold,
+            threshold,
             public_polynomial: "".to_string(),
         };
 

@@ -119,3 +119,14 @@ pub const SECRET_KEY_FILE_NAME: &str = ".orbis_secret_key";
 /// a hex-encoded string. The key will be stored encrypted in the secret
 /// key file for future use.
 pub const SECRET_KEY_ENV_VAR: &str = "ORBIS_SECRET_KEY";
+
+// ============================================================================
+// Bulletin Configuration Constants
+// ============================================================================
+
+/// Namespace for ring information on the bulletin board
+///
+/// Ring payloads (public key, peer IDs, threshold, public polynomial) are
+/// posted to this namespace after DKG completion. This namespace must be
+/// registered before use.
+pub const BULLETIN_RING_NAMESPACE: &str = "rings";

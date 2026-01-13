@@ -31,6 +31,10 @@ pub enum DkgError {
     #[error("Local storage error: {0}")]
     Storage(String),
 
+    /// Bulletin error
+    #[error("Bulletin error: {0}")]
+    Bulletin(String),
+
     /// DKG session not found
     #[error("DKG session not found: {0}")]
     SessionNotFound(String),

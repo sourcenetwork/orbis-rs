@@ -34,8 +34,8 @@ pub struct RingPayload {
     pub ring_pk: String,
     /// Network ids of peers in ring
     pub peer_ids: Vec<String>,
-    /// Threhsold of ring
-    pub threhsold: u32,
+    /// Threshold of ring
+    pub threshold: u32,
     /// Public polynomial of ring
     pub public_polynomial: String,
 }

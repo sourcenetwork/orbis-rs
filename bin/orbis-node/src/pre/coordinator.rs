@@ -11,7 +11,7 @@
 //! - Manages reencryption share collection and recovery
 
 use crate::app_state::AppState;
-use crate::helpers::helpers::{connect_to_peer, is_self_peer_id};
+use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::pre::error::{PreError, Result};
 use crate::pre::messages::PreMessage;
 use crate::pre::service::validate_pre_claims;
@@ -345,6 +345,9 @@ where
     ///
     /// Sends reencryption requests to all ring nodes, collects responses,
     /// verifies them, and recovers the reencrypted commitment.
+    ///
+    /// Ring information (threshold, public_polynomial) is read from the bulletin
+    /// by the service layer and passed to this function.
     pub async fn initiate_reencryption(
         &self,
         request_id: String,
@@ -352,6 +355,8 @@ where
         secret_bytes: Vec<u8>,
         rdr_pk_bytes: Vec<u8>,
         peer_ids: &[String],
+        threshold: usize,
+        public_polynomial_hex: &str,
         policy_id: String,
         resource: String,
         object_id: String,
@@ -373,30 +378,30 @@ where
             request_id = %request_id,
             peer_count = actual_peer_count,
             self_in_list = self_in_list,
+            threshold = threshold,
             "PRE Coordinator: Initiating reencryption"
         );
 
-        // 1. Find DKG session to get threshold and public polynomial
-        let dkg_session = self
-            .app_state
-            .get_dkg_session_by_ring_pk(&ring_pk_bytes)
-            .await
-            .ok_or_else(|| {
-                PreError::SessionNotFound("DKG session not found for ring_pk".to_string())
-            })?;
+        // 1. Deserialize public polynomial from bulletin data
+        let pub_poly_bytes = hex::decode(public_polynomial_hex).map_err(|e| {
+            PreError::Deserialization(format!(
+                "Failed to decode public polynomial hex: {}",
+                e
+            ))
+        })?;
+        let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
+            PreError::Deserialization(format!(
+                "Failed to deserialize public polynomial: {}",
+                e
+            ))
+        })?;
 
-        let (threshold, total_participants, pub_poly, node_id) = {
-            let session = dkg_session.read().await;
-            let pub_poly = session.compute_public_polynomial().map_err(|e| {
-                PreError::Crypto(format!("Failed to compute public polynomial: {}", e))
-            })?;
-            (
-                session.threshold(),
-                session.total_nodes(),
-                pub_poly,
-                session.node_id(),
-            )
-        };
+        // Total participants is derived from peer_ids
+        let total_participants = peer_ids.len();
+
+        // Derive node_id from sorted peer_ids (if we're in the list)
+        let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
+        let node_id = determine_session_node_id(&our_peer_id, peer_ids).unwrap_or(0);
 
         // Validate we have enough potential shares to meet threshold
         // If we're in the list, we can contribute our own share locally
