@@ -71,7 +71,7 @@ impl ChainConfig {
 }
 
 /// Builder for ChainConfig.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ChainConfigBuilder {
     chain_id: Option<String>,
     rpc_url: Option<String>,

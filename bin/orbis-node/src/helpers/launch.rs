@@ -278,67 +278,71 @@ pub fn db_path(name: &str) -> String {
     format!("{}/dbs/{}.redb", project_root.display(), name)
 }
 
-pub fn create_and_store_node_key(local_storage: LocalStorageImpl) -> Result<String, String> {
+pub fn create_and_store_node_key(
+    local_storage: LocalStorageImpl,
+    config: ChainConfig,
+) -> Result<TxSigner, String> {
     // Write public key to file in project root
     let project_root = project_root::get_project_root()
         .map_err(|e| format!("Failed to get project root: {}", e))?;
     let public_key_path = project_root.join("public_key.txt");
 
     // Check if a signing key exists in DB
-    match local_storage.get_encrypted(LocalStorageKeys::NodeSigningKey) {
+    let hex_key = match local_storage.get_encrypted(LocalStorageKeys::NodeSigningKey) {
         Ok(Some(key_bytes)) => {
-            // Key exists, derive public key and return it
+            // Key exists, use it
             let hex_key = String::from_utf8(key_bytes)
                 .map_err(|e| format!("Failed to parse stored key as UTF-8: {}", e))?;
-
-            let config = ChainConfig::local();
-            let signer = TxSigner::from_hex_key(&hex_key, config)
-                .map_err(|e| format!("Failed to create signer from stored key: {}", e))?;
-
-            let public_address = signer.address();
-            tracing::info!(address = %public_address, "Existing signing key loaded from storage");
-            fs::write(&public_key_path, &public_address)
-                .map_err(|e| format!("Failed to write public key to file: {}", e))?;
-            return Ok(public_address);
+            tracing::info!("Existing signing key loaded from storage");
+            hex_key
         }
         Ok(None) => {
             // No key exists, create one
             tracing::info!("No signing key found, generating new one");
+            let mut key_bytes = [0u8; 32];
+            getrandom::getrandom(&mut key_bytes)
+                .map_err(|e| format!("Failed to generate random bytes: {}", e))?;
+            let hex_key = hex::encode(key_bytes);
+
+            // Store the key encrypted
+            local_storage
+                .set_encrypted(
+                    LocalStorageKeys::NodeSigningKey,
+                    hex_key.as_bytes().to_vec(),
+                )
+                .map_err(|e| format!("Failed to store signing key: {}", e))?;
+            hex_key
         }
         Err(e) => {
             tracing::warn!(error = %e, "Error reading signing key from storage, generating new one");
+            let mut key_bytes = [0u8; 32];
+            getrandom::getrandom(&mut key_bytes)
+                .map_err(|e| format!("Failed to generate random bytes: {}", e))?;
+            let hex_key = hex::encode(key_bytes);
+
+            // Store the key encrypted
+            local_storage
+                .set_encrypted(
+                    LocalStorageKeys::NodeSigningKey,
+                    hex_key.as_bytes().to_vec(),
+                )
+                .map_err(|e| format!("Failed to store signing key: {}", e))?;
+            hex_key
         }
-    }
+    };
 
-    // Generate new 32-byte secp256k1 private key
-    let mut key_bytes = [0u8; 32];
-    getrandom::getrandom(&mut key_bytes)
-        .map_err(|e| format!("Failed to generate random bytes: {}", e))?;
-    let hex_key = hex::encode(key_bytes);
-
-    // Create signer to derive public address
-    let config = ChainConfig::local();
     let signer = TxSigner::from_hex_key(&hex_key, config)
         .map_err(|e| format!("Failed to create signer: {}", e))?;
 
     let public_address = signer.address();
-
-    // Store the key encrypted
-    local_storage
-        .set_encrypted(
-            LocalStorageKeys::NodeSigningKey,
-            hex_key.as_bytes().to_vec(),
-        )
-        .map_err(|e| format!("Failed to store signing key: {}", e))?;
-
-    tracing::info!(address = %public_address, "New signing key generated and stored");
+    tracing::info!(address = %public_address, "Signing key ready");
 
     fs::write(&public_key_path, &public_address)
         .map_err(|e| format!("Failed to write public key to file: {}", e))?;
 
     tracing::info!(path = %public_key_path.display(), "Public key written to file");
 
-    Ok(public_address)
+    Ok(signer)
 }
 
 /// Retrieve the node signing key from storage and create a TxSigner.

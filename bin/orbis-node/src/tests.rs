@@ -5,7 +5,7 @@
 
 use crate::{
     helpers::{
-        launch::{create_and_store_node_key, derive_secret_key_bytes, get_node_signer, LogLevel},
+        launch::{create_and_store_node_key, derive_secret_key_bytes, LogLevel},
         test_helpers::{cleanup_db, test_db_path},
     },
     init_node, Args, NodeConfig,
@@ -672,15 +672,18 @@ fn test_create_and_store_node_key() {
     let local_storage = LocalStorageImpl::new(Some("test-password".to_string()), db_path.clone())
         .expect("Failed to create local storage");
 
+    let config = ChainConfig::local();
+
     // First call should create a new key
-    let result = create_and_store_node_key(local_storage.clone());
+    let result = create_and_store_node_key(local_storage.clone(), config.clone());
     assert!(
         result.is_ok(),
         "Should create key successfully: {:?}",
         result.err()
     );
 
-    let address1 = result.unwrap();
+    let signer1 = result.unwrap();
+    let address1 = signer1.address();
     assert!(
         address1.starts_with("source1"),
         "Address should be bech32 with source1 prefix, got: {}",
@@ -688,29 +691,14 @@ fn test_create_and_store_node_key() {
     );
 
     // Second call should return the same address (idempotent)
-    let result2 = create_and_store_node_key(local_storage.clone());
+    let result2 = create_and_store_node_key(local_storage.clone(), config);
     assert!(result2.is_ok(), "Second call should succeed");
 
-    let address2 = result2.unwrap();
+    let signer2 = result2.unwrap();
+    let address2 = signer2.address();
     assert_eq!(
         address1, address2,
         "Same key should be returned on subsequent calls"
-    );
-
-    // Verify we can load the signer using get_node_signer
-    let config = ChainConfig::local();
-    let signer_result = get_node_signer(local_storage, config);
-    assert!(
-        signer_result.is_ok(),
-        "Should load signer: {:?}",
-        signer_result.err()
-    );
-
-    let signer = signer_result.unwrap();
-    assert_eq!(
-        signer.address(),
-        address1,
-        "Signer address should match stored address"
     );
 
     cleanup_db(&db_path);
