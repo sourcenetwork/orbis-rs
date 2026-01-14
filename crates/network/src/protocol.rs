@@ -15,3 +15,4 @@ pub const DKG: &[u8] = b"orbis/dkg/0";
 /// Used for Proxy Re-Encryption requests where a reader (Bob) requests
 /// re-encryption from ring nodes.
 pub const REENCRYPT: &[u8] = b"orbis/reencrypt/0";
+

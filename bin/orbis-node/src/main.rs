@@ -4,6 +4,7 @@ pub mod constants;
 pub mod dkg;
 pub mod error;
 pub mod helpers;
+pub mod info;
 pub mod pre;
 
 #[cfg(test)]
@@ -14,6 +15,7 @@ use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, get_network_key_secret,
     get_password, Args,
 };
+use crate::info::InfoServiceImpl;
 use crate::pre::service::PreServiceImpl;
 use app_state::AppState;
 use authz::r#trait::Authz;
@@ -33,6 +35,7 @@ pub type DkgImpl = DKGNode;
 pub type PreImpl = ThresholdDealerNode;
 
 use proto::dkg_service::dkg_service_server::DkgServiceServer;
+use proto::info_service::info_service_server::InfoServiceServer;
 use proto::pre_service::pre_service_server::PreServiceServer;
 
 /// Configuration for running the node, allowing dependency injection for testing
@@ -114,11 +117,13 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     // Initialize services with shared state
     let dkg_service = DkgServiceImpl::<DkgImpl>::new((*node.app_state).clone());
     let pre_service = PreServiceImpl::<DkgImpl, PreImpl>::new((*node.app_state).clone());
+    let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
 
-    // Start gRPC server with both DKG and PRE services
+    // Start gRPC server with DKG, PRE, and Info services
     let grpc_server = tonic::transport::Server::builder()
         .add_service(DkgServiceServer::new(dkg_service))
         .add_service(PreServiceServer::new(pre_service))
+        .add_service(InfoServiceServer::new(info_service))
         .serve(node.grpc_addr);
 
     // Run gRPC server (router runs in background automatically)

@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package info_service;
+
+service InfoService {
+  rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
+}
+
+message GetNodeInfoRequest {}
+
+message GetNodeInfoResponse {
+  string public_address = 1;
+  string peer_id = 2;
+}

@@ -1064,7 +1064,8 @@ where
             let peer_ids = self
                 .session_state
                 .get_peer_ids(&session_id)
-                .await.unwrap_or_default();
+                .await
+                .unwrap_or_default();
 
             // Create RingPayload
             let ring_payload = RingPayload {
