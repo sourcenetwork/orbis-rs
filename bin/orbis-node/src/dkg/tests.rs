@@ -234,10 +234,6 @@ async fn test_start_dkg_succeeds_on_all_connections() {
 
     let start = std::time::Instant::now();
     loop {
-        // Check if Alice's session has completed Phase 4
-        // We can check by trying to get the session and see if we can compute the aggregate key
-        let alice_coordinator = DkgCoordinator::new(Arc::new(network.alice.app_state.clone()));
-
         // Debug: check session count
         let session_count = network.alice.app_state.session_count().await;
         if start.elapsed().as_secs() % 5 == 0 {

@@ -6,7 +6,7 @@
 use crate::{
     helpers::{
         launch::{create_and_store_node_key, derive_secret_key_bytes, LogLevel},
-        test_helpers::{cleanup_db, get_test_bulletin, test_db_path},
+        test_helpers::{cleanup_db, test_db_path},
     },
     init_node, Args, NodeConfig,
 };
@@ -378,13 +378,12 @@ mod cli_tool_integration {
     use bulletin::r#trait::{DocumentPayload, RingPayload};
     use common::SourceHubTestContainer;
     use crypto::bls12_381::pre::ThresholdDealerNode;
-    use crypto::r#trait::{Dkg, ThresholdDealer};
+    use crypto::r#trait::ThresholdDealer;
     use crypto::{CryptoDeserialize, CryptoSerialize};
     use proto::dkg_service::dkg_service_server::DkgServiceServer;
     use proto::pre_service::pre_service_server::PreServiceServer;
     use rand_core::OsRng;
     use std::net::SocketAddr;
-    use std::sync::Arc;
     use tokio::time::{sleep, Duration};
     /// End-to-end test: Run DKG, then call cli-tool's do_pre function
     /// Tests cli-tool and just full integration test
@@ -436,8 +435,6 @@ mod cli_tool_integration {
             "DKG should succeed: {:?}",
             dkg_result.err()
         );
-        let dkg_response = dkg_result.unwrap();
-        let session_id: u64 = dkg_response.session_id.parse().expect("parse session_id");
 
         // Wait for DKG to complete and get the ring public key
         let max_wait = Duration::from_secs(30);
@@ -483,7 +480,6 @@ mod cli_tool_integration {
         let namespace = "namespace".to_string();
         let full_namespace = format!("bulletin/{}", namespace);
         let ring_namespace = "orbis".to_string();
-        let full_ring_namespace = format!("bulletin/{}", ring_namespace);
         let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
         let proof = vec![0x01];
 

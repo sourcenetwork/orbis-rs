@@ -130,4 +130,3 @@ pub const SECRET_KEY_ENV_VAR: &str = "ORBIS_SECRET_KEY";
 /// posted to this namespace after DKG completion. This namespace must be
 /// registered before use.
 pub const BULLETIN_RING_NAMESPACE: &str = "orbis";
-

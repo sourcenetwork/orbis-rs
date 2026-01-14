@@ -11,7 +11,6 @@
 //! - Manages reencryption share collection and recovery
 
 use crate::app_state::AppState;
-use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::pre::error::{PreError, Result};
 use crate::pre::messages::PreMessage;

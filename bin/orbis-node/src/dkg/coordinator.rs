@@ -23,7 +23,7 @@ use crate::dkg::session_state::{DkgMessageType, DkgPhase, SessionStateManager};
 use crate::helpers::helpers::is_self_peer_id;
 use ark_bls12_381::{Fr, G1Affine};
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
-use bulletin::r#trait::{BulletinPost, RingPayload};
+use bulletin::r#trait::RingPayload;
 use crypto::bls12_381::common::{PolynomialCommitment, FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE};
 use crypto::r#trait::DistributedShare;
 use crypto::r#trait::Dkg;
@@ -33,7 +33,6 @@ use network::Message as NetworkMessage;
 use network::DKG;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::RwLock;
 
 /// DKG Session Manager
 ///
