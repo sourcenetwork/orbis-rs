@@ -6,7 +6,8 @@ use hex;
 
 pub use commands::{
     add_policy_to_chain, create_bulletin_post, do_dkg, do_encrypt_secret, do_generate_reader_key,
-    do_pre, register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
+    do_pre, query_node_info, register_bulletin_namespace, register_object_to_chain,
+    set_relationship_on_chain,
 };
 
 #[derive(Parser, Debug, Clone)]
@@ -201,8 +202,7 @@ async fn main() -> Result<()> {
             create_bulletin_post(namespace, payload_bytes, proof_bytes).await?;
         }
         SubCommands::Info { endpoint } => {
-            println!("Querying node at: {}", endpoint);
-            println!("(Info endpoint not yet implemented on server)");
+            query_node_info(endpoint).await?;
         }
     }
 

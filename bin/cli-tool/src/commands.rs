@@ -22,7 +22,9 @@ use rand_core::OsRng;
 use serde::Deserialize;
 
 use proto::dkg_service::dkg_service_client::DkgServiceClient;
+use proto::info_service::info_service_client::InfoServiceClient;
 use proto::pre_service::pre_service_client::PreServiceClient;
+use tonic::Request;
 
 /// Response structure from PRE server
 #[derive(Debug, Deserialize)]
@@ -409,4 +411,32 @@ pub async fn create_bulletin_post(
 
     println!("Created bulletin post with ID: {}", post_id);
     Ok(post_id)
+}
+
+pub async fn query_node_info(endpoint: String) -> Result<String> {
+    println!("Querying node info from: {}", endpoint);
+
+    let mut client = InfoServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+
+    let request = Request::new(proto::info_service::GetNodeInfoRequest {});
+
+    let response = client
+        .get_node_info(request)
+        .await
+        .map_err(|e| anyhow!("Failed to query node info: {}", e))?;
+
+    let node_info = response.into_inner();
+
+    let output = format!(
+        "Node Info:\n{}\n  Public Address: {}\n  Peer ID: {}",
+        "=".repeat(60),
+        node_info.public_address,
+        node_info.peer_id
+    );
+
+    println!("{}", output);
+
+    Ok(node_info.public_address)
 }
