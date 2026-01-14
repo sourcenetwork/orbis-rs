@@ -6,7 +6,7 @@
 use crate::{
     helpers::{
         launch::{create_and_store_node_key, derive_secret_key_bytes, LogLevel},
-        test_helpers::{cleanup_db, test_db_path},
+        test_helpers::{cleanup_db, get_test_bulletin, test_db_path},
     },
     init_node, Args, NodeConfig,
 };
@@ -366,10 +366,9 @@ async fn test_init_node_with_encrypted_storage() {
 // against them. If orbis-node changes break cli-tool, these tests will fail.
 
 mod cli_tool_integration {
-    use crate::dkg::coordinator::DkgCoordinator;
     use crate::dkg::service::DkgServiceImpl;
     use crate::helpers::test_helpers::{
-        cleanup_db, setup_three_node_network_with_pre, test_db_path,
+        cleanup_db, get_test_bulletin, setup_three_node_network_with_pre, test_db_path,
     };
     use crate::pre::service::PreServiceImpl;
     use crate::{DkgImpl, PreImpl};
@@ -445,21 +444,19 @@ mod cli_tool_integration {
         let start = std::time::Instant::now();
         let mut ring_pk_hex = String::new();
 
-        let alice_coordinator = DkgCoordinator::new(Arc::new(network.alice.app_state.clone()));
-
         while start.elapsed() < max_wait {
-            if let Some(session) = alice_coordinator.get_session(&session_id).await {
-                let session_guard = session.read().await;
-                if let Ok(agg_key) = session_guard.compute_aggregate_public_key() {
-                    // Serialize to bytes then hex (same format cli-tool uses)
-                    let ring_pk_bytes = agg_key.to_bytes().expect("serialize ring pk");
-                    ring_pk_hex = hex::encode(&ring_pk_bytes);
-                    println!(
-                        "DKG completed! Ring PK: {}...",
-                        &ring_pk_hex[..40.min(ring_pk_hex.len())]
-                    );
-                    break;
-                }
+            let post = get_test_bulletin(&network.alice.app_state.bulletin).await;
+
+            // Check if payload is non-empty (DKG complete, ring info posted to bulletin)
+            if !post.payload.is_empty() {
+                // Parse RingPayload from bulletin post - ring_pk is already hex-encoded
+                let ring_payload: RingPayload = post.try_into().expect("parse RingPayload");
+                ring_pk_hex = ring_payload.ring_pk;
+                println!(
+                    "DKG completed! Ring PK: {}...",
+                    &ring_pk_hex[..40.min(ring_pk_hex.len())]
+                );
+                break;
             }
             sleep(Duration::from_millis(500)).await;
         }

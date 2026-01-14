@@ -23,7 +23,7 @@ use crate::dkg::session_state::{DkgMessageType, DkgPhase, SessionStateManager};
 use crate::helpers::helpers::is_self_peer_id;
 use ark_bls12_381::{Fr, G1Affine};
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
-use bulletin::r#trait::RingPayload;
+use bulletin::r#trait::{BulletinPost, RingPayload};
 use crypto::bls12_381::common::{PolynomialCommitment, FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE};
 use crypto::r#trait::DistributedShare;
 use crypto::r#trait::Dkg;
@@ -545,11 +545,6 @@ where
         Ok(response)
     }
 
-    /// Get the DKG session Arc for a given session ID
-    pub async fn get_session(&self, session_id: &u64) -> Option<Arc<RwLock<D>>> {
-        self.app_state.get_dkg_session(session_id).await
-    }
-
     /// Create a new DKG session
     ///
     /// This is typically called when a StartDkg gRPC request is received.
@@ -1069,8 +1064,7 @@ where
             let peer_ids = self
                 .session_state
                 .get_peer_ids(&session_id)
-                .await
-                .unwrap_or_default();
+                .await.unwrap_or_default();
 
             // Create RingPayload
             let ring_payload = RingPayload {

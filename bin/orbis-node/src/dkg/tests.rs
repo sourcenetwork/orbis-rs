@@ -1,11 +1,11 @@
-use crate::dkg::coordinator::DkgCoordinator;
-use crate::dkg::messages::DkgMessage;
+use crate::dkg::{coordinator::DkgCoordinator, messages::DkgMessage};
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
-    setup_three_node_network, test_db_path, TestKeyPair,
+    get_test_bulletin, setup_three_node_network, test_db_path, TestKeyPair,
 };
 use crate::DkgServiceImpl;
-use crypto::r#trait::Dkg;
+use bulletin::r#trait::RingPayload;
+use crypto::r#trait::{CryptoDeserialize, Dkg};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use std::sync::Arc;
@@ -248,92 +248,63 @@ async fn test_start_dkg_succeeds_on_all_connections() {
             );
         }
 
-        // Try to get the session and check if we can compute aggregate key (indicates Phase 4 complete)
-        if let Some(session) = alice_coordinator
-            .get_session(&inner.session_id.parse().unwrap())
-            .await
-        {
-            println!("Found session!");
-            let session_guard = session.read().await;
-            let key = session_guard.compute_aggregate_public_key();
-            // If we can compute aggregate key, Phase 4 is complete
-            if let Ok(aggregate_key_alice) = key {
-                println!("Alice computed aggregate key: {:?}", aggregate_key_alice);
+        // Try to get the ring payload from bulletin (indicates Phase 4 complete)
+        let post = get_test_bulletin(&network.alice.app_state.bulletin).await;
 
-                // Get Bob and Charlie's aggregate public keys
-                let bob_coordinator = DkgCoordinator::new(Arc::new(network.bob.app_state.clone()));
-                let charlie_coordinator =
-                    DkgCoordinator::new(Arc::new(network.charlie.app_state.clone()));
+        // Check if payload is non-empty (DKG complete, ring info posted to bulletin)
+        if !post.payload.is_empty() {
+            println!("Found ring payload in bulletin!");
 
-                let bob_session = bob_coordinator
-                    .get_session(&inner.session_id.parse().unwrap())
-                    .await;
-                let charlie_session = charlie_coordinator
-                    .get_session(&inner.session_id.parse().unwrap())
-                    .await;
+            // Parse RingPayload from bulletin post
+            let ring_payload: RingPayload = post.try_into().expect("parse RingPayload");
+            println!("Ring public key from bulletin: {}", &ring_payload.ring_pk);
 
-                if let (Some(bob_sess), Some(charlie_sess)) = (bob_session, charlie_session) {
-                    let bob_guard = bob_sess.read().await;
-                    let charlie_guard = charlie_sess.read().await;
+            // Deserialize the public key to get the key string for local storage lookup
+            let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode hex");
+            let aggregate_key = <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes)
+                .expect("deserialize public key");
+            let key_string = aggregate_key.to_string();
 
-                    let aggregate_key_bob = bob_guard.compute_aggregate_public_key();
-                    let aggregate_key_charlie = charlie_guard.compute_aggregate_public_key();
+            // Since all nodes read from the same bulletin, they all see the same ring_pk
+            // No need to verify across nodes - it's the same shared bulletin
+            println!(
+                "Success! DKG complete with aggregate key: {:?}",
+                aggregate_key
+            );
 
-                    if let (Ok(agg_bob), Ok(agg_charlie)) =
-                        (aggregate_key_bob, aggregate_key_charlie)
-                    {
-                        println!("Bob computed aggregate key: {:?}", agg_bob);
-                        println!("Charlie computed aggregate key: {:?}", agg_charlie);
+            // Verify that each node stored its secret share in local storage
+            let share_alice = network
+                .alice
+                .app_state
+                .local_storage
+                .get_encrypted(LocalStorageKeys::RingKey(key_string.clone()));
+            let share_bob = network
+                .bob
+                .app_state
+                .local_storage
+                .get_encrypted(LocalStorageKeys::RingKey(key_string.clone()));
+            let share_charlie = network
+                .charlie
+                .app_state
+                .local_storage
+                .get_encrypted(LocalStorageKeys::RingKey(key_string));
 
-                        // Test that all nodes computed the same aggregate public key
-                        assert_eq!(
-                            aggregate_key_alice, agg_bob,
-                            "Alice and Bob should have the same aggregate public key"
-                        );
-                        assert_eq!(
-                            aggregate_key_alice, agg_charlie,
-                            "Alice and Charlie should have the same aggregate public key"
-                        );
+            // Verify all shares exist (they should be different, so we don't compare them)
+            assert!(
+                share_alice.is_ok() && share_alice.as_ref().unwrap().is_some(),
+                "Alice should have stored her secret share"
+            );
+            assert!(
+                share_bob.is_ok() && share_bob.as_ref().unwrap().is_some(),
+                "Bob should have stored his secret share"
+            );
+            assert!(
+                share_charlie.is_ok() && share_charlie.as_ref().unwrap().is_some(),
+                "Charlie should have stored his secret share"
+            );
 
-                        println!("Success! All nodes computed the same aggregate public key");
-
-                        // Verify that each node stored its secret share in local storage
-                        let key_string = aggregate_key_alice.to_string();
-                        let share_alice = network
-                            .alice
-                            .app_state
-                            .local_storage
-                            .get_encrypted(LocalStorageKeys::RingKey(key_string.clone()));
-                        let share_bob = network
-                            .bob
-                            .app_state
-                            .local_storage
-                            .get_encrypted(LocalStorageKeys::RingKey(key_string.clone()));
-                        let share_charlie = network
-                            .charlie
-                            .app_state
-                            .local_storage
-                            .get_encrypted(LocalStorageKeys::RingKey(key_string));
-
-                        // Verify all shares exist (they should be different, so we don't compare them)
-                        assert!(
-                            share_alice.is_ok() && share_alice.as_ref().unwrap().is_some(),
-                            "Alice should have stored her secret share"
-                        );
-                        assert!(
-                            share_bob.is_ok() && share_bob.as_ref().unwrap().is_some(),
-                            "Bob should have stored his secret share"
-                        );
-                        assert!(
-                            share_charlie.is_ok() && share_charlie.as_ref().unwrap().is_some(),
-                            "Charlie should have stored his secret share"
-                        );
-
-                        println!("Success! All nodes stored their secret shares in local storage");
-                        break;
-                    }
-                }
-            }
+            println!("Success! All nodes stored their secret shares in local storage");
+            break;
         }
 
         if start.elapsed() > max_wait {

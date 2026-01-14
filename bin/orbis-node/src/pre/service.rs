@@ -193,6 +193,7 @@ where
 
         // 5. Create coordinator and initiate reencryption
         let coordinator = PreCoordinator::<D, T>::new(Arc::new(self.state.clone()));
+        let total_nodes = ring_payload.peer_ids.len();
         let result = coordinator
             .initiate_reencryption(
                 request_id,
@@ -201,6 +202,7 @@ where
                 rdr_pk,
                 &ring_payload.peer_ids,
                 ring_payload.threshold as usize,
+                total_nodes,
                 &ring_payload.public_polynomial,
                 document_payload.policy_id,
                 document_payload.resource,

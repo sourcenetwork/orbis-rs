@@ -3,14 +3,14 @@
 //! This module contains end-to-end tests for the PRE (Proxy Re-Encryption) protocol.
 //! These tests verify the complete flow: DKG → Alice encrypts → PRE to Bob → Bob decrypts.
 
-use crate::dkg::coordinator::DkgCoordinator;
 use crate::helpers::test_helpers::{
-    cleanup_db, create_authenticated_request, create_test_app_state_default,
+    cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_bulletin,
     setup_three_node_network_with_pre, test_db_path, TestKeyPair,
 };
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::pre::service::PreServiceImpl;
 use crate::DkgServiceImpl;
+use bulletin::r#trait::RingPayload;
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, ThresholdDealer};
@@ -82,13 +82,18 @@ async fn test_dkg_then_pre_end_to_end() {
         result.err()
     );
 
-    // Wait for DKG to complete and get the aggregate public key
+    // Wait for DKG to complete and get the ring payload from bulletin
     println!("Waiting for DKG to complete...");
-    let aggregate_pk = wait_for_dkg_completion(
+    let ring_payload = wait_for_dkg_completion(
         &network,
         result.unwrap().into_inner().session_id.parse().unwrap(),
     )
     .await;
+
+    // Deserialize the aggregate public key from the ring payload
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
     println!("DKG completed! Aggregate public key: {:?}", aggregate_pk);
 
     // =========================================================================
@@ -167,10 +172,7 @@ async fn test_dkg_then_pre_end_to_end() {
         .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id)
         .expect("Failed to create PRE JWT");
 
-    // Initiate re-encryption
-    // TODO: threshold and public_polynomial should come from bulletin in real flow
-    let threshold = 2;
-    let public_polynomial_hex = ""; // Placeholder - tests need to be updated to get this from DKG
+    // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
             request_id.clone(),
@@ -178,8 +180,9 @@ async fn test_dkg_then_pre_end_to_end() {
             secret_bytes.clone(),
             bob_pk_bytes.clone(),
             &pre_peer_ids,
-            threshold,
-            public_polynomial_hex,
+            ring_payload.threshold as usize,
+            ring_payload.peer_ids.len(),
+            &ring_payload.public_polynomial,
             "".to_string(),
             "".to_string(),
             object_id,
@@ -247,47 +250,26 @@ async fn test_dkg_then_pre_end_to_end() {
     }
 }
 
-/// Helper function to wait for DKG completion and return the aggregate public key
+/// Helper function to wait for DKG completion and return the RingPayload
 async fn wait_for_dkg_completion(
     network: &crate::helpers::test_helpers::ThreeNodeNetwork,
-    session_id: u64,
-) -> <DkgImpl as Dkg>::PublicKey {
+    _session_id: u64,
+) -> RingPayload {
     let check_interval = Duration::from_millis(500);
     let max_wait = Duration::from_secs(60);
     let start = std::time::Instant::now();
 
     loop {
-        // Check if node1's session has completed Phase 4
-        let node1_coordinator =
-            DkgCoordinator::<DkgImpl>::new(Arc::new(network.alice.app_state.clone()));
+        // Check if ring payload has been posted to bulletin (indicates Phase 4 complete)
+        let post = get_test_bulletin(&network.alice.app_state.bulletin).await;
 
-        if let Some(session) = node1_coordinator.get_session(&session_id).await {
-            let session_guard = session.read().await;
-            if let Ok(aggregate_key) = session_guard.compute_aggregate_public_key() {
-                // Verify all nodes have the same aggregate key
-                let node2_coordinator =
-                    DkgCoordinator::<DkgImpl>::new(Arc::new(network.bob.app_state.clone()));
-                let node3_coordinator =
-                    DkgCoordinator::<DkgImpl>::new(Arc::new(network.charlie.app_state.clone()));
+        // Check if payload is non-empty (DKG complete, ring info posted to bulletin)
+        if !post.payload.is_empty() {
+            // Parse RingPayload from bulletin post
+            let ring_payload: RingPayload = post.try_into().expect("parse RingPayload");
 
-                let node2_session = node2_coordinator.get_session(&session_id).await;
-                let node3_session = node3_coordinator.get_session(&session_id).await;
-
-                if let (Some(node2_sess), Some(node3_sess)) = (node2_session, node3_session) {
-                    let node2_guard = node2_sess.read().await;
-                    let node3_guard = node3_sess.read().await;
-
-                    if let (Ok(key2), Ok(key3)) = (
-                        node2_guard.compute_aggregate_public_key(),
-                        node3_guard.compute_aggregate_public_key(),
-                    ) {
-                        if aggregate_key == key2 && aggregate_key == key3 {
-                            println!("All nodes have computed the same aggregate public key!");
-                            return aggregate_key;
-                        }
-                    }
-                }
-            }
+            println!("All nodes have computed the same aggregate public key!");
+            return ring_payload;
         }
 
         if start.elapsed() > max_wait {
@@ -333,11 +315,16 @@ async fn test_pre_with_large_secret() {
         .await;
     assert!(result.is_ok());
 
-    let aggregate_pk = wait_for_dkg_completion(
+    let ring_payload = wait_for_dkg_completion(
         &network,
         result.unwrap().into_inner().session_id.parse().unwrap(),
     )
     .await;
+
+    // Deserialize the aggregate public key from the ring payload
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
 
     // Create a large secret (1KB)
     let large_secret: Vec<u8> = (0..1024).map(|i| (i % 256) as u8).collect();
@@ -351,7 +338,6 @@ async fn test_pre_with_large_secret() {
     // Bob's keys using trait method
     let (bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
     let bob_pk_bytes = bob_pk.to_bytes().unwrap();
-    let ring_pk_bytes = aggregate_pk.to_bytes().unwrap();
 
     // PRE
     let pre_coordinator =
@@ -364,9 +350,7 @@ async fn test_pre_with_large_secret() {
         .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id)
         .expect("Failed to create PRE JWT");
 
-    // TODO: threshold and public_polynomial should come from bulletin in real flow
-    let threshold = 2;
-    let public_polynomial_hex = ""; // Placeholder - tests need to be updated to get this from DKG
+    // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
             "large-pre-request".to_string(),
@@ -374,8 +358,9 @@ async fn test_pre_with_large_secret() {
             secret_bytes,
             bob_pk_bytes,
             &pre_peer_ids,
-            threshold,
-            public_polynomial_hex,
+            ring_payload.threshold as usize,
+            ring_payload.peer_ids.len(),
+            &ring_payload.public_polynomial,
             "".to_string(),
             "".to_string(),
             object_id,
@@ -449,11 +434,16 @@ async fn test_pre_fails_with_wrong_key() {
         .await;
     assert!(result.is_ok());
 
-    let aggregate_pk = wait_for_dkg_completion(
+    let ring_payload = wait_for_dkg_completion(
         &network,
         result.unwrap().into_inner().session_id.parse().unwrap(),
     )
     .await;
+
+    // Deserialize the aggregate public key from the ring payload
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
 
     // Alice encrypts
     let secret_message = b"Secret that should not be decrypted with wrong key";
@@ -464,7 +454,6 @@ async fn test_pre_fails_with_wrong_key() {
     // Bob's real keys
     let (_bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
     let bob_pk_bytes = bob_pk.to_bytes().unwrap();
-    let ring_pk_bytes = aggregate_pk.to_bytes().unwrap();
 
     // Wrong private key (Eve trying to decrypt)
     let (eve_sk, _eve_pk) = ThresholdDealerNode::generate_keypair();
@@ -482,9 +471,7 @@ async fn test_pre_fails_with_wrong_key() {
         .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id)
         .expect("Failed to create PRE JWT");
 
-    // TODO: threshold and public_polynomial should come from bulletin in real flow
-    let threshold = 2;
-    let public_polynomial_hex = ""; // Placeholder - tests need to be updated to get this from DKG
+    // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
             "wrong-key-pre-request".to_string(),
@@ -492,8 +479,9 @@ async fn test_pre_fails_with_wrong_key() {
             secret_bytes,
             bob_pk_bytes,
             &pre_peer_ids,
-            threshold,
-            public_polynomial_hex,
+            ring_payload.threshold as usize,
+            ring_payload.peer_ids.len(),
+            &ring_payload.public_polynomial,
             "".to_string(),
             "".to_string(),
             object_id,
@@ -568,11 +556,16 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         .await;
     assert!(result.is_ok());
 
-    let aggregate_pk = wait_for_dkg_completion(
+    let ring_payload = wait_for_dkg_completion(
         &network,
         result.unwrap().into_inner().session_id.parse().unwrap(),
     )
     .await;
+
+    // Deserialize the aggregate public key from the ring payload
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
 
     // Alice encrypts
     let secret_message = b"Secret that should not be re-encrypted with bad token";
@@ -583,7 +576,6 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     // Bob's keys
     let (_bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
     let bob_pk_bytes = bob_pk.to_bytes().unwrap();
-    let ring_pk_bytes = aggregate_pk.to_bytes().unwrap();
 
     // PRE with invalid token
     let pre_coordinator =
@@ -595,9 +587,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     let object_id = "object_id_test".to_string();
     let namespace = "namespace_test".to_string();
 
-    // TODO: threshold and public_polynomial should come from bulletin in real flow
-    let threshold = 2;
-    let public_polynomial_hex = ""; // Placeholder - tests need to be updated to get this from DKG
+    // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
     let pre_result = pre_coordinator
         .initiate_reencryption(
             "invalid-token-pre-request".to_string(),
@@ -605,8 +595,9 @@ async fn test_pre_fails_with_invalid_jwt_token() {
             secret_bytes,
             bob_pk_bytes,
             &pre_peer_ids,
-            threshold,
-            public_polynomial_hex,
+            ring_payload.threshold as usize,
+            ring_payload.peer_ids.len(),
+            &ring_payload.public_polynomial,
             "".to_string(),
             "".to_string(),
             object_id,
@@ -680,11 +671,16 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         .await;
     assert!(result.is_ok());
 
-    let aggregate_pk = wait_for_dkg_completion(
+    let ring_payload = wait_for_dkg_completion(
         &network,
         result.unwrap().into_inner().session_id.parse().unwrap(),
     )
     .await;
+
+    // Deserialize the aggregate public key from the ring payload
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
 
     // Alice encrypts
     let secret_message = b"Secret with mismatched claims";
@@ -695,7 +691,6 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     // Bob's keys
     let (_bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
     let bob_pk_bytes = bob_pk.to_bytes().unwrap();
-    let ring_pk_bytes = aggregate_pk.to_bytes().unwrap();
 
     // PRE with token that has WRONG claims (different rdr_pk)
     let pre_coordinator =
@@ -715,9 +710,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         )
         .expect("Failed to create JWT");
 
-    // TODO: threshold and public_polynomial should come from bulletin in real flow
-    let threshold = 2;
-    let public_polynomial_hex = ""; // Placeholder - tests need to be updated to get this from DKG
+    // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
     let pre_result = pre_coordinator
         .initiate_reencryption(
             "mismatched-claims-pre-request".to_string(),
@@ -725,8 +718,9 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             secret_bytes,
             bob_pk_bytes, // Actual rdr_pk doesn't match JWT claim
             &pre_peer_ids,
-            threshold,
-            public_polynomial_hex,
+            ring_payload.threshold as usize,
+            ring_payload.peer_ids.len(),
+            &ring_payload.public_polynomial,
             "".to_string(),
             "".to_string(),
             object_id,

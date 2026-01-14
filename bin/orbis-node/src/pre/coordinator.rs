@@ -348,7 +348,7 @@ where
     /// Sends reencryption requests to all ring nodes, collects responses,
     /// verifies them, and recovers the reencrypted commitment.
     ///
-    /// Ring information (threshold, public_polynomial) is read from the bulletin
+    /// Ring information (threshold, public_polynomial, total_nodes) is read from the bulletin
     /// by the service layer and passed to this function.
     pub async fn initiate_reencryption(
         &self,
@@ -358,6 +358,7 @@ where
         rdr_pk_bytes: Vec<u8>,
         peer_ids: &[String],
         threshold: usize,
+        total_participants: usize,
         public_polynomial_hex: &str,
         policy_id: String,
         resource: String,
@@ -391,9 +392,6 @@ where
         let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize public polynomial: {}", e))
         })?;
-
-        // Total participants is derived from peer_ids
-        let total_participants = peer_ids.len();
 
         // Derive node_id from sorted peer_ids (if we're in the list)
         let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());

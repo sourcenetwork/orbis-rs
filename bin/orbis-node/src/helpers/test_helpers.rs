@@ -3,12 +3,17 @@
 //! This module provides utility functions for setting up test environments.
 
 use crate::app_state::AppState;
+use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::dkg::protocol_handler;
 use crate::dkg::protocol_handler::create_router_with_handlers;
 use authz::dummy::DummyAuthZ;
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
-use bulletin::{dummy::DummyBulletin, r#trait::Bulletin, BulletinImpl};
+use bulletin::{
+    dummy::DummyBulletin,
+    r#trait::{Bulletin, BulletinPost},
+    BulletinImpl,
+};
 use common::blockchain::ChainConfigBuilder;
 use hex;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
@@ -56,6 +61,31 @@ pub async fn create_test_app_state(
     dummy_bulletin: bool,
     db_name: &str,
 ) -> AppState<DkgImpl> {
+    let bulletin: Arc<dyn Bulletin + Send + Sync> = if dummy_bulletin {
+        Arc::new(
+            DummyBulletin::new()
+                .await
+                .expect("Failed to initialize dummy bulletin"),
+        )
+    } else {
+        Arc::new(
+            BulletinImpl::new(ChainConfigBuilder::default())
+                .await
+                .expect("Failed to initialize bulletin"),
+        )
+    };
+    create_test_app_state_with_bulletin(bind_address, dummy_authz, bulletin, db_name).await
+}
+
+/// Create a test AppState with a shared bulletin instance
+///
+/// Use this when you need multiple nodes to share the same bulletin (e.g., in multi-node tests).
+pub async fn create_test_app_state_with_bulletin(
+    bind_address: Option<String>,
+    dummy_authz: bool,
+    bulletin: Arc<dyn Bulletin + Send + Sync>,
+    db_name: &str,
+) -> AppState<DkgImpl> {
     let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
 
     // Initialize network for testing
@@ -79,20 +109,6 @@ pub async fn create_test_app_state(
                 .expect("Failed to initialize dummy Authz"),
         )
     }
-
-    let bulletin: Arc<dyn Bulletin + Send + Sync> = if dummy_bulletin {
-        Arc::new(
-            DummyBulletin::new()
-                .await
-                .expect("Failed to initialize dummy bulletin"),
-        )
-    } else {
-        Arc::new(
-            BulletinImpl::new(ChainConfigBuilder::default())
-                .await
-                .expect("Failed to initialize bulletin"),
-        )
-    };
 
     // Create AppState with the network (node_id is no longer needed - it's session-specific)
     AppState::<DkgImpl>::new(bind_address, network, local_storage, authz, bulletin)
@@ -228,25 +244,32 @@ impl ThreeNodeNetwork {
 pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> ThreeNodeNetwork {
     println!("Setting up three-node test network...");
 
-    // Create three nodes: Alice, Bob, and Charlie
-    let alice_state = create_test_app_state(
+    // Create a shared bulletin for all nodes
+    let shared_bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize shared dummy bulletin"),
+    );
+
+    // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
+    let alice_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
-        true,
+        shared_bulletin.clone(),
         &format!("{}_1", db_name),
     )
     .await;
-    let bob_state = create_test_app_state(
+    let bob_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
-        true,
+        shared_bulletin.clone(),
         &format!("{}_2", db_name),
     )
     .await;
-    let charlie_state = create_test_app_state(
+    let charlie_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
-        true,
+        shared_bulletin,
         &format!("{}_3", db_name),
     )
     .await;
@@ -397,25 +420,40 @@ pub async fn setup_three_node_network_with_pre(
 ) -> ThreeNodeNetwork {
     println!("Setting up three-node test network with DKG and PRE handlers...");
 
-    // Create three nodes: Alice, Bob, and Charlie
-    let alice_state = create_test_app_state(
+    // Create a shared bulletin for all nodes
+    let shared_bulletin: Arc<dyn Bulletin + Send + Sync> = if dummy_bulletin {
+        Arc::new(
+            DummyBulletin::new()
+                .await
+                .expect("Failed to initialize shared dummy bulletin"),
+        )
+    } else {
+        Arc::new(
+            BulletinImpl::new(ChainConfigBuilder::default())
+                .await
+                .expect("Failed to initialize shared bulletin"),
+        )
+    };
+
+    // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
+    let alice_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
-        dummy_bulletin,
+        shared_bulletin.clone(),
         &format!("{}_1", db_name),
     )
     .await;
-    let bob_state = create_test_app_state(
+    let bob_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
-        dummy_bulletin,
+        shared_bulletin.clone(),
         &format!("{}_2", db_name),
     )
     .await;
-    let charlie_state = create_test_app_state(
+    let charlie_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
-        dummy_bulletin,
+        shared_bulletin,
         &format!("{}_3", db_name),
     )
     .await;
@@ -550,4 +588,12 @@ pub fn test_db_path(name: &str) -> String {
 /// Silently ignores errors (e.g., if file doesn't exist).
 pub fn cleanup_db(path: &str) {
     let _ = fs::remove_file(path);
+}
+
+/// Get bulletin ring info for tests
+pub async fn get_test_bulletin(bulletin: &Arc<dyn Bulletin + Send + Sync>) -> BulletinPost {
+    bulletin
+        .read(BULLETIN_RING_NAMESPACE.to_string(), "test".to_string())
+        .await
+        .unwrap()
 }

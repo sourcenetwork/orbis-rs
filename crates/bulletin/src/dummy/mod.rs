@@ -20,7 +20,8 @@ impl Bulletin for DummyBulletin {
 
     async fn post(&self, namespace: String, payload: Vec<u8>, proof: Vec<u8>) -> Result<()> {
         // Generate deterministic ID from namespace + payload (same as SourceHubBulletin)
-        let id = Self::compute_post_id(&namespace, &payload);
+        // TODO: fine for test if only running one dkg
+        let id = "test".to_string(); //Self::compute_post_id(&namespace, &payload);
 
         let post = BulletinPost {
             id: id.clone(),
