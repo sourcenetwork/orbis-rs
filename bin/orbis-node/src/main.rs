@@ -30,9 +30,6 @@ use std::{net::SocketAddr, sync::Arc};
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
 
-#[cfg(feature = "integration-test")]
-use cli_tool;
-
 // Type aliases for concrete implementations
 pub type DkgImpl = DKGNode;
 pub type PreImpl = ThresholdDealerNode;
@@ -204,17 +201,15 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Only fund if both the feature is enabled AND we're in the integration test network
     #[cfg(feature = "integration-test")]
     {
-        if std::env::var("ORBIS_INTEGRATION_TEST").is_ok() {
             // Build chain config with the provided RPC/REST URLs
             let fund_config = ChainConfigBuilder::default()
-                .rpc_url(Some(args.chain_rpc.clone()))
-                .rest_url(Some(args.chain_rest.clone()))
+                .rpc_url(args.chain_rpc.clone())
+                .rest_url(args.chain_rest.clone())
                 .grpc_url(args.bulletin_grpc.clone())
                 .build();
             cli_tool::fund(signer.address(), fund_config)
                 .await
                 .expect("issue with faucet");
-        }
     }
 
     // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)

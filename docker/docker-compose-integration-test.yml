@@ -41,7 +41,6 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret1testsecret1
       - RUST_LOG=info
-      - ORBIS_INTEGRATION_TEST=1
     command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317"]
     ports:
       - "50051:50051"
@@ -66,7 +65,6 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret2testsecret2
       - RUST_LOG=info
-      - ORBIS_INTEGRATION_TEST=1
     command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317"]
     ports:
       - "50052:50051"
@@ -91,7 +89,6 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret3testsecret3
       - RUST_LOG=info
-      - ORBIS_INTEGRATION_TEST=1
     command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317"]
     ports:
       - "50053:50051"
