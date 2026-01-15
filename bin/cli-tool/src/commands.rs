@@ -388,6 +388,27 @@ pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
     Ok(())
 }
 
+pub async fn add_bulletin_collaborator(namespace: String, collaborator_address: String) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+
+    let client = SourceHubClient::with_signer(ChainConfig::local(), signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create blockchain client: {}", e))?;
+
+    let result = client
+        .bulletin_add_collaborator(&namespace, &collaborator_address)
+        .await
+        .map_err(|e| anyhow!("Failed to add collaborator: {}", e))?;
+
+    if result.code != 0 {
+        return Err(anyhow!("Failed to add collaborator: code {}", result.code));
+    }
+
+    println!("Added collaborator {} to namespace {}", collaborator_address, namespace);
+    Ok(())
+}
+
 pub async fn create_bulletin_post(
     namespace: String,
     payload: Vec<u8>,
@@ -413,7 +434,43 @@ pub async fn create_bulletin_post(
     Ok(post_id)
 }
 
-pub async fn query_node_info(endpoint: String) -> Result<String> {
+/// Read a bulletin post by namespace and ID
+pub async fn read_bulletin_post(namespace: String, id: String) -> Result<Vec<u8>> {
+    let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
+        .await
+        .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
+
+    let post = bulletin
+        .read(namespace, id)
+        .await
+        .map_err(|e| anyhow!("Failed to read bulletin post: {}", e))?;
+
+    Ok(post.payload)
+}
+
+/// List all bulletin posts in a namespace
+pub async fn list_bulletin_posts(namespace: String) -> Result<Vec<Vec<u8>>> {
+    let client = SourceHubClient::new(ChainConfig::local())
+        .await
+        .map_err(|e| anyhow!("Failed to create client: {}", e))?;
+
+    let posts = client
+        .bulletin_list_posts(&namespace)
+        .await
+        .map_err(|e| anyhow!("Failed to list bulletin posts: {}", e))?;
+
+    Ok(posts.into_iter().map(|p| p.payload).collect())
+}
+
+/// Result of querying node info
+#[derive(Debug, Clone)]
+pub struct NodeInfoResult {
+    pub public_address: String,
+    pub peer_id: String,
+    pub p2p_address: String,
+}
+
+pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
     println!("Querying node info from: {}", endpoint);
 
     let mut client = InfoServiceClient::connect(endpoint.clone())
@@ -430,13 +487,75 @@ pub async fn query_node_info(endpoint: String) -> Result<String> {
     let node_info = response.into_inner();
 
     let output = format!(
-        "Node Info:\n{}\n  Public Address: {}\n  Peer ID: {}",
+        "Node Info:\n{}\n  Public Address: {}\n  Peer ID: {}\n  P2P Address: {}",
         "=".repeat(60),
         node_info.public_address,
-        node_info.peer_id
+        node_info.peer_id,
+        node_info.p2p_address
     );
 
     println!("{}", output);
 
-    Ok(node_info.public_address)
+    Ok(NodeInfoResult {
+        public_address: node_info.public_address,
+        peer_id: node_info.peer_id,
+        p2p_address: node_info.p2p_address,
+    })
+}
+
+pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
+    println!("Funding address: {}", address);
+
+    // Transfer a reasonable amount (e.g., 1000000 uopen = 1 OPEN)
+    // This should be enough for multiple transactions
+    let amount = 1_000_000u64;
+    let denom = "uopen";
+
+    println!("Transferring {} {} to {}", amount, denom, address);
+
+    // Retry logic for timing issues (REST API might not be ready immediately)
+    // and sequence mismatch issues (multiple nodes starting simultaneously)
+    // This is dumb but fine for testing
+    let max_retries = 15;
+    let mut last_error = None;
+
+    // Create the signer once
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer from test account: {}", e))?;
+
+    let client = SourceHubClient::with_signer(config.clone(), signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create client: {}", e))?;
+
+    for attempt in 1..=max_retries {
+        match client.transfer(&address, amount, denom).await {
+            Ok(result) => {
+                println!(
+                    "Transfer successful! Tx hash: {}, Height: {:?}",
+                    result.tx_hash, result.height
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                println!("Transfer attempt {}/{} failed: {}", attempt, max_retries, err_str);
+                last_error = Some(anyhow!("{}", e));
+                if attempt < max_retries {
+                    // Use pseudo-random delay (1-4 seconds) to desynchronize competing nodes
+                    // Based on current time nanos to add jitter between nodes
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0);
+                    let delay_ms = 1000 + (nanos % 3000);
+                    println!("Retrying in {}ms...", delay_ms);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                }
+            }
+        }
+    }
+
+    Err(anyhow!("Failed to transfer funds after {} attempts: {}",
+        max_retries,
+        last_error.map(|e| e.to_string()).unwrap_or_default()))
 }

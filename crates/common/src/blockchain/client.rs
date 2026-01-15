@@ -1,6 +1,6 @@
 //! SourceHub blockchain client.
 
-use crate::blockchain::{BlockchainError, ChainConfig, Result, TxSigner};
+use crate::blockchain::{bank, BlockchainError, ChainConfig, Result, TxSigner};
 use cosmrs::Any;
 use prost::Message;
 use reqwest::Client as HttpClient;
@@ -303,6 +303,33 @@ impl SourceHubClient {
                 e, body
             ))
         })
+    }
+
+    /// Transfer coins from the signer's account to another address.
+    ///
+    /// # Arguments
+    /// * `to_address` - The recipient's bech32 address
+    /// * `amount` - The amount to transfer (in base units, e.g., uopen)
+    /// * `denom` - The denomination (e.g., "uopen")
+    pub async fn transfer(&self, to_address: &str, amount: u64, denom: &str) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+
+        // Create the bank transfer message using protobuf
+        let coin = bank::Coin {
+            denom: denom.to_string(),
+            amount: amount.to_string(),
+        };
+
+        let msg = bank::MsgSend {
+            from_address: signer.address(),
+            to_address: to_address.to_string(),
+            amount: vec![coin],
+        };
+
+        // Use protobuf encoding
+        self.broadcast_proto_msg(bank::MsgSend::TYPE_URL, &msg).await
     }
 }
 

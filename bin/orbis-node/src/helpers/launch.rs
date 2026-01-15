@@ -28,6 +28,12 @@ pub struct Args {
     /// Bulletin GRPC (chain GRPC endpoint probably)
     #[arg(short = 'b', long, default_value = "http://localhost:9090")]
     pub bulletin_grpc: Option<String>,
+    /// Chain RPC URL (Tendermint RPC endpoint)
+    #[arg(long, default_value = "http://localhost:26657")]
+    pub chain_rpc: String,
+    /// Chain REST URL (Cosmos REST API endpoint)
+    #[arg(long, default_value = "http://localhost:1317")]
+    pub chain_rest: String,
 }
 
 // ============================================================================
@@ -274,18 +280,43 @@ impl From<LogLevel> for tracing::Level {
 }
 
 pub fn db_path(name: &str) -> String {
-    let project_root = project_root::get_project_root().unwrap();
-    format!("{}/dbs/{}.redb", project_root.display(), name)
+    // Try to get project root (works in dev environment), fall back to /data for Docker
+    let base_path = match project_root::get_project_root() {
+        Ok(root) => root,
+        Err(_) => {
+            // In Docker or other environments without Cargo.toml, use /data or current dir
+            let data_dir = std::path::PathBuf::from("/data");
+            if data_dir.exists() {
+                data_dir
+            } else {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            }
+        }
+    };
+    let db_dir = base_path.join("dbs");
+    // Create the dbs directory if it doesn't exist
+    std::fs::create_dir_all(&db_dir).ok();
+    format!("{}/{}.redb", db_dir.display(), name)
 }
 
 pub fn create_and_store_node_key(
     local_storage: LocalStorageImpl,
     config: ChainConfig,
 ) -> Result<TxSigner, String> {
-    // Write public key to file in project root
-    let project_root = project_root::get_project_root()
-        .map_err(|e| format!("Failed to get project root: {}", e))?;
-    let public_key_path = project_root.join("public_key.txt");
+    // Write public key to file - try project root first, fall back to /data or current dir
+    let base_path = match project_root::get_project_root() {
+        Ok(root) => root,
+        Err(_) => {
+            // In Docker or other environments without Cargo.toml, use /data or current dir
+            let data_dir = std::path::PathBuf::from("/data");
+            if data_dir.exists() {
+                data_dir
+            } else {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            }
+        }
+    };
+    let public_key_path = base_path.join("public_key.txt");
 
     // Check if a signing key exists in DB
     let hex_key = match local_storage.get_encrypted(LocalStorageKeys::NodeSigningKey) {

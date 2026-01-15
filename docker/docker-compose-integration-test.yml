@@ -1,0 +1,113 @@
+# Docker Compose for integration tests
+# Spins up sourcehub chain + 3 orbis nodes with proper dependencies and healthchecks
+services:
+  sourcehub:
+    image: ghcr.io/sourcenetwork/sourcehub:c83789e436a4d45a15741ae3fd4084e6b13299eb
+    platform: linux/amd64
+    container_name: sourcehub-integration-test
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        rm -rf /home/node/.sourcehub/*
+        sourcehubd init local-node --chain-id sourcehub-localnet --home /home/node/.sourcehub
+        sourcehubd keys add validator --keyring-backend test --home /home/node/.sourcehub
+        # Add a test account with known mnemonic for integration testing
+        echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | sourcehubd keys add test --recover --keyring-backend test --home /home/node/.sourcehub
+        sourcehubd genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
+        sourcehubd genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
+        sourcehubd genesis gentx validator 10000000000uopen --keyring-backend test --chain-id sourcehub-localnet --home /home/node/.sourcehub
+        sourcehubd genesis collect-gentxs --home /home/node/.sourcehub
+        exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
+    ports:
+      - "26657:26657" # RPC
+      - "26656:26656" # P2P
+      - "1317:1317"   # API
+      - "9090:9090"   # gRPC
+    networks:
+      - orbis-integration-network
+    healthcheck:
+      test: ["CMD", "sourcehubd", "status", "--home", "/home/node/.sourcehub"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  node1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: orbis-integration-node-1
+    environment:
+      - ORBIS_PASSWORD=testpassword123
+      - ORBIS_SECRET_KEY=testsecret1testsecret1
+      - RUST_LOG=info
+      - ORBIS_INTEGRATION_TEST=1
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317"]
+    ports:
+      - "50051:50051"
+    networks:
+      - orbis-integration-network
+    depends_on:
+      sourcehub:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  node2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: orbis-integration-node-2
+    environment:
+      - ORBIS_PASSWORD=testpassword123
+      - ORBIS_SECRET_KEY=testsecret2testsecret2
+      - RUST_LOG=info
+      - ORBIS_INTEGRATION_TEST=1
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317"]
+    ports:
+      - "50052:50051"
+    networks:
+      - orbis-integration-network
+    depends_on:
+      sourcehub:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  node3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: orbis-integration-node-3
+    environment:
+      - ORBIS_PASSWORD=testpassword123
+      - ORBIS_SECRET_KEY=testsecret3testsecret3
+      - RUST_LOG=info
+      - ORBIS_INTEGRATION_TEST=1
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317"]
+    ports:
+      - "50053:50051"
+    networks:
+      - orbis-integration-network
+    depends_on:
+      sourcehub:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+networks:
+  orbis-integration-network:
+    driver: bridge
+

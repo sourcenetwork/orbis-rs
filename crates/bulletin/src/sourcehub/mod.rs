@@ -77,11 +77,26 @@ impl SourceHubBulletin {
         chain_config_builder: ChainConfigBuilder,
         signer: TxSigner,
     ) -> Result<Self> {
-        Ok(SourceHubBulletin {
+        // Get the address before moving the signer
+        let address = signer.address();
+
+        let client = SourceHubBulletin {
             chain_client: SourceHubClient::with_signer(chain_config_builder.build(), signer)
                 .await
                 .map_err(|e| BulletinError::ChainError(e.to_string()))?,
-        })
+        };
+
+        // Transfer to self to register account on-chain (registers public key)
+        let amount = 1u64;
+        let denom = "uopen";
+
+        let _result = client
+            .chain_client
+            .transfer(&address, amount, denom)
+            .await
+            .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+
+        Ok(client)
     }
 
     pub fn get_post_id(namespace: &str, payload: &[u8]) -> Result<String> {

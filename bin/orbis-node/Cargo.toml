@@ -36,6 +36,7 @@ tracing = { version = "0.1.16"}
 sha2 = { workspace = true }
 common = { path = "../../crates/common" }
 project-root = { workspace = true }
+cli-tool = { path = "../cli-tool", optional = true }
 
 [dev-dependencies]
 serial_test = "3.2.0"
@@ -43,10 +44,11 @@ ark-ec = "0.4"
 ark-std = "0.4"
 rand_core = "0.6"
 crypto = { path = "../../crates/crypto", features = ["test-helpers"] }
-cli-tool = { path = "../cli-tool" }
 tokio-stream = "0.1"
+cli-tool = { path = "../cli-tool" }
 
 [features]
 default = ["local-storage/redb"]
 redb = ["local-storage/redb"]
 memory = ["local-storage/memory"]
+integration-test = ["cli-tool"]

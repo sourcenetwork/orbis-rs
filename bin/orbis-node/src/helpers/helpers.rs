@@ -10,11 +10,48 @@ use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+/// Check if a string is a valid address (either ip:port or hostname:port)
+fn is_valid_address(addr_str: &str) -> bool {
+    // First, try to parse as a socket address (ip:port)
+    if addr_str.parse::<SocketAddr>().is_ok() {
+        return true;
+    }
+
+    // Otherwise, check if it's a valid hostname:port format
+    // Find the last colon to split host and port
+    if let Some(colon_pos) = addr_str.rfind(':') {
+        let host = &addr_str[..colon_pos];
+        let port_str = &addr_str[colon_pos + 1..];
+
+        // Port must be a valid number between 1 and 65535
+        if let Ok(port) = port_str.parse::<u16>() {
+            if port == 0 {
+                return false;
+            }
+
+            // Host must be a valid hostname (alphanumeric, hyphens, dots)
+            // and must not be empty
+            if !host.is_empty()
+                && host
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+                && !host.starts_with('-')
+                && !host.ends_with('-')
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Validate a peer ID string
 ///
 /// Valid formats:
 /// - `node_id` - Just the iroh public key (hex-encoded, 64 chars for Ed25519)
-/// - `node_id@ip:port` - Node ID with socket address
+/// - `node_id@ip:port` - Node ID with IP socket address
+/// - `node_id@hostname:port` - Node ID with hostname address (for Docker/DNS)
 ///
 /// # Arguments
 /// * `peer_id` - The peer ID string to validate
@@ -65,10 +102,10 @@ pub fn validate_peer_id(peer_id: &str) -> Result<(), PeerIdValidationError> {
             ));
         }
 
-        // Try to parse as a socket address
-        if addr_str.parse::<SocketAddr>().is_err() {
+        // Try to parse as a socket address (ip:port) or hostname:port
+        if !is_valid_address(addr_str) {
             return Err(PeerIdValidationError::InvalidSocketAddr(format!(
-                "Cannot parse '{}' as a valid socket address (expected ip:port)",
+                "Cannot parse '{}' as a valid address (expected ip:port or hostname:port)",
                 addr_str
             )));
         }

@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.85-bookworm AS builder
+FROM rust:latest AS builder
 
 # Install build dependencies
 # - protobuf-compiler: required for tonic-build
@@ -19,15 +19,18 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY bin ./bin
 
-# Build release binary
-RUN cargo build --release --bin orbis-node
+# Build release binary with integration-test feature for test environments
+RUN cargo build --release --bin orbis-node --features integration-test
 
 # Runtime stage
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates netcat-openbsd && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Create data directory for database and keys
+RUN mkdir -p /data/dbs
 
 # Copy the compiled binary from builder
 COPY --from=builder /app/target/release/orbis-node /usr/local/bin/orbis-node

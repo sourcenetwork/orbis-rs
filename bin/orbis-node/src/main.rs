@@ -30,6 +30,9 @@ use std::{net::SocketAddr, sync::Arc};
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
 
+#[cfg(feature = "integration-test")]
+use cli_tool;
+
 // Type aliases for concrete implementations
 pub type DkgImpl = DKGNode;
 pub type PreImpl = ThresholdDealerNode;
@@ -178,7 +181,10 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|e| format!("Failed to initialize network: {}", e))?,
     );
-    let authz_chain_config = ChainConfigBuilder::default().grpc_url(args.authz_grpc.clone());
+    let authz_chain_config = ChainConfigBuilder::default()
+        .grpc_url(args.authz_grpc.clone())
+        .rpc_url(Some(args.chain_rpc.clone()))
+        .rest_url(Some(args.chain_rest.clone()));
     // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
     let authz: Arc<dyn Authz> = Arc::new(
         SourceHubAuth::new(authz_chain_config)
@@ -186,10 +192,30 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("Failed to initialize authz: {}", e))?,
     );
 
-    let bulletin_chain_config = ChainConfigBuilder::default().grpc_url(args.bulletin_grpc.clone());
+    let bulletin_chain_config = ChainConfigBuilder::default()
+        .grpc_url(args.bulletin_grpc.clone())
+        .rpc_url(Some(args.chain_rpc.clone()))
+        .rest_url(Some(args.chain_rest.clone()));
     let chain_config = bulletin_chain_config.clone().build();
     let signer = create_and_store_node_key(local_storage.clone(), chain_config)
         .map_err(|e| format!("Failed to create or store node key: {}", e))?;
+
+    // For integration tests, this funds the account, this is handled differently live
+    // Only fund if both the feature is enabled AND we're in the integration test network
+    #[cfg(feature = "integration-test")]
+    {
+        if std::env::var("ORBIS_INTEGRATION_TEST").is_ok() {
+            // Build chain config with the provided RPC/REST URLs
+            let fund_config = ChainConfigBuilder::default()
+                .rpc_url(Some(args.chain_rpc.clone()))
+                .rest_url(Some(args.chain_rest.clone()))
+                .grpc_url(args.bulletin_grpc.clone())
+                .build();
+            cli_tool::fund(signer.address(), fund_config)
+                .await
+                .expect("issue with faucet");
+        }
+    }
 
     // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
     let bulletin: Arc<BulletinImpl> = Arc::new(

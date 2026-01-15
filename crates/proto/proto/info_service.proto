@@ -11,4 +11,6 @@ message GetNodeInfoRequest {}
 message GetNodeInfoResponse {
   string public_address = 1;
   string peer_id = 2;
+  // P2P connection string in format "peer_id@host:port" for node-to-node communication
+  string p2p_address = 3;
 }

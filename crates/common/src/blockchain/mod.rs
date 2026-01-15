@@ -8,6 +8,7 @@
 //! - `bulletin` - Bulletin board module types and operations
 
 pub mod acp;
+pub mod bank;
 pub mod bulletin;
 mod client;
 mod config;

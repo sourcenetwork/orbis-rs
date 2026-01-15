@@ -3,11 +3,11 @@ mod commands;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use hex;
-
+use common::blockchain::ChainConfig;
 pub use commands::{
-    add_policy_to_chain, create_bulletin_post, do_dkg, do_encrypt_secret, do_generate_reader_key,
-    do_pre, query_node_info, register_bulletin_namespace, register_object_to_chain,
-    set_relationship_on_chain,
+    add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg, do_encrypt_secret,
+    do_generate_reader_key, do_pre, fund, query_node_info, register_bulletin_namespace,
+    register_object_to_chain, set_relationship_on_chain,
 };
 
 #[derive(Parser, Debug, Clone)]
@@ -111,6 +111,15 @@ pub enum SubCommands {
         #[clap(long)]
         namespace: String,
     },
+    /// Add a collaborator to a bulletin namespace
+    AddBulletinCollaborator {
+        /// Namespace to add collaborator to
+        #[clap(long)]
+        namespace: String,
+        /// Collaborator address to add
+        #[clap(long)]
+        collaborator: String,
+    },
     /// Create a post on the bulletin
     CreateBulletinPost {
         /// Namespace to post to
@@ -122,6 +131,12 @@ pub enum SubCommands {
         /// Proof as hex string
         #[clap(long)]
         proof: String,
+    },
+    /// Fund an account from the pre funded account
+    Fund {
+        /// Address to fund
+        #[clap(long)]
+        address: String,
     },
     /// Query node info
     Info {
@@ -192,6 +207,12 @@ async fn main() -> Result<()> {
         SubCommands::RegisterBulletinNamespace { namespace } => {
             register_bulletin_namespace(namespace).await?;
         }
+        SubCommands::AddBulletinCollaborator {
+            namespace,
+            collaborator,
+        } => {
+            add_bulletin_collaborator(namespace, collaborator).await?;
+        }
         SubCommands::CreateBulletinPost {
             namespace,
             payload,
@@ -200,6 +221,9 @@ async fn main() -> Result<()> {
             let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
             let proof_bytes = hex::decode(&proof).expect("Failed to decode proof hex");
             create_bulletin_post(namespace, payload_bytes, proof_bytes).await?;
+        }
+        SubCommands::Fund { address } => {
+            fund(address, ChainConfig::local()).await?;
         }
         SubCommands::Info { endpoint } => {
             query_node_info(endpoint).await?;

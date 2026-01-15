@@ -135,12 +135,27 @@ impl Network for IrohNetwork {
 
         // Create EndpointAddr from the public key
         let peer_addr = if let Some(addr_str) = socket_addr_opt {
-            let socket_addr: SocketAddr = addr_str.parse().map_err(|e| {
-                NetworkError::InvalidAddress(format!(
-                    "Invalid socket address '{}': {}",
-                    addr_str, e
-                ))
-            })?;
+            // First try to parse as a direct SocketAddr (IP:port)
+            let socket_addr = if let Ok(addr) = addr_str.parse::<SocketAddr>() {
+                addr
+            } else {
+                // Try to resolve as hostname:port using DNS
+                tokio::net::lookup_host(addr_str)
+                    .await
+                    .map_err(|e| {
+                        NetworkError::InvalidAddress(format!(
+                            "Failed to resolve address '{}': {}",
+                            addr_str, e
+                        ))
+                    })?
+                    .next()
+                    .ok_or_else(|| {
+                        NetworkError::InvalidAddress(format!(
+                            "No addresses found for hostname '{}'",
+                            addr_str
+                        ))
+                    })?
+            };
 
             // Add the IP address to the endpoint address
             EndpointAddr::new(public_key).with_ip_addr(socket_addr)

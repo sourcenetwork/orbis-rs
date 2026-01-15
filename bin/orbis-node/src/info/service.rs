@@ -38,6 +38,16 @@ where
         // Get the peer ID from the network
         let peer_id = hex::encode(self.state.network.local_peer_id().as_bytes());
 
+        // Get the P2P connection string (peer_id@host:port)
+        let socket_addr = self
+            .state
+            .network
+            .bound_addresses()
+            .first()
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|| "0.0.0.0:0".to_string());
+        let p2p_address = format!("{}@{}", peer_id, socket_addr);
+
         // Get the signer address from local storage
         let config = ChainConfigBuilder::default().build();
         let public_address = get_node_signer(self.state.local_storage.clone(), config)
@@ -47,6 +57,7 @@ where
         Ok(Response::new(GetNodeInfoResponse {
             public_address,
             peer_id,
+            p2p_address,
         }))
     }
 }

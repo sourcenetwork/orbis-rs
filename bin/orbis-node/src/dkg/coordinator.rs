@@ -204,8 +204,6 @@ where
                 "DKG Coordinator: Session init"
             );
 
-            // For non-initiator nodes, they should start Phase 1 after receiving SessionInit
-            // They now have peer_ids, so they can send commitments when they generate their polynomial
             return Ok(Some(DkgMessage::Ack {
                 session_id,
                 message_type: "SessionInit".to_string(),
@@ -1079,8 +1077,9 @@ where
                 DkgError::Serialization(format!("Failed to serialize RingPayload: {}", e))
             })?;
 
-            // Post to bulletin (no proof needed for ring registration)
-            let proof = Vec::new();
+            // TODO: FIX Post to bulletin with a placeholder proof
+            // The blockchain requires a non-empty proof, so we use a simple placeholder
+            let proof = vec![0x01];
 
             self.app_state
                 .bulletin
