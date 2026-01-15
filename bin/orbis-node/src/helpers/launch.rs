@@ -30,10 +30,10 @@ pub struct Args {
     pub bulletin_grpc: Option<String>,
     /// Chain RPC URL (Tendermint RPC endpoint)
     #[arg(long, default_value = "http://localhost:26657")]
-    pub chain_rpc: String,
+    pub chain_rpc: Option<String>,
     /// Chain REST URL (Cosmos REST API endpoint)
     #[arg(long, default_value = "http://localhost:1317")]
-    pub chain_rest: String,
+    pub chain_rest: Option<String>,
 }
 
 // ============================================================================

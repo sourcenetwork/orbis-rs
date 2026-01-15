@@ -311,7 +311,12 @@ impl SourceHubClient {
     /// * `to_address` - The recipient's bech32 address
     /// * `amount` - The amount to transfer (in base units, e.g., uopen)
     /// * `denom` - The denomination (e.g., "uopen")
-    pub async fn transfer(&self, to_address: &str, amount: u64, denom: &str) -> Result<BroadcastResult> {
+    pub async fn transfer(
+        &self,
+        to_address: &str,
+        amount: u64,
+        denom: &str,
+    ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
@@ -329,7 +334,8 @@ impl SourceHubClient {
         };
 
         // Use protobuf encoding
-        self.broadcast_proto_msg(bank::MsgSend::TYPE_URL, &msg).await
+        self.broadcast_proto_msg(bank::MsgSend::TYPE_URL, &msg)
+            .await
     }
 }
 

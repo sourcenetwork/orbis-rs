@@ -388,7 +388,10 @@ pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
     Ok(())
 }
 
-pub async fn add_bulletin_collaborator(namespace: String, collaborator_address: String) -> Result<()> {
+pub async fn add_bulletin_collaborator(
+    namespace: String,
+    collaborator_address: String,
+) -> Result<()> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
@@ -405,7 +408,10 @@ pub async fn add_bulletin_collaborator(namespace: String, collaborator_address: 
         return Err(anyhow!("Failed to add collaborator: code {}", result.code));
     }
 
-    println!("Added collaborator {} to namespace {}", collaborator_address, namespace);
+    println!(
+        "Added collaborator {} to namespace {}",
+        collaborator_address, namespace
+    );
     Ok(())
 }
 
@@ -538,7 +544,10 @@ pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
             }
             Err(e) => {
                 let err_str = e.to_string();
-                println!("Transfer attempt {}/{} failed: {}", attempt, max_retries, err_str);
+                println!(
+                    "Transfer attempt {}/{} failed: {}",
+                    attempt, max_retries, err_str
+                );
                 last_error = Some(anyhow!("{}", e));
                 if attempt < max_retries {
                     // Use pseudo-random delay (1-4 seconds) to desynchronize competing nodes
@@ -555,7 +564,9 @@ pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
         }
     }
 
-    Err(anyhow!("Failed to transfer funds after {} attempts: {}",
+    Err(anyhow!(
+        "Failed to transfer funds after {} attempts: {}",
         max_retries,
-        last_error.map(|e| e.to_string()).unwrap_or_default()))
+        last_error.map(|e| e.to_string()).unwrap_or_default()
+    ))
 }

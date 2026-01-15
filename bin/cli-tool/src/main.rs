@@ -2,13 +2,13 @@ mod commands;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use hex;
-use common::blockchain::ChainConfig;
 pub use commands::{
-    add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg, do_encrypt_secret,
-    do_generate_reader_key, do_pre, fund, query_node_info, register_bulletin_namespace,
-    register_object_to_chain, set_relationship_on_chain,
+    add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg,
+    do_encrypt_secret, do_generate_reader_key, do_pre, fund, query_node_info,
+    register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
 };
+use common::blockchain::ChainConfig;
+use hex;
 
 #[derive(Parser, Debug, Clone)]
 #[clap(version, about = "CLI tool for interacting with an orbis network")]

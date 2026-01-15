@@ -19,345 +19,357 @@ use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::Network;
 use std::sync::Arc;
 
-// /// Test that the node initializes successfully with valid configuration
-// #[tokio::test]
-// async fn test_init_node_success() {
-//     let db_path = test_db_path("test_init_node_success");
+/// Test that the node initializes successfully with valid configuration
+#[tokio::test]
+async fn test_init_node_success() {
+    let db_path = test_db_path("test_init_node_success");
 
-//     // Create a real network for testing
-//     let network: Arc<dyn Network> = Arc::new(
-//         network::IrohNetwork::new()
-//             .await
-//             .expect("Failed to create network"),
-//     );
+    // Create a real network for testing
+    let network: Arc<dyn Network> = Arc::new(
+        network::IrohNetwork::new()
+            .await
+            .expect("Failed to create network"),
+    );
 
-//     let authz: Arc<dyn Authz> = Arc::new(
-//         SourceHubAuth::new(ChainConfigBuilder::default())
-//             .await
-//             .expect("Failed to initialize Authz"),
-//     );
+    let authz: Arc<dyn Authz> = Arc::new(
+        SourceHubAuth::new(ChainConfigBuilder::default())
+            .await
+            .expect("Failed to initialize Authz"),
+    );
 
-//     let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-//         DummyBulletin::new()
-//             .await
-//             .expect("Failed to initialize bulletin"),
-//     );
+    let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize bulletin"),
+    );
 
-//     let config = NodeConfig {
-//         args: Args {
-//             addr: "127.0.0.1:0".to_string(), // Use port 0 to let OS assign
-//             log_level: LogLevel::Info,
-//             authz_grpc: None,
-//             bulletin_grpc: None,
-//         },
-//         network,
-//         local_storage: LocalStorageImpl::new(None, db_path.clone())
-//             .expect("Failed to create local storage"),
-//         authz,
-//         bulletin,
-//     };
+    let config = NodeConfig {
+        args: Args {
+            addr: "127.0.0.1:0".to_string(), // Use port 0 to let OS assign
+            log_level: LogLevel::Info,
+            authz_grpc: None,
+            bulletin_grpc: None,
+            chain_rest: None,
+            chain_rpc: None,
+        },
+        network,
+        local_storage: LocalStorageImpl::new(None, db_path.clone())
+            .expect("Failed to create local storage"),
+        authz,
+        bulletin,
+    };
 
-//     let result = init_node(config).await;
-//     assert!(result.is_ok(), "Node initialization should succeed");
+    let result = init_node(config).await;
+    assert!(result.is_ok(), "Node initialization should succeed");
 
-//     let node = result.unwrap();
+    let node = result.unwrap();
 
-//     // Verify the node was initialized correctly
-//     assert!(
-//         !node.local_address.is_empty(),
-//         "Local address should be set"
-//     );
+    // Verify the node was initialized correctly
+    assert!(
+        !node.local_address.is_empty(),
+        "Local address should be set"
+    );
 
-//     // Clean up
-//     node.router
-//         .shutdown()
-//         .await
-//         .expect("Router shutdown failed");
-//     cleanup_db(&db_path);
-// }
+    // Clean up
+    node.router
+        .shutdown()
+        .await
+        .expect("Router shutdown failed");
+    cleanup_db(&db_path);
+}
 
-// /// Test that the node fails with invalid address
-// #[tokio::test]
-// async fn test_init_node_invalid_address() {
-//     let db_path = test_db_path("test_init_node_invalid_address");
+/// Test that the node fails with invalid address
+#[tokio::test]
+async fn test_init_node_invalid_address() {
+    let db_path = test_db_path("test_init_node_invalid_address");
 
-//     let network: Arc<dyn Network> = Arc::new(
-//         network::IrohNetwork::new()
-//             .await
-//             .expect("Failed to create network"),
-//     );
+    let network: Arc<dyn Network> = Arc::new(
+        network::IrohNetwork::new()
+            .await
+            .expect("Failed to create network"),
+    );
 
-//     let authz: Arc<dyn Authz> = Arc::new(
-//         SourceHubAuth::new(ChainConfigBuilder::default())
-//             .await
-//             .expect("Failed to initialize Authz"),
-//     );
+    let authz: Arc<dyn Authz> = Arc::new(
+        SourceHubAuth::new(ChainConfigBuilder::default())
+            .await
+            .expect("Failed to initialize Authz"),
+    );
 
-//     let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-//         DummyBulletin::new()
-//             .await
-//             .expect("Failed to initialize bulletin"),
-//     );
+    let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize bulletin"),
+    );
 
-//     let config = NodeConfig {
-//         args: Args {
-//             addr: "not-a-valid-address".to_string(),
-//             log_level: LogLevel::Info,
-//             authz_grpc: None,
-//             bulletin_grpc: None,
-//         },
-//         network,
-//         local_storage: LocalStorageImpl::new(None, db_path.clone())
-//             .expect("Failed to create local storage"),
-//         authz,
-//         bulletin,
-//     };
+    let config = NodeConfig {
+        args: Args {
+            addr: "not-a-valid-address".to_string(),
+            log_level: LogLevel::Info,
+            authz_grpc: None,
+            bulletin_grpc: None,
+            chain_rest: None,
+            chain_rpc: None,
+        },
+        network,
+        local_storage: LocalStorageImpl::new(None, db_path.clone())
+            .expect("Failed to create local storage"),
+        authz,
+        bulletin,
+    };
 
-//     let result = init_node(config).await;
-//     assert!(
-//         result.is_err(),
-//         "Node initialization should fail with invalid address"
-//     );
-//     cleanup_db(&db_path);
-// }
+    let result = init_node(config).await;
+    assert!(
+        result.is_err(),
+        "Node initialization should fail with invalid address"
+    );
+    cleanup_db(&db_path);
+}
 
-// /// Test that AppState is properly configured after initialization
-// #[tokio::test]
-// async fn test_init_node_app_state_configuration() {
-//     let db_path = test_db_path("test_init_node_app_state_configuration");
+/// Test that AppState is properly configured after initialization
+#[tokio::test]
+async fn test_init_node_app_state_configuration() {
+    let db_path = test_db_path("test_init_node_app_state_configuration");
 
-//     let network: Arc<dyn Network> = Arc::new(
-//         network::IrohNetwork::new()
-//             .await
-//             .expect("Failed to create network"),
-//     );
+    let network: Arc<dyn Network> = Arc::new(
+        network::IrohNetwork::new()
+            .await
+            .expect("Failed to create network"),
+    );
 
-//     let authz: Arc<dyn Authz> = Arc::new(
-//         SourceHubAuth::new(ChainConfigBuilder::default())
-//             .await
-//             .expect("Failed to initialize Authz"),
-//     );
+    let authz: Arc<dyn Authz> = Arc::new(
+        SourceHubAuth::new(ChainConfigBuilder::default())
+            .await
+            .expect("Failed to initialize Authz"),
+    );
 
-//     let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-//         DummyBulletin::new()
-//             .await
-//             .expect("Failed to initialize bulletin"),
-//     );
+    let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize bulletin"),
+    );
 
-//     let bind_addr = "127.0.0.1:0".to_string();
-//     let config = NodeConfig {
-//         args: Args {
-//             addr: bind_addr.clone(),
-//             log_level: LogLevel::Info,
-//             authz_grpc: None,
-//             bulletin_grpc: None,
-//         },
-//         network,
-//         local_storage: LocalStorageImpl::new(None, db_path.clone())
-//             .expect("Failed to create local storage"),
-//         authz,
-//         bulletin,
-//     };
+    let bind_addr = "127.0.0.1:0".to_string();
+    let config = NodeConfig {
+        args: Args {
+            addr: bind_addr.clone(),
+            log_level: LogLevel::Info,
+            authz_grpc: None,
+            bulletin_grpc: None,
+            chain_rest: None,
+            chain_rpc: None,
+        },
+        network,
+        local_storage: LocalStorageImpl::new(None, db_path.clone())
+            .expect("Failed to create local storage"),
+        authz,
+        bulletin,
+    };
 
-//     let node = init_node(config).await.expect("Node initialization failed");
+    let node = init_node(config).await.expect("Node initialization failed");
 
-//     // Verify AppState configuration
-//     assert_eq!(
-//         node.app_state.config.bind_address, bind_addr,
-//         "Bind address should match"
-//     );
+    // Verify AppState configuration
+    assert_eq!(
+        node.app_state.config.bind_address, bind_addr,
+        "Bind address should match"
+    );
 
-//     // Verify no sessions exist initially
-//     assert_eq!(
-//         node.app_state.session_count().await,
-//         0,
-//         "Should have no sessions initially"
-//     );
+    // Verify no sessions exist initially
+    assert_eq!(
+        node.app_state.session_count().await,
+        0,
+        "Should have no sessions initially"
+    );
 
-//     // Clean up
-//     node.router
-//         .shutdown()
-//         .await
-//         .expect("Router shutdown failed");
-//     cleanup_db(&db_path);
-// }
+    // Clean up
+    node.router
+        .shutdown()
+        .await
+        .expect("Router shutdown failed");
+    cleanup_db(&db_path);
+}
 
-// /// Test that multiple nodes can be initialized concurrently
-// #[tokio::test]
-// async fn test_init_multiple_nodes() {
-//     let db_path1 = test_db_path("test_init_multiple_nodes_1");
-//     let db_path2 = test_db_path("test_init_multiple_nodes_2");
+/// Test that multiple nodes can be initialized concurrently
+#[tokio::test]
+async fn test_init_multiple_nodes() {
+    let db_path1 = test_db_path("test_init_multiple_nodes_1");
+    let db_path2 = test_db_path("test_init_multiple_nodes_2");
 
-//     let network1: Arc<dyn Network> = Arc::new(
-//         network::IrohNetwork::new()
-//             .await
-//             .expect("Failed to create network 1"),
-//     );
-//     let network2: Arc<dyn Network> = Arc::new(
-//         network::IrohNetwork::new()
-//             .await
-//             .expect("Failed to create network 2"),
-//     );
+    let network1: Arc<dyn Network> = Arc::new(
+        network::IrohNetwork::new()
+            .await
+            .expect("Failed to create network 1"),
+    );
+    let network2: Arc<dyn Network> = Arc::new(
+        network::IrohNetwork::new()
+            .await
+            .expect("Failed to create network 2"),
+    );
 
-//     let authz1: Arc<dyn Authz> = Arc::new(
-//         SourceHubAuth::new(ChainConfigBuilder::default())
-//             .await
-//             .expect("Failed to initialize Authz"),
-//     );
-//     let authz2: Arc<dyn Authz> = Arc::new(
-//         SourceHubAuth::new(ChainConfigBuilder::default())
-//             .await
-//             .expect("Failed to initialize Authz"),
-//     );
+    let authz1: Arc<dyn Authz> = Arc::new(
+        SourceHubAuth::new(ChainConfigBuilder::default())
+            .await
+            .expect("Failed to initialize Authz"),
+    );
+    let authz2: Arc<dyn Authz> = Arc::new(
+        SourceHubAuth::new(ChainConfigBuilder::default())
+            .await
+            .expect("Failed to initialize Authz"),
+    );
 
-//     let bulletin1: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-//         DummyBulletin::new()
-//             .await
-//             .expect("Failed to initialize bulletin"),
-//     );
+    let bulletin1: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize bulletin"),
+    );
 
-//     let bulletin2: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-//         DummyBulletin::new()
-//             .await
-//             .expect("Failed to initialize bulletin"),
-//     );
+    let bulletin2: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize bulletin"),
+    );
 
-//     let config1 = NodeConfig {
-//         args: Args {
-//             addr: "127.0.0.1:0".to_string(),
-//             log_level: LogLevel::Info,
-//             authz_grpc: None,
-//             bulletin_grpc: None,
-//         },
-//         network: network1,
-//         local_storage: LocalStorageImpl::new(None, db_path1.clone())
-//             .expect("Failed to create local storage"),
-//         authz: authz1,
-//         bulletin: bulletin1,
-//     };
+    let config1 = NodeConfig {
+        args: Args {
+            addr: "127.0.0.1:0".to_string(),
+            log_level: LogLevel::Info,
+            authz_grpc: None,
+            bulletin_grpc: None,
+            chain_rest: None,
+            chain_rpc: None,
+        },
+        network: network1,
+        local_storage: LocalStorageImpl::new(None, db_path1.clone())
+            .expect("Failed to create local storage"),
+        authz: authz1,
+        bulletin: bulletin1,
+    };
 
-//     let config2 = NodeConfig {
-//         args: Args {
-//             addr: "127.0.0.1:0".to_string(),
-//             log_level: LogLevel::Info,
-//             authz_grpc: None,
-//             bulletin_grpc: None,
-//         },
-//         network: network2,
-//         local_storage: LocalStorageImpl::new(None, db_path2.clone())
-//             .expect("Failed to create local storage"),
-//         authz: authz2,
-//         bulletin: bulletin2,
-//     };
+    let config2 = NodeConfig {
+        args: Args {
+            addr: "127.0.0.1:0".to_string(),
+            log_level: LogLevel::Info,
+            authz_grpc: None,
+            bulletin_grpc: None,
+            chain_rest: None,
+            chain_rpc: None,
+        },
+        network: network2,
+        local_storage: LocalStorageImpl::new(None, db_path2.clone())
+            .expect("Failed to create local storage"),
+        authz: authz2,
+        bulletin: bulletin2,
+    };
 
-//     let node1 = init_node(config1)
-//         .await
-//         .expect("Node 1 initialization failed");
-//     let node2 = init_node(config2)
-//         .await
-//         .expect("Node 2 initialization failed");
+    let node1 = init_node(config1)
+        .await
+        .expect("Node 1 initialization failed");
+    let node2 = init_node(config2)
+        .await
+        .expect("Node 2 initialization failed");
 
-//     // Verify both nodes have different addresses
-//     assert_ne!(
-//         node1.local_address, node2.local_address,
-//         "Nodes should have different P2P addresses"
-//     );
+    // Verify both nodes have different addresses
+    assert_ne!(
+        node1.local_address, node2.local_address,
+        "Nodes should have different P2P addresses"
+    );
 
-//     // Clean up
-//     node1
-//         .router
-//         .shutdown()
-//         .await
-//         .expect("Router 1 shutdown failed");
-//     node2
-//         .router
-//         .shutdown()
-//         .await
-//         .expect("Router 2 shutdown failed");
-//     cleanup_db(&db_path1);
-//     cleanup_db(&db_path2);
-// }
+    // Clean up
+    node1
+        .router
+        .shutdown()
+        .await
+        .expect("Router 1 shutdown failed");
+    node2
+        .router
+        .shutdown()
+        .await
+        .expect("Router 2 shutdown failed");
+    cleanup_db(&db_path1);
+    cleanup_db(&db_path2);
+}
 
-// /// Test Args default values
-// #[test]
-// fn test_args_default() {
-//     use clap::Parser;
+/// Test Args default values
+#[test]
+fn test_args_default() {
+    use clap::Parser;
 
-//     // Parse with no arguments (uses defaults)
-//     let args = Args::parse_from(["orbis-node"]);
-//     assert_eq!(
-//         args.addr, "[::1]:50051",
-//         "Default address should be [::1]:50051"
-//     );
-// }
+    // Parse with no arguments (uses defaults)
+    let args = Args::parse_from(["orbis-node"]);
+    assert_eq!(
+        args.addr, "[::1]:50051",
+        "Default address should be [::1]:50051"
+    );
+}
 
-// /// Test Args custom address
-// #[test]
-// fn test_args_custom_address() {
-//     use clap::Parser;
+/// Test Args custom address
+#[test]
+fn test_args_custom_address() {
+    use clap::Parser;
 
-//     let args = Args::parse_from(["orbis-node", "--addr", "0.0.0.0:8080"]);
-//     assert_eq!(args.addr, "0.0.0.0:8080");
+    let args = Args::parse_from(["orbis-node", "--addr", "0.0.0.0:8080"]);
+    assert_eq!(args.addr, "0.0.0.0:8080");
 
-//     // Test short form
-//     let args = Args::parse_from(["orbis-node", "-a", "127.0.0.1:9000"]);
-//     assert_eq!(args.addr, "127.0.0.1:9000");
-// }
+    // Test short form
+    let args = Args::parse_from(["orbis-node", "-a", "127.0.0.1:9000"]);
+    assert_eq!(args.addr, "127.0.0.1:9000");
+}
 
-// /// Test that encrypted storage works with the node
-// #[tokio::test]
-// #[serial_test::serial]
-// async fn test_init_node_with_encrypted_storage() {
-//     let db_path = test_db_path("test_init_node_with_encrypted_storage");
+/// Test that encrypted storage works with the node
+#[tokio::test]
+#[serial_test::serial]
+async fn test_init_node_with_encrypted_storage() {
+    let db_path = test_db_path("test_init_node_with_encrypted_storage");
 
-//     let network: Arc<dyn Network> = Arc::new(
-//         network::IrohNetwork::new()
-//             .await
-//             .expect("Failed to create network"),
-//     );
+    let network: Arc<dyn Network> = Arc::new(
+        network::IrohNetwork::new()
+            .await
+            .expect("Failed to create network"),
+    );
 
-//     // Create storage with a password
-//     let password = "test-password-123".to_string();
-//     let local_storage = LocalStorageImpl::new(Some(password), db_path.clone())
-//         .expect("Failed to create local storage");
-//     let authz: Arc<dyn Authz> = Arc::new(
-//         SourceHubAuth::new(ChainConfigBuilder::default())
-//             .await
-//             .expect("Failed to initialize Authz"),
-//     );
+    // Create storage with a password
+    let password = "test-password-123".to_string();
+    let local_storage = LocalStorageImpl::new(Some(password), db_path.clone())
+        .expect("Failed to create local storage");
+    let authz: Arc<dyn Authz> = Arc::new(
+        SourceHubAuth::new(ChainConfigBuilder::default())
+            .await
+            .expect("Failed to initialize Authz"),
+    );
 
-//     let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-//         DummyBulletin::new()
-//             .await
-//             .expect("Failed to initialize bulletin"),
-//     );
+    let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize bulletin"),
+    );
 
-//     let config = NodeConfig {
-//         args: Args {
-//             addr: "127.0.0.1:0".to_string(),
-//             log_level: LogLevel::Info,
-//             authz_grpc: None,
-//             bulletin_grpc: None,
-//         },
-//         network,
-//         local_storage,
-//         authz,
-//         bulletin,
-//     };
+    let config = NodeConfig {
+        args: Args {
+            addr: "127.0.0.1:0".to_string(),
+            log_level: LogLevel::Info,
+            authz_grpc: None,
+            bulletin_grpc: None,
+            chain_rest: None,
+            chain_rpc: None,
+        },
+        network,
+        local_storage,
+        authz,
+        bulletin,
+    };
 
-//     let result = init_node(config).await;
-//     assert!(
-//         result.is_ok(),
-//         "Node should initialize with encrypted storage"
-//     );
+    let result = init_node(config).await;
+    assert!(
+        result.is_ok(),
+        "Node should initialize with encrypted storage"
+    );
 
-//     let node = result.unwrap();
-//     node.router
-//         .shutdown()
-//         .await
-//         .expect("Router shutdown failed");
-//     cleanup_db(&db_path);
-// }
+    let node = result.unwrap();
+    node.router
+        .shutdown()
+        .await
+        .expect("Router shutdown failed");
+    cleanup_db(&db_path);
+}
 
 // ============================================================================
 // CLI-TOOL INTEGRATION TESTS
@@ -367,229 +379,17 @@ use std::sync::Arc;
 
 mod cli_tool_integration {
     use crate::constants::BULLETIN_RING_NAMESPACE;
-    use crate::dkg::service::DkgServiceImpl;
-    use crate::helpers::test_helpers::{
-        cleanup_db, get_test_bulletin, setup_three_node_network_with_pre, test_db_path,
-    };
-    use crate::info::InfoServiceImpl;
-    use crate::pre::service::PreServiceImpl;
-    use crate::{DkgImpl, PreImpl};
     use ark_bls12_381::{Fr, G1Affine, G1Projective};
     use ark_ec::Group;
     use ark_std::UniformRand;
     use bulletin::r#trait::{DocumentPayload, RingPayload};
     use bulletin::sourcehub::SourceHubBulletin;
-    use common::{SourceHubTestContainer, blockchain::ChainConfig};
     use crypto::bls12_381::pre::ThresholdDealerNode;
     use crypto::r#trait::ThresholdDealer;
     use crypto::{CryptoDeserialize, CryptoSerialize};
-    use proto::dkg_service::dkg_service_server::DkgServiceServer;
-    use proto::info_service::info_service_server::InfoServiceServer;
-    use proto::pre_service::pre_service_server::PreServiceServer;
     use rand_core::OsRng;
-    use std::net::SocketAddr;
     use tokio::time::{sleep, Duration};
     use tracing_subscriber;
-    // /// End-to-end test: Run DKG, then call cli-tool's do_pre function
-    // /// Tests cli-tool and just full integration test
-    // ///
-    // /// This tests the full user workflow:
-    // /// 1. Run DKG to generate distributed keys
-    // /// 2. Run PRE to re-encrypt a secret
-    // #[tokio::test]
-    // #[serial_test::serial]
-    // async fn test_cli_calls_dkg_and_pre_endpoint() {
-    //     // Initialize tracing for debugging
-    //     let _ = tracing_subscriber::fmt()
-    //         .with_max_level(tracing::Level::DEBUG)
-    //         .with_test_writer()
-    //         .try_init();
-
-    //     let db_name = "test_cli_calls_dkg_and_pre_endpoint";
-    //     let db_paths = [
-    //         test_db_path(&format!("{}_1", db_name)),
-    //         test_db_path(&format!("{}_2", db_name)),
-    //         test_db_path(&format!("{}_3", db_name)),
-    //     ];
-
-    //     // Spin up SourceHub container
-    //     let _container = SourceHubTestContainer::new();
-    //     // Set up three nodes
-    //     let mut network = setup_three_node_network_with_pre(true, false, false, db_name).await;
-
-    //     let peer_ids = network.get_all_peer_ids();
-    //     let threshold = 2;
-
-    //     // Start gRPC server for Alice
-    //     let alice_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    //     let dkg_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
-    //     let pre_service = PreServiceImpl::<DkgImpl, PreImpl>::new(network.alice.app_state.clone());
-    //     let info_service = InfoServiceImpl::new(network.alice.app_state.clone());
-
-    //     let listener = tokio::net::TcpListener::bind(alice_addr).await.unwrap();
-    //     let server_addr = listener.local_addr().unwrap();
-    //     let endpoint = format!("http://{}", server_addr);
-
-    //     let server_handle = tokio::spawn(async move {
-    //         tonic::transport::Server::builder()
-    //             .add_service(DkgServiceServer::new(dkg_service))
-    //             .add_service(PreServiceServer::new(pre_service))
-    //             .add_service(InfoServiceServer::new(info_service))
-    //             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
-    //             .await
-    //     });
-
-    //     sleep(Duration::from_millis(100)).await;
-
-    //     let ring_namespace = BULLETIN_RING_NAMESPACE.to_string();
-    //     // Register ring bulletin space
-    //     cli_tool::register_bulletin_namespace(ring_namespace.clone())
-    //         .await
-    //         .expect("register_bulletin_namespace_ring");
-
-    //     // Step 1: Run DKG via CLI to get a ring public key
-    //     let dkg_result = cli_tool::do_dkg(endpoint.clone(), threshold, peer_ids.clone()).await;
-    //     assert!(
-    //         dkg_result.is_ok(),
-    //         "DKG should succeed: {:?}",
-    //         dkg_result.err()
-    //     );
-
-    //     // Wait for DKG to complete and get the ring public key
-    //     let max_wait = Duration::from_secs(30);
-    //     let start = std::time::Instant::now();
-    //     let mut ring_pk_hex = String::new();
-
-    //     while start.elapsed() < max_wait {
-    //         let post = get_test_bulletin(&network.alice.app_state.bulletin).await;
-
-    //         // Check if payload is non-empty (DKG complete, ring info posted to bulletin)
-    //         if !post.payload.is_empty() {
-    //             // Parse RingPayload from bulletin post - ring_pk is already hex-encoded
-    //             let ring_payload: RingPayload = post.try_into().expect("parse RingPayload");
-    //             ring_pk_hex = ring_payload.ring_pk;
-    //             println!(
-    //                 "DKG completed! Ring PK: {}...",
-    //                 &ring_pk_hex[..40.min(ring_pk_hex.len())]
-    //             );
-    //             break;
-    //         }
-    //         sleep(Duration::from_millis(500)).await;
-    //     }
-
-    //     assert!(
-    //         !ring_pk_hex.is_empty(),
-    //         "Should have ring public key after DKG"
-    //     );
-
-    //     // Step 2: Generate reader keypair (same as cli-tool generate-reader-key)
-    //     let mut rng = OsRng;
-    //     let reader_sk = Fr::rand(&mut rng);
-    //     let reader_pk: G1Affine = (G1Projective::generator() * reader_sk).into();
-
-    //     let reader_sk_bytes = reader_sk.to_bytes().expect("serialize reader sk");
-    //     let reader_pk_bytes = reader_pk.to_bytes().expect("serialize reader pk");
-    //     let reader_sk_hex = hex::encode(&reader_sk_bytes);
-    //     let reader_pk_hex = hex::encode(&reader_pk_bytes);
-
-    //     let resource = "document".to_string();
-    //     let relation = "reader".to_string();
-    //     let permission = "read".to_string();
-    //     let did_pk_string = "test_did_secret".to_string();
-    //     let namespace = "namespace".to_string();
-    //     let full_namespace = format!("bulletin/{}", namespace);
-    //     let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
-    //     let proof = vec![0x01];
-
-    //     // TODO: remove this should be set on node dkg level
-    //     let ring_payload = RingPayload {
-    //         ring_pk: ring_pk_hex.clone(),
-    //         peer_ids,
-    //         threshold,
-    //         public_polynomial: "".to_string(),
-    //     };
-
-    //     let serialized_ring_payload: Vec<u8> =
-    //         ring_payload.clone().try_into().expect("serialize payload");
-    //     let ring_id = cli_tool::create_bulletin_post(
-    //         ring_namespace.clone(),
-    //         serialized_ring_payload,
-    //         proof.clone(),
-    //     )
-    //     .await
-    //     .expect("create_bulletin_post");
-
-    //     // Register bulletin namespace and create post with payload
-    //     cli_tool::register_bulletin_namespace(namespace.clone())
-    //         .await
-    //         .expect("register_bulletin_namespace");
-
-    //     // Encrypt a test secret to the ring public key
-    //     let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
-    //     let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes).expect("deserialize ring_pk");
-    //     let test_secret = "Hello from CLI integration test!";
-    //     let (_enc_cmt, encrypted_secret) =
-    //         ThresholdDealerNode::encrypt_secret(&ring_pk_point, test_secret.as_bytes())
-    //             .expect("encrypt secret");
-    //     let secret_json =
-    //         serde_json::to_string(&encrypted_secret).expect("serialize encrypted secret");
-
-    //     let payload = DocumentPayload {
-    //         ring_id: ring_id.clone(),
-    //         document: secret_json,
-    //         policy_id: policy_id.clone(),
-    //         resource: resource.clone(),
-    //         permission: permission.clone(),
-    //     };
-    //     let serialized_payload: Vec<u8> = payload.clone().try_into().expect("serialize payload");
-
-    //     // The bulletin post ID is the object_id for ACP and PRE
-    //     let object_id =
-    //         cli_tool::create_bulletin_post(namespace.clone(), serialized_payload, proof)
-    //             .await
-    //             .expect("create_bulletin_post");
-
-    //     cli_tool::register_object_to_chain(policy_id.clone(), object_id.clone(), resource.clone())
-    //         .await
-    //         .expect("register_object_to_chain");
-
-    //     cli_tool::set_relationship_on_chain(
-    //         policy_id.clone(),
-    //         object_id.clone(),
-    //         resource.clone(),
-    //         relation.clone(),
-    //         Some(did_pk_string.clone()),
-    //     )
-    //     .await
-    //     .expect("set_relationship_on_chain");
-
-    //     // Step 3: Run PRE via CLI
-    //     // Use full_namespace (with bulletin/ prefix) for reading from chain
-    //     let pre_result = cli_tool::do_pre(
-    //         endpoint.clone(),
-    //         ring_pk_hex,
-    //         reader_pk_hex,
-    //         reader_sk_hex,
-    //         object_id,
-    //         Some(did_pk_string),
-    //         full_namespace,
-    //     )
-    //     .await;
-
-    //     // The key test: CLI do_pre should succeed against orbis-node
-    //     assert!(
-    //         pre_result.is_ok(),
-    //         "cli-tool do_pre should succeed against orbis-node: {:?}",
-    //         pre_result.err()
-    //     );
-
-    //     // Clean up
-    //     server_handle.abort();
-    //     network.shutdown_routers().await.unwrap();
-    //     for path in &db_paths {
-    //         cleanup_db(path);
-    //     }
-    // }
 
     /// Docker-based integration test: Run DKG and PRE using Docker Compose
     ///
@@ -637,15 +437,24 @@ mod cli_tool_integration {
         cli_tool::register_bulletin_namespace(BULLETIN_RING_NAMESPACE.to_string())
             .await
             .expect("Failed to register namespace");
-        cli_tool::add_bulletin_collaborator(BULLETIN_RING_NAMESPACE.to_string(), node1_info.public_address.clone())
-            .await
-            .expect("add_bulletin_collaborator");
-        cli_tool::add_bulletin_collaborator(BULLETIN_RING_NAMESPACE.to_string(), node2_info.public_address.clone())
-            .await
-            .expect("add_bulletin_collaborator");
-        cli_tool::add_bulletin_collaborator(BULLETIN_RING_NAMESPACE.to_string(), node3_info.public_address.clone())
-            .await
-            .expect("add_bulletin_collaborator");
+        cli_tool::add_bulletin_collaborator(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            node1_info.public_address.clone(),
+        )
+        .await
+        .expect("add_bulletin_collaborator");
+        cli_tool::add_bulletin_collaborator(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            node2_info.public_address.clone(),
+        )
+        .await
+        .expect("add_bulletin_collaborator");
+        cli_tool::add_bulletin_collaborator(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            node3_info.public_address.clone(),
+        )
+        .await
+        .expect("add_bulletin_collaborator");
         // Transform P2P addresses for inter-container communication
         // The addresses from nodes will be like "peer_id@0.0.0.0:port"
         // We need to replace 0.0.0.0 with the container name for Docker networking
@@ -705,7 +514,7 @@ mod cli_tool_integration {
                     let ring_payload: RingPayload =
                         serde_json::from_slice(&posts[0]).expect("parse RingPayload");
                     ring_pk_hex = ring_payload.ring_pk.clone();
-                    
+
                     // Compute the ring_id from the post (it's deterministic based on namespace + payload)
                     let full_namespace = format!("bulletin/{}", ring_namespace);
                     ring_id = SourceHubBulletin::get_post_id(&full_namespace, &posts[0])
@@ -726,11 +535,8 @@ mod cli_tool_integration {
             !ring_pk_hex.is_empty(),
             "Should have ring public key after DKG"
         );
-        assert!(
-            !ring_id.is_empty(),
-            "Should have ring ID after DKG"
-        );
-        let dkg_ring_payload = dkg_ring_payload.expect("Should have ring payload after DKG");
+        assert!(!ring_id.is_empty(), "Should have ring ID after DKG");
+        let _dkg_ring_payload = dkg_ring_payload.expect("Should have ring payload after DKG");
 
         // Step 2: Generate reader keypair
         let mut rng = OsRng;
@@ -772,7 +578,7 @@ mod cli_tool_integration {
             permission: permission.clone(),
         };
         let serialized_payload: Vec<u8> = payload.clone().try_into().expect("serialize payload");
-        
+
         cli_tool::register_bulletin_namespace(namespace.clone())
             .await
             .expect("Failed to register namespace");

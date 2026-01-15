@@ -44,4 +44,3 @@ pub struct Coin {
     #[prost(string, tag = "2")]
     pub amount: String,
 }
-
