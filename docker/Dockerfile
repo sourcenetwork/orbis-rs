@@ -19,8 +19,15 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY bin ./bin
 
-# Build release binary with integration-test feature for test environments
-RUN cargo build --release --bin orbis-node --features integration-test
+# Build argument to conditionally enable integration-test feature
+ARG ENABLE_INTEGRATION_TEST=false
+
+# Build release binary, conditionally with integration-test feature
+RUN if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then \
+        cargo build --release --bin orbis-node --features integration-test; \
+    else \
+        cargo build --release --bin orbis-node; \
+    fi
 
 # Runtime stage
 FROM debian:bookworm-slim

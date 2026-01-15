@@ -36,6 +36,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        ENABLE_INTEGRATION_TEST: "true"
     container_name: orbis-integration-node-1
     environment:
       - ORBIS_PASSWORD=testpassword123
@@ -60,6 +62,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        ENABLE_INTEGRATION_TEST: "true"
     container_name: orbis-integration-node-2
     environment:
       - ORBIS_PASSWORD=testpassword123
@@ -84,6 +88,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        ENABLE_INTEGRATION_TEST: "true"
     container_name: orbis-integration-node-3
     environment:
       - ORBIS_PASSWORD=testpassword123
