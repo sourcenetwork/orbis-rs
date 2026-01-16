@@ -384,6 +384,7 @@ mod cli_tool_integration {
     use ark_std::UniformRand;
     use bulletin::r#trait::{DocumentPayload, RingPayload};
     use bulletin::sourcehub::SourceHubBulletin;
+    use common::IntegrationTestNetwork;
     use crypto::bls12_381::pre::ThresholdDealerNode;
     use crypto::r#trait::ThresholdDealer;
     use crypto::{CryptoDeserialize, CryptoSerialize};
@@ -401,8 +402,6 @@ mod cli_tool_integration {
     #[tokio::test]
     #[serial_test::serial]
     async fn test_cli_calls_dkg_and_pre_endpoint() {
-        use common::IntegrationTestNetwork;
-
         // Initialize tracing for debugging
         let _ = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::DEBUG)

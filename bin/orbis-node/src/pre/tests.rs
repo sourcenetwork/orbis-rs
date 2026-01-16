@@ -625,7 +625,17 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         error
     );
 
-    println!("SUCCESS! PRE correctly rejected invalid JWT token");
+    // Verify pre_response was cleaned up even though PRE failed
+    // This tests the cleanup-on-error behavior added to initiate_reencryption
+    let remaining_responses = network
+        .alice
+        .app_state
+        .get_pre_responses("invalid-token-pre-request")
+        .await;
+    assert!(
+        remaining_responses.is_none(),
+        "pre_response should be cleaned up after PRE failure"
+    );
 
     network
         .shutdown_routers()
@@ -748,7 +758,16 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         error
     );
 
-    println!("SUCCESS! PRE correctly rejected mismatched JWT claims");
+    // Verify pre_response was cleaned up even though PRE failed
+    let remaining_responses = network
+        .alice
+        .app_state
+        .get_pre_responses("mismatched-claims-pre-request")
+        .await;
+    assert!(
+        remaining_responses.is_none(),
+        "pre_response should be cleaned up after PRE failure"
+    );
 
     network
         .shutdown_routers()

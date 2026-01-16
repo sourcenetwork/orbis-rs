@@ -384,6 +384,72 @@ where
             "PRE Coordinator: Initiating reencryption"
         );
 
+        // Initialize response collection before calling inner function
+        // This allows us to guarantee cleanup regardless of how inner function exits
+        let request_id_for_cleanup = request_id.clone();
+        if !self
+            .app_state
+            .init_pre_response(request_id.clone(), actual_peer_count)
+            .await
+        {
+            return Err(PreError::ProtocolError(
+                "PRE response limit exceeded, too many pending requests".to_string(),
+            ));
+        }
+
+        // Execute inner function and ensure cleanup happens regardless of result
+        let result = self
+            .initiate_reencryption_inner(
+                request_id,
+                ring_pk_bytes,
+                secret_bytes,
+                rdr_pk_bytes,
+                peer_ids,
+                threshold,
+                total_participants,
+                public_polynomial_hex,
+                policy_id,
+                resource,
+                object_id,
+                permission,
+                token_string,
+                namespace,
+                self_in_list,
+                actual_peer_count,
+            )
+            .await;
+
+        // Always cleanup, regardless of success or failure
+        self.app_state
+            .remove_pre_response(&request_id_for_cleanup)
+            .await;
+
+        result
+    }
+
+    /// Inner implementation of initiate_reencryption
+    ///
+    /// This is separated so that cleanup can be guaranteed by the outer function.
+    /// Assumes init_pre_response has already been called.
+    async fn initiate_reencryption_inner(
+        &self,
+        request_id: String,
+        ring_pk_bytes: Vec<u8>,
+        secret_bytes: Vec<u8>,
+        rdr_pk_bytes: Vec<u8>,
+        peer_ids: &[String],
+        threshold: usize,
+        total_participants: usize,
+        public_polynomial_hex: &str,
+        policy_id: String,
+        resource: String,
+        object_id: String,
+        permission: String,
+        token_string: String,
+        namespace: String,
+        self_in_list: bool,
+        actual_peer_count: usize,
+    ) -> Result<Vec<u8>> {
         // 1. Deserialize public polynomial from bulletin data
         let pub_poly_bytes = hex::decode(public_polynomial_hex).map_err(|e| {
             PreError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
@@ -425,20 +491,8 @@ where
             PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e))
         })?;
 
-        // 4. Initialize response collection (with limit checking)
-        // Clone request_id before moving into Arc (we need it later)
-        let request_id_for_storage = request_id.clone();
-        if !self
-            .app_state
-            .init_pre_response(request_id_for_storage, actual_peer_count)
-            .await
-        {
-            return Err(PreError::ProtocolError(
-                "PRE response limit exceeded, too many pending requests".to_string(),
-            ));
-        }
-
-        // 5. Send reencryption requests to all peers concurrently and receive responses
+        // 4. Send reencryption requests to all peers concurrently and receive responses
+        // Note: init_pre_response is called by the outer function to ensure cleanup on all paths
         // node_id is already obtained from DKG session above
         let mut handles = Vec::new();
 
@@ -649,10 +703,7 @@ where
         let response_bytes = serde_json::to_vec(&pre_response)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize response: {}", e)))?;
 
-        // 14. Cleanup
-        self.app_state
-            .remove_pre_response(request_id_arc.as_ref())
-            .await;
+        // Note: Cleanup is handled by the outer initiate_reencryption function
 
         tracing::info!(
             request_id = %request_id_arc.as_ref(),

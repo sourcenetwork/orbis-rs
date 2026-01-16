@@ -49,13 +49,6 @@ pub const SESSION_TTL: Duration = Duration::from_secs(3600);
 /// many concurrent PRE operations while maintaining reasonable memory usage.
 pub const MAX_PRE_RESPONSES: usize = 1000;
 
-/// Time-to-live for PRE responses before they are cleaned up
-///
-/// PRE responses older than this duration are automatically cleaned up. This
-/// is set to 5 minutes (300 seconds), which provides time for responses to
-/// arrive while ensuring stale responses don't accumulate.
-pub const PRE_RESPONSE_TTL: Duration = Duration::from_secs(300);
-
 // ============================================================================
 // Peer ID Validation Constants
 // ============================================================================

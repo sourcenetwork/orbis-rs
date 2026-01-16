@@ -1,4 +1,4 @@
-use crate::constants::{MAX_DKG_SESSIONS, MAX_PRE_RESPONSES, PRE_RESPONSE_TTL, SESSION_TTL};
+use crate::constants::{MAX_DKG_SESSIONS, MAX_PRE_RESPONSES, SESSION_TTL};
 use crate::dkg::session_state::SessionStateManager;
 use crate::pre::messages::PreMessage;
 use authz::r#trait::Authz;
@@ -240,12 +240,9 @@ where
 
     /// Initialize PRE response collection with limit checking
     ///
-    /// Returns false if the limit is exceeded
+    /// Returns false if the limit is exceeded.
     pub async fn init_pre_response(&self, request_id: String, expected_count: usize) -> bool {
         let mut responses = self.pre_responses.write().await;
-
-        // Cleanup expired responses first
-        Self::cleanup_pre_responses_internal(&mut responses);
 
         // Check limit
         if responses.len() >= MAX_PRE_RESPONSES {
@@ -288,40 +285,6 @@ where
     pub async fn remove_pre_response(&self, request_id: &str) {
         let mut responses = self.pre_responses.write().await;
         responses.remove(request_id);
-    }
-
-    /// Clean up expired PRE responses (internal helper)
-    fn cleanup_pre_responses_internal(responses: &mut HashMap<String, PreResponseEntry>) {
-        let now = Instant::now();
-        let before_count = responses.len();
-
-        responses.retain(|request_id, entry| {
-            let age = now.duration_since(entry.created_at);
-            let should_keep = age < PRE_RESPONSE_TTL;
-            if !should_keep {
-                tracing::debug!(
-                    request_id = %request_id,
-                    age = ?age,
-                    "Cleaning up expired PRE response"
-                );
-            }
-            should_keep
-        });
-
-        let removed = before_count - responses.len();
-        if removed > 0 {
-            tracing::info!(
-                removed = removed,
-                remaining = responses.len(),
-                "Cleaned up expired PRE responses"
-            );
-        }
-    }
-
-    /// Manually trigger PRE response cleanup
-    pub async fn cleanup_expired_pre_responses(&self) {
-        let mut responses = self.pre_responses.write().await;
-        Self::cleanup_pre_responses_internal(&mut responses);
     }
 }
 
