@@ -92,7 +92,16 @@ impl SourceHubBulletin {
             let address_clone = address.clone();
             let client_ref = &client.chain_client;
 
-            // First: Retry connecting to the chain until it's available
+            // Helper to create backoff config
+            let create_backoff = || {
+                let mut backoff = backoff::ExponentialBackoff::default();
+                backoff.max_elapsed_time = Some(std::time::Duration::from_secs(15 * 60));
+                backoff.initial_interval = std::time::Duration::from_secs(2);
+                backoff.max_interval = std::time::Duration::from_secs(30);
+                backoff
+            };
+
+            // Phase 1: Connect to chain and get initial balance
             let connect_to_chain = || async {
                 client_ref
                     .get_balance(&address_clone, denom)
@@ -111,11 +120,7 @@ impl SourceHubBulletin {
                     })
             };
 
-            let mut connect_backoff = backoff::ExponentialBackoff::default();
-            connect_backoff.max_elapsed_time = Some(std::time::Duration::from_secs(15 * 60));
-            connect_backoff.initial_interval = std::time::Duration::from_secs(2);
-            connect_backoff.max_interval = std::time::Duration::from_secs(30);
-            let balance = backoff::future::retry(connect_backoff, connect_to_chain)
+            let balance = backoff::future::retry(create_backoff(), connect_to_chain)
                 .await
                 .map_err(|e| {
                     BulletinError::ChainError(format!(
@@ -129,7 +134,7 @@ impl SourceHubBulletin {
                 balance
             );
 
-            // Second: Check if balance is sufficient (retry in case balance increases)
+            // Phase 2: Verify balance is sufficient (retry in case balance increases)
             let check_sufficient_balance = || async {
                 let current_balance = client_ref
                     .get_balance(&address_clone, denom)
@@ -149,24 +154,20 @@ impl SourceHubBulletin {
                     Ok(())
                 } else {
                     eprintln!(
-                        "Balance check: Balance {} is insufficient (required: {}). for address: {} Retrying...",
+                        "Balance check: Balance {} is insufficient (required: {}) for address: {}. Retrying...",
                         current_balance, balance_check_amount, address_clone
                     );
                     Err(backoff::Error::Transient {
                         err: BulletinError::ChainError(format!(
                             "Balance check: Balance {} is less than required {} for node address: {}",
-                            current_balance,
-                            balance_check_amount,
-                            address_clone
+                            current_balance, balance_check_amount, address_clone
                         )),
                         retry_after: None,
                     })
                 }
             };
 
-            let mut balance_backoff = backoff::ExponentialBackoff::default();
-            balance_backoff.max_elapsed_time = Some(std::time::Duration::from_secs(15 * 60));
-            backoff::future::retry(balance_backoff, check_sufficient_balance)
+            backoff::future::retry(create_backoff(), check_sufficient_balance)
                 .await
                 .map_err(|e| {
                     BulletinError::ChainError(format!(
