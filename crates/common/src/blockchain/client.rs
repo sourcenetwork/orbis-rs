@@ -47,7 +47,11 @@ impl SourceHubClient {
         let rpc_client = TendermintClient::new(config.rpc_url.as_str())
             .map_err(|e| BlockchainError::Config(format!("Failed to create RPC client: {}", e)))?;
 
-        let http_client = HttpClient::new();
+        let http_client = HttpClient::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| BlockchainError::Config(format!("Failed to create HTTP client: {}", e)))?;
 
         Ok(Self {
             config,
@@ -75,23 +79,62 @@ impl SourceHubClient {
     }
 
     /// Get account information for an address.
+    /// Returns default values (account_number: 0, sequence: 0) if the account doesn't exist yet.
     pub async fn get_account(&self, address: &str) -> Result<AccountInfo> {
         let url = format!(
             "{}/cosmos/auth/v1beta1/accounts/{}",
             self.config.rest_url, address
         );
 
-        let response: AccountResponse = self.rest_get(&url).await?;
+        match self.rest_get_optional::<AccountResponse>(&url).await? {
+            Some(response) => {
+                // Parse the account info from the response
+                // Cosmos SDK returns different account types, we need to handle the base account
+                let account = response.account;
 
-        // Parse the account info from the response
-        // Cosmos SDK returns different account types, we need to handle the base account
-        let account = response.account;
+                Ok(AccountInfo {
+                    address: account.address,
+                    account_number: account.account_number.parse()?,
+                    sequence: account.sequence.parse()?,
+                })
+            }
+            None => {
+                // Account doesn't exist yet - return default values
+                // In Cosmos SDK, new accounts start with account_number 0 and sequence 0
+                Ok(AccountInfo {
+                    address: address.to_string(),
+                    account_number: 0,
+                    sequence: 0,
+                })
+            }
+        }
+    }
 
-        Ok(AccountInfo {
-            address: account.address,
-            account_number: account.account_number.parse()?,
-            sequence: account.sequence.parse()?,
-        })
+    /// Get the balance for a specific address and denomination.
+    ///
+    /// # Arguments
+    /// * `address` - The bech32 address to query
+    /// * `denom` - The denomination to query (e.g., "uopen")
+    ///
+    /// # Returns
+    /// The balance amount as u64, or 0 if the address has no balance for that denomination
+    pub async fn get_balance(&self, address: &str, denom: &str) -> Result<u64> {
+        let url = format!(
+            "{}/cosmos/bank/v1beta1/balances/{}",
+            self.config.rest_url, address
+        );
+
+        let response: BalanceResponse = self.rest_get(&url).await?;
+
+        // Find the balance for the specified denomination
+        let balance = response
+            .balances
+            .iter()
+            .find(|coin| coin.denom == denom)
+            .and_then(|coin| coin.amount.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        Ok(balance)
     }
 
     /// Broadcast a protobuf-encoded message as a transaction.
@@ -281,6 +324,30 @@ impl SourceHubClient {
         })
     }
 
+    /// Make a REST API GET request that returns None on 404.
+    /// Useful for queries where 404 is a valid response (e.g., account doesn't exist).
+    pub async fn rest_get_optional<T: DeserializeOwned>(&self, url: &str) -> Result<Option<T>> {
+        let response = self.http_client.get(url).send().await?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let response = response
+            .error_for_status()
+            .map_err(|e| BlockchainError::Rest(e.to_string()))?;
+
+        let body = response.text().await?;
+        let parsed = serde_json::from_str(&body).map_err(|e| {
+            BlockchainError::Serialization(format!(
+                "Failed to parse response: {} - body: {}",
+                e, body
+            ))
+        })?;
+        Ok(Some(parsed))
+    }
+
     /// Make a REST API POST request.
     pub async fn rest_post<T: DeserializeOwned, B: Serialize>(
         &self,
@@ -356,4 +423,16 @@ struct AccountData {
     account_number: String,
     #[serde(default)]
     sequence: String,
+}
+
+// Internal response types for parsing Cosmos REST API balance responses
+#[derive(Debug, Deserialize)]
+struct BalanceResponse {
+    balances: Vec<BalanceCoin>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BalanceCoin {
+    denom: String,
+    amount: String,
 }

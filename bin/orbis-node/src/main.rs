@@ -27,6 +27,7 @@ use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, Router};
 use std::{net::SocketAddr, sync::Arc};
 // Concrete crypto implementations
+use constants::MIN_NODE_BALANCE;
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
 
@@ -214,7 +215,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
     let bulletin: Arc<BulletinImpl> = Arc::new(
-        BulletinImpl::with_signer(bulletin_chain_config, signer)
+        BulletinImpl::with_signer(bulletin_chain_config, signer, Some(MIN_NODE_BALANCE))
             .await
             .map_err(|e| format!("Failed to initialize bulletin: {}", e))?,
     );

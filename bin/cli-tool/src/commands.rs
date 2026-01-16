@@ -375,7 +375,7 @@ pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer)
+    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -423,7 +423,7 @@ pub async fn create_bulletin_post(
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer)
+    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 

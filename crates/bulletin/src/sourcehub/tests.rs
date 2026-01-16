@@ -14,7 +14,7 @@ async fn test_bulletin_document() {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer)
+    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
         .await
         .unwrap();
 
@@ -55,7 +55,7 @@ async fn test_bulletin_ring() {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer)
+    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
         .await
         .unwrap();
 

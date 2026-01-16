@@ -4,14 +4,11 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: orbis-node-1
-    depends_on:
-      sourcehub:
-        condition: service_healthy
     environment:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret1testsecret1
       - RUST_LOG=info
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "info"]
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317"]
     ports:
       - "50051:50051"
     networks:
@@ -22,14 +19,11 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: orbis-node-2
-    depends_on:
-      sourcehub:
-        condition: service_healthy
     environment:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret2testsecret2
       - RUST_LOG=info
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "info"]
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317"]
     ports:
       - "50052:50051"
     networks:
@@ -40,14 +34,11 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: orbis-node-3
-    depends_on:
-      sourcehub:
-        condition: service_healthy
     environment:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret3testsecret3
       - RUST_LOG=info
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "info"]
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317"]
     ports:
       - "50053:50051"
     networks:
@@ -59,12 +50,17 @@ services:
     volumes:
       - sourcehub-data:/home/node/.sourcehub
     entrypoint: ["/bin/sh", "-c"]
+    networks:
+      - orbis-network
     command:
       - |
         rm -rf /home/node/.sourcehub/*
         sourcehubd init local-node --chain-id sourcehub-localnet --home /home/node/.sourcehub
         sourcehubd keys add validator --keyring-backend test --home /home/node/.sourcehub
+        # Add a test account with known mnemonic for CLI tool funding
+        echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | sourcehubd keys add test --recover --keyring-backend test --home /home/node/.sourcehub
         sourcehubd genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
+        sourcehubd genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
         sourcehubd genesis gentx validator 10000000000uopen --keyring-backend test --chain-id sourcehub-localnet --home /home/node/.sourcehub
         sourcehubd genesis collect-gentxs --home /home/node/.sourcehub
         exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
@@ -73,12 +69,6 @@ services:
       - "26656:26656" # P2P
       - "1317:1317" # API
       - "4500:4500"
-    healthcheck:
-      test: ["CMD-SHELL", "sourcehubd status --home /home/node/.sourcehub || exit 1"]
-      interval: 2s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
 
 networks:
   orbis-network:

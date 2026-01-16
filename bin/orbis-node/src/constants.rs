@@ -123,3 +123,6 @@ pub const SECRET_KEY_ENV_VAR: &str = "ORBIS_SECRET_KEY";
 /// posted to this namespace after DKG completion. This namespace must be
 /// registered before use.
 pub const BULLETIN_RING_NAMESPACE: &str = "orbis";
+
+/// The minimum amount a node can have in chain balance to start the node
+pub const MIN_NODE_BALANCE: u64 = 1_000_000u64;

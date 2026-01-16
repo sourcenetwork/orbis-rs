@@ -76,9 +76,11 @@ impl SourceHubBulletin {
     pub async fn with_signer(
         chain_config_builder: ChainConfigBuilder,
         signer: TxSigner,
+        balance_check_amount: Option<u64>,
     ) -> Result<Self> {
         // Get the address before moving the signer
         let address = signer.address();
+        let denom = "uopen";
 
         let client = SourceHubBulletin {
             chain_client: SourceHubClient::with_signer(chain_config_builder.build(), signer)
@@ -86,9 +88,95 @@ impl SourceHubBulletin {
                 .map_err(|e| BulletinError::ChainError(e.to_string()))?,
         };
 
+        if let Some(balance_check_amount) = balance_check_amount {
+            let address_clone = address.clone();
+            let client_ref = &client.chain_client;
+
+            // First: Retry connecting to the chain until it's available
+            let connect_to_chain = || async {
+                client_ref
+                    .get_balance(&address_clone, denom)
+                    .await
+                    .map_err(|e| {
+                        let error_msg = e.to_string();
+                        eprintln!("Balance check: Failed to connect to chain: {}", error_msg);
+                        eprintln!("Balance check: Retrying connection...");
+                        backoff::Error::Transient {
+                            err: BulletinError::ChainError(format!(
+                                "Chain not available yet: {}",
+                                error_msg
+                            )),
+                            retry_after: None,
+                        }
+                    })
+            };
+
+            let mut connect_backoff = backoff::ExponentialBackoff::default();
+            connect_backoff.max_elapsed_time = Some(std::time::Duration::from_secs(15 * 60));
+            connect_backoff.initial_interval = std::time::Duration::from_secs(2);
+            connect_backoff.max_interval = std::time::Duration::from_secs(30);
+            let balance = backoff::future::retry(connect_backoff, connect_to_chain)
+                .await
+                .map_err(|e| {
+                    BulletinError::ChainError(format!(
+                        "Balance check: Failed to connect to chain after retries: {}",
+                        e
+                    ))
+                })?;
+
+            eprintln!(
+                "Balance check: Connected to chain. Current balance: {}",
+                balance
+            );
+
+            // Second: Check if balance is sufficient (retry in case balance increases)
+            let check_sufficient_balance = || async {
+                let current_balance = client_ref
+                    .get_balance(&address_clone, denom)
+                    .await
+                    .map_err(|e| {
+                        backoff::Error::Permanent(BulletinError::ChainError(format!(
+                            "Balance check: Failed to query balance after connection: {}",
+                            e
+                        )))
+                    })?;
+
+                if current_balance >= balance_check_amount {
+                    eprintln!(
+                        "Balance check: Balance {} is sufficient (required: {})",
+                        current_balance, balance_check_amount
+                    );
+                    Ok(())
+                } else {
+                    eprintln!(
+                        "Balance check: Balance {} is insufficient (required: {}). for address: {} Retrying...",
+                        current_balance, balance_check_amount, address_clone
+                    );
+                    Err(backoff::Error::Transient {
+                        err: BulletinError::ChainError(format!(
+                            "Balance check: Balance {} is less than required {} for node address: {}",
+                            current_balance,
+                            balance_check_amount,
+                            address_clone
+                        )),
+                        retry_after: None,
+                    })
+                }
+            };
+
+            let mut balance_backoff = backoff::ExponentialBackoff::default();
+            balance_backoff.max_elapsed_time = Some(std::time::Duration::from_secs(15 * 60));
+            backoff::future::retry(balance_backoff, check_sufficient_balance)
+                .await
+                .map_err(|e| {
+                    BulletinError::ChainError(format!(
+                        "Balance check: Balance insufficient after retries: {}",
+                        e
+                    ))
+                })?;
+        }
         // Transfer to self to register account on-chain (registers public key)
         let amount = 1u64;
-        let denom = "uopen";
 
         let _result = client
             .chain_client
