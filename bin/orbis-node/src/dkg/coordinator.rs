@@ -19,7 +19,7 @@ use crate::constants::{BULLETIN_RING_NAMESPACE, MAX_COMMITMENT_COEFFICIENTS};
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::DkgMessage;
 use crate::dkg::service::validate_dkg_claims;
-use crate::dkg::session_state::{DkgMessageType, DkgPhase, SessionStateManager};
+use crate::dkg::session_state::{DkgMessageType, DkgPhase};
 use crate::helpers::helpers::is_self_peer_id;
 use ark_bls12_381::{Fr, G1Affine};
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
@@ -53,7 +53,6 @@ where
     D: Dkg + Clone,
 {
     app_state: Arc<AppState<D>>,
-    session_state: Arc<SessionStateManager>,
 }
 
 impl<D> DkgCoordinator<D>
@@ -66,15 +65,8 @@ where
     /// Each node creates its own instance to manage its participation
     /// in DKG sessions. This is part of a decentralized architecture
     /// where all nodes participate equally.
-    ///
-    /// The session_state is shared from AppState to ensure all coordinators
-    /// (service, protocol handler, etc.) use the same state.
     pub fn new(app_state: Arc<AppState<D>>) -> Self {
-        let session_state = app_state.dkg_session_state.clone();
-        Self {
-            app_state,
-            session_state,
-        }
+        Self { app_state }
     }
 
     /// Handle an incoming DKG message
@@ -101,7 +93,8 @@ where
         // Check for duplicate messages (except SessionInit, Ack, Error)
         if let Some(from_node_id) = from_node_id_opt {
             if self
-                .session_state
+                .app_state
+                .dkg_session_state
                 .is_message_processed(&session_id, from_node_id, message_type)
                 .await
             {
@@ -167,7 +160,12 @@ where
             );
 
             // If session doesn't exist, create it with assigned node_id
-            if self.app_state.get_dkg_session(&session_id).await.is_none() {
+            if !self
+                .app_state
+                .dkg_session_state
+                .session_exists(&session_id)
+                .await
+            {
                 self.create_session(
                     session_id,
                     *assigned_node_id,
@@ -191,7 +189,8 @@ where
                     .unwrap_or_else(|| peer_id_key.clone());
                 node_id_to_peer_id.insert(*node_id, full_peer_id);
             }
-            self.session_state
+            self.app_state
+                .dkg_session_state
                 .set_node_peer_mappings(&session_id, node_id_to_peer_id)
                 .await;
 
@@ -211,7 +210,12 @@ where
         }
 
         // For all other messages, ensure the session exists
-        if self.app_state.get_dkg_session(&session_id).await.is_none() {
+        if !self
+            .app_state
+            .dkg_session_state
+            .session_exists(&session_id)
+            .await
+        {
             return Err(DkgError::SessionNotFound(format!(
                 "DKG session {} not found",
                 session_id
@@ -263,7 +267,8 @@ where
                 // Get threshold from session to validate coefficient count
                 let threshold = self
                     .app_state
-                    .with_dkg_session(&session_id, |session| session.threshold())
+                    .dkg_session_state
+                    .with_state(&session_id, |state| state.node.threshold())
                     .await
                     .ok_or_else(|| {
                         DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
@@ -302,15 +307,17 @@ where
                 // Update session with commitment (no cloning needed!)
                 let need_to_generate_polynomial = self
                     .app_state
-                    .with_dkg_session_mut(&session_id, |session| {
-                        session
+                    .dkg_session_state
+                    .with_state_mut(&session_id, |state| {
+                        state
+                            .node
                             .receive_commitment(from_node_id, polynomial_commitment)
                             .map_err(|e| {
                                 DkgError::Crypto(format!("Failed to receive commitment: {}", e))
                             })?;
 
                         // Check if we need to generate our polynomial
-                        Ok::<_, DkgError>(session.commitment().coefficients.is_empty())
+                        Ok::<_, DkgError>(state.node.commitment().coefficients.is_empty())
                     })
                     .await
                     .ok_or_else(|| {
@@ -318,12 +325,16 @@ where
                     })??;
 
                 // Mark message as processed
-                self.session_state
+                self.app_state
+                    .dkg_session_state
                     .mark_message_processed(&session_id, from_node_id, DkgMessageType::Commitment)
                     .await;
 
                 // Track that we received it
-                self.session_state.increment_commitments(&session_id).await;
+                self.app_state
+                    .dkg_session_state
+                    .increment_commitments(&session_id)
+                    .await;
 
                 // If this is the first commitment we receive and we haven't generated our polynomial yet,
                 // we need to generate it and send our commitment
@@ -332,8 +343,9 @@ where
 
                     // Generate polynomial
                     self.app_state
-                        .with_dkg_session_mut(&session_id, |session| {
-                            session.generate_polynomial().map_err(|e| {
+                        .dkg_session_state
+                        .with_state_mut(&session_id, |state| {
+                            state.node.generate_polynomial().map_err(|e| {
                                 DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
                             })
                         })
@@ -346,13 +358,19 @@ where
                         })??;
 
                     // Get peer IDs and node_id from session to send our commitment
-                    if let Some(peer_ids) = self.session_state.get_peer_ids(&session_id).await {
+                    if let Some(peer_ids) = self
+                        .app_state
+                        .dkg_session_state
+                        .get_peer_ids(&session_id)
+                        .await
+                    {
                         // Serialize our commitment
                         let (commitment_bytes, node_id) = self
                             .app_state
-                            .with_dkg_session(&session_id, |session| {
+                            .dkg_session_state
+                            .with_state(&session_id, |state| {
                                 let mut bytes = Vec::new();
-                                for coeff in &session.commitment().coefficients {
+                                for coeff in &state.node.commitment().coefficients {
                                     let coeff_bytes = coeff.to_bytes().map_err(|e| {
                                         DkgError::Serialization(format!(
                                             "Failed to serialize commitment: {}",
@@ -361,7 +379,7 @@ where
                                     })?;
                                     bytes.extend_from_slice(&coeff_bytes);
                                 }
-                                Ok::<_, DkgError>((bytes, session.node_id()))
+                                Ok::<_, DkgError>((bytes, state.node.node_id()))
                             })
                             .await
                             .ok_or_else(|| {
@@ -405,7 +423,12 @@ where
                 }
 
                 // Get peer IDs from session state
-                if let Some(peer_ids) = self.session_state.get_peer_ids(&session_id).await {
+                if let Some(peer_ids) = self
+                    .app_state
+                    .dkg_session_state
+                    .get_peer_ids(&session_id)
+                    .await
+                {
                     // Check if Phase 1 is complete and trigger Phase 2
                     self.check_and_trigger_phase2(session_id, &peer_ids).await?;
                 }
@@ -439,7 +462,8 @@ where
                 // Get our node_id from the session (session-specific)
                 let our_node_id = self
                     .app_state
-                    .with_dkg_session(&session_id, |session| session.node_id())
+                    .dkg_session_state
+                    .with_state(&session_id, |state| state.node.node_id())
                     .await
                     .ok_or_else(|| {
                         DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
@@ -471,8 +495,9 @@ where
 
                 // Receive and verify the share (mutates session in-place, no cloning!)
                 self.app_state
-                    .with_dkg_session_mut(&session_id, |session| {
-                        session.receive_share(share).map_err(|e| {
+                    .dkg_session_state
+                    .with_state_mut(&session_id, |state| {
+                        state.node.receive_share(share).map_err(|e| {
                             DkgError::ShareVerificationFailed(format!(
                                 "Failed to receive share: {}",
                                 e
@@ -492,12 +517,16 @@ where
                 );
 
                 // Mark message as processed
-                self.session_state
+                self.app_state
+                    .dkg_session_state
                     .mark_message_processed(&session_id, from_node_id, DkgMessageType::Share)
                     .await;
 
                 // Track share received
-                self.session_state.increment_shares(&session_id).await;
+                self.app_state
+                    .dkg_session_state
+                    .increment_shares(&session_id)
+                    .await;
 
                 // Check if Phase 2 is complete and trigger Phase 4
                 self.check_and_trigger_phase4(session_id).await?;
@@ -559,15 +588,10 @@ where
         // Set the session ID so all nodes use the same session ID for verification
         dkg_node.set_session_id(session_id);
 
-        // Store the session (with limit checking)
+        // Create the unified session state (crypto node + protocol tracking)
         self.app_state
-            .store_dkg_session(session_id, *dkg_node)
-            .await
-            .map_err(|e| DkgError::ProtocolError(e.to_string()))?;
-
-        // Initialize session state
-        self.session_state
-            .create_session(session_id, total_nodes)
+            .dkg_session_state
+            .create_session(session_id, *dkg_node, total_nodes)
             .await;
 
         Ok(())
@@ -575,7 +599,10 @@ where
 
     /// Store peer IDs for a session (needed for sending messages in later phases)
     pub async fn set_peer_ids(&self, session_id: &u64, peer_ids: Vec<String>) {
-        self.session_state.set_peer_ids(session_id, peer_ids).await;
+        self.app_state
+            .dkg_session_state
+            .set_peer_ids(session_id, peer_ids)
+            .await;
     }
 
     /// Send a DKG message to a peer
@@ -624,15 +651,16 @@ where
         // Generate polynomial and serialize commitment
         let (commitment_bytes, node_id) = self
             .app_state
-            .with_dkg_session_mut(&session_id, |session| {
+            .dkg_session_state
+            .with_state_mut(&session_id, |state| {
                 // Generate polynomial and commitment
-                session.generate_polynomial().map_err(|e| {
+                state.node.generate_polynomial().map_err(|e| {
                     DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
                 })?;
 
                 // Serialize commitment
                 let mut bytes = Vec::new();
-                for coeff in &session.commitment().coefficients {
+                for coeff in &state.node.commitment().coefficients {
                     let coeff_bytes = coeff.to_bytes().map_err(|e| {
                         DkgError::Serialization(format!(
                             "Failed to serialize commitment coefficient: {}",
@@ -642,7 +670,7 @@ where
                     bytes.extend_from_slice(&coeff_bytes);
                 }
 
-                Ok::<_, DkgError>((bytes, session.node_id()))
+                Ok::<_, DkgError>((bytes, state.node.node_id()))
             })
             .await
             .ok_or_else(|| {
@@ -650,7 +678,8 @@ where
             })??;
 
         // Update phase
-        self.session_state
+        self.app_state
+            .dkg_session_state
             .update_phase(&session_id, DkgPhase::Phase1Commitments)
             .await;
 
@@ -697,11 +726,12 @@ where
         // Check if we've generated our polynomial and how many nodes we expect
         let (has_polynomial, expected_commitments, node_id) = self
             .app_state
-            .with_dkg_session(&session_id, |session| {
+            .dkg_session_state
+            .with_state(&session_id, |state| {
                 (
-                    !session.commitment().coefficients.is_empty(),
-                    session.total_nodes() - 1, // Excluding self
-                    session.node_id(),
+                    !state.node.commitment().coefficients.is_empty(),
+                    state.node.total_nodes() - 1, // Excluding self
+                    state.node.node_id(),
                 )
             })
             .await
@@ -717,7 +747,8 @@ where
 
         // Get the actual count from session_state
         let received_commitments = self
-            .session_state
+            .app_state
+            .dkg_session_state
             .with_state(&session_id, |state| state.commitments_received)
             .await
             .unwrap_or(0);
@@ -747,43 +778,45 @@ where
     /// This is triggered when all commitments have been received.
     pub async fn initiate_phase2_shares(&self, session_id: u64, peer_ids: &[String]) -> Result<()> {
         // Generate shares and get node_id
-        let (shares, node_id) = self
-            .app_state
-            .with_dkg_session_mut(&session_id, |session| {
-                // Make sure we've generated our polynomial
-                if session.commitment().coefficients.is_empty() {
+        let (shares, node_id) =
+            self.app_state
+                .dkg_session_state
+                .with_state_mut(&session_id, |state| {
+                    // Make sure we've generated our polynomial
+                    if state.node.commitment().coefficients.is_empty() {
+                        tracing::debug!(
+                            node_id = state.node.node_id(),
+                            "DKG Coordinator: Generating polynomial before Phase 2"
+                        );
+                        state.node.generate_polynomial().map_err(|e| {
+                            DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
+                        })?;
+                    }
+
+                    // Generate shares for all nodes
                     tracing::debug!(
-                        node_id = session.node_id(),
-                        "DKG Coordinator: Generating polynomial before Phase 2"
+                        node_id = state.node.node_id(),
+                        session_id = session_id,
+                        "DKG Coordinator: Generating shares"
                     );
-                    session.generate_polynomial().map_err(|e| {
-                        DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
+                    let shares = state.node.generate_shares().map_err(|e| {
+                        DkgError::Crypto(format!("Failed to generate shares: {}", e))
                     })?;
-                }
 
-                // Generate shares for all nodes
-                tracing::debug!(
-                    node_id = session.node_id(),
-                    session_id = session_id,
-                    "DKG Coordinator: Generating shares"
-                );
-                let shares = session
-                    .generate_shares()
-                    .map_err(|e| DkgError::Crypto(format!("Failed to generate shares: {}", e)))?;
-
-                tracing::debug!(
-                    share_count = shares.len(),
-                    "DKG Coordinator: Generated shares"
-                );
-                Ok::<_, DkgError>((shares, session.node_id()))
-            })
-            .await
-            .ok_or_else(|| {
-                DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-            })??;
+                    tracing::debug!(
+                        share_count = shares.len(),
+                        "DKG Coordinator: Generated shares"
+                    );
+                    Ok::<_, DkgError>((shares, state.node.node_id()))
+                })
+                .await
+                .ok_or_else(|| {
+                    DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
+                })??;
 
         // Update phase
-        self.session_state
+        self.app_state
+            .dkg_session_state
             .update_phase(&session_id, DkgPhase::Phase2Shares)
             .await;
 
@@ -818,7 +851,8 @@ where
 
             // Try to get specific peer_id for this node_id (O(1) lookup)
             if let Some(target_peer_id) = self
-                .session_state
+                .app_state
+                .dkg_session_state
                 .get_peer_id_for_node(&session_id, share.to_id)
                 .await
             {
@@ -911,7 +945,8 @@ where
         // Get expected shares count
         let expected_shares = self
             .app_state
-            .with_dkg_session(&session_id, |session| session.total_nodes() - 1)
+            .dkg_session_state
+            .with_state(&session_id, |state| state.node.total_nodes() - 1)
             .await
             .ok_or_else(|| {
                 DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
@@ -919,7 +954,8 @@ where
 
         // Get the actual count from session_state
         let received_shares = self
-            .session_state
+            .app_state
+            .dkg_session_state
             .with_state(&session_id, |state| state.shares_received)
             .await
             .unwrap_or(0);
@@ -934,8 +970,9 @@ where
             // Verify we have all commitments before proceeding
             let has_all_commitments = self
                 .app_state
-                .with_dkg_session(&session_id, |session| {
-                    session.compute_aggregate_public_key().is_ok()
+                .dkg_session_state
+                .with_state(&session_id, |state| {
+                    state.node.compute_aggregate_public_key().is_ok()
                 })
                 .await
                 .ok_or_else(|| {
@@ -972,29 +1009,30 @@ where
         // Compute final secret share, aggregate public key, and gather data for bulletin
         let (node_id, aggregate_pk, final_share_bytes, threshold, pub_poly_bytes) = self
             .app_state
-            .with_dkg_session(&session_id, |session| {
+            .dkg_session_state
+            .with_state(&session_id, |state| {
                 tracing::debug!(
-                    node_id = session.node_id(),
+                    node_id = state.node.node_id(),
                     "DKG Coordinator: Computing secret share"
                 );
 
                 // Compute final secret share
-                let final_share = session.compute_secret_share().map_err(|e| {
+                let final_share = state.node.compute_secret_share().map_err(|e| {
                     DkgError::Crypto(format!("Failed to compute secret share: {}", e))
                 })?;
 
                 tracing::debug!(
-                    node_id = session.node_id(),
+                    node_id = state.node.node_id(),
                     "DKG Coordinator: Successfully computed secret share"
                 );
 
                 // Compute aggregate public key
-                let aggregate_pk = session.compute_aggregate_public_key().map_err(|e| {
+                let aggregate_pk = state.node.compute_aggregate_public_key().map_err(|e| {
                     DkgError::Crypto(format!("Failed to compute aggregate public key: {}", e))
                 })?;
 
                 tracing::debug!(
-                    node_id = session.node_id(),
+                    node_id = state.node.node_id(),
                     "DKG Coordinator: Computed aggregate public key"
                 );
 
@@ -1004,7 +1042,7 @@ where
                 })?;
 
                 // Compute and serialize public polynomial for bulletin
-                let pub_poly = session.compute_public_polynomial().map_err(|e| {
+                let pub_poly = state.node.compute_public_polynomial().map_err(|e| {
                     DkgError::Crypto(format!("Failed to compute public polynomial: {}", e))
                 })?;
                 let pub_poly_bytes = pub_poly.to_bytes().map_err(|e| {
@@ -1012,10 +1050,10 @@ where
                 })?;
 
                 Ok::<_, DkgError>((
-                    session.node_id(),
+                    state.node.node_id(),
                     aggregate_pk,
                     final_share_bytes,
-                    session.threshold(),
+                    state.node.threshold(),
                     pub_poly_bytes,
                 ))
             })
@@ -1039,7 +1077,8 @@ where
         );
 
         // Update phase
-        self.session_state
+        self.app_state
+            .dkg_session_state
             .update_phase(&session_id, DkgPhase::Phase4Complete)
             .await;
 
@@ -1059,7 +1098,8 @@ where
         if node_id == 1 {
             // Get peer_ids from session state
             let peer_ids = self
-                .session_state
+                .app_state
+                .dkg_session_state
                 .get_peer_ids(&session_id)
                 .await
                 .unwrap_or_default();
@@ -1096,8 +1136,10 @@ where
 
         // Clean up session data - no longer needed since private share is in local storage
         // and ring info is on the bulletin
-        self.app_state.remove_dkg_session(&session_id).await;
-        self.session_state.remove_session(&session_id).await;
+        self.app_state
+            .dkg_session_state
+            .remove_session(&session_id)
+            .await;
 
         tracing::info!(
             session_id = session_id,

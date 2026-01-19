@@ -1,11 +1,17 @@
 //! DKG Session State Management
 //!
 //! This module tracks the state of DKG sessions including active connections,
-//! protocol phases, and peer information.
+//! protocol phases, peer information, and the cryptographic DKG node state.
+//!
+//! `DkgSessionState` combines both the protocol state (phase tracking, connections,
+//! message deduplication) and the cryptographic state (the DKG node itself) into
+//! a single unified structure.
 
+use crypto::r#trait::Dkg;
 use network::Connection;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 
 /// DKG Protocol Phase
@@ -36,8 +42,21 @@ pub enum DkgMessageType {
     Error,
 }
 
-/// State for a DKG session including connections and phase tracking
-pub struct DkgSessionState {
+/// Unified state for a DKG session combining crypto state and protocol tracking
+///
+/// This struct holds both:
+/// - The cryptographic DKG node (polynomial, commitments, shares)
+/// - Protocol state (phase, connections, message deduplication)
+pub struct DkgSessionState<D: Dkg> {
+    // === Crypto State (the DKG node) ===
+    /// The DKG node containing cryptographic state (polynomial, commitments, shares)
+    pub node: D,
+
+    // === Metadata ===
+    /// When this session was created
+    pub created_at: Instant,
+
+    // === Protocol State ===
     /// Current protocol phase
     pub phase: DkgPhase,
     /// Connection pool: peer_id_string -> connection
@@ -59,9 +78,12 @@ pub struct DkgSessionState {
     pub processed_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
 }
 
-impl DkgSessionState {
-    pub fn new(total_participants: usize) -> Self {
+impl<D: Dkg> DkgSessionState<D> {
+    /// Create a new DKG session state with the given DKG node
+    pub fn new(node: D, total_participants: usize) -> Self {
         Self {
+            node,
+            created_at: Instant::now(),
             phase: DkgPhase::Initializing,
             connections: HashMap::new(),
             node_id_to_peer_id: HashMap::new(),
@@ -88,12 +110,12 @@ impl DkgSessionState {
 }
 
 /// Global session state manager
-pub struct SessionStateManager {
+pub struct SessionStateManager<D: Dkg> {
     /// session_id -> session state
-    pub(crate) states: Arc<RwLock<HashMap<u64, DkgSessionState>>>,
+    pub(crate) states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
 }
 
-impl SessionStateManager {
+impl<D: Dkg> SessionStateManager<D> {
     pub fn new() -> Self {
         Self {
             states: Arc::new(RwLock::new(HashMap::new())),
@@ -103,7 +125,7 @@ impl SessionStateManager {
     /// Execute a function with read-only access to a session state
     pub async fn with_state<F, R>(&self, session_id: &u64, f: F) -> Option<R>
     where
-        F: FnOnce(&DkgSessionState) -> R,
+        F: FnOnce(&DkgSessionState<D>) -> R,
     {
         let states = self.states.read().await;
         states.get(session_id).map(f)
@@ -112,15 +134,27 @@ impl SessionStateManager {
     /// Execute a function with mutable access to a session state
     pub async fn with_state_mut<F, R>(&self, session_id: &u64, f: F) -> Option<R>
     where
-        F: FnOnce(&mut DkgSessionState) -> R,
+        F: FnOnce(&mut DkgSessionState<D>) -> R,
     {
         let mut states = self.states.write().await;
         states.get_mut(session_id).map(f)
     }
 
-    pub async fn create_session(&self, session_id: u64, total_participants: usize) {
+    pub async fn create_session(&self, session_id: u64, node: D, total_participants: usize) {
         let mut states = self.states.write().await;
-        states.insert(session_id, DkgSessionState::new(total_participants));
+        states.insert(session_id, DkgSessionState::new(node, total_participants));
+    }
+
+    /// Check if a session exists
+    pub async fn session_exists(&self, session_id: &u64) -> bool {
+        let states = self.states.read().await;
+        states.contains_key(session_id)
+    }
+
+    /// Get the number of active sessions
+    pub async fn session_count(&self) -> usize {
+        let states = self.states.read().await;
+        states.len()
     }
 
     pub async fn set_peer_ids(&self, session_id: &u64, peer_ids: Vec<String>) {
@@ -265,7 +299,7 @@ impl SessionStateManager {
     }
 }
 
-impl Default for SessionStateManager {
+impl<D: Dkg> Default for SessionStateManager<D> {
     fn default() -> Self {
         Self::new()
     }

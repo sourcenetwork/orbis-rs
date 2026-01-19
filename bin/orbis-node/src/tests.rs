@@ -175,7 +175,7 @@ async fn test_init_node_app_state_configuration() {
 
     // Verify no sessions exist initially
     assert_eq!(
-        node.app_state.session_count().await,
+        node.app_state.dkg_session_state.session_count().await,
         0,
         "Should have no sessions initially"
     );

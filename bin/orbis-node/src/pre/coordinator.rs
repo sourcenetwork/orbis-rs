@@ -389,7 +389,8 @@ where
         let request_id_for_cleanup = request_id.clone();
         if !self
             .app_state
-            .init_pre_response(request_id.clone(), actual_peer_count)
+            .pre_response_state
+            .init_response(request_id.clone())
             .await
         {
             return Err(PreError::ProtocolError(
@@ -421,7 +422,8 @@ where
 
         // Always cleanup, regardless of success or failure
         self.app_state
-            .remove_pre_response(&request_id_for_cleanup)
+            .pre_response_state
+            .remove_response(&request_id_for_cleanup)
             .await;
 
         result
@@ -550,7 +552,8 @@ where
         // 6. Collect the stored responses
         let collected_responses = self
             .app_state
-            .get_pre_responses(request_id_arc.as_ref())
+            .pre_response_state
+            .get_responses(request_id_arc.as_ref())
             .await
             .ok_or_else(|| {
                 PreError::Timeout(format!(
@@ -717,7 +720,8 @@ where
     pub async fn store_response(&self, message: PreMessage) {
         let request_id = message.request_id().to_string();
         self.app_state
-            .store_pre_response(&request_id, message)
+            .pre_response_state
+            .store_response(&request_id, message)
             .await;
         tracing::debug!(request_id = %request_id, "PRE Coordinator: Stored response");
     }

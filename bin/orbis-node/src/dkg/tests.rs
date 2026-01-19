@@ -235,7 +235,12 @@ async fn test_start_dkg_succeeds_on_all_connections() {
     let start = std::time::Instant::now();
     loop {
         // Debug: check session count
-        let session_count = network.alice.app_state.session_count().await;
+        let session_count = network
+            .alice
+            .app_state
+            .dkg_session_state
+            .session_count()
+            .await;
         if start.elapsed().as_secs() % 5 == 0 {
             println!(
                 "Session count: {}, elapsed: {:?}",

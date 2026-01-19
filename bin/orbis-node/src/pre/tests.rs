@@ -630,7 +630,8 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     let remaining_responses = network
         .alice
         .app_state
-        .get_pre_responses("invalid-token-pre-request")
+        .pre_response_state
+        .get_responses("invalid-token-pre-request")
         .await;
     assert!(
         remaining_responses.is_none(),
@@ -762,7 +763,8 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     let remaining_responses = network
         .alice
         .app_state
-        .get_pre_responses("mismatched-claims-pre-request")
+        .pre_response_state
+        .get_responses("mismatched-claims-pre-request")
         .await;
     assert!(
         remaining_responses.is_none(),
