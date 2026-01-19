@@ -129,8 +129,7 @@ pub fn get_network_key_secret(
         Ok(secret_node_key_option) => {
             if let Some(secret_node_key) = secret_node_key_option {
                 tracing::info!("secret network key loaded from local storage");
-                return Ok(String::from_utf8(secret_node_key)
-                    .expect("Issue stringifying secret key from local storage"));
+                return String::from_utf8(secret_node_key).map_err(PasswordError::Utf8Error);
             }
         }
         Err(e) => {
@@ -143,7 +142,8 @@ pub fn get_network_key_secret(
     }
     // None exist - generate new secret key
     let mut key_bytes = [0u8; 32];
-    getrandom::getrandom(&mut key_bytes).expect("Failed to generate random bytes");
+    getrandom::getrandom(&mut key_bytes)
+        .map_err(|e| PasswordError::RandomGenerationError(e.to_string()))?;
     let secret_hex = hex::encode(key_bytes);
 
     // Store in local storage for future use
@@ -152,7 +152,7 @@ pub fn get_network_key_secret(
             LocalStorageKeys::NodeSecretKey,
             secret_hex.as_bytes().to_vec(),
         )
-        .expect("Issue storing secret key in local storage");
+        .map_err(|e| PasswordError::StorageError(e.to_string()))?;
 
     Ok(secret_hex)
 }

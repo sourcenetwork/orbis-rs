@@ -69,6 +69,12 @@ pub enum PasswordError {
     EmptyPassword,
     /// User cancelled the password prompt
     UserCancelled,
+    /// Failed to convert bytes to UTF-8 string
+    Utf8Error(std::string::FromUtf8Error),
+    /// Failed to generate random bytes
+    RandomGenerationError(String),
+    /// Failed to store or retrieve from local storage
+    StorageError(String),
 }
 
 impl std::fmt::Display for PasswordError {
@@ -78,6 +84,11 @@ impl std::fmt::Display for PasswordError {
             PasswordError::StdinError(e) => write!(f, "Failed to read password from stdin: {}", e),
             PasswordError::EmptyPassword => write!(f, "Password cannot be empty"),
             PasswordError::UserCancelled => write!(f, "Password entry cancelled by user"),
+            PasswordError::Utf8Error(e) => write!(f, "Failed to convert to UTF-8: {}", e),
+            PasswordError::RandomGenerationError(e) => {
+                write!(f, "Failed to generate random bytes: {}", e)
+            }
+            PasswordError::StorageError(e) => write!(f, "Storage error: {}", e),
         }
     }
 }
