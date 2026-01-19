@@ -4,8 +4,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg,
-    do_encrypt_secret, do_generate_reader_key, do_pre, fund, query_node_info,
-    register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
+    do_encrypt_secret, do_generate_reader_key, do_pre, fund, list_bulletin_posts, query_node_info,
+    read_bulletin_post, register_bulletin_namespace, register_object_to_chain,
+    set_relationship_on_chain,
 };
 use common::blockchain::ChainConfig;
 use hex;
@@ -138,6 +139,19 @@ pub enum SubCommands {
         #[clap(long)]
         address: String,
     },
+    ReadBulletinPost {
+        /// Namespace to add collaborator to
+        #[clap(long)]
+        namespace: String,
+        /// Collaborator address to add
+        #[clap(long)]
+        id: String,
+    },
+    ListBulletinPost {
+        /// Namespace to add collaborator to
+        #[clap(long)]
+        namespace: String,
+    },
     /// Query node info
     Info {
         /// gRPC endpoint of the node
@@ -224,6 +238,12 @@ async fn main() -> Result<()> {
         }
         SubCommands::Fund { address } => {
             fund(address, ChainConfig::local()).await?;
+        }
+        SubCommands::ReadBulletinPost { namespace, id } => {
+            read_bulletin_post(namespace, id).await?;
+        }
+        SubCommands::ListBulletinPost { namespace } => {
+            list_bulletin_posts(namespace).await?;
         }
         SubCommands::Info { endpoint } => {
             query_node_info(endpoint).await?;

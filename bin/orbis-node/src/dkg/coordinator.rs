@@ -751,7 +751,9 @@ where
             .dkg_session_state
             .with_state(&session_id, |state| state.commitments_received)
             .await
-            .unwrap_or(0);
+            .ok_or_else(|| {
+                DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
+            })?;
 
         if received_commitments >= expected_commitments {
             tracing::info!(
@@ -958,7 +960,9 @@ where
             .dkg_session_state
             .with_state(&session_id, |state| state.shares_received)
             .await
-            .unwrap_or(0);
+            .ok_or_else(|| {
+                DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
+            })?;
 
         if received_shares >= expected_shares {
             tracing::info!(
@@ -1102,8 +1106,7 @@ where
                 .dkg_session_state
                 .get_peer_ids(&session_id)
                 .await
-                .unwrap_or_default();
-
+                .ok_or(DkgError::Generic("Failed to get peer ids".to_string()))?;
             // Create RingPayload
             let ring_payload = RingPayload {
                 ring_pk: hex::encode(&ring_pk_bytes),

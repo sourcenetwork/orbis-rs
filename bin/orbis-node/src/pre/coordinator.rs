@@ -366,10 +366,17 @@ where
         token_string: String,
         namespace: String,
     ) -> Result<Vec<u8>> {
+        // Determine our node_id (if we're in the ring) - single source of truth
+        let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
+        let node_id_opt = determine_session_node_id(&our_peer_id, peer_ids);
+
+        // self_in_list derived from node_id - guarantees consistency
+        let self_in_list = node_id_opt.is_some();
+
+        // 0 is a safe sentinel: DKG node_ids are 1-indexed, so 0 means "external requester"
+        let node_id = node_id_opt.unwrap_or(0);
+
         // Count how many peers we'll actually contact (excluding self)
-        let self_in_list = peer_ids
-            .iter()
-            .any(|pid| is_self_peer_id(&self.app_state.network, pid));
         let actual_peer_count = if self_in_list {
             peer_ids.len() - 1
         } else {
@@ -415,6 +422,7 @@ where
                 permission,
                 token_string,
                 namespace,
+                node_id,
                 self_in_list,
                 actual_peer_count,
             )
@@ -449,6 +457,7 @@ where
         permission: String,
         token_string: String,
         namespace: String,
+        node_id: u32,
         self_in_list: bool,
         actual_peer_count: usize,
     ) -> Result<Vec<u8>> {
@@ -459,10 +468,6 @@ where
         let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize public polynomial: {}", e))
         })?;
-
-        // Derive node_id from sorted peer_ids (if we're in the list)
-        let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
-        let node_id = determine_session_node_id(&our_peer_id, peer_ids).unwrap_or(0);
 
         // Validate we have enough potential shares to meet threshold
         // If we're in the list, we can contribute our own share locally

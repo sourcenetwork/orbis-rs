@@ -14,7 +14,7 @@ use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::Bulletin;
-use common::blockchain::{ChainConfig, ChainConfigBuilder};
+use common::blockchain::ChainConfigBuilder;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::Network;
 use std::sync::Arc;
