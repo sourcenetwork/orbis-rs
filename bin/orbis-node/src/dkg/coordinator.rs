@@ -392,11 +392,13 @@ where
                         // Use Arc to share commitment bytes across all peers (cheap clone)
                         let commitment_bytes_arc = Arc::new(commitment_bytes);
                         let mut sent_count = 0;
+                        let mut expected_count = 0;
                         for peer_id_str in &peer_ids {
                             // Skip self - don't try to connect to ourselves
                             if is_self_peer_id(&self.app_state.network, peer_id_str) {
                                 continue;
                             }
+                            expected_count += 1;
 
                             let commitment_msg = DkgMessage::Commitment {
                                 session_id,
@@ -415,10 +417,27 @@ where
                                 }
                             }
                         }
+
                         tracing::info!(
                             sent = sent_count,
+                            expected = expected_count,
                             "DKG Coordinator: Sent our commitment to peers"
                         );
+
+                        // Validate ALL peers received the commitment
+                        // Users expect the full redundancy they configured - partial success is a failure
+                        if sent_count < expected_count {
+                            tracing::error!(
+                                sent = sent_count,
+                                expected = expected_count,
+                                session_id = session_id,
+                                "DKG Coordinator: Could not send commitment to all peers - failing DKG to preserve expected redundancy"
+                            );
+                            return Err(DkgError::NetworkCommunication(format!(
+                                "Failed to send commitment to all peers: sent to {} of {}",
+                                sent_count, expected_count
+                            )));
+                        }
                     }
                 }
 
@@ -649,7 +668,7 @@ where
         peer_ids: &[String],
     ) -> Result<()> {
         // Generate polynomial and serialize commitment
-        let (commitment_bytes, node_id) = self
+        let (commitment_bytes, node_id, threshold) = self
             .app_state
             .dkg_session_state
             .with_state_mut(&session_id, |state| {
@@ -670,7 +689,7 @@ where
                     bytes.extend_from_slice(&coeff_bytes);
                 }
 
-                Ok::<_, DkgError>((bytes, state.node.node_id()))
+                Ok::<_, DkgError>((bytes, state.node.node_id(), state.node.threshold()))
             })
             .await
             .ok_or_else(|| {
@@ -686,12 +705,14 @@ where
         // Use Arc to share commitment bytes across all peers (cheap clone)
         let commitment_bytes_arc = Arc::new(commitment_bytes);
         let mut peers_sent = 0;
+        let mut expected_peers = 0;
         for peer_id_str in peer_ids {
             // Skip self - don't try to connect to ourselves
             if is_self_peer_id(&self.app_state.network, peer_id_str) {
                 tracing::debug!(peer_id = %peer_id_str, "Skipping self when broadcasting commitment");
                 continue;
             }
+            expected_peers += 1;
 
             let commitment_msg = DkgMessage::Commitment {
                 session_id,
@@ -709,9 +730,26 @@ where
 
         tracing::info!(
             peers_sent = peers_sent,
-            total_peers = peer_ids.len(),
+            expected_peers = expected_peers,
             "Phase 1: Broadcasted commitment to peers"
         );
+
+        // Validate ALL peers received the commitment
+        // Users expect the full redundancy they configured - partial success is a failure
+        if peers_sent < expected_peers {
+            tracing::error!(
+                sent = peers_sent,
+                expected = expected_peers,
+                session_id = session_id,
+                "DKG Coordinator: Could not broadcast commitment to all peers - failing DKG to preserve expected redundancy"
+            );
+            return Err(DkgError::InsufficientPeers {
+                successful: peers_sent,
+                total: expected_peers,
+                threshold,
+            });
+        }
+
         Ok(())
     }
 
@@ -779,8 +817,8 @@ where
     ///
     /// This is triggered when all commitments have been received.
     pub async fn initiate_phase2_shares(&self, session_id: u64, peer_ids: &[String]) -> Result<()> {
-        // Generate shares and get node_id
-        let (shares, node_id) =
+        // Generate shares and get node_id and threshold
+        let (shares, node_id, threshold) =
             self.app_state
                 .dkg_session_state
                 .with_state_mut(&session_id, |state| {
@@ -809,7 +847,7 @@ where
                         share_count = shares.len(),
                         "DKG Coordinator: Generated shares"
                     );
-                    Ok::<_, DkgError>((shares, state.node.node_id()))
+                    Ok::<_, DkgError>((shares, state.node.node_id(), state.node.threshold()))
                 })
                 .await
                 .ok_or_else(|| {
@@ -823,8 +861,12 @@ where
             .await;
 
         if peer_ids.is_empty() {
-            tracing::warn!("DKG Coordinator: No peer_ids available to send shares to");
-            return Ok(());
+            tracing::error!("DKG Coordinator: No peer_ids available to send shares to");
+            return Err(DkgError::InsufficientPeers {
+                successful: 0,
+                total: 0,
+                threshold,
+            });
         }
 
         tracing::debug!(
@@ -931,12 +973,30 @@ where
             }
         }
 
+        let expected_shares = shares.len().saturating_sub(1); // Exclude share to self
         tracing::info!(
             sent = shares_sent,
-            total = shares.len() - 1,
+            total = expected_shares,
             node_id = node_id,
             "Phase 2: Sent shares to peers"
         );
+
+        // Validate ALL shares were sent successfully
+        // Users expect the full redundancy they configured - partial success is a failure
+        if shares_sent < expected_shares {
+            tracing::error!(
+                sent = shares_sent,
+                expected = expected_shares,
+                threshold = threshold,
+                "DKG Coordinator: Could not send shares to all peers - failing DKG to preserve expected redundancy"
+            );
+            return Err(DkgError::InsufficientPeers {
+                successful: shares_sent,
+                total: expected_shares,
+                threshold,
+            });
+        }
+
         Ok(())
     }
 

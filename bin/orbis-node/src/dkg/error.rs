@@ -66,6 +66,16 @@ pub enum DkgError {
     /// Hash conversion error
     #[error("Hash conversion error: {0}")]
     HashConversion(#[from] std::array::TryFromSliceError),
+
+    /// Insufficient peers to reach threshold
+    #[error(
+        "Insufficient peers: sent to {successful} of {total} peers, need {threshold} for threshold"
+    )]
+    InsufficientPeers {
+        successful: usize,
+        total: usize,
+        threshold: usize,
+    },
 }
 
 /// Result type for DKG operations
