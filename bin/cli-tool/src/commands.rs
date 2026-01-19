@@ -77,7 +77,8 @@ pub async fn do_dkg(endpoint: String, threshold: u32, peer_ids: Vec<String>) -> 
     let token = jwt_signer
         .create_dkg_jwt(threshold, &peer_ids)
         .expect("Failed to create JWT");
-    let tonic_request = create_authenticated_request(request, &token);
+    let tonic_request = create_authenticated_request(request, &token)
+        .map_err(|e| anyhow!("Failed to create_dkg_jwt: {}", e))?;
 
     let response = client
         .start_dkg(tonic_request)
@@ -156,7 +157,8 @@ pub async fn do_pre(
     let token = jwt_signer
         .create_pre_jwt(&reader_pk, &namespace, &object_id)
         .expect("Failed to create JWT");
-    let tonic_request = create_authenticated_request(request, &token);
+    let tonic_request = create_authenticated_request(request, &token)
+        .map_err(|e| anyhow!("Failed to create_authenticated_request: {}", e))?;
 
     let response = client
         .start_pre(tonic_request)

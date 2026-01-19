@@ -276,7 +276,10 @@ impl SourceHubClient {
         height: Option<u64>,
         prove: bool,
     ) -> Result<Vec<u8>> {
-        let height = height.map(|h| tendermint::block::Height::try_from(h).unwrap());
+        let height = height
+            .map(|h| tendermint::block::Height::try_from(h))
+            .transpose()
+            .map_err(|e| BlockchainError::Query(format!("Invalid block height: {}", e)))?;
 
         let response = self
             .rpc_client

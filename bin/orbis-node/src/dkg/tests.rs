@@ -35,7 +35,7 @@ async fn test_start_dkg_empty_participants() {
     let token = test_keys
         .create_dkg_jwt(0, &peer_ids)
         .expect("Failed to create JWT");
-    let tonic_request = create_authenticated_request(request, &token);
+    let tonic_request = create_authenticated_request(request, &token).unwrap();
 
     let result = service.start_dkg(tonic_request).await;
 
@@ -82,7 +82,7 @@ async fn test_three_nodes_connect() {
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with peer IDs...");
-    let tonic_request = create_authenticated_request(request, &token);
+    let tonic_request = create_authenticated_request(request, &token).unwrap();
     let result = alice_service.start_dkg(tonic_request).await;
 
     assert!(result.is_ok(), "start_dkg should succeed");
@@ -145,7 +145,7 @@ async fn test_start_dkg_fails_on_connection_failure() {
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with invalid peer IDs...");
-    let tonic_request = create_authenticated_request(request, &token);
+    let tonic_request = create_authenticated_request(request, &token).unwrap();
     let result = alice_service.start_dkg(tonic_request).await;
 
     // Verify that the request fails with a gRPC error due to invalid peer ID format
@@ -212,7 +212,7 @@ async fn test_start_dkg_succeeds_on_all_connections() {
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with valid peer IDs...");
-    let tonic_request = create_authenticated_request(request, &token);
+    let tonic_request = create_authenticated_request(request, &token).unwrap();
     let result = alice_service.start_dkg(tonic_request).await;
 
     // Verify that the request succeeds when all connections are successful
@@ -381,7 +381,7 @@ async fn test_start_dkg_fails_malformed_jwt() {
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
-    let tonic_request = create_authenticated_request(request, "not-a-valid-jwt-token");
+    let tonic_request = create_authenticated_request(request, "not-a-valid-jwt-token").unwrap();
 
     let result = service.start_dkg(tonic_request).await;
 
@@ -433,7 +433,7 @@ async fn test_start_dkg_fails_wrong_signature() {
         peer_ids,
     };
 
-    let tonic_request = create_authenticated_request(request, &tampered_token);
+    let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
 
     let result = service.start_dkg(tonic_request).await;
 

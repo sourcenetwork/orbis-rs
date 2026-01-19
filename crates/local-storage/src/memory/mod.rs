@@ -32,7 +32,7 @@ impl LocalStorage for MemoryStorage {
             Some(password) => {
                 let salt = SaltString::generate(&mut OsRng);
                 let salt_bytes = salt.as_salt().as_str().as_bytes().to_vec();
-                let cipher = derive_cipher(&password, &salt_bytes);
+                let cipher = derive_cipher(&password, &salt_bytes)?;
 
                 Ok(Self {
                     store,

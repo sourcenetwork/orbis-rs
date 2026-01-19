@@ -35,11 +35,13 @@ pub fn decrypt_value(cipher: &Aes256Gcm, encrypted: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Derive cipher from password and salt using Argon2
-pub fn derive_cipher(password: &str, salt: &[u8]) -> Aes256Gcm {
+pub fn derive_cipher(password: &str, salt: &[u8]) -> Result<Aes256Gcm> {
     let argon2 = Argon2::default();
     let mut key_bytes = Zeroizing::new([0u8; 32]);
     argon2
         .hash_password_into(password.as_bytes(), salt, key_bytes.as_mut())
-        .expect("argon2 key derivation failed");
-    Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key_bytes.as_ref()))
+        .map_err(|e| LocalStorageError::KeyDerivationError(e.to_string()))?;
+    Ok(Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(
+        key_bytes.as_ref(),
+    )))
 }

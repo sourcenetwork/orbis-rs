@@ -17,6 +17,8 @@ pub enum LocalStorageError {
     UniqueDBError(String),
     #[error("Invalid password")]
     InvalidPassword,
+    #[error("Key derivation failed: {0}")]
+    KeyDerivationError(String),
 }
 
 /// Result type for local storage operations

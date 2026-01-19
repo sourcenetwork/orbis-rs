@@ -52,7 +52,7 @@ impl LocalStorage for RedbStorage {
             Some(password) => {
                 let (cipher, salt_bytes) = if let Some(stored_salt) = existing_salt {
                     // Existing database - verify password
-                    let cipher = derive_cipher(&password, &stored_salt);
+                    let cipher = derive_cipher(&password, &stored_salt)?;
                     let encrypted_check = raw_get(&db, INTERNAL_PASSWORD_CHECK_KEY)?
                         .ok_or(LocalStorageError::CorruptData)?;
                     let decrypted = decrypt_value(&cipher, &encrypted_check)
@@ -66,7 +66,7 @@ impl LocalStorage for RedbStorage {
                     // New database - generate salt and store password check
                     let salt = SaltString::generate(&mut OsRng);
                     let salt_bytes = salt.as_salt().as_str().as_bytes().to_vec();
-                    let cipher = derive_cipher(&password, &salt_bytes);
+                    let cipher = derive_cipher(&password, &salt_bytes)?;
                     let encrypted_check = encrypt_value(&cipher, PASSWORD_CHECK_VALUE)?;
 
                     raw_set(&db, INTERNAL_SALT_KEY, &salt_bytes)?;

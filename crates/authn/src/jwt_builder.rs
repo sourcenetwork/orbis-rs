@@ -39,10 +39,11 @@ impl JwtSigner {
     }
 
     /// Get the signing key for jwt-simple.
-    fn get_signing_key(&self) -> Ed25519KeyPair {
+    fn get_signing_key(&self) -> Result<Ed25519KeyPair> {
         let mut keypair_bytes = self.key_pair.private_key_bytes();
         keypair_bytes.extend(self.key_pair.public_key_bytes());
-        Ed25519KeyPair::from_bytes(&keypair_bytes).expect("Failed to create signing key")
+        Ed25519KeyPair::from_bytes(&keypair_bytes)
+            .map_err(|e| AuthNError::JwtError(format!("Failed to create signing key: {}", e)))
     }
 
     /// Create a signed JWT with custom claims.
@@ -57,7 +58,7 @@ impl JwtSigner {
     where
         T: Serialize + DeserializeOwned,
     {
-        let signing_key = self.get_signing_key();
+        let signing_key = self.get_signing_key()?;
         let jwt_claims = Claims::with_custom_claims(claims, duration).with_issuer(&self.did_uri);
         signing_key
             .sign(jwt_claims)
@@ -146,13 +147,18 @@ pub fn extract_bearer_token<T>(request: &Request<T>) -> Result<&str> {
 /// # Arguments
 /// * `request` - The tonic gRPC request to modify
 /// * `token` - The JWT token to add
-pub fn add_auth_header<T>(request: &mut Request<T>, token: &str) {
+///
+/// # Returns
+/// Ok(()) on success, or an error if the token contains invalid header characters
+pub fn add_auth_header<T>(request: &mut Request<T>, token: &str) -> Result<()> {
     use tonic::metadata::MetadataValue;
     let header_value = format!("Bearer {}", token);
-    request.metadata_mut().insert(
-        "authorization",
-        MetadataValue::try_from(&header_value).expect("Invalid header value"),
-    );
+    let metadata_value = MetadataValue::try_from(&header_value)
+        .map_err(|e| AuthNError::JwtError(format!("Invalid token for header: {}", e)))?;
+    request
+        .metadata_mut()
+        .insert("authorization", metadata_value);
+    Ok(())
 }
 
 /// Creates a tonic request with an authorization header.
@@ -162,11 +168,11 @@ pub fn add_auth_header<T>(request: &mut Request<T>, token: &str) {
 /// * `token` - The JWT token to add
 ///
 /// # Returns
-/// A new tonic Request with the authorization header set
-pub fn create_authenticated_request<T>(inner: T, token: &str) -> Request<T> {
+/// A new tonic Request with the authorization header set, or an error if the token is invalid
+pub fn create_authenticated_request<T>(inner: T, token: &str) -> Result<Request<T>> {
     let mut request = Request::new(inner);
-    add_auth_header(&mut request, token);
-    request
+    add_auth_header(&mut request, token)?;
+    Ok(request)
 }
 
 #[cfg(test)]

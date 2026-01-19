@@ -74,7 +74,7 @@ async fn test_dkg_then_pre_end_to_end() {
         .expect("Failed to create JWT");
 
     println!("Node1 sending StartDkgRequest...");
-    let tonic_request = create_authenticated_request(request, &token);
+    let tonic_request = create_authenticated_request(request, &token).unwrap();
     let result = node1_service.start_dkg(tonic_request).await;
     assert!(
         result.is_ok(),
@@ -311,7 +311,7 @@ async fn test_pre_with_large_secret() {
         .expect("Failed to create JWT");
 
     let result = node1_service
-        .start_dkg(create_authenticated_request(request, &token))
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
         .await;
     assert!(result.is_ok());
 
@@ -430,7 +430,7 @@ async fn test_pre_fails_with_wrong_key() {
         .expect("Failed to create JWT");
 
     let result = node1_service
-        .start_dkg(create_authenticated_request(request, &token))
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
         .await;
     assert!(result.is_ok());
 
@@ -552,7 +552,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         .expect("Failed to create JWT");
 
     let result = node1_service
-        .start_dkg(create_authenticated_request(request, &token))
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
         .await;
     assert!(result.is_ok());
 
@@ -678,7 +678,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         .expect("Failed to create JWT");
 
     let result = node1_service
-        .start_dkg(create_authenticated_request(request, &token))
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
         .await;
     assert!(result.is_ok());
 
@@ -832,7 +832,7 @@ async fn test_start_pre_fails_malformed_jwt() {
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
-    let tonic_request = create_authenticated_request(request, "not-a-valid-jwt-token");
+    let tonic_request = create_authenticated_request(request, "not-a-valid-jwt-token").unwrap();
 
     let result = service.start_pre(tonic_request).await;
 
@@ -886,7 +886,7 @@ async fn test_start_pre_fails_wrong_signature() {
         object_id: "".to_string(),
     };
 
-    let tonic_request = create_authenticated_request(request, &tampered_token);
+    let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
 
     let result = service.start_pre(tonic_request).await;
 
