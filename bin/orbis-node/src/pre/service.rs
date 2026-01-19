@@ -83,10 +83,14 @@ where
             .bulletin
             .read(req.namespace.clone(), req.object_id.clone())
             .await
-            .unwrap();
+            .map_err(|e| {
+                PreError::Storage(format!("Failed to read object '{}': {}", req.object_id, e))
+            })?;
 
-        let document_payload =
-            serde_json::from_slice::<DocumentPayload>(&object_info.payload).unwrap();
+        let document_payload = serde_json::from_slice::<DocumentPayload>(&object_info.payload)
+            .map_err(|e| {
+                PreError::Deserialization(format!("Failed to parse document payload: {}", e))
+            })?;
 
         let ring_info = self
             .state
@@ -96,9 +100,17 @@ where
                 document_payload.ring_id.clone(),
             )
             .await
-            .unwrap();
+            .map_err(|e| {
+                PreError::Storage(format!(
+                    "Failed to read ring '{}': {}",
+                    document_payload.ring_id, e
+                ))
+            })?;
 
-        let ring_payload = serde_json::from_slice::<RingPayload>(&ring_info.payload).unwrap();
+        let ring_payload =
+            serde_json::from_slice::<RingPayload>(&ring_info.payload).map_err(|e| {
+                PreError::Deserialization(format!("Failed to parse ring payload: {}", e))
+            })?;
 
         let permission = AccessCheckRequest::new(
             document_payload.policy_id.clone(),
