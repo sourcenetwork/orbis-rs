@@ -389,8 +389,6 @@ where
                                 ))
                             })??;
 
-                        // Use Arc to share commitment bytes across all peers (cheap clone)
-                        let commitment_bytes_arc = Arc::new(commitment_bytes);
                         let mut sent_count = 0;
                         let mut expected_count = 0;
                         for peer_id_str in &peer_ids {
@@ -403,7 +401,7 @@ where
                             let commitment_msg = DkgMessage::Commitment {
                                 session_id,
                                 from_node_id: node_id,
-                                commitment: commitment_bytes_arc.as_ref().clone(),
+                                commitment: commitment_bytes.clone(),
                             };
 
                             match self.send_message_to_peer(peer_id_str, commitment_msg).await {
@@ -702,8 +700,6 @@ where
             .update_phase(&session_id, DkgPhase::Phase1Commitments)
             .await;
 
-        // Use Arc to share commitment bytes across all peers (cheap clone)
-        let commitment_bytes_arc = Arc::new(commitment_bytes);
         let mut peers_sent = 0;
         let mut expected_peers = 0;
         for peer_id_str in peer_ids {
@@ -717,7 +713,7 @@ where
             let commitment_msg = DkgMessage::Commitment {
                 session_id,
                 from_node_id: node_id,
-                commitment: commitment_bytes_arc.as_ref().clone(),
+                commitment: commitment_bytes.clone(),
             };
 
             if let Err(e) = self.send_message_to_peer(peer_id_str, commitment_msg).await {
@@ -890,9 +886,6 @@ where
                 DkgError::Serialization(format!("Failed to serialize share value: {}", e))
             })?;
 
-            // Use Arc to share bytes if we need to broadcast (cheap clone)
-            let share_value_bytes_arc = Arc::new(share_value_bytes);
-
             // Try to get specific peer_id for this node_id (O(1) lookup)
             if let Some(target_peer_id) = self
                 .app_state
@@ -905,7 +898,7 @@ where
                     session_id,
                     from_node_id: node_id,
                     to_node_id: share.to_id,
-                    share_value: share_value_bytes_arc.as_ref().clone(),
+                    share_value: share_value_bytes.clone(),
                     nonce: share.nonce,
                 };
                 match self.send_message_to_peer(&target_peer_id, share_msg).await {
@@ -940,7 +933,7 @@ where
                         session_id,
                         from_node_id: node_id,
                         to_node_id: share.to_id,
-                        share_value: share_value_bytes_arc.as_ref().clone(),
+                        share_value: share_value_bytes.clone(),
                         nonce: share.nonce,
                     };
                     match self

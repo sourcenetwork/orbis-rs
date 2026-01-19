@@ -81,7 +81,7 @@ where
         let coordinator = DkgCoordinator::new(Arc::new(self.state.clone()));
 
         // Validate threshold and total_participants
-        if req.threshold as usize > req.peer_ids.len() as usize {
+        if req.threshold as usize > req.peer_ids.len() {
             return Err(DkgError::InvalidInput(format!(
                 "Threshold ({}) cannot be greater than total participants ({})",
                 req.threshold,
@@ -90,8 +90,8 @@ where
             .into());
         }
 
-        if req.peer_ids.len() == 0 {
-            return Err(DkgError::InvalidInput(format!("Not enough participants",)).into());
+        if req.peer_ids.is_empty() {
+            return Err(DkgError::InvalidInput("Not enough participants".to_string()).into());
         }
 
         // As the initiator, assign node_ids to all participants based on sorted peer list

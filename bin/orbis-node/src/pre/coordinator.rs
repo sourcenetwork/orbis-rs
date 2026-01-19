@@ -503,13 +503,8 @@ where
         // node_id is already obtained from DKG session above
         let mut handles = Vec::new();
 
-        // Use Arc to share byte vectors across all tasks (cheap clone)
-        // Clone secret_bytes before moving into Arc (we need it later for deserialization)
+        // Keep a copy of secret_bytes for later deserialization
         let secret_bytes_for_later = secret_bytes.clone();
-        let secret_bytes_arc = Arc::new(secret_bytes);
-        let rdr_pk_bytes_arc = Arc::new(rdr_pk_bytes);
-        let ring_pk_bytes_arc = Arc::new(ring_pk_bytes);
-        let request_id_arc = Arc::new(request_id);
 
         for peer_id_str in peer_ids {
             // Skip self - don't try to connect to ourselves
@@ -519,11 +514,11 @@ where
             }
 
             let request = PreMessage::ReencryptRequest {
-                request_id: request_id_arc.as_ref().clone(),
+                request_id: request_id.clone(),
                 from_node_id: node_id,
-                secret: secret_bytes_arc.as_ref().clone(),
-                rdr_pk: rdr_pk_bytes_arc.as_ref().clone(),
-                ring_pk: ring_pk_bytes_arc.as_ref().clone(),
+                secret: secret_bytes.clone(),
+                rdr_pk: rdr_pk_bytes.clone(),
+                ring_pk: ring_pk_bytes.clone(),
                 policy_id: policy_id.clone(),
                 resource: resource.clone(),
                 object_id: object_id.clone(),
@@ -533,7 +528,7 @@ where
             };
 
             let peer_id = peer_id_str.clone();
-            let req_id = request_id_arc.as_ref().clone();
+            let req_id = request_id.clone();
             let app_state = self.app_state.clone();
 
             // Spawn a task for each peer to send request and receive response
@@ -558,13 +553,10 @@ where
         let collected_responses = self
             .app_state
             .pre_response_state
-            .get_responses(request_id_arc.as_ref())
+            .get_responses(&request_id)
             .await
             .ok_or_else(|| {
-                PreError::Timeout(format!(
-                    "No responses found for request {}",
-                    request_id_arc.as_ref()
-                ))
+                PreError::Timeout(format!("No responses found for request {}", &request_id))
             })?;
 
         // Check if we have enough responses (accounting for local share if self is participating)
@@ -589,7 +581,7 @@ where
         // If we're in the peer list (self_in_list), compute our own share locally
         if self_in_list {
             // Try to get our local share and compute reencryption
-            let ring_pk = <D::PublicKey>::from_bytes(&ring_pk_bytes_arc[..]).map_err(|e| {
+            let ring_pk = <D::PublicKey>::from_bytes(&ring_pk_bytes[..]).map_err(|e| {
                 PreError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
             })?;
 
@@ -714,7 +706,7 @@ where
         // Note: Cleanup is handled by the outer initiate_reencryption function
 
         tracing::info!(
-            request_id = %request_id_arc.as_ref(),
+            request_id = %request_id,
             "PRE Coordinator: Successfully recovered reencrypted commitment"
         );
 

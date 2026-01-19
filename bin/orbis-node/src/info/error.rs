@@ -10,12 +10,9 @@ pub enum InfoError {
 /// Result type for DKG operations
 pub type Result<T> = std::result::Result<T, InfoError>;
 
-/// Convert DkgError to tonic::Status for gRPC responses
+/// Convert InfoError to tonic::Status for gRPC responses
 impl From<InfoError> for tonic::Status {
     fn from(error: InfoError) -> Self {
-        use tonic::Code;
-        match error {
-            _ => tonic::Status::new(Code::Internal, error.to_string()),
-        }
+        tonic::Status::new(tonic::Code::Internal, error.to_string())
     }
 }
