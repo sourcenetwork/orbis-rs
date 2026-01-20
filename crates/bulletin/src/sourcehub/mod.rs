@@ -80,7 +80,10 @@ impl SourceHubBulletin {
     ) -> Result<Self> {
         // Get the address before moving the signer
         let address = signer.address();
-        let denom = "uopen";
+        let denom = chain_config_builder
+            .clone()
+            .denom
+            .unwrap_or("uopen".to_string());
 
         let client = SourceHubBulletin {
             chain_client: SourceHubClient::with_signer(chain_config_builder.build(), signer)
@@ -104,7 +107,7 @@ impl SourceHubBulletin {
             // Phase 1: Connect to chain and get initial balance
             let connect_to_chain = || async {
                 client_ref
-                    .get_balance(&address_clone, denom)
+                    .get_balance(&address_clone, &denom)
                     .await
                     .map_err(|e| {
                         let error_msg = e.to_string();
@@ -137,7 +140,7 @@ impl SourceHubBulletin {
             // Phase 2: Verify balance is sufficient (retry in case balance increases)
             let check_sufficient_balance = || async {
                 let current_balance = client_ref
-                    .get_balance(&address_clone, denom)
+                    .get_balance(&address_clone, &denom)
                     .await
                     .map_err(|e| {
                         backoff::Error::Permanent(BulletinError::ChainError(format!(
@@ -181,7 +184,7 @@ impl SourceHubBulletin {
 
         let _result = client
             .chain_client
-            .transfer(&address, amount, denom)
+            .transfer(&address, amount, &denom)
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?;
 

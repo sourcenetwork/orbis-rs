@@ -182,7 +182,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let authz_chain_config = ChainConfigBuilder::default()
         .grpc_url(args.authz_grpc.clone())
         .rpc_url(args.chain_rpc.clone())
-        .rest_url(args.chain_rest.clone());
+        .rest_url(args.chain_rest.clone())
+        .denom(args.denom.clone());
     // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
     let authz: Arc<dyn Authz> = Arc::new(
         SourceHubAuth::new(authz_chain_config)
@@ -193,7 +194,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let bulletin_chain_config = ChainConfigBuilder::default()
         .grpc_url(args.bulletin_grpc.clone())
         .rpc_url(args.chain_rpc.clone())
-        .rest_url(args.chain_rest.clone());
+        .rest_url(args.chain_rest.clone())
+        .denom(args.denom.clone());
     let chain_config = bulletin_chain_config.clone().build();
     let signer = create_and_store_node_key(local_storage.clone(), chain_config)
         .map_err(|e| format!("Failed to create or store node key: {}", e))?;

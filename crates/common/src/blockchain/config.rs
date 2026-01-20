@@ -43,6 +43,9 @@ pub struct ChainConfig {
 
     /// Gas price configuration
     pub gas_price: GasPrice,
+
+    /// denomanation of token (e.g, "uopen")
+    pub denom: String,
 }
 
 impl ChainConfig {
@@ -61,6 +64,7 @@ impl ChainConfig {
             account_prefix: "source".to_string(),
             default_gas_limit: 300_000,
             gas_price: GasPrice::default(),
+            denom: "uopen".to_string(),
         }
     }
 
@@ -73,13 +77,14 @@ impl ChainConfig {
 /// Builder for ChainConfig.
 #[derive(Debug, Default, Clone)]
 pub struct ChainConfigBuilder {
-    chain_id: Option<String>,
-    rpc_url: Option<String>,
-    rest_url: Option<String>,
-    grpc_url: Option<String>,
-    account_prefix: Option<String>,
-    default_gas_limit: Option<u64>,
-    gas_price: Option<GasPrice>,
+    pub chain_id: Option<String>,
+    pub rpc_url: Option<String>,
+    pub rest_url: Option<String>,
+    pub grpc_url: Option<String>,
+    pub account_prefix: Option<String>,
+    pub default_gas_limit: Option<u64>,
+    pub gas_price: Option<GasPrice>,
+    pub denom: Option<String>,
 }
 
 impl ChainConfigBuilder {
@@ -118,6 +123,11 @@ impl ChainConfigBuilder {
         self
     }
 
+    pub fn denom(mut self, denom: Option<String>) -> Self {
+        self.denom = denom;
+        self
+    }
+
     /// Build the ChainConfig. Uses local defaults for any unset values.
     pub fn build(self) -> ChainConfig {
         let local = ChainConfig::local();
@@ -129,6 +139,7 @@ impl ChainConfigBuilder {
             account_prefix: self.account_prefix.unwrap_or(local.account_prefix),
             default_gas_limit: self.default_gas_limit.unwrap_or(local.default_gas_limit),
             gas_price: self.gas_price.unwrap_or(local.gas_price),
+            denom: self.denom.unwrap_or(local.denom),
         }
     }
 }

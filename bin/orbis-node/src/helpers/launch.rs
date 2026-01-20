@@ -34,6 +34,9 @@ pub struct Args {
     /// Chain REST URL (Cosmos REST API endpoint)
     #[arg(long, default_value = "http://localhost:1317")]
     pub chain_rest: Option<String>,
+    /// denomination of chain gas tokens
+    #[arg(long)]
+    pub denom: Option<String>,
 }
 
 // ============================================================================
