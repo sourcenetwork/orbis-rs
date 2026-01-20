@@ -38,6 +38,9 @@ pub enum BlockchainError {
     #[error("Timeout: {0}")]
     Timeout(String),
 
+    #[error("Chain not available: {0}")]
+    ChainNotAvailable(String),
+
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 

@@ -6,16 +6,29 @@ use cosmrs::{
     tx::{self, Fee, SignDoc, SignerInfo},
     AccountId, Any, Coin,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Transaction signer using secp256k1.
+///
+/// The nonce (sequence number) and account number are managed in memory to
+/// support concurrent transaction signing without querying the chain each time.
 pub struct TxSigner {
     signing_key: SigningKey,
     account_id: AccountId,
     config: ChainConfig,
+    /// The account number from the chain (fixed once account is created).
+    /// Uses atomic for interior mutability since we set it after construction.
+    account_number: AtomicU64,
+    /// The current nonce (sequence number) for transaction signing.
+    /// Uses atomic operations for thread-safe concurrent access.
+    nonce: AtomicU64,
 }
 
 impl TxSigner {
     /// Create a new TxSigner from raw private key bytes.
+    ///
+    /// The nonce is initialized to 0. Call `set_nonce()` after creation
+    /// to set the correct sequence number from the chain.
     pub fn new(private_key_bytes: &[u8], config: ChainConfig) -> Result<Self> {
         let signing_key = SigningKey::from_slice(private_key_bytes)
             .map_err(|e| BlockchainError::Signing(format!("Invalid private key: {}", e)))?;
@@ -29,6 +42,8 @@ impl TxSigner {
             signing_key,
             account_id,
             config,
+            account_number: AtomicU64::new(0),
+            nonce: AtomicU64::new(0),
         })
     }
 
@@ -74,6 +89,43 @@ impl TxSigner {
     /// Get the signer's account ID.
     pub fn account_id(&self) -> &AccountId {
         &self.account_id
+    }
+
+    /// Get the account number.
+    pub fn account_number(&self) -> u64 {
+        self.account_number.load(Ordering::SeqCst)
+    }
+
+    /// Set the account number.
+    ///
+    /// This should be called once when initializing from the chain.
+    /// The account number is fixed for an account and doesn't change.
+    pub fn set_account_number(&self, value: u64) {
+        self.account_number.store(value, Ordering::SeqCst);
+    }
+
+    /// Get the current nonce value without modifying it.
+    pub fn nonce(&self) -> u64 {
+        self.nonce.load(Ordering::SeqCst)
+    }
+
+    /// Set the nonce to a specific value.
+    ///
+    /// Use this to initialize the nonce from the chain's sequence number,
+    /// or to resync after a nonce mismatch error.
+    pub fn set_nonce(&self, value: u64) {
+        self.nonce.store(value, Ordering::SeqCst);
+    }
+
+    /// Atomically fetch the current nonce and increment it for the next transaction.
+    ///
+    /// Returns the nonce value to use for the current transaction.
+    /// The internal counter is incremented, so the next call returns nonce + 1.
+    ///
+    /// This is the primary method for getting nonces when sending transactions,
+    /// as it ensures concurrent transactions get unique sequential nonces.
+    pub fn fetch_and_increment_nonce(&self) -> u64 {
+        self.nonce.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Sign a transaction.

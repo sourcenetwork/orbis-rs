@@ -6,6 +6,9 @@ use prost::Message;
 use reqwest::Client as HttpClient;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tendermint_rpc::{Client, HttpClient as TendermintClient};
+use tokio::sync::Mutex;
+use std::time::Duration;
+use tokio::time::sleep;
 
 /// Account information from the chain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +42,9 @@ pub struct SourceHubClient {
     rpc_client: TendermintClient,
     http_client: HttpClient,
     signer: Option<TxSigner>,
+    /// Lock to serialize transaction submission.
+    /// Cosmos SDK requires txs to reach the mempool in nonce order.
+    tx_lock: Mutex<()>,
 }
 
 impl SourceHubClient {
@@ -58,14 +64,71 @@ impl SourceHubClient {
             rpc_client,
             http_client,
             signer: None,
+            tx_lock: Mutex::new(()),
         })
     }
 
     /// Create a new client with signing capability.
+    ///
+    /// This fetches the current account info from the chain and initializes
+    /// the signer's account number and nonce for in-memory transaction sequencing.
+    ///
+    /// Retries with exponential backoff if the chain is not yet available,
+    /// waiting up to 15 minutes for the chain to become ready.
     pub async fn with_signer(config: ChainConfig, signer: TxSigner) -> Result<Self> {
-        let mut client = Self::new(config).await?;
-        client.signer = Some(signer);
-        Ok(client)
+        let client = Self::new(config).await?;
+        let address = signer.address();
+
+        // Retry config: wait up to 15 minutes for chain to be available
+        let backoff_config = || {
+            let mut backoff = backoff::ExponentialBackoff::default();
+            backoff.max_elapsed_time = Some(std::time::Duration::from_secs(15 * 60));
+            backoff.initial_interval = std::time::Duration::from_secs(2);
+            backoff.max_interval = std::time::Duration::from_secs(30);
+            backoff
+        };
+
+        // Fetch account info with retry (waits for chain to be available)
+        let fetch_account_info = || async {
+            client.get_account(&address).await.map_err(|e| {
+                let error_msg = e.to_string();
+                eprintln!("Signer init: Failed to connect to chain: {}", error_msg);
+                eprintln!("Signer init: Retrying connection...");
+                backoff::Error::Transient {
+                    err: BlockchainError::ChainNotAvailable(format!(
+                        "Chain not available yet: {}",
+                        error_msg
+                    )),
+                    retry_after: None,
+                }
+            })
+        };
+
+        let account_info = backoff::future::retry(backoff_config(), fetch_account_info)
+            .await
+            .map_err(|e| {
+                BlockchainError::ChainNotAvailable(format!(
+                    "Failed to connect to chain after retries: {}",
+                    e
+                ))
+            })?;
+
+        eprintln!(
+            "Signer init: Connected to chain. Account number: {}, sequence: {}",
+            account_info.account_number, account_info.sequence
+        );
+
+        // Initialize the signer with account info
+        signer.set_account_number(account_info.account_number);
+        signer.set_nonce(account_info.sequence);
+
+        Ok(Self {
+            config: client.config,
+            rpc_client: client.rpc_client,
+            http_client: client.http_client,
+            signer: Some(signer),
+            tx_lock: Mutex::new(()),
+        })
     }
 
     /// Get the signer (if configured).
@@ -76,6 +139,25 @@ impl SourceHubClient {
     /// Get the chain configuration.
     pub fn config(&self) -> &ChainConfig {
         &self.config
+    }
+
+    /// Resync the signer's nonce from the chain.
+    ///
+    /// Call this after a transaction fails due to a sequence mismatch to
+    /// recover and continue sending transactions. This fetches the current
+    /// sequence number from the chain and updates the signer's in-memory nonce.
+    ///
+    /// Returns the new nonce value, or an error if no signer is configured
+    /// or the chain query fails.
+    pub async fn resync_nonce(&self) -> Result<u64> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+
+        let account_info = self.get_account(&signer.address()).await?;
+        signer.set_nonce(account_info.sequence);
+
+        Ok(account_info.sequence)
     }
 
     /// Get account information for an address.
@@ -138,6 +220,9 @@ impl SourceHubClient {
     }
 
     /// Broadcast a protobuf-encoded message as a transaction.
+    ///
+    /// Uses the signer's in-memory nonce and increments it for the next transaction.
+    /// Transactions are serialized to ensure they reach the mempool in nonce order.
     pub async fn broadcast_proto_msg<T: Message>(
         &self,
         type_url: &str,
@@ -147,10 +232,7 @@ impl SourceHubClient {
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
 
-        // Get account info for sequence number
-        let account_info = self.get_account(&signer.address()).await?;
-
-        // Encode message as protobuf
+        // Encode message as protobuf (can do outside lock)
         let msg_bytes = msg.encode_to_vec();
 
         let any_msg = Any {
@@ -158,20 +240,36 @@ impl SourceHubClient {
             value: msg_bytes,
         };
 
+        // Acquire lock to ensure txs reach mempool in nonce order
+        let _guard = self.tx_lock.lock().await;
+
+        // Get account number and atomically fetch-and-increment the nonce
+        let account_number = signer.account_number();
+        let sequence = signer.fetch_and_increment_nonce();
+
         // Sign the transaction
         let tx_bytes = signer.sign_tx(
             vec![any_msg],
-            account_info.account_number,
-            account_info.sequence,
+            account_number,
+            sequence,
             None, // Use default gas
             None, // No memo
         )?;
 
-        // Broadcast
-        self.broadcast_tx_commit(tx_bytes).await
+        // Submit to mempool (CheckTx) - releases lock after this
+        let sync_result = self.broadcast_tx_sync(tx_bytes).await?;
+
+        // Lock is released here, allowing next tx to submit
+        drop(_guard);
+
+        // Wait for confirmation by polling
+        self.wait_for_tx(&sync_result.tx_hash).await
     }
 
     /// Broadcast a JSON-encoded message as a transaction (for messages not yet migrated to prost).
+    ///
+    /// Uses the signer's in-memory nonce and increments it for the next transaction.
+    /// Transactions are serialized to ensure they reach the mempool in nonce order.
     pub async fn broadcast_json_msg<T: Serialize>(
         &self,
         type_url: &str,
@@ -181,10 +279,7 @@ impl SourceHubClient {
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
 
-        // Get account info for sequence number
-        let account_info = self.get_account(&signer.address()).await?;
-
-        // Encode message as JSON bytes
+        // Encode message as JSON bytes (can do outside lock)
         let msg_bytes = serde_json::to_vec(msg)?;
 
         let any_msg = Any {
@@ -192,17 +287,30 @@ impl SourceHubClient {
             value: msg_bytes,
         };
 
+        // Acquire lock to ensure txs reach mempool in nonce order
+        let _guard = self.tx_lock.lock().await;
+
+        // Get account number and atomically fetch-and-increment the nonce
+        let account_number = signer.account_number();
+        let sequence = signer.fetch_and_increment_nonce();
+
         // Sign the transaction
         let tx_bytes = signer.sign_tx(
             vec![any_msg],
-            account_info.account_number,
-            account_info.sequence,
+            account_number,
+            sequence,
             None, // Use default gas
             None, // No memo
         )?;
 
-        // Broadcast
-        self.broadcast_tx_commit(tx_bytes).await
+        // Submit to mempool (CheckTx) - releases lock after this
+        let sync_result = self.broadcast_tx_sync(tx_bytes).await?;
+
+        // Lock is released here, allowing next tx to submit
+        drop(_guard);
+
+        // Wait for confirmation by polling
+        self.wait_for_tx(&sync_result.tx_hash).await
     }
 
     /// Broadcast a signed transaction and wait for it to be committed.
@@ -266,6 +374,50 @@ impl SourceHubClient {
             log: response.log.to_string(),
             data: Some(response.data.to_vec()),
         })
+    }
+
+    /// Wait for a transaction to be committed to a block.
+    ///
+    /// Polls the chain until the transaction is found or timeout is reached.
+    pub async fn wait_for_tx(&self, tx_hash: &str) -> Result<BroadcastResult> {
+        let hash = tx_hash
+            .parse()
+            .map_err(|e| BlockchainError::Query(format!("Invalid tx hash: {}", e)))?;
+
+        // Poll for up to 30 seconds (block time is typically 1-5 seconds)
+        let max_attempts = 30;
+        let poll_interval = Duration::from_secs(1);
+
+        for _ in 0..max_attempts {
+            match self.rpc_client.tx(hash, false).await {
+                Ok(response) => {
+                    let code = response.tx_result.code.value();
+                    if code != 0 {
+                        return Err(BlockchainError::TxFailed {
+                            code,
+                            log: response.tx_result.log.to_string(),
+                        });
+                    }
+
+                    return Ok(BroadcastResult {
+                        tx_hash: response.hash.to_string(),
+                        height: Some(response.height.value()),
+                        code,
+                        log: response.tx_result.log.to_string(),
+                        data: Some(response.tx_result.data.to_vec()),
+                    });
+                }
+                Err(_) => {
+                    // Tx not found yet, keep polling
+                    sleep(poll_interval).await;
+                }
+            }
+        }
+
+        Err(BlockchainError::Timeout(format!(
+            "Transaction {} not found after {} seconds",
+            tx_hash, max_attempts
+        )))
     }
 
     /// Execute an ABCI query.

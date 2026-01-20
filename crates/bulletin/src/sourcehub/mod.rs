@@ -95,7 +95,7 @@ impl SourceHubBulletin {
             let address_clone = address.clone();
             let client_ref = &client.chain_client;
 
-            // Helper to create backoff config
+            // Helper to create backoff config for balance check
             let create_backoff = || {
                 let mut backoff = backoff::ExponentialBackoff::default();
                 backoff.max_elapsed_time = Some(std::time::Duration::from_secs(15 * 60));
@@ -103,40 +103,6 @@ impl SourceHubBulletin {
                 backoff.max_interval = std::time::Duration::from_secs(30);
                 backoff
             };
-
-            // Phase 1: Connect to chain and get initial balance
-            let connect_to_chain = || async {
-                client_ref
-                    .get_balance(&address_clone, &denom)
-                    .await
-                    .map_err(|e| {
-                        let error_msg = e.to_string();
-                        eprintln!("Balance check: Failed to connect to chain: {}", error_msg);
-                        eprintln!("Balance check: Retrying connection...");
-                        backoff::Error::Transient {
-                            err: BulletinError::ChainError(format!(
-                                "Chain not available yet: {}",
-                                error_msg
-                            )),
-                            retry_after: None,
-                        }
-                    })
-            };
-
-            let balance = backoff::future::retry(create_backoff(), connect_to_chain)
-                .await
-                .map_err(|e| {
-                    BulletinError::ChainError(format!(
-                        "Balance check: Failed to connect to chain after retries: {}",
-                        e
-                    ))
-                })?;
-
-            eprintln!(
-                "Balance check: Connected to chain. Current balance: {}",
-                balance
-            );
-
             // Phase 2: Verify balance is sufficient (retry in case balance increases)
             let check_sufficient_balance = || async {
                 let current_balance = client_ref

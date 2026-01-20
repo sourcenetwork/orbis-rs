@@ -931,6 +931,7 @@ name = "common"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "backoff",
  "base64 0.22.1",
  "bip32",
  "cosmrs",
