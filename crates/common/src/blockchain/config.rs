@@ -46,6 +46,8 @@ pub struct ChainConfig {
 
     /// denomanation of token (e.g, "uopen")
     pub denom: String,
+    /// Safety buffer multiplier (e.g., 1.2 for 20% extra)
+    pub gas_multiplier: f64,
 }
 
 impl ChainConfig {
@@ -65,6 +67,7 @@ impl ChainConfig {
             default_gas_limit: 300_000,
             gas_price: GasPrice::default(),
             denom: "uopen".to_string(),
+            gas_multiplier: 1.2,
         }
     }
 
@@ -85,6 +88,7 @@ pub struct ChainConfigBuilder {
     pub default_gas_limit: Option<u64>,
     pub gas_price: Option<GasPrice>,
     pub denom: Option<String>,
+    pub gas_multiplier: Option<f64>,
 }
 
 impl ChainConfigBuilder {
@@ -128,6 +132,11 @@ impl ChainConfigBuilder {
         self
     }
 
+    pub fn gas_multiplier(mut self, gas_multiplier: Option<f64>) -> Self {
+        self.gas_multiplier = gas_multiplier;
+        self
+    }
+
     /// Build the ChainConfig. Uses local defaults for any unset values.
     pub fn build(self) -> ChainConfig {
         let local = ChainConfig::local();
@@ -140,6 +149,7 @@ impl ChainConfigBuilder {
             default_gas_limit: self.default_gas_limit.unwrap_or(local.default_gas_limit),
             gas_price: self.gas_price.unwrap_or(local.gas_price),
             denom: self.denom.unwrap_or(local.denom),
+            gas_multiplier: self.gas_multiplier.unwrap_or(local.gas_multiplier),
         }
     }
 }

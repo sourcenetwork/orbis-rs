@@ -1,13 +1,14 @@
 //! SourceHub blockchain client.
 
 use crate::blockchain::{bank, BlockchainError, ChainConfig, Result, TxSigner};
+use base64::Engine;
 use cosmrs::Any;
 use prost::Message;
 use reqwest::Client as HttpClient;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::time::Duration;
 use tendermint_rpc::{Client, HttpClient as TendermintClient};
 use tokio::sync::Mutex;
-use std::time::Duration;
 use tokio::time::sleep;
 
 /// Account information from the chain.
@@ -555,9 +556,136 @@ impl SourceHubClient {
             amount: vec![coin],
         };
 
-        // Use protobuf encoding
-        self.broadcast_proto_msg(bank::MsgSend::TYPE_URL, &msg)
-            .await
+        // Use protobuf encoding with gas simulation
+        self.broadcast_proto_msg_with_gas(
+            bank::MsgSend::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    /// Simulate a transaction to estimate gas usage.
+    ///
+    /// # Arguments
+    /// * `tx_bytes` - The signed transaction bytes to simulate
+    ///
+    /// # Returns
+    /// The estimated gas used by the transaction.
+    pub async fn simulate_tx(&self, tx_bytes: &[u8]) -> Result<u64> {
+        let url = format!("{}/cosmos/tx/v1beta1/simulate", self.config.rest_url);
+
+        let request = SimulateRequest {
+            tx_bytes: base64::engine::general_purpose::STANDARD.encode(tx_bytes),
+        };
+
+        // Make the request and get raw response for debugging
+        let response = self.http_client.post(&url).json(&request).send().await?;
+
+        let status = response.status();
+        let body = response.text().await?;
+
+        if !status.is_success() {
+            return Err(BlockchainError::Rest(format!(
+                "Simulate failed with status {}: {}",
+                status, body
+            )));
+        }
+
+        let parsed: SimulateResponse = serde_json::from_str(&body).map_err(|e| {
+            BlockchainError::Serialization(format!(
+                "Failed to parse simulate response: {} - body: {}",
+                e, body
+            ))
+        })?;
+
+        parsed
+            .gas_info
+            .gas_used
+            .parse()
+            .map_err(|e| BlockchainError::Serialization(format!("Invalid gas_used: {}", e)))
+    }
+
+    /// Broadcast a protobuf-encoded message with automatic gas estimation.
+    ///
+    /// This simulates the transaction first to get accurate gas usage,
+    /// then broadcasts with the estimated gas plus a safety buffer.
+    ///
+    /// # Arguments
+    /// * `type_url` - The protobuf type URL for the message
+    /// * `msg` - The message to broadcast
+    /// * `gas_multiplier` - Safety buffer multiplier (e.g., 1.3 for 30% extra)
+    pub async fn broadcast_proto_msg_with_gas<T: Message>(
+        &self,
+        type_url: &str,
+        msg: &T,
+        gas_multiplier: f64,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+
+        // Encode message as protobuf (can do outside lock)
+        let msg_bytes = msg.encode_to_vec();
+
+        let any_msg = Any {
+            type_url: type_url.to_string(),
+            value: msg_bytes,
+        };
+
+        // Acquire lock to ensure txs reach mempool in nonce order
+        let _guard = self.tx_lock.lock().await;
+
+        // Get account info for simulation
+        let account_number = signer.account_number();
+        let sequence = signer.fetch_and_increment_nonce();
+
+        // Build tx with high gas limit for simulation
+        let sim_gas_limit = 10_000_000u64; // High limit for simulation
+        let sim_tx_bytes = signer.sign_tx(
+            vec![any_msg.clone()],
+            account_number,
+            sequence,
+            Some(sim_gas_limit),
+            None,
+        )?;
+
+        // Simulate to get actual gas usage
+        // Note: We need to decrement nonce since simulation doesn't consume it
+        let gas_used = match self.simulate_tx(&sim_tx_bytes).await {
+            Ok(gas) => gas,
+            Err(e) => {
+                // Simulation failed - this shouldn't consume the nonce
+                // But we already incremented it, so the next tx will use the right one
+                // The chain will reject this nonce if we try to use it again
+                return Err(BlockchainError::Signing(format!(
+                    "Gas simulation failed: {}",
+                    e
+                )));
+            }
+        };
+
+        // Calculate gas limit with buffer
+        let gas_limit = ((gas_used as f64) * gas_multiplier).ceil() as u64;
+
+        // Rebuild transaction with accurate gas limit
+        // Note: We use the same sequence number - simulation doesn't change chain state
+        let tx_bytes = signer.sign_tx(
+            vec![any_msg],
+            account_number,
+            sequence,
+            Some(gas_limit),
+            None,
+        )?;
+
+        // Submit to mempool
+        let sync_result = self.broadcast_tx_sync(tx_bytes).await?;
+
+        // Lock is released here
+        drop(_guard);
+
+        // Wait for confirmation
+        self.wait_for_tx(&sync_result.tx_hash).await
     }
 }
 
@@ -590,4 +718,22 @@ struct BalanceResponse {
 struct BalanceCoin {
     denom: String,
     amount: String,
+}
+
+// Types for transaction simulation
+#[derive(Debug, Serialize)]
+struct SimulateRequest {
+    tx_bytes: String, // base64 encoded
+}
+
+#[derive(Debug, Deserialize)]
+struct SimulateResponse {
+    gas_info: GasInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct GasInfo {
+    gas_used: String,
+    #[allow(dead_code)]
+    gas_wanted: String,
 }

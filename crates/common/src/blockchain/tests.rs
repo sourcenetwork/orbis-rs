@@ -172,3 +172,85 @@ async fn test_concurrent_nonce_management() {
     // Final nonce should be initial + NUM_CONCURRENT_TXS
     // (we started at some value and incremented for each tx)
 }
+
+/// Test gas simulation and auto-gas broadcast.
+///
+/// This verifies that:
+/// 1. Gas simulation returns a reasonable estimate
+/// 2. Broadcasting with auto-gas works correctly
+#[tokio::test]
+#[serial_test::serial]
+async fn test_gas_simulation() {
+    use crate::blockchain::bank;
+
+    let _container = SourceHubTestContainer::new();
+    let config = ChainConfig::local();
+
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+        .expect("Failed to create signer");
+
+    let client = SourceHubClient::with_signer(config.clone(), signer)
+        .await
+        .expect("Failed to create client with signer");
+
+    let address = client.signer().unwrap().address();
+    println!("Signer address: {}", address);
+
+    // Create a simple transfer message
+    let coin = bank::Coin {
+        denom: "uopen".to_string(),
+        amount: "1".to_string(),
+    };
+
+    let msg = bank::MsgSend {
+        from_address: address.clone(),
+        to_address: address.clone(),
+        amount: vec![coin],
+    };
+
+    // Test 1: Simulate to get gas estimate
+    let account_number = client.signer().unwrap().account_number();
+    let sequence = client.signer().unwrap().nonce();
+
+    let tx_bytes = client
+        .signer()
+        .unwrap()
+        .sign_tx(
+            vec![cosmrs::Any {
+                type_url: bank::MsgSend::TYPE_URL.to_string(),
+                value: prost::Message::encode_to_vec(&msg),
+            }],
+            account_number,
+            sequence,
+            Some(10_000_000), // High gas for simulation
+            None,
+        )
+        .expect("Failed to sign tx");
+
+    let gas_estimate = client
+        .simulate_tx(&tx_bytes)
+        .await
+        .expect("Simulation failed");
+
+    println!("Gas estimate for transfer: {}", gas_estimate);
+
+    // Gas should be reasonable (not 0, not extremely high)
+    assert!(gas_estimate > 0, "Gas estimate should be > 0");
+    assert!(
+        gas_estimate < 1_000_000,
+        "Gas estimate should be < 1M for simple transfer"
+    );
+
+    // Test 2: Broadcast with auto-gas (1.3x multiplier)
+    let result = client
+        .broadcast_proto_msg_with_gas(bank::MsgSend::TYPE_URL, &msg, 1.3)
+        .await
+        .expect("Auto-gas broadcast failed");
+
+    println!(
+        "Auto-gas tx succeeded: hash={}, height={:?}",
+        result.tx_hash, result.height
+    );
+
+    assert_eq!(result.code, 0, "Transaction should succeed");
+}

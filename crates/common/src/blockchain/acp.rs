@@ -603,8 +603,12 @@ impl SourceHubClient {
             marshal_type,
         };
 
-        self.broadcast_proto_msg(MsgCreatePolicy::TYPE_URL, &msg)
-            .await
+        self.broadcast_proto_msg_with_gas(
+            MsgCreatePolicy::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
     }
 
     /// Check access and store the decision on-chain.
@@ -623,8 +627,12 @@ impl SourceHubClient {
             access_request: Some(access_request),
         };
 
-        self.broadcast_proto_msg(MsgCheckAccess::TYPE_URL, &msg)
-            .await
+        self.broadcast_proto_msg_with_gas(
+            MsgCheckAccess::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
     }
 
     /// Register an object in a policy.
@@ -647,8 +655,12 @@ impl SourceHubClient {
             }),
         };
 
-        self.broadcast_proto_msg(MsgDirectPolicyCmd::TYPE_URL, &msg)
-            .await
+        self.broadcast_proto_msg_with_gas(
+            MsgDirectPolicyCmd::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
     }
 
     /// Set a relationship in a policy.
@@ -671,8 +683,12 @@ impl SourceHubClient {
             }),
         };
 
-        self.broadcast_proto_msg(MsgDirectPolicyCmd::TYPE_URL, &msg)
-            .await
+        self.broadcast_proto_msg_with_gas(
+            MsgDirectPolicyCmd::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
     }
 
     /// Delete a relationship from a policy.
@@ -697,8 +713,12 @@ impl SourceHubClient {
             }),
         };
 
-        self.broadcast_proto_msg(MsgDirectPolicyCmd::TYPE_URL, &msg)
-            .await
+        self.broadcast_proto_msg_with_gas(
+            MsgDirectPolicyCmd::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
     }
 
     /// Archive an object (remove all relationships).
@@ -721,7 +741,11 @@ impl SourceHubClient {
             }),
         };
 
-        self.broadcast_proto_msg(MsgDirectPolicyCmd::TYPE_URL, &msg)
-            .await
+        self.broadcast_proto_msg_with_gas(
+            MsgDirectPolicyCmd::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
     }
 }

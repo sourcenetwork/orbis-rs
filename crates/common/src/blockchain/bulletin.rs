@@ -416,8 +416,12 @@ impl SourceHubClient {
 
         let msg = MsgRegisterNamespace::new(&signer.address(), namespace);
 
-        self.broadcast_proto_msg(MsgRegisterNamespace::TYPE_URL, &msg)
-            .await
+        self.broadcast_proto_msg_with_gas(
+            MsgRegisterNamespace::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
     }
 
     /// Create a post in a namespace.
@@ -432,8 +436,12 @@ impl SourceHubClient {
 
         let msg = MsgCreatePost::new(&signer.address(), namespace, payload);
 
-        self.broadcast_proto_msg(MsgCreatePost::TYPE_URL, &msg)
-            .await
+        self.broadcast_proto_msg_with_gas(
+            MsgCreatePost::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
     }
 
     /// Create a post with proof in a namespace.
@@ -449,8 +457,12 @@ impl SourceHubClient {
 
         let msg = MsgCreatePost::with_proof(&signer.address(), namespace, payload, proof);
 
-        self.broadcast_proto_msg(MsgCreatePost::TYPE_URL, &msg)
-            .await
+        self.broadcast_proto_msg_with_gas(
+            MsgCreatePost::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
     }
 
     /// Add a collaborator to a namespace.
@@ -466,8 +478,12 @@ impl SourceHubClient {
 
         let msg = MsgAddCollaborator::new(&signer.address(), namespace, collaborator);
 
-        self.broadcast_proto_msg(MsgAddCollaborator::TYPE_URL, &msg)
-            .await
+        self.broadcast_proto_msg_with_gas(
+            MsgAddCollaborator::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
     }
 
     /// Remove a collaborator from a namespace.
@@ -483,7 +499,11 @@ impl SourceHubClient {
 
         let msg = MsgRemoveCollaborator::new(&signer.address(), namespace, collaborator);
 
-        self.broadcast_proto_msg(MsgRemoveCollaborator::TYPE_URL, &msg)
-            .await
+        self.broadcast_proto_msg_with_gas(
+            MsgRemoveCollaborator::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
     }
 }
