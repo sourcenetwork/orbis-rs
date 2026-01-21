@@ -52,6 +52,7 @@ async fn test_init_node_success() {
             chain_rest: None,
             chain_rpc: None,
             denom: None,
+            metrics_addr: None,
         },
         network,
         local_storage: LocalStorageImpl::new(None, db_path.clone())
@@ -111,6 +112,7 @@ async fn test_init_node_invalid_address() {
             chain_rest: None,
             chain_rpc: None,
             denom: None,
+            metrics_addr: None,
         },
         network,
         local_storage: LocalStorageImpl::new(None, db_path.clone())
@@ -160,6 +162,7 @@ async fn test_init_node_app_state_configuration() {
             chain_rest: None,
             chain_rpc: None,
             denom: None,
+            metrics_addr: None,
         },
         network,
         local_storage: LocalStorageImpl::new(None, db_path.clone())
@@ -240,6 +243,7 @@ async fn test_init_multiple_nodes() {
             chain_rest: None,
             chain_rpc: None,
             denom: None,
+            metrics_addr: None,
         },
         network: network1,
         local_storage: LocalStorageImpl::new(None, db_path1.clone())
@@ -257,6 +261,7 @@ async fn test_init_multiple_nodes() {
             chain_rest: None,
             chain_rpc: None,
             denom: None,
+            metrics_addr: None,
         },
         network: network2,
         local_storage: LocalStorageImpl::new(None, db_path2.clone())
@@ -356,6 +361,7 @@ async fn test_init_node_with_encrypted_storage() {
             chain_rest: None,
             chain_rpc: None,
             denom: None,
+            metrics_addr: None,
         },
         network,
         local_storage,

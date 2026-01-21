@@ -37,6 +37,11 @@ sha2 = { workspace = true }
 common = { path = "../../crates/common" }
 project-root = { workspace = true }
 cli-tool = { path = "../cli-tool", optional = true }
+prometheus = { workspace = true }
+lazy_static = { workspace = true }
+hyper = { workspace = true }
+http-body-util = { workspace = true }
+hyper-util = { workspace = true }                                                                                                                                                                                                                                                                                                                                                                                
 
 [dev-dependencies]
 serial_test = "3.2.0"

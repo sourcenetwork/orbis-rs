@@ -5,6 +5,7 @@ pub mod dkg;
 pub mod error;
 pub mod helpers;
 pub mod info;
+pub mod metrics;
 pub mod pre;
 
 #[cfg(test)]
@@ -54,12 +55,19 @@ pub struct InitializedNode {
     pub router: Box<dyn Router>,
     pub grpc_addr: SocketAddr,
     pub local_address: String,
+    pub metrics_addr: Option<SocketAddr>,
 }
 
 /// Initialize the node without starting the gRPC server
 /// This is useful for testing the initialization logic
 pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn std::error::Error>> {
     let grpc_addr: SocketAddr = config.args.addr.parse()?;
+    let metrics_addr: Option<SocketAddr> = config
+        .args
+        .metrics_addr
+        .as_ref()
+        .map(|s| s.parse())
+        .transpose()?;
 
     // Get the local peer ID and address
     let local_peer_id = config.network.local_peer_id();
@@ -106,6 +114,7 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
         router,
         grpc_addr,
         local_address,
+        metrics_addr,
     })
 }
 
@@ -114,6 +123,15 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     tracing::info!("Server is ready to accept connections");
     tracing::info!(grpc_addr = %node.grpc_addr, "Starting gRPC server");
     tracing::info!(p2p_addr = %node.local_address, "P2P address for node-to-node communication");
+
+    // Start metrics server if configured
+    if let Some(metrics_addr) = node.metrics_addr {
+        tokio::spawn(async move {
+            if let Err(e) = metrics::start_metrics_server(metrics_addr).await {
+                tracing::error!(error = %e, "Metrics server failed");
+            }
+        });
+    }
 
     // Initialize services with shared state
     let dkg_service = DkgServiceImpl::<DkgImpl>::new((*node.app_state).clone());

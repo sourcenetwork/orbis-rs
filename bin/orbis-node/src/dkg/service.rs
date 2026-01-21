@@ -3,12 +3,13 @@ use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::DkgMessage;
 use crate::helpers::helpers::{connect_to_peers, extract_node_part, validate_all_peer_ids};
+use crate::metrics;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, DkgClaims};
 use network::DKG;
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
 use rand;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
 /// Implementation of the DkgService
@@ -47,10 +48,20 @@ where
         &self,
         request: Request<StartDkgRequest>,
     ) -> Result<Response<StartDkgResponse>, Status> {
+        let start = Instant::now();
+
         // Get current timestamp (needed for both auth and response)
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| Status::internal(format!("Failed to get timestamp: {}", e)))?
+            .map_err(|e| {
+                metrics::record_grpc_request(
+                    "dkg",
+                    "start_dkg",
+                    "error",
+                    start.elapsed().as_secs_f64(),
+                );
+                Status::internal(format!("Failed to get timestamp: {}", e))
+            })?
             .as_secs();
 
         // 1. Authenticate: Extract and validate JWT
@@ -259,6 +270,9 @@ where
             ),
             created_at,
         };
+
+        // Record success metric
+        metrics::record_grpc_request("dkg", "start_dkg", "ok", start.elapsed().as_secs_f64());
 
         Ok(Response::new(response))
     }

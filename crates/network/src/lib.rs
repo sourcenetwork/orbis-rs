@@ -6,6 +6,7 @@
 
 pub mod error;
 pub mod iroh;
+pub mod metrics;
 pub mod protocol;
 pub mod r#trait;
 

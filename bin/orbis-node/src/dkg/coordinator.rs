@@ -21,6 +21,7 @@ use crate::dkg::messages::DkgMessage;
 use crate::dkg::service::validate_dkg_claims;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase};
 use crate::helpers::helpers::is_self_peer_id;
+use crate::metrics;
 use ark_bls12_381::{Fr, G1Affine};
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use bulletin::r#trait::RingPayload;
@@ -89,6 +90,17 @@ where
             DkgMessage::Ack { .. } => (DkgMessageType::Ack, None),
             DkgMessage::Error { .. } => (DkgMessageType::Error, None),
         };
+
+        // Record message received metric
+        let message_type_str = match message_type {
+            DkgMessageType::SessionInit => "session_init",
+            DkgMessageType::Commitment => "commitment",
+            DkgMessageType::Share => "share",
+            DkgMessageType::Complaint => "complaint",
+            DkgMessageType::Ack => "ack",
+            DkgMessageType::Error => "error",
+        };
+        metrics::record_dkg_message_received(message_type_str);
 
         // Check for duplicate messages (except SessionInit, Ack, Error)
         if let Some(from_node_id) = from_node_id_opt {
@@ -611,6 +623,9 @@ where
             .create_session(session_id, *dkg_node, total_nodes)
             .await;
 
+        // Record metrics
+        metrics::record_dkg_session_started();
+
         Ok(())
     }
 
@@ -627,6 +642,16 @@ where
     /// Connects to the peer if needed, sends the message, then closes the connection.
     pub async fn send_message_to_peer(&self, peer_id_str: &str, message: DkgMessage) -> Result<()> {
         use crate::helpers::helpers::connect_to_peer;
+
+        // Record message type for metrics
+        let message_type = match &message {
+            DkgMessage::SessionInit { .. } => "session_init",
+            DkgMessage::Commitment { .. } => "commitment",
+            DkgMessage::Share { .. } => "share",
+            DkgMessage::Complaint { .. } => "complaint",
+            DkgMessage::Ack { .. } => "ack",
+            DkgMessage::Error { .. } => "error",
+        };
 
         // Connect to peer
         let connection = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
@@ -652,6 +677,9 @@ where
                     peer_id_str, e
                 ))
             })?;
+
+        // Record metrics
+        metrics::record_dkg_message_sent(message_type);
 
         Ok(())
     }
@@ -1196,6 +1224,9 @@ where
             .dkg_session_state
             .remove_session(&session_id)
             .await;
+
+        // Record session completion metric
+        metrics::record_dkg_session_completed();
 
         tracing::info!(
             session_id = session_id,

@@ -8,10 +8,12 @@ use iroh::endpoint::Connection as IrohConnection;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 
 use crate::error::{NetworkError, Result};
 use crate::iroh::router::IrohRouterBuilder;
+use crate::metrics;
 use crate::r#trait::{
     Connection, Message, Network, PeerId, ProtocolHandler, RouterBuilder as RouterBuilderTrait,
 };
@@ -117,9 +119,12 @@ impl Network for IrohNetwork {
         use std::net::SocketAddr;
         use std::str::FromStr;
 
+        let start = Instant::now();
+
         // Convert peer_id bytes to PublicKey
         // The peer_id might be in format "node_id" or "node_id@ip:port"
         let peer_id_str = std::str::from_utf8(peer_id.as_bytes()).map_err(|_| {
+            metrics::record_connection_failure(protocol);
             NetworkError::InvalidAddress("Invalid peer ID format - not UTF-8".to_string())
         })?;
 
@@ -130,8 +135,10 @@ impl Network for IrohNetwork {
             (peer_id_str, None)
         };
 
-        let public_key = PublicKey::from_str(node_id_str)
-            .map_err(|e| NetworkError::InvalidAddress(format!("Invalid peer ID: {}", e)))?;
+        let public_key = PublicKey::from_str(node_id_str).map_err(|e| {
+            metrics::record_connection_failure(protocol);
+            NetworkError::InvalidAddress(format!("Invalid peer ID: {}", e))
+        })?;
 
         // Create EndpointAddr from the public key
         let peer_addr = if let Some(addr_str) = socket_addr_opt {
@@ -143,6 +150,7 @@ impl Network for IrohNetwork {
                 tokio::net::lookup_host(addr_str)
                     .await
                     .map_err(|e| {
+                        metrics::record_connection_failure(protocol);
                         NetworkError::InvalidAddress(format!(
                             "Failed to resolve address '{}': {}",
                             addr_str, e
@@ -150,6 +158,7 @@ impl Network for IrohNetwork {
                     })?
                     .next()
                     .ok_or_else(|| {
+                        metrics::record_connection_failure(protocol);
                         NetworkError::InvalidAddress(format!(
                             "No addresses found for hostname '{}'",
                             addr_str
@@ -168,11 +177,13 @@ impl Network for IrohNetwork {
         let alpn = protocol.to_vec();
 
         // Connect to the peer
-        let conn = self
-            .endpoint
-            .connect(peer_addr, &alpn)
-            .await
-            .map_err(|e| NetworkError::Connection(format!("Failed to connect: {}", e)))?;
+        let conn = self.endpoint.connect(peer_addr, &alpn).await.map_err(|e| {
+            metrics::record_connection_failure(protocol);
+            NetworkError::Connection(format!("Failed to connect: {}", e))
+        })?;
+
+        let duration = start.elapsed().as_secs_f64();
+        metrics::record_connection_success(protocol, duration);
 
         Ok(Box::new(IrohConnectionWrapper::new(
             conn,
@@ -239,46 +250,59 @@ impl IrohConnectionWrapper {
 #[async_trait]
 impl Connection for IrohConnectionWrapper {
     async fn send(&self, message: Message) -> Result<()> {
+        let start = Instant::now();
+        let message_size = message.data.len();
+
         // Open a new bidirectional stream for this message
-        let (mut send, mut recv) = self
-            .conn
-            .open_bi()
-            .await
-            .map_err(|e| NetworkError::Connection(format!("Failed to open stream: {}", e)))?;
+        let (mut send, mut recv) = self.conn.open_bi().await.map_err(|e| {
+            metrics::record_send_error(&self.protocol);
+            NetworkError::Connection(format!("Failed to open stream: {}", e))
+        })?;
 
         // Write message data
-        send.write_all(&message.data)
-            .await
-            .map_err(|e| NetworkError::Io(e.into()))?;
+        send.write_all(&message.data).await.map_err(|e| {
+            metrics::record_send_error(&self.protocol);
+            NetworkError::Io(e.into())
+        })?;
 
         // Finish the send side to signal completion
-        send.finish()
-            .map_err(|e| NetworkError::Connection(format!("Failed to finish stream: {}", e)))?;
+        send.finish().map_err(|e| {
+            metrics::record_send_error(&self.protocol);
+            NetworkError::Connection(format!("Failed to finish stream: {}", e))
+        })?;
 
         // Wait for acknowledgment (keeps connection alive until receiver processes message)
         // This prevents connection closure before the receiver can read the data
         let _ = recv.read_to_end(64).await; // Small buffer for ack
 
+        let duration = start.elapsed().as_secs_f64();
+        metrics::record_message_sent(&self.protocol, message_size, duration);
+
         Ok(())
     }
 
     async fn recv(&self) -> Result<Message> {
+        let start = Instant::now();
+
         // Accept an incoming bidirectional stream
-        let (mut send, mut recv) = self
-            .conn
-            .accept_bi()
-            .await
-            .map_err(|e| NetworkError::Connection(format!("Failed to accept stream: {}", e)))?;
+        let (mut send, mut recv) = self.conn.accept_bi().await.map_err(|e| {
+            metrics::record_recv_error(&self.protocol);
+            NetworkError::Connection(format!("Failed to accept stream: {}", e))
+        })?;
 
         // Read all data from the stream (up to max_message_size)
-        let buffer = recv
-            .read_to_end(self.max_message_size)
-            .await
-            .map_err(|e| NetworkError::Connection(format!("Failed to read data: {}", e)))?;
+        let buffer = recv.read_to_end(self.max_message_size).await.map_err(|e| {
+            metrics::record_recv_error(&self.protocol);
+            NetworkError::Connection(format!("Failed to read data: {}", e))
+        })?;
 
         // Send acknowledgment to signal successful receipt
         let _ = send.write_all(&[1u8]).await; // Simple 1-byte ack
         let _ = send.finish();
+
+        let message_size = buffer.len();
+        let duration = start.elapsed().as_secs_f64();
+        metrics::record_message_received(&self.protocol, message_size, duration);
 
         // Convert to Bytes for zero-copy efficiency
         let data = Bytes::from(buffer);
@@ -290,6 +314,7 @@ impl Connection for IrohConnectionWrapper {
     }
 
     async fn close(&self) -> Result<()> {
+        metrics::record_connection_closed(&self.protocol);
         self.conn.close(0u32.into(), b"Goodbye");
         Ok(())
     }

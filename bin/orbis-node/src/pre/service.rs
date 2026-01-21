@@ -3,6 +3,7 @@ use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::helpers::helpers::{
     connect_to_peers, derive_node_id_from_peer_id_bytes, validate_all_peer_ids,
 };
+use crate::metrics;
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, PreClaims};
@@ -12,7 +13,7 @@ use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer
 use network::REENCRYPT;
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
 /// Implementation of the PreService
@@ -64,10 +65,17 @@ where
         &self,
         request: Request<StartPreRequest>,
     ) -> Result<Response<StartPreResponse>, Status> {
+        let start = Instant::now();
+
         // Get current timestamp (needed for both auth and response)
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| Status::internal(format!("Failed to get timestamp: {}", e)))?
+            .map_err(|e| {
+                let duration = start.elapsed().as_secs_f64();
+                metrics::record_grpc_request("pre", "start_pre", "error", duration);
+                metrics::record_pre_request("error", duration);
+                Status::internal(format!("Failed to get timestamp: {}", e))
+            })?
             .as_secs();
 
         // 1. Authenticate: Extract and validate JWT
@@ -241,6 +249,11 @@ where
             created_at,
             encrypted_secret,
         };
+
+        // Record success metrics
+        let duration = start.elapsed().as_secs_f64();
+        metrics::record_grpc_request("pre", "start_pre", "ok", duration);
+        metrics::record_pre_request("success", duration);
 
         Ok(Response::new(response))
     }

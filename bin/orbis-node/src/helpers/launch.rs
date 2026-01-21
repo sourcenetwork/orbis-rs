@@ -37,6 +37,9 @@ pub struct Args {
     /// denomination of chain gas tokens
     #[arg(long)]
     pub denom: Option<String>,
+    /// Address for Prometheus metrics HTTP server (e.g., "0.0.0.0:9090")
+    #[arg(short = 'm', long)]
+    pub metrics_addr: Option<String>,
 }
 
 // ============================================================================
