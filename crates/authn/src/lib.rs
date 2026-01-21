@@ -53,6 +53,25 @@ pub struct DkgClaims {
     pub peer_ids: String,
 }
 
+/// Claims for StoreSecret endpoints
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct StoreSecretClaims {
+    /// The encrypted document (JSON-serialized Secret struct)
+    pub encrypted_document: String,
+    /// The encryption commitment (hex-encoded G1 point)
+    pub enc_cmt: String,
+    /// Ring ID to use for encryption
+    pub ring_id: String,
+    /// Namespace for storing the document
+    pub namespace: String,
+    /// Policy ID for access control
+    pub policy_id: String,
+    /// Resource type for the policy
+    pub resource: String,
+    /// Permission required for the policy
+    pub permission: String,
+}
+
 /// Resolves and verifies a JWT token, returning the decoded BearerToken with custom claims.
 ///
 /// # Type Parameters
