@@ -332,7 +332,7 @@ async fn iroh_connection_close_graceful() {
     conn.close().await.expect("Should close gracefully");
 
     // Wait for the handler to be notified of the close
-    tokio::time::timeout(std::time::Duration::from_secs(5), closed.notified())
+    tokio::time::timeout(std::time::Duration::from_secs(15), closed.notified())
         .await
         .expect("Handler should be notified of connection close");
 

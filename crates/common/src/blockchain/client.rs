@@ -11,6 +11,25 @@ use tendermint_rpc::{Client, HttpClient as TendermintClient};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
+// ============================================================================
+// Transaction Polling Constants
+// ============================================================================
+
+/// Maximum number of attempts when polling for transaction confirmation.
+/// Block time is typically 1-5 seconds, so 30 attempts gives 30 seconds of polling.
+const TX_POLL_MAX_ATTEMPTS: u32 = 30;
+
+/// Interval between transaction polling attempts.
+const TX_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+// ============================================================================
+// Gas Simulation Constants
+// ============================================================================
+
+/// Gas limit used for transaction simulation.
+/// Set high to ensure simulation succeeds; actual tx uses simulated gas.
+const SIMULATION_GAS_LIMIT: u64 = 10_000_000;
+
 /// Account information from the chain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountInfo {
@@ -385,11 +404,7 @@ impl SourceHubClient {
             .parse()
             .map_err(|e| BlockchainError::Query(format!("Invalid tx hash: {}", e)))?;
 
-        // Poll for up to 30 seconds (block time is typically 1-5 seconds)
-        let max_attempts = 30;
-        let poll_interval = Duration::from_secs(1);
-
-        for _ in 0..max_attempts {
+        for _ in 0..TX_POLL_MAX_ATTEMPTS {
             match self.rpc_client.tx(hash, false).await {
                 Ok(response) => {
                     let code = response.tx_result.code.value();
@@ -410,14 +425,14 @@ impl SourceHubClient {
                 }
                 Err(_) => {
                     // Tx not found yet, keep polling
-                    sleep(poll_interval).await;
+                    sleep(TX_POLL_INTERVAL).await;
                 }
             }
         }
 
         Err(BlockchainError::Timeout(format!(
             "Transaction {} not found after {} seconds",
-            tx_hash, max_attempts
+            tx_hash, TX_POLL_MAX_ATTEMPTS
         )))
     }
 
@@ -641,12 +656,11 @@ impl SourceHubClient {
         let sequence = signer.fetch_and_increment_nonce();
 
         // Build tx with high gas limit for simulation
-        let sim_gas_limit = 10_000_000u64; // High limit for simulation
         let sim_tx_bytes = signer.sign_tx(
             vec![any_msg.clone()],
             account_number,
             sequence,
-            Some(sim_gas_limit),
+            Some(SIMULATION_GAS_LIMIT),
             None,
         )?;
 

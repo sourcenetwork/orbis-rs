@@ -326,7 +326,6 @@ pub async fn register_object_to_chain(
         resource,
         id: object_id,
     };
-    dbg!(&document);
     let _result = client
         .acp_register_object(&policy_id, document)
         .await

@@ -15,7 +15,9 @@
 //! All nodes participate equally in the protocol.
 
 use crate::app_state::AppState;
-use crate::constants::{BULLETIN_RING_NAMESPACE, MAX_COMMITMENT_COEFFICIENTS};
+use crate::constants::{
+    BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, MAX_COMMITMENT_COEFFICIENTS,
+};
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::DkgMessage;
 use crate::dkg::service::validate_dkg_claims;
@@ -1201,13 +1203,13 @@ where
                 DkgError::Serialization(format!("Failed to serialize RingPayload: {}", e))
             })?;
 
-            // TODO: FIX Post to bulletin with a placeholder proof
-            // The blockchain requires a non-empty proof, so we use a simple placeholder
-            let proof = vec![0x01];
-
             self.app_state
                 .bulletin
-                .post(BULLETIN_RING_NAMESPACE.to_string(), payload_bytes, proof)
+                .post(
+                    BULLETIN_RING_NAMESPACE.to_string(),
+                    payload_bytes,
+                    BULLETIN_PLACEHOLDER_PROOF.to_vec(),
+                )
                 .await
                 .map_err(|e| DkgError::Bulletin(format!("Failed to post RingPayload: {}", e)))?;
 

@@ -644,7 +644,6 @@ impl SourceHubClient {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
-        dbg!(&object);
         let msg = MsgDirectPolicyCmd {
             creator: signer.address(),
             policy_id: policy_id.to_string(),

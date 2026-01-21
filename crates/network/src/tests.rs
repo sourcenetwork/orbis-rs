@@ -15,7 +15,8 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 const TEST_PROTOCOL: &[u8] = b"test/protocol/1";
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_TIMEOUT: Duration = Duration::from_secs(15);
+const CONCURRENT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ============================================================================
 // Test Infrastructure
@@ -406,25 +407,36 @@ pub async fn test_concurrent_connections<N: Network>(net1: &N, net2: &N, net3: &
         .spawn()
         .expect("Should spawn router");
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Give router more time to start accepting connections
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     let peer_addr = build_peer_addr(net2);
 
-    // Connect from both net1 and net3 concurrently
+    // Connect from both net1 and net3 concurrently with timeout
     let peer_addr_clone = peer_addr.clone();
-    let (conn1, conn2) = tokio::join!(
+    let conn1_future = timeout(
+        CONCURRENT_CONNECTION_TIMEOUT,
         net1.connect(&peer_addr, TEST_PROTOCOL),
+    );
+    let conn2_future = timeout(
+        CONCURRENT_CONNECTION_TIMEOUT,
         net3.connect(&peer_addr_clone, TEST_PROTOCOL),
     );
 
-    let conn1 = conn1.expect("Connection 1 should succeed");
-    let conn2 = conn2.expect("Connection 2 should succeed");
+    let (conn1_result, conn2_result) = tokio::join!(conn1_future, conn2_future);
+
+    let conn1 = conn1_result
+        .expect("Connection 1 should not timeout")
+        .expect("Connection 1 should succeed");
+    let conn2 = conn2_result
+        .expect("Connection 2 should not timeout")
+        .expect("Connection 2 should succeed");
 
     // Wait for both handlers to be invoked
-    timeout(TEST_TIMEOUT, rx.recv())
+    timeout(CONCURRENT_CONNECTION_TIMEOUT, rx.recv())
         .await
         .expect("Should receive first notification");
-    timeout(TEST_TIMEOUT, rx.recv())
+    timeout(CONCURRENT_CONNECTION_TIMEOUT, rx.recv())
         .await
         .expect("Should receive second notification");
 

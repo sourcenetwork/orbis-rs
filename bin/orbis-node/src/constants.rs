@@ -126,3 +126,16 @@ pub const BULLETIN_RING_NAMESPACE: &str = "orbis";
 
 /// The minimum amount a node can have in chain balance to start the node
 pub const MIN_NODE_BALANCE: u64 = 1_000_000u64;
+
+// ============================================================================
+// Bulletin Proof Constants
+// ============================================================================
+
+/// Placeholder proof for bulletin posts
+///
+/// TODO(crypto): Replace this placeholder with a proper cryptographic proof.
+/// The blockchain currently requires a non-empty proof field. This placeholder
+/// satisfies that requirement but provides no cryptographic guarantees.
+/// A proper implementation should generate a ZK proof or signature that
+/// validates the DKG completion.
+pub const BULLETIN_PLACEHOLDER_PROOF: &[u8] = &[0x01];
