@@ -40,6 +40,9 @@ pub struct Args {
     /// Address for Prometheus metrics HTTP server (e.g., "0.0.0.0:9090")
     #[arg(short = 'm', long)]
     pub metrics_addr: Option<String>,
+    /// Loki server URL for log aggregation (e.g., "http://localhost:3100")
+    #[arg(long)]
+    pub loki_url: Option<String>,
 }
 
 // ============================================================================

@@ -53,6 +53,7 @@ async fn test_init_node_success() {
             chain_rpc: None,
             denom: None,
             metrics_addr: None,
+            loki_url: None,
         },
         network,
         local_storage: LocalStorageImpl::new(None, db_path.clone())
@@ -113,6 +114,7 @@ async fn test_init_node_invalid_address() {
             chain_rpc: None,
             denom: None,
             metrics_addr: None,
+            loki_url: None,
         },
         network,
         local_storage: LocalStorageImpl::new(None, db_path.clone())
@@ -163,6 +165,7 @@ async fn test_init_node_app_state_configuration() {
             chain_rpc: None,
             denom: None,
             metrics_addr: None,
+            loki_url: None,
         },
         network,
         local_storage: LocalStorageImpl::new(None, db_path.clone())
@@ -244,6 +247,7 @@ async fn test_init_multiple_nodes() {
             chain_rpc: None,
             denom: None,
             metrics_addr: None,
+            loki_url: None,
         },
         network: network1,
         local_storage: LocalStorageImpl::new(None, db_path1.clone())
@@ -262,6 +266,7 @@ async fn test_init_multiple_nodes() {
             chain_rpc: None,
             denom: None,
             metrics_addr: None,
+            loki_url: None,
         },
         network: network2,
         local_storage: LocalStorageImpl::new(None, db_path2.clone())
@@ -362,6 +367,7 @@ async fn test_init_node_with_encrypted_storage() {
             chain_rpc: None,
             denom: None,
             metrics_addr: None,
+            loki_url: None,
         },
         network,
         local_storage,

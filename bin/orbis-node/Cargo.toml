@@ -31,8 +31,10 @@ getrandom = "0.2"
 base64 = "0.22.1"
 dirs = "5.0"
 rpassword = "7.3"
-tracing-subscriber = { version = "0.3", features = ["tracing-log", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["tracing-log", "fmt", "env-filter"] }
 tracing = { version = "0.1.16"}
+tracing-loki = "0.2"
+url = "2.5"
 sha2 = { workspace = true }
 common = { path = "../../crates/common" }
 project-root = { workspace = true }

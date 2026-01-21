@@ -31,6 +31,7 @@ use std::{net::SocketAddr, sync::Arc};
 use constants::MIN_NODE_BALANCE;
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 // Type aliases for concrete implementations
 pub type DkgImpl = DKGNode;
@@ -168,12 +169,44 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+/// Initialize the tracing subscriber with optional Loki log shipping
+fn init_tracing(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
+    let log_level = tracing::Level::from(args.log_level);
+    let fmt_layer = tracing_subscriber::fmt::layer();
+    let filter = tracing_subscriber::filter::LevelFilter::from_level(log_level);
+
+    if let Some(loki_url) = &args.loki_url {
+        let url: url::Url = loki_url.parse()?;
+
+        let (loki_layer, loki_task) = tracing_loki::builder()
+            .label("app", "orbis-node")?
+            .build_url(url)?;
+
+        // Spawn the background task that ships logs to Loki
+        tokio::spawn(loki_task);
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer)
+            .with(loki_layer)
+            .init();
+
+        // Can't use tracing here since it's not initialized until after init()
+        println!("Loki log shipping enabled: {}", loki_url);
+    } else {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer)
+            .init();
+    }
+
+    Ok(())
+}
+
 /// Full run function that initializes and runs the server
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::from(args.log_level))
-        .init();
+    // Initialize tracing with optional Loki support
+    init_tracing(&args)?;
 
     // Get password for encrypting ring key shares
     let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
