@@ -574,59 +574,99 @@ mod cli_tool_integration {
         let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
         let proof = vec![0x01];
 
-        // Use the ring_id from the DKG result (already computed above)
-        // The ring_id is the post ID of the RingPayload that node 1 posted during DKG
-
-        // Encrypt a test secret to the ring public key
-        let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
-        let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes).expect("deserialize ring_pk");
-        let test_secret = "Hello from Docker integration test!";
-        let (_enc_cmt, encrypted_secret) =
-            ThresholdDealerNode::encrypt_secret(&ring_pk_point, test_secret.as_bytes())
-                .expect("encrypt secret");
-        let secret_json =
-            serde_json::to_string(&encrypted_secret).expect("serialize encrypted secret");
-
-        let payload = DocumentPayload {
-            ring_id: ring_id.clone(),
-            document: secret_json,
-            policy_id: policy_id.clone(),
-            resource: resource.clone(),
-            permission: permission.clone(),
-        };
-        let serialized_payload: Vec<u8> = payload.clone().try_into().expect("serialize payload");
-
         cli_tool::register_bulletin_namespace(namespace.clone())
             .await
             .expect("Failed to register namespace");
-        // Create bulletin post (the post ID becomes the object_id)
-        let object_id =
-            cli_tool::create_bulletin_post(namespace.clone(), serialized_payload, proof)
-                .await
-                .expect("create_bulletin_post");
 
-        cli_tool::register_object_to_chain(policy_id.clone(), object_id.clone(), resource.clone())
+        // Add node1 as collaborator on the user namespace so it can post on user's behalf
+        cli_tool::add_bulletin_collaborator(namespace.clone(), node1_info.public_address.clone())
+            .await
+            .expect("add node as collaborator on user namespace");
+
+        // ====================================================================
+        // Create objects: MANUAL vs SERVICE
+        // Both paths encrypt locally first, then post to bulletin
+        // ====================================================================
+
+        // Parse ring public key for encryption
+        let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
+        let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes).expect("deserialize ring_pk");
+
+        // MANUAL PATH: Encrypt and post directly to bulletin
+        let object_id_manual = {
+            let (_enc_cmt, encrypted_secret) =
+                ThresholdDealerNode::encrypt_secret(&ring_pk_point, b"Hello from manual path!")
+                    .expect("encrypt secret");
+            let payload = DocumentPayload {
+                ring_id: ring_id.clone(),
+                document: serde_json::to_string(&encrypted_secret).expect("serialize"),
+                policy_id: policy_id.clone(),
+                resource: resource.clone(),
+                permission: permission.clone(),
+            };
+            let serialized: Vec<u8> = payload.try_into().expect("serialize payload");
+            cli_tool::create_bulletin_post(namespace.clone(), serialized, proof)
+                .await
+                .expect("create_bulletin_post")
+        };
+
+        // SERVICE PATH: CLI encrypts internally, node validates and posts
+        let object_id_service = cli_tool::do_store_secret(
+            endpoint.clone(),
+            b"Hello from StoreSecret!",
+            ring_pk_hex.clone(),
+            ring_id.clone(),
+            namespace.clone(),
+            policy_id.clone(),
+            resource.clone(),
+            permission.clone(),
+            Some(did_pk_string.clone()),
+        )
+        .await
+        .expect("do_store_secret")
+        .object_id;
+
+        // Wait for block confirmation after service call
+        sleep(Duration::from_secs(2)).await;
+
+        // Read both from bulletin and compare metadata
+        let manual_bytes = cli_tool::read_bulletin_post(full_namespace.clone(), object_id_manual.clone())
+            .await
+            .expect("read manual post");
+        let service_bytes = cli_tool::read_bulletin_post(full_namespace.clone(), object_id_service.clone())
+            .await
+            .expect("read service post");
+
+        let manual: DocumentPayload = serde_json::from_slice(&manual_bytes).expect("parse manual");
+        let service: DocumentPayload = serde_json::from_slice(&service_bytes).expect("parse service");
+
+        assert_eq!(manual.ring_id, service.ring_id, "ring_id mismatch");
+        assert_eq!(manual.policy_id, service.policy_id, "policy_id mismatch");
+        assert_eq!(manual.resource, service.resource, "resource mismatch");
+        assert_eq!(manual.permission, service.permission, "permission mismatch");
+
+        // Run PRE to verify full flow works
+        cli_tool::register_object_to_chain(policy_id.clone(), object_id_manual.clone(), resource.clone())
             .await
             .expect("register_object_to_chain");
 
         cli_tool::set_relationship_on_chain(
-            policy_id.clone(),
-            object_id.clone(),
-            resource.clone(),
-            relation.clone(),
+            policy_id,
+            object_id_manual.clone(),
+            resource,
+            relation,
             Some(did_pk_string.clone()),
         )
         .await
         .expect("set_relationship_on_chain");
-
         // Step 3: Run PRE via CLI
         println!("Running PRE...");
         let pre_result = cli_tool::do_pre(
-            endpoint.clone(),
+            endpoint,
             ring_pk_hex,
             reader_pk_hex,
             reader_sk_hex,
-            object_id,
+            object_id_manual,
             Some(did_pk_string),
             full_namespace,
         )

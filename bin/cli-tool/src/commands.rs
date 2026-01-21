@@ -24,6 +24,7 @@ use serde::Deserialize;
 use proto::dkg_service::dkg_service_client::DkgServiceClient;
 use proto::info_service::info_service_client::InfoServiceClient;
 use proto::pre_service::pre_service_client::PreServiceClient;
+use proto::store_secret_service::store_secret_service_client::StoreSecretServiceClient;
 use tonic::Request;
 
 /// Response structure from PRE server
@@ -100,16 +101,113 @@ pub async fn do_dkg(endpoint: String, threshold: u32, peer_ids: Vec<String>) -> 
     })
 }
 
-// TODO: Encrypt secret and post it to bulletin to a policy
-//  Step 1: Encrypt the plaintext secret to the ring public key
-// println!("Step 1: Encrypting secret to ring public key...");
-// let (_enc_cmt, encrypted_secret) =
-//     ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret.as_bytes())
-//         .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+/// Result of a StoreSecret operation
+#[derive(Debug)]
+pub struct StoreSecretResult {
+    pub status: String,
+    pub message: String,
+    pub created_at: i64,
+    pub object_id: String,
+    pub ring_id: String,
+}
 
-// // Serialize the encrypted secret to JSON for the PRE request
-// let encrypted_secret_json = serde_json::to_string(&encrypted_secret)
-//     .map_err(|e| anyhow!("Failed to serialize encrypted secret: {}", e))?;
+/// Store a secret using the StoreSecret service
+///
+/// This function:
+/// 1. Encrypts the secret locally using the ring's public key (node never sees plaintext)
+/// 2. Connects to the orbis-node endpoint
+/// 3. Sends the encrypted secret to the node for validation and posting
+/// 4. Returns the object_id needed for PRE requests
+pub async fn do_store_secret(
+    endpoint: String,
+    secret: &[u8],        // Plaintext secret - encrypted locally before sending
+    ring_pk_hex: String,  // Ring public key (hex) - used for encryption
+    ring_id: String,
+    namespace: String,
+    policy_id: String,
+    resource: String,
+    permission: String,
+    reader_did_pk: Option<String>,
+) -> Result<StoreSecretResult> {
+    println!("Storing secret via StoreSecret service:");
+    println!("  Endpoint: {}", endpoint);
+    println!("  Ring ID: {}", ring_id);
+    println!("  Namespace: {}", namespace);
+    println!();
+
+    // Parse ring public key
+    let ring_pk_bytes = hex::decode(&ring_pk_hex)
+        .map_err(|e| anyhow!("Invalid ring_pk hex: {}", e))?;
+    let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
+        .map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
+
+    // Encrypt locally - node never sees plaintext
+    let (enc_cmt, encrypted_secret) = ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret)
+        .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+
+    let encrypted_document = serde_json::to_string(&encrypted_secret)
+        .map_err(|e| anyhow!("Failed to serialize encrypted secret: {}", e))?;
+    let enc_cmt_hex = hex::encode(
+        enc_cmt
+            .to_bytes()
+            .map_err(|e| anyhow!("Failed to serialize enc_cmt: {}", e))?,
+    );
+
+    let mut client = StoreSecretServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+
+    let request = proto::store_secret_service::StoreSecretRequest {
+        encrypted_document: encrypted_document.clone(),
+        enc_cmt: enc_cmt_hex.clone(),
+        ring_id: ring_id.clone(),
+        namespace: namespace.clone(),
+        policy_id: policy_id.clone(),
+        resource: resource.clone(),
+        permission: permission.clone(),
+    };
+
+    // Create JWT for authentication with all request fields
+    let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
+    let key_pair = generate::<DidEd25519KeyPair>(Some(reader_did_pk.as_bytes()));
+    let jwt_signer = JwtSigner::from_key_pair(key_pair);
+    let token = jwt_signer
+        .create_store_secret_jwt(
+            &encrypted_document,
+            &enc_cmt_hex,
+            &ring_id,
+            &namespace,
+            &policy_id,
+            &resource,
+            &permission,
+        )
+        .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
+
+    let tonic_request = create_authenticated_request(request, &token)
+        .map_err(|e| anyhow!("Failed to create authenticated request: {}", e))?;
+
+    let response = client
+        .store_secret(tonic_request)
+        .await
+        .map_err(|e| anyhow!("StoreSecret request failed: {}", e))?;
+
+    let response = response.into_inner();
+
+    println!("StoreSecret Result:");
+    println!("{}", "=".repeat(60));
+    println!("  Status: {}", response.status);
+    println!("  Message: {}", response.message);
+    println!("  Object ID: {}", response.object_id);
+    println!("  Ring ID: {}", response.ring_id);
+
+    Ok(StoreSecretResult {
+        status: response.status,
+        message: response.message,
+        created_at: response.created_at,
+        object_id: response.object_id,
+        ring_id: response.ring_id,
+    })
+}
 
 pub async fn do_pre(
     endpoint: String,

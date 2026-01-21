@@ -5,7 +5,7 @@
 //! - Extracting bearer tokens from gRPC request metadata
 
 use crate::error::{AuthNError, Result};
-use crate::{DkgClaims, PreClaims};
+use crate::{DkgClaims, PreClaims, StoreSecretClaims};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint, KeyMaterial};
 use jwt_simple::prelude::*;
 use serde::{de::DeserializeOwned, Serialize};
@@ -95,6 +95,41 @@ impl JwtSigner {
             rdr_pk: rdr_pk.to_string(),
             object_id: object_id.to_string(),
             namespace: namespace.to_string(),
+        };
+        self.sign(claims, Duration::from_hours(1))
+    }
+
+    /// Create a JWT with StoreSecret claims.
+    ///
+    /// # Arguments
+    /// * `encrypted_document` - The encrypted document (JSON-serialized Secret struct)
+    /// * `enc_cmt` - The encryption commitment (hex-encoded G1 point)
+    /// * `ring_id` - The ring ID to use for encryption
+    /// * `namespace` - The namespace for storing the document
+    /// * `policy_id` - Policy ID for access control
+    /// * `resource` - Resource type for the policy
+    /// * `permission` - Permission required for the policy
+    ///
+    /// # Returns
+    /// The signed JWT string valid for 1 hour
+    pub fn create_store_secret_jwt(
+        &self,
+        encrypted_document: &str,
+        enc_cmt: &str,
+        ring_id: &str,
+        namespace: &str,
+        policy_id: &str,
+        resource: &str,
+        permission: &str,
+    ) -> Result<String> {
+        let claims = StoreSecretClaims {
+            encrypted_document: encrypted_document.to_string(),
+            enc_cmt: enc_cmt.to_string(),
+            ring_id: ring_id.to_string(),
+            namespace: namespace.to_string(),
+            policy_id: policy_id.to_string(),
+            resource: resource.to_string(),
+            permission: permission.to_string(),
         };
         self.sign(claims, Duration::from_hours(1))
     }
@@ -202,5 +237,24 @@ mod tests {
         let signer = JwtSigner::new();
         let token = signer.create_pre_jwt("rdr_pk_value", "namespace", "object_id");
         assert!(token.is_ok());
+    }
+
+    #[test]
+    fn test_create_store_secret_jwt() {
+        let signer = JwtSigner::new();
+        let token = signer.create_store_secret_jwt(
+            "encrypted_doc",
+            "enc_cmt_hex",
+            "ring_id_value",
+            "namespace",
+            "policy_id",
+            "resource",
+            "permission",
+        );
+        assert!(token.is_ok());
+
+        // Token should have 3 parts (header.payload.signature)
+        let token_str = token.unwrap();
+        assert_eq!(token_str.split('.').count(), 3);
     }
 }
