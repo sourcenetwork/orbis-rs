@@ -44,8 +44,6 @@ pub struct ChainConfig {
     /// Gas price configuration
     pub gas_price: GasPrice,
 
-    /// denomanation of token (e.g, "uopen")
-    pub denom: String,
     /// Safety buffer multiplier (e.g., 1.2 for 20% extra)
     pub gas_multiplier: f64,
 }
@@ -66,7 +64,6 @@ impl ChainConfig {
             account_prefix: "source".to_string(),
             default_gas_limit: 300_000,
             gas_price: GasPrice::default(),
-            denom: "uopen".to_string(),
             gas_multiplier: 1.2,
         }
     }
@@ -87,7 +84,6 @@ pub struct ChainConfigBuilder {
     pub account_prefix: Option<String>,
     pub default_gas_limit: Option<u64>,
     pub gas_price: Option<GasPrice>,
-    pub denom: Option<String>,
     pub gas_multiplier: Option<f64>,
 }
 
@@ -128,7 +124,9 @@ impl ChainConfigBuilder {
     }
 
     pub fn denom(mut self, denom: Option<String>) -> Self {
-        self.denom = denom;
+        if let Some(denom) = denom {
+            self.gas_price.get_or_insert_with(GasPrice::default).denom = denom;
+        }
         self
     }
 
@@ -148,7 +146,6 @@ impl ChainConfigBuilder {
             account_prefix: self.account_prefix.unwrap_or(local.account_prefix),
             default_gas_limit: self.default_gas_limit.unwrap_or(local.default_gas_limit),
             gas_price: self.gas_price.unwrap_or(local.gas_price),
-            denom: self.denom.unwrap_or(local.denom),
             gas_multiplier: self.gas_multiplier.unwrap_or(local.gas_multiplier),
         }
     }

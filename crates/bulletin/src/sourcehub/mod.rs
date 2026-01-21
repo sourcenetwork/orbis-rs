@@ -82,8 +82,9 @@ impl SourceHubBulletin {
         let address = signer.address();
         let denom = chain_config_builder
             .clone()
-            .denom
-            .unwrap_or("uopen".to_string());
+            .gas_price
+            .map(|gp| gp.denom)
+            .unwrap_or_else(|| "uopen".to_string());
 
         let client = SourceHubBulletin {
             chain_client: SourceHubClient::with_signer(chain_config_builder.build(), signer)
