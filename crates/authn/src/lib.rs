@@ -70,6 +70,12 @@ pub struct StoreSecretClaims {
     pub resource: String,
     /// Permission required for the policy
     pub permission: String,
+    /// rsG - the shared point used for key derivation
+    pub shared_point: Vec<u8>,
+    /// Fiat-Shamir challenge
+    pub challenge: Vec<u8>,
+    /// proof response (s = k + c*r)
+    pub response: Vec<u8>,
 }
 
 /// Resolves and verifies a JWT token, returning the decoded BearerToken with custom claims.

@@ -3,14 +3,18 @@
 //! This module contains tests for the StoreSecret service.
 //! Tests verify authentication, validation, and error handling.
 
+use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::helpers::test_helpers::{
-    cleanup_db, create_authenticated_request, create_test_app_state_default, test_db_path,
-    TestKeyPair,
+    cleanup_db, create_authenticated_request, create_test_app_state_default,
+    create_test_app_state_with_bulletin, test_db_path, TestKeyPair,
 };
 use crate::store_secret::StoreSecretServiceImpl;
+use bulletin::dummy::DummyBulletin;
+use bulletin::r#trait::{BulletinPost, RingPayload};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest,
 };
+use std::sync::Arc;
 use tonic::Request;
 
 // Concrete crypto implementations for tests
@@ -25,6 +29,42 @@ const TEST_NAMESPACE: &str = "test-namespace";
 const TEST_POLICY_ID: &str = "test-policy";
 const TEST_RESOURCE: &str = "test-resource";
 const TEST_PERMISSION: &str = "test-permission";
+const TEST_SHARED_POINT: &str = "test-shared-point";
+const TEST_CHALLENGE: &str = "test-challenge";
+const TEST_RESPONSE: &str = "test-response";
+/// A valid hex-encoded G1 point for testing (generator point)
+const TEST_RING_PK: &str = "97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb";
+
+/// Helper to create an AppState with a pre-configured test ring in the bulletin
+async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState<DkgImpl> {
+    let bulletin = DummyBulletin::new()
+        .await
+        .expect("Failed to create DummyBulletin");
+
+    // Create a test RingPayload
+    let ring_payload = RingPayload {
+        ring_pk: TEST_RING_PK.to_string(),
+        peer_ids: vec!["peer1".to_string()],
+        threshold: 1,
+        public_polynomial: "00".to_string(),
+    };
+
+    // Serialize and set in bulletin
+    let payload_bytes: Vec<u8> = ring_payload.try_into().expect("serialize RingPayload");
+    let post = BulletinPost {
+        id: TEST_RING_ID.to_string(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        payload: payload_bytes,
+        proof: vec![],
+    };
+    bulletin.set_post(
+        BULLETIN_RING_NAMESPACE.to_string(),
+        TEST_RING_ID.to_string(),
+        post,
+    );
+
+    create_test_app_state_with_bulletin(None, true, Arc::new(bulletin), db_name).await
+}
 
 /// Helper to create a dummy StoreSecretRequest for auth tests.
 /// These tests fail at auth stage, so encrypted_document and enc_cmt can be dummy values.
@@ -37,6 +77,9 @@ fn create_dummy_request() -> StoreSecretRequest {
         policy_id: TEST_POLICY_ID.to_string(),
         resource: TEST_RESOURCE.to_string(),
         permission: TEST_PERMISSION.to_string(),
+        shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
+        challenge: TEST_CHALLENGE.as_bytes().to_vec(),
+        response: TEST_RESPONSE.as_bytes().to_vec(),
     }
 }
 
@@ -51,6 +94,9 @@ fn create_test_jwt(test_keys: &TestKeyPair) -> String {
             TEST_POLICY_ID,
             TEST_RESOURCE,
             TEST_PERMISSION,
+            TEST_SHARED_POINT.into(),
+            TEST_CHALLENGE.into(),
+            TEST_RESPONSE.into(),
         )
         .expect("Failed to create JWT")
 }
@@ -138,6 +184,9 @@ async fn test_store_secret_fails_claims_mismatch() {
             TEST_POLICY_ID,
             TEST_RESOURCE,
             TEST_PERMISSION,
+            TEST_SHARED_POINT.into(),
+            TEST_CHALLENGE.into(),
+            TEST_RESPONSE.into(),
         )
         .expect("Failed to create JWT");
 
@@ -187,6 +236,9 @@ async fn test_store_secret_fails_namespace_mismatch() {
             TEST_POLICY_ID,
             TEST_RESOURCE,
             TEST_PERMISSION,
+            TEST_SHARED_POINT.into(),
+            TEST_CHALLENGE.into(),
+            TEST_RESPONSE.into(),
         )
         .expect("Failed to create JWT");
 
@@ -222,7 +274,7 @@ async fn test_store_secret_fails_namespace_mismatch() {
 async fn test_store_secret_fails_invalid_encrypted_document() {
     let db_name = "test_store_secret_fails_invalid_encrypted_document";
     let db_path = test_db_path(db_name);
-    let app_state = create_test_app_state_default(db_name).await;
+    let app_state = create_app_state_with_ring(db_name).await;
     let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
 
     // Use invalid encrypted_document that will fail validation
@@ -239,6 +291,9 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
             TEST_POLICY_ID,
             TEST_RESOURCE,
             TEST_PERMISSION,
+            TEST_SHARED_POINT.into(),
+            TEST_CHALLENGE.into(),
+            TEST_RESPONSE.into(),
         )
         .expect("Failed to create JWT");
 
@@ -251,6 +306,9 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         policy_id: TEST_POLICY_ID.to_string(),
         resource: TEST_RESOURCE.to_string(),
         permission: TEST_PERMISSION.to_string(),
+        shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
+        challenge: TEST_CHALLENGE.as_bytes().to_vec(),
+        response: TEST_RESPONSE.as_bytes().to_vec(),
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -272,6 +330,74 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
     assert!(
         status.message().contains("Validation"),
         "Error message should indicate validation error: {}",
+        status.message()
+    );
+    cleanup_db(&db_path);
+}
+
+/// Test that StoreSecret fails when encryption proof verification fails
+#[tokio::test]
+async fn test_store_secret_fails_invalid_encryption_proof() {
+    let db_name = "test_store_secret_fails_invalid_encryption_proof";
+    let db_path = test_db_path(db_name);
+    let app_state = create_app_state_with_ring(db_name).await;
+    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+
+    // Create a valid Secret struct with enc_cmt matching TEST_RING_PK format
+    let enc_cmt_bytes = hex::decode(TEST_RING_PK).expect("decode TEST_RING_PK");
+    let secret = crypto::r#trait::Secret {
+        enc_cmt: enc_cmt_bytes.clone(),
+        encrypted_data: vec![0u8; 32],
+        nonce: vec![0u8; 12], // 12 bytes for AES-GCM
+        auth_tag: vec![0u8; 16],
+    };
+    let encrypted_doc = serde_json::to_string(&secret).expect("serialize Secret");
+    let enc_cmt_hex = hex::encode(&enc_cmt_bytes);
+
+    // Malformed proof - invalid bytes that won't deserialize as valid curve points
+    let invalid_shared_point = vec![0xffu8; 48]; // Invalid G1 point bytes
+
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_store_secret_jwt(
+            &encrypted_doc,
+            &enc_cmt_hex,
+            TEST_RING_ID,
+            TEST_NAMESPACE,
+            TEST_POLICY_ID,
+            TEST_RESOURCE,
+            TEST_PERMISSION,
+            invalid_shared_point.clone(),
+            TEST_CHALLENGE.into(),
+            TEST_RESPONSE.into(),
+        )
+        .expect("Failed to create JWT");
+
+    let request = StoreSecretRequest {
+        encrypted_document: encrypted_doc,
+        enc_cmt: enc_cmt_hex,
+        ring_id: TEST_RING_ID.to_string(),
+        namespace: TEST_NAMESPACE.to_string(),
+        policy_id: TEST_POLICY_ID.to_string(),
+        resource: TEST_RESOURCE.to_string(),
+        permission: TEST_PERMISSION.to_string(),
+        shared_point: invalid_shared_point,
+        challenge: TEST_CHALLENGE.as_bytes().to_vec(),
+        response: TEST_RESPONSE.as_bytes().to_vec(),
+    };
+
+    let tonic_request = create_authenticated_request(request, &token).unwrap();
+    let result = service.store_secret(tonic_request).await;
+
+    assert!(
+        result.is_err(),
+        "store_secret should fail with invalid encryption proof"
+    );
+
+    let status = result.unwrap_err();
+    assert!(
+        status.message().contains("encryption"),
+        "Error message should mention encryption verification failure: {}",
         status.message()
     );
     cleanup_db(&db_path);

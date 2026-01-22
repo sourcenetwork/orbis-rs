@@ -19,6 +19,9 @@ pub enum StoreSecretError {
     #[error("Serialization error: {0}")]
     Serialization(String),
 
+    #[error("Deserialization error: {0}")]
+    Deserialization(String),
+
     #[error("Ring not found: {0}")]
     RingNotFound(String),
 }
@@ -35,7 +38,9 @@ impl From<StoreSecretError> for tonic::Status {
                 tonic::Status::invalid_argument(error.to_string())
             }
             StoreSecretError::RingNotFound(_) => tonic::Status::not_found(error.to_string()),
-            StoreSecretError::Storage(_) | StoreSecretError::Serialization(_) => {
+            StoreSecretError::Storage(_)
+            | StoreSecretError::Serialization(_)
+            | StoreSecretError::Deserialization(_) => {
                 metrics::record_store_secret_failed();
                 tonic::Status::internal(error.to_string())
             }

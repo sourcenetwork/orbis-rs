@@ -142,7 +142,7 @@ pub async fn do_store_secret(
         G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
 
     // Encrypt locally - node never sees plaintext
-    let (enc_cmt, encrypted_secret, _proof) =
+    let (enc_cmt, encrypted_secret, proof) =
         ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret)
             .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
@@ -166,6 +166,9 @@ pub async fn do_store_secret(
         policy_id: policy_id.clone(),
         resource: resource.clone(),
         permission: permission.clone(),
+        shared_point: proof.shared_point.clone(),
+        challenge: proof.challenge.clone(),
+        response: proof.response.clone(),
     };
 
     // Create JWT for authentication with all request fields
@@ -181,6 +184,9 @@ pub async fn do_store_secret(
             &policy_id,
             &resource,
             &permission,
+            proof.shared_point,
+            proof.challenge,
+            proof.response,
         )
         .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
 

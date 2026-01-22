@@ -1,11 +1,12 @@
 use crate::app_state::AppState;
-use crate::constants::BULLETIN_PLACEHOLDER_PROOF;
+use crate::constants::{BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE};
 use crate::metrics;
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
-use bulletin::r#trait::DocumentPayload;
+use bulletin::r#trait::{DocumentPayload, RingPayload};
 use bulletin::sourcehub::SourceHubBulletin;
-use crypto::r#trait::{CryptoDeserialize, Dkg, Secret};
+use crypto::bls12_381::pre::ThresholdDealerNode;
+use crypto::r#trait::{CryptoDeserialize, Dkg, EncryptionProof, Secret, ThresholdDealer};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
 };
@@ -68,9 +69,30 @@ where
             "Authenticated StoreSecret request"
         );
 
+        // Get ring public_key from bulletin
+        let ring_info = self
+            .state
+            .bulletin
+            .read(BULLETIN_RING_NAMESPACE.to_string(), req.ring_id.clone())
+            .await
+            .map_err(|e| {
+                StoreSecretError::Storage(format!("Failed to read ring '{}': {}", req.ring_id, e))
+            })?;
+
+        let ring_payload =
+            serde_json::from_slice::<RingPayload>(&ring_info.payload).map_err(|e| {
+                StoreSecretError::Deserialization(format!("Failed to parse ring payload: {}", e))
+            })?;
+
         // 3. Validate the encrypted document structure
-        let _encrypted_secret =
-            validate_encrypted_document::<D>(&req.encrypted_document, &req.enc_cmt)?;
+        let _encrypted_secret = validate_encrypted_document::<D>(
+            &req.encrypted_document,
+            &req.enc_cmt,
+            &ring_payload.ring_pk,
+            req.shared_point,
+            req.challenge,
+            req.response,
+        )?;
 
         // 4. Create DocumentPayload with the pre-encrypted secret
         let document_payload = DocumentPayload {
@@ -135,6 +157,10 @@ where
 fn validate_encrypted_document<D>(
     encrypted_document: &str,
     enc_cmt_hex: &str,
+    ring_key: &str,
+    shared_point: Vec<u8>,
+    challenge: Vec<u8>,
+    response: Vec<u8>,
 ) -> Result<Secret, StoreSecretError>
 where
     D: Dkg<PublicKey = ark_bls12_381::G1Affine>,
@@ -153,8 +179,16 @@ where
     })?;
 
     // Validate it's a valid G1 point (48 bytes compressed)
-    let _enc_cmt_point = D::PublicKey::from_bytes(&enc_cmt_bytes).map_err(|e| {
+    let enc_cmt_point = D::PublicKey::from_bytes(&enc_cmt_bytes).map_err(|e| {
         StoreSecretError::Validation(format!("enc_cmt is not a valid G1 curve point: {}", e))
+    })?;
+
+    // 2b. Parse ring_key from hex to G1 point
+    let ring_key_bytes = hex::decode(ring_key).map_err(|e| {
+        StoreSecretError::Validation(format!("Invalid ring_key hex encoding: {}", e))
+    })?;
+    let ring_key_point = D::PublicKey::from_bytes(&ring_key_bytes).map_err(|e| {
+        StoreSecretError::Validation(format!("ring_key is not a valid G1 curve point: {}", e))
     })?;
 
     // 3. Validate the enc_cmt in the Secret matches the provided enc_cmt
@@ -172,10 +206,16 @@ where
         )));
     }
 
-    // TODO: Add encryption proof verification here.
-    // Currently only validating structure. Cryptographic verification that the
-    // secret was correctly encrypted to a ring's public key is not yet implemented.
-    // The ThresholdDealer::verify function is for re-encryption proofs, not encryption proofs.
+    // 5. Validate Encryption of secret validity
+    let proof = EncryptionProof {
+        shared_point,
+        challenge,
+        response,
+    };
+
+    ThresholdDealerNode::verify_encryption(&ring_key_point, &enc_cmt_point, &proof).map_err(
+        |e| StoreSecretError::Validation(format!("Failed to Validate secret encryption: {}", e)),
+    )?;
 
     Ok(secret)
 }
@@ -228,6 +268,27 @@ fn validate_store_secret_claims(
         return Err(StoreSecretError::Unauthorized(format!(
             "Token permission '{}' does not match request permission '{}'",
             token.claims.permission, req.permission
+        )));
+    }
+
+    if token.claims.shared_point != req.shared_point {
+        return Err(StoreSecretError::Unauthorized(format!(
+            "Token shared_point '{:?}' does not match request shared_point '{:?}'",
+            token.claims.shared_point, req.shared_point
+        )));
+    }
+
+    if token.claims.challenge != req.challenge {
+        return Err(StoreSecretError::Unauthorized(format!(
+            "Token challenge '{:?}' does not match request challenge '{:?}'",
+            token.claims.challenge, req.challenge
+        )));
+    }
+
+    if token.claims.response != req.response {
+        return Err(StoreSecretError::Unauthorized(format!(
+            "Token response '{:?}' does not match request response '{:?}'",
+            token.claims.response, req.response
         )));
     }
 
