@@ -2,7 +2,8 @@ use super::common::PubPoly;
 use crate::{
     error::{CryptoError, Result},
     r#trait::{
-        DistKeyShare, PubPoly as PubPolyTrait, PubShare, ReencryptReply, Secret, ThresholdDealer,
+        DistKeyShare, EncryptionProof, PubPoly as PubPolyTrait, PubShare, ReencryptReply, Secret,
+        ThresholdDealer,
     },
 };
 use aes_gcm::{
@@ -128,12 +129,31 @@ impl ThresholdDealer for ThresholdDealerNode {
     fn encrypt_secret(
         dkg_pk: &Self::PublicKey,
         data: &[u8],
-    ) -> Result<(Self::PublicKey, Self::Secret)> {
+    ) -> Result<(Self::PublicKey, Self::Secret, EncryptionProof)> {
         let mut rng = OsRng;
         // Generate random r
         let r = Fr::rand(&mut rng);
         let enc_cmt: G1Affine = (G1Projective::generator() * r).into(); // rG
-        let rs_g: G1Affine = (G1Projective::from(*dkg_pk) * r).into(); // rsG
+        let rs_g: G1Affine = (G1Projective::from(*dkg_pk) * r).into(); // rsG (shared point)
+
+        // Generate Chaum-Pedersen NIZK proof
+        // Proves that enc_cmt = r*G and rs_g = r*dkg_pk use the same r
+        let (challenge, response) =
+            Self::generate_encryption_proof(&r, dkg_pk, &enc_cmt, &rs_g)?;
+
+        // Serialize proof components
+        let mut shared_point_bytes = Vec::new();
+        rs_g.serialize_compressed(&mut shared_point_bytes)?;
+        let mut challenge_bytes = Vec::new();
+        challenge.serialize_compressed(&mut challenge_bytes)?;
+        let mut response_bytes = Vec::new();
+        response.serialize_compressed(&mut response_bytes)?;
+
+        let proof = EncryptionProof {
+            shared_point: shared_point_bytes,
+            challenge: challenge_bytes,
+            response: response_bytes,
+        };
 
         // Derive AES key from rsG
         let aes_key = Self::derive_key_from_point(&rs_g)?;
@@ -165,7 +185,59 @@ impl ThresholdDealer for ThresholdDealerNode {
                 nonce: nonce_bytes.to_vec(),
                 auth_tag: Vec::new(), // Included in ciphertext with AES-GCM
             },
+            proof,
         ))
+    }
+
+    fn verify_encryption(
+        dkg_pk: &Self::PublicKey,
+        enc_cmt: &Self::PublicKey,
+        proof: &EncryptionProof,
+    ) -> Result<()> {
+        // Deserialize proof components
+        let shared_point = G1Affine::deserialize_compressed(&proof.shared_point[..]).map_err(
+            |e| CryptoError::ElGamalError(format!("Failed to deserialize shared_point: {:?}", e)),
+        )?;
+        let challenge = Fr::deserialize_compressed(&proof.challenge[..]).map_err(|e| {
+            CryptoError::ElGamalError(format!("Failed to deserialize challenge: {:?}", e))
+        })?;
+        let response = Fr::deserialize_compressed(&proof.response[..]).map_err(|e| {
+            CryptoError::ElGamalError(format!("Failed to deserialize response: {:?}", e))
+        })?;
+
+        // Verify: R1' = s*G - c*enc_cmt
+        let r1_prime: G1Affine = (G1Projective::generator() * response
+            - G1Projective::from(*enc_cmt) * challenge)
+            .into();
+
+        // Verify: R2' = s*dkg_pk - c*shared_point
+        let r2_prime: G1Affine = (G1Projective::from(*dkg_pk) * response
+            - G1Projective::from(shared_point) * challenge)
+            .into();
+
+        // Recompute challenge: c' = Hash(PROTOCOL, G, dkg_pk, enc_cmt, shared_point, R1', R2')
+        let g = G1Affine::generator();
+        let challenge_hash =
+            Self::hash_encryption_proof_points(&g, dkg_pk, enc_cmt, &shared_point, &r1_prime, &r2_prime)?;
+        let recomputed_challenge = Fr::from_le_bytes_mod_order(&challenge_hash);
+
+        // Constant-time comparison
+        let mut challenge_bytes = [0u8; 32];
+        let mut recomputed_bytes = [0u8; 32];
+        challenge
+            .serialize_compressed(&mut &mut challenge_bytes[..])
+            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
+        recomputed_challenge
+            .serialize_compressed(&mut &mut recomputed_bytes[..])
+            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
+
+        if challenge_bytes.ct_ne(&recomputed_bytes).into() {
+            return Err(CryptoError::ElGamalError(
+                "Encryption proof verification failed".to_string(),
+            ));
+        }
+
+        Ok(())
     }
     fn decrypt_secret(
         dkg_pk: &Self::PublicKey,
@@ -413,6 +485,65 @@ impl ThresholdDealerNode {
 
         Ok(key)
     }
+
+    /// Generate Chaum-Pedersen NIZK proof for encryption
+    /// Proves that enc_cmt = r*G and shared_point = r*dkg_pk use the same randomness r
+    fn generate_encryption_proof(
+        r: &Fr,
+        dkg_pk: &G1Affine,
+        enc_cmt: &G1Affine,
+        shared_point: &G1Affine,
+    ) -> Result<(Fr, Fr)> {
+        let mut rng = OsRng;
+
+        // 1. k ← random scalar
+        let k = Fr::rand(&mut rng);
+
+        // 2. R1 = k * G, R2 = k * dkg_pk
+        let r1: G1Affine = (G1Projective::generator() * k).into();
+        let r2: G1Affine = (G1Projective::from(*dkg_pk) * k).into();
+
+        // 3. c = Hash(PROTOCOL, G, dkg_pk, enc_cmt, shared_point, R1, R2)
+        let g = G1Affine::generator();
+        let challenge_hash =
+            Self::hash_encryption_proof_points(&g, dkg_pk, enc_cmt, shared_point, &r1, &r2)?;
+        let c = Fr::from_le_bytes_mod_order(&challenge_hash);
+
+        // 4. s = k + c * r
+        let s = k + (c * r);
+
+        // 5. Output: (c, s)
+        Ok((c, s))
+    }
+
+    /// Hash points for encryption proof with domain separation
+    fn hash_encryption_proof_points(
+        g: &G1Affine,
+        dkg_pk: &G1Affine,
+        enc_cmt: &G1Affine,
+        shared_point: &G1Affine,
+        r1: &G1Affine,
+        r2: &G1Affine,
+    ) -> Result<[u8; 32]> {
+        let mut hasher = Sha256::new();
+
+        // Add domain separation
+        hasher.update(PROTOCOL);
+
+        // Serialize and hash all points
+        let mut bytes = Vec::with_capacity(48);
+        for point in &[g, dkg_pk, enc_cmt, shared_point, r1, r2] {
+            bytes.clear();
+            point.serialize_compressed(&mut bytes)?;
+            hasher.update(&bytes);
+        }
+
+        let result = hasher.finalize();
+        let mut output = [0u8; 32];
+        output.copy_from_slice(&result);
+
+        Ok(output)
+    }
 }
 
 #[cfg(test)]
@@ -440,7 +571,7 @@ mod tests {
         let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
 
         // 1. Encrypt the secret
-        let (enc_cmt, encrypted_secret) =
+        let (enc_cmt, encrypted_secret, _proof) =
             ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
 
         // Verify encryption produces valid output
@@ -479,7 +610,7 @@ mod tests {
         let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
 
         // Encrypt
-        let (enc_cmt, encrypted_secret) =
+        let (enc_cmt, encrypted_secret, _proof) =
             ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
 
         assert_ne!(enc_cmt, G1Affine::zero());
@@ -509,7 +640,7 @@ mod tests {
         let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
 
         // Encrypt empty data
-        let (enc_cmt, encrypted_secret) =
+        let (enc_cmt, encrypted_secret, _proof) =
             ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
 
         // Simulate re-encryption commitment correctly
@@ -537,7 +668,7 @@ mod tests {
         let wrong_rdr_sk = Fr::rand(&mut rng);
 
         // Encrypt
-        let (enc_cmt, encrypted_secret) =
+        let (enc_cmt, encrypted_secret, _proof) =
             ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
 
         // Simulate re-encryption commitment with CORRECT reader key
@@ -581,7 +712,7 @@ mod tests {
 
         // Encrypt a secret
         let secret = b"test data";
-        let (enc_cmt, encrypted_secret) =
+        let (enc_cmt, encrypted_secret, _proof) =
             ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
 
         // Re-encrypt
@@ -615,7 +746,7 @@ mod tests {
         };
 
         let secret = b"test data";
-        let (enc_cmt, encrypted_secret) =
+        let (enc_cmt, encrypted_secret, _proof) =
             ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
 
         // Re-encrypt
@@ -752,7 +883,7 @@ mod tests {
         }
 
         // Step 2: Encrypt the secret using aggregate public key
-        let (enc_cmt, encrypted_secret) =
+        let (enc_cmt, encrypted_secret, _proof) =
             ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret).unwrap();
 
         // Verify encryption
@@ -818,5 +949,135 @@ mod tests {
         // Verify decryption recovered the original secret
         assert_eq!(decrypted, secret);
         assert_eq!(decrypted.len(), secret.len());
+    }
+
+    #[test]
+    fn test_encryption_proof_valid() {
+        let secret = b"test secret data";
+        let mut rng = OsRng;
+
+        // Setup DKG key pair
+        let dkg_sk = Fr::rand(&mut rng);
+        let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+
+        // Encrypt the secret
+        let (enc_cmt, _encrypted_secret, proof) =
+            ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+
+        // Verify the encryption proof
+        let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
+        assert!(result.is_ok(), "Valid encryption proof should verify");
+    }
+
+    #[test]
+    fn test_encryption_proof_wrong_dkg_pk() {
+        let secret = b"test secret data";
+        let mut rng = OsRng;
+
+        // Setup DKG key pair
+        let dkg_sk = Fr::rand(&mut rng);
+        let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+
+        // Different DKG public key
+        let wrong_dkg_sk = Fr::rand(&mut rng);
+        let wrong_dkg_pk: G1Affine = (G1Projective::generator() * wrong_dkg_sk).into();
+
+        // Encrypt the secret
+        let (enc_cmt, _encrypted_secret, proof) =
+            ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+
+        // Verify with wrong DKG public key - should fail
+        let result = ThresholdDealerNode::verify_encryption(&wrong_dkg_pk, &enc_cmt, &proof);
+        assert!(
+            result.is_err(),
+            "Encryption proof should fail with wrong DKG public key"
+        );
+    }
+
+    #[test]
+    fn test_encryption_proof_tampered_challenge() {
+        let secret = b"test secret data";
+        let mut rng = OsRng;
+
+        // Setup DKG key pair
+        let dkg_sk = Fr::rand(&mut rng);
+        let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+
+        // Encrypt the secret
+        let (enc_cmt, _encrypted_secret, mut proof) =
+            ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+
+        // Tamper with the challenge
+        let tampered_challenge = Fr::rand(&mut rng);
+        let mut tampered_bytes = Vec::new();
+        tampered_challenge
+            .serialize_compressed(&mut tampered_bytes)
+            .unwrap();
+        proof.challenge = tampered_bytes;
+
+        // Verification should fail
+        let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
+        assert!(
+            result.is_err(),
+            "Encryption proof should fail with tampered challenge"
+        );
+    }
+
+    #[test]
+    fn test_encryption_proof_tampered_response() {
+        let secret = b"test secret data";
+        let mut rng = OsRng;
+
+        // Setup DKG key pair
+        let dkg_sk = Fr::rand(&mut rng);
+        let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+
+        // Encrypt the secret
+        let (enc_cmt, _encrypted_secret, mut proof) =
+            ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+
+        // Tamper with the response
+        let tampered_response = Fr::rand(&mut rng);
+        let mut tampered_bytes = Vec::new();
+        tampered_response
+            .serialize_compressed(&mut tampered_bytes)
+            .unwrap();
+        proof.response = tampered_bytes;
+
+        // Verification should fail
+        let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
+        assert!(
+            result.is_err(),
+            "Encryption proof should fail with tampered response"
+        );
+    }
+
+    #[test]
+    fn test_encryption_proof_tampered_shared_point() {
+        let secret = b"test secret data";
+        let mut rng = OsRng;
+
+        // Setup DKG key pair
+        let dkg_sk = Fr::rand(&mut rng);
+        let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+
+        // Encrypt the secret
+        let (enc_cmt, _encrypted_secret, mut proof) =
+            ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+
+        // Tamper with the shared point
+        let tampered_point: G1Affine = (G1Projective::generator() * Fr::rand(&mut rng)).into();
+        let mut tampered_bytes = Vec::new();
+        tampered_point
+            .serialize_compressed(&mut tampered_bytes)
+            .unwrap();
+        proof.shared_point = tampered_bytes;
+
+        // Verification should fail
+        let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
+        assert!(
+            result.is_err(),
+            "Encryption proof should fail with tampered shared point"
+        );
     }
 }

@@ -67,6 +67,15 @@ pub struct Secret {
     pub auth_tag: Vec<u8>,       // Authentication tag
 }
 
+/// Chaum-Pedersen NIZK proof that encryption was performed correctly.
+/// Proves that enc_cmt = rG and shared_point = r*dkg_pk use the same randomness r.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct EncryptionProof {
+    pub shared_point: Vec<u8>, // rsG - the shared point used for key derivation
+    pub challenge: Vec<u8>,    // c - Fiat-Shamir challenge
+    pub response: Vec<u8>,     // s - proof response (s = k + c*r)
+}
+
 /// Re-encryption reply
 #[derive(Clone, Debug)]
 pub struct ReencryptReply<ShareValue, PublicKey> {
@@ -504,10 +513,19 @@ pub trait ThresholdDealer {
     /// Output:
     ///   enc_cmt  - Schnorr commit (rG)
     ///   enc_scrt - Encrypted key-slices (rsG + Ki)
+    ///   proof    - Chaum-Pedersen NIZK proof of correct encryption
     fn encrypt_secret(
         dkg_pk: &Self::PublicKey,
         data: &[u8],
-    ) -> Result<(Self::PublicKey, Self::Secret)>;
+    ) -> Result<(Self::PublicKey, Self::Secret, EncryptionProof)>;
+
+    /// Verify that a secret was correctly encrypted to the given DKG public key.
+    /// Uses Chaum-Pedersen NIZK proof to verify enc_cmt and shared_point use same randomness.
+    fn verify_encryption(
+        dkg_pk: &Self::PublicKey,
+        enc_cmt: &Self::PublicKey,
+        proof: &EncryptionProof,
+    ) -> Result<()>;
 
     /// Decrypt a secret using the reader's secret key.
     ///

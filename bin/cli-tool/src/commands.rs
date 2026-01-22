@@ -142,8 +142,9 @@ pub async fn do_store_secret(
         G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
 
     // Encrypt locally - node never sees plaintext
-    let (enc_cmt, encrypted_secret) = ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret)
-        .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+    let (enc_cmt, encrypted_secret, _proof) =
+        ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret)
+            .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
     let encrypted_document = serde_json::to_string(&encrypted_secret)
         .map_err(|e| anyhow!("Failed to serialize encrypted secret: {}", e))?;
@@ -322,7 +323,7 @@ pub async fn do_encrypt_secret(ring_pk: String, secret: String) -> Result<()> {
         .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
     // Encrypt the secret
-    let (_enc_cmt, encrypted_secret) =
+    let (_enc_cmt, encrypted_secret, _proof) =
         ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret.as_bytes())
             .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 

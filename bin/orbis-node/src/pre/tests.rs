@@ -108,7 +108,7 @@ async fn test_dkg_then_pre_end_to_end() {
     );
 
     // Alice encrypts the message using the DKG aggregate public key
-    let (enc_cmt, encrypted_secret) =
+    let (enc_cmt, encrypted_secret, _proof) =
         ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret_message)
             .expect("Encryption should succeed");
 
@@ -331,7 +331,7 @@ async fn test_pre_with_large_secret() {
     println!("Large secret size: {} bytes", large_secret.len());
 
     // Alice encrypts
-    let (_, encrypted_secret) =
+    let (_, encrypted_secret, _) =
         PreImpl::encrypt_secret(&aggregate_pk, &large_secret).expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
@@ -447,7 +447,7 @@ async fn test_pre_fails_with_wrong_key() {
 
     // Alice encrypts
     let secret_message = b"Secret that should not be decrypted with wrong key";
-    let (_, encrypted_secret) =
+    let (_, encrypted_secret, _) =
         PreImpl::encrypt_secret(&aggregate_pk, secret_message).expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
@@ -569,7 +569,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
 
     // Alice encrypts
     let secret_message = b"Secret that should not be re-encrypted with bad token";
-    let (_, encrypted_secret) =
+    let (_, encrypted_secret, _) =
         PreImpl::encrypt_secret(&aggregate_pk, secret_message).expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
@@ -695,7 +695,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
 
     // Alice encrypts
     let secret_message = b"Secret with mismatched claims";
-    let (_, encrypted_secret) =
+    let (_, encrypted_secret, _) =
         PreImpl::encrypt_secret(&aggregate_pk, secret_message).expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
