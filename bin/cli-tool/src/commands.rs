@@ -120,8 +120,8 @@ pub struct StoreSecretResult {
 /// 4. Returns the object_id needed for PRE requests
 pub async fn do_store_secret(
     endpoint: String,
-    secret: &[u8],        // Plaintext secret - encrypted locally before sending
-    ring_pk_hex: String,  // Ring public key (hex) - used for encryption
+    secret: &[u8],       // Plaintext secret - encrypted locally before sending
+    ring_pk_hex: String, // Ring public key (hex) - used for encryption
     ring_id: String,
     namespace: String,
     policy_id: String,
@@ -136,10 +136,10 @@ pub async fn do_store_secret(
     println!();
 
     // Parse ring public key
-    let ring_pk_bytes = hex::decode(&ring_pk_hex)
-        .map_err(|e| anyhow!("Invalid ring_pk hex: {}", e))?;
-    let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
-        .map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
+    let ring_pk_bytes =
+        hex::decode(&ring_pk_hex).map_err(|e| anyhow!("Invalid ring_pk hex: {}", e))?;
+    let ring_pk_point =
+        G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
 
     // Encrypt locally - node never sees plaintext
     let (enc_cmt, encrypted_secret) = ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret)

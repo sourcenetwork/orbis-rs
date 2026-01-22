@@ -73,7 +73,6 @@ where
             .map_err(|e| {
                 let duration = start.elapsed().as_secs_f64();
                 metrics::record_grpc_request("pre", "start_pre", "error", duration);
-                metrics::record_pre_request("error", duration);
                 Status::internal(format!("Failed to get timestamp: {}", e))
             })?
             .as_secs();
@@ -212,6 +211,7 @@ where
         );
 
         // 5. Create coordinator and initiate reencryption
+        metrics::record_pre_request_started();
         let coordinator = PreCoordinator::<D, T>::new(Arc::new(self.state.clone()));
         let total_nodes = ring_payload.peer_ids.len();
         let result = coordinator
@@ -253,7 +253,7 @@ where
         // Record success metrics
         let duration = start.elapsed().as_secs_f64();
         metrics::record_grpc_request("pre", "start_pre", "ok", duration);
-        metrics::record_pre_request("success", duration);
+        metrics::record_pre_request_completed(duration);
 
         Ok(Response::new(response))
     }

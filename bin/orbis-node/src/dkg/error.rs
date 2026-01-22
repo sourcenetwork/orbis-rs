@@ -1,3 +1,4 @@
+use crate::metrics;
 use thiserror::Error;
 
 /// DKG (Distributed Key Generation) related errors
@@ -94,18 +95,25 @@ impl From<DkgError> for tonic::Status {
             }
             DkgError::SessionNotFound(_) => tonic::Status::new(Code::NotFound, error.to_string()),
             DkgError::ProtocolError(_) => {
+                metrics::record_dkg_session_failed();
                 tonic::Status::new(Code::FailedPrecondition, error.to_string())
             }
             DkgError::NetworkConnection(_) => {
+                metrics::record_dkg_session_failed();
                 tonic::Status::new(Code::Unavailable, error.to_string())
             }
             DkgError::CommitmentVerificationFailed(_) => {
+                metrics::record_dkg_session_failed();
                 tonic::Status::new(Code::InvalidArgument, error.to_string())
             }
             DkgError::ShareVerificationFailed(_) => {
+                metrics::record_dkg_session_failed();
                 tonic::Status::new(Code::InvalidArgument, error.to_string())
             }
-            _ => tonic::Status::new(Code::Internal, error.to_string()),
+            _ => {
+                metrics::record_dkg_session_failed();
+                tonic::Status::new(Code::Internal, error.to_string())
+            }
         }
     }
 }

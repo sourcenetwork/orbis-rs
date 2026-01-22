@@ -1,5 +1,6 @@
 use crate::app_state::AppState;
 use crate::constants::BULLETIN_PLACEHOLDER_PROOF;
+use crate::metrics;
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
 use bulletin::r#trait::DocumentPayload;
@@ -8,7 +9,7 @@ use crypto::r#trait::{CryptoDeserialize, Dkg, Secret};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
 /// Implementation of the StoreSecretService
@@ -43,6 +44,7 @@ where
         &self,
         request: Request<StoreSecretRequest>,
     ) -> Result<Response<StoreSecretResponse>, Status> {
+        let start = Instant::now();
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| Status::internal(format!("Failed to get timestamp: {}", e)))?
@@ -52,9 +54,7 @@ where
         let token_str = extract_bearer_token(&request)
             .map_err(|e| StoreSecretError::Unauthorized(e.to_string()))?;
         let token: BearerToken<StoreSecretClaims> = resolve_jwt_did(token_str, current_time)
-            .map_err(|e| {
-                StoreSecretError::Unauthorized(format!("JWT validation failed: {}", e))
-            })?;
+            .map_err(|e| StoreSecretError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 
         let req = request.into_inner();
 
@@ -69,7 +69,8 @@ where
         );
 
         // 3. Validate the encrypted document structure
-        let _encrypted_secret = validate_encrypted_document::<D>(&req.encrypted_document, &req.enc_cmt)?;
+        let _encrypted_secret =
+            validate_encrypted_document::<D>(&req.encrypted_document, &req.enc_cmt)?;
 
         // 4. Create DocumentPayload with the pre-encrypted secret
         let document_payload = DocumentPayload {
@@ -80,9 +81,15 @@ where
             permission: req.permission,
         };
 
-        let payload_bytes: Vec<u8> = document_payload.try_into().map_err(|e: bulletin::error::BulletinError| {
-            StoreSecretError::Serialization(format!("Failed to serialize DocumentPayload: {}", e))
-        })?;
+        let payload_bytes: Vec<u8> =
+            document_payload
+                .try_into()
+                .map_err(|e: bulletin::error::BulletinError| {
+                    StoreSecretError::Serialization(format!(
+                        "Failed to serialize DocumentPayload: {}",
+                        e
+                    ))
+                })?;
 
         // 5. Compute object_id before posting (deterministic hash)
         // Note: get_post_id expects the full namespace format "bulletin/{namespace}"
@@ -97,9 +104,7 @@ where
             .bulletin
             .post(req.namespace.clone(), payload_bytes, proof)
             .await
-            .map_err(|e| {
-                StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e))
-            })?;
+            .map_err(|e| StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e)))?;
 
         let created_at = current_time as i64;
 
@@ -110,6 +115,8 @@ where
             owner = %token.issuer_id,
             "Successfully stored encrypted secret"
         );
+
+        metrics::record_store_secret_completed(start.elapsed().as_secs_f64());
 
         Ok(Response::new(StoreSecretResponse {
             status: "success".to_string(),
@@ -147,10 +154,7 @@ where
 
     // Validate it's a valid G1 point (48 bytes compressed)
     let _enc_cmt_point = D::PublicKey::from_bytes(&enc_cmt_bytes).map_err(|e| {
-        StoreSecretError::Validation(format!(
-            "enc_cmt is not a valid G1 curve point: {}",
-            e
-        ))
+        StoreSecretError::Validation(format!("enc_cmt is not a valid G1 curve point: {}", e))
     })?;
 
     // 3. Validate the enc_cmt in the Secret matches the provided enc_cmt

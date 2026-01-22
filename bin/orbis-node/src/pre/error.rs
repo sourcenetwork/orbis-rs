@@ -1,3 +1,4 @@
+use crate::metrics;
 use thiserror::Error;
 
 /// PRE (Proxy Re-Encryption) related errors
@@ -88,17 +89,26 @@ impl From<PreError> for tonic::Status {
             }
             PreError::SessionNotFound(_) => tonic::Status::new(Code::NotFound, error.to_string()),
             PreError::InsufficientShares { .. } => {
+                metrics::record_pre_request_failed();
                 tonic::Status::new(Code::FailedPrecondition, error.to_string())
             }
-            PreError::Timeout(_) => tonic::Status::new(Code::DeadlineExceeded, error.to_string()),
+            PreError::Timeout(_) => {
+                metrics::record_pre_request_failed();
+                tonic::Status::new(Code::DeadlineExceeded, error.to_string())
+            }
             PreError::NetworkConnection(_) => {
+                metrics::record_pre_request_failed();
                 tonic::Status::new(Code::Unavailable, error.to_string())
             }
             PreError::VerificationFailed(_) => {
+                metrics::record_pre_request_failed();
                 tonic::Status::new(Code::InvalidArgument, error.to_string())
             }
             PreError::AuthZ(_) => tonic::Status::new(Code::Unauthenticated, error.to_string()),
-            _ => tonic::Status::new(Code::Internal, error.to_string()),
+            _ => {
+                metrics::record_pre_request_failed();
+                tonic::Status::new(Code::Internal, error.to_string())
+            }
         }
     }
 }

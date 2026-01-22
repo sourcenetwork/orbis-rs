@@ -630,15 +630,18 @@ mod cli_tool_integration {
         sleep(Duration::from_secs(2)).await;
 
         // Read both from bulletin and compare metadata
-        let manual_bytes = cli_tool::read_bulletin_post(full_namespace.clone(), object_id_manual.clone())
-            .await
-            .expect("read manual post");
-        let service_bytes = cli_tool::read_bulletin_post(full_namespace.clone(), object_id_service.clone())
-            .await
-            .expect("read service post");
+        let manual_bytes =
+            cli_tool::read_bulletin_post(full_namespace.clone(), object_id_manual.clone())
+                .await
+                .expect("read manual post");
+        let service_bytes =
+            cli_tool::read_bulletin_post(full_namespace.clone(), object_id_service.clone())
+                .await
+                .expect("read service post");
 
         let manual: DocumentPayload = serde_json::from_slice(&manual_bytes).expect("parse manual");
-        let service: DocumentPayload = serde_json::from_slice(&service_bytes).expect("parse service");
+        let service: DocumentPayload =
+            serde_json::from_slice(&service_bytes).expect("parse service");
 
         assert_eq!(manual.ring_id, service.ring_id, "ring_id mismatch");
         assert_eq!(manual.policy_id, service.policy_id, "policy_id mismatch");
@@ -646,9 +649,13 @@ mod cli_tool_integration {
         assert_eq!(manual.permission, service.permission, "permission mismatch");
 
         // Run PRE to verify full flow works
-        cli_tool::register_object_to_chain(policy_id.clone(), object_id_manual.clone(), resource.clone())
-            .await
-            .expect("register_object_to_chain");
+        cli_tool::register_object_to_chain(
+            policy_id.clone(),
+            object_id_manual.clone(),
+            resource.clone(),
+        )
+        .await
+        .expect("register_object_to_chain");
 
         cli_tool::set_relationship_on_chain(
             policy_id,

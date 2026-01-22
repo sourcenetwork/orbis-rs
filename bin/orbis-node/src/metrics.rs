@@ -81,6 +81,12 @@ lazy_static! {
     )
     .expect("failed to register pre_requests_total");
 
+    pub static ref PRE_ACTIVE_REQUESTS: Gauge = register_gauge!(
+        "pre_active_requests",
+        "Number of currently active PRE requests"
+    )
+    .expect("failed to register pre_active_requests");
+
     pub static ref PRE_REQUEST_DURATION_SECONDS: HistogramVec = register_histogram_vec!(
         "pre_request_duration_seconds",
         "PRE request duration in seconds",
@@ -88,6 +94,32 @@ lazy_static! {
         vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
     )
     .expect("failed to register pre_request_duration_seconds");
+
+    pub static ref PRE_MESSAGES_TOTAL: CounterVec = register_counter_vec!(
+        "pre_messages_total",
+        "Total number of PRE protocol messages",
+        &["message_type", "direction"]
+    )
+    .expect("failed to register pre_messages_total");
+
+    // ============================================================================
+    // StoreSecret Metrics
+    // ============================================================================
+
+    pub static ref STORE_SECRET_REQUESTS_TOTAL: CounterVec = register_counter_vec!(
+        "store_secret_requests_total",
+        "Total number of StoreSecret requests",
+        &["status"]
+    )
+    .expect("failed to register store_secret_requests_total");
+
+    pub static ref STORE_SECRET_REQUEST_DURATION_SECONDS: HistogramVec = register_histogram_vec!(
+        "store_secret_request_duration_seconds",
+        "StoreSecret request duration in seconds",
+        &[],
+        vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0]
+    )
+    .expect("failed to register store_secret_request_duration_seconds");
 
     // ============================================================================
     // Node Health Metrics
@@ -180,12 +212,56 @@ pub fn record_dkg_message_received(message_type: &str) {
         .inc();
 }
 
-/// Record PRE request
-pub fn record_pre_request(status: &str, duration_secs: f64) {
-    PRE_REQUESTS_TOTAL.with_label_values(&[status]).inc();
+/// Record PRE request started
+pub fn record_pre_request_started() {
+    PRE_REQUESTS_TOTAL.with_label_values(&["started"]).inc();
+    PRE_ACTIVE_REQUESTS.inc();
+}
+
+/// Record PRE request completed
+pub fn record_pre_request_completed(duration_secs: f64) {
+    PRE_REQUESTS_TOTAL.with_label_values(&["completed"]).inc();
+    PRE_ACTIVE_REQUESTS.dec();
     PRE_REQUEST_DURATION_SECONDS
         .with_label_values(&[])
         .observe(duration_secs);
+}
+
+/// Record PRE request failed
+pub fn record_pre_request_failed() {
+    PRE_REQUESTS_TOTAL.with_label_values(&["failed"]).inc();
+    PRE_ACTIVE_REQUESTS.dec();
+}
+
+/// Record PRE message sent
+pub fn record_pre_message_sent(message_type: &str) {
+    PRE_MESSAGES_TOTAL
+        .with_label_values(&[message_type, "sent"])
+        .inc();
+}
+
+/// Record PRE message received
+pub fn record_pre_message_received(message_type: &str) {
+    PRE_MESSAGES_TOTAL
+        .with_label_values(&[message_type, "received"])
+        .inc();
+}
+
+/// Record StoreSecret request completed
+pub fn record_store_secret_completed(duration_secs: f64) {
+    STORE_SECRET_REQUESTS_TOTAL
+        .with_label_values(&["completed"])
+        .inc();
+    STORE_SECRET_REQUEST_DURATION_SECONDS
+        .with_label_values(&[])
+        .observe(duration_secs);
+}
+
+/// Record StoreSecret request failed
+pub fn record_store_secret_failed() {
+    STORE_SECRET_REQUESTS_TOTAL
+        .with_label_values(&["failed"])
+        .inc();
 }
 
 // ============================================================================

@@ -1,3 +1,4 @@
+use crate::metrics;
 use thiserror::Error;
 
 /// StoreSecret related errors
@@ -29,14 +30,15 @@ pub type Result<T> = std::result::Result<T, StoreSecretError>;
 impl From<StoreSecretError> for tonic::Status {
     fn from(error: StoreSecretError) -> Self {
         match &error {
-            StoreSecretError::Unauthorized(_) => {
-                tonic::Status::unauthenticated(error.to_string())
-            }
+            StoreSecretError::Unauthorized(_) => tonic::Status::unauthenticated(error.to_string()),
             StoreSecretError::InvalidInput(_) | StoreSecretError::Validation(_) => {
                 tonic::Status::invalid_argument(error.to_string())
             }
             StoreSecretError::RingNotFound(_) => tonic::Status::not_found(error.to_string()),
-            _ => tonic::Status::internal(error.to_string()),
+            StoreSecretError::Storage(_) | StoreSecretError::Serialization(_) => {
+                metrics::record_store_secret_failed();
+                tonic::Status::internal(error.to_string())
+            }
         }
     }
 }
