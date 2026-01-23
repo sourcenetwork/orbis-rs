@@ -20,14 +20,14 @@ use tonic::{Request, Response, Status};
 #[derive(Debug)]
 pub struct StoreSecretServiceImpl<D>
 where
-    D: Dkg + Clone,
+    D: Dkg + Clone + 'static,
 {
     pub state: AppState<D>,
 }
 
 impl<D> StoreSecretServiceImpl<D>
 where
-    D: Dkg + Clone,
+    D: Dkg + Clone + 'static,
 {
     /// Create a new StoreSecretServiceImpl with shared application state
     pub fn new(state: AppState<D>) -> Self {

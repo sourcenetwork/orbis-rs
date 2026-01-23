@@ -32,7 +32,7 @@ use std::sync::Arc;
 /// for this node's participation in the decentralized DKG protocol.
 pub struct DkgProtocolHandler<D>
 where
-    D: crypto::r#trait::Dkg + Clone,
+    D: crypto::r#trait::Dkg + Clone + 'static,
 {
     coordinator: Arc<DkgCoordinator<D>>,
 }

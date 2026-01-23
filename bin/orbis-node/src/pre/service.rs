@@ -20,7 +20,7 @@ use tonic::{Request, Response, Status};
 #[derive(Debug)]
 pub struct PreServiceImpl<D, T>
 where
-    D: Dkg + Clone,
+    D: Dkg + Clone + 'static,
     T: ThresholdDealer,
 {
     pub state: AppState<D>,
@@ -29,7 +29,7 @@ where
 
 impl<D, T> PreServiceImpl<D, T>
 where
-    D: Dkg + Clone,
+    D: Dkg + Clone + 'static,
     T: ThresholdDealer,
 {
     /// Create a new PreServiceImpl with shared application state

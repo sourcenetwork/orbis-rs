@@ -24,7 +24,7 @@ use std::sync::Arc;
 /// to this node's PRE coordinator for processing.
 pub struct PreProtocolHandler<D, T>
 where
-    D: crypto::r#trait::Dkg + Clone,
+    D: crypto::r#trait::Dkg + Clone + 'static,
     T: crypto::r#trait::ThresholdDealer,
 {
     coordinator: Arc<PreCoordinator<D, T>>,

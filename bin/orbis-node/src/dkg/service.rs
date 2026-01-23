@@ -16,14 +16,14 @@ use tonic::{Request, Response, Status};
 #[derive(Debug)]
 pub struct DkgServiceImpl<D>
 where
-    D: crypto::r#trait::Dkg + Clone,
+    D: crypto::r#trait::Dkg + Clone + 'static,
 {
     pub state: AppState<D>,
 }
 
 impl<D> DkgServiceImpl<D>
 where
-    D: crypto::r#trait::Dkg + Clone,
+    D: crypto::r#trait::Dkg + Clone + 'static,
 {
     /// Create a new DkgServiceImpl with shared application state
     pub fn new(state: AppState<D>) -> Self {
@@ -154,7 +154,8 @@ where
         );
 
         // Create DKG session only if we're participating
-        if let Some(node_id) = our_assigned_node_id {
+        // Create a cleanup guard that will automatically clean up the session on error
+        let cleanup_guard = if let Some(node_id) = our_assigned_node_id {
             coordinator
                 .create_session(
                     session_id,
@@ -163,7 +164,11 @@ where
                     actual_total_participants,
                 )
                 .await?;
-        }
+            // Guard will clean up session if we return early due to error
+            Some(self.state.dkg_session_state.cleanup_guard(session_id))
+        } else {
+            None
+        };
 
         // Store peer IDs in session state for later use (needed for Phase 2)
         coordinator
@@ -201,7 +206,7 @@ where
                 );
                 tracing::error!(error = %error_msg, "Failed to connect to all peers");
 
-                // Return gRPC error and end execution
+                // cleanup_guard will automatically clean up the session when dropped
                 return Err(DkgError::NetworkConnection(error_msg).into());
             }
 
@@ -253,6 +258,7 @@ where
                     .await
                 {
                     tracing::error!(error = %e, "Failed to initiate Phase 1");
+                    // cleanup_guard will automatically clean up the session when dropped
                     return Err(e.into());
                 }
                 tracing::info!("DKG Protocol: Phase 1 initiated, commitments broadcasted");
@@ -270,6 +276,12 @@ where
             ),
             created_at,
         };
+
+        // Session started successfully - defuse the cleanup guard
+        // The session will be cleaned up when Phase 4 completes (or by error handlers in coordinator)
+        if let Some(guard) = cleanup_guard {
+            guard.defuse();
+        }
 
         // Record success metric
         metrics::record_grpc_request("dkg", "start_dkg", "ok", start.elapsed().as_secs_f64());
