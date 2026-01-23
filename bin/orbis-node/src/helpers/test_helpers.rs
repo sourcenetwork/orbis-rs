@@ -14,6 +14,7 @@ use bulletin::{
     r#trait::{Bulletin, BulletinPost},
     BulletinImpl,
 };
+use cli_tool;
 use common::blockchain::ChainConfigBuilder;
 use hex;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
@@ -596,4 +597,66 @@ pub async fn get_test_bulletin(bulletin: &Arc<dyn Bulletin + Send + Sync>) -> Bu
         .read(BULLETIN_RING_NAMESPACE.to_string(), "test".to_string())
         .await
         .unwrap()
+}
+
+/// Wait for multiple gRPC endpoints to become ready
+///
+/// Polls each endpoint until it responds to a `query_node_info` request.
+/// This is useful for waiting for Docker-based integration test nodes to initialize.
+///
+/// # Arguments
+/// * `endpoints` - Slice of gRPC endpoint URLs to poll (e.g., "http://localhost:50051")
+/// * `max_attempts` - Maximum number of attempts per endpoint before failing
+/// * `poll_interval` - Duration to wait between poll attempts
+///
+/// # Panics
+/// Panics if any endpoint fails to become ready within the maximum attempts.
+///
+/// # Example
+/// ```rust
+/// use std::time::Duration;
+///
+/// #[tokio::test]
+/// async fn test_with_docker_nodes() {
+///     let endpoints = &["http://localhost:50051", "http://localhost:50052"];
+///     wait_for_nodes_ready(endpoints, 90, Duration::from_secs(1)).await;
+///     // Nodes are now ready...
+/// }
+/// ```
+pub async fn wait_for_nodes_ready(
+    endpoints: &[&str],
+    max_attempts: u32,
+    poll_interval: std::time::Duration,
+) {
+    use tokio::time::sleep;
+
+    for (i, endpoint) in endpoints.iter().enumerate() {
+        let node_num = i + 1;
+        for attempt in 1..=max_attempts {
+            match cli_tool::query_node_info(endpoint.to_string()).await {
+                Ok(_) => {
+                    println!(
+                        "Node {} ({}) is ready after {} attempts",
+                        node_num, endpoint, attempt
+                    );
+                    break;
+                }
+                Err(_) if attempt < max_attempts => {
+                    if attempt % 10 == 1 {
+                        println!(
+                            "Waiting for node {} ({}) to be ready (attempt {}/{})",
+                            node_num, endpoint, attempt, max_attempts
+                        );
+                    }
+                    sleep(poll_interval).await;
+                }
+                Err(e) => {
+                    panic!(
+                        "Node {} ({}) failed to become ready after {} attempts: {}",
+                        node_num, endpoint, max_attempts, e
+                    );
+                }
+            }
+        }
+    }
 }

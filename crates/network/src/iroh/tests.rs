@@ -313,8 +313,6 @@ async fn iroh_connection_close_graceful() {
         .spawn()
         .expect("Should spawn router");
 
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-
     let node_id_str = net2.local_address().expect("Should get local address");
     let bound_addrs = net2.bound_addresses();
     let peer_addr = if let Some(addr) = bound_addrs.first() {
@@ -323,10 +321,21 @@ async fn iroh_connection_close_graceful() {
         PeerId::from_bytes(node_id_str.as_bytes())
     };
 
-    let conn = net1
-        .connect(&peer_addr, b"test/close")
-        .await
-        .expect("Should connect");
+    // Retry connection with backoff until router is ready
+    let mut conn = None;
+    for attempt in 1..=20 {
+        match net1.connect(&peer_addr, b"test/close").await {
+            Ok(c) => {
+                conn = Some(c);
+                break;
+            }
+            Err(_) if attempt < 20 => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("Failed to connect after 20 attempts: {}", e),
+        }
+    }
+    let conn = conn.expect("Should have connected");
 
     // Close the connection
     conn.close().await.expect("Should close gracefully");

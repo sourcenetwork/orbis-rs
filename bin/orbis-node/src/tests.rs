@@ -431,9 +431,17 @@ mod cli_tool_integration {
         // Start the full integration network (sourcehub + 3 nodes)
         let _network = IntegrationTestNetwork::new();
 
-        // Give nodes time to fully initialize (funding with retries can take a while)
-        // TODO: I hate this but fine for now just figure out how to fix eventually
-        sleep(Duration::from_secs(45)).await;
+        // Wait for all nodes to be ready by polling their gRPC endpoints
+        crate::helpers::test_helpers::wait_for_nodes_ready(
+            &[
+                IntegrationTestNetwork::NODE1_GRPC,
+                IntegrationTestNetwork::NODE2_GRPC,
+                IntegrationTestNetwork::NODE3_GRPC,
+            ],
+            90,
+            Duration::from_secs(1),
+        )
+        .await;
 
         // Query node info from all three nodes to get their peer IDs
         let node1_info = cli_tool::query_node_info(IntegrationTestNetwork::NODE1_GRPC.to_string())
