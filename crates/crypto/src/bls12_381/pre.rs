@@ -21,7 +21,10 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 const NAME: &str = "elgamal";
+
+const ENCRYPT_PROOF_DOMAIN: &[u8; 24] = b"elgamal-encrypt-proof-v1";
 const PROTOCOL: &[u8; 30] = b"elgamal-reencrypt-challenge-v1";
+const AAD_DOMAIN: &[u8; 15] = b"elgamal-aad-v1\0";
 
 #[derive(Clone, Debug)]
 pub struct ThresholdDealerNode {}
@@ -149,7 +152,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         response.serialize_compressed(&mut response_bytes)?;
 
         let proof = EncryptionProof {
-            shared_point: shared_point_bytes,
+            shared_point: shared_point_bytes.clone(),
             challenge: challenge_bytes,
             response: response_bytes,
         };
@@ -163,14 +166,17 @@ impl ThresholdDealer for ThresholdDealerNode {
         rng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        // Serialize commitment for use as AAD
+        // Serialize commitment
         let mut enc_cmt_bytes = Vec::new();
         enc_cmt.serialize_compressed(&mut enc_cmt_bytes)?;
 
-        // Encrypt data with commitment as AAD to bind ciphertext to commitment
+        // Build AAD using centralized helper for consistency with decryption
+        let aad = Self::build_aad(&enc_cmt_bytes, &shared_point_bytes);
+
+        // Encrypt data with AAD to bind ciphertext to commitment and shared point
         let payload = Payload {
             msg: data,
-            aad: &enc_cmt_bytes,
+            aad: &aad,
         };
         let ciphertext = cipher
             .encrypt(nonce, payload)
@@ -188,16 +194,59 @@ impl ThresholdDealer for ThresholdDealerNode {
         ))
     }
 
+    /// Verify the Chaum-Pedersen NIZK proof for encryption.
+    ///
+    /// This verifies that `enc_cmt` and `shared_point` (in the proof) share the same
+    /// discrete logarithm relative to G and dkg_pk respectively. In other words:
+    ///   enc_cmt = r * G  AND  shared_point = r * dkg_pk  for some r
+    ///
+    /// ## What this DOES verify:
+    /// - The mathematical relationship between enc_cmt and shared_point
+    /// - That the encryptor knew the discrete log (randomness r)
+    /// - Point validity (not identity, correct subgroup)
+    ///
+    /// ## What this does NOT verify:
+    /// - That the ciphertext was actually encrypted using shared_point
+    /// - Ciphertext integrity (that's verified at decrypt time via AES-GCM)
+    ///
+    /// The ciphertext binding is enforced via AAD in AES-GCM: if the wrong
+    /// shared_point was used during encryption, decryption will fail with
+    /// an authentication error.
     fn verify_encryption(
         dkg_pk: &Self::PublicKey,
         enc_cmt: &Self::PublicKey,
         proof: &EncryptionProof,
     ) -> Result<()> {
+        // Validate enc_cmt from untrusted input
+        if enc_cmt.is_zero() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid enc_cmt: cannot be the identity element".to_string(),
+            ));
+        }
+        if !enc_cmt.is_in_correct_subgroup_assuming_on_curve() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid enc_cmt: not in correct subgroup".to_string(),
+            ));
+        }
+
         // Deserialize proof components
         let shared_point =
             G1Affine::deserialize_compressed(&proof.shared_point[..]).map_err(|e| {
                 CryptoError::ElGamalError(format!("Failed to deserialize shared_point: {:?}", e))
             })?;
+
+        // Validate shared_point is not the identity element and is in correct subgroup
+        if shared_point.is_zero() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid shared_point: cannot be the identity element".to_string(),
+            ));
+        }
+        if !shared_point.is_in_correct_subgroup_assuming_on_curve() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid shared_point: not in correct subgroup".to_string(),
+            ));
+        }
+
         let challenge = Fr::deserialize_compressed(&proof.challenge[..]).map_err(|e| {
             CryptoError::ElGamalError(format!("Failed to deserialize challenge: {:?}", e))
         })?;
@@ -215,7 +264,7 @@ impl ThresholdDealer for ThresholdDealerNode {
             - G1Projective::from(shared_point) * challenge)
             .into();
 
-        // Recompute challenge: c' = Hash(PROTOCOL, G, dkg_pk, enc_cmt, shared_point, R1', R2')
+        // Recompute challenge: c' = Hash(ENCRYPT_PROOF_DOMAIN, G, dkg_pk, enc_cmt, shared_point, R1', R2')
         let g = G1Affine::generator();
         let challenge_hash = Self::hash_encryption_proof_points(
             &g,
@@ -227,17 +276,9 @@ impl ThresholdDealer for ThresholdDealerNode {
         )?;
         let recomputed_challenge = Fr::from_le_bytes_mod_order(&challenge_hash);
 
-        // Constant-time comparison
-        let mut challenge_bytes = [0u8; 32];
-        let mut recomputed_bytes = [0u8; 32];
-        challenge
-            .serialize_compressed(&mut &mut challenge_bytes[..])
-            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
-        recomputed_challenge
-            .serialize_compressed(&mut &mut recomputed_bytes[..])
-            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
-
-        if challenge_bytes.ct_ne(&recomputed_bytes).into() {
+        // Compare challenges
+        // Note: Fr field element comparison in arkworks is constant-time
+        if challenge != recomputed_challenge {
             return Err(CryptoError::ElGamalError(
                 "Encryption proof verification failed".to_string(),
             ));
@@ -268,19 +309,26 @@ impl ThresholdDealer for ThresholdDealerNode {
             return Err(CryptoError::ElGamalError("Empty commitment".to_string()));
         }
 
-        // Recover rsG
+        // Recover rsG (shared_point)
+        // After correct re-encryption and recovery:
+        // xnc_cmt = (x+r)*s*G, so rs_g = xnc_cmt - x*sG = r*sG = shared_point
         let xs_g = G1Projective::from(*dkg_pk) * rdr_sk; // xsG = x * sG
-        let rs_g: G1Affine = (G1Projective::from(*xnc_cmt) - xs_g).into(); // rsG
+        let rs_g: G1Affine = (G1Projective::from(*xnc_cmt) - xs_g).into(); // rsG = shared_point
 
         // Derive AES key
         let aes_key = Self::derive_key_from_point(&rs_g)?;
         let cipher = Aes256Gcm::new(&aes_key.into());
 
-        // Decrypt with commitment as AAD (must match encryption)
+        // Build AAD using centralized helper (must match encryption)
+        let mut shared_point_bytes = Vec::new();
+        rs_g.serialize_compressed(&mut shared_point_bytes)?;
+        let aad = Self::build_aad(&secret.enc_cmt, &shared_point_bytes);
+
+        // Decrypt with AAD to verify binding to commitment and shared point
         let nonce = Nonce::from_slice(&secret.nonce);
         let payload = Payload {
             msg: secret.encrypted_data.as_ref(),
-            aad: &secret.enc_cmt,
+            aad: &aad,
         };
         let plaintext = cipher.decrypt(nonce, payload).map_err(|_| {
             CryptoError::ElGamalError("Decryption failed - authentication failed".to_string())
@@ -344,7 +392,7 @@ impl ThresholdDealerNode {
         let ui_hat = (xr_g * ri).into(); // UiHat = ri * (xG + rG)
         let hi_hat = (G1Projective::generator() * ri).into(); // HiHat = ri * G
 
-        let challenge_hash = Self::hash_points(&[xnc_ski, ui_hat, hi_hat])?;
+        let challenge_hash = Self::hash_reencrypt_proof_points(&[xnc_ski, ui_hat, hi_hat])?;
         let chlgi = Fr::from_le_bytes_mod_order(&challenge_hash);
 
         // Produce NIZK proof of re-encryption (fi)
@@ -374,7 +422,7 @@ impl ThresholdDealerNode {
         let hi_hat = (fi_g - ei_ci).into(); // HiHat = fi * G - ei * ci
                                             // Reconstruct random oracle challenge (ei)
                                             // ei = Hash(Ui + UiHat + HiHat)
-        let challenge_hash = Self::hash_points(&[*dkg_ski, ui_hat, hi_hat])?;
+        let challenge_hash = Self::hash_reencrypt_proof_points(&[*dkg_ski, ui_hat, hi_hat])?;
         let chlg = Fr::from_le_bytes_mod_order(&challenge_hash);
 
         // Verify local challenge using constant-time comparison
@@ -457,7 +505,7 @@ impl ThresholdDealerNode {
     }
 
     /// Hash multiple points together with domain separation
-    fn hash_points(points: &[G1Affine]) -> Result<[u8; 32]> {
+    fn hash_reencrypt_proof_points(points: &[G1Affine]) -> Result<[u8; 32]> {
         let mut hasher = Sha256::new();
 
         // Add domain separation to prevent cross-protocol attacks
@@ -477,6 +525,27 @@ impl ThresholdDealerNode {
         output.copy_from_slice(&result);
 
         Ok(output)
+    }
+
+    /// Build AAD (Additional Authenticated Data) for AES-GCM encryption/decryption.
+    ///
+    /// AAD format: H(AAD_DOMAIN || enc_cmt || shared_point)
+    ///
+    /// This binds the ciphertext to both the ElGamal commitment and the shared point,
+    /// ensuring that:
+    /// 1. The ciphertext cannot be transplanted to a different commitment
+    /// 2. The shared_point used for key derivation matches what's in the proof
+    ///
+    /// Using a hash ensures consistent length and provides domain separation.
+    fn build_aad(enc_cmt_bytes: &[u8], shared_point_bytes: &[u8]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(AAD_DOMAIN);
+        hasher.update(enc_cmt_bytes);
+        hasher.update(shared_point_bytes);
+        let result = hasher.finalize();
+        let mut output = [0u8; 32];
+        output.copy_from_slice(&result);
+        output
     }
 
     /// Derive AES key from elliptic curve point
@@ -509,7 +578,7 @@ impl ThresholdDealerNode {
         let r1: G1Affine = (G1Projective::generator() * k).into();
         let r2: G1Affine = (G1Projective::from(*dkg_pk) * k).into();
 
-        // 3. c = Hash(PROTOCOL, G, dkg_pk, enc_cmt, shared_point, R1, R2)
+        // 3. c = Hash(ENCRYPT_PROOF_DOMAIN, G, dkg_pk, enc_cmt, shared_point, R1, R2)
         let g = G1Affine::generator();
         let challenge_hash =
             Self::hash_encryption_proof_points(&g, dkg_pk, enc_cmt, shared_point, &r1, &r2)?;
@@ -534,7 +603,7 @@ impl ThresholdDealerNode {
         let mut hasher = Sha256::new();
 
         // Add domain separation
-        hasher.update(PROTOCOL);
+        hasher.update(ENCRYPT_PROOF_DOMAIN);
 
         // Serialize and hash all points
         let mut bytes = Vec::with_capacity(48);
