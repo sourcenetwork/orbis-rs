@@ -4,8 +4,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg,
-    do_encrypt_secret, do_generate_reader_key, do_pre, fund, list_bulletin_posts, query_node_info,
-    read_bulletin_post, register_bulletin_namespace, register_object_to_chain,
+    do_encrypt_secret, do_generate_reader_key, do_pre, do_store_secret, fund, list_bulletin_posts,
+    query_node_info, read_bulletin_post, register_bulletin_namespace, register_object_to_chain,
     set_relationship_on_chain,
 };
 use common::blockchain::ChainConfig;
@@ -139,6 +139,7 @@ pub enum SubCommands {
         #[clap(long)]
         address: String,
     },
+    /// Read an item from a bulletin
     ReadBulletinPost {
         /// Namespace to add collaborator to
         #[clap(long)]
@@ -147,10 +148,41 @@ pub enum SubCommands {
         #[clap(long)]
         id: String,
     },
+    /// List all bulletin posts on the namespace
     ListBulletinPost {
         /// Namespace to add collaborator to
         #[clap(long)]
         namespace: String,
+    },
+    /// Store secret by sending it to node
+    StoreSecret {
+        /// gRPC endpoint of the node to use
+        #[clap(long)]
+        endpoint: String,
+        /// Plaintext secret encrypted locally before sending
+        #[clap(long)]
+        secret: String,
+        /// Ring public key (hex) - used for encryption       
+        #[clap(long)]
+        ring_pk_hex: String,
+        /// Ring id of ring to encrypt to     
+        #[clap(long)]
+        ring_id: String,
+        /// Namespace of board to store secret to
+        #[clap(long)]
+        namespace: String,
+        /// Policy to attach to secret
+        #[clap(long)]
+        policy_id: String,
+        /// Resource type of secret
+        #[clap(long)]
+        resource: String,
+        /// Permision to read secret
+        #[clap(long)]
+        permission: String,
+        /// A private key to generate a reader did
+        #[clap(long)]
+        reader_did_pk: Option<String>,
     },
     /// Query node info
     Info {
@@ -244,6 +276,30 @@ async fn main() -> Result<()> {
         }
         SubCommands::ListBulletinPost { namespace } => {
             list_bulletin_posts(namespace).await?;
+        }
+        SubCommands::StoreSecret {
+            endpoint,
+            secret,
+            ring_pk_hex,
+            ring_id,
+            namespace,
+            policy_id,
+            resource,
+            permission,
+            reader_did_pk,
+        } => {
+            do_store_secret(
+                endpoint,
+                secret.as_bytes(),
+                ring_pk_hex,
+                ring_id,
+                namespace,
+                policy_id,
+                resource,
+                permission,
+                reader_did_pk,
+            )
+            .await?;
         }
         SubCommands::Info { endpoint } => {
             query_node_info(endpoint).await?;
