@@ -626,3 +626,181 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
     println!("SUCCESS! SessionInit with mismatched peer_ids was correctly rejected");
     cleanup_db(&db_path);
 }
+
+// ============================================================================
+// Session Cleanup Guard Tests
+// ============================================================================
+
+/// Test: Verify that SessionCleanupGuard cleans up on drop (error path)
+///
+/// When a guard is dropped without calling defuse(), the session should be
+/// automatically cleaned up via the background worker.
+#[tokio::test]
+async fn test_session_cleanup_guard_cleans_up_on_drop() {
+    use crate::dkg::session_state::SessionStateManager;
+
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+
+    // Create a mock DKG node and session
+    let session_id = 12345u64;
+    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    manager.create_session(session_id, dkg_node, 3).await;
+
+    // Verify session exists
+    assert!(
+        manager.session_exists(&session_id).await,
+        "Session should exist after creation"
+    );
+    assert_eq!(manager.session_count().await, 1, "Should have 1 session");
+
+    // Create guard and drop it without defusing (simulates error path)
+    {
+        let _guard = manager.cleanup_guard(session_id);
+        // guard is dropped here without defuse()
+    }
+
+    // Give the background worker time to process the cleanup
+    sleep(Duration::from_millis(50)).await;
+
+    // Verify session was cleaned up
+    assert!(
+        !manager.session_exists(&session_id).await,
+        "Session should be cleaned up after guard drop"
+    );
+    assert_eq!(
+        manager.session_count().await,
+        0,
+        "Should have 0 sessions after cleanup"
+    );
+
+    println!("SUCCESS! SessionCleanupGuard correctly cleaned up session on drop");
+}
+
+/// Test: Verify that defuse() prevents cleanup
+///
+/// When defuse() is called on the guard, the session should NOT be cleaned up.
+#[tokio::test]
+async fn test_session_cleanup_guard_defuse_prevents_cleanup() {
+    use crate::dkg::session_state::SessionStateManager;
+
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+
+    // Create a mock DKG node and session
+    let session_id = 67890u64;
+    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    manager.create_session(session_id, dkg_node, 3).await;
+
+    // Verify session exists
+    assert!(
+        manager.session_exists(&session_id).await,
+        "Session should exist after creation"
+    );
+
+    // Create guard, defuse it, then drop (simulates success path)
+    {
+        let guard = manager.cleanup_guard(session_id);
+        guard.defuse(); // Prevent cleanup
+                        // guard is dropped here, but cleanup should NOT happen
+    }
+
+    // Give time for any (incorrectly triggered) cleanup to process
+    sleep(Duration::from_millis(50)).await;
+
+    // Verify session still exists
+    assert!(
+        manager.session_exists(&session_id).await,
+        "Session should still exist after defused guard drop"
+    );
+    assert_eq!(
+        manager.session_count().await,
+        1,
+        "Should still have 1 session"
+    );
+
+    // Manual cleanup for test
+    manager.remove_session(&session_id).await;
+
+    println!("SUCCESS! defuse() correctly prevented cleanup");
+}
+
+/// Test: Verify that expired sessions are automatically removed
+///
+/// Sessions older than SESSION_TTL that haven't completed Phase 4 should be
+/// removed by the expiration worker.
+#[tokio::test]
+async fn test_session_expiration_removes_old_sessions() {
+    use crate::dkg::session_state::{DkgPhase, SessionStateManager};
+    use std::time::Instant;
+
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+
+    // Create a session
+    let session_id = 11111u64;
+    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    manager.create_session(session_id, dkg_node, 3).await;
+
+    // Verify session exists
+    assert!(
+        manager.session_exists(&session_id).await,
+        "Session should exist after creation"
+    );
+
+    // Manually backdate the session's created_at to simulate an old session
+    // We need to access the internal state to do this
+    {
+        let mut states = manager.states.write().await;
+        if let Some(state) = states.get_mut(&session_id) {
+            // Set created_at to 31 minutes ago (beyond 30 min TTL)
+            state.created_at = Instant::now() - std::time::Duration::from_secs(31 * 60);
+            // Ensure it's not in Phase4Complete (which is exempt from expiration)
+            assert_ne!(
+                state.phase,
+                DkgPhase::Phase4Complete,
+                "Session should not be complete"
+            );
+        }
+    }
+
+    // The expiration worker runs every 60 seconds by default, but we can
+    // trigger cleanup by waiting. For faster testing, let's just verify
+    // the session was backdated and manually call the check logic.
+    //
+    // In a real scenario, the expiration_worker would handle this automatically.
+    // For this test, we'll simulate what the worker does.
+
+    // Wait for the expiration worker to run (interval is 60s, but we backdated
+    // the session so it should be cleaned up on first check)
+    // Note: In production, SESSION_EXPIRATION_CHECK_INTERVAL is 60s.
+    // For this test, we wait a bit and check manually.
+
+    // Give expiration worker time to run at least once
+    // (it runs immediately on start, then every 60s)
+    sleep(Duration::from_millis(100)).await;
+
+    // The expiration worker should have removed the session
+    // Note: If this fails, the expiration worker might not have run yet.
+    // In that case, increase the sleep duration or manually trigger expiration.
+
+    let session_exists = manager.session_exists(&session_id).await;
+    if session_exists {
+        // Worker might not have run yet - let's check the age manually
+        let states = manager.states.read().await;
+        if let Some(state) = states.get(&session_id) {
+            let age = Instant::now().duration_since(state.created_at);
+            println!("Session age: {:?}, phase: {:?}", age.as_secs(), state.phase);
+        }
+        drop(states);
+
+        // Wait longer for expiration worker
+        println!("Waiting for expiration worker to run...");
+        sleep(Duration::from_secs(2)).await;
+    }
+
+    // Check again
+    assert!(
+        !manager.session_exists(&session_id).await,
+        "Expired session should have been removed by expiration worker"
+    );
+
+    println!("SUCCESS! Expired session was automatically removed");
+}

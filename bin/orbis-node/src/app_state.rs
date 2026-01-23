@@ -11,7 +11,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct AppState<D>
 where
-    D: Dkg + Clone,
+    D: Dkg + Clone + 'static,
 {
     /// Server configuration
     pub config: ServerConfig,
@@ -37,7 +37,7 @@ pub struct ServerConfig {
 
 impl<D> AppState<D>
 where
-    D: Dkg + Clone,
+    D: Dkg + Clone + 'static,
 {
     /// Create a new AppState instance
     pub fn new(
@@ -61,7 +61,7 @@ where
 
 impl<D> std::fmt::Debug for AppState<D>
 where
-    D: Dkg + Clone,
+    D: Dkg + Clone + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppState")

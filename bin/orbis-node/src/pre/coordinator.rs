@@ -49,7 +49,7 @@ pub struct PreResponse {
 /// - T: ThresholdDealer implementation (must use compatible types)
 pub struct PreCoordinator<D, T>
 where
-    D: Dkg + Clone,
+    D: Dkg + Clone + 'static,
     T: ThresholdDealer,
 {
     app_state: Arc<AppState<D>>,

@@ -7,11 +7,14 @@
 //! message deduplication) and the cryptographic state (the DKG node itself) into
 //! a single unified structure.
 
+use crate::constants::{SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL};
 use crypto::r#trait::Dkg;
 use network::Connection;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
 /// DKG Protocol Phase
@@ -109,17 +112,154 @@ impl<D: Dkg> DkgSessionState<D> {
     }
 }
 
+/// Guard that automatically cleans up a DKG session on drop unless defused.
+///
+/// This implements the RAII pattern for session cleanup. Create a guard when
+/// starting a session operation, and call `defuse()` when the operation completes
+/// successfully. If the guard is dropped without being defused (e.g., due to an
+/// early return or error), it will automatically queue the session for cleanup.
+///
+/// # Example
+/// ```ignore
+/// let guard = state_manager.cleanup_guard(session_id);
+/// // ... do work that might fail ...
+/// guard.defuse(); // Session completed successfully, don't clean up
+/// ```
+pub struct SessionCleanupGuard {
+    cleanup_tx: mpsc::UnboundedSender<u64>,
+    session_id: u64,
+    defused: Arc<AtomicBool>,
+}
+
+impl SessionCleanupGuard {
+    fn new(cleanup_tx: mpsc::UnboundedSender<u64>, session_id: u64) -> Self {
+        Self {
+            cleanup_tx,
+            session_id,
+            defused: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Prevent cleanup from running when the guard is dropped.
+    /// Call this when the session completes successfully.
+    pub fn defuse(self) {
+        self.defused.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Drop for SessionCleanupGuard {
+    fn drop(&mut self) {
+        if !self.defused.load(Ordering::SeqCst) {
+            // Queue cleanup - the background task will handle it
+            if self.cleanup_tx.send(self.session_id).is_err() {
+                tracing::warn!(
+                    session_id = self.session_id,
+                    "SessionCleanupGuard: Failed to queue session cleanup (receiver dropped)"
+                );
+            } else {
+                tracing::debug!(
+                    session_id = self.session_id,
+                    "SessionCleanupGuard: Queued session for cleanup on error path"
+                );
+            }
+        }
+    }
+}
+
 /// Global session state manager
 pub struct SessionStateManager<D: Dkg> {
     /// session_id -> session state
     pub(crate) states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
+    /// Channel for queueing session cleanup requests
+    cleanup_tx: mpsc::UnboundedSender<u64>,
 }
 
-impl<D: Dkg> SessionStateManager<D> {
+impl<D: Dkg + 'static> SessionStateManager<D> {
+    /// Create a new SessionStateManager and spawn background tasks
     pub fn new() -> Self {
-        Self {
-            states: Arc::new(RwLock::new(HashMap::new())),
+        let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel();
+        let states = Arc::new(RwLock::new(HashMap::new()));
+
+        // Spawn background cleanup task (handles guard-triggered cleanup)
+        let states_clone = states.clone();
+        tokio::spawn(async move {
+            Self::cleanup_worker(states_clone, cleanup_rx).await;
+        });
+
+        // Spawn background expiration task (handles abandoned sessions)
+        let states_clone = states.clone();
+        tokio::spawn(async move {
+            Self::expiration_worker(states_clone).await;
+        });
+
+        Self { states, cleanup_tx }
+    }
+
+    /// Background task that processes cleanup requests from guards
+    async fn cleanup_worker(
+        states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
+        mut rx: mpsc::UnboundedReceiver<u64>,
+    ) {
+        while let Some(session_id) = rx.recv().await {
+            let mut states = states.write().await;
+            if let Some(state) = states.remove(&session_id) {
+                tracing::debug!(
+                    session_id = session_id,
+                    connections = state.connections.len(),
+                    "SessionStateManager: Cleaned up abandoned session"
+                );
+            }
         }
+        tracing::debug!("SessionStateManager: Cleanup worker shutting down");
+    }
+
+    /// Background task that periodically removes expired sessions
+    ///
+    /// Sessions older than SESSION_TTL that haven't completed are considered
+    /// abandoned and are removed to prevent memory leaks.
+    async fn expiration_worker(states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>) {
+        let mut interval = tokio::time::interval(SESSION_EXPIRATION_CHECK_INTERVAL);
+
+        loop {
+            interval.tick().await;
+
+            let now = Instant::now();
+            let mut states = states.write().await;
+            let initial_count = states.len();
+
+            states.retain(|session_id, state| {
+                let age = now.duration_since(state.created_at);
+                if age > SESSION_TTL && state.phase != DkgPhase::Phase4Complete {
+                    tracing::warn!(
+                        session_id = session_id,
+                        age_secs = age.as_secs(),
+                        phase = ?state.phase,
+                        "SessionStateManager: Removing expired DKG session"
+                    );
+                    false // remove
+                } else {
+                    true // keep
+                }
+            });
+
+            let removed = initial_count - states.len();
+            if removed > 0 {
+                tracing::info!(
+                    removed = removed,
+                    remaining = states.len(),
+                    "SessionStateManager: Expired session cleanup complete"
+                );
+            }
+        }
+    }
+
+    /// Create a cleanup guard for a session.
+    ///
+    /// The guard will automatically clean up the session when dropped unless
+    /// `defuse()` is called. Use this to ensure sessions are cleaned up on
+    /// error paths without manual cleanup code.
+    pub fn cleanup_guard(&self, session_id: u64) -> SessionCleanupGuard {
+        SessionCleanupGuard::new(self.cleanup_tx.clone(), session_id)
     }
 
     /// Execute a function with read-only access to a session state
@@ -299,7 +439,7 @@ impl<D: Dkg> SessionStateManager<D> {
     }
 }
 
-impl<D: Dkg> Default for SessionStateManager<D> {
+impl<D: Dkg + 'static> Default for SessionStateManager<D> {
     fn default() -> Self {
         Self::new()
     }

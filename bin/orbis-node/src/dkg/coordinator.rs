@@ -53,7 +53,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// for compatibility with the current serialization code.
 pub struct DkgCoordinator<D>
 where
-    D: Dkg + Clone,
+    D: Dkg + Clone + 'static,
 {
     app_state: Arc<AppState<D>>,
 }
@@ -61,7 +61,8 @@ where
 impl<D> DkgCoordinator<D>
 where
     D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone,
+        + Clone
+        + 'static,
 {
     /// Create a new DKG session manager for this node
     ///
@@ -445,6 +446,15 @@ where
                                 session_id = session_id,
                                 "DKG Coordinator: Could not send commitment to all peers - failing DKG to preserve expected redundancy"
                             );
+                            // Clean up session to prevent memory leak from abandoned sessions
+                            self.app_state
+                                .dkg_session_state
+                                .remove_session(&session_id)
+                                .await;
+                            tracing::debug!(
+                                session_id = session_id,
+                                "Cleaned up session after commitment send failure"
+                            );
                             return Err(DkgError::NetworkCommunication(format!(
                                 "Failed to send commitment to all peers: sent to {} of {}",
                                 sent_count, expected_count
@@ -769,6 +779,15 @@ where
                 session_id = session_id,
                 "DKG Coordinator: Could not broadcast commitment to all peers - failing DKG to preserve expected redundancy"
             );
+            // Clean up session to prevent memory leak from abandoned sessions
+            self.app_state
+                .dkg_session_state
+                .remove_session(&session_id)
+                .await;
+            tracing::debug!(
+                session_id = session_id,
+                "Cleaned up session after Phase 1 broadcast failure"
+            );
             return Err(DkgError::InsufficientPeers {
                 successful: peers_sent,
                 total: expected_peers,
@@ -888,6 +907,15 @@ where
 
         if peer_ids.is_empty() {
             tracing::error!("DKG Coordinator: No peer_ids available to send shares to");
+            // Clean up session to prevent memory leak from abandoned sessions
+            self.app_state
+                .dkg_session_state
+                .remove_session(&session_id)
+                .await;
+            tracing::debug!(
+                session_id = session_id,
+                "Cleaned up session - no peer_ids available"
+            );
             return Err(DkgError::InsufficientPeers {
                 successful: 0,
                 total: 0,
@@ -1012,6 +1040,15 @@ where
                 expected = expected_shares,
                 threshold = threshold,
                 "DKG Coordinator: Could not send shares to all peers - failing DKG to preserve expected redundancy"
+            );
+            // Clean up session to prevent memory leak from abandoned sessions
+            self.app_state
+                .dkg_session_state
+                .remove_session(&session_id)
+                .await;
+            tracing::debug!(
+                session_id = session_id,
+                "Cleaned up session after Phase 2 share send failure"
             );
             return Err(DkgError::InsufficientPeers {
                 successful: shares_sent,

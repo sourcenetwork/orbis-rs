@@ -11,14 +11,14 @@ use tonic::{Request, Response, Status};
 #[derive(Debug)]
 pub struct InfoServiceImpl<D>
 where
-    D: crypto::r#trait::Dkg + Clone,
+    D: crypto::r#trait::Dkg + Clone + 'static,
 {
     pub state: AppState<D>,
 }
 
 impl<D> InfoServiceImpl<D>
 where
-    D: crypto::r#trait::Dkg + Clone,
+    D: crypto::r#trait::Dkg + Clone + 'static,
 {
     /// Create a new InfoServiceImpl with shared application state
     pub fn new(state: AppState<D>) -> Self {

@@ -33,10 +33,17 @@ pub const MAX_DKG_SESSIONS: usize = 100;
 /// Time-to-live for DKG sessions before they are eligible for cleanup
 ///
 /// Sessions older than this duration are automatically cleaned up to prevent
-/// memory leaks. This is set to 1 hour (3600 seconds), which provides ample
-/// time for DKG protocols to complete while ensuring stale sessions don't
-/// accumulate indefinitely.
-pub const SESSION_TTL: Duration = Duration::from_secs(3600);
+/// memory leaks from abandoned sessions. This is set to 30 minutes, which
+/// provides ample time for DKG protocols to complete while ensuring stale
+/// sessions don't accumulate indefinitely.
+pub const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
+
+/// Interval between session expiration checks
+///
+/// The session expiration worker runs periodically to clean up abandoned
+/// sessions. This interval determines how often it checks for expired sessions.
+/// Set to 1 minute for reasonable responsiveness without excessive overhead.
+pub const SESSION_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 // ============================================================================
 // PRE (Proxy Re-Encryption) Constants
