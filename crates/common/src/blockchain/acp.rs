@@ -286,7 +286,9 @@ pub struct CreationTimestamp {
 /// Policy definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub description: String,

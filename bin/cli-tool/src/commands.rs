@@ -378,21 +378,19 @@ pub fn do_generate_reader_key() -> Result<()> {
 const TEST_POLICY_YAML: &str = r#"
 name: test-policy
 resources:
-  document:
+  - name: document
     relations:
-      owner:
+      - name: creator
         types:
           - actor
-      reader:
+      - name: reader
         types:
           - actor
     permissions:
-      read:
-        expr: owner + reader
-      write:
-        expr: owner
-actor:
-  name: actor
+      - name: read
+        expr: creator + reader
+      - name: write
+        expr: creator
 "#;
 
 pub async fn add_policy_to_chain() -> Result<String> {
@@ -408,12 +406,16 @@ pub async fn add_policy_to_chain() -> Result<String> {
         .await
         .map_err(|e| anyhow!("Failed to create policy: {}", e))?;
 
-    // TODO: This is dumb grabs the only policy id that exists, fine for now but fix later by grabbing policy id from event or something
+    // TODO: This is dumb grabs the last policy id that exists, fine for now but fix later by grabbing policy id from event or something
     let policy_ids = client
         .acp_list_policy_ids()
         .await
         .map_err(|e| anyhow!("Failed to list policy IDs: {}", e))?;
-    Ok(policy_ids.ids[0].clone())
+    Ok(policy_ids
+        .ids
+        .last()
+        .ok_or_else(|| anyhow!("No policy IDs found"))?
+        .clone())
 }
 pub async fn register_object_to_chain(
     policy_id: String,

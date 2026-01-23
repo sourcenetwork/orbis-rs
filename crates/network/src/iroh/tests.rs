@@ -313,7 +313,7 @@ async fn iroh_connection_close_graceful() {
         .spawn()
         .expect("Should spawn router");
 
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
 
     let node_id_str = net2.local_address().expect("Should get local address");
     let bound_addrs = net2.bound_addresses();

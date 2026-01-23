@@ -12,21 +12,19 @@ use did_key::{generate, Ed25519KeyPair, Fingerprint};
 const TEST_POLICY_YAML: &str = r#"
 name: test-policy
 resources:
-  document:
+  - name: document
     relations:
-      owner:
+      - name: creator
         types:
           - actor
-      reader:
+      - name: reader
         types:
           - actor
     permissions:
-      read:
-        expr: owner + reader
-      write:
-        expr: owner
-actor:
-  name: actor
+      - name: read
+        expr: creator + reader
+      - name: write
+        expr: creator
 "#;
 
 /// Integration test that creates a policy and then queries it.
@@ -91,6 +89,7 @@ async fn test_create_and_query_policy() {
 
     println!("Retrieved policy: {:?}", policy);
     assert_eq!(policy.name, "test-policy");
+
     // Create DID for reader user
     let key_pair = generate::<Ed25519KeyPair>(None);
     let reader_did = format!("did:key:{}", key_pair.fingerprint());
@@ -166,41 +165,39 @@ async fn test_create_and_query_policy() {
 const COMPLEX_POLICY_YAML: &str = r#"
 name: project-policy
 resources:
-  project:
+  - name: project
     relations:
-      admin:
+      - name: admin
         types:
           - actor
-      editor:
+      - name: editor
         types:
           - actor
-      viewer:
+      - name: viewer
         types:
           - actor
     permissions:
-      manage:
+      - name: manage
         expr: admin
-      edit:
+      - name: edit
         expr: admin + editor
-      view:
+      - name: view
         expr: admin + editor + viewer
-      delete:
+      - name: delete
         expr: admin
-  file:
+  - name: file
     relations:
-      owner:
+      - name: creator
         types:
           - actor
-      contributor:
+      - name: contributor
         types:
           - actor
     permissions:
-      read:
-        expr: owner + contributor
-      write:
-        expr: owner
-actor:
-  name: actor
+      - name: read
+        expr: creator + contributor
+      - name: write
+        expr: creator
 "#;
 
 /// Test the policy parser with a more complex policy containing
@@ -340,7 +337,7 @@ async fn test_complex_policy_permissions() {
         .get_policy(policy_id.clone())
         .await
         .expect("Failed to get policy");
-    println!("Policy name: {}", policy.name);
+    println!("Retrieved policy: {:?}", policy);
     assert_eq!(policy.name, "project-policy");
 
     // Find the project resource and verify permissions exist
