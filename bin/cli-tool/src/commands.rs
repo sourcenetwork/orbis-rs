@@ -540,7 +540,7 @@ pub async fn create_bulletin_post(
         .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
 
     bulletin
-        .post(namespace, payload, proof)
+        .post(namespace, payload, proof, None)
         .await
         .map_err(|e| anyhow!("Failed to create post: {}", e))?;
 

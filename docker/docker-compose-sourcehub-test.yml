@@ -1,6 +1,6 @@
 services:
   sourcehub:
-    image: ghcr.io/sourcenetwork/sourcehub:latest
+    image: ghcr.io/sourcenetwork/sourcehub:dev
     platform: linux/amd64
     container_name: sourcehub-test
     entrypoint: ["/bin/sh", "-c"]

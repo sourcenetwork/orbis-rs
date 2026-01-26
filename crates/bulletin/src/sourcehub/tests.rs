@@ -26,7 +26,12 @@ async fn test_bulletin_document() {
     bulletin.register(namespace.to_string()).await.unwrap();
 
     bulletin
-        .post(namespace.to_string(), serialized_payload.clone(), proof)
+        .post(
+            namespace.to_string(),
+            serialized_payload.clone(),
+            proof,
+            None,
+        )
         .await
         .unwrap();
 
@@ -67,7 +72,12 @@ async fn test_bulletin_ring() {
     bulletin.register(namespace.to_string()).await.unwrap();
 
     bulletin
-        .post(namespace.to_string(), serialized_payload.clone(), proof)
+        .post(
+            namespace.to_string(),
+            serialized_payload.clone(),
+            proof,
+            None,
+        )
         .await
         .unwrap();
 

@@ -30,28 +30,39 @@ pub struct MsgCreatePost {
     /// Cryptographic proof (optional)
     #[prost(bytes = "vec", tag = "4")]
     pub proof: Vec<u8>,
+    /// Artifact for finding post (optional)
+    #[prost(string, tag = "5")]
+    pub artifact: String,
 }
 
 impl MsgCreatePost {
     pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgCreatePost";
 
     /// Create a new post message.
-    pub fn new(creator: &str, namespace: &str, payload: Vec<u8>) -> Self {
+    pub fn new(creator: &str, namespace: &str, payload: Vec<u8>, artifact: Option<String>) -> Self {
         Self {
             creator: creator.to_string(),
             namespace: namespace.to_string(),
             payload,
             proof: Vec::new(),
+            artifact: artifact.unwrap_or("".to_string()),
         }
     }
 
     /// Create a new post message with proof.
-    pub fn with_proof(creator: &str, namespace: &str, payload: Vec<u8>, proof: Vec<u8>) -> Self {
+    pub fn with_proof(
+        creator: &str,
+        namespace: &str,
+        payload: Vec<u8>,
+        proof: Vec<u8>,
+        artifact: Option<String>,
+    ) -> Self {
         Self {
             creator: creator.to_string(),
             namespace: namespace.to_string(),
             payload,
             proof,
+            artifact: artifact.unwrap_or("".to_string()),
         }
     }
 }
@@ -429,12 +440,13 @@ impl SourceHubClient {
         &self,
         namespace: &str,
         payload: Vec<u8>,
+        artifact: Option<String>,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
 
-        let msg = MsgCreatePost::new(&signer.address(), namespace, payload);
+        let msg = MsgCreatePost::new(&signer.address(), namespace, payload, artifact);
 
         self.broadcast_proto_msg_with_gas(
             MsgCreatePost::TYPE_URL,
@@ -450,12 +462,13 @@ impl SourceHubClient {
         namespace: &str,
         payload: Vec<u8>,
         proof: Vec<u8>,
+        artifact: Option<String>,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
 
-        let msg = MsgCreatePost::with_proof(&signer.address(), namespace, payload, proof);
+        let msg = MsgCreatePost::with_proof(&signer.address(), namespace, payload, proof, artifact);
 
         self.broadcast_proto_msg_with_gas(
             MsgCreatePost::TYPE_URL,

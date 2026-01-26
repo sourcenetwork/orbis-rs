@@ -18,7 +18,13 @@ impl Bulletin for DummyBulletin {
         Ok(())
     }
 
-    async fn post(&self, namespace: String, payload: Vec<u8>, proof: Vec<u8>) -> Result<()> {
+    async fn post(
+        &self,
+        namespace: String,
+        payload: Vec<u8>,
+        proof: Vec<u8>,
+        _artifact: Option<String>,
+    ) -> Result<()> {
         // Generate deterministic ID from namespace + payload (same as SourceHubBulletin)
         // TODO: fine for test if only running one dkg
         let id = "test".to_string(); //Self::compute_post_id(&namespace, &payload);

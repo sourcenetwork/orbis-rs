@@ -1246,6 +1246,7 @@ where
                     BULLETIN_RING_NAMESPACE.to_string(),
                     payload_bytes,
                     BULLETIN_PLACEHOLDER_PROOF.to_vec(),
+                    Some(session_id.to_string()),
                 )
                 .await
                 .map_err(|e| DkgError::Bulletin(format!("Failed to post RingPayload: {}", e)))?;

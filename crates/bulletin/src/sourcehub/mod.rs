@@ -32,10 +32,16 @@ impl Bulletin for SourceHubBulletin {
         Ok(())
     }
 
-    async fn post(&self, namespace: String, payload: Vec<u8>, proof: Vec<u8>) -> Result<()> {
+    async fn post(
+        &self,
+        namespace: String,
+        payload: Vec<u8>,
+        proof: Vec<u8>,
+        artifact: Option<String>,
+    ) -> Result<()> {
         let result = self
             .chain_client
-            .bulletin_create_post_with_proof(&namespace, payload, proof)
+            .bulletin_create_post_with_proof(&namespace, payload, proof, artifact)
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?;
 

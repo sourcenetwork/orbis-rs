@@ -124,7 +124,7 @@ where
 
         self.state
             .bulletin
-            .post(req.namespace.clone(), payload_bytes, proof)
+            .post(req.namespace.clone(), payload_bytes, proof, None)
             .await
             .map_err(|e| StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e)))?;
 
