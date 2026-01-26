@@ -16,6 +16,7 @@ use prost::Message;
 /// - 2: namespace (string)
 /// - 3: payload (bytes)
 /// - 4: proof (bytes)
+/// - 5: artifact (string)
 #[derive(Clone, Message)]
 pub struct MsgCreatePost {
     /// Creator's address
