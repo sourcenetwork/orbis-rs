@@ -142,6 +142,7 @@ where
 
         if req.with_proof {
             // If information is already stored also return a proof?
+            // probably will need to wait for bulletin.post to be in block
             // Do signature with payload_bytes hash as message
             // Signature threhsold servers should check that bulletin item was stored first
             // use ring_payload for finding threshold signers
