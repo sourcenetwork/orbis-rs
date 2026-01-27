@@ -8,6 +8,7 @@
 //! a single unified structure.
 
 use crate::constants::{SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL};
+use crate::metrics;
 use crypto::r#trait::Dkg;
 use network::Connection;
 use std::collections::HashMap;
@@ -230,6 +231,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             states.retain(|session_id, state| {
                 let age = now.duration_since(state.created_at);
                 if age > SESSION_TTL && state.phase != DkgPhase::Phase4Complete {
+                    metrics::record_dkg_session_abandoned();
                     tracing::warn!(
                         session_id = session_id,
                         age_secs = age.as_secs(),

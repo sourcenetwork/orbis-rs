@@ -70,6 +70,12 @@ lazy_static! {
     )
     .expect("failed to register dkg_messages_total");
 
+    pub static ref DKG_ABANDONED_SESSIONS: Gauge = register_gauge!(
+        "dkg_abandoned_sessions",
+        "Number of DKG sessions abandoned"
+    )
+    .expect("failed to register dkg_abandoned_sessions");
+
     // ============================================================================
     // PRE Protocol Metrics
     // ============================================================================
@@ -189,6 +195,13 @@ pub fn record_dkg_session_completed() {
 pub fn record_dkg_session_failed() {
     DKG_SESSIONS_TOTAL.with_label_values(&["failed"]).inc();
     DKG_ACTIVE_SESSIONS.dec();
+}
+
+/// Record DKG session abandoned
+pub fn record_dkg_session_abandoned() {
+    DKG_SESSIONS_TOTAL.with_label_values(&["abandoned"]).inc();
+    DKG_ACTIVE_SESSIONS.dec();
+    DKG_ABANDONED_SESSIONS.dec();
 }
 
 /// Record DKG phase duration
