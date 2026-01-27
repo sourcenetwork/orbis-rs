@@ -15,3 +15,10 @@ pub const DKG: &[u8] = b"orbis/dkg/0";
 /// Used for Proxy Re-Encryption requests where a reader (Bob) requests
 /// re-encryption from ring nodes.
 pub const REENCRYPT: &[u8] = b"orbis/reencrypt/0";
+
+/// Threshold BLS signing protocol
+///
+/// Used for threshold BLS signature generation where a requester asks
+/// ring nodes to produce signature shares that can be combined into
+/// a full signature.
+pub const SIGN: &[u8] = b"orbis/sign/0";

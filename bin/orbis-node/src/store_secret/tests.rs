@@ -80,6 +80,7 @@ fn create_dummy_request() -> StoreSecretRequest {
         shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
+        with_proof: false,
     }
 }
 
@@ -309,6 +310,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
+        with_proof: false,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -384,6 +386,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
         shared_point: invalid_shared_point,
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
+        with_proof: false,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();

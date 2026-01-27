@@ -169,6 +169,7 @@ pub async fn do_store_secret(
         shared_point: proof.shared_point.clone(),
         challenge: proof.challenge.clone(),
         response: proof.response.clone(),
+        with_proof: false,
     };
 
     // Create JWT for authentication with all request fields

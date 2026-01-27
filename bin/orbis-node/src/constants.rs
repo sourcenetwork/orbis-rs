@@ -57,6 +57,17 @@ pub const SESSION_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 pub const MAX_PRE_RESPONSES: usize = 1000;
 
 // ============================================================================
+// Sign (Threshold BLS Signing) Constants
+// ============================================================================
+
+/// Maximum number of pending Sign responses
+///
+/// Sign responses are collected asynchronously from multiple nodes. This limit
+/// prevents unbounded growth of response storage. The value of 1000 allows for
+/// many concurrent signing operations while maintaining reasonable memory usage.
+pub const MAX_SIGN_RESPONSES: usize = 1000;
+
+// ============================================================================
 // Peer ID Validation Constants
 // ============================================================================
 

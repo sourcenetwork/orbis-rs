@@ -109,6 +109,38 @@ lazy_static! {
     .expect("failed to register pre_messages_total");
 
     // ============================================================================
+    // Sign (Threshold BLS Signing) Metrics
+    // ============================================================================
+
+    pub static ref SIGN_REQUESTS_TOTAL: CounterVec = register_counter_vec!(
+        "sign_requests_total",
+        "Total number of threshold signing requests",
+        &["status"]
+    )
+    .expect("failed to register sign_requests_total");
+
+    pub static ref SIGN_ACTIVE_REQUESTS: Gauge = register_gauge!(
+        "sign_active_requests",
+        "Number of currently active signing requests"
+    )
+    .expect("failed to register sign_active_requests");
+
+    pub static ref SIGN_REQUEST_DURATION_SECONDS: HistogramVec = register_histogram_vec!(
+        "sign_request_duration_seconds",
+        "Signing request duration in seconds",
+        &[],
+        vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+    )
+    .expect("failed to register sign_request_duration_seconds");
+
+    pub static ref SIGN_MESSAGES_TOTAL: CounterVec = register_counter_vec!(
+        "sign_messages_total",
+        "Total number of signing protocol messages",
+        &["message_type", "direction"]
+    )
+    .expect("failed to register sign_messages_total");
+
+    // ============================================================================
     // StoreSecret Metrics
     // ============================================================================
 
@@ -256,6 +288,41 @@ pub fn record_pre_message_sent(message_type: &str) {
 /// Record PRE message received
 pub fn record_pre_message_received(message_type: &str) {
     PRE_MESSAGES_TOTAL
+        .with_label_values(&[message_type, "received"])
+        .inc();
+}
+
+/// Record Sign request started
+pub fn record_sign_request_started() {
+    SIGN_REQUESTS_TOTAL.with_label_values(&["started"]).inc();
+    SIGN_ACTIVE_REQUESTS.inc();
+}
+
+/// Record Sign request completed
+pub fn record_sign_request_completed(duration_secs: f64) {
+    SIGN_REQUESTS_TOTAL.with_label_values(&["completed"]).inc();
+    SIGN_ACTIVE_REQUESTS.dec();
+    SIGN_REQUEST_DURATION_SECONDS
+        .with_label_values(&[])
+        .observe(duration_secs);
+}
+
+/// Record Sign request failed
+pub fn record_sign_request_failed() {
+    SIGN_REQUESTS_TOTAL.with_label_values(&["failed"]).inc();
+    SIGN_ACTIVE_REQUESTS.dec();
+}
+
+/// Record Sign message sent
+pub fn record_sign_message_sent(message_type: &str) {
+    SIGN_MESSAGES_TOTAL
+        .with_label_values(&[message_type, "sent"])
+        .inc();
+}
+
+/// Record Sign message received
+pub fn record_sign_message_received(message_type: &str) {
+    SIGN_MESSAGES_TOTAL
         .with_label_values(&[message_type, "received"])
         .inc();
 }

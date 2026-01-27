@@ -138,6 +138,16 @@ where
             "Successfully stored encrypted secret"
         );
 
+        let signature = "".to_string();
+
+        if req.with_proof {
+            // If information is already stored also return a proof?
+            // Do signature with payload_bytes hash as message
+            // Signature threhsold servers should check that bulletin item was stored first
+            // use ring_payload for finding threshold signers
+            // set signature
+        }
+
         metrics::record_store_secret_completed(start.elapsed().as_secs_f64());
 
         Ok(Response::new(StoreSecretResponse {
@@ -146,6 +156,7 @@ where
             created_at,
             object_id,
             ring_id: req.ring_id,
+            signature,
         }))
     }
 }

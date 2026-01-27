@@ -7,12 +7,14 @@ pub mod helpers;
 pub mod info;
 pub mod metrics;
 pub mod pre;
+pub mod sign;
 pub mod store_secret;
 
 #[cfg(test)]
 mod tests;
 
 use crate::dkg::service::DkgServiceImpl;
+use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, get_network_key_secret,
     get_password, Args,
@@ -33,11 +35,13 @@ use std::{net::SocketAddr, sync::Arc};
 use constants::MIN_NODE_BALANCE;
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
+use crypto::bls12_381::sign::ThresholdBlsSigner;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 // Type aliases for concrete implementations
 pub type DkgImpl = DKGNode;
 pub type PreImpl = ThresholdDealerNode;
+pub type SignImpl = ThresholdBlsSigner;
 
 use proto::dkg_service::dkg_service_server::DkgServiceServer;
 use proto::info_service::info_service_server::InfoServiceServer;
@@ -102,15 +106,15 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
     );
     let app_state_arc = Arc::new(app_state);
 
-    // Start the router in the background with DKG and PRE protocol handlers
-    let router = dkg::protocol_handler::create_router_with_handlers::<DkgImpl, PreImpl>(
+    // Start the router in the background with DKG, PRE, and Sign protocol handlers
+    let router = create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
         &config.network,
         app_state_arc.clone(),
     )
     .map_err(|e| format!("Failed to create router: {}", e))?;
 
     tracing::info!(
-        "Router started with DKG and PRE protocol handlers and ready to accept connections"
+        "Router started with DKG, PRE, and Sign protocol handlers and ready to accept connections"
     );
 
     Ok(InitializedNode {
