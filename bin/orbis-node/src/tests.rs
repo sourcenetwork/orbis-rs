@@ -617,11 +617,12 @@ mod cli_tool_integration {
                 .await
                 .expect("create_bulletin_post")
         };
+        let secret = b"Hello from StoreSecret!";
 
         // SERVICE PATH: CLI encrypts internally, node validates and posts
         let object_response = cli_tool::do_store_secret(
             endpoint.clone(),
-            b"Hello from StoreSecret!",
+            &secret.clone(),
             ring_pk_hex.clone(),
             ring_id.clone(),
             namespace.clone(),
@@ -698,18 +699,26 @@ mod cli_tool_integration {
             ring_pk_hex,
             reader_pk_hex,
             reader_sk_hex,
-            object_id_manual,
+            object_id_service,
             Some(did_pk_string),
             full_namespace,
         )
         .await;
 
-        // The key test: CLI do_pre should succeed against Docker-hosted orbis-nodes
+        // The key test: CLI do_pre should succeed and return the original plaintext
         assert!(
             pre_result.is_ok(),
             "cli-tool do_pre should succeed against Docker orbis-nodes: {:?}",
             pre_result.err()
         );
+
+        let decrypted = pre_result.unwrap();
+
+        assert_eq!(
+            decrypted, secret,
+            "Decrypted secret should match original plaintext"
+        );
+        println!("PRE decryption verified: decrypted data matches original secret!");
         // Cleanup happens automatically when _network is dropped
     }
 }

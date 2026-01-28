@@ -229,7 +229,7 @@ pub async fn do_pre(
     object_id: String,
     reader_did_pk: Option<String>,
     namespace: String,
-) -> Result<()> {
+) -> Result<Vec<u8>> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
     println!("  Reader PK: {}...", &reader_pk[..reader_pk.len().min(20)]);
@@ -312,13 +312,19 @@ pub async fn do_pre(
         )
         .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
-        let decrypted_str = String::from_utf8(decrypted)
-            .map_err(|e| anyhow!("Decrypted data is not valid UTF-8: {}", e))?;
+        if let Ok(decrypted_str) = String::from_utf8(decrypted.clone()) {
+            println!("  Decrypted Secret: {}", decrypted_str);
+        } else {
+            println!(
+                "  Decrypted Secret: <binary data, {} bytes>",
+                decrypted.len()
+            );
+        }
 
-        println!("  Decrypted Secret: {}", decrypted_str);
+        return Ok(decrypted);
     }
 
-    Ok(())
+    Err(anyhow!("PRE response did not contain encrypted_secret"))
 }
 
 pub async fn do_encrypt_secret(ring_pk: String, secret: String) -> Result<()> {
