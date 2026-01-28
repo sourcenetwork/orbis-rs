@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::constants::{BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE};
 use crate::metrics;
-use crate::sign::coordinator::SignCoordinator;
+use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
 use bulletin::r#trait::{DocumentPayload, RingPayload};
@@ -165,10 +165,8 @@ where
         let mut signature = "".to_string();
 
         if req.with_proof {
-            // TODO: Implement signing with proof
             let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
-            // TODO: fix unwarp
-            let bytes_sig = coordinator
+            let response_bytes = coordinator
                 .initiate_signing(
                     object_id.clone(),
                     hex::decode(&ring_payload.ring_pk).map_err(|e| {
@@ -181,12 +179,13 @@ where
                     &ring_payload.public_polynomial,
                 )
                 .await
-                .unwrap();
-            signature = hex::encode(bytes_sig);
-            // If information is already stored also return a proof?
-            // probably will need to wait for bulletin.post to be in block (post does this but maybe propgation delay)
-            // Signature threshold servers should check that bulletin item was stored first
-            // set signature
+                .map_err(|e| StoreSecretError::Signing(format!("Signing failed: {}", e)))?;
+
+            let sign_response: SignResponse =
+                serde_json::from_slice(&response_bytes).map_err(|e| {
+                    StoreSecretError::Signing(format!("Failed to parse sign response: {}", e))
+                })?;
+            signature = sign_response.signature;
         }
 
         metrics::record_store_secret_completed(start.elapsed().as_secs_f64());

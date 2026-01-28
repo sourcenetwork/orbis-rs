@@ -404,7 +404,8 @@ mod cli_tool_integration {
     use bulletin::sourcehub::SourceHubBulletin;
     use common::IntegrationTestNetwork;
     use crypto::bls12_381::pre::ThresholdDealerNode;
-    use crypto::r#trait::ThresholdDealer;
+    use crypto::bls12_381::sign::ThresholdBlsSigner;
+    use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
     use crypto::{CryptoDeserialize, CryptoSerialize};
     use rand_core::OsRng;
     use tokio::time::{sleep, Duration};
@@ -632,9 +633,9 @@ mod cli_tool_integration {
         )
         .await
         .expect("do_store_secret");
-        let object_id_service = object_response.object_id;
-        // TODO check sig better
-        assert!(object_response.signature.len() > 5);
+        let object_id_service = object_response.object_id.clone();
+        let signature_hex = object_response.signature.clone();
+
         // Wait for block confirmation after service call
         sleep(Duration::from_secs(2)).await;
 
@@ -656,6 +657,21 @@ mod cli_tool_integration {
         assert_eq!(manual.policy_id, service.policy_id, "policy_id mismatch");
         assert_eq!(manual.resource, service.resource, "resource mismatch");
         assert_eq!(manual.permission, service.permission, "permission mismatch");
+
+        // Verify the BLS signature against the ring public key
+        // The signature was created over service_bytes (the serialized DocumentPayload)
+        let signature_bytes = hex::decode(&signature_hex).expect("decode signature hex");
+        let signature =
+            <ThresholdBlsSigner as ThresholdSigner>::Signature::from_bytes(&signature_bytes)
+                .expect("deserialize BLS signature");
+
+        let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
+        let ring_pk = G1Affine::from_bytes(&ring_pk_bytes).expect("deserialize ring public key");
+
+        let signer = ThresholdBlsSigner::new();
+        signer
+            .verify(&ring_pk, &service_bytes, &signature)
+            .expect("BLS signature should verify against ring public key");
 
         // Run PRE to verify full flow works
         cli_tool::register_object_to_chain(
