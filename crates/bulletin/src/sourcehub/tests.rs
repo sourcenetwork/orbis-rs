@@ -36,7 +36,9 @@ async fn test_bulletin_document() {
         .unwrap();
 
     let full_namespace = format!("bulletin/{}", namespace);
-    let post_id = SourceHubBulletin::get_post_id(&full_namespace, &serialized_payload).unwrap();
+    let post_id = bulletin
+        .get_post_id(&full_namespace, &serialized_payload)
+        .unwrap();
 
     let created_post = bulletin.read(full_namespace, post_id).await.unwrap();
     println!("Created post ID: {}", created_post.id);
@@ -82,7 +84,9 @@ async fn test_bulletin_ring() {
         .unwrap();
 
     let full_namespace = format!("bulletin/{}", namespace);
-    let post_id = SourceHubBulletin::get_post_id(&full_namespace, &serialized_payload).unwrap();
+    let post_id = bulletin
+        .get_post_id(&full_namespace, &serialized_payload)
+        .unwrap();
 
     let created_post = bulletin.read(full_namespace, post_id).await.unwrap();
     println!("Created post ID: {}", created_post.id);

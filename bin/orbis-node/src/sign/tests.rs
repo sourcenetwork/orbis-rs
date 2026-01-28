@@ -94,19 +94,13 @@ async fn test_dkg_then_sign_end_to_end() {
     println!("DKG completed! Aggregate public key obtained.");
 
     // =========================================================================
-    // Step 3: Create a message hash to sign
+    // Step 3: Create a message to sign
     // =========================================================================
-    println!("\nStep 3: Creating message hash to sign...");
+    println!("\nStep 3: Creating message to sign...");
 
     let message = b"Hello, threshold BLS signing!";
-    // In practice, you'd hash the message. For this test, we'll use sha256.
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(message);
-    let msg_hash = hasher.finalize().to_vec();
 
-    println!("Original message: {:?}", String::from_utf8_lossy(message));
-    println!("Message hash (hex): {}", hex::encode(&msg_hash));
+    println!("Message: {:?}", String::from_utf8_lossy(message));
 
     // =========================================================================
     // Step 4: Initiate threshold signing
@@ -136,7 +130,7 @@ async fn test_dkg_then_sign_end_to_end() {
         .initiate_signing(
             request_id.clone(),
             ring_pk_bytes.clone(),
-            msg_hash.clone(),
+            message.to_vec(),
             &sign_peer_ids,
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
@@ -169,7 +163,7 @@ async fn test_dkg_then_sign_end_to_end() {
 
     // Verify the signature using the ThresholdSigner trait
     let signer = SignImpl::new();
-    let verify_result = signer.verify(&aggregate_pk, &msg_hash, &signature);
+    let verify_result = signer.verify(&aggregate_pk, message, &signature);
 
     assert!(
         verify_result.is_ok(),
@@ -268,15 +262,9 @@ async fn test_sign_different_messages() {
         <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
 
     // Sign two different messages
-    use sha2::{Digest, Sha256};
-
-    let messages = [b"First message".as_slice(), b"Second message".as_slice()];
+    let messages: [&[u8]; 2] = [b"First message", b"Second message"];
 
     for (i, message) in messages.iter().enumerate() {
-        let mut hasher = Sha256::new();
-        hasher.update(message);
-        let msg_hash = hasher.finalize().to_vec();
-
         let sign_coordinator =
             SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
 
@@ -293,7 +281,7 @@ async fn test_sign_different_messages() {
             .initiate_signing(
                 request_id,
                 ring_pk_bytes.clone(),
-                msg_hash.clone(),
+                message.to_vec(),
                 &peer_ids,
                 ring_payload.threshold as usize,
                 ring_payload.peer_ids.len(),
@@ -310,7 +298,7 @@ async fn test_sign_different_messages() {
 
         let signer = SignImpl::new();
         assert!(
-            signer.verify(&aggregate_pk, &msg_hash, &signature).is_ok(),
+            signer.verify(&aggregate_pk, *message, &signature).is_ok(),
             "Signature {} should verify",
             i
         );
@@ -374,12 +362,7 @@ async fn test_sign_fails_wrong_message() {
         <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
 
     // Sign a message
-    use sha2::{Digest, Sha256};
-
     let original_message = b"Original message";
-    let mut hasher = Sha256::new();
-    hasher.update(original_message);
-    let msg_hash = hasher.finalize().to_vec();
 
     let sign_coordinator =
         SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
@@ -396,7 +379,7 @@ async fn test_sign_fails_wrong_message() {
         .initiate_signing(
             request_id,
             ring_pk_bytes.clone(),
-            msg_hash.clone(),
+            original_message.to_vec(),
             &peer_ids,
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
@@ -413,17 +396,16 @@ async fn test_sign_fails_wrong_message() {
     // Verify with the correct message should succeed
     let signer = SignImpl::new();
     assert!(
-        signer.verify(&aggregate_pk, &msg_hash, &signature).is_ok(),
+        signer
+            .verify(&aggregate_pk, original_message, &signature)
+            .is_ok(),
         "Signature should verify with correct message"
     );
 
     // Verify with a different message should fail
     let wrong_message = b"Wrong message";
-    let mut wrong_hasher = Sha256::new();
-    wrong_hasher.update(wrong_message);
-    let wrong_hash = wrong_hasher.finalize().to_vec();
 
-    let verify_result = signer.verify(&aggregate_pk, &wrong_hash, &signature);
+    let verify_result = signer.verify(&aggregate_pk, wrong_message, &signature);
     assert!(
         verify_result.is_err(),
         "Signature verification should fail with wrong message"
@@ -483,12 +465,7 @@ async fn test_sign_response_cleanup() {
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
     // Sign a message
-    use sha2::{Digest, Sha256};
-
     let message = b"Test message for cleanup";
-    let mut hasher = Sha256::new();
-    hasher.update(message);
-    let msg_hash = hasher.finalize().to_vec();
 
     let sign_coordinator =
         SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
@@ -505,7 +482,7 @@ async fn test_sign_response_cleanup() {
         .initiate_signing(
             request_id.clone(),
             ring_pk_bytes.clone(),
-            msg_hash.clone(),
+            message.to_vec(),
             &peer_ids,
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),

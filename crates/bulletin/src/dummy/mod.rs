@@ -45,6 +45,10 @@ impl Bulletin for DummyBulletin {
         let posts = self.posts.lock().unwrap();
         Ok(posts.get(&(namespace, id)).cloned().unwrap_or_default())
     }
+
+    fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String> {
+        Ok(Self::compute_post_id(namespace, payload))
+    }
 }
 
 impl DummyBulletin {
@@ -67,12 +71,6 @@ impl DummyBulletin {
         hasher.update(namespace.as_bytes());
         hasher.update(payload);
         hex::encode(hasher.finalize())
-    }
-
-    /// Get the ID that would be generated for a given namespace and payload
-    /// Useful for tests that need to know the ID before reading
-    pub fn get_post_id(namespace: &str, payload: &[u8]) -> String {
-        Self::compute_post_id(namespace, payload)
     }
 
     /// Get all posts in a given namespace (for testing)

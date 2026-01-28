@@ -84,4 +84,5 @@ pub trait Bulletin {
     ) -> Result<()>;
     /// Read a message from the bulletin namespace
     async fn read(&self, namespace: String, id: String) -> Result<BulletinPost>;
+    fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String>;
 }

@@ -145,7 +145,8 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     let dkg_service = DkgServiceImpl::<DkgImpl>::new((*node.app_state).clone());
     let pre_service = PreServiceImpl::<DkgImpl, PreImpl>::new((*node.app_state).clone());
     let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
-    let store_secret_service = StoreSecretServiceImpl::<DkgImpl>::new((*node.app_state).clone());
+    let store_secret_service =
+        StoreSecretServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
 
     // Start gRPC server with DKG, PRE, Info, and StoreSecret services
     let grpc_server = tonic::transport::Server::builder()

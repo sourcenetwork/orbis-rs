@@ -1,15 +1,16 @@
 use crate::app_state::AppState;
 use crate::constants::{BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE};
 use crate::metrics;
+use crate::sign::coordinator::SignCoordinator;
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
 use bulletin::r#trait::{DocumentPayload, RingPayload};
-use bulletin::sourcehub::SourceHubBulletin;
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{CryptoDeserialize, Dkg, EncryptionProof, Secret, ThresholdDealer};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
 };
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -18,27 +19,47 @@ use tonic::{Request, Response, Status};
 /// This service acts as an authenticated relay for storing pre-encrypted secrets.
 /// The node NEVER sees plaintext - users must encrypt locally before calling this service.
 #[derive(Debug)]
-pub struct StoreSecretServiceImpl<D>
+pub struct StoreSecretServiceImpl<D, S>
 where
     D: Dkg + Clone + 'static,
+    S: crypto::r#trait::ThresholdSigner,
 {
     pub state: AppState<D>,
+    _phantom: std::marker::PhantomData<S>,
 }
 
-impl<D> StoreSecretServiceImpl<D>
+impl<D, S> StoreSecretServiceImpl<D, S>
 where
     D: Dkg + Clone + 'static,
+    S: crypto::r#trait::ThresholdSigner,
 {
     /// Create a new StoreSecretServiceImpl with shared application state
     pub fn new(state: AppState<D>) -> Self {
-        Self { state }
+        Self {
+            state,
+            _phantom: std::marker::PhantomData,
+        }
     }
 }
 
 #[tonic::async_trait]
-impl<D> StoreSecretService for StoreSecretServiceImpl<D>
+impl<D, S> StoreSecretService for StoreSecretServiceImpl<D, S>
 where
-    D: Dkg<PublicKey = ark_bls12_381::G1Affine> + Clone + Send + Sync + 'static,
+    D: Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    S: crypto::r#trait::ThresholdSigner<
+            ShareValue = ark_bls12_381::Fr,
+            PublicKey = ark_bls12_381::G1Affine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            PubPoly = D::PubPoly,
+            Signature = crypto::bls12_381::common::G2Point,
+            SigShare = crypto::r#trait::PubShare<crypto::bls12_381::common::G2Point>,
+        > + Send
+        + Sync
+        + 'static,
 {
     #[tracing::instrument(skip_all, fields(request))]
     async fn store_secret(
@@ -116,7 +137,10 @@ where
         // 5. Compute object_id before posting (deterministic hash)
         // Note: get_post_id expects the full namespace format "bulletin/{namespace}"
         let full_namespace = format!("bulletin/{}", req.namespace);
-        let object_id = SourceHubBulletin::get_post_id(&full_namespace, &payload_bytes)
+        let object_id = self
+            .state
+            .bulletin
+            .get_post_id(&full_namespace, &payload_bytes)
             .map_err(|e| StoreSecretError::Storage(format!("Failed to compute post ID: {}", e)))?;
 
         // 6. Post to bulletin
@@ -124,28 +148,44 @@ where
 
         self.state
             .bulletin
-            .post(req.namespace.clone(), payload_bytes, proof, None)
+            .post(req.namespace.clone(), payload_bytes.clone(), proof, None)
             .await
             .map_err(|e| StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e)))?;
 
         let created_at = current_time as i64;
 
         tracing::info!(
-            object_id = %object_id,
+            object_id = %object_id.clone(),
             ring_id = %req.ring_id,
             namespace = %req.namespace,
             owner = %token.issuer_id,
             "Successfully stored encrypted secret"
         );
 
-        let signature = "".to_string();
+        let mut signature = "".to_string();
 
         if req.with_proof {
+            // TODO: Implement signing with proof
+            let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
+            // TODO: fix unwarp
+            let bytes_sig = coordinator
+                .initiate_signing(
+                    object_id.clone(),
+                    hex::decode(&ring_payload.ring_pk).map_err(|e| {
+                        StoreSecretError::Validation(format!("Invalid ring_pk hex: {}", e))
+                    })?,
+                    payload_bytes,
+                    &ring_payload.peer_ids,
+                    ring_payload.threshold as usize,
+                    ring_payload.peer_ids.len(),
+                    &ring_payload.public_polynomial,
+                )
+                .await
+                .unwrap();
+            signature = hex::encode(bytes_sig);
             // If information is already stored also return a proof?
-            // probably will need to wait for bulletin.post to be in block
-            // Do signature with payload_bytes hash as message
-            // Signature threhsold servers should check that bulletin item was stored first
-            // use ring_payload for finding threshold signers
+            // probably will need to wait for bulletin.post to be in block (post does this but maybe propgation delay)
+            // Signature threshold servers should check that bulletin item was stored first
             // set signature
         }
 

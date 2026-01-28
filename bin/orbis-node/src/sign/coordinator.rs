@@ -80,7 +80,7 @@ where
             SignMessage::SignRequest {
                 request_id,
                 from_node_id,
-                msg_hash,
+                message,
                 ring_pk,
             } => {
                 tracing::info!(
@@ -90,7 +90,7 @@ where
                 );
 
                 // Handle the sign request
-                self.handle_sign_request(request_id, from_node_id, msg_hash, ring_pk)
+                self.handle_sign_request(request_id, from_node_id, message, ring_pk)
                     .await
             }
             SignMessage::SignResponse { .. } => {
@@ -117,7 +117,7 @@ where
         &self,
         request_id: String,
         from_node_id: u32,
-        msg_hash: Vec<u8>,
+        message: Vec<u8>,
         ring_pk_bytes: Vec<u8>,
     ) -> Result<Option<SignMessage>> {
         // 1. Deserialize ring public key to get the storage key
@@ -152,10 +152,10 @@ where
         // 4. Create distributed key share
         let dist_key_share = DistKeyShare { pri_share };
 
-        // 5. Sign the message hash
+        // 5. Sign the message (hash-to-curve is handled internally by the signer)
         let signer = S::new();
         let sig_share = signer
-            .sign(&dist_key_share, &msg_hash)
+            .sign(&dist_key_share, &message)
             .map_err(|e| SignError::Crypto(format!("Signing failed: {}", e)))?;
 
         // 6. Serialize the signature share
@@ -277,7 +277,7 @@ where
         &self,
         request_id: String,
         ring_pk_bytes: Vec<u8>,
-        msg_hash: Vec<u8>,
+        message: Vec<u8>,
         peer_ids: &[String],
         threshold: usize,
         total_participants: usize,
@@ -327,7 +327,7 @@ where
             .initiate_signing_inner(
                 request_id,
                 ring_pk_bytes,
-                msg_hash,
+                message,
                 peer_ids,
                 threshold,
                 total_participants,
@@ -355,7 +355,7 @@ where
         &self,
         request_id: String,
         ring_pk_bytes: Vec<u8>,
-        msg_hash: Vec<u8>,
+        message: Vec<u8>,
         peer_ids: &[String],
         threshold: usize,
         total_participants: usize,
@@ -400,7 +400,7 @@ where
             let request = SignMessage::SignRequest {
                 request_id: request_id.clone(),
                 from_node_id: node_id,
-                msg_hash: msg_hash.clone(),
+                message: message.clone(),
                 ring_pk: ring_pk_bytes.clone(),
             };
 
@@ -469,10 +469,10 @@ where
                     let dist_key_share = DistKeyShare { pri_share };
 
                     // Perform local signing
-                    match signer.sign(&dist_key_share, &msg_hash) {
+                    match signer.sign(&dist_key_share, &message) {
                         Ok(sig_share) => {
                             // Verify our own share
-                            match signer.verify_share(&msg_hash, &pub_poly, &sig_share) {
+                            match signer.verify_share(&message, &pub_poly, &sig_share) {
                                 Ok(_) => {
                                     tracing::debug!(
                                         from_node_id = sig_share.i,
@@ -517,7 +517,7 @@ where
                 };
 
                 // Verify the share
-                match signer.verify_share(&msg_hash, &pub_poly, &sig_share) {
+                match signer.verify_share(&message, &pub_poly, &sig_share) {
                     Ok(_) => {
                         tracing::debug!(
                             from_node_id = from_node_id,

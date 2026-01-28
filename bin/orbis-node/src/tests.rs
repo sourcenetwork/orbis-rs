@@ -542,8 +542,7 @@ mod cli_tool_integration {
 
                     // Compute the ring_id from the post (it's deterministic based on namespace + payload)
                     let full_namespace = format!("bulletin/{}", ring_namespace);
-                    ring_id = SourceHubBulletin::get_post_id(&full_namespace, &posts[0])
-                        .expect("Failed to compute ring_id");
+                    ring_id = SourceHubBulletin::compute_post_id(&full_namespace, &posts[0]);
                     dkg_ring_payload = Some(ring_payload);
                     println!(
                         "DKG completed! Ring PK: {}..., Ring ID: {}",
@@ -619,7 +618,7 @@ mod cli_tool_integration {
         };
 
         // SERVICE PATH: CLI encrypts internally, node validates and posts
-        let object_id_service = cli_tool::do_store_secret(
+        let object_response = cli_tool::do_store_secret(
             endpoint.clone(),
             b"Hello from StoreSecret!",
             ring_pk_hex.clone(),
@@ -629,11 +628,13 @@ mod cli_tool_integration {
             resource.clone(),
             permission.clone(),
             Some(did_pk_string.clone()),
+            true,
         )
         .await
-        .expect("do_store_secret")
-        .object_id;
-
+        .expect("do_store_secret");
+        let object_id_service = object_response.object_id;
+        // TODO check sig better
+        assert!(object_response.signature.len() > 5);
         // Wait for block confirmation after service call
         sleep(Duration::from_secs(2)).await;
 

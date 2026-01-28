@@ -68,6 +68,10 @@ impl Bulletin for SourceHubBulletin {
             proof: post.proof,
         })
     }
+
+    fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String> {
+        Ok(Self::compute_post_id(namespace, payload))
+    }
 }
 
 impl SourceHubBulletin {
@@ -164,13 +168,13 @@ impl SourceHubBulletin {
         Ok(client)
     }
 
-    pub fn get_post_id(namespace: &str, payload: &[u8]) -> Result<String> {
+    pub fn compute_post_id(namespace: &str, payload: &[u8]) -> String {
         let mut hasher = Sha256::new();
 
         hasher.update(namespace.as_bytes());
         hasher.update(payload);
 
         let hash = hasher.finalize();
-        Ok(hex::encode(hash))
+        hex::encode(hash)
     }
 }

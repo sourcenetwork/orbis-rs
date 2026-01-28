@@ -11,6 +11,7 @@ use crate::helpers::test_helpers::{
 use crate::store_secret::StoreSecretServiceImpl;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{BulletinPost, RingPayload};
+use crypto::bls12_381::sign::ThresholdBlsSigner;
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest,
 };
@@ -20,6 +21,7 @@ use tonic::Request;
 // Concrete crypto implementations for tests
 use crypto::bls12_381::dkg::DKGNode;
 type DkgImpl = DKGNode;
+pub type SignImpl = ThresholdBlsSigner;
 
 /// Default test values for StoreSecret requests
 const TEST_ENCRYPTED_DOC: &str = "{}";
@@ -108,7 +110,7 @@ async fn test_store_secret_fails_missing_auth_header() {
     let db_name = "test_store_secret_fails_missing_auth_header";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     let request = create_dummy_request();
 
@@ -143,7 +145,7 @@ async fn test_store_secret_fails_malformed_jwt() {
     let db_name = "test_store_secret_fails_malformed_jwt";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     let request = create_dummy_request();
 
@@ -172,7 +174,7 @@ async fn test_store_secret_fails_claims_mismatch() {
     let db_name = "test_store_secret_fails_claims_mismatch";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     // Create JWT with one ring_id but request with different ring_id
     let test_keys = TestKeyPair::new();
@@ -224,7 +226,7 @@ async fn test_store_secret_fails_namespace_mismatch() {
     let db_name = "test_store_secret_fails_namespace_mismatch";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     // Create JWT with one namespace but request with different namespace
     let test_keys = TestKeyPair::new();
@@ -276,7 +278,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
     let db_name = "test_store_secret_fails_invalid_encrypted_document";
     let db_path = test_db_path(db_name);
     let app_state = create_app_state_with_ring(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     // Use invalid encrypted_document that will fail validation
     let invalid_encrypted_doc = "not valid json";
@@ -343,7 +345,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
     let db_name = "test_store_secret_fails_invalid_encryption_proof";
     let db_path = test_db_path(db_name);
     let app_state = create_app_state_with_ring(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     // Create a valid Secret struct with enc_cmt matching TEST_RING_PK format
     let enc_cmt_bytes = hex::decode(TEST_RING_PK).expect("decode TEST_RING_PK");
@@ -412,7 +414,7 @@ async fn test_store_secret_fails_wrong_signature() {
     let db_name = "test_store_secret_fails_wrong_signature";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     // Create a valid JWT
     let key_pair = TestKeyPair::new();

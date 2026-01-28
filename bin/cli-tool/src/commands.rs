@@ -109,6 +109,7 @@ pub struct StoreSecretResult {
     pub created_at: i64,
     pub object_id: String,
     pub ring_id: String,
+    pub signature: String,
 }
 
 /// Store a secret using the StoreSecret service
@@ -128,6 +129,7 @@ pub async fn do_store_secret(
     resource: String,
     permission: String,
     reader_did_pk: Option<String>,
+    with_proof: bool,
 ) -> Result<StoreSecretResult> {
     println!("Storing secret via StoreSecret service:");
     println!("  Endpoint: {}", endpoint);
@@ -169,7 +171,7 @@ pub async fn do_store_secret(
         shared_point: proof.shared_point.clone(),
         challenge: proof.challenge.clone(),
         response: proof.response.clone(),
-        with_proof: false,
+        with_proof,
     };
 
     // Create JWT for authentication with all request fields
@@ -207,6 +209,7 @@ pub async fn do_store_secret(
     println!("  Message: {}", response.message);
     println!("  Object ID: {}", response.object_id);
     println!("  Ring ID: {}", response.ring_id);
+    println!("  signature: {}", response.signature);
 
     Ok(StoreSecretResult {
         status: response.status,
@@ -214,6 +217,7 @@ pub async fn do_store_secret(
         created_at: response.created_at,
         object_id: response.object_id,
         ring_id: response.ring_id,
+        signature: response.signature,
     })
 }
 
@@ -537,7 +541,8 @@ pub async fn create_bulletin_post(
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
     let full_namespace = format!("bulletin/{}", namespace);
-    let post_id = SourceHubBulletin::get_post_id(&full_namespace, &payload)
+    let post_id = bulletin
+        .get_post_id(&full_namespace, &payload)
         .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
 
     bulletin

@@ -183,6 +183,9 @@ pub enum SubCommands {
         /// A private key to generate a reader did
         #[clap(long)]
         reader_did_pk: Option<String>,
+        /// Request a proof
+        #[clap(long)]
+        with_proof: bool,
     },
     /// Query node info
     Info {
@@ -287,6 +290,7 @@ async fn main() -> Result<()> {
             resource,
             permission,
             reader_did_pk,
+            with_proof,
         } => {
             do_store_secret(
                 endpoint,
@@ -298,6 +302,7 @@ async fn main() -> Result<()> {
                 resource,
                 permission,
                 reader_did_pk,
+                with_proof,
             )
             .await?;
         }
