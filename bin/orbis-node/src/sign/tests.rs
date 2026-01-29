@@ -592,3 +592,450 @@ async fn test_sign_response_cleanup() {
         cleanup_db(path);
     }
 }
+
+// ============================================================================
+// verify_message tests
+// ============================================================================
+
+/// Test that signing fails when the message is not a valid BulletinPost (malformed bytes)
+#[tokio::test]
+async fn test_sign_fails_invalid_bulletin_post() {
+    let db_name = "test_sign_fails_invalid_bulletin_post";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    println!("=== Starting Sign Fails Invalid BulletinPost Test ===\n");
+
+    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let peer_ids = network.get_all_peer_ids();
+
+    // Run DKG
+    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let request = StartDkgRequest {
+        threshold: 2,
+        peer_ids: peer_ids.clone(),
+    };
+
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
+
+    let result = node1_service
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
+        .await;
+    assert!(result.is_ok());
+
+    let (ring_payload, _ring_id) = wait_for_dkg_completion(
+        &network,
+        result.unwrap().into_inner().session_id.parse().unwrap(),
+    )
+    .await;
+
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+
+    // Try to sign with invalid message (not a valid BulletinPost)
+    let invalid_message = b"this is not a valid BulletinPost JSON";
+
+    let sign_coordinator =
+        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+
+    let request_id = format!(
+        "sign-invalid-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+
+    let sign_result = sign_coordinator
+        .initiate_signing(
+            request_id,
+            ring_pk_bytes,
+            invalid_message.to_vec(),
+            &peer_ids,
+            ring_payload.threshold as usize,
+            ring_payload.peer_ids.len(),
+            &ring_payload.public_polynomial,
+        )
+        .await;
+
+    // Signing should fail because responders can't deserialize the BulletinPost
+    assert!(
+        sign_result.is_err(),
+        "Signing should fail with invalid BulletinPost message"
+    );
+
+    println!("SUCCESS! Signing correctly failed with invalid BulletinPost");
+
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
+/// Test that signing fails when the BulletinPost doesn't exist on the bulletin
+#[tokio::test]
+async fn test_sign_fails_post_not_on_bulletin() {
+    let db_name = "test_sign_fails_post_not_on_bulletin";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    println!("=== Starting Sign Fails Post Not On Bulletin Test ===\n");
+
+    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let peer_ids = network.get_all_peer_ids();
+
+    // Run DKG
+    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let request = StartDkgRequest {
+        threshold: 2,
+        peer_ids: peer_ids.clone(),
+    };
+
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
+
+    let result = node1_service
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
+        .await;
+    assert!(result.is_ok());
+
+    let (ring_payload, ring_id) = wait_for_dkg_completion(
+        &network,
+        result.unwrap().into_inner().session_id.parse().unwrap(),
+    )
+    .await;
+
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+
+    // Create a valid BulletinPost but DON'T post it to the bulletin
+    let doc_payload = DocumentPayload {
+        ring_id: ring_id.clone(),
+        document: "fake_document".to_string(),
+        policy_id: "fake_policy".to_string(),
+        resource: "fake_resource".to_string(),
+        permission: "read".to_string(),
+    };
+
+    let payload_bytes: Vec<u8> = doc_payload.try_into().expect("serialize DocumentPayload");
+
+    // Create a fake BulletinPost that was never posted
+    let fake_bulletin_post = BulletinPost {
+        id: "fake_post_id_that_doesnt_exist".to_string(),
+        namespace: "fake_namespace".to_string(),
+        payload: payload_bytes,
+        proof: BULLETIN_PLACEHOLDER_PROOF.to_vec(),
+    };
+
+    let fake_message: Vec<u8> = fake_bulletin_post
+        .try_into()
+        .expect("serialize BulletinPost");
+
+    let sign_coordinator =
+        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+
+    let request_id = format!(
+        "sign-not-posted-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+
+    let sign_result = sign_coordinator
+        .initiate_signing(
+            request_id,
+            ring_pk_bytes,
+            fake_message,
+            &peer_ids,
+            ring_payload.threshold as usize,
+            ring_payload.peer_ids.len(),
+            &ring_payload.public_polynomial,
+        )
+        .await;
+
+    // Signing should fail because the post doesn't exist on the bulletin
+    assert!(
+        sign_result.is_err(),
+        "Signing should fail when BulletinPost doesn't exist on bulletin"
+    );
+
+    println!("SUCCESS! Signing correctly failed when post not on bulletin");
+
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
+/// Test that signing fails when the payload is tampered (doesn't match bulletin)
+#[tokio::test]
+async fn test_sign_fails_tampered_payload() {
+    let db_name = "test_sign_fails_tampered_payload";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    println!("=== Starting Sign Fails Tampered Payload Test ===\n");
+
+    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let peer_ids = network.get_all_peer_ids();
+
+    // Run DKG
+    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let request = StartDkgRequest {
+        threshold: 2,
+        peer_ids: peer_ids.clone(),
+    };
+
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
+
+    let result = node1_service
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
+        .await;
+    assert!(result.is_ok());
+
+    let (ring_payload, ring_id) = wait_for_dkg_completion(
+        &network,
+        result.unwrap().into_inner().session_id.parse().unwrap(),
+    )
+    .await;
+
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+
+    // First, create and post a legitimate document
+    let namespace = "test_tamper_namespace";
+    let original_doc = DocumentPayload {
+        ring_id: ring_id.clone(),
+        document: "original_document".to_string(),
+        policy_id: "test_policy".to_string(),
+        resource: "test_resource".to_string(),
+        permission: "read".to_string(),
+    };
+
+    let original_payload: Vec<u8> = original_doc.try_into().expect("serialize");
+    let full_namespace = format!("bulletin/{}", namespace);
+    let post_id = network
+        .alice
+        .app_state
+        .bulletin
+        .get_post_id(&full_namespace, &original_payload)
+        .expect("get post_id");
+
+    // Post the original document
+    network
+        .alice
+        .app_state
+        .bulletin
+        .post(
+            namespace.to_string(),
+            original_payload.clone(),
+            BULLETIN_PLACEHOLDER_PROOF.to_vec(),
+            None,
+        )
+        .await
+        .expect("post to bulletin");
+
+    // Now create a tampered BulletinPost with same ID but different payload
+    let tampered_doc = DocumentPayload {
+        ring_id: ring_id.clone(),
+        document: "TAMPERED_document".to_string(), // Different content!
+        policy_id: "test_policy".to_string(),
+        resource: "test_resource".to_string(),
+        permission: "read".to_string(),
+    };
+
+    let tampered_payload: Vec<u8> = tampered_doc.try_into().expect("serialize");
+
+    let tampered_bulletin_post = BulletinPost {
+        id: post_id, // Same ID as the posted one
+        namespace: namespace.to_string(),
+        payload: tampered_payload, // But different payload!
+        proof: BULLETIN_PLACEHOLDER_PROOF.to_vec(),
+    };
+
+    let tampered_message: Vec<u8> = tampered_bulletin_post
+        .try_into()
+        .expect("serialize BulletinPost");
+
+    let sign_coordinator =
+        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+
+    let request_id = format!(
+        "sign-tampered-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+
+    let sign_result = sign_coordinator
+        .initiate_signing(
+            request_id,
+            ring_pk_bytes,
+            tampered_message,
+            &peer_ids,
+            ring_payload.threshold as usize,
+            ring_payload.peer_ids.len(),
+            &ring_payload.public_polynomial,
+        )
+        .await;
+
+    // Signing should fail because the payload doesn't match what's on bulletin
+    assert!(
+        sign_result.is_err(),
+        "Signing should fail when payload is tampered"
+    );
+
+    println!("SUCCESS! Signing correctly failed with tampered payload");
+
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
+/// Test that signing fails when ring_id references a non-existent ring
+#[tokio::test]
+async fn test_sign_fails_invalid_ring_id() {
+    let db_name = "test_sign_fails_invalid_ring_id";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    println!("=== Starting Sign Fails Invalid Ring ID Test ===\n");
+
+    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let peer_ids = network.get_all_peer_ids();
+
+    // Run DKG
+    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let request = StartDkgRequest {
+        threshold: 2,
+        peer_ids: peer_ids.clone(),
+    };
+
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
+
+    let result = node1_service
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
+        .await;
+    assert!(result.is_ok());
+
+    let (ring_payload, _ring_id) = wait_for_dkg_completion(
+        &network,
+        result.unwrap().into_inner().session_id.parse().unwrap(),
+    )
+    .await;
+
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+
+    // Create a document with a fake ring_id that doesn't exist
+    let namespace = "test_invalid_ring_namespace";
+    let doc_with_fake_ring = DocumentPayload {
+        ring_id: "fake_ring_id_that_doesnt_exist_on_bulletin".to_string(),
+        document: "test_document".to_string(),
+        policy_id: "test_policy".to_string(),
+        resource: "test_resource".to_string(),
+        permission: "read".to_string(),
+    };
+
+    let payload_bytes: Vec<u8> = doc_with_fake_ring.try_into().expect("serialize");
+    let full_namespace = format!("bulletin/{}", namespace);
+    let post_id = network
+        .alice
+        .app_state
+        .bulletin
+        .get_post_id(&full_namespace, &payload_bytes)
+        .expect("get post_id");
+
+    // Post this document (it will be on bulletin, but ring_id is invalid)
+    network
+        .alice
+        .app_state
+        .bulletin
+        .post(
+            namespace.to_string(),
+            payload_bytes.clone(),
+            BULLETIN_PLACEHOLDER_PROOF.to_vec(),
+            None,
+        )
+        .await
+        .expect("post to bulletin");
+
+    let bulletin_post = BulletinPost {
+        id: post_id,
+        namespace: namespace.to_string(),
+        payload: payload_bytes,
+        proof: BULLETIN_PLACEHOLDER_PROOF.to_vec(),
+    };
+
+    let message: Vec<u8> = bulletin_post.try_into().expect("serialize BulletinPost");
+
+    let sign_coordinator =
+        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+
+    let request_id = format!(
+        "sign-invalid-ring-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+
+    let sign_result = sign_coordinator
+        .initiate_signing(
+            request_id,
+            ring_pk_bytes,
+            message,
+            &peer_ids,
+            ring_payload.threshold as usize,
+            ring_payload.peer_ids.len(),
+            &ring_payload.public_polynomial,
+        )
+        .await;
+
+    // Signing should fail because the ring_id doesn't exist on bulletin
+    assert!(
+        sign_result.is_err(),
+        "Signing should fail when ring_id references non-existent ring"
+    );
+
+    println!("SUCCESS! Signing correctly failed with invalid ring_id");
+
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
