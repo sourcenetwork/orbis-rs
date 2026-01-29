@@ -4,7 +4,7 @@ use crate::metrics;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
-use bulletin::r#trait::{DocumentPayload, RingPayload};
+use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{CryptoDeserialize, Dkg, EncryptionProof, Secret, ThresholdDealer};
 use proto::store_secret_service::{
@@ -148,14 +148,19 @@ where
 
         self.state
             .bulletin
-            .post(req.namespace.clone(), payload_bytes.clone(), proof, None)
+            .post(
+                req.namespace.clone(),
+                payload_bytes.clone(),
+                proof.clone(),
+                None,
+            )
             .await
             .map_err(|e| StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e)))?;
 
         let created_at = current_time as i64;
 
         tracing::info!(
-            object_id = %object_id.clone(),
+            object_id = %object_id,
             ring_id = %req.ring_id,
             namespace = %req.namespace,
             owner = %token.issuer_id,
@@ -165,14 +170,29 @@ where
         let mut signature = "".to_string();
 
         if req.with_proof {
+            // Construct the BulletinPost that was stored
+            let bulletin_post = BulletinPost {
+                id: object_id.clone(),
+                namespace: req.namespace.clone(),
+                payload: payload_bytes.clone(),
+                proof: proof.clone(),
+            };
+
+            // Serialize BulletinPost to bytes for signing
+            let message_to_sign: Vec<u8> = bulletin_post.try_into().map_err(|e| {
+                StoreSecretError::Serialization(format!("Failed to serialize BulletinPost: {}", e))
+            })?;
+
+            // Generate random session id
+            let session_id: u64 = rand::random();
             let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
             let response_bytes = coordinator
                 .initiate_signing(
-                    object_id.clone(),
+                    session_id.to_string(),
                     hex::decode(&ring_payload.ring_pk).map_err(|e| {
                         StoreSecretError::Validation(format!("Invalid ring_pk hex: {}", e))
                     })?,
-                    payload_bytes,
+                    message_to_sign,
                     &ring_payload.peer_ids,
                     ring_payload.threshold as usize,
                     ring_payload.peer_ids.len(),

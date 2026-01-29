@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 /// Struct for posting to the Bulletin
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize, Debug)]
 pub struct BulletinPost {
     pub id: String,
     pub namespace: String,
@@ -43,6 +43,22 @@ impl TryFrom<BulletinPost> for DocumentPayload {
 
     fn try_from(post: BulletinPost) -> Result<Self> {
         serde_json::from_slice(&post.payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<Vec<u8>> for BulletinPost {
+    type Error = BulletinError;
+
+    fn try_from(bytes: Vec<u8>) -> Result<Self> {
+        serde_json::from_slice(&bytes).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<BulletinPost> for Vec<u8> {
+    type Error = BulletinError;
+
+    fn try_from(post: BulletinPost) -> Result<Self> {
+        serde_json::to_vec(&post).map_err(|e| BulletinError::ParseError(e.to_string()))
     }
 }
 

@@ -11,10 +11,12 @@
 //! - Manages signature share collection and recovery
 
 use crate::app_state::AppState;
+use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::sign::error::{Result, SignError};
 use crate::sign::messages::SignMessage;
 use ark_bls12_381::{Fr, G1Affine};
+use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::bls12_381::common::G2Point;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ThresholdSigner,
@@ -81,7 +83,6 @@ where
                 request_id,
                 from_node_id,
                 message,
-                ring_pk,
             } => {
                 tracing::info!(
                     request_id = %request_id,
@@ -90,7 +91,7 @@ where
                 );
 
                 // Handle the sign request
-                self.handle_sign_request(request_id, from_node_id, message, ring_pk)
+                self.handle_sign_request(request_id, from_node_id, message)
                     .await
             }
             SignMessage::SignResponse { .. } => {
@@ -118,14 +119,19 @@ where
         request_id: String,
         from_node_id: u32,
         message: Vec<u8>,
-        ring_pk_bytes: Vec<u8>,
     ) -> Result<Option<SignMessage>> {
-        // 1. Deserialize ring public key to get the storage key
+        // 1. Verify the message exists on bulletin and get the associated ring_pk
+        let ring_pk_hex = self.verify_message(&message).await?;
+
+        // 2. Deserialize ring public key to get the storage key
+        let ring_pk_bytes = hex::decode(&ring_pk_hex).map_err(|e| {
+            SignError::Deserialization(format!("Failed to decode ring_pk hex: {}", e))
+        })?;
         let ring_pk = <D::PublicKey>::from_bytes(&ring_pk_bytes[..]).map_err(|e| {
             SignError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
         })?;
 
-        // 2. Retrieve final share from local storage
+        // 3. Retrieve final share from local storage
         let final_share_bytes = self
             .app_state
             .local_storage
@@ -142,28 +148,28 @@ where
                 SignError::Storage("Final share not found in storage for ring_pk".to_string())
             })?;
 
-        // 3. Deserialize final share
+        // 4. Deserialize final share
         let pri_share: PriShare<D::ShareValue> =
             PriShare::from_bytes(&final_share_bytes).map_err(|e| {
                 SignError::Deserialization(format!("Failed to deserialize final share: {}", e))
             })?;
         let node_id = pri_share.i;
 
-        // 4. Create distributed key share
+        // 5. Create distributed key share
         let dist_key_share = DistKeyShare { pri_share };
 
-        // 5. Sign the message (hash-to-curve is handled internally by the signer)
+        // 6. Sign the message (hash-to-curve is handled internally by the signer)
         let signer = S::new();
         let sig_share = signer
             .sign(&dist_key_share, &message)
             .map_err(|e| SignError::Crypto(format!("Signing failed: {}", e)))?;
 
-        // 6. Serialize the signature share
+        // 7. Serialize the signature share
         let sig_share_bytes = sig_share.v.to_bytes().map_err(|e| {
             SignError::Serialization(format!("Failed to serialize signature share: {}", e))
         })?;
 
-        // 7. Create response message
+        // 8. Create response message
         let response = SignMessage::SignResponse {
             request_id: request_id.clone(),
             from_node_id: node_id,
@@ -402,7 +408,6 @@ where
                 request_id: request_id.clone(),
                 from_node_id: node_id,
                 message: message.clone(),
-                ring_pk: ring_pk_bytes.clone(),
             };
 
             let peer_id = peer_id_str.clone();
@@ -587,5 +592,73 @@ where
             .store_response(&request_id, message)
             .await;
         tracing::debug!(request_id = %request_id, "Sign Coordinator: Stored response");
+    }
+
+    /// Verify that a message exists on the bulletin and return the associated ring public key
+    ///
+    /// This provides security by ensuring:
+    /// 1. The message was actually posted to the bulletin (existence proof)
+    /// 2. The payload content matches what's on the bulletin (integrity)
+    /// 3. The ring_pk is derived from the bulletin's trusted data, not the requester
+    async fn verify_message(&self, message: &[u8]) -> Result<String> {
+        // 1. Deserialize the BulletinPost from the message
+        let post: BulletinPost = message.to_vec().try_into().map_err(|e| {
+            SignError::Deserialization(format!("Failed to deserialize BulletinPost: {}", e))
+        })?;
+
+        // 2. Verify it exists on bulletin (read by namespace + id)
+        let actual_post = self
+            .app_state
+            .bulletin
+            .read(post.namespace.clone(), post.id.clone())
+            .await
+            .map_err(|e| {
+                SignError::VerificationFailed(format!(
+                    "Failed to read from bulletin (namespace={}, id={}): {}",
+                    post.namespace, post.id, e
+                ))
+            })?;
+
+        // 3. Verify payload matches what's on bulletin
+        if actual_post.payload != post.payload {
+            return Err(SignError::VerificationFailed(
+                "Payload mismatch: message payload does not match bulletin".to_string(),
+            ));
+        }
+
+        // 4. Parse the DocumentPayload to get ring_id
+        let doc_payload: DocumentPayload = serde_json::from_slice(&post.payload).map_err(|e| {
+            SignError::Deserialization(format!("Failed to parse DocumentPayload: {}", e))
+        })?;
+
+        // 5. Look up ring info from bulletin
+        let ring_info = self
+            .app_state
+            .bulletin
+            .read(
+                BULLETIN_RING_NAMESPACE.to_string(),
+                doc_payload.ring_id.clone(),
+            )
+            .await
+            .map_err(|e| {
+                SignError::VerificationFailed(format!(
+                    "Failed to read ring info for ring_id={}: {}",
+                    doc_payload.ring_id, e
+                ))
+            })?;
+
+        let ring_payload: RingPayload =
+            serde_json::from_slice(&ring_info.payload).map_err(|e| {
+                SignError::Deserialization(format!("Failed to parse RingPayload: {}", e))
+            })?;
+
+        tracing::debug!(
+            post_id = %post.id,
+            ring_id = %doc_payload.ring_id,
+            "Sign Coordinator: Message verified on bulletin"
+        );
+
+        // 6. Return ring_pk for signing
+        Ok(ring_payload.ring_pk)
     }
 }

@@ -396,11 +396,11 @@ async fn test_init_node_with_encrypted_storage() {
 // against them. If orbis-node changes break cli-tool, these tests will fail.
 
 mod cli_tool_integration {
-    use crate::constants::BULLETIN_RING_NAMESPACE;
+    use crate::constants::{BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE};
     use ark_bls12_381::{Fr, G1Affine, G1Projective};
     use ark_ec::Group;
     use ark_std::UniformRand;
-    use bulletin::r#trait::{DocumentPayload, RingPayload};
+    use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
     use bulletin::sourcehub::SourceHubBulletin;
     use common::IntegrationTestNetwork;
     use crypto::bls12_381::pre::ThresholdDealerNode;
@@ -653,6 +653,17 @@ mod cli_tool_integration {
         let manual: DocumentPayload = serde_json::from_slice(&manual_bytes).expect("parse manual");
         let service: DocumentPayload =
             serde_json::from_slice(&service_bytes).expect("parse service");
+        let bulletin_post = BulletinPost {
+            id: object_id_service.clone(),
+            namespace: namespace.clone(),
+            payload: service_bytes.clone(),
+            proof: BULLETIN_PLACEHOLDER_PROOF.to_vec(),
+        };
+
+        // Serialize BulletinPost to bytes (this is what was signed)
+        let message_bytes: Vec<u8> = bulletin_post
+            .try_into()
+            .expect("serialize BulletinPost to bytes");
 
         assert_eq!(manual.ring_id, service.ring_id, "ring_id mismatch");
         assert_eq!(manual.policy_id, service.policy_id, "policy_id mismatch");
@@ -660,7 +671,7 @@ mod cli_tool_integration {
         assert_eq!(manual.permission, service.permission, "permission mismatch");
 
         // Verify the BLS signature against the ring public key
-        // The signature was created over service_bytes (the serialized DocumentPayload)
+        // The signature was created over the serialized BulletinPost
         let signature_bytes = hex::decode(&signature_hex).expect("decode signature hex");
         let signature =
             <ThresholdBlsSigner as ThresholdSigner>::Signature::from_bytes(&signature_bytes)
@@ -671,7 +682,7 @@ mod cli_tool_integration {
 
         let signer = ThresholdBlsSigner::new();
         signer
-            .verify(&ring_pk, &service_bytes, &signature)
+            .verify(&ring_pk, &message_bytes, &signature)
             .expect("BLS signature should verify against ring public key");
 
         // Run PRE to verify full flow works

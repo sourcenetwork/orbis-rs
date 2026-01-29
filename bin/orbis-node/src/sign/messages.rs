@@ -14,8 +14,6 @@ pub enum SignMessage {
         from_node_id: u32,
         /// Raw message to sign (will be hashed internally using hash-to-curve)
         message: Vec<u8>,
-        /// Ring's aggregate public key (for identifying which ring/DKG session)
-        ring_pk: Vec<u8>,
     },
     /// Response from ring node to coordinator with signature share
     SignResponse {
