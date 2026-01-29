@@ -343,5 +343,12 @@ fn validate_store_secret_claims(
         )));
     }
 
+    if token.claims.with_proof != req.with_proof {
+        return Err(StoreSecretError::Unauthorized(format!(
+            "Token with_proof '{:?}' does not match request with_proof '{:?}'",
+            token.claims.with_proof, req.with_proof
+        )));
+    }
+
     Ok(())
 }

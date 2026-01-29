@@ -190,6 +190,7 @@ pub async fn do_store_secret(
             proof.shared_point,
             proof.challenge,
             proof.response,
+            with_proof,
         )
         .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
 
