@@ -1,5 +1,5 @@
 use crate::{
-    error::Result,
+    error::{BulletinError, Result},
     r#trait::{Bulletin, BulletinPost},
 };
 use async_trait::async_trait;
@@ -44,7 +44,10 @@ impl Bulletin for DummyBulletin {
 
     async fn read(&self, namespace: String, id: String) -> Result<BulletinPost> {
         let posts = self.posts.lock().unwrap();
-        Ok(posts.get(&(namespace, id)).cloned().unwrap_or_default())
+        posts
+            .get(&(namespace.clone(), id.clone()))
+            .cloned()
+            .ok_or(BulletinError::NotFound { namespace, id })
     }
 
     fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String> {

@@ -409,7 +409,6 @@ mod cli_tool_integration {
     use crypto::{CryptoDeserialize, CryptoSerialize};
     use rand_core::OsRng;
     use tokio::time::{sleep, Duration};
-    use tracing_subscriber;
 
     /// Docker-based integration test: Run DKG and PRE using Docker Compose
     ///
@@ -421,11 +420,12 @@ mod cli_tool_integration {
     #[tokio::test]
     #[serial_test::serial]
     async fn test_cli_calls_dkg_and_pre_endpoint() {
+        // use tracing_subscriber;
         // Initialize tracing for debugging
-        let _ = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
-            .with_test_writer()
-            .try_init();
+        // let _ = tracing_subscriber::fmt()
+        //     .with_max_level(tracing::Level::DEBUG)
+        //     .with_test_writer()
+        //     .try_init();
 
         println!("Starting Docker-based integration test...");
 

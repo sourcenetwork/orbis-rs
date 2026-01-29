@@ -143,19 +143,47 @@ where
             .get_post_id(&full_namespace, &payload_bytes)
             .map_err(|e| StoreSecretError::Storage(format!("Failed to compute post ID: {}", e)))?;
 
-        // 6. Post to bulletin
+        // 6. Post to bulletin (only if it doesn't already exist)
         let proof = BULLETIN_PLACEHOLDER_PROOF.to_vec();
 
-        self.state
+        // Check if the post already exists (read returns NotFound error if not found)
+        let post_exists = match self
+            .state
             .bulletin
-            .post(
-                req.namespace.clone(),
-                payload_bytes.clone(),
-                proof.clone(),
-                None,
-            )
+            .read(req.namespace.clone(), object_id.clone())
             .await
-            .map_err(|e| StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e)))?;
+        {
+            Ok(_) => true,
+            Err(bulletin::error::BulletinError::NotFound { .. }) => false,
+            Err(e) => {
+                return Err(StoreSecretError::Storage(format!(
+                    "Failed to check existing post: {}",
+                    e
+                ))
+                .into())
+            }
+        };
+
+        if !post_exists {
+            self.state
+                .bulletin
+                .post(
+                    req.namespace.clone(),
+                    payload_bytes.clone(),
+                    proof.clone(),
+                    None,
+                )
+                .await
+                .map_err(|e| {
+                    StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e))
+                })?;
+        } else {
+            tracing::debug!(
+                object_id = %object_id,
+                namespace = %req.namespace,
+                "Post already exists on bulletin, skipping post"
+            );
+        }
 
         let created_at = current_time as i64;
 

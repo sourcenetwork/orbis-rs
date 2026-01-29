@@ -59,7 +59,19 @@ impl Bulletin for SourceHubBulletin {
             .chain_client
             .bulletin_read_post(&namespace, &id)
             .await
-            .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+            .map_err(|e| {
+                let err_str = e.to_string();
+                // Check if this is a "not found" error from the chain
+                // TODO: Fix this, go deeper into bulletin_read_post and return an option
+                if err_str.contains("not found") || err_str.contains("NotFound") {
+                    BulletinError::NotFound {
+                        namespace: namespace.clone(),
+                        id: id.clone(),
+                    }
+                } else {
+                    BulletinError::ChainError(err_str)
+                }
+            })?;
 
         Ok(BulletinPost {
             id: post.id,
