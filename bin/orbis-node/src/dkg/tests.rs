@@ -1,7 +1,7 @@
 use crate::dkg::{coordinator::DkgCoordinator, messages::DkgMessage};
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
-    get_test_bulletin, setup_three_node_network, test_db_path, TestKeyPair,
+    get_test_ring_post, setup_three_node_network, test_db_path, TestKeyPair,
 };
 use crate::DkgServiceImpl;
 use bulletin::r#trait::RingPayload;
@@ -250,7 +250,11 @@ async fn test_start_dkg_succeeds_on_all_connections() {
         }
 
         // Try to get the ring payload from bulletin (indicates Phase 4 complete)
-        let post = get_test_bulletin(&network.alice.app_state.bulletin).await;
+        let dummy_bulletin = network
+            .dummy_bulletin
+            .as_ref()
+            .expect("DKG tests require DummyBulletin");
+        let post = get_test_ring_post(dummy_bulletin);
 
         // Check if payload is non-empty (DKG complete, ring info posted to bulletin)
         if !post.payload.is_empty() {

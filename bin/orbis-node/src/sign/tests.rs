@@ -3,13 +3,14 @@
 //! This module contains end-to-end tests for the threshold BLS signing protocol.
 //! These tests verify the complete flow: DKG → Sign message → Verify signature.
 
+use crate::constants::BULLETIN_PLACEHOLDER_PROOF;
 use crate::helpers::test_helpers::{
-    cleanup_db, create_authenticated_request, get_test_bulletin,
+    cleanup_db, create_authenticated_request, get_test_ring_post,
     setup_three_node_network_with_sign, test_db_path, TestKeyPair,
 };
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::DkgServiceImpl;
-use bulletin::r#trait::RingPayload;
+use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, RingPayload};
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::sign::ThresholdBlsSigner;
 use crypto::r#trait::{CryptoDeserialize, Dkg, ThresholdSigner};
@@ -81,7 +82,7 @@ async fn test_dkg_then_sign_end_to_end() {
 
     // Wait for DKG to complete and get the ring payload from bulletin
     println!("Waiting for DKG to complete...");
-    let ring_payload = wait_for_dkg_completion(
+    let (ring_payload, ring_id) = wait_for_dkg_completion(
         &network,
         result.unwrap().into_inner().session_id.parse().unwrap(),
     )
@@ -94,13 +95,19 @@ async fn test_dkg_then_sign_end_to_end() {
     println!("DKG completed! Aggregate public key obtained.");
 
     // =========================================================================
-    // Step 3: Create a message to sign
+    // Step 3: Create a document, post it to bulletin, and get the message to sign
     // =========================================================================
-    println!("\nStep 3: Creating message to sign...");
+    println!("\nStep 3: Creating document and posting to bulletin...");
 
-    let message = b"Hello, threshold BLS signing!";
+    let test_namespace = "test_sign_namespace";
+    let message =
+        create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id, test_namespace)
+            .await;
 
-    println!("Message: {:?}", String::from_utf8_lossy(message));
+    println!(
+        "Document posted to bulletin, message length: {} bytes",
+        message.len()
+    );
 
     // =========================================================================
     // Step 4: Initiate threshold signing
@@ -130,7 +137,7 @@ async fn test_dkg_then_sign_end_to_end() {
         .initiate_signing(
             request_id.clone(),
             ring_pk_bytes.clone(),
-            message.to_vec(),
+            message.clone(),
             &sign_peer_ids,
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
@@ -163,7 +170,7 @@ async fn test_dkg_then_sign_end_to_end() {
 
     // Verify the signature using the ThresholdSigner trait
     let signer = SignImpl::new();
-    let verify_result = signer.verify(&aggregate_pk, message, &signature);
+    let verify_result = signer.verify(&aggregate_pk, &message, &signature);
 
     assert!(
         verify_result.is_ok(),
@@ -187,26 +194,32 @@ async fn test_dkg_then_sign_end_to_end() {
     }
 }
 
-/// Helper function to wait for DKG completion and return the RingPayload
+/// Helper function to wait for DKG completion and return the RingPayload and ring_id
 async fn wait_for_dkg_completion(
     network: &crate::helpers::test_helpers::ThreeNodeNetwork,
     _session_id: u64,
-) -> RingPayload {
+) -> (RingPayload, String) {
     let check_interval = Duration::from_millis(500);
     let max_wait = Duration::from_secs(60);
     let start = std::time::Instant::now();
 
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("sign tests require DummyBulletin");
+
     loop {
         // Check if ring payload has been posted to bulletin (indicates Phase 4 complete)
-        let post = get_test_bulletin(&network.alice.app_state.bulletin).await;
+        let post = get_test_ring_post(dummy_bulletin);
 
         // Check if payload is non-empty (DKG complete, ring info posted to bulletin)
         if !post.payload.is_empty() {
             // Parse RingPayload from bulletin post
-            let ring_payload: RingPayload = post.try_into().expect("parse RingPayload");
+            let ring_payload: RingPayload = post.clone().try_into().expect("parse RingPayload");
+            let ring_id = post.id.clone();
 
             println!("All nodes have computed the same aggregate public key!");
-            return ring_payload;
+            return (ring_payload, ring_id);
         }
 
         if start.elapsed() > max_wait {
@@ -215,6 +228,57 @@ async fn wait_for_dkg_completion(
 
         sleep(check_interval).await;
     }
+}
+
+/// Helper function to create a DocumentPayload, post it to bulletin, and return the serialized BulletinPost
+async fn create_test_document_and_post(
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    ring_id: &str,
+    namespace: &str,
+) -> Vec<u8> {
+    // Create a test DocumentPayload
+    let doc_payload = DocumentPayload {
+        ring_id: ring_id.to_string(),
+        document: "test_encrypted_document".to_string(),
+        policy_id: "test_policy".to_string(),
+        resource: "test_resource".to_string(),
+        permission: "read".to_string(),
+    };
+
+    // Serialize DocumentPayload to bytes
+    let payload_bytes: Vec<u8> = doc_payload
+        .clone()
+        .try_into()
+        .expect("serialize DocumentPayload");
+
+    // Compute the post ID
+    let full_namespace = format!("bulletin/{}", namespace);
+    let post_id = bulletin
+        .get_post_id(&full_namespace, &payload_bytes)
+        .expect("compute post_id");
+
+    // Post to bulletin
+    let proof = BULLETIN_PLACEHOLDER_PROOF.to_vec();
+    bulletin
+        .post(
+            namespace.to_string(),
+            payload_bytes.clone(),
+            proof.clone(),
+            None,
+        )
+        .await
+        .expect("post to bulletin");
+
+    // Create the BulletinPost that was stored (this is what gets signed)
+    let bulletin_post = BulletinPost {
+        id: post_id,
+        namespace: namespace.to_string(),
+        payload: payload_bytes,
+        proof,
+    };
+
+    // Serialize BulletinPost to bytes
+    bulletin_post.try_into().expect("serialize BulletinPost")
 }
 
 /// Test signing with different message hashes
@@ -251,7 +315,7 @@ async fn test_sign_different_messages() {
         .await;
     assert!(result.is_ok());
 
-    let ring_payload = wait_for_dkg_completion(
+    let (ring_payload, ring_id) = wait_for_dkg_completion(
         &network,
         result.unwrap().into_inner().session_id.parse().unwrap(),
     )
@@ -261,10 +325,15 @@ async fn test_sign_different_messages() {
     let aggregate_pk =
         <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
 
-    // Sign two different messages
-    let messages: [&[u8]; 2] = [b"First message", b"Second message"];
+    // Sign two different documents
+    let namespaces = ["test_namespace_1", "test_namespace_2"];
 
-    for (i, message) in messages.iter().enumerate() {
+    for (i, namespace) in namespaces.iter().enumerate() {
+        // Create and post a document for each message
+        let message =
+            create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id, namespace)
+                .await;
+
         let sign_coordinator =
             SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
 
@@ -281,7 +350,7 @@ async fn test_sign_different_messages() {
             .initiate_signing(
                 request_id,
                 ring_pk_bytes.clone(),
-                message.to_vec(),
+                message.clone(),
                 &peer_ids,
                 ring_payload.threshold as usize,
                 ring_payload.peer_ids.len(),
@@ -298,7 +367,7 @@ async fn test_sign_different_messages() {
 
         let signer = SignImpl::new();
         assert!(
-            signer.verify(&aggregate_pk, *message, &signature).is_ok(),
+            signer.verify(&aggregate_pk, &message, &signature).is_ok(),
             "Signature {} should verify",
             i
         );
@@ -351,7 +420,7 @@ async fn test_sign_fails_wrong_message() {
         .await;
     assert!(result.is_ok());
 
-    let ring_payload = wait_for_dkg_completion(
+    let (ring_payload, ring_id) = wait_for_dkg_completion(
         &network,
         result.unwrap().into_inner().session_id.parse().unwrap(),
     )
@@ -361,8 +430,13 @@ async fn test_sign_fails_wrong_message() {
     let aggregate_pk =
         <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
 
-    // Sign a message
-    let original_message = b"Original message";
+    // Create and post a document, then sign it
+    let original_message = create_test_document_and_post(
+        &network.alice.app_state.bulletin,
+        &ring_id,
+        "test_wrong_msg_namespace",
+    )
+    .await;
 
     let sign_coordinator =
         SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
@@ -379,7 +453,7 @@ async fn test_sign_fails_wrong_message() {
         .initiate_signing(
             request_id,
             ring_pk_bytes.clone(),
-            original_message.to_vec(),
+            original_message.clone(),
             &peer_ids,
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
@@ -397,13 +471,13 @@ async fn test_sign_fails_wrong_message() {
     let signer = SignImpl::new();
     assert!(
         signer
-            .verify(&aggregate_pk, original_message, &signature)
+            .verify(&aggregate_pk, &original_message, &signature)
             .is_ok(),
         "Signature should verify with correct message"
     );
 
     // Verify with a different message should fail
-    let wrong_message = b"Wrong message";
+    let wrong_message = b"Wrong message that was not signed";
 
     let verify_result = signer.verify(&aggregate_pk, wrong_message, &signature);
     assert!(
@@ -456,7 +530,7 @@ async fn test_sign_response_cleanup() {
         .await;
     assert!(result.is_ok());
 
-    let ring_payload = wait_for_dkg_completion(
+    let (ring_payload, ring_id) = wait_for_dkg_completion(
         &network,
         result.unwrap().into_inner().session_id.parse().unwrap(),
     )
@@ -464,8 +538,13 @@ async fn test_sign_response_cleanup() {
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
-    // Sign a message
-    let message = b"Test message for cleanup";
+    // Create and post a document, then sign it
+    let message = create_test_document_and_post(
+        &network.alice.app_state.bulletin,
+        &ring_id,
+        "test_cleanup_namespace",
+    )
+    .await;
 
     let sign_coordinator =
         SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
@@ -482,7 +561,7 @@ async fn test_sign_response_cleanup() {
         .initiate_signing(
             request_id.clone(),
             ring_pk_bytes.clone(),
-            message.to_vec(),
+            message,
             &peer_ids,
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),

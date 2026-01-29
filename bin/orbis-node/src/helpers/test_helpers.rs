@@ -177,6 +177,8 @@ pub struct ThreeNodeNetwork {
     pub bob: TestNode,
     /// Charlie node (peer)
     pub charlie: TestNode,
+    /// Shared DummyBulletin for direct test access (when using dummy bulletin)
+    pub dummy_bulletin: Option<Arc<DummyBulletin>>,
 }
 
 impl ThreeNodeNetwork {
@@ -248,12 +250,13 @@ impl ThreeNodeNetwork {
 pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> ThreeNodeNetwork {
     println!("Setting up three-node test network...");
 
-    // Create a shared bulletin for all nodes
-    let shared_bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+    // Create a shared DummyBulletin for all nodes (keep concrete type for test access)
+    let dummy_bulletin = Arc::new(
         DummyBulletin::new()
             .await
             .expect("Failed to initialize shared dummy bulletin"),
     );
+    let shared_bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
 
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
     let alice_state = create_test_app_state_with_bulletin(
@@ -393,6 +396,7 @@ pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> Thr
             address: charlie_peer_id_with_addr,
             router: charlie_router,
         },
+        dummy_bulletin: Some(dummy_bulletin),
     }
 }
 
@@ -415,18 +419,25 @@ pub async fn setup_three_node_network_with_pre(
 ) -> ThreeNodeNetwork {
     println!("Setting up three-node test network with DKG and PRE handlers...");
 
-    // Create a shared bulletin for all nodes
-    let shared_bulletin: Arc<dyn Bulletin + Send + Sync> = if dummy_bulletin {
-        Arc::new(
+    // Create a shared bulletin for all nodes (keep concrete DummyBulletin for test access)
+    let (shared_bulletin, dummy_bulletin_arc): (
+        Arc<dyn Bulletin + Send + Sync>,
+        Option<Arc<DummyBulletin>>,
+    ) = if dummy_bulletin {
+        let db = Arc::new(
             DummyBulletin::new()
                 .await
                 .expect("Failed to initialize shared dummy bulletin"),
-        )
+        );
+        (db.clone(), Some(db))
     } else {
-        Arc::new(
-            BulletinImpl::new(ChainConfigBuilder::default())
-                .await
-                .expect("Failed to initialize shared bulletin"),
+        (
+            Arc::new(
+                BulletinImpl::new(ChainConfigBuilder::default())
+                    .await
+                    .expect("Failed to initialize shared bulletin"),
+            ),
+            None,
         )
     };
 
@@ -569,6 +580,7 @@ pub async fn setup_three_node_network_with_pre(
             address: charlie_peer_id_with_addr,
             router: charlie_router,
         },
+        dummy_bulletin: dummy_bulletin_arc,
     }
 }
 
@@ -594,18 +606,25 @@ pub async fn setup_three_node_network_with_sign(
 ) -> ThreeNodeNetwork {
     println!("Setting up three-node test network with DKG, PRE, and Sign handlers...");
 
-    // Create a shared bulletin for all nodes
-    let shared_bulletin: Arc<dyn Bulletin + Send + Sync> = if dummy_bulletin {
-        Arc::new(
+    // Create a shared bulletin for all nodes (keep concrete DummyBulletin for test access)
+    let (shared_bulletin, dummy_bulletin_arc): (
+        Arc<dyn Bulletin + Send + Sync>,
+        Option<Arc<DummyBulletin>>,
+    ) = if dummy_bulletin {
+        let db = Arc::new(
             DummyBulletin::new()
                 .await
                 .expect("Failed to initialize shared dummy bulletin"),
-        )
+        );
+        (db.clone(), Some(db))
     } else {
-        Arc::new(
-            BulletinImpl::new(ChainConfigBuilder::default())
-                .await
-                .expect("Failed to initialize shared bulletin"),
+        (
+            Arc::new(
+                BulletinImpl::new(ChainConfigBuilder::default())
+                    .await
+                    .expect("Failed to initialize shared bulletin"),
+            ),
+            None,
         )
     };
 
@@ -753,6 +772,7 @@ pub async fn setup_three_node_network_with_sign(
             address: charlie_peer_id_with_addr,
             router: charlie_router,
         },
+        dummy_bulletin: dummy_bulletin_arc,
     }
 }
 
@@ -769,12 +789,11 @@ pub fn cleanup_db(path: &str) {
     let _ = fs::remove_file(path);
 }
 
-/// Get bulletin ring info for tests
-pub async fn get_test_bulletin(bulletin: &Arc<dyn Bulletin + Send + Sync>) -> BulletinPost {
-    bulletin
-        .read(BULLETIN_RING_NAMESPACE.to_string(), "test".to_string())
-        .await
-        .unwrap()
+/// Get bulletin ring info for tests using the DummyBulletin directly
+/// Returns the first post in the BULLETIN_RING_NAMESPACE, or a default empty post if none found
+pub fn get_test_ring_post(dummy_bulletin: &DummyBulletin) -> BulletinPost {
+    let posts = dummy_bulletin.get_posts_by_namespace(BULLETIN_RING_NAMESPACE);
+    posts.into_iter().next().unwrap_or_default()
 }
 
 /// Wait for multiple gRPC endpoints to become ready
