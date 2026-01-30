@@ -4,7 +4,7 @@
 //! These tests verify the complete flow: DKG → Alice encrypts → PRE to Bob → Bob decrypts.
 
 use crate::helpers::test_helpers::{
-    cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_bulletin,
+    cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_ring_post,
     setup_three_node_network_with_pre, test_db_path, TestKeyPair,
 };
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
@@ -33,6 +33,7 @@ type PreImpl = ThresholdDealerNode;
 /// 4. The nodes perform PRE to re-encrypt the secret to Bob's public key
 /// 5. Bob decrypts the secret using his private key
 #[tokio::test]
+#[serial_test::serial]
 async fn test_dkg_then_pre_end_to_end() {
     let db_name = "test_dkg_then_pre_end_to_end";
     let db_paths = [
@@ -259,9 +260,14 @@ async fn wait_for_dkg_completion(
     let max_wait = Duration::from_secs(60);
     let start = std::time::Instant::now();
 
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("PRE tests require DummyBulletin");
+
     loop {
         // Check if ring payload has been posted to bulletin (indicates Phase 4 complete)
-        let post = get_test_bulletin(&network.alice.app_state.bulletin).await;
+        let post = get_test_ring_post(dummy_bulletin);
 
         // Check if payload is non-empty (DKG complete, ring info posted to bulletin)
         if !post.payload.is_empty() {
@@ -282,6 +288,7 @@ async fn wait_for_dkg_completion(
 
 /// Test PRE with a larger secret
 #[tokio::test]
+#[serial_test::serial]
 async fn test_pre_with_large_secret() {
     let db_name = "test_pre_with_large_secret";
     let db_paths = [

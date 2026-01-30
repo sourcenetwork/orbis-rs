@@ -9,17 +9,22 @@ use crate::helpers::test_helpers::{
     create_test_app_state_with_bulletin, test_db_path, TestKeyPair,
 };
 use crate::store_secret::StoreSecretServiceImpl;
+use ark_bls12_381::G1Affine;
+use ark_ec::AffineRepr;
 use bulletin::dummy::DummyBulletin;
-use bulletin::r#trait::{BulletinPost, RingPayload};
+use bulletin::r#trait::{Bulletin, BulletinPost, RingPayload};
+use crypto::bls12_381::pre::ThresholdDealerNode;
+use crypto::bls12_381::sign::ThresholdBlsSigner;
+use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest,
 };
 use std::sync::Arc;
 use tonic::Request;
-
 // Concrete crypto implementations for tests
 use crypto::bls12_381::dkg::DKGNode;
 type DkgImpl = DKGNode;
+pub type SignImpl = ThresholdBlsSigner;
 
 /// Default test values for StoreSecret requests
 const TEST_ENCRYPTED_DOC: &str = "{}";
@@ -80,6 +85,7 @@ fn create_dummy_request() -> StoreSecretRequest {
         shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
+        with_proof: false,
     }
 }
 
@@ -97,6 +103,7 @@ fn create_test_jwt(test_keys: &TestKeyPair) -> String {
             TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            false,
         )
         .expect("Failed to create JWT")
 }
@@ -107,7 +114,7 @@ async fn test_store_secret_fails_missing_auth_header() {
     let db_name = "test_store_secret_fails_missing_auth_header";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     let request = create_dummy_request();
 
@@ -142,7 +149,7 @@ async fn test_store_secret_fails_malformed_jwt() {
     let db_name = "test_store_secret_fails_malformed_jwt";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     let request = create_dummy_request();
 
@@ -171,7 +178,7 @@ async fn test_store_secret_fails_claims_mismatch() {
     let db_name = "test_store_secret_fails_claims_mismatch";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     // Create JWT with one ring_id but request with different ring_id
     let test_keys = TestKeyPair::new();
@@ -187,6 +194,7 @@ async fn test_store_secret_fails_claims_mismatch() {
             TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            false,
         )
         .expect("Failed to create JWT");
 
@@ -223,7 +231,7 @@ async fn test_store_secret_fails_namespace_mismatch() {
     let db_name = "test_store_secret_fails_namespace_mismatch";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     // Create JWT with one namespace but request with different namespace
     let test_keys = TestKeyPair::new();
@@ -239,6 +247,7 @@ async fn test_store_secret_fails_namespace_mismatch() {
             TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            false,
         )
         .expect("Failed to create JWT");
 
@@ -275,7 +284,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
     let db_name = "test_store_secret_fails_invalid_encrypted_document";
     let db_path = test_db_path(db_name);
     let app_state = create_app_state_with_ring(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     // Use invalid encrypted_document that will fail validation
     let invalid_encrypted_doc = "not valid json";
@@ -294,6 +303,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
             TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            false,
         )
         .expect("Failed to create JWT");
 
@@ -309,6 +319,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
+        with_proof: false,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -341,7 +352,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
     let db_name = "test_store_secret_fails_invalid_encryption_proof";
     let db_path = test_db_path(db_name);
     let app_state = create_app_state_with_ring(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     // Create a valid Secret struct with enc_cmt matching TEST_RING_PK format
     let enc_cmt_bytes = hex::decode(TEST_RING_PK).expect("decode TEST_RING_PK");
@@ -370,6 +381,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
             invalid_shared_point.clone(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            false,
         )
         .expect("Failed to create JWT");
 
@@ -384,6 +396,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
         shared_point: invalid_shared_point,
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
+        with_proof: false,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -409,7 +422,7 @@ async fn test_store_secret_fails_wrong_signature() {
     let db_name = "test_store_secret_fails_wrong_signature";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     // Create a valid JWT
     let key_pair = TestKeyPair::new();
@@ -446,5 +459,174 @@ async fn test_store_secret_fails_wrong_signature() {
         tonic::Code::Unauthenticated,
         "Error code should be Unauthenticated for invalid signature"
     );
+    cleanup_db(&db_path);
+}
+
+/// Test that StoreSecret is idempotent - storing the same secret twice should succeed
+/// and not create duplicate posts on the bulletin
+#[tokio::test]
+async fn test_store_secret_idempotent() {
+    let db_name = "test_store_secret_idempotent";
+    let db_path = test_db_path(db_name);
+
+    // Create bulletin and keep a reference for verification
+    let bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to create DummyBulletin"),
+    );
+
+    // Create a valid ring with real crypto
+    let ring_pk = G1Affine::generator();
+    let ring_pk_bytes = ring_pk.to_bytes().expect("serialize ring_pk");
+    let ring_pk_hex = hex::encode(&ring_pk_bytes);
+
+    let ring_payload = RingPayload {
+        ring_pk: ring_pk_hex.clone(),
+        peer_ids: vec!["peer1".to_string()],
+        threshold: 1,
+        public_polynomial: "00".to_string(),
+    };
+
+    // Compute the ring_id (deterministic hash of the ring payload)
+    let ring_payload_bytes: Vec<u8> = ring_payload
+        .clone()
+        .try_into()
+        .expect("serialize RingPayload");
+    let full_ring_namespace = format!("bulletin/{}", BULLETIN_RING_NAMESPACE);
+    let ring_id = bulletin
+        .get_post_id(&full_ring_namespace, &ring_payload_bytes)
+        .expect("compute ring_id");
+
+    // Set ring in bulletin
+    let ring_post = BulletinPost {
+        id: ring_id.clone(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        payload: ring_payload_bytes,
+        proof: vec![],
+    };
+    bulletin.set_post(
+        BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id.clone(),
+        ring_post,
+    );
+
+    // Create app state with this bulletin
+    let app_state =
+        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+
+    // Generate valid encryption proof using ThresholdDealerNode
+    let plaintext = b"test secret data";
+    let (_enc_cmt, secret, proof) =
+        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext).expect("encrypt with proof");
+
+    let encrypted_doc = serde_json::to_string(&secret).expect("serialize Secret");
+    let enc_cmt_hex = hex::encode(secret.enc_cmt.clone());
+    let shared_point_bytes = proof.shared_point.clone();
+    let challenge_bytes = proof.challenge.clone();
+    let response_bytes = proof.response.clone();
+
+    let namespace = "test_idempotent_namespace";
+    let policy_id = "test_policy";
+    let resource = "test_resource";
+    let permission = "read";
+
+    // Create JWT and request
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_store_secret_jwt(
+            &encrypted_doc,
+            &enc_cmt_hex,
+            &ring_id,
+            namespace,
+            policy_id,
+            resource,
+            permission,
+            shared_point_bytes.clone(),
+            challenge_bytes.clone(),
+            response_bytes.clone(),
+            false,
+        )
+        .expect("Failed to create JWT");
+
+    let request1 = StoreSecretRequest {
+        encrypted_document: encrypted_doc.clone(),
+        enc_cmt: enc_cmt_hex.clone(),
+        ring_id: ring_id.clone(),
+        namespace: namespace.to_string(),
+        policy_id: policy_id.to_string(),
+        resource: resource.to_string(),
+        permission: permission.to_string(),
+        shared_point: shared_point_bytes.clone(),
+        challenge: challenge_bytes.clone(),
+        response: response_bytes.clone(),
+        with_proof: false,
+    };
+
+    // First store - should succeed
+    let tonic_request1 = create_authenticated_request(request1, &token).unwrap();
+    let result1 = service.store_secret(tonic_request1).await;
+    assert!(
+        result1.is_ok(),
+        "First store_secret should succeed: {:?}",
+        result1.err()
+    );
+    let response1 = result1.unwrap().into_inner();
+    let object_id = response1.object_id.clone();
+    println!("First store succeeded with object_id: {}", object_id);
+
+    // Check bulletin has 1 post in the namespace (plus the ring post in orbis namespace)
+    let posts_after_first = bulletin.get_posts_by_namespace(namespace);
+    assert_eq!(
+        posts_after_first.len(),
+        1,
+        "Should have exactly 1 post after first store"
+    );
+
+    // Second store with same data - should also succeed (idempotent)
+    let request2 = StoreSecretRequest {
+        encrypted_document: encrypted_doc.clone(),
+        enc_cmt: enc_cmt_hex.clone(),
+        ring_id: ring_id.clone(),
+        namespace: namespace.to_string(),
+        policy_id: policy_id.to_string(),
+        resource: resource.to_string(),
+        permission: permission.to_string(),
+        shared_point: shared_point_bytes.clone(),
+        challenge: challenge_bytes.clone(),
+        response: response_bytes.clone(),
+        with_proof: false,
+    };
+
+    let tonic_request2 = create_authenticated_request(request2, &token).unwrap();
+    let result2 = service.store_secret(tonic_request2).await;
+    assert!(
+        result2.is_ok(),
+        "Second store_secret should succeed (idempotent): {:?}",
+        result2.err()
+    );
+    let response2 = result2.unwrap().into_inner();
+    println!(
+        "Second store succeeded with object_id: {}",
+        response2.object_id
+    );
+
+    // Verify same object_id returned
+    assert_eq!(
+        response1.object_id, response2.object_id,
+        "Both stores should return the same object_id"
+    );
+
+    // Check bulletin still has only 1 post (didn't create duplicate)
+    let posts_after_second = bulletin.get_posts_by_namespace(namespace);
+    assert_eq!(
+        posts_after_second.len(),
+        1,
+        "Should still have exactly 1 post after second store (no duplicate)"
+    );
+
+    println!("SUCCESS! StoreSecret is idempotent - second call didn't create duplicate post");
+
     cleanup_db(&db_path);
 }

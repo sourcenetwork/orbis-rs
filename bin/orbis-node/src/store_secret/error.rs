@@ -24,6 +24,9 @@ pub enum StoreSecretError {
 
     #[error("Ring not found: {0}")]
     RingNotFound(String),
+
+    #[error("Signing error: {0}")]
+    Signing(String),
 }
 
 /// Result type for StoreSecret operations
@@ -40,7 +43,8 @@ impl From<StoreSecretError> for tonic::Status {
             StoreSecretError::RingNotFound(_) => tonic::Status::not_found(error.to_string()),
             StoreSecretError::Storage(_)
             | StoreSecretError::Serialization(_)
-            | StoreSecretError::Deserialization(_) => {
+            | StoreSecretError::Deserialization(_)
+            | StoreSecretError::Signing(_) => {
                 metrics::record_store_secret_failed();
                 tonic::Status::internal(error.to_string())
             }

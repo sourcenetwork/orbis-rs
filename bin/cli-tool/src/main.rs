@@ -4,9 +4,10 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg,
-    do_encrypt_secret, do_generate_reader_key, do_pre, do_store_secret, fund, list_bulletin_posts,
-    query_node_info, read_bulletin_post, register_bulletin_namespace, register_object_to_chain,
-    set_relationship_on_chain,
+    do_encrypt_secret, do_generate_reader_key, do_pre, do_store_secret, fund, get_account_sequence,
+    list_bulletin_posts, prepare_secret, query_node_info, read_bulletin_post,
+    register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
+    store_prepared_secret, PreparedSecret,
 };
 use common::blockchain::ChainConfig;
 use hex;
@@ -154,7 +155,46 @@ pub enum SubCommands {
         #[clap(long)]
         namespace: String,
     },
-    /// Store secret by sending it to node
+    /// Prepare a secret for storage (encrypt locally, output JSON for later use)
+    PrepareSecret {
+        /// Plaintext secret to encrypt
+        #[clap(long)]
+        secret: String,
+        /// Ring public key (hex) - used for encryption
+        #[clap(long)]
+        ring_pk_hex: String,
+    },
+    /// Store a prepared (pre-encrypted) secret - idempotent, safe for retries
+    StorePreparedSecret {
+        /// gRPC endpoint of the node to use
+        #[clap(long)]
+        endpoint: String,
+        /// Prepared secret JSON (from prepare-secret command)
+        #[clap(long)]
+        prepared_json: String,
+        /// Ring id of ring to encrypt to
+        #[clap(long)]
+        ring_id: String,
+        /// Namespace of board to store secret to
+        #[clap(long)]
+        namespace: String,
+        /// Policy to attach to secret
+        #[clap(long)]
+        policy_id: String,
+        /// Resource type of secret
+        #[clap(long)]
+        resource: String,
+        /// Permission to read secret
+        #[clap(long)]
+        permission: String,
+        /// A private key to generate a reader did
+        #[clap(long)]
+        reader_did_pk: Option<String>,
+        /// Request a proof
+        #[clap(long)]
+        with_proof: bool,
+    },
+    /// Store secret by sending it to node (encrypts and stores in one step)
     StoreSecret {
         /// gRPC endpoint of the node to use
         #[clap(long)]
@@ -162,10 +202,10 @@ pub enum SubCommands {
         /// Plaintext secret encrypted locally before sending
         #[clap(long)]
         secret: String,
-        /// Ring public key (hex) - used for encryption       
+        /// Ring public key (hex) - used for encryption
         #[clap(long)]
         ring_pk_hex: String,
-        /// Ring id of ring to encrypt to     
+        /// Ring id of ring to encrypt to
         #[clap(long)]
         ring_id: String,
         /// Namespace of board to store secret to
@@ -183,6 +223,9 @@ pub enum SubCommands {
         /// A private key to generate a reader did
         #[clap(long)]
         reader_did_pk: Option<String>,
+        /// Request a proof
+        #[clap(long)]
+        with_proof: bool,
     },
     /// Query node info
     Info {
@@ -277,6 +320,42 @@ async fn main() -> Result<()> {
         SubCommands::ListBulletinPost { namespace } => {
             list_bulletin_posts(namespace).await?;
         }
+        SubCommands::PrepareSecret {
+            secret,
+            ring_pk_hex,
+        } => {
+            let prepared = prepare_secret(secret.as_bytes(), &ring_pk_hex)?;
+            let json = serde_json::to_string_pretty(&prepared)?;
+            println!("Prepared Secret (save this for store-prepared-secret):");
+            println!("{}", "=".repeat(60));
+            println!("{}", json);
+        }
+        SubCommands::StorePreparedSecret {
+            endpoint,
+            prepared_json,
+            ring_id,
+            namespace,
+            policy_id,
+            resource,
+            permission,
+            reader_did_pk,
+            with_proof,
+        } => {
+            let prepared: PreparedSecret = serde_json::from_str(&prepared_json)
+                .map_err(|e| anyhow::anyhow!("Invalid prepared_json: {}", e))?;
+            store_prepared_secret(
+                endpoint,
+                &prepared,
+                ring_id,
+                namespace,
+                policy_id,
+                resource,
+                permission,
+                reader_did_pk,
+                with_proof,
+            )
+            .await?;
+        }
         SubCommands::StoreSecret {
             endpoint,
             secret,
@@ -287,6 +366,7 @@ async fn main() -> Result<()> {
             resource,
             permission,
             reader_did_pk,
+            with_proof,
         } => {
             do_store_secret(
                 endpoint,
@@ -298,6 +378,7 @@ async fn main() -> Result<()> {
                 resource,
                 permission,
                 reader_did_pk,
+                with_proof,
             )
             .await?;
         }

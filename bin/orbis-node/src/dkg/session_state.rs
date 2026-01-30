@@ -282,9 +282,36 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states.get_mut(session_id).map(f)
     }
 
-    pub async fn create_session(&self, session_id: u64, node: D, total_participants: usize) {
+    /// Create a new DKG session
+    ///
+    /// Returns false if the session already exists (to avoid overwriting existing state).
+    pub async fn create_session(
+        &self,
+        session_id: u64,
+        node: D,
+        total_participants: usize,
+    ) -> bool {
+        if total_participants == 0 {
+            tracing::warn!(
+                session_id = session_id,
+                "Cannot create DKG session with zero participants"
+            );
+            return false;
+        }
+
         let mut states = self.states.write().await;
+
+        // Check if session already exists to avoid overwriting existing state
+        if states.contains_key(&session_id) {
+            tracing::warn!(
+                session_id = session_id,
+                "DKG session already exists for session_id"
+            );
+            return false;
+        }
+
         states.insert(session_id, DkgSessionState::new(node, total_participants));
+        true
     }
 
     /// Check if a session exists

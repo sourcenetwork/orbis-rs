@@ -9,6 +9,10 @@ pub enum CryptoError {
     ElGamalError(String),
     #[error("Serilization error: {0}")]
     SerializationError(#[from] ark_serialize::SerializationError),
+    #[error("Invalid Signature Share")]
+    InvalidSignatureShare,
+    #[error("Invalid Signature")]
+    InvalidSignature,
 }
 
 /// Result type for network operations

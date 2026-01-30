@@ -76,6 +76,8 @@ pub struct StoreSecretClaims {
     pub challenge: Vec<u8>,
     /// proof response (s = k + c*r)
     pub response: Vec<u8>,
+    /// Add a proof to the store secret call
+    pub with_proof: bool,
 }
 
 /// Resolves and verifies a JWT token, returning the decoded BearerToken with custom claims.

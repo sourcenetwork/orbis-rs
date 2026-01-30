@@ -57,6 +57,17 @@ pub const SESSION_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 pub const MAX_PRE_RESPONSES: usize = 1000;
 
 // ============================================================================
+// Sign (Threshold BLS Signing) Constants
+// ============================================================================
+
+/// Maximum number of pending Sign responses
+///
+/// Sign responses are collected asynchronously from multiple nodes. This limit
+/// prevents unbounded growth of response storage. The value of 1000 allows for
+/// many concurrent signing operations while maintaining reasonable memory usage.
+pub const MAX_SIGN_RESPONSES: usize = 1000;
+
+// ============================================================================
 // Peer ID Validation Constants
 // ============================================================================
 
@@ -133,6 +144,18 @@ pub const BULLETIN_RING_NAMESPACE: &str = "orbis";
 
 /// The minimum amount a node can have in chain balance to start the node
 pub const MIN_NODE_BALANCE: u64 = 1_000_000u64;
+
+// ============================================================================
+// Network Timeout Constants
+// ============================================================================
+
+/// Timeout for waiting on peer responses during signing and PRE operations
+///
+/// When a node sends a request to a peer and waits for a response, this timeout
+/// prevents indefinite blocking if the peer stalls or becomes unresponsive.
+/// Set to 10 seconds, which provides reasonable time for cryptographic operations
+/// while ensuring the signing flow doesn't hang indefinitely.
+pub const PEER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ============================================================================
 // Bulletin Proof Constants

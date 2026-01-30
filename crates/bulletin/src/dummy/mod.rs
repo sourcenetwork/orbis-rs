@@ -1,5 +1,5 @@
 use crate::{
-    error::Result,
+    error::{BulletinError, Result},
     r#trait::{Bulletin, BulletinPost},
 };
 use async_trait::async_trait;
@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+#[derive(Debug)]
 pub struct DummyBulletin {
     /// Storage for posts: (namespace, id) -> BulletinPost
     posts: Mutex<HashMap<(String, String), BulletinPost>>,
@@ -25,9 +26,9 @@ impl Bulletin for DummyBulletin {
         proof: Vec<u8>,
         _artifact: Option<String>,
     ) -> Result<()> {
-        // Generate deterministic ID from namespace + payload (same as SourceHubBulletin)
-        // TODO: fine for test if only running one dkg
-        let id = "test".to_string(); //Self::compute_post_id(&namespace, &payload);
+        // Generate deterministic ID from full namespace + payload (same as SourceHubBulletin)
+        let full_namespace = format!("bulletin/{}", namespace);
+        let id = Self::compute_post_id(&full_namespace, &payload);
 
         let post = BulletinPost {
             id: id.clone(),
@@ -43,7 +44,14 @@ impl Bulletin for DummyBulletin {
 
     async fn read(&self, namespace: String, id: String) -> Result<BulletinPost> {
         let posts = self.posts.lock().unwrap();
-        Ok(posts.get(&(namespace, id)).cloned().unwrap_or_default())
+        posts
+            .get(&(namespace.clone(), id.clone()))
+            .cloned()
+            .ok_or(BulletinError::NotFound { namespace, id })
+    }
+
+    fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String> {
+        Ok(Self::compute_post_id(namespace, payload))
     }
 }
 
@@ -67,12 +75,6 @@ impl DummyBulletin {
         hasher.update(namespace.as_bytes());
         hasher.update(payload);
         hex::encode(hasher.finalize())
-    }
-
-    /// Get the ID that would be generated for a given namespace and payload
-    /// Useful for tests that need to know the ID before reading
-    pub fn get_post_id(namespace: &str, payload: &[u8]) -> String {
-        Self::compute_post_id(namespace, payload)
     }
 
     /// Get all posts in a given namespace (for testing)

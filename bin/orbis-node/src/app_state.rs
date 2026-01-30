@@ -1,5 +1,6 @@
 use crate::dkg::session_state::SessionStateManager;
 use crate::pre::response_state::PreResponseManager;
+use crate::sign::response_state::SignResponseManager;
 use authz::r#trait::Authz;
 use bulletin::r#trait::Bulletin;
 use crypto::r#trait::Dkg;
@@ -23,6 +24,8 @@ where
     pub dkg_session_state: Arc<SessionStateManager<D>>,
     /// PRE response state manager - handles PRE response collection
     pub pre_response_state: Arc<PreResponseManager>,
+    /// Sign response state manager - handles threshold signing response collection
+    pub sign_response_state: Arc<SignResponseManager>,
     /// Authz implementation
     pub authz: Arc<dyn Authz + Send + Sync>,
     /// Bulletin implementation
@@ -53,6 +56,7 @@ where
             local_storage,
             dkg_session_state: Arc::new(SessionStateManager::new()),
             pre_response_state: Arc::new(PreResponseManager::new()),
+            sign_response_state: Arc::new(SignResponseManager::new()),
             authz,
             bulletin,
         }
@@ -69,6 +73,7 @@ where
             .field("network", &"<Network>")
             .field("dkg_session_state", &"<SessionStateManager>")
             .field("pre_response_state", &"<PreResponseManager>")
+            .field("sign_response_state", &"<SignResponseManager>")
             .finish()
     }
 }

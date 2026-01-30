@@ -52,6 +52,8 @@ pub struct PubShare<PublicKey> {
     pub v: PublicKey,
 }
 
+pub type SigShare<G> = PubShare<G>;
+
 /// Distributed key share
 #[derive(Clone, Debug)]
 pub struct DistKeyShare<ShareValue> {
@@ -542,4 +544,55 @@ pub trait ThresholdDealer {
         rdr_sk: &Self::ShareValue,
         secret: &Self::Secret,
     ) -> Result<Vec<u8>>;
+}
+
+pub trait ThresholdSigner {
+    /// Scalar field (Fr for BLS12-381)
+    type ShareValue;
+
+    /// Signature type (usually G1Affine)
+    type Signature;
+
+    /// Public key type (usually G2Affine)
+    type PublicKey;
+
+    /// Public polynomial from DKG (commitments)
+    type PubPoly;
+
+    /// Distributed secret key share
+    type DistKeyShare;
+
+    /// Signature share type
+    type SigShare;
+
+    /// Construct a new signer
+    fn new() -> Self;
+
+    /// Domain-separated name for the protocol
+    fn name(&self) -> &str;
+
+    /// Hash a message to the signing group
+    fn hash_message(&self, msg: &[u8]) -> Result<Self::Signature>;
+
+    /// Locally sign a message using a DKG share
+    fn sign(&self, dist_key_share: &Self::DistKeyShare, msg: &[u8]) -> Result<Self::SigShare>;
+
+    /// Verify a single signature share against the DKG commitments
+    fn verify_share(
+        &self,
+        msg: &[u8],
+        pub_poly: &Self::PubPoly,
+        sig_share: &Self::SigShare,
+    ) -> Result<()>;
+
+    /// Recover a full signature from shares
+    fn recover(
+        &self,
+        shares: &[Self::SigShare],
+        t: usize,
+        n: usize,
+    ) -> Result<Option<Self::Signature>>;
+
+    /// Verify the final signature
+    fn verify(&self, pk: &Self::PublicKey, msg: &[u8], sig: &Self::Signature) -> Result<()>;
 }

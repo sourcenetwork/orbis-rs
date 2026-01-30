@@ -59,7 +59,11 @@ impl Bulletin for SourceHubBulletin {
             .chain_client
             .bulletin_read_post(&namespace, &id)
             .await
-            .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+            .map_err(|e| BulletinError::ChainError(e.to_string()))?
+            .ok_or_else(|| BulletinError::NotFound {
+                namespace: namespace.clone(),
+                id: id.clone(),
+            })?;
 
         Ok(BulletinPost {
             id: post.id,
@@ -67,6 +71,10 @@ impl Bulletin for SourceHubBulletin {
             payload: post.payload,
             proof: post.proof,
         })
+    }
+
+    fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String> {
+        Ok(Self::compute_post_id(namespace, payload))
     }
 }
 
@@ -164,13 +172,13 @@ impl SourceHubBulletin {
         Ok(client)
     }
 
-    pub fn get_post_id(namespace: &str, payload: &[u8]) -> Result<String> {
+    pub fn compute_post_id(namespace: &str, payload: &[u8]) -> String {
         let mut hasher = Sha256::new();
 
         hasher.update(namespace.as_bytes());
         hasher.update(payload);
 
         let hash = hasher.finalize();
-        Ok(hex::encode(hash))
+        hex::encode(hash)
     }
 }

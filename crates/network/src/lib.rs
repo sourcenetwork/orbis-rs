@@ -12,7 +12,7 @@ pub mod r#trait;
 
 pub use error::{NetworkError, Result};
 pub use iroh::{IrohNetwork, IrohNetworkBuilder, IrohRouterBuilder, IrohRouterWrapper, SecretKey};
-pub use protocol::{DKG, REENCRYPT};
+pub use protocol::{DKG, REENCRYPT, SIGN};
 pub use r#trait::{Connection, Message, Network, PeerId, ProtocolHandler, Router, RouterBuilder};
 
 #[cfg(test)]

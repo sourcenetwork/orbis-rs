@@ -1,15 +1,16 @@
 use crate::app_state::AppState;
 use crate::constants::{BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE};
 use crate::metrics;
+use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
-use bulletin::r#trait::{DocumentPayload, RingPayload};
-use bulletin::sourcehub::SourceHubBulletin;
+use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{CryptoDeserialize, Dkg, EncryptionProof, Secret, ThresholdDealer};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
 };
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -18,27 +19,47 @@ use tonic::{Request, Response, Status};
 /// This service acts as an authenticated relay for storing pre-encrypted secrets.
 /// The node NEVER sees plaintext - users must encrypt locally before calling this service.
 #[derive(Debug)]
-pub struct StoreSecretServiceImpl<D>
+pub struct StoreSecretServiceImpl<D, S>
 where
     D: Dkg + Clone + 'static,
+    S: crypto::r#trait::ThresholdSigner,
 {
     pub state: AppState<D>,
+    _phantom: std::marker::PhantomData<S>,
 }
 
-impl<D> StoreSecretServiceImpl<D>
+impl<D, S> StoreSecretServiceImpl<D, S>
 where
     D: Dkg + Clone + 'static,
+    S: crypto::r#trait::ThresholdSigner,
 {
     /// Create a new StoreSecretServiceImpl with shared application state
     pub fn new(state: AppState<D>) -> Self {
-        Self { state }
+        Self {
+            state,
+            _phantom: std::marker::PhantomData,
+        }
     }
 }
 
 #[tonic::async_trait]
-impl<D> StoreSecretService for StoreSecretServiceImpl<D>
+impl<D, S> StoreSecretService for StoreSecretServiceImpl<D, S>
 where
-    D: Dkg<PublicKey = ark_bls12_381::G1Affine> + Clone + Send + Sync + 'static,
+    D: Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    S: crypto::r#trait::ThresholdSigner<
+            ShareValue = ark_bls12_381::Fr,
+            PublicKey = ark_bls12_381::G1Affine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            PubPoly = D::PubPoly,
+            Signature = crypto::bls12_381::common::G2Point,
+            SigShare = crypto::r#trait::PubShare<crypto::bls12_381::common::G2Point>,
+        > + Send
+        + Sync
+        + 'static,
 {
     #[tracing::instrument(skip_all, fields(request))]
     async fn store_secret(
@@ -116,17 +137,53 @@ where
         // 5. Compute object_id before posting (deterministic hash)
         // Note: get_post_id expects the full namespace format "bulletin/{namespace}"
         let full_namespace = format!("bulletin/{}", req.namespace);
-        let object_id = SourceHubBulletin::get_post_id(&full_namespace, &payload_bytes)
+        let object_id = self
+            .state
+            .bulletin
+            .get_post_id(&full_namespace, &payload_bytes)
             .map_err(|e| StoreSecretError::Storage(format!("Failed to compute post ID: {}", e)))?;
 
-        // 6. Post to bulletin
+        // 6. Post to bulletin (only if it doesn't already exist)
         let proof = BULLETIN_PLACEHOLDER_PROOF.to_vec();
 
-        self.state
+        // Check if the post already exists (read returns NotFound error if not found)
+        let post_exists = match self
+            .state
             .bulletin
-            .post(req.namespace.clone(), payload_bytes, proof, None)
+            .read(req.namespace.clone(), object_id.clone())
             .await
-            .map_err(|e| StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e)))?;
+        {
+            Ok(_) => true,
+            Err(bulletin::error::BulletinError::NotFound { .. }) => false,
+            Err(e) => {
+                return Err(StoreSecretError::Storage(format!(
+                    "Failed to check existing post: {}",
+                    e
+                ))
+                .into())
+            }
+        };
+
+        if !post_exists {
+            self.state
+                .bulletin
+                .post(
+                    req.namespace.clone(),
+                    payload_bytes.clone(),
+                    proof.clone(),
+                    None,
+                )
+                .await
+                .map_err(|e| {
+                    StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e))
+                })?;
+        } else {
+            tracing::debug!(
+                object_id = %object_id,
+                namespace = %req.namespace,
+                "Post already exists on bulletin, skipping post"
+            );
+        }
 
         let created_at = current_time as i64;
 
@@ -138,6 +195,47 @@ where
             "Successfully stored encrypted secret"
         );
 
+        let mut signature = "".to_string();
+
+        if req.with_proof {
+            // Construct the BulletinPost that was stored
+            let bulletin_post = BulletinPost {
+                id: object_id.clone(),
+                namespace: req.namespace.clone(),
+                payload: payload_bytes.clone(),
+                proof: proof.clone(),
+            };
+
+            // Serialize BulletinPost to bytes for signing
+            let message_to_sign: Vec<u8> = bulletin_post.try_into().map_err(|e| {
+                StoreSecretError::Serialization(format!("Failed to serialize BulletinPost: {}", e))
+            })?;
+
+            // Generate random session id
+            let session_id: u64 = rand::random();
+            let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
+            let response_bytes = coordinator
+                .initiate_signing(
+                    session_id.to_string(),
+                    hex::decode(&ring_payload.ring_pk).map_err(|e| {
+                        StoreSecretError::Validation(format!("Invalid ring_pk hex: {}", e))
+                    })?,
+                    message_to_sign,
+                    &ring_payload.peer_ids,
+                    ring_payload.threshold as usize,
+                    ring_payload.peer_ids.len(),
+                    &ring_payload.public_polynomial,
+                )
+                .await
+                .map_err(|e| StoreSecretError::Signing(format!("Signing failed: {}", e)))?;
+
+            let sign_response: SignResponse =
+                serde_json::from_slice(&response_bytes).map_err(|e| {
+                    StoreSecretError::Signing(format!("Failed to parse sign response: {}", e))
+                })?;
+            signature = sign_response.signature;
+        }
+
         metrics::record_store_secret_completed(start.elapsed().as_secs_f64());
 
         Ok(Response::new(StoreSecretResponse {
@@ -146,6 +244,7 @@ where
             created_at,
             object_id,
             ring_id: req.ring_id,
+            signature,
         }))
     }
 }
@@ -289,6 +388,13 @@ fn validate_store_secret_claims(
         return Err(StoreSecretError::Unauthorized(format!(
             "Token response '{:?}' does not match request response '{:?}'",
             token.claims.response, req.response
+        )));
+    }
+
+    if token.claims.with_proof != req.with_proof {
+        return Err(StoreSecretError::Unauthorized(format!(
+            "Token with_proof '{:?}' does not match request with_proof '{:?}'",
+            token.claims.with_proof, req.with_proof
         )));
     }
 

@@ -1,72 +1,82 @@
-//! DKG Protocol Handler
+//! Sign Protocol Handler
 //!
-//! This module implements the protocol handler for DKG (Distributed Key Generation)
-//! communication between nodes over the iroh network.
+//! This module implements the protocol handler for threshold BLS signing
+//! communication between nodes over the network.
 //!
 //! The handler acts as the network layer:
 //! - Accepts connections (authentication via iroh)
 //! - Reads/writes messages
-//! - Routes messages to the DKG session manager
+//! - Routes messages to the Sign coordinator
 //!
-//! The actual DKG protocol logic is handled by the DKG session manager.
-//!
-//! **Architecture Note**: Each node has its own session manager instance.
-//! The DKG protocol is decentralized - there is no central coordinator.
-//! All nodes participate equally in the peer-to-peer protocol.
+//! The actual signing protocol logic is handled by the Sign coordinator.
 
 use crate::app_state::AppState;
-use crate::dkg::coordinator::DkgCoordinator;
-use crate::dkg::messages::DkgMessage;
+use crate::sign::coordinator::SignCoordinator;
+use crate::sign::messages::SignMessage;
 use async_trait::async_trait;
 use network::error::Result as NetworkResult;
 use network::{Connection, Message, ProtocolHandler};
 use std::sync::Arc;
 
-/// DKG Protocol Handler
+/// Sign Protocol Handler
 ///
 /// Network layer handler that accepts connections and routes messages
-/// to this node's DKG session manager for processing.
-///
-/// Each node has its own handler instance that manages connections
-/// for this node's participation in the decentralized DKG protocol.
-pub struct DkgProtocolHandler<D>
+/// to this node's Sign coordinator for processing.
+pub struct SignProtocolHandler<D, S>
 where
     D: crypto::r#trait::Dkg + Clone + 'static,
+    S: crypto::r#trait::ThresholdSigner,
 {
-    coordinator: Arc<DkgCoordinator<D>>,
+    coordinator: Arc<SignCoordinator<D, S>>,
 }
 
-impl<D> DkgProtocolHandler<D>
+impl<D, S> SignProtocolHandler<D, S>
 where
-    D: crypto::r#trait::Dkg<
+    D: crypto::r#trait::Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    S: crypto::r#trait::ThresholdSigner<
             ShareValue = ark_bls12_381::Fr,
             PublicKey = ark_bls12_381::G1Affine,
-            PolynomialCommitment = crypto::bls12_381::common::PolynomialCommitment,
-        > + Clone,
+            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            PubPoly = D::PubPoly,
+            Signature = crypto::bls12_381::common::G2Point,
+            SigShare = crypto::r#trait::PubShare<crypto::bls12_381::common::G2Point>,
+        > + Send
+        + Sync
+        + 'static,
 {
-    /// Create a new DKG protocol handler with access to app state
+    /// Create a new Sign protocol handler with access to app state
     pub fn new(app_state: Arc<AppState<D>>) -> Self {
-        let coordinator = Arc::new(DkgCoordinator::new(app_state));
+        let coordinator = Arc::new(SignCoordinator::new(app_state));
         Self { coordinator }
     }
 }
 
 #[async_trait]
-impl<D> ProtocolHandler for DkgProtocolHandler<D>
+impl<D, S> ProtocolHandler for SignProtocolHandler<D, S>
 where
-    D: crypto::r#trait::Dkg<
+    D: crypto::r#trait::Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    S: crypto::r#trait::ThresholdSigner<
             ShareValue = ark_bls12_381::Fr,
             PublicKey = ark_bls12_381::G1Affine,
-            PolynomialCommitment = crypto::bls12_381::common::PolynomialCommitment,
-        > + Clone
-        + Send
+            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            PubPoly = D::PubPoly,
+            Signature = crypto::bls12_381::common::G2Point,
+            SigShare = crypto::r#trait::PubShare<crypto::bls12_381::common::G2Point>,
+        > + Send
         + Sync
         + 'static,
 {
     async fn handle(&self, connection: Box<dyn Connection>) -> NetworkResult<()> {
         let peer_id = connection.peer_id().clone();
-        // TODO: Authentic nodes?
-        tracing::info!(peer_id = ?peer_id, "DKG Protocol: Accepted connection from peer");
+        tracing::info!(peer_id = ?peer_id, "Sign Protocol: Accepted connection from peer");
 
         // Read messages from the connection and route them to the coordinator
         loop {
@@ -78,24 +88,24 @@ where
                     tracing::debug!(
                         peer_id = ?peer_id,
                         error = %e,
-                        "DKG Protocol: Connection closed or error from peer"
+                        "Sign Protocol: Connection closed or error from peer"
                     );
                     break;
                 }
             };
 
-            // Deserialize the DKG message
-            let dkg_message: DkgMessage = match serde_json::from_slice(&network_message.data) {
+            // Deserialize the Sign message
+            let sign_message: SignMessage = match serde_json::from_slice(&network_message.data) {
                 Ok(msg) => msg,
                 Err(e) => {
                     tracing::error!(
                         peer_id = ?peer_id,
                         error = %e,
-                        "DKG Protocol: Failed to deserialize message from peer"
+                        "Sign Protocol: Failed to deserialize message from peer"
                     );
                     // Send error response
-                    let error_msg = DkgMessage::Error {
-                        session_id: 0, // Unknown session
+                    let error_msg = SignMessage::Error {
+                        request_id: String::from("unknown"),
                         error: format!("Failed to deserialize message: {}", e),
                     };
                     if let Ok(error_data) = serde_json::to_vec(&error_msg) {
@@ -108,14 +118,20 @@ where
             };
 
             tracing::debug!(
-                message_type = ?std::mem::discriminant(&dkg_message),
-                session_id = dkg_message.session_id(),
+                message_type = ?std::mem::discriminant(&sign_message),
+                request_id = %sign_message.request_id(),
                 peer_id = ?peer_id,
-                "DKG Protocol: Received message"
+                "Sign Protocol: Received message"
             );
 
+            // Special handling for responses - store them for the initiator
+            if let SignMessage::SignResponse { .. } = &sign_message {
+                self.coordinator.store_response(sign_message).await;
+                continue;
+            }
+
             // Route message to coordinator
-            match self.coordinator.handle_message(dkg_message).await {
+            match self.coordinator.handle_message(sign_message).await {
                 Ok(Some(response)) => {
                     // Send response back
                     if let Ok(response_data) = serde_json::to_vec(&response) {
@@ -123,11 +139,7 @@ where
                             .send(Message::new(response_data, network_message.protocol))
                             .await
                         {
-                            tracing::error!(
-                                peer_id = ?peer_id,
-                                error = %e,
-                                "DKG Protocol: Failed to send response to peer"
-                            );
+                            tracing::error!(error = %e, "Sign Protocol: Failed to send response");
                         }
                     }
                 }
@@ -135,14 +147,10 @@ where
                     // No response needed
                 }
                 Err(e) => {
-                    tracing::error!(
-                        peer_id = ?peer_id,
-                        error = %e,
-                        "DKG Protocol: Coordinator error"
-                    );
+                    tracing::error!(error = %e, "Sign Protocol: Error handling message");
                     // Send error response
-                    let error_msg = DkgMessage::Error {
-                        session_id: 0, // Could extract from failed message if needed
+                    let error_msg = SignMessage::Error {
+                        request_id: String::from("unknown"),
                         error: e.to_string(),
                     };
                     if let Ok(error_data) = serde_json::to_vec(&error_msg) {
@@ -154,7 +162,7 @@ where
             }
         }
 
-        tracing::debug!(peer_id = ?peer_id, "DKG Protocol: Connection closed with peer");
+        tracing::debug!(peer_id = ?peer_id, "Sign Protocol: Connection handler finished for peer");
         Ok(())
     }
 }

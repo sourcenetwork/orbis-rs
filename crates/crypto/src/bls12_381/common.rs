@@ -1,9 +1,9 @@
-use crate::error::Result;
+use crate::error::{CryptoError, Result};
 use crate::r#trait::{
     CryptoDeserialize, CryptoSerialize, PolynomialCommitment as PolynomialCommitmentTrait,
     PubPoly as PubPolyTrait,
 };
-use ark_bls12_381::{Fr, G1Affine, G1Projective};
+use ark_bls12_381::{Fr, G1Affine, G1Projective, G2Affine, G2Projective};
 use ark_ec::{AffineRepr, Group};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use subtle::ConstantTimeEq;
@@ -15,8 +15,94 @@ use subtle::ConstantTimeEq;
 /// Size of a compressed G1Affine point in bytes (BLS12-381)
 pub const G1_COMPRESSED_SIZE: usize = 48;
 
+/// Size of a compressed G2Affine point in bytes (BLS12-381)
+pub const G2_COMPRESSED_SIZE: usize = 96;
+
 /// Size of a compressed Fr scalar in bytes (BLS12-381)
 pub const FR_COMPRESSED_SIZE: usize = 32;
+
+// ============================================================================
+// Wrapper type for G2 points (avoids trait coherence issues with arkworks)
+// ============================================================================
+
+/// Wrapper for G2Affine to enable trait implementations
+///
+/// This wrapper exists because Rust's coherence rules prevent implementing
+/// foreign traits (CryptoSerialize/CryptoDeserialize) for foreign types
+/// (G2Affine) when they share the same underlying generic structure as G1Affine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct G2Point(pub G2Affine);
+
+impl G2Point {
+    /// Create a new G2Point from a G2Affine
+    pub fn new(point: G2Affine) -> Self {
+        Self(point)
+    }
+
+    /// Get the inner G2Affine
+    pub fn inner(&self) -> &G2Affine {
+        &self.0
+    }
+
+    /// Convert to G2Affine
+    pub fn into_inner(self) -> G2Affine {
+        self.0
+    }
+
+    /// Check if the point is the identity/zero element
+    pub fn is_zero(&self) -> bool {
+        self.0.is_zero()
+    }
+
+    /// Get the generator point
+    pub fn generator() -> Self {
+        Self(G2Affine::generator())
+    }
+}
+
+impl From<G2Affine> for G2Point {
+    fn from(point: G2Affine) -> Self {
+        Self(point)
+    }
+}
+
+impl From<G2Point> for G2Affine {
+    fn from(point: G2Point) -> Self {
+        point.0
+    }
+}
+
+impl From<G2Projective> for G2Point {
+    fn from(point: G2Projective) -> Self {
+        Self(point.into())
+    }
+}
+
+impl Default for G2Point {
+    fn default() -> Self {
+        Self(G2Affine::zero())
+    }
+}
+
+impl CryptoSerialize for G2Point {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(G2_COMPRESSED_SIZE);
+        self.0.serialize_compressed(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    fn serialized_size() -> usize {
+        G2_COMPRESSED_SIZE
+    }
+}
+
+impl CryptoDeserialize for G2Point {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let point = G2Affine::deserialize_compressed(bytes)
+            .map_err(|e| CryptoError::SerializationError(e))?;
+        Ok(Self(point))
+    }
+}
 
 // ============================================================================
 // CryptoSerialize/CryptoDeserialize implementations for BLS12-381 types
