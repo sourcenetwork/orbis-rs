@@ -175,6 +175,7 @@ async fn test_start_dkg_fails_on_connection_failure() {
 /// This test verifies that if a node can connect to all requested peer IDs,
 /// the gRPC service succeeds.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_start_dkg_succeeds_on_all_connections() {
     let db_name = "test_start_dkg_succeeds_on_all_connections";
     let db_paths = [

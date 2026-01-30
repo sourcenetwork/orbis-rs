@@ -33,6 +33,7 @@ type PreImpl = ThresholdDealerNode;
 /// 4. The nodes perform PRE to re-encrypt the secret to Bob's public key
 /// 5. Bob decrypts the secret using his private key
 #[tokio::test]
+#[serial_test::serial]
 async fn test_dkg_then_pre_end_to_end() {
     let db_name = "test_dkg_then_pre_end_to_end";
     let db_paths = [
@@ -287,6 +288,7 @@ async fn wait_for_dkg_completion(
 
 /// Test PRE with a larger secret
 #[tokio::test]
+#[serial_test::serial]
 async fn test_pre_with_large_secret() {
     let db_name = "test_pre_with_large_secret";
     let db_paths = [

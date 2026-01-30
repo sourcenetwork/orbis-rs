@@ -11,6 +11,7 @@
 //! - Manages reencryption share collection and recovery
 
 use crate::app_state::AppState;
+use crate::constants::PEER_RESPONSE_TIMEOUT;
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::pre::error::{PreError, Result};
 use crate::pre::messages::PreMessage;
@@ -323,13 +324,21 @@ where
                 ))
             })?;
 
-        // Wait for response on the same connection
-        let response_msg = connection.recv().await.map_err(|e| {
-            PreError::NetworkCommunication(format!(
-                "Failed to receive response from peer {}: {}",
-                peer_id_str, e
-            ))
-        })?;
+        // Wait for response on the same connection with timeout
+        let response_msg = tokio::time::timeout(PEER_RESPONSE_TIMEOUT, connection.recv())
+            .await
+            .map_err(|_| {
+                PreError::Timeout(format!(
+                    "Timed out waiting for response from peer {}",
+                    peer_id_str
+                ))
+            })?
+            .map_err(|e| {
+                PreError::NetworkCommunication(format!(
+                    "Failed to receive response from peer {}: {}",
+                    peer_id_str, e
+                ))
+            })?;
 
         // Deserialize response
         let response: PreMessage = serde_json::from_slice(&response_msg.data).map_err(|e| {
