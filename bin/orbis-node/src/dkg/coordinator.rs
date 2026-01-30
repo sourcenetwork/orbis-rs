@@ -630,10 +630,17 @@ where
         dkg_node.set_session_id(session_id);
 
         // Create the unified session state (crypto node + protocol tracking)
-        self.app_state
+        if !self
+            .app_state
             .dkg_session_state
             .create_session(session_id, *dkg_node, total_nodes)
-            .await;
+            .await
+        {
+            return Err(DkgError::ProtocolError(format!(
+                "DKG session {} already exists",
+                session_id
+            )));
+        }
 
         // Record metrics
         metrics::record_dkg_session_started();

@@ -34,9 +34,18 @@ impl PreResponseManager {
 
     /// Initialize PRE response collection with limit checking
     ///
-    /// Returns false if the limit is exceeded.
+    /// Returns false if the limit is exceeded or if the request_id already exists.
     pub async fn init_response(&self, request_id: String) -> bool {
         let mut responses = self.states.write().await;
+
+        // Check if request_id already exists to avoid overwriting existing state
+        if responses.contains_key(&request_id) {
+            tracing::warn!(
+                request_id = %request_id,
+                "PRE response entry already exists for request_id"
+            );
+            return false;
+        }
 
         // Check limit
         if responses.len() >= MAX_PRE_RESPONSES {
