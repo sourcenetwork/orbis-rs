@@ -6,13 +6,15 @@
 
 use crate::constants::MAX_PRE_RESPONSES;
 use crate::pre::messages::PreMessage;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// PRE response entry for collecting responses from nodes
 pub struct PreResponseEntry {
     pub responses: Vec<PreMessage>,
+    /// Tracks node IDs we've already received responses from (for deduplication)
+    pub seen_node_ids: HashSet<u32>,
 }
 
 /// PRE Response State Manager
@@ -61,15 +63,27 @@ impl PreResponseManager {
             request_id,
             PreResponseEntry {
                 responses: Vec::new(),
+                seen_node_ids: HashSet::new(),
             },
         );
         true
     }
 
-    /// Store a PRE response
+    /// Store a PRE response (with early deduplication)
     pub async fn store_response(&self, request_id: &str, message: PreMessage) {
         let mut responses = self.states.write().await;
         if let Some(entry) = responses.get_mut(request_id) {
+            if let Some(from_node_id) = message.from_node_id() {
+                if entry.seen_node_ids.contains(&from_node_id) {
+                    tracing::warn!(
+                        from_node_id = from_node_id,
+                        request_id = request_id,
+                        "PRE: Skipping duplicate response from node"
+                    );
+                    return;
+                }
+                entry.seen_node_ids.insert(from_node_id);
+            }
             entry.responses.push(message);
         }
     }
