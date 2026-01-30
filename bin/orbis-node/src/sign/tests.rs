@@ -31,6 +31,7 @@ type SignImpl = ThresholdBlsSigner;
 /// 4. The signature shares are combined into a full signature
 /// 5. The signature is verified against the aggregate public key
 #[tokio::test]
+#[serial_test::serial]
 async fn test_dkg_then_sign_end_to_end() {
     let db_name = "test_dkg_then_sign_end_to_end";
     let db_paths = [
@@ -283,6 +284,7 @@ async fn create_test_document_and_post(
 
 /// Test signing with different message hashes
 #[tokio::test]
+#[serial_test::serial]
 async fn test_sign_different_messages() {
     let db_name = "test_sign_different_messages";
     let db_paths = [
@@ -388,6 +390,7 @@ async fn test_sign_different_messages() {
 
 /// Test that signature verification fails with wrong message
 #[tokio::test]
+#[serial_test::serial]
 async fn test_sign_fails_wrong_message() {
     let db_name = "test_sign_fails_wrong_message";
     let db_paths = [
@@ -498,6 +501,7 @@ async fn test_sign_fails_wrong_message() {
 
 /// Test that sign response is cleaned up after completion
 #[tokio::test]
+#[serial_test::serial]
 async fn test_sign_response_cleanup() {
     let db_name = "test_sign_response_cleanup";
     let db_paths = [
@@ -599,6 +603,7 @@ async fn test_sign_response_cleanup() {
 
 /// Test that signing fails when the message is not a valid BulletinPost (malformed bytes)
 #[tokio::test]
+#[serial_test::serial]
 async fn test_sign_fails_invalid_bulletin_post() {
     let db_name = "test_sign_fails_invalid_bulletin_post";
     let db_paths = [
@@ -682,6 +687,7 @@ async fn test_sign_fails_invalid_bulletin_post() {
 
 /// Test that signing fails when the BulletinPost doesn't exist on the bulletin
 #[tokio::test]
+#[serial_test::serial]
 async fn test_sign_fails_post_not_on_bulletin() {
     let db_name = "test_sign_fails_post_not_on_bulletin";
     let db_paths = [
@@ -785,6 +791,7 @@ async fn test_sign_fails_post_not_on_bulletin() {
 
 /// Test that signing fails when the payload is tampered (doesn't match bulletin)
 #[tokio::test]
+#[serial_test::serial]
 async fn test_sign_fails_tampered_payload() {
     let db_name = "test_sign_fails_tampered_payload";
     let db_paths = [
@@ -920,6 +927,7 @@ async fn test_sign_fails_tampered_payload() {
 
 /// Test that signing fails when ring_id references a non-existent ring
 #[tokio::test]
+#[serial_test::serial]
 async fn test_sign_fails_invalid_ring_id() {
     let db_name = "test_sign_fails_invalid_ring_id";
     let db_paths = [

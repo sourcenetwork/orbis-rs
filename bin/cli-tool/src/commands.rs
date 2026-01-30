@@ -112,34 +112,30 @@ pub struct StoreSecretResult {
     pub signature: String,
 }
 
-/// Store a secret using the StoreSecret service
-///
-/// This function:
-/// 1. Encrypts the secret locally using the ring's public key (node never sees plaintext)
-/// 2. Connects to the orbis-node endpoint
-/// 3. Sends the encrypted secret to the node for validation and posting
-/// 4. Returns the object_id needed for PRE requests
-pub async fn do_store_secret(
-    endpoint: String,
-    secret: &[u8],       // Plaintext secret - encrypted locally before sending
-    ring_pk_hex: String, // Ring public key (hex) - used for encryption
-    ring_id: String,
-    namespace: String,
-    policy_id: String,
-    resource: String,
-    permission: String,
-    reader_did_pk: Option<String>,
-    with_proof: bool,
-) -> Result<StoreSecretResult> {
-    println!("Storing secret via StoreSecret service:");
-    println!("  Endpoint: {}", endpoint);
-    println!("  Ring ID: {}", ring_id);
-    println!("  Namespace: {}", namespace);
-    println!();
+/// Prepared secret ready for storage - can be reused for retries
+/// This contains the encrypted data and proof, which are deterministic
+/// for a given plaintext and ring public key encryption.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PreparedSecret {
+    /// Encrypted document as JSON string
+    pub encrypted_document: String,
+    /// Encryption commitment in hex
+    pub enc_cmt_hex: String,
+    /// Shared point for encryption proof
+    pub shared_point: Vec<u8>,
+    /// Challenge for encryption proof
+    pub challenge: Vec<u8>,
+    /// Response for encryption proof
+    pub response: Vec<u8>,
+}
 
+/// Prepare a secret for storage by encrypting it locally.
+/// The returned PreparedSecret can be stored and reused for retries,
+/// ensuring idempotent storage (same encrypted data = same object_id).
+pub fn prepare_secret(secret: &[u8], ring_pk_hex: &str) -> Result<PreparedSecret> {
     // Parse ring public key
     let ring_pk_bytes =
-        hex::decode(&ring_pk_hex).map_err(|e| anyhow!("Invalid ring_pk hex: {}", e))?;
+        hex::decode(ring_pk_hex).map_err(|e| anyhow!("Invalid ring_pk hex: {}", e))?;
     let ring_pk_point =
         G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
 
@@ -156,21 +152,50 @@ pub async fn do_store_secret(
             .map_err(|e| anyhow!("Failed to serialize enc_cmt: {}", e))?,
     );
 
+    Ok(PreparedSecret {
+        encrypted_document,
+        enc_cmt_hex,
+        shared_point: proof.shared_point,
+        challenge: proof.challenge,
+        response: proof.response,
+    })
+}
+
+/// Store a prepared (pre-encrypted) secret using the StoreSecret service.
+/// This is idempotent - calling with the same PreparedSecret will return
+/// the same object_id without creating duplicates.
+pub async fn store_prepared_secret(
+    endpoint: String,
+    prepared: &PreparedSecret,
+    ring_id: String,
+    namespace: String,
+    policy_id: String,
+    resource: String,
+    permission: String,
+    reader_did_pk: Option<String>,
+    with_proof: bool,
+) -> Result<StoreSecretResult> {
+    println!("Storing secret via StoreSecret service:");
+    println!("  Endpoint: {}", endpoint);
+    println!("  Ring ID: {}", ring_id);
+    println!("  Namespace: {}", namespace);
+    println!();
+
     let mut client = StoreSecretServiceClient::connect(endpoint.clone())
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
     let request = proto::store_secret_service::StoreSecretRequest {
-        encrypted_document: encrypted_document.clone(),
-        enc_cmt: enc_cmt_hex.clone(),
+        encrypted_document: prepared.encrypted_document.clone(),
+        enc_cmt: prepared.enc_cmt_hex.clone(),
         ring_id: ring_id.clone(),
         namespace: namespace.clone(),
         policy_id: policy_id.clone(),
         resource: resource.clone(),
         permission: permission.clone(),
-        shared_point: proof.shared_point.clone(),
-        challenge: proof.challenge.clone(),
-        response: proof.response.clone(),
+        shared_point: prepared.shared_point.clone(),
+        challenge: prepared.challenge.clone(),
+        response: prepared.response.clone(),
         with_proof,
     };
 
@@ -180,16 +205,16 @@ pub async fn do_store_secret(
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
         .create_store_secret_jwt(
-            &encrypted_document,
-            &enc_cmt_hex,
+            &prepared.encrypted_document,
+            &prepared.enc_cmt_hex,
             &ring_id,
             &namespace,
             &policy_id,
             &resource,
             &permission,
-            proof.shared_point,
-            proof.challenge,
-            proof.response,
+            prepared.shared_point.clone(),
+            prepared.challenge.clone(),
+            prepared.response.clone(),
             with_proof,
         )
         .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
@@ -220,6 +245,43 @@ pub async fn do_store_secret(
         ring_id: response.ring_id,
         signature: response.signature,
     })
+}
+
+/// Store a secret using the StoreSecret service (convenience function).
+///
+/// This function:
+/// 1. Encrypts the secret locally using the ring's public key (node never sees plaintext)
+/// 2. Connects to the orbis-node endpoint
+/// 3. Sends the encrypted secret to the node for validation and posting
+/// 4. Returns the object_id needed for PRE requests
+///
+/// Note: For retry scenarios, use prepare_secret() + store_prepared_secret()
+/// to ensure the same encrypted data is sent (idempotent storage).
+pub async fn do_store_secret(
+    endpoint: String,
+    secret: &[u8],       // Plaintext secret - encrypted locally before sending
+    ring_pk_hex: String, // Ring public key (hex) - used for encryption
+    ring_id: String,
+    namespace: String,
+    policy_id: String,
+    resource: String,
+    permission: String,
+    reader_did_pk: Option<String>,
+    with_proof: bool,
+) -> Result<StoreSecretResult> {
+    let prepared = prepare_secret(secret, &ring_pk_hex)?;
+    store_prepared_secret(
+        endpoint,
+        &prepared,
+        ring_id,
+        namespace,
+        policy_id,
+        resource,
+        permission,
+        reader_did_pk,
+        with_proof,
+    )
+    .await
 }
 
 pub async fn do_pre(
@@ -628,6 +690,21 @@ pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
         peer_id: node_info.peer_id,
         p2p_address: node_info.p2p_address,
     })
+}
+
+/// Get the current sequence number for an account address.
+/// Useful for verifying if a transaction was broadcast (sequence increments after each tx).
+pub async fn get_account_sequence(address: &str) -> Result<u64> {
+    let client = SourceHubClient::new(ChainConfig::local())
+        .await
+        .map_err(|e| anyhow!("Failed to create client: {}", e))?;
+
+    let account_info = client
+        .get_account(address)
+        .await
+        .map_err(|e| anyhow!("Failed to get account info: {}", e))?;
+
+    Ok(account_info.sequence)
 }
 
 pub async fn fund(address: String, config: ChainConfig) -> Result<()> {

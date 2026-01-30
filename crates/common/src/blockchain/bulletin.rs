@@ -335,7 +335,8 @@ impl SourceHubClient {
     // ========================================================================
 
     /// Read a post by namespace and ID using ABCI query.
-    pub async fn bulletin_read_post(&self, namespace: &str, id: &str) -> Result<Post> {
+    /// Returns `Ok(None)` if the post does not exist.
+    pub async fn bulletin_read_post(&self, namespace: &str, id: &str) -> Result<Option<Post>> {
         let request = QueryPostRequest {
             namespace: namespace.to_string(),
             id: id.to_string(),
@@ -344,15 +345,19 @@ impl SourceHubClient {
         let request_bytes = request.encode_to_vec();
         let path = "/sourcehub.bulletin.Query/Post";
 
-        let response_bytes = self.abci_query(path, request_bytes, None, false).await?;
+        let response_bytes = match self.abci_query(path, request_bytes, None, false).await {
+            Ok(bytes) => bytes,
+            Err(BlockchainError::Query(msg)) if msg.contains("not found") => {
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        };
 
         let response = QueryPostResponse::decode(response_bytes.as_slice()).map_err(|e| {
             BlockchainError::Serialization(format!("Failed to decode post response: {}", e))
         })?;
 
-        response.post.ok_or_else(|| {
-            BlockchainError::NotFound(format!("Post {}/{} not found", namespace, id))
-        })
+        Ok(response.post)
     }
 
     /// Get namespace information using ABCI query.

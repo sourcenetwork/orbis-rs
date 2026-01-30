@@ -421,7 +421,7 @@ mod cli_tool_integration {
     #[serial_test::serial]
     async fn test_cli_calls_dkg_and_pre_endpoint() {
         // use tracing_subscriber;
-        // Initialize tracing for debugging
+        // // Initialize tracing for debugging
         // let _ = tracing_subscriber::fmt()
         //     .with_max_level(tracing::Level::DEBUG)
         //     .with_test_writer()
@@ -454,7 +454,7 @@ mod cli_tool_integration {
         let node3_info = cli_tool::query_node_info(IntegrationTestNetwork::NODE3_GRPC.to_string())
             .await
             .expect("Failed to query node3 info");
-
+        let node1_address = node1_info.public_address.clone();
         println!("Node 1 P2P address: {}", node1_info.p2p_address);
         println!("Node 2 P2P address: {}", node2_info.p2p_address);
         println!("Node 3 P2P address: {}", node3_info.p2p_address);
@@ -619,11 +619,23 @@ mod cli_tool_integration {
         };
         let secret = b"Hello from StoreSecret!";
 
-        // SERVICE PATH: CLI encrypts internally, node validates and posts
-        let object_response = cli_tool::do_store_secret(
+        // SERVICE PATH: Prepare secret once (encrypt locally), then store
+        // This allows testing idempotency by reusing the same prepared data
+        let prepared_secret =
+            cli_tool::prepare_secret(secret, &ring_pk_hex).expect("prepare_secret should succeed");
+
+        // Get sequence before first store to verify transaction is broadcast
+        let sequence_before_first = cli_tool::get_account_sequence(&node1_address)
+            .await
+            .expect("get sequence before first store");
+        println!(
+            "Node1 sequence before first store: {}",
+            sequence_before_first
+        );
+
+        let object_response = cli_tool::store_prepared_secret(
             endpoint.clone(),
-            &secret.clone(),
-            ring_pk_hex.clone(),
+            &prepared_secret,
             ring_id.clone(),
             namespace.clone(),
             policy_id.clone(),
@@ -633,12 +645,20 @@ mod cli_tool_integration {
             true,
         )
         .await
-        .expect("do_store_secret");
+        .expect("store_prepared_secret");
         let object_id_service = object_response.object_id.clone();
         let signature_hex = object_response.signature.clone();
 
-        // Wait for block confirmation after service call
+        // Wait for block confirmation and check sequence incremented
         sleep(Duration::from_secs(2)).await;
+        let sequence_after_first = cli_tool::get_account_sequence(&node1_address)
+            .await
+            .expect("get sequence after first store");
+        println!("Node1 sequence after first store: {}", sequence_after_first);
+        assert!(
+            sequence_after_first > sequence_before_first,
+            "Sequence should increment after first store (tx was broadcast)"
+        );
 
         // Read both from bulletin and compare metadata
         let manual_bytes =
@@ -695,9 +715,9 @@ mod cli_tool_integration {
         .expect("register_object_to_chain");
 
         cli_tool::set_relationship_on_chain(
-            policy_id,
+            policy_id.clone(),
             object_id_manual.clone(),
-            resource,
+            resource.clone(),
             relation,
             Some(did_pk_string.clone()),
         )
@@ -706,13 +726,13 @@ mod cli_tool_integration {
         // Step 3: Run PRE via CLI
         println!("Running PRE...");
         let pre_result = cli_tool::do_pre(
-            endpoint,
-            ring_pk_hex,
-            reader_pk_hex,
-            reader_sk_hex,
-            object_id_service,
-            Some(did_pk_string),
-            full_namespace,
+            endpoint.clone(),
+            ring_pk_hex.clone(),
+            reader_pk_hex.clone(),
+            reader_sk_hex.clone(),
+            object_id_service.clone(),
+            Some(did_pk_string.clone()),
+            full_namespace.clone(),
         )
         .await;
 
@@ -730,6 +750,61 @@ mod cli_tool_integration {
             "Decrypted secret should match original plaintext"
         );
         println!("PRE decryption verified: decrypted data matches original secret!");
+
+        // Test idempotency: store the same prepared secret again
+        // This should succeed and return the same object_id (no duplicate post)
+        println!("Testing idempotency: storing same secret again...");
+
+        // Get sequence before second store
+        let sequence_before_second = cli_tool::get_account_sequence(&node1_address)
+            .await
+            .expect("get sequence before second store");
+        println!(
+            "Node1 sequence before second store: {}",
+            sequence_before_second
+        );
+
+        let object_response_2 = cli_tool::store_prepared_secret(
+            endpoint.clone(),
+            &prepared_secret, // Same prepared data as first call
+            ring_id.clone(),
+            namespace.clone(),
+            policy_id.clone(),
+            resource.clone(),
+            permission.clone(),
+            Some(did_pk_string.clone()),
+            true,
+        )
+        .await
+        .expect("store_prepared_secret (idempotent call)");
+
+        // Wait and check sequence did NOT change (no tx broadcast for idempotent call)
+        sleep(Duration::from_secs(2)).await;
+        let sequence_after_second = cli_tool::get_account_sequence(&node1_address)
+            .await
+            .expect("get sequence after second store");
+        println!(
+            "Node1 sequence after second store: {}",
+            sequence_after_second
+        );
+
+        // Verify idempotency: same object_id should be returned
+        assert_eq!(
+            object_id_service, object_response_2.object_id,
+            "Idempotency check: second store should return same object_id"
+        );
+
+        // Verify no transaction was broadcast (sequence unchanged)
+        assert_eq!(
+            sequence_before_second, sequence_after_second,
+            "Idempotency check: sequence should NOT change (no tx broadcast for duplicate)"
+        );
+
+        println!(
+            "Idempotency verified: both calls returned object_id {}, sequence unchanged at {}",
+            object_id_service, sequence_after_second
+        );
+
         // Cleanup happens automatically when _network is dropped
     }
 }
