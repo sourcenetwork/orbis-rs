@@ -25,6 +25,7 @@ use local_storage::r#trait::LocalStorage;
 use network::Message as NetworkMessage;
 use network::SIGN;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Response structure containing the recovered signature
@@ -467,6 +468,7 @@ where
         // 4. Verify and extract shares
         let signer = S::new();
         let mut verified_shares: Vec<PubShare<G2Point>> = Vec::new();
+        let mut seen_node_ids: HashSet<u32> = HashSet::new();
 
         // If we're in the peer list (self_in_list), compute our own share locally
         if self_in_list {
@@ -492,6 +494,7 @@ where
                                         from_node_id = sig_share.i,
                                         "Sign Coordinator: Added local share"
                                     );
+                                    seen_node_ids.insert(sig_share.i);
                                     verified_shares.push(sig_share);
                                 }
                                 Err(e) => {
@@ -520,6 +523,15 @@ where
                 ..
             } = response
             {
+                // Skip duplicate responses from the same node
+                if seen_node_ids.contains(&from_node_id) {
+                    tracing::warn!(
+                        from_node_id = from_node_id,
+                        "Sign Coordinator: Skipping duplicate response from node"
+                    );
+                    continue;
+                }
+
                 // Deserialize signature share
                 let sig_share_v = G2Point::from_bytes(&sig_share_bytes[..]).map_err(|e| {
                     SignError::Deserialization(format!("Failed to deserialize sig_share: {}", e))
@@ -537,6 +549,7 @@ where
                             from_node_id = from_node_id,
                             "Sign Coordinator: Verified share"
                         );
+                        seen_node_ids.insert(from_node_id);
                         verified_shares.push(sig_share);
                     }
                     Err(e) => {
