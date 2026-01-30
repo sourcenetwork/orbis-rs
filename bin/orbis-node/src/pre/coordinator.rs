@@ -633,12 +633,8 @@ where
                 ..
             } = response
             {
-                // Skip duplicate responses from the same node
+                // Skip if this node_id matches our local share (local-vs-network conflict)
                 if seen_node_ids.contains(&from_node_id) {
-                    tracing::warn!(
-                        from_node_id = from_node_id,
-                        "PRE Coordinator: Skipping duplicate response from node"
-                    );
                     continue;
                 }
 
@@ -672,7 +668,6 @@ where
                             from_node_id = from_node_id,
                             "PRE Coordinator: Verified share"
                         );
-                        seen_node_ids.insert(from_node_id);
                         verified_shares.push(reply.share);
                     }
                     Err(e) => {

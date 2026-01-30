@@ -35,4 +35,12 @@ impl SignMessage {
             SignMessage::Error { request_id, .. } => request_id,
         }
     }
+
+    /// Get the from_node_id for response messages (used for deduplication)
+    pub fn from_node_id(&self) -> Option<u32> {
+        match self {
+            SignMessage::SignResponse { from_node_id, .. } => Some(*from_node_id),
+            _ => None,
+        }
+    }
 }

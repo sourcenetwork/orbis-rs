@@ -6,13 +6,15 @@
 
 use crate::constants::MAX_SIGN_RESPONSES;
 use crate::sign::messages::SignMessage;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Sign response entry for collecting responses from nodes
 pub struct SignResponseEntry {
     pub responses: Vec<SignMessage>,
+    /// Tracks node IDs we've already received responses from (for deduplication)
+    pub seen_node_ids: HashSet<u32>,
 }
 
 /// Sign Response State Manager
@@ -61,15 +63,27 @@ impl SignResponseManager {
             request_id,
             SignResponseEntry {
                 responses: Vec::new(),
+                seen_node_ids: HashSet::new(),
             },
         );
         true
     }
 
-    /// Store a sign response
+    /// Store a sign response (with early deduplication)
     pub async fn store_response(&self, request_id: &str, message: SignMessage) {
         let mut responses = self.states.write().await;
         if let Some(entry) = responses.get_mut(request_id) {
+            if let Some(from_node_id) = message.from_node_id() {
+                if entry.seen_node_ids.contains(&from_node_id) {
+                    tracing::warn!(
+                        from_node_id = from_node_id,
+                        request_id = request_id,
+                        "Sign: Skipping duplicate response from node"
+                    );
+                    return;
+                }
+                entry.seen_node_ids.insert(from_node_id);
+            }
             entry.responses.push(message);
         }
     }
