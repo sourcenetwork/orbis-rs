@@ -291,6 +291,14 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         node: D,
         total_participants: usize,
     ) -> bool {
+        if total_participants == 0 {
+            tracing::warn!(
+                session_id = session_id,
+                "Cannot create DKG session with zero participants"
+            );
+            return false;
+        }
+
         let mut states = self.states.write().await;
 
         // Check if session already exists to avoid overwriting existing state
