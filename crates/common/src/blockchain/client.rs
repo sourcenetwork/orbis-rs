@@ -455,6 +455,10 @@ impl SourceHubClient {
             .await?;
 
         if response.code.is_err() {
+            let log = response.log.to_lowercase();
+            if log.contains("not found") {
+                return Err(BlockchainError::NotFound(response.log));
+            }
             return Err(BlockchainError::Query(format!(
                 "ABCI query failed: {} (code {})",
                 response.log,

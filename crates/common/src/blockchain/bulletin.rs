@@ -347,9 +347,7 @@ impl SourceHubClient {
 
         let response_bytes = match self.abci_query(path, request_bytes, None, false).await {
             Ok(bytes) => bytes,
-            Err(BlockchainError::Query(msg)) if msg.contains("not found") => {
-                return Ok(None);
-            }
+            Err(BlockchainError::NotFound(_)) => return Ok(None),
             Err(e) => return Err(e),
         };
 
