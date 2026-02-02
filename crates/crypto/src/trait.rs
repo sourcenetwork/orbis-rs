@@ -69,27 +69,28 @@ pub struct Secret {
     pub encrypted_data: Vec<u8>,
     /// AES-GCM nonce (12 bytes)
     pub nonce: Vec<u8>,
-    /// Optional capability derivation binding (for validation/UX only).
-    ///
-    /// When present, stores `SHA256(derivation)` to detect mismatched derivations
-    /// and provide clear error messages. This hash has NO cryptographic role.
-    ///
-    /// The actual security comes from the capability scalar:
-    ///   `d = SHA256(DERIVATION_DOMAIN || derivation)`
-    /// which is computed from the original derivation bytes (pre-image) and applied
-    /// multiplicatively: `shared_point = r * (d * dkg_pk)`.
-    /// Decryption requires the original derivation bytes to recompute `d`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub derivation_hash: Option<Vec<u8>>,
 }
 
 /// Chaum-Pedersen NIZK proof that encryption was performed correctly.
-/// Proves that enc_cmt = rG and shared_point = r*dkg_pk use the same randomness r.
+/// Proves that enc_cmt = rG and shared_point = r*effective_pk use the same randomness r.
+///
+/// When capability derivation is used:
+///   effective_pk = d * dkg_pk  (where d = H(DERIVATION_DOMAIN || derivation))
+/// Otherwise:
+///   effective_pk = dkg_pk
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EncryptionProof {
-    pub shared_point: Vec<u8>, // rsG - the shared point used for key derivation
-    pub challenge: Vec<u8>,    // c - Fiat-Shamir challenge
-    pub response: Vec<u8>,     // s - proof response (s = k + c*r)
+    /// The shared point used for key derivation: r * effective_pk
+    pub shared_point: Vec<u8>,
+    /// Fiat-Shamir challenge
+    pub challenge: Vec<u8>,
+    /// Proof response (s = k + c*r)
+    pub response: Vec<u8>,
+    /// Derived public key when capability derivation is used: d * dkg_pk
+    /// Allows verification without knowing the derivation pre-image.
+    /// None when no derivation was used (effective_pk = dkg_pk).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_pk: Option<Vec<u8>>,
 }
 
 /// Re-encryption reply
@@ -543,12 +544,12 @@ pub trait ThresholdDealer {
     /// Verify that a secret was correctly encrypted to the given DKG public key.
     /// Uses Chaum-Pedersen NIZK proof to verify enc_cmt and shared_point use same randomness.
     ///
-    /// When derivation is provided, verifies against derived_pk = d * dkg_pk.
+    /// When `proof.derived_pk` is present, verifies against the derived public key.
+    /// This allows verification without knowing the derivation pre-image.
     fn verify_encryption(
         dkg_pk: &Self::PublicKey,
         enc_cmt: &Self::PublicKey,
         proof: &EncryptionProof,
-        derivation: Option<&[u8]>,
     ) -> Result<()>;
 
     /// Decrypt a secret using the reader's secret key.

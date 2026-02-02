@@ -420,7 +420,7 @@ fn test_encryption_proof_valid() {
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Verify the encryption proof
-    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, None);
+    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
     assert!(result.is_ok(), "Valid encryption proof should verify");
 }
 
@@ -442,7 +442,7 @@ fn test_encryption_proof_wrong_dkg_pk() {
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Verify with wrong DKG public key - should fail
-    let result = ThresholdDealerNode::verify_encryption(&wrong_dkg_pk, &enc_cmt, &proof, None);
+    let result = ThresholdDealerNode::verify_encryption(&wrong_dkg_pk, &enc_cmt, &proof);
     assert!(
         result.is_err(),
         "Encryption proof should fail with wrong DKG public key"
@@ -471,7 +471,7 @@ fn test_encryption_proof_tampered_challenge() {
     proof.challenge = tampered_bytes;
 
     // Verification should fail
-    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, None);
+    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
     assert!(
         result.is_err(),
         "Encryption proof should fail with tampered challenge"
@@ -500,7 +500,7 @@ fn test_encryption_proof_tampered_response() {
     proof.response = tampered_bytes;
 
     // Verification should fail
-    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, None);
+    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
     assert!(
         result.is_err(),
         "Encryption proof should fail with tampered response"
@@ -529,7 +529,7 @@ fn test_encryption_proof_tampered_shared_point() {
     proof.shared_point = tampered_bytes;
 
     // Verification should fail
-    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, None);
+    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
     assert!(
         result.is_err(),
         "Encryption proof should fail with tampered shared point"
@@ -558,18 +558,17 @@ fn test_capability_derivation_encrypt_decrypt() {
     let (enc_cmt, encrypted_secret, proof) =
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation)).unwrap();
 
-    // Verify the derivation_hash is stored
+    // Verify the derived_pk is stored in proof (allows verification without derivation)
     assert!(
-        encrypted_secret.derivation_hash.is_some(),
-        "derivation_hash should be stored"
+        proof.derived_pk.is_some(),
+        "derived_pk should be stored in proof"
     );
 
-    // Verify encryption proof with derivation
-    let verify_result =
-        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(derivation));
+    // Verify encryption proof (no derivation needed - uses derived_pk from proof)
+    let verify_result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
     assert!(
         verify_result.is_ok(),
-        "Encryption proof should verify with correct derivation"
+        "Encryption proof should verify using derived_pk from proof"
     );
 
     // 2. Simulate re-encryption (unchanged by derivation)
@@ -613,7 +612,7 @@ fn test_capability_derivation_wrong_derivation_fails() {
     let xr_g = G1Projective::from(rdr_pk) + G1Projective::from(enc_cmt);
     let xnc_cmt: G1Affine = (xr_g * dkg_sk).into();
 
-    // Try to decrypt with WRONG derivation - should fail
+    // Try to decrypt with WRONG derivation - should fail (AES-GCM auth failure)
     let result = ThresholdDealerNode::decrypt_secret(
         &dkg_pk,
         &xnc_cmt,
@@ -630,8 +629,8 @@ fn test_capability_derivation_wrong_derivation_fails() {
         result
             .unwrap_err()
             .to_string()
-            .contains("Derivation mismatch"),
-        "Error should indicate derivation mismatch"
+            .contains("authentication failed"),
+        "Error should indicate authentication failure"
     );
 }
 
@@ -655,7 +654,7 @@ fn test_capability_derivation_missing_derivation_fails() {
     let xr_g = G1Projective::from(rdr_pk) + G1Projective::from(enc_cmt);
     let xnc_cmt: G1Affine = (xr_g * dkg_sk).into();
 
-    // Try to decrypt WITHOUT derivation - should fail
+    // Try to decrypt WITHOUT derivation - should fail (AES-GCM auth failure)
     let result =
         ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret, None);
 
@@ -667,8 +666,8 @@ fn test_capability_derivation_missing_derivation_fails() {
         result
             .unwrap_err()
             .to_string()
-            .contains("Derivation required"),
-        "Error should indicate derivation is required"
+            .contains("authentication failed"),
+        "Error should indicate authentication failure"
     );
 }
 
@@ -685,19 +684,20 @@ fn test_capability_derivation_unexpected_derivation_fails() {
     let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
 
     // Encrypt WITHOUT derivation
-    let (enc_cmt, encrypted_secret, _proof) =
+    let (enc_cmt, encrypted_secret, proof) =
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
+    // Verify derived_pk is NOT in proof when no derivation used
     assert!(
-        encrypted_secret.derivation_hash.is_none(),
-        "derivation_hash should be None"
+        proof.derived_pk.is_none(),
+        "derived_pk should be None when no derivation used"
     );
 
     // Simulate re-encryption
     let xr_g = G1Projective::from(rdr_pk) + G1Projective::from(enc_cmt);
     let xnc_cmt: G1Affine = (xr_g * dkg_sk).into();
 
-    // Try to decrypt WITH derivation when none was used - should fail
+    // Try to decrypt WITH derivation when none was used - should fail (AES-GCM auth failure)
     let result = ThresholdDealerNode::decrypt_secret(
         &dkg_pk,
         &xnc_cmt,
@@ -714,16 +714,17 @@ fn test_capability_derivation_unexpected_derivation_fails() {
         result
             .unwrap_err()
             .to_string()
-            .contains("Unexpected derivation"),
-        "Error should indicate unexpected derivation"
+            .contains("authentication failed"),
+        "Error should indicate authentication failure"
     );
 }
 
 #[test]
-fn test_capability_derivation_verify_encryption_wrong_derivation() {
+fn test_capability_derivation_verify_without_knowing_derivation() {
+    // This test verifies that encryption proof can be verified without knowing
+    // the derivation pre-image, because derived_pk is stored in the proof.
     let secret = b"test secret";
-    let derivation = b"my-capability";
-    let wrong_derivation = b"wrong-capability";
+    let derivation = b"my-secret-capability";
     let mut rng = OsRng;
 
     let dkg_sk = Fr::rand(&mut rng);
@@ -733,13 +734,17 @@ fn test_capability_derivation_verify_encryption_wrong_derivation() {
     let (enc_cmt, _encrypted_secret, proof) =
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation)).unwrap();
 
-    // Verify with wrong derivation - should fail
-    let result =
-        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(wrong_derivation));
-
+    // Verify that derived_pk is stored in proof
     assert!(
-        result.is_err(),
-        "Verification should fail with wrong derivation"
+        proof.derived_pk.is_some(),
+        "derived_pk should be stored in proof when derivation is used"
+    );
+
+    // Verification succeeds without knowing the derivation pre-image
+    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
+    assert!(
+        result.is_ok(),
+        "Verification should succeed using derived_pk from proof"
     );
 }
 
@@ -754,9 +759,9 @@ fn test_capability_derivation_different_capabilities_different_ciphertexts() {
     let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
 
     // Encrypt with different derivations
-    let (_, encrypted1, proof1) =
+    let (_, _encrypted1, proof1) =
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation1)).unwrap();
-    let (_, encrypted2, proof2) =
+    let (_, _encrypted2, proof2) =
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation2)).unwrap();
 
     // The shared_points should be different (different derived keys)
@@ -765,10 +770,10 @@ fn test_capability_derivation_different_capabilities_different_ciphertexts() {
         "Different derivations should produce different shared points"
     );
 
-    // The derivation hashes should be different
+    // The derived_pk values should be different
     assert_ne!(
-        encrypted1.derivation_hash, encrypted2.derivation_hash,
-        "Different derivations should have different hashes"
+        proof1.derived_pk, proof2.derived_pk,
+        "Different derivations should produce different derived public keys"
     );
 }
 
@@ -803,14 +808,8 @@ fn test_capability_derivation_full_pre_integration() {
     let (enc_cmt, encrypted_secret, proof) =
         ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret, Some(capability)).unwrap();
 
-    // Verify encryption proof with capability
-    assert!(ThresholdDealerNode::verify_encryption(
-        &aggregate_pk,
-        &enc_cmt,
-        &proof,
-        Some(capability)
-    )
-    .is_ok());
+    // Verify encryption proof (no derivation needed - uses derived_pk from proof)
+    assert!(ThresholdDealerNode::verify_encryption(&aggregate_pk, &enc_cmt, &proof).is_ok());
 
     // Step 3: Setup reader (Bob)
     let mut rng = OsRng;

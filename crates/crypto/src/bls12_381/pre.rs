@@ -141,15 +141,14 @@ impl ThresholdDealer for ThresholdDealerNode {
         let enc_cmt: G1Affine = (G1Projective::generator() * r).into(); // rG
 
         // Compute derived public key if derivation is provided
-        // derived_pk = d * dkg_pk where d = H(derivation)
-        let (effective_pk, derivation_hash) = if let Some(deriv_bytes) = derivation {
+        // derived_pk = d * dkg_pk where d = H(DERIVATION_DOMAIN || derivation)
+        let (effective_pk, derived_pk_bytes) = if let Some(deriv_bytes) = derivation {
             let d = Self::derive_capability_scalar(deriv_bytes);
             let derived_pk: G1Affine = (G1Projective::from(*dkg_pk) * d).into();
-            // Store H(derivation) for binding verification
-            let mut hasher = Sha256::new();
-            hasher.update(deriv_bytes);
-            let hash = hasher.finalize().to_vec();
-            (derived_pk, Some(hash))
+            // Serialize derived_pk for storage in proof (allows verification without derivation)
+            let mut bytes = Vec::new();
+            derived_pk.serialize_compressed(&mut bytes)?;
+            (derived_pk, Some(bytes))
         } else {
             (*dkg_pk, None)
         };
@@ -174,6 +173,7 @@ impl ThresholdDealer for ThresholdDealerNode {
             shared_point: shared_point_bytes.clone(),
             challenge: challenge_bytes,
             response: response_bytes,
+            derived_pk: derived_pk_bytes,
         };
 
         // Derive AES key from shared_point
@@ -207,7 +207,6 @@ impl ThresholdDealer for ThresholdDealerNode {
                 enc_cmt: enc_cmt_bytes,
                 encrypted_data: ciphertext,
                 nonce: nonce_bytes.to_vec(),
-                derivation_hash,
             },
             proof,
         ))
@@ -219,10 +218,12 @@ impl ThresholdDealer for ThresholdDealerNode {
     /// discrete logarithm relative to G and effective_pk respectively. In other words:
     ///   enc_cmt = r * G  AND  shared_point = r * effective_pk  for some r
     ///
-    /// When derivation is provided:
-    ///   effective_pk = d * dkg_pk where d = H(derivation)
+    /// When `proof.derived_pk` is present:
+    ///   effective_pk = derived_pk (the pre-computed d * dkg_pk)
     /// Otherwise:
     ///   effective_pk = dkg_pk
+    ///
+    /// This allows verification without knowing the derivation pre-image.
     ///
     /// ## What this DOES verify:
     /// - The mathematical relationship between enc_cmt and shared_point
@@ -232,6 +233,8 @@ impl ThresholdDealer for ThresholdDealerNode {
     /// ## What this does NOT verify:
     /// - That the ciphertext was actually encrypted using shared_point
     /// - Ciphertext integrity (that's verified at decrypt time via AES-GCM)
+    /// - That derived_pk is actually d * dkg_pk for some valid derivation
+    ///   (the verifier trusts that the encryptor used a valid derivation)
     ///
     /// The ciphertext binding is enforced via AAD in AES-GCM: if the wrong
     /// shared_point was used during encryption, decryption will fail with
@@ -240,7 +243,6 @@ impl ThresholdDealer for ThresholdDealerNode {
         dkg_pk: &Self::PublicKey,
         enc_cmt: &Self::PublicKey,
         proof: &EncryptionProof,
-        derivation: Option<&[u8]>,
     ) -> Result<()> {
         // Validate enc_cmt from untrusted input
         if enc_cmt.is_zero() {
@@ -254,10 +256,24 @@ impl ThresholdDealer for ThresholdDealerNode {
             ));
         }
 
-        // Compute effective public key (apply derivation if provided)
-        let effective_pk = if let Some(deriv_bytes) = derivation {
-            let d = Self::derive_capability_scalar(deriv_bytes);
-            (G1Projective::from(*dkg_pk) * d).into()
+        // Get effective public key from proof (derived_pk if present, otherwise dkg_pk)
+        let effective_pk: G1Affine = if let Some(ref derived_pk_bytes) = proof.derived_pk {
+            let derived_pk =
+                G1Affine::deserialize_compressed(&derived_pk_bytes[..]).map_err(|e| {
+                    CryptoError::ElGamalError(format!("Failed to deserialize derived_pk: {:?}", e))
+                })?;
+            // Validate derived_pk
+            if derived_pk.is_zero() {
+                return Err(CryptoError::ElGamalError(
+                    "Invalid derived_pk: cannot be the identity element".to_string(),
+                ));
+            }
+            if !derived_pk.is_in_correct_subgroup_assuming_on_curve() {
+                return Err(CryptoError::ElGamalError(
+                    "Invalid derived_pk: not in correct subgroup".to_string(),
+                ));
+            }
+            derived_pk
         } else {
             *dkg_pk
         };
@@ -341,34 +357,6 @@ impl ThresholdDealer for ThresholdDealerNode {
 
         if secret.enc_cmt.is_empty() {
             return Err(CryptoError::ElGamalError("Empty commitment".to_string()));
-        }
-
-        // Verify derivation binding matches what was used during encryption
-        match (&secret.derivation_hash, &derivation) {
-            (Some(stored_hash), Some(deriv_bytes)) => {
-                let mut hasher = Sha256::new();
-                hasher.update(deriv_bytes);
-                let provided_hash = hasher.finalize();
-                if stored_hash.as_slice() != provided_hash.as_slice() {
-                    return Err(CryptoError::ElGamalError(
-                        "Derivation mismatch: provided derivation does not match encryption"
-                            .to_string(),
-                    ));
-                }
-            }
-            (Some(_), None) => {
-                return Err(CryptoError::ElGamalError(
-                    "Derivation required: secret was encrypted with capability derivation"
-                        .to_string(),
-                ));
-            }
-            (None, Some(_)) => {
-                return Err(CryptoError::ElGamalError(
-                    "Unexpected derivation: secret was encrypted without capability derivation"
-                        .to_string(),
-                ));
-            }
-            (None, None) => {}
         }
 
         // Recover rs_g from re-encryption result

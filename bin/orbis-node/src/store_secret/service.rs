@@ -306,14 +306,16 @@ where
     }
 
     // 5. Validate Encryption of secret validity
+    // TODO: Accept derived_pk from request when capability derivation is supported
     let proof = EncryptionProof {
         shared_point,
         challenge,
         response,
+        derived_pk: None,
     };
 
     // TODO: Support capability derivation when storing secrets with derivation binding
-    ThresholdDealerNode::verify_encryption(&ring_key_point, &enc_cmt_point, &proof, None).map_err(
+    ThresholdDealerNode::verify_encryption(&ring_key_point, &enc_cmt_point, &proof).map_err(
         |e| StoreSecretError::Validation(format!("Failed to Validate secret encryption: {}", e)),
     )?;
 
