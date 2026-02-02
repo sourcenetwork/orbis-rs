@@ -110,7 +110,7 @@ async fn test_dkg_then_pre_end_to_end() {
 
     // Alice encrypts the message using the DKG aggregate public key
     let (enc_cmt, encrypted_secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret_message)
+        ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret_message, None)
             .expect("Encryption should succeed");
 
     println!("Message encrypted successfully!");
@@ -217,7 +217,7 @@ async fn test_dkg_then_pre_end_to_end() {
 
     // Bob decrypts using his private key
     let decrypted_message =
-        PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret)
+        PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret, None)
             .expect("Decryption should succeed");
 
     println!(
@@ -339,7 +339,7 @@ async fn test_pre_with_large_secret() {
 
     // Alice encrypts
     let (_, encrypted_secret, _) =
-        PreImpl::encrypt_secret(&aggregate_pk, &large_secret).expect("Encryption should succeed");
+        PreImpl::encrypt_secret(&aggregate_pk, &large_secret, None).expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys using trait method
@@ -384,7 +384,7 @@ async fn test_pre_with_large_secret() {
     let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).unwrap();
     let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes).unwrap();
 
-    let decrypted = PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret)
+    let decrypted = PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret, None)
         .expect("Decryption should succeed");
 
     assert_eq!(
@@ -455,7 +455,7 @@ async fn test_pre_fails_with_wrong_key() {
     // Alice encrypts
     let secret_message = b"Secret that should not be decrypted with wrong key";
     let (_, encrypted_secret, _) =
-        PreImpl::encrypt_secret(&aggregate_pk, secret_message).expect("Encryption should succeed");
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None).expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's real keys
@@ -510,6 +510,7 @@ async fn test_pre_fails_with_wrong_key() {
         &xnc_cmt,
         &eve_sk, // Wrong key!
         &pre_response.secret,
+        None,
     );
 
     assert!(
@@ -577,7 +578,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     // Alice encrypts
     let secret_message = b"Secret that should not be re-encrypted with bad token";
     let (_, encrypted_secret, _) =
-        PreImpl::encrypt_secret(&aggregate_pk, secret_message).expect("Encryption should succeed");
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None).expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys
@@ -703,7 +704,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     // Alice encrypts
     let secret_message = b"Secret with mismatched claims";
     let (_, encrypted_secret, _) =
-        PreImpl::encrypt_secret(&aggregate_pk, secret_message).expect("Encryption should succeed");
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None).expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys

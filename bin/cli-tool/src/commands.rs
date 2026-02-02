@@ -140,8 +140,9 @@ pub fn prepare_secret(secret: &[u8], ring_pk_hex: &str) -> Result<PreparedSecret
         G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
 
     // Encrypt locally - node never sees plaintext
+    // TODO: Support capability derivation for secret encryption
     let (enc_cmt, encrypted_secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret)
+        ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret, None)
             .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
     let encrypted_document = serde_json::to_string(&encrypted_secret)
@@ -367,11 +368,13 @@ pub async fn do_pre(
             .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
         // Decrypt using reader's secret key and the secret from the response
+        // TODO: Support capability derivation for secret decryption
         let decrypted = ThresholdDealerNode::decrypt_secret(
             &ring_pk_point,
             &xnc_cmt,
             &reader_sk_scalar,
             &pre_response.secret,
+            None,
         )
         .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
@@ -403,8 +406,9 @@ pub async fn do_encrypt_secret(ring_pk: String, secret: String) -> Result<()> {
         .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
     // Encrypt the secret
+    // TODO: Support capability derivation for secret encryption
     let (_enc_cmt, encrypted_secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret.as_bytes())
+        ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret.as_bytes(), None)
             .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
     // Output the full secret as JSON (this is what PRE expects)

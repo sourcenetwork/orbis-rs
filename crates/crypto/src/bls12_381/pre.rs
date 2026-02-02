@@ -25,6 +25,7 @@ const NAME: &str = "elgamal";
 const ENCRYPT_PROOF_DOMAIN: &[u8; 24] = b"elgamal-encrypt-proof-v1";
 const PROTOCOL: &[u8; 30] = b"elgamal-reencrypt-challenge-v1";
 const AAD_DOMAIN: &[u8; 15] = b"elgamal-aad-v1\0";
+const DERIVATION_DOMAIN: &[u8; 23] = b"elgamal-derivation-v1\0\0";
 
 #[derive(Clone, Debug)]
 pub struct ThresholdDealerNode {}
@@ -132,20 +133,38 @@ impl ThresholdDealer for ThresholdDealerNode {
     fn encrypt_secret(
         dkg_pk: &Self::PublicKey,
         data: &[u8],
+        derivation: Option<&[u8]>,
     ) -> Result<(Self::PublicKey, Self::Secret, EncryptionProof)> {
         let mut rng = OsRng;
         // Generate random r
         let r = Fr::rand(&mut rng);
         let enc_cmt: G1Affine = (G1Projective::generator() * r).into(); // rG
-        let rs_g: G1Affine = (G1Projective::from(*dkg_pk) * r).into(); // rsG (shared point)
+
+        // Compute derived public key if derivation is provided
+        // derived_pk = d * dkg_pk where d = H(derivation)
+        let (effective_pk, derivation_hash) = if let Some(deriv_bytes) = derivation {
+            let d = Self::derive_capability_scalar(deriv_bytes);
+            let derived_pk: G1Affine = (G1Projective::from(*dkg_pk) * d).into();
+            // Store H(derivation) for binding verification
+            let mut hasher = Sha256::new();
+            hasher.update(deriv_bytes);
+            let hash = hasher.finalize().to_vec();
+            (derived_pk, Some(hash))
+        } else {
+            (*dkg_pk, None)
+        };
+
+        // shared_point = r * effective_pk = r*d*s*G (with derivation) or r*s*G (without)
+        let shared_point: G1Affine = (G1Projective::from(effective_pk) * r).into();
 
         // Generate Chaum-Pedersen NIZK proof
-        // Proves that enc_cmt = r*G and rs_g = r*dkg_pk use the same r
-        let (challenge, response) = Self::generate_encryption_proof(&r, dkg_pk, &enc_cmt, &rs_g)?;
+        // Proves that enc_cmt = r*G and shared_point = r*effective_pk use the same r
+        let (challenge, response) =
+            Self::generate_encryption_proof(&r, &effective_pk, &enc_cmt, &shared_point)?;
 
         // Serialize proof components
         let mut shared_point_bytes = Vec::new();
-        rs_g.serialize_compressed(&mut shared_point_bytes)?;
+        shared_point.serialize_compressed(&mut shared_point_bytes)?;
         let mut challenge_bytes = Vec::new();
         challenge.serialize_compressed(&mut challenge_bytes)?;
         let mut response_bytes = Vec::new();
@@ -157,8 +176,8 @@ impl ThresholdDealer for ThresholdDealerNode {
             response: response_bytes,
         };
 
-        // Derive AES key from rsG
-        let aes_key = Self::derive_key_from_point(&rs_g)?;
+        // Derive AES key from shared_point
+        let aes_key = Self::derive_key_from_point(&shared_point)?;
         let cipher = Aes256Gcm::new(&aes_key.into());
 
         // Generate nonce using cryptographically secure RNG
@@ -189,6 +208,7 @@ impl ThresholdDealer for ThresholdDealerNode {
                 encrypted_data: ciphertext,
                 nonce: nonce_bytes.to_vec(),
                 auth_tag: Vec::new(), // Included in ciphertext with AES-GCM
+                derivation_hash,
             },
             proof,
         ))
@@ -197,8 +217,13 @@ impl ThresholdDealer for ThresholdDealerNode {
     /// Verify the Chaum-Pedersen NIZK proof for encryption.
     ///
     /// This verifies that `enc_cmt` and `shared_point` (in the proof) share the same
-    /// discrete logarithm relative to G and dkg_pk respectively. In other words:
-    ///   enc_cmt = r * G  AND  shared_point = r * dkg_pk  for some r
+    /// discrete logarithm relative to G and effective_pk respectively. In other words:
+    ///   enc_cmt = r * G  AND  shared_point = r * effective_pk  for some r
+    ///
+    /// When derivation is provided:
+    ///   effective_pk = d * dkg_pk where d = H(derivation)
+    /// Otherwise:
+    ///   effective_pk = dkg_pk
     ///
     /// ## What this DOES verify:
     /// - The mathematical relationship between enc_cmt and shared_point
@@ -216,6 +241,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         dkg_pk: &Self::PublicKey,
         enc_cmt: &Self::PublicKey,
         proof: &EncryptionProof,
+        derivation: Option<&[u8]>,
     ) -> Result<()> {
         // Validate enc_cmt from untrusted input
         if enc_cmt.is_zero() {
@@ -228,6 +254,14 @@ impl ThresholdDealer for ThresholdDealerNode {
                 "Invalid enc_cmt: not in correct subgroup".to_string(),
             ));
         }
+
+        // Compute effective public key (apply derivation if provided)
+        let effective_pk = if let Some(deriv_bytes) = derivation {
+            let d = Self::derive_capability_scalar(deriv_bytes);
+            (G1Projective::from(*dkg_pk) * d).into()
+        } else {
+            *dkg_pk
+        };
 
         // Deserialize proof components
         let shared_point =
@@ -259,16 +293,16 @@ impl ThresholdDealer for ThresholdDealerNode {
             - G1Projective::from(*enc_cmt) * challenge)
             .into();
 
-        // Verify: R2' = s*dkg_pk - c*shared_point
-        let r2_prime: G1Affine = (G1Projective::from(*dkg_pk) * response
+        // Verify: R2' = s*effective_pk - c*shared_point
+        let r2_prime: G1Affine = (G1Projective::from(effective_pk) * response
             - G1Projective::from(shared_point) * challenge)
             .into();
 
-        // Recompute challenge: c' = Hash(ENCRYPT_PROOF_DOMAIN, G, dkg_pk, enc_cmt, shared_point, R1', R2')
+        // Recompute challenge: c' = Hash(ENCRYPT_PROOF_DOMAIN, G, effective_pk, enc_cmt, shared_point, R1', R2')
         let g = G1Affine::generator();
         let challenge_hash = Self::hash_encryption_proof_points(
             &g,
-            dkg_pk,
+            &effective_pk,
             enc_cmt,
             &shared_point,
             &r1_prime,
@@ -291,6 +325,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         xnc_cmt: &Self::PublicKey, // Recovered from re-encryption
         rdr_sk: &Self::ShareValue,
         secret: &Self::Secret,
+        derivation: Option<&[u8]>,
     ) -> Result<Vec<u8>> {
         // Input validation
         if secret.nonce.len() != 12 {
@@ -309,19 +344,57 @@ impl ThresholdDealer for ThresholdDealerNode {
             return Err(CryptoError::ElGamalError("Empty commitment".to_string()));
         }
 
-        // Recover rsG (shared_point)
-        // After correct re-encryption and recovery:
-        // xnc_cmt = (x+r)*s*G, so rs_g = xnc_cmt - x*sG = r*sG = shared_point
-        let xs_g = G1Projective::from(*dkg_pk) * rdr_sk; // xsG = x * sG
-        let rs_g: G1Affine = (G1Projective::from(*xnc_cmt) - xs_g).into(); // rsG = shared_point
+        // Verify derivation binding matches what was used during encryption
+        match (&secret.derivation_hash, &derivation) {
+            (Some(stored_hash), Some(deriv_bytes)) => {
+                let mut hasher = Sha256::new();
+                hasher.update(deriv_bytes);
+                let provided_hash = hasher.finalize();
+                if stored_hash.as_slice() != provided_hash.as_slice() {
+                    return Err(CryptoError::ElGamalError(
+                        "Derivation mismatch: provided derivation does not match encryption"
+                            .to_string(),
+                    ));
+                }
+            }
+            (Some(_), None) => {
+                return Err(CryptoError::ElGamalError(
+                    "Derivation required: secret was encrypted with capability derivation"
+                        .to_string(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(CryptoError::ElGamalError(
+                    "Unexpected derivation: secret was encrypted without capability derivation"
+                        .to_string(),
+                ));
+            }
+            (None, None) => {}
+        }
 
-        // Derive AES key
-        let aes_key = Self::derive_key_from_point(&rs_g)?;
+        // Recover rs_g from re-encryption result
+        // After correct re-encryption and recovery:
+        // xnc_cmt = (x+r)*s*G, so rs_g = xnc_cmt - x*sG = r*sG
+        let xs_g = G1Projective::from(*dkg_pk) * rdr_sk; // xsG = x * sG
+        let rs_g: G1Affine = (G1Projective::from(*xnc_cmt) - xs_g).into(); // rsG
+
+        // Apply capability derivation to recover the shared_point
+        // If derivation was used: shared_point = d * rs_g = d*r*s*G = r*d*s*G
+        // Otherwise: shared_point = rs_g = r*s*G
+        let shared_point: G1Affine = if let Some(deriv_bytes) = derivation {
+            let d = Self::derive_capability_scalar(deriv_bytes);
+            (G1Projective::from(rs_g) * d).into()
+        } else {
+            rs_g
+        };
+
+        // Derive AES key from shared_point
+        let aes_key = Self::derive_key_from_point(&shared_point)?;
         let cipher = Aes256Gcm::new(&aes_key.into());
 
         // Build AAD using centralized helper (must match encryption)
         let mut shared_point_bytes = Vec::new();
-        rs_g.serialize_compressed(&mut shared_point_bytes)?;
+        shared_point.serialize_compressed(&mut shared_point_bytes)?;
         let aad = Self::build_aad(&secret.enc_cmt, &shared_point_bytes);
 
         // Decrypt with AAD to verify binding to commitment and shared point
@@ -346,6 +419,18 @@ impl ThresholdDealerNode {
         let sk = Fr::rand(&mut rng);
         let pk: G1Affine = (G1Projective::generator() * sk).into();
         (sk, pk)
+    }
+
+    /// Derive a capability scalar from derivation bytes.
+    ///
+    /// Uses domain-separated hashing to derive a scalar d = H(DERIVATION_DOMAIN || derivation).
+    /// The scalar is used multiplicatively: derived_pk = d * dkg_pk.
+    fn derive_capability_scalar(derivation: &[u8]) -> Fr {
+        let mut hasher = Sha256::new();
+        hasher.update(DERIVATION_DOMAIN);
+        hasher.update(derivation);
+        let hash = hasher.finalize();
+        Fr::from_le_bytes_mod_order(&hash)
     }
 
     /// Decompress a point from bytes and validate it's not the identity element

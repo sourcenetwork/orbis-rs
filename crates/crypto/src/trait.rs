@@ -67,6 +67,18 @@ pub struct Secret {
     pub encrypted_data: Vec<u8>, // AES-GCM encrypted data
     pub nonce: Vec<u8>,          // AES-GCM nonce (12 bytes)
     pub auth_tag: Vec<u8>,       // Authentication tag
+    /// Optional capability derivation binding (for validation/UX only).
+    ///
+    /// When present, stores `SHA256(derivation)` to detect mismatched derivations
+    /// and provide clear error messages. This hash has NO cryptographic role.
+    ///
+    /// The actual security comes from the capability scalar:
+    ///   `d = SHA256(DERIVATION_DOMAIN || derivation)`
+    /// which is computed from the original derivation bytes (pre-image) and applied
+    /// multiplicatively: `shared_point = r * (d * dkg_pk)`.
+    /// Decryption requires the original derivation bytes to recompute `d`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation_hash: Option<Vec<u8>>,
 }
 
 /// Chaum-Pedersen NIZK proof that encryption was performed correctly.
@@ -509,40 +521,54 @@ pub trait ThresholdDealer {
     /// Encrypt a secret using the aggregate public key of the DKG.
     ///
     /// Input:
-    ///   dkg_pk (sG) - Aggregate public key of the DKG.
-    ///   scrt  (k)   - Secret to be encrypted.
+    ///   dkg_pk (sG)   - Aggregate public key of the DKG.
+    ///   data          - Data to be encrypted.
+    ///   derivation    - Optional capability derivation bytes. When provided,
+    ///                   a scalar d = H(derivation) is derived and applied
+    ///                   multiplicatively: derived_pk = d * dkg_pk.
+    ///                   The shared_point becomes r * derived_pk = r*d*s*G.
     ///
     /// Output:
     ///   enc_cmt  - Schnorr commit (rG)
-    ///   enc_scrt - Encrypted key-slices (rsG + Ki)
+    ///   secret   - Encrypted data with capability binding
     ///   proof    - Chaum-Pedersen NIZK proof of correct encryption
     fn encrypt_secret(
         dkg_pk: &Self::PublicKey,
         data: &[u8],
+        derivation: Option<&[u8]>,
     ) -> Result<(Self::PublicKey, Self::Secret, EncryptionProof)>;
 
     /// Verify that a secret was correctly encrypted to the given DKG public key.
     /// Uses Chaum-Pedersen NIZK proof to verify enc_cmt and shared_point use same randomness.
+    ///
+    /// When derivation is provided, verifies against derived_pk = d * dkg_pk.
     fn verify_encryption(
         dkg_pk: &Self::PublicKey,
         enc_cmt: &Self::PublicKey,
         proof: &EncryptionProof,
+        derivation: Option<&[u8]>,
     ) -> Result<()>;
 
     /// Decrypt a secret using the reader's secret key.
     ///
     /// Input:
-    ///   dkg_pk  (sG)       - Aggregate public key of DKG.
-    ///   xnc_cmt (rsG + xsG) - Re-encrypted schnorr-commit.
-    ///   rdr_sk  (x)        - Secret key of the reader.
+    ///   dkg_pk  (sG)        - Aggregate public key of DKG.
+    ///   xnc_cmt ((x+r)*sG)  - Re-encrypted schnorr-commit.
+    ///   rdr_sk  (x)         - Secret key of the reader.
+    ///   secret              - The encrypted secret.
+    ///   derivation          - Optional capability derivation bytes. Must match
+    ///                         what was used during encryption. If provided,
+    ///                         d = H(derivation) is applied to recover the
+    ///                         shared_point: d * (xnc_cmt - x*dkg_pk) = r*d*s*G.
     ///
     /// Output:
-    ///   scrt - Recovered secret.
+    ///   Decrypted data.
     fn decrypt_secret(
         dkg_pk: &Self::PublicKey,
         xnc_cmt: &Self::PublicKey, // Recovered from re-encryption
         rdr_sk: &Self::ShareValue,
         secret: &Self::Secret,
+        derivation: Option<&[u8]>,
     ) -> Result<Vec<u8>>;
 }
 

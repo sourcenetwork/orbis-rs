@@ -361,6 +361,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
         encrypted_data: vec![0u8; 32],
         nonce: vec![0u8; 12], // 12 bytes for AES-GCM
         auth_tag: vec![0u8; 16],
+        derivation_hash: None
     };
     let encrypted_doc = serde_json::to_string(&secret).expect("serialize Secret");
     let enc_cmt_hex = hex::encode(&enc_cmt_bytes);
@@ -519,7 +520,7 @@ async fn test_store_secret_idempotent() {
     // Generate valid encryption proof using ThresholdDealerNode
     let plaintext = b"test secret data";
     let (_enc_cmt, secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext).expect("encrypt with proof");
+        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None).expect("encrypt with proof");
 
     let encrypted_doc = serde_json::to_string(&secret).expect("serialize Secret");
     let enc_cmt_hex = hex::encode(secret.enc_cmt.clone());

@@ -312,7 +312,8 @@ where
         response,
     };
 
-    ThresholdDealerNode::verify_encryption(&ring_key_point, &enc_cmt_point, &proof).map_err(
+    // TODO: Support capability derivation when storing secrets with derivation binding
+    ThresholdDealerNode::verify_encryption(&ring_key_point, &enc_cmt_point, &proof, None).map_err(
         |e| StoreSecretError::Validation(format!("Failed to Validate secret encryption: {}", e)),
     )?;
 

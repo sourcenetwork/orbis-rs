@@ -29,7 +29,7 @@ fn test_encrypt_decrypt_flow() {
 
     // 1. Encrypt the secret
     let (enc_cmt, encrypted_secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Verify encryption produces valid output
     assert_ne!(enc_cmt, G1Affine::zero());
@@ -44,7 +44,8 @@ fn test_encrypt_decrypt_flow() {
 
     // 3. Decrypt the secret
     let decrypted =
-        ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret).unwrap();
+        ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret, None)
+            .unwrap();
 
     // Verify decryption recovers original secret
     assert_eq!(decrypted, secret);
@@ -67,7 +68,7 @@ fn test_encrypt_decrypt_large_data() {
 
     // Encrypt
     let (enc_cmt, encrypted_secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     assert_ne!(enc_cmt, G1Affine::zero());
     assert!(!encrypted_secret.encrypted_data.is_empty());
@@ -79,7 +80,8 @@ fn test_encrypt_decrypt_large_data() {
 
     // Decrypt
     let decrypted =
-        ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret).unwrap();
+        ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret, None)
+            .unwrap();
 
     assert_eq!(decrypted.len(), secret.len());
     assert_eq!(decrypted, secret);
@@ -96,7 +98,7 @@ fn test_encrypt_decrypt_empty_data() {
 
     // Encrypt empty data
     let (enc_cmt, encrypted_secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Simulate re-encryption commitment correctly
     let xr_g = G1Projective::from(rdr_pk) + G1Projective::from(enc_cmt);
@@ -104,7 +106,8 @@ fn test_encrypt_decrypt_empty_data() {
 
     // Decrypt
     let decrypted =
-        ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret).unwrap();
+        ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret, None)
+            .unwrap();
 
     assert_eq!(decrypted, secret);
 }
@@ -123,15 +126,20 @@ fn test_decryption_fails_with_wrong_key() {
 
     // Encrypt
     let (enc_cmt, encrypted_secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Simulate re-encryption commitment with CORRECT reader key
     let xr_g = G1Projective::from(rdr_pk) + G1Projective::from(enc_cmt);
     let xnc_cmt: G1Affine = (xr_g * dkg_sk).into();
 
     // Try to decrypt with WRONG key - should fail
-    let result =
-        ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &wrong_rdr_sk, &encrypted_secret);
+    let result = ThresholdDealerNode::decrypt_secret(
+        &dkg_pk,
+        &xnc_cmt,
+        &wrong_rdr_sk,
+        &encrypted_secret,
+        None,
+    );
 
     assert!(result.is_err());
     assert!(result
@@ -163,7 +171,7 @@ fn test_reencrypt_and_verify() {
     // Encrypt a secret
     let secret = b"test data";
     let (enc_cmt, encrypted_secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Re-encrypt
     let dealer = ThresholdDealerNode::new();
@@ -197,7 +205,7 @@ fn test_verify_fails_with_wrong_proof() {
 
     let secret = b"test data";
     let (enc_cmt, encrypted_secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Re-encrypt
     let dealer = ThresholdDealerNode::new();
@@ -330,7 +338,7 @@ fn test_dkg_encrypt_decrypt_integration() {
 
     // Step 2: Encrypt the secret using aggregate public key
     let (enc_cmt, encrypted_secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret).unwrap();
+        ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret, None).unwrap();
 
     // Verify encryption
     assert_ne!(enc_cmt, G1Affine::zero());
@@ -384,9 +392,14 @@ fn test_dkg_encrypt_decrypt_integration() {
     assert_ne!(xnc_cmt, G1Affine::zero());
 
     // Step 6: Decrypt the secret using Bob's private key
-    let decrypted =
-        ThresholdDealerNode::decrypt_secret(&aggregate_pk, &xnc_cmt, &rdr_sk, &encrypted_secret)
-            .unwrap();
+    let decrypted = ThresholdDealerNode::decrypt_secret(
+        &aggregate_pk,
+        &xnc_cmt,
+        &rdr_sk,
+        &encrypted_secret,
+        None,
+    )
+    .unwrap();
 
     // Verify decryption recovered the original secret
     assert_eq!(decrypted, secret);
@@ -404,10 +417,10 @@ fn test_encryption_proof_valid() {
 
     // Encrypt the secret
     let (enc_cmt, _encrypted_secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Verify the encryption proof
-    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
+    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, None);
     assert!(result.is_ok(), "Valid encryption proof should verify");
 }
 
@@ -426,10 +439,10 @@ fn test_encryption_proof_wrong_dkg_pk() {
 
     // Encrypt the secret
     let (enc_cmt, _encrypted_secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Verify with wrong DKG public key - should fail
-    let result = ThresholdDealerNode::verify_encryption(&wrong_dkg_pk, &enc_cmt, &proof);
+    let result = ThresholdDealerNode::verify_encryption(&wrong_dkg_pk, &enc_cmt, &proof, None);
     assert!(
         result.is_err(),
         "Encryption proof should fail with wrong DKG public key"
@@ -447,7 +460,7 @@ fn test_encryption_proof_tampered_challenge() {
 
     // Encrypt the secret
     let (enc_cmt, _encrypted_secret, mut proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Tamper with the challenge
     let tampered_challenge = Fr::rand(&mut rng);
@@ -458,7 +471,7 @@ fn test_encryption_proof_tampered_challenge() {
     proof.challenge = tampered_bytes;
 
     // Verification should fail
-    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
+    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, None);
     assert!(
         result.is_err(),
         "Encryption proof should fail with tampered challenge"
@@ -476,7 +489,7 @@ fn test_encryption_proof_tampered_response() {
 
     // Encrypt the secret
     let (enc_cmt, _encrypted_secret, mut proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Tamper with the response
     let tampered_response = Fr::rand(&mut rng);
@@ -487,7 +500,7 @@ fn test_encryption_proof_tampered_response() {
     proof.response = tampered_bytes;
 
     // Verification should fail
-    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
+    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, None);
     assert!(
         result.is_err(),
         "Encryption proof should fail with tampered response"
@@ -505,7 +518,7 @@ fn test_encryption_proof_tampered_shared_point() {
 
     // Encrypt the secret
     let (enc_cmt, _encrypted_secret, mut proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Tamper with the shared point
     let tampered_point: G1Affine = (G1Projective::generator() * Fr::rand(&mut rng)).into();
@@ -516,9 +529,354 @@ fn test_encryption_proof_tampered_shared_point() {
     proof.shared_point = tampered_bytes;
 
     // Verification should fail
-    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof);
+    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, None);
     assert!(
         result.is_err(),
         "Encryption proof should fail with tampered shared point"
+    );
+}
+
+// =============================================================================
+// Capability Derivation Tests
+// =============================================================================
+
+#[test]
+fn test_capability_derivation_encrypt_decrypt() {
+    let secret = b"capability-protected secret";
+    let derivation = b"my-capability-tag";
+    let mut rng = OsRng;
+
+    // Setup DKG key pair
+    let dkg_sk = Fr::rand(&mut rng);
+    let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+
+    // Setup reader key pair
+    let rdr_sk = Fr::rand(&mut rng);
+    let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
+
+    // 1. Encrypt with derivation
+    let (enc_cmt, encrypted_secret, proof) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation)).unwrap();
+
+    // Verify the derivation_hash is stored
+    assert!(
+        encrypted_secret.derivation_hash.is_some(),
+        "derivation_hash should be stored"
+    );
+
+    // Verify encryption proof with derivation
+    let verify_result =
+        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(derivation));
+    assert!(
+        verify_result.is_ok(),
+        "Encryption proof should verify with correct derivation"
+    );
+
+    // 2. Simulate re-encryption (unchanged by derivation)
+    let xr_g = G1Projective::from(rdr_pk) + G1Projective::from(enc_cmt);
+    let xnc_cmt: G1Affine = (xr_g * dkg_sk).into();
+
+    // 3. Decrypt with correct derivation
+    let decrypted = ThresholdDealerNode::decrypt_secret(
+        &dkg_pk,
+        &xnc_cmt,
+        &rdr_sk,
+        &encrypted_secret,
+        Some(derivation),
+    )
+    .unwrap();
+
+    assert_eq!(
+        decrypted, secret,
+        "Decryption should recover original secret"
+    );
+}
+
+#[test]
+fn test_capability_derivation_wrong_derivation_fails() {
+    let secret = b"capability-protected secret";
+    let derivation = b"my-capability-tag";
+    let wrong_derivation = b"wrong-capability-tag";
+    let mut rng = OsRng;
+
+    // Setup keys
+    let dkg_sk = Fr::rand(&mut rng);
+    let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+    let rdr_sk = Fr::rand(&mut rng);
+    let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
+
+    // Encrypt with derivation
+    let (enc_cmt, encrypted_secret, _proof) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation)).unwrap();
+
+    // Simulate re-encryption
+    let xr_g = G1Projective::from(rdr_pk) + G1Projective::from(enc_cmt);
+    let xnc_cmt: G1Affine = (xr_g * dkg_sk).into();
+
+    // Try to decrypt with WRONG derivation - should fail
+    let result = ThresholdDealerNode::decrypt_secret(
+        &dkg_pk,
+        &xnc_cmt,
+        &rdr_sk,
+        &encrypted_secret,
+        Some(wrong_derivation),
+    );
+
+    assert!(
+        result.is_err(),
+        "Decryption with wrong derivation should fail"
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Derivation mismatch"),
+        "Error should indicate derivation mismatch"
+    );
+}
+
+#[test]
+fn test_capability_derivation_missing_derivation_fails() {
+    let secret = b"capability-protected secret";
+    let derivation = b"my-capability-tag";
+    let mut rng = OsRng;
+
+    // Setup keys
+    let dkg_sk = Fr::rand(&mut rng);
+    let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+    let rdr_sk = Fr::rand(&mut rng);
+    let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
+
+    // Encrypt WITH derivation
+    let (enc_cmt, encrypted_secret, _proof) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation)).unwrap();
+
+    // Simulate re-encryption
+    let xr_g = G1Projective::from(rdr_pk) + G1Projective::from(enc_cmt);
+    let xnc_cmt: G1Affine = (xr_g * dkg_sk).into();
+
+    // Try to decrypt WITHOUT derivation - should fail
+    let result =
+        ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret, None);
+
+    assert!(
+        result.is_err(),
+        "Decryption without derivation should fail when encrypted with derivation"
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Derivation required"),
+        "Error should indicate derivation is required"
+    );
+}
+
+#[test]
+fn test_capability_derivation_unexpected_derivation_fails() {
+    let secret = b"non-capability secret";
+    let derivation = b"unexpected-capability";
+    let mut rng = OsRng;
+
+    // Setup keys
+    let dkg_sk = Fr::rand(&mut rng);
+    let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+    let rdr_sk = Fr::rand(&mut rng);
+    let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
+
+    // Encrypt WITHOUT derivation
+    let (enc_cmt, encrypted_secret, _proof) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
+
+    assert!(
+        encrypted_secret.derivation_hash.is_none(),
+        "derivation_hash should be None"
+    );
+
+    // Simulate re-encryption
+    let xr_g = G1Projective::from(rdr_pk) + G1Projective::from(enc_cmt);
+    let xnc_cmt: G1Affine = (xr_g * dkg_sk).into();
+
+    // Try to decrypt WITH derivation when none was used - should fail
+    let result = ThresholdDealerNode::decrypt_secret(
+        &dkg_pk,
+        &xnc_cmt,
+        &rdr_sk,
+        &encrypted_secret,
+        Some(derivation),
+    );
+
+    assert!(
+        result.is_err(),
+        "Decryption with derivation should fail when encrypted without derivation"
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Unexpected derivation"),
+        "Error should indicate unexpected derivation"
+    );
+}
+
+#[test]
+fn test_capability_derivation_verify_encryption_wrong_derivation() {
+    let secret = b"test secret";
+    let derivation = b"my-capability";
+    let wrong_derivation = b"wrong-capability";
+    let mut rng = OsRng;
+
+    let dkg_sk = Fr::rand(&mut rng);
+    let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+
+    // Encrypt with derivation
+    let (enc_cmt, _encrypted_secret, proof) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation)).unwrap();
+
+    // Verify with wrong derivation - should fail
+    let result =
+        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(wrong_derivation));
+
+    assert!(
+        result.is_err(),
+        "Verification should fail with wrong derivation"
+    );
+}
+
+#[test]
+fn test_capability_derivation_different_capabilities_different_ciphertexts() {
+    let secret = b"same secret";
+    let derivation1 = b"capability-A";
+    let derivation2 = b"capability-B";
+    let mut rng = OsRng;
+
+    let dkg_sk = Fr::rand(&mut rng);
+    let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+
+    // Encrypt with different derivations
+    let (_, encrypted1, proof1) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation1)).unwrap();
+    let (_, encrypted2, proof2) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation2)).unwrap();
+
+    // The shared_points should be different (different derived keys)
+    assert_ne!(
+        proof1.shared_point, proof2.shared_point,
+        "Different derivations should produce different shared points"
+    );
+
+    // The derivation hashes should be different
+    assert_ne!(
+        encrypted1.derivation_hash, encrypted2.derivation_hash,
+        "Different derivations should have different hashes"
+    );
+}
+
+#[test]
+fn test_capability_derivation_full_pre_integration() {
+    // This test demonstrates the complete capability-based PRE flow:
+    // 1. Run DKG to generate threshold keys
+    // 2. Encrypt a secret with capability derivation
+    // 3. Re-encrypt using threshold shares (unchanged by derivation)
+    // 4. Decrypt with correct capability - succeeds
+    // 5. Decrypt with wrong capability - fails
+
+    let secret = b"Capability-protected secret via threshold PRE!";
+    let capability = b"resource:document:123:read";
+
+    // Setup: 3-of-5 threshold DKG
+    let n = 5;
+    let t = 3;
+
+    // Step 1: Run DKG
+    let mut coordinator = DKGCoordinator::new(
+        |id: u32, threshold: usize, total_nodes: usize| {
+            <crate::bls12_381::dkg::DKGNode as crate::r#trait::Dkg>::new(id, threshold, total_nodes)
+        },
+        n,
+        t,
+    )
+    .unwrap();
+    let (aggregate_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
+
+    // Step 2: Encrypt with capability derivation
+    let (enc_cmt, encrypted_secret, proof) =
+        ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret, Some(capability)).unwrap();
+
+    // Verify encryption proof with capability
+    assert!(ThresholdDealerNode::verify_encryption(
+        &aggregate_pk,
+        &enc_cmt,
+        &proof,
+        Some(capability)
+    )
+    .is_ok());
+
+    // Step 3: Setup reader (Bob)
+    let mut rng = OsRng;
+    let rdr_sk = Fr::rand(&mut rng);
+    let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
+
+    // Step 4: Re-encrypt using threshold shares (derivation is transparent to this step)
+    let dealer = ThresholdDealerNode::new();
+    let mut reencrypt_replies = Vec::new();
+
+    for share in secret_shares.iter().take(t) {
+        let dist_key_share = DistKeyShare {
+            pri_share: share.clone(),
+        };
+        let reply = dealer
+            .reencrypt(&dist_key_share, &encrypted_secret, &rdr_pk)
+            .unwrap();
+        dealer
+            .verify(&rdr_pk, &pub_poly, &enc_cmt, &reply)
+            .expect("Re-encryption verification should succeed");
+        reencrypt_replies.push(reply);
+    }
+
+    // Step 5: Recover re-encrypted commitment
+    let pub_shares: Vec<PubShare<G1Affine>> =
+        reencrypt_replies.iter().map(|r| r.share.clone()).collect();
+    let xnc_cmt = dealer
+        .recover(&pub_shares, t, n)
+        .unwrap()
+        .expect("Recovery should succeed");
+
+    // Step 6: Decrypt WITH correct capability - should succeed
+    let decrypted = ThresholdDealerNode::decrypt_secret(
+        &aggregate_pk,
+        &xnc_cmt,
+        &rdr_sk,
+        &encrypted_secret,
+        Some(capability),
+    )
+    .expect("Decryption with correct capability should succeed");
+
+    assert_eq!(decrypted, secret);
+
+    // Step 7: Decrypt WITHOUT capability - should fail
+    let wrong_result = ThresholdDealerNode::decrypt_secret(
+        &aggregate_pk,
+        &xnc_cmt,
+        &rdr_sk,
+        &encrypted_secret,
+        None,
+    );
+    assert!(
+        wrong_result.is_err(),
+        "Decryption without capability should fail"
+    );
+
+    // Step 8: Decrypt with WRONG capability - should fail
+    let wrong_cap_result = ThresholdDealerNode::decrypt_secret(
+        &aggregate_pk,
+        &xnc_cmt,
+        &rdr_sk,
+        &encrypted_secret,
+        Some(b"wrong:capability"),
+    );
+    assert!(
+        wrong_cap_result.is_err(),
+        "Decryption with wrong capability should fail"
     );
 }
