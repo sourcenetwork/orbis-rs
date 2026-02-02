@@ -70,12 +70,25 @@ pub struct Secret {
 }
 
 /// Chaum-Pedersen NIZK proof that encryption was performed correctly.
-/// Proves that enc_cmt = rG and shared_point = r*dkg_pk use the same randomness r.
+/// Proves that enc_cmt = rG and shared_point = r*effective_pk use the same randomness r.
+///
+/// When capability derivation is used:
+///   effective_pk = d * dkg_pk  (where d = H(DERIVATION_DOMAIN || derivation))
+/// Otherwise:
+///   effective_pk = dkg_pk
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EncryptionProof {
-    pub shared_point: Vec<u8>, // rsG - the shared point used for key derivation
-    pub challenge: Vec<u8>,    // c - Fiat-Shamir challenge
-    pub response: Vec<u8>,     // s - proof response (s = k + c*r)
+    /// The shared point used for key derivation: r * effective_pk
+    pub shared_point: Vec<u8>,
+    /// Fiat-Shamir challenge
+    pub challenge: Vec<u8>,
+    /// Proof response (s = k + c*r)
+    pub response: Vec<u8>,
+    /// Derived public key when capability derivation is used: d * dkg_pk
+    /// Allows verification without knowing the derivation pre-image.
+    /// None when no derivation was used (effective_pk = dkg_pk).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_pk: Option<Vec<u8>>,
 }
 
 /// Re-encryption reply
@@ -461,13 +474,21 @@ pub trait ThresholdDealer {
 
     /// Re-encrypt a secret share using the receiver's public key.
     ///
+    /// When derivation is provided, this function:
+    /// 1. Verifies that `H(derivation) * dkg_pk == proof.derived_pk`
+    /// 2. If verification fails, returns an error (fail at node level)
+    /// 3. Applies derivation scalar to the share: `xnc_ski = d * ski * (xG + rG)`
+    ///
     /// Input:
-    ///   dkg_ski (ski) - Private share of secret key of DKG.
-    ///   rdr_pk  (xG)  - Public key of the reader.
-    ///   enc_cmt (rG)  - Schnorr commit of encoded keys.
+    ///   dist_key_share - Private share of secret key of DKG.
+    ///   scrt           - The encrypted secret (contains enc_cmt = rG).
+    ///   rdr_pk  (xG)   - Public key of the reader.
+    ///   dkg_pk  (sG)   - Aggregate public key of the DKG (for derivation verification).
+    ///   derivation     - Optional capability derivation bytes.
+    ///   proof          - Encryption proof (contains derived_pk for verification).
     ///
     /// Output:
-    ///   xnc_ski (Ui) - Re-encrypted secret share.
+    ///   xnc_ski (Ui) - Re-encrypted secret share (with derivation applied if provided).
     ///   chlgi  (ei)  - Random oracle challenge.
     ///   proofi (fi)  - NIZK proof of re-encryption.
     fn reencrypt(
@@ -475,23 +496,29 @@ pub trait ThresholdDealer {
         dist_key_share: &Self::DistKeyShare,
         scrt: &Self::Secret,
         rdr_pk: &Self::PublicKey,
+        dkg_pk: &Self::PublicKey,
+        derivation: Option<&[u8]>,
+        proof: &EncryptionProof,
     ) -> Result<Self::ReencryptReply>;
 
     /// Verify a re-encryption proof.
     ///
+    /// When derivation is provided, verification uses d * dkg_cmt.eval(idx) as the
+    /// expected commitment for the share, matching the derivation applied during re-encryption.
+    ///
     /// Input:
-    ///   rdr_pk  (xG)  - Public key of the reader.
-    ///   enc_cmt (rG)  - Schnorr commit of encoded keys.
-    ///   dkg_ski (Ui)  - Re-encrypted share of commitment.
-    ///   chlgi  (ei)   - Random oracle challenge at index i.
-    ///   proofi (fi)   - NIZK proof of re-encryption at index i.
-    ///   dkg_cmt (ci)  - Commitment (public polynomial) of DKG at index i.
+    ///   rdr_pk     (xG)  - Public key of the reader.
+    ///   dkg_cmt          - Public polynomial commitment of DKG.
+    ///   enc_cmt    (rG)  - Schnorr commit of encoded keys.
+    ///   reply            - Re-encryption reply containing share, challenge, and proof.
+    ///   derivation       - Optional capability derivation bytes (must match reencrypt).
     fn verify(
         &self,
         rdr_pk: &Self::PublicKey,
         dkg_cmt: &Self::PubPoly,
         enc_cmt: &Self::PublicKey,
         reply: &Self::ReencryptReply,
+        derivation: Option<&[u8]>,
     ) -> Result<()>;
 
     /// Recover the re-encrypted commitment from shares
@@ -509,16 +536,21 @@ pub trait ThresholdDealer {
     /// Encrypt a secret using the aggregate public key of the DKG.
     ///
     /// Input:
-    ///   dkg_pk (sG) - Aggregate public key of the DKG.
-    ///   scrt  (k)   - Secret to be encrypted.
+    ///   dkg_pk (sG)   - Aggregate public key of the DKG.
+    ///   data          - Data to be encrypted.
+    ///   derivation    - Optional capability derivation bytes. When provided,
+    ///                   a scalar d = H(derivation) is derived and applied
+    ///                   multiplicatively: derived_pk = d * dkg_pk.
+    ///                   The shared_point becomes r * derived_pk = r*d*s*G.
     ///
     /// Output:
     ///   enc_cmt  - Schnorr commit (rG)
-    ///   enc_scrt - Encrypted key-slices (rsG + Ki)
+    ///   secret   - Encrypted data with capability binding
     ///   proof    - Chaum-Pedersen NIZK proof of correct encryption
     fn encrypt_secret(
         dkg_pk: &Self::PublicKey,
         data: &[u8],
+        derivation: Option<&[u8]>,
     ) -> Result<(Self::PublicKey, Self::Secret, EncryptionProof)>;
 
     /// Verify that a secret was correctly encrypted to the given DKG public key.
@@ -532,15 +564,24 @@ pub trait ThresholdDealer {
     /// Decrypt a secret using the reader's secret key.
     ///
     /// Input:
-    ///   dkg_pk  (sG)       - Aggregate public key of DKG.
-    ///   xnc_cmt (rsG + xsG) - Re-encrypted schnorr-commit.
+    ///   effective_pk       - The public key used for decryption:
+    ///                        - If derivation was used: derived_pk (from proof.derived_pk)
+    ///                        - Otherwise: dkg_pk (aggregate public key of DKG)
+    ///   xnc_cmt            - Re-encrypted commitment: d*(x+r)*sG (with derivation)
+    ///                        or (x+r)*sG (without derivation).
     ///   rdr_sk  (x)        - Secret key of the reader.
+    ///   secret             - The encrypted secret.
     ///
     /// Output:
-    ///   scrt - Recovered secret.
+    ///   Decrypted data.
+    ///
+    /// Note: When derivation was used during encryption/re-encryption:
+    ///   - xnc_cmt = d * (x+r) * sG
+    ///   - effective_pk = d * sG (derived_pk)
+    ///   - shared_point = xnc_cmt - x * effective_pk = d*r*sG
     fn decrypt_secret(
-        dkg_pk: &Self::PublicKey,
-        xnc_cmt: &Self::PublicKey, // Recovered from re-encryption
+        effective_pk: &Self::PublicKey,
+        xnc_cmt: &Self::PublicKey,
         rdr_sk: &Self::ShareValue,
         secret: &Self::Secret,
     ) -> Result<Vec<u8>>;
