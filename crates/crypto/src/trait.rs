@@ -474,18 +474,18 @@ pub trait ThresholdDealer {
 
     /// Re-encrypt a secret share using the receiver's public key.
     ///
-    /// When derivation is provided, this function:
-    /// 1. Verifies that `H(derivation) * dkg_pk == proof.derived_pk`
-    /// 2. If verification fails, returns an error (fail at node level)
-    /// 3. Applies derivation scalar to the share: `xnc_ski = d * ski * (xG + rG)`
+    /// When derivation is provided, applies the derivation scalar to the share:
+    ///   xnc_ski = d * ski * (xG + rG)  where d = H(DERIVATION_DOMAIN || derivation)
+    ///
+    /// Note: If the wrong derivation is provided, decryption will fail at the user
+    /// level (AES-GCM authentication failure). An attacker cannot brute-force the
+    /// correct derivation without the reader's private key.
     ///
     /// Input:
     ///   dist_key_share - Private share of secret key of DKG.
     ///   scrt           - The encrypted secret (contains enc_cmt = rG).
     ///   rdr_pk  (xG)   - Public key of the reader.
-    ///   dkg_pk  (sG)   - Aggregate public key of the DKG (for derivation verification).
     ///   derivation     - Optional capability derivation bytes.
-    ///   proof          - Encryption proof (contains derived_pk for verification).
     ///
     /// Output:
     ///   xnc_ski (Ui) - Re-encrypted secret share (with derivation applied if provided).
@@ -496,9 +496,7 @@ pub trait ThresholdDealer {
         dist_key_share: &Self::DistKeyShare,
         scrt: &Self::Secret,
         rdr_pk: &Self::PublicKey,
-        dkg_pk: &Self::PublicKey,
         derivation: Option<&[u8]>,
-        proof: &EncryptionProof,
     ) -> Result<Self::ReencryptReply>;
 
     /// Verify a re-encryption proof.

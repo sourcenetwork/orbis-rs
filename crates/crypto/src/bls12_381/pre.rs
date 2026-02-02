@@ -51,9 +51,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         dist_key_share: &Self::DistKeyShare,
         scrt: &Self::Secret,
         rdr_pk: &Self::PublicKey,
-        dkg_pk: &Self::PublicKey,
         derivation: Option<&[u8]>,
-        proof: &EncryptionProof,
     ) -> Result<Self::ReencryptReply> {
         // Input validation
         if scrt.enc_cmt.is_empty() {
@@ -76,43 +74,13 @@ impl ThresholdDealer for ThresholdDealerNode {
         // Unmarshal the commitment
         let enc_cmt = Self::decompress_point(&scrt.enc_cmt)?;
 
-        // Handle capability derivation
-        let derivation_scalar = if let Some(deriv_bytes) = derivation {
-            // Compute derivation scalar d = H(DERIVATION_DOMAIN || derivation)
-            let d = Self::derive_capability_scalar(deriv_bytes);
-
-            // Verify that d * dkg_pk == derived_pk from proof
-            let expected_derived_pk: G1Affine = (G1Projective::from(*dkg_pk) * d).into();
-
-            // Get derived_pk from proof
-            let proof_derived_pk = proof.derived_pk.as_ref().ok_or_else(|| {
-                CryptoError::ElGamalError(
-                    "Derivation provided but proof has no derived_pk".to_string(),
-                )
-            })?;
-
-            let actual_derived_pk = Self::decompress_point(proof_derived_pk)?;
-
-            // Verify derivation matches - fail at node level if mismatch
-            if expected_derived_pk != actual_derived_pk {
-                return Err(CryptoError::ElGamalError(
-                    "Derivation verification failed: computed derived_pk does not match proof"
-                        .to_string(),
-                ));
-            }
-
-            Some(d)
-        } else {
-            // No derivation - verify proof also has no derived_pk
-            if proof.derived_pk.is_some() {
-                return Err(CryptoError::ElGamalError(
-                    "No derivation provided but proof has derived_pk".to_string(),
-                ));
-            }
-            None
-        };
+        // Compute derivation scalar if provided
+        // d = H(DERIVATION_DOMAIN || derivation)
+        let derivation_scalar = derivation.map(Self::derive_capability_scalar);
 
         // Compute re-encrypted share with optional derivation
+        // If wrong derivation is provided, decryption will fail at user level
+        // (AES-GCM auth failure). Attacker cannot brute-force without reader's private key.
         let (xnc_ski, chlgi, proofi) =
             Self::reencrypt_internal(&ski, rdr_pk, &enc_cmt, derivation_scalar)?;
 

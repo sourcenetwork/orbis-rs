@@ -163,13 +163,13 @@ fn test_reencrypt_and_verify() {
 
     // Encrypt a secret
     let secret = b"test data";
-    let (enc_cmt, encrypted_secret, proof) =
+    let (enc_cmt, encrypted_secret, _proof) =
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Re-encrypt (no derivation)
     let dealer = ThresholdDealerNode::new();
     let reply = dealer
-        .reencrypt(&share, &encrypted_secret, &rdr_pk, &dkg_pk, None, &proof)
+        .reencrypt(&share, &encrypted_secret, &rdr_pk, None)
         .unwrap();
 
     // Verify the reply (no derivation)
@@ -197,13 +197,13 @@ fn test_verify_fails_with_wrong_proof() {
     };
 
     let secret = b"test data";
-    let (enc_cmt, encrypted_secret, proof) =
+    let (enc_cmt, encrypted_secret, _proof) =
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
     // Re-encrypt
     let dealer = ThresholdDealerNode::new();
     let mut reply = dealer
-        .reencrypt(&share, &encrypted_secret, &rdr_pk, &dkg_pk, None, &proof)
+        .reencrypt(&share, &encrypted_secret, &rdr_pk, None)
         .unwrap();
 
     // Tamper with the proof
@@ -330,7 +330,7 @@ fn test_dkg_encrypt_decrypt_integration() {
     }
 
     // Step 2: Encrypt the secret using aggregate public key (no derivation)
-    let (enc_cmt, encrypted_secret, proof) =
+    let (enc_cmt, encrypted_secret, _proof) =
         ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret, None).unwrap();
 
     // Verify encryption
@@ -355,14 +355,7 @@ fn test_dkg_encrypt_decrypt_integration() {
         };
 
         let reply = dealer
-            .reencrypt(
-                &dist_key_share,
-                &encrypted_secret,
-                &rdr_pk,
-                &aggregate_pk,
-                None,
-                &proof,
-            )
+            .reencrypt(&dist_key_share, &encrypted_secret, &rdr_pk, None)
             .unwrap();
 
         // Verify the re-encryption reply (no derivation)
@@ -613,14 +606,7 @@ fn test_reencrypt_with_derivation() {
     // Re-encrypt with derivation
     let dealer = ThresholdDealerNode::new();
     let reply = dealer
-        .reencrypt(
-            &share,
-            &encrypted_secret,
-            &rdr_pk,
-            &dkg_pk,
-            Some(derivation),
-            &proof,
-        )
+        .reencrypt(&share, &encrypted_secret, &rdr_pk, Some(derivation))
         .unwrap();
 
     // Verify with derivation
@@ -629,15 +615,19 @@ fn test_reencrypt_with_derivation() {
 }
 
 #[test]
-fn test_reencrypt_fails_with_wrong_derivation() {
+fn test_reencrypt_wrong_derivation_fails_at_decrypt() {
+    // With the simplified design, wrong derivation at re-encrypt succeeds
+    // but decryption fails (AES-GCM auth failure).
+    // Attacker cannot brute-force without reader's private key.
     let mut rng = OsRng;
-    let derivation = b"correct-capability";
+    let correct_derivation = b"correct-capability";
     let wrong_derivation = b"wrong-capability";
 
     // Setup keys
     let dkg_sk = Fr::rand(&mut rng);
     let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
-    let rdr_pk: G1Affine = (G1Projective::generator() * Fr::rand(&mut rng)).into();
+    let rdr_sk = Fr::rand(&mut rng);
+    let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
 
     let share = DistKeyShare {
         pri_share: PriShare { i: 1, v: dkg_sk },
@@ -646,35 +636,43 @@ fn test_reencrypt_fails_with_wrong_derivation() {
     // Encrypt with correct derivation
     let secret = b"test data";
     let (_enc_cmt, encrypted_secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation)).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(correct_derivation)).unwrap();
 
-    // Try to re-encrypt with WRONG derivation - should fail at node level
+    // Re-encrypt with WRONG derivation - this succeeds (no verification)
     let dealer = ThresholdDealerNode::new();
-    let result = dealer.reencrypt(
-        &share,
-        &encrypted_secret,
-        &rdr_pk,
-        &dkg_pk,
-        Some(wrong_derivation),
-        &proof,
-    );
+    let reply = dealer
+        .reencrypt(&share, &encrypted_secret, &rdr_pk, Some(wrong_derivation))
+        .unwrap();
+
+    // Recover xnc_cmt (in real system, from threshold of shares)
+    let xnc_cmt = reply.share.v;
+
+    // Extract derived_pk from proof (the CORRECT one used at encryption)
+    let derived_pk =
+        G1Affine::deserialize_compressed(&proof.derived_pk.as_ref().unwrap()[..]).unwrap();
+
+    // Decrypt fails because re-encryption used wrong derivation scalar
+    let result =
+        ThresholdDealerNode::decrypt_secret(&derived_pk, &xnc_cmt, &rdr_sk, &encrypted_secret);
 
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
         .to_string()
-        .contains("Derivation verification failed"));
+        .contains("authentication failed"));
 }
 
 #[test]
-fn test_reencrypt_fails_derivation_mismatch() {
+fn test_reencrypt_missing_derivation_fails_at_decrypt() {
+    // Encrypt WITH derivation, re-encrypt WITHOUT - decryption fails
     let mut rng = OsRng;
     let derivation = b"some-capability";
 
     // Setup keys
     let dkg_sk = Fr::rand(&mut rng);
     let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
-    let rdr_pk: G1Affine = (G1Projective::generator() * Fr::rand(&mut rng)).into();
+    let rdr_sk = Fr::rand(&mut rng);
+    let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
 
     let share = DistKeyShare {
         pri_share: PriShare { i: 1, v: dkg_sk },
@@ -685,33 +683,40 @@ fn test_reencrypt_fails_derivation_mismatch() {
     let (_enc_cmt, encrypted_secret, proof) =
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation)).unwrap();
 
-    // Try to re-encrypt WITHOUT derivation (mismatch) - should fail
+    // Re-encrypt WITHOUT derivation
     let dealer = ThresholdDealerNode::new();
-    let result = dealer.reencrypt(
-        &share,
-        &encrypted_secret,
-        &rdr_pk,
-        &dkg_pk,
-        None, // No derivation, but proof has derived_pk
-        &proof,
-    );
+    let reply = dealer
+        .reencrypt(&share, &encrypted_secret, &rdr_pk, None)
+        .unwrap();
+
+    let xnc_cmt = reply.share.v;
+
+    // Extract derived_pk from proof
+    let derived_pk =
+        G1Affine::deserialize_compressed(&proof.derived_pk.as_ref().unwrap()[..]).unwrap();
+
+    // Decrypt fails - re-encryption didn't apply derivation but encryption did
+    let result =
+        ThresholdDealerNode::decrypt_secret(&derived_pk, &xnc_cmt, &rdr_sk, &encrypted_secret);
 
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
         .to_string()
-        .contains("No derivation provided but proof has derived_pk"));
+        .contains("authentication failed"));
 }
 
 #[test]
-fn test_reencrypt_fails_derivation_missing() {
+fn test_reencrypt_extra_derivation_fails_at_decrypt() {
+    // Encrypt WITHOUT derivation, re-encrypt WITH - decryption fails
     let mut rng = OsRng;
     let derivation = b"some-capability";
 
     // Setup keys
     let dkg_sk = Fr::rand(&mut rng);
     let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
-    let rdr_pk: G1Affine = (G1Projective::generator() * Fr::rand(&mut rng)).into();
+    let rdr_sk = Fr::rand(&mut rng);
+    let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
 
     let share = DistKeyShare {
         pri_share: PriShare { i: 1, v: dkg_sk },
@@ -719,25 +724,27 @@ fn test_reencrypt_fails_derivation_missing() {
 
     // Encrypt WITHOUT derivation
     let secret = b"test data";
-    let (_enc_cmt, encrypted_secret, proof) =
+    let (_enc_cmt, encrypted_secret, _proof) =
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None).unwrap();
 
-    // Try to re-encrypt WITH derivation (mismatch) - should fail
+    // Re-encrypt WITH derivation (extra)
     let dealer = ThresholdDealerNode::new();
-    let result = dealer.reencrypt(
-        &share,
-        &encrypted_secret,
-        &rdr_pk,
-        &dkg_pk,
-        Some(derivation), // Derivation provided, but proof has no derived_pk
-        &proof,
-    );
+    let reply = dealer
+        .reencrypt(&share, &encrypted_secret, &rdr_pk, Some(derivation))
+        .unwrap();
+
+    let xnc_cmt = reply.share.v;
+
+    // Decrypt fails - re-encryption applied derivation but encryption didn't
+    // Use dkg_pk since there's no derived_pk
+    let result =
+        ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret);
 
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
         .to_string()
-        .contains("Derivation provided but proof has no derived_pk"));
+        .contains("authentication failed"));
 }
 
 #[test]
@@ -778,7 +785,7 @@ fn test_dkg_encrypt_decrypt_with_derivation_integration() {
     let rdr_sk = Fr::rand(&mut rng);
     let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
 
-    // Step 4: Re-encrypt with derivation verification at each node
+    // Step 4: Re-encrypt with derivation at each node
     let dealer = ThresholdDealerNode::new();
     let mut reencrypt_replies = Vec::new();
 
@@ -787,16 +794,9 @@ fn test_dkg_encrypt_decrypt_with_derivation_integration() {
             pri_share: share.clone(),
         };
 
-        // Re-encrypt with derivation - node verifies derivation matches proof
+        // Re-encrypt with derivation
         let reply = dealer
-            .reencrypt(
-                &dist_key_share,
-                &encrypted_secret,
-                &rdr_pk,
-                &aggregate_pk,
-                Some(derivation),
-                &proof,
-            )
+            .reencrypt(&dist_key_share, &encrypted_secret, &rdr_pk, Some(derivation))
             .unwrap();
 
         // Verify with derivation
