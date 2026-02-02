@@ -13,6 +13,7 @@ use crate::DkgServiceImpl;
 use bulletin::r#trait::RingPayload;
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
+use crypto::error::CryptoError::ElGamalError;
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, ThresholdDealer};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest};
@@ -107,10 +108,10 @@ async fn test_dkg_then_pre_end_to_end() {
         "Original message: {:?}",
         String::from_utf8_lossy(secret_message)
     );
-
+    let derivation = b"test_derivation".to_vec();
     // Alice encrypts the message using the DKG aggregate public key
     let (enc_cmt, encrypted_secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret_message, None)
+        ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret_message, Some(&derivation))
             .expect("Encryption should succeed");
 
     println!("Message encrypted successfully!");
@@ -214,11 +215,22 @@ async fn test_dkg_then_pre_end_to_end() {
     let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).expect("Failed to decode xnc_cmt hex");
     let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes)
         .expect("Failed to deserialize xnc_cmt");
+    let decrypted_message_no_derivation =
+        PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret, None);
 
+    assert_eq!(
+        decrypted_message_no_derivation.unwrap_err().to_string(),
+        ElGamalError("Decryption failed - authentication failed".to_string()).to_string()
+    );
     // Bob decrypts using his private key
-    let decrypted_message =
-        PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret, None)
-            .expect("Decryption should succeed");
+    let decrypted_message = PreImpl::decrypt_secret(
+        &aggregate_pk,
+        &xnc_cmt,
+        &bob_sk,
+        &pre_response.secret,
+        Some(&derivation),
+    )
+    .expect("Decryption should succeed");
 
     println!(
         "Decrypted message: {:?}",
