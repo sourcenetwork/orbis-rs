@@ -63,10 +63,12 @@ pub struct DistKeyShare<ShareValue> {
 /// Secret structure
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Secret {
-    pub enc_cmt: Vec<u8>,        // rG - Schnorr commitment
-    pub encrypted_data: Vec<u8>, // AES-GCM encrypted data
-    pub nonce: Vec<u8>,          // AES-GCM nonce (12 bytes)
-    pub auth_tag: Vec<u8>,       // Authentication tag
+    /// rG - Schnorr commitment
+    pub enc_cmt: Vec<u8>,
+    /// AES-GCM encrypted data (includes 16-byte auth tag appended by AES-GCM)
+    pub encrypted_data: Vec<u8>,
+    /// AES-GCM nonce (12 bytes)
+    pub nonce: Vec<u8>,
     /// Optional capability derivation binding (for validation/UX only).
     ///
     /// When present, stores `SHA256(derivation)` to detect mismatched derivations

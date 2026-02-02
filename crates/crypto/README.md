@@ -165,10 +165,10 @@ pub struct DistKeyShare<ShareValue> {
 
 /// Encrypted secret with Schnorr commitment
 pub struct Secret {
-    pub enc_cmt: Vec<u8>,        // rG - Schnorr commitment
-    pub encrypted_data: Vec<u8>, // AES-GCM encrypted data
-    pub nonce: Vec<u8>,          // AES-GCM nonce
-    pub auth_tag: Vec<u8>,       // Authentication tag
+    pub enc_cmt: Vec<u8>,                    // rG - Schnorr commitment
+    pub encrypted_data: Vec<u8>,             // AES-GCM encrypted data (includes auth tag)
+    pub nonce: Vec<u8>,                      // AES-GCM nonce (12 bytes)
+    pub derivation_hash: Option<Vec<u8>>,    // Optional capability binding (for validation only)
 }
 
 /// Re-encryption reply with NIZK proof

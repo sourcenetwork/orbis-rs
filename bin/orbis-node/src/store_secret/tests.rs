@@ -358,10 +358,9 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
     let enc_cmt_bytes = hex::decode(TEST_RING_PK).expect("decode TEST_RING_PK");
     let secret = crypto::r#trait::Secret {
         enc_cmt: enc_cmt_bytes.clone(),
-        encrypted_data: vec![0u8; 32],
-        nonce: vec![0u8; 12], // 12 bytes for AES-GCM
-        auth_tag: vec![0u8; 16],
-        derivation_hash: None
+        encrypted_data: vec![0u8; 32], // includes AES-GCM auth tag
+        nonce: vec![0u8; 12],          // 12 bytes for AES-GCM
+        derivation_hash: None,
     };
     let encrypted_doc = serde_json::to_string(&secret).expect("serialize Secret");
     let enc_cmt_hex = hex::encode(&enc_cmt_bytes);

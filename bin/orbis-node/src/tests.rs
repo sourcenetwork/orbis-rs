@@ -602,9 +602,12 @@ mod cli_tool_integration {
 
         // MANUAL PATH: Encrypt and post directly to bulletin
         let object_id_manual = {
-            let (_enc_cmt, encrypted_secret, _proof) =
-                ThresholdDealerNode::encrypt_secret(&ring_pk_point, b"Hello from manual path!", None)
-                    .expect("encrypt secret");
+            let (_enc_cmt, encrypted_secret, _proof) = ThresholdDealerNode::encrypt_secret(
+                &ring_pk_point,
+                b"Hello from manual path!",
+                None,
+            )
+            .expect("encrypt secret");
             let payload = DocumentPayload {
                 ring_id: ring_id.clone(),
                 document: serde_json::to_string(&encrypted_secret).expect("serialize"),

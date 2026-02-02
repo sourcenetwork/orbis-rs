@@ -207,7 +207,6 @@ impl ThresholdDealer for ThresholdDealerNode {
                 enc_cmt: enc_cmt_bytes,
                 encrypted_data: ciphertext,
                 nonce: nonce_bytes.to_vec(),
-                auth_tag: Vec::new(), // Included in ciphertext with AES-GCM
                 derivation_hash,
             },
             proof,
