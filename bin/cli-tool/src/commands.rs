@@ -127,12 +127,18 @@ pub struct PreparedSecret {
     pub challenge: Vec<u8>,
     /// Response for encryption proof
     pub response: Vec<u8>,
+    /// Optional derived public key
+    pub derived_pk: Option<Vec<u8>>,
 }
 
 /// Prepare a secret for storage by encrypting it locally.
 /// The returned PreparedSecret can be stored and reused for retries,
 /// ensuring idempotent storage (same encrypted data = same object_id).
-pub fn prepare_secret(secret: &[u8], ring_pk_hex: &str) -> Result<PreparedSecret> {
+pub fn prepare_secret(
+    secret: &[u8],
+    ring_pk_hex: &str,
+    derivation: Option<Vec<u8>>,
+) -> Result<PreparedSecret> {
     // Parse ring public key
     let ring_pk_bytes =
         hex::decode(ring_pk_hex).map_err(|e| anyhow!("Invalid ring_pk hex: {}", e))?;
@@ -142,7 +148,7 @@ pub fn prepare_secret(secret: &[u8], ring_pk_hex: &str) -> Result<PreparedSecret
     // Encrypt locally - node never sees plaintext
     // TODO: Support capability derivation for secret encryption
     let (enc_cmt, encrypted_secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret, None)
+        ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret, derivation.as_deref())
             .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
     let encrypted_document = serde_json::to_string(&encrypted_secret)
@@ -159,6 +165,7 @@ pub fn prepare_secret(secret: &[u8], ring_pk_hex: &str) -> Result<PreparedSecret
         shared_point: proof.shared_point,
         challenge: proof.challenge,
         response: proof.response,
+        derived_pk: proof.derived_pk,
     })
 }
 
@@ -197,6 +204,7 @@ pub async fn store_prepared_secret(
         shared_point: prepared.shared_point.clone(),
         challenge: prepared.challenge.clone(),
         response: prepared.response.clone(),
+        derived_pk: prepared.derived_pk.clone(),
         with_proof,
     };
 
@@ -216,6 +224,7 @@ pub async fn store_prepared_secret(
             prepared.shared_point.clone(),
             prepared.challenge.clone(),
             prepared.response.clone(),
+            prepared.derived_pk.clone(),
             with_proof,
         )
         .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
@@ -269,8 +278,9 @@ pub async fn do_store_secret(
     permission: String,
     reader_did_pk: Option<String>,
     with_proof: bool,
+    derivation: Option<Vec<u8>>,
 ) -> Result<StoreSecretResult> {
-    let prepared = prepare_secret(secret, &ring_pk_hex)?;
+    let prepared = prepare_secret(secret, &ring_pk_hex, derivation)?;
     store_prepared_secret(
         endpoint,
         &prepared,
@@ -293,6 +303,7 @@ pub async fn do_pre(
     object_id: String,
     reader_did_pk: Option<String>,
     namespace: String,
+    derivation: Option<Vec<u8>>,
 ) -> Result<Vec<u8>> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
@@ -374,7 +385,7 @@ pub async fn do_pre(
             &xnc_cmt,
             &reader_sk_scalar,
             &pre_response.secret,
-            None,
+            derivation.as_deref(),
         )
         .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 

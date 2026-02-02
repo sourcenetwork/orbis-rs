@@ -112,6 +112,7 @@ impl JwtSigner {
     /// * `shared_point`- rsG - the shared point used for key derivation
     /// * `challenge` - c - Fiat-Shamir challenge
     /// * `response` - s - proof response (s = k + c*r)
+    /// * `derived_pk` - Optional derived public key used to encrypt secret
     /// * `with_proof` - If a proof should be returned
     ///
     /// # Returns
@@ -128,6 +129,7 @@ impl JwtSigner {
         shared_point: Vec<u8>,
         challenge: Vec<u8>,
         response: Vec<u8>,
+        derived_pk: Option<Vec<u8>>,
         with_proof: bool,
     ) -> Result<String> {
         let claims = StoreSecretClaims {
@@ -141,6 +143,7 @@ impl JwtSigner {
             shared_point: shared_point,
             challenge: challenge,
             response: response,
+            derived_pk: derived_pk,
             with_proof,
         };
         self.sign(claims, Duration::from_hours(1))
@@ -265,6 +268,7 @@ mod tests {
             b"shared_point".to_vec(),
             b"challenge".to_vec(),
             b"response".to_vec(),
+            None,
             false,
         );
         assert!(token.is_ok());

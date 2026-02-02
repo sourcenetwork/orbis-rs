@@ -11,6 +11,7 @@ use crate::helpers::test_helpers::{
 use crate::store_secret::StoreSecretServiceImpl;
 use ark_bls12_381::G1Affine;
 use ark_ec::AffineRepr;
+use ark_serialize::CanonicalDeserialize;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{Bulletin, BulletinPost, RingPayload};
 use crypto::bls12_381::pre::ThresholdDealerNode;
@@ -85,6 +86,7 @@ fn create_dummy_request() -> StoreSecretRequest {
         shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
+        derived_pk: None,
         with_proof: false,
     }
 }
@@ -103,6 +105,7 @@ fn create_test_jwt(test_keys: &TestKeyPair) -> String {
             TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            None,
             false,
         )
         .expect("Failed to create JWT")
@@ -194,6 +197,7 @@ async fn test_store_secret_fails_claims_mismatch() {
             TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            None,
             false,
         )
         .expect("Failed to create JWT");
@@ -247,6 +251,7 @@ async fn test_store_secret_fails_namespace_mismatch() {
             TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            None,
             false,
         )
         .expect("Failed to create JWT");
@@ -303,6 +308,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
             TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            None,
             false,
         )
         .expect("Failed to create JWT");
@@ -319,6 +325,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
+        derived_pk: None,
         with_proof: false,
     };
 
@@ -380,6 +387,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
             invalid_shared_point.clone(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            None,
             false,
         )
         .expect("Failed to create JWT");
@@ -395,6 +403,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
         shared_point: invalid_shared_point,
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
+        derived_pk: None,
         with_proof: false,
     };
 
@@ -545,6 +554,7 @@ async fn test_store_secret_idempotent() {
             shared_point_bytes.clone(),
             challenge_bytes.clone(),
             response_bytes.clone(),
+            None,
             false,
         )
         .expect("Failed to create JWT");
@@ -560,6 +570,7 @@ async fn test_store_secret_idempotent() {
         shared_point: shared_point_bytes.clone(),
         challenge: challenge_bytes.clone(),
         response: response_bytes.clone(),
+        derived_pk: None,
         with_proof: false,
     };
 
@@ -595,6 +606,7 @@ async fn test_store_secret_idempotent() {
         shared_point: shared_point_bytes.clone(),
         challenge: challenge_bytes.clone(),
         response: response_bytes.clone(),
+        derived_pk: None,
         with_proof: false,
     };
 
@@ -626,6 +638,227 @@ async fn test_store_secret_idempotent() {
     );
 
     println!("SUCCESS! StoreSecret is idempotent - second call didn't create duplicate post");
+
+    cleanup_db(&db_path);
+}
+
+/// Test that StoreSecret fails when derivation is wrong, then succeeds with correct derivation
+#[tokio::test]
+async fn test_store_secret_derivation_validation() {
+    let db_name = "test_store_secret_derivation_validation";
+    let db_path = test_db_path(db_name);
+
+    // Create bulletin and keep a reference for verification
+    let bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to create DummyBulletin"),
+    );
+
+    // Create a valid ring with real crypto
+    let ring_pk = G1Affine::generator();
+    let ring_pk_bytes = ring_pk.to_bytes().expect("serialize ring_pk");
+    let ring_pk_hex = hex::encode(&ring_pk_bytes);
+
+    let ring_payload = RingPayload {
+        ring_pk: ring_pk_hex.clone(),
+        peer_ids: vec!["peer1".to_string()],
+        threshold: 1,
+        public_polynomial: "00".to_string(),
+    };
+
+    // Compute the ring_id (deterministic hash of the ring payload)
+    let ring_payload_bytes: Vec<u8> = ring_payload
+        .clone()
+        .try_into()
+        .expect("serialize RingPayload");
+    let full_ring_namespace = format!("bulletin/{}", BULLETIN_RING_NAMESPACE);
+    let ring_id = bulletin
+        .get_post_id(&full_ring_namespace, &ring_payload_bytes)
+        .expect("compute ring_id");
+
+    // Set ring in bulletin
+    let ring_post = BulletinPost {
+        id: ring_id.clone(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        payload: ring_payload_bytes,
+        proof: vec![],
+    };
+    bulletin.set_post(
+        BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id.clone(),
+        ring_post,
+    );
+
+    // Create app state with this bulletin
+    let app_state =
+        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+
+    let plaintext = b"test secret with derivation";
+    let correct_derivation = b"correct-derivation";
+    let wrong_derivation = b"wrong-derivation";
+
+    let namespace = "test_derivation_namespace";
+    let policy_id = "test_policy";
+    let resource = "test_resource";
+    let permission = "read";
+    let test_keys = TestKeyPair::new();
+
+    // Step 1: Encrypt with WRONG derivation and try to store - should fail
+    // We'll create a proof that's invalid by using wrong derivation's encryption
+    // but claiming it was encrypted with correct derivation (tampered derived_pk)
+    println!("Step 1: Encrypting with wrong derivation and tampering proof...");
+
+    let (_enc_cmt_wrong, secret_wrong, proof_wrong) =
+        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, Some(wrong_derivation))
+            .expect("encrypt with wrong derivation");
+
+    // Get the correct derived_pk by encrypting with correct derivation
+    let (_enc_cmt_correct_temp, _secret_correct_temp, proof_correct_temp) =
+        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, Some(correct_derivation))
+            .expect("encrypt with correct derivation to get derived_pk");
+
+    // Create a tampered proof: encryption was done with wrong_derivation,
+    // but we claim it was done with correct_derivation by using correct derived_pk
+    // This will cause verification to fail because shared_point doesn't match derived_pk
+    let mut tampered_proof = proof_wrong.clone();
+    tampered_proof.derived_pk = proof_correct_temp.derived_pk.clone();
+
+    // Verify that the tampered proof fails verification
+    let enc_cmt_wrong_point =
+        G1Affine::deserialize_compressed(&secret_wrong.enc_cmt[..]).expect("deserialize enc_cmt");
+    let verify_result =
+        ThresholdDealerNode::verify_encryption(&ring_pk, &enc_cmt_wrong_point, &tampered_proof);
+    assert!(
+        verify_result.is_err(),
+        "Tampered proof should fail verification: {:?}",
+        verify_result
+    );
+
+    // Try to store with the tampered proof - should fail
+    let encrypted_doc_wrong = serde_json::to_string(&secret_wrong).expect("serialize Secret");
+    let enc_cmt_hex_wrong = hex::encode(secret_wrong.enc_cmt.clone());
+
+    let token_wrong = test_keys
+        .create_store_secret_jwt(
+            &encrypted_doc_wrong,
+            &enc_cmt_hex_wrong,
+            &ring_id,
+            namespace,
+            policy_id,
+            resource,
+            permission,
+            tampered_proof.shared_point.clone(),
+            tampered_proof.challenge.clone(),
+            tampered_proof.response.clone(),
+            tampered_proof.derived_pk.clone(),
+            false,
+        )
+        .expect("Failed to create JWT");
+
+    let request_wrong = StoreSecretRequest {
+        encrypted_document: encrypted_doc_wrong,
+        enc_cmt: enc_cmt_hex_wrong,
+        ring_id: ring_id.clone(),
+        namespace: namespace.to_string(),
+        policy_id: policy_id.to_string(),
+        resource: resource.to_string(),
+        permission: permission.to_string(),
+        shared_point: tampered_proof.shared_point.clone(),
+        challenge: tampered_proof.challenge.clone(),
+        response: tampered_proof.response.clone(),
+        derived_pk: tampered_proof.derived_pk.clone(),
+        with_proof: false,
+    };
+
+    let tonic_request_wrong = create_authenticated_request(request_wrong, &token_wrong).unwrap();
+    let result_wrong = service.store_secret(tonic_request_wrong).await;
+
+    // This should fail because the proof verification will detect the mismatch
+    assert!(
+        result_wrong.is_err(),
+        "store_secret with wrong derivation (tampered proof) should fail: {:?}",
+        result_wrong
+    );
+
+    let status_wrong = result_wrong.unwrap_err();
+    assert!(
+        status_wrong.message().contains("encryption")
+            || status_wrong.message().contains("Validation"),
+        "Error should mention encryption or validation failure: {}",
+        status_wrong.message()
+    );
+    println!("Step 1: Correctly failed with wrong derivation");
+
+    // Step 2: Encrypt with CORRECT derivation and store - should succeed
+    println!("Step 2: Encrypting with correct derivation...");
+    let (_enc_cmt_correct, secret_correct, proof_correct) =
+        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, Some(correct_derivation))
+            .expect("encrypt with correct derivation");
+
+    let encrypted_doc_correct = serde_json::to_string(&secret_correct).expect("serialize Secret");
+    let enc_cmt_hex_correct = hex::encode(secret_correct.enc_cmt.clone());
+
+    let token_correct = test_keys
+        .create_store_secret_jwt(
+            &encrypted_doc_correct,
+            &enc_cmt_hex_correct,
+            &ring_id,
+            namespace,
+            policy_id,
+            resource,
+            permission,
+            proof_correct.shared_point.clone(),
+            proof_correct.challenge.clone(),
+            proof_correct.response.clone(),
+            proof_correct_temp.derived_pk.clone(),
+            false,
+        )
+        .expect("Failed to create JWT");
+
+    let request_correct = StoreSecretRequest {
+        encrypted_document: encrypted_doc_correct,
+        enc_cmt: enc_cmt_hex_correct,
+        ring_id: ring_id.clone(),
+        namespace: namespace.to_string(),
+        policy_id: policy_id.to_string(),
+        resource: resource.to_string(),
+        permission: permission.to_string(),
+        shared_point: proof_correct.shared_point.clone(),
+        challenge: proof_correct.challenge.clone(),
+        response: proof_correct.response.clone(),
+        derived_pk: proof_correct_temp.derived_pk.clone(),
+        with_proof: false,
+    };
+
+    let tonic_request_correct =
+        create_authenticated_request(request_correct, &token_correct).unwrap();
+    let result_correct = service.store_secret(tonic_request_correct).await;
+
+    assert!(
+        result_correct.is_ok(),
+        "store_secret with correct derivation should succeed: {:?}",
+        result_correct.err()
+    );
+
+    let response_correct = result_correct.unwrap().into_inner();
+    println!(
+        "Step 2: Succeeded with object_id: {}",
+        response_correct.object_id
+    );
+
+    // Verify the secret was stored
+    let posts_after = bulletin.get_posts_by_namespace(namespace);
+    assert_eq!(
+        posts_after.len(),
+        1,
+        "Should have exactly 1 post after storing with correct derivation"
+    );
+
+    println!(
+        "SUCCESS! StoreSecret correctly rejected wrong derivation and accepted correct derivation"
+    );
 
     cleanup_db(&db_path);
 }

@@ -65,6 +65,10 @@ pub enum SubCommands {
         /// A private key to generate a reader did
         #[clap(long)]
         reader_did_pk: Option<String>,
+
+        /// Derivation bytes for capability-based encryption (optional)
+        #[clap(long)]
+        derivation: Option<Vec<u8>>,
     },
     /// Encrypts a secret to the ring public key (from DKG)
     EncryptSecret {
@@ -163,6 +167,9 @@ pub enum SubCommands {
         /// Ring public key (hex) - used for encryption
         #[clap(long)]
         ring_pk_hex: String,
+        /// Derivation bytes for capability-based encryption (optional)
+        #[clap(long)]
+        derivation: Option<Vec<u8>>,
     },
     /// Store a prepared (pre-encrypted) secret - idempotent, safe for retries
     StorePreparedSecret {
@@ -226,6 +233,9 @@ pub enum SubCommands {
         /// Request a proof
         #[clap(long)]
         with_proof: bool,
+        /// Derivation bytes for capability-based encryption (optional)
+        #[clap(long)]
+        derivation: Option<Vec<u8>>,
     },
     /// Query node info
     Info {
@@ -255,6 +265,7 @@ async fn main() -> Result<()> {
             object_id,
             reader_did_pk,
             namespace,
+            derivation,
         } => {
             do_pre(
                 endpoint,
@@ -264,6 +275,7 @@ async fn main() -> Result<()> {
                 object_id,
                 reader_did_pk,
                 namespace,
+                derivation,
             )
             .await?;
         }
@@ -323,8 +335,9 @@ async fn main() -> Result<()> {
         SubCommands::PrepareSecret {
             secret,
             ring_pk_hex,
+            derivation,
         } => {
-            let prepared = prepare_secret(secret.as_bytes(), &ring_pk_hex)?;
+            let prepared = prepare_secret(secret.as_bytes(), &ring_pk_hex, derivation)?;
             let json = serde_json::to_string_pretty(&prepared)?;
             println!("Prepared Secret (save this for store-prepared-secret):");
             println!("{}", "=".repeat(60));
@@ -367,6 +380,7 @@ async fn main() -> Result<()> {
             permission,
             reader_did_pk,
             with_proof,
+            derivation,
         } => {
             do_store_secret(
                 endpoint,
@@ -379,6 +393,7 @@ async fn main() -> Result<()> {
                 permission,
                 reader_did_pk,
                 with_proof,
+                derivation,
             )
             .await?;
         }

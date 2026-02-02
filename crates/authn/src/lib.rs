@@ -76,6 +76,8 @@ pub struct StoreSecretClaims {
     pub challenge: Vec<u8>,
     /// proof response (s = k + c*r)
     pub response: Vec<u8>,
+    /// Optional derived public key used to encrypt secret
+    pub derived_pk: Option<Vec<u8>>,
     /// Add a proof to the store secret call
     pub with_proof: bool,
 }

@@ -624,8 +624,8 @@ mod cli_tool_integration {
 
         // SERVICE PATH: Prepare secret once (encrypt locally), then store
         // This allows testing idempotency by reusing the same prepared data
-        let prepared_secret =
-            cli_tool::prepare_secret(secret, &ring_pk_hex).expect("prepare_secret should succeed");
+        let prepared_secret = cli_tool::prepare_secret(secret, &ring_pk_hex, None)
+            .expect("prepare_secret should succeed");
 
         // Get sequence before first store to verify transaction is broadcast
         let sequence_before_first = cli_tool::get_account_sequence(&node1_address)
@@ -736,6 +736,7 @@ mod cli_tool_integration {
             object_id_service.clone(),
             Some(did_pk_string.clone()),
             full_namespace.clone(),
+            None,
         )
         .await;
 
