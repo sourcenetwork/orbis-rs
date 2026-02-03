@@ -600,7 +600,7 @@ fn test_reencrypt_with_derivation() {
 
     // Encrypt with derivation
     let secret = b"test data with derivation";
-    let (enc_cmt, encrypted_secret, proof) =
+    let (enc_cmt, encrypted_secret, _proof) =
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation)).unwrap();
 
     // Re-encrypt with derivation

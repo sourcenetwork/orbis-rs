@@ -919,3 +919,163 @@ async fn test_start_pre_fails_wrong_signature() {
     );
     cleanup_db(&db_path);
 }
+
+/// Test that PRE fails when wrong derivation is used for decryption
+///
+/// This test verifies that if Alice encrypts with derivation D1, and Bob tries
+/// to decrypt using derivation D2, the decryption fails (AES-GCM auth failure).
+#[tokio::test]
+#[serial_test::serial]
+async fn test_pre_fails_with_wrong_derivation() {
+    let db_name = "test_pre_fails_with_wrong_derivation";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    println!("=== Starting PRE Failure Test (Wrong Derivation) ===\n");
+
+    // Setup network
+    let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
+    let peer_ids = network.get_all_peer_ids();
+
+    // Run DKG
+    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+
+    let request = StartDkgRequest {
+        threshold: 2,
+        peer_ids: peer_ids.clone(),
+    };
+
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
+
+    let result = node1_service
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
+        .await;
+    assert!(result.is_ok());
+
+    let ring_payload = wait_for_dkg_completion(
+        &network,
+        result.unwrap().into_inner().session_id.parse().unwrap(),
+    )
+    .await;
+
+    // Deserialize the aggregate public key from the ring payload
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
+
+    // Alice encrypts WITH derivation
+    let secret_message = b"Secret encrypted with specific derivation";
+    let correct_derivation = b"correct_derivation_path".to_vec();
+    let wrong_derivation = b"wrong_derivation_path".to_vec();
+
+    let (_, encrypted_secret, _proof) =
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, Some(&correct_derivation))
+            .expect("Encryption with derivation should succeed");
+    let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
+
+    // Bob's keys
+    let (bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
+    let bob_pk_bytes = bob_pk.to_bytes().unwrap();
+
+    // PRE with CORRECT derivation (re-encryption should work)
+    let pre_coordinator =
+        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
+
+    let object_id = "object_id_derivation_test".to_string();
+    let namespace = "namespace_derivation_test".to_string();
+
+    // Create PRE JWT token with CORRECT derivation
+    let pre_token = test_keys
+        .create_pre_jwt(
+            &hex::encode(&bob_pk_bytes),
+            &namespace,
+            &object_id,
+            Some(correct_derivation.clone()),
+        )
+        .expect("Failed to create PRE JWT");
+
+    // Initiate re-encryption with CORRECT derivation
+    let pre_response_bytes = pre_coordinator
+        .initiate_reencryption(
+            "correct-derivation-pre-request".to_string(),
+            ring_pk_bytes.clone(),
+            secret_bytes.clone(),
+            bob_pk_bytes.clone(),
+            &pre_peer_ids,
+            ring_payload.threshold as usize,
+            ring_payload.peer_ids.len(),
+            &ring_payload.public_polynomial,
+            "".to_string(),
+            "".to_string(),
+            object_id.clone(),
+            "".to_string(),
+            pre_token,
+            namespace.clone(),
+            Some(correct_derivation.clone()),
+        )
+        .await
+        .expect("PRE with correct derivation should succeed");
+
+    let pre_response: PreResponse = serde_json::from_slice(&pre_response_bytes).unwrap();
+
+    // Bob decrypts with CORRECT derivation - should succeed
+    let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).unwrap();
+    let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes).unwrap();
+
+    // Compute correct derived_pk for decryption
+    let correct_effective_pk =
+        PreImpl::derive_public_key(&aggregate_pk, &correct_derivation).unwrap();
+
+    let decrypt_result_correct = PreImpl::decrypt_secret(
+        &correct_effective_pk,
+        &xnc_cmt,
+        &bob_sk,
+        &pre_response.secret,
+    );
+
+    assert!(
+        decrypt_result_correct.is_ok(),
+        "Decryption with correct derivation should succeed"
+    );
+    assert_eq!(
+        decrypt_result_correct.unwrap(),
+        secret_message,
+        "Decrypted message should match original"
+    );
+    println!("Decryption with correct derivation succeeded!");
+
+    // Now try to decrypt with WRONG derivation - should fail
+    let wrong_effective_pk = PreImpl::derive_public_key(&aggregate_pk, &wrong_derivation).unwrap();
+
+    let decrypt_result_wrong =
+        PreImpl::decrypt_secret(&wrong_effective_pk, &xnc_cmt, &bob_sk, &pre_response.secret);
+
+    assert!(
+        decrypt_result_wrong.is_err(),
+        "Decryption with wrong derivation should fail"
+    );
+
+    // Also verify that using no derivation (ring_pk directly) fails
+    let decrypt_result_no_derivation =
+        PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret);
+
+    assert!(
+        decrypt_result_no_derivation.is_err(),
+        "Decryption without derivation should fail when secret was encrypted with derivation"
+    );
+
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
