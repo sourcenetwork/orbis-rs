@@ -132,7 +132,6 @@ where
             .check(permission, &token.issuer_id)
             .await
             .map_err(|e| PreError::AuthZ(format!("Error in Authz request: {}", e)))?;
-        // TODO: use token.issuer_id as AuthZ check
 
         // 2. Authorize: Validate JWT claims match request fields
         validate_pre_claims(

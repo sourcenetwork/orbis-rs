@@ -165,7 +165,6 @@ where
 
         let token: BearerToken<PreClaims> = resolve_jwt_did(&token_string, current_time)
             .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-        // TODO: use token.issuer_id as AuthZ check
 
         // 2. Authorize: Validate JWT claims match request fields
         validate_pre_claims(

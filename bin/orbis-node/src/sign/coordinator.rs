@@ -298,7 +298,6 @@ where
         total_participants: usize,
         public_polynomial_hex: &str,
     ) -> Result<Vec<u8>> {
-        // TODO: Check proof item is on bulletin first
         // Determine our node_id (if we're in the ring) - single source of truth
         let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
         let node_id_opt = determine_session_node_id(&our_peer_id, peer_ids);
