@@ -155,6 +155,20 @@ impl ThresholdDealer for ThresholdDealerNode {
         data: &[u8],
         derivation: Option<&[u8]>,
     ) -> Result<(Self::PublicKey, Self::Secret, EncryptionProof)> {
+        // Validate dkg_pk is not the identity element
+        if dkg_pk.is_zero() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid dkg_pk: cannot be the identity element".to_string(),
+            ));
+        }
+
+        // Validate dkg_pk is in correct subgroup
+        if !dkg_pk.is_in_correct_subgroup_assuming_on_curve() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid dkg_pk: not in correct subgroup".to_string(),
+            ));
+        }
+
         let mut rng = OsRng;
         // Generate random r
         let r = Fr::rand(&mut rng);
@@ -346,9 +360,18 @@ impl ThresholdDealer for ThresholdDealerNode {
         )?;
         let recomputed_challenge = Fr::from_le_bytes_mod_order(&challenge_hash);
 
-        // Compare challenges
-        // Note: Fr field element comparison in arkworks is constant-time
-        if challenge != recomputed_challenge {
+        // Compare challenges using constant-time comparison
+        // Fr serializes to exactly 32 bytes for BLS12-381
+        let mut challenge_bytes = [0u8; 32];
+        let mut recomputed_bytes = [0u8; 32];
+        challenge
+            .serialize_compressed(&mut &mut challenge_bytes[..])
+            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
+        recomputed_challenge
+            .serialize_compressed(&mut &mut recomputed_bytes[..])
+            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
+
+        if challenge_bytes.ct_ne(&recomputed_bytes).into() {
             return Err(CryptoError::ElGamalError(
                 "Encryption proof verification failed".to_string(),
             ));
@@ -444,7 +467,7 @@ impl ThresholdDealerNode {
         Fr::from_le_bytes_mod_order(&hash)
     }
 
-    /// Decompress a point from bytes and validate it's not the identity element
+    /// Decompress a point from bytes and validate it's a valid curve point
     fn decompress_point(bytes: &[u8]) -> Result<G1Affine> {
         let point = G1Affine::deserialize_compressed(bytes).map_err(|e| {
             CryptoError::ElGamalError(format!("failed to decompress point: {:?}", e))
@@ -454,6 +477,13 @@ impl ThresholdDealerNode {
         if point.is_zero() {
             return Err(CryptoError::ElGamalError(
                 "Invalid point: cannot be the identity element".to_string(),
+            ));
+        }
+
+        // Verify point is in correct subgroup (defense in depth)
+        if !point.is_in_correct_subgroup_assuming_on_curve() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid point: not in correct subgroup".to_string(),
             ));
         }
 
