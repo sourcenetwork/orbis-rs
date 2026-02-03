@@ -65,6 +65,10 @@ pub enum SubCommands {
         /// A private key to generate a reader did
         #[clap(long)]
         reader_did_pk: Option<String>,
+
+        /// Optional derivation path (hex encoded)
+        #[clap(long)]
+        derivation: Option<String>,
     },
     /// Encrypts a secret to the ring public key (from DKG)
     EncryptSecret {
@@ -74,6 +78,9 @@ pub enum SubCommands {
         /// Ring public key (from DKG) in hex format
         #[clap(long)]
         ring_pk: String,
+        /// Optional derivation path (hex encoded)
+        #[clap(long)]
+        derivation: Option<String>,
     },
 
     /// Generate a reader keypair for PRE decryption
@@ -163,6 +170,9 @@ pub enum SubCommands {
         /// Ring public key (hex) - used for encryption
         #[clap(long)]
         ring_pk_hex: String,
+        /// Optional derivation path (hex encoded)
+        #[clap(long)]
+        derivation: Option<String>,
     },
     /// Store a prepared (pre-encrypted) secret - idempotent, safe for retries
     StorePreparedSecret {
@@ -190,6 +200,9 @@ pub enum SubCommands {
         /// A private key to generate a reader did
         #[clap(long)]
         reader_did_pk: Option<String>,
+        /// Optional derived public key (hex encoded)
+        #[clap(long)]
+        derived_pk: Option<String>,
         /// Request a proof
         #[clap(long)]
         with_proof: bool,
@@ -223,6 +236,9 @@ pub enum SubCommands {
         /// A private key to generate a reader did
         #[clap(long)]
         reader_did_pk: Option<String>,
+        /// Optional derivation path (hex encoded)
+        #[clap(long)]
+        derivation: Option<String>,
         /// Request a proof
         #[clap(long)]
         with_proof: bool,
@@ -255,7 +271,10 @@ async fn main() -> Result<()> {
             object_id,
             reader_did_pk,
             namespace,
+            derivation,
         } => {
+            let derivation_bytes =
+                derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
             do_pre(
                 endpoint,
                 ring_pk,
@@ -264,11 +283,18 @@ async fn main() -> Result<()> {
                 object_id,
                 reader_did_pk,
                 namespace,
+                derivation_bytes,
             )
             .await?;
         }
-        SubCommands::EncryptSecret { secret, ring_pk } => {
-            do_encrypt_secret(ring_pk, secret).await?;
+        SubCommands::EncryptSecret {
+            secret,
+            ring_pk,
+            derivation,
+        } => {
+            let derivation_bytes =
+                derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
+            do_encrypt_secret(ring_pk, secret, derivation_bytes).await?;
         }
         SubCommands::GenerateReaderKey => {
             do_generate_reader_key()?;
@@ -323,8 +349,11 @@ async fn main() -> Result<()> {
         SubCommands::PrepareSecret {
             secret,
             ring_pk_hex,
+            derivation,
         } => {
-            let prepared = prepare_secret(secret.as_bytes(), &ring_pk_hex)?;
+            let derivation_bytes =
+                derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
+            let prepared = prepare_secret(secret.as_bytes(), &ring_pk_hex, derivation_bytes)?;
             let json = serde_json::to_string_pretty(&prepared)?;
             println!("Prepared Secret (save this for store-prepared-secret):");
             println!("{}", "=".repeat(60));
@@ -339,8 +368,11 @@ async fn main() -> Result<()> {
             resource,
             permission,
             reader_did_pk,
+            derived_pk,
             with_proof,
         } => {
+            let derived_pk_bytes =
+                derived_pk.map(|d| hex::decode(&d).expect("Failed to decode derived_pk hex"));
             let prepared: PreparedSecret = serde_json::from_str(&prepared_json)
                 .map_err(|e| anyhow::anyhow!("Invalid prepared_json: {}", e))?;
             store_prepared_secret(
@@ -352,6 +384,7 @@ async fn main() -> Result<()> {
                 resource,
                 permission,
                 reader_did_pk,
+                derived_pk_bytes,
                 with_proof,
             )
             .await?;
@@ -366,8 +399,11 @@ async fn main() -> Result<()> {
             resource,
             permission,
             reader_did_pk,
+            derivation,
             with_proof,
         } => {
+            let derivation_bytes =
+                derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
             do_store_secret(
                 endpoint,
                 secret.as_bytes(),
@@ -378,6 +414,7 @@ async fn main() -> Result<()> {
                 resource,
                 permission,
                 reader_did_pk,
+                derivation_bytes,
                 with_proof,
             )
             .await?;

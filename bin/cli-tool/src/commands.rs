@@ -127,12 +127,19 @@ pub struct PreparedSecret {
     pub challenge: Vec<u8>,
     /// Response for encryption proof
     pub response: Vec<u8>,
+    /// Optional derived public key (when derivation was used)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_pk: Option<Vec<u8>>,
 }
 
 /// Prepare a secret for storage by encrypting it locally.
 /// The returned PreparedSecret can be stored and reused for retries,
 /// ensuring idempotent storage (same encrypted data = same object_id).
-pub fn prepare_secret(secret: &[u8], ring_pk_hex: &str) -> Result<PreparedSecret> {
+pub fn prepare_secret(
+    secret: &[u8],
+    ring_pk_hex: &str,
+    derivation: Option<Vec<u8>>,
+) -> Result<PreparedSecret> {
     // Parse ring public key
     let ring_pk_bytes =
         hex::decode(ring_pk_hex).map_err(|e| anyhow!("Invalid ring_pk hex: {}", e))?;
@@ -141,7 +148,7 @@ pub fn prepare_secret(secret: &[u8], ring_pk_hex: &str) -> Result<PreparedSecret
 
     // Encrypt locally - node never sees plaintext
     let (enc_cmt, encrypted_secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret)
+        ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret, derivation.as_deref())
             .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
     let encrypted_document = serde_json::to_string(&encrypted_secret)
@@ -158,6 +165,7 @@ pub fn prepare_secret(secret: &[u8], ring_pk_hex: &str) -> Result<PreparedSecret
         shared_point: proof.shared_point,
         challenge: proof.challenge,
         response: proof.response,
+        derived_pk: proof.derived_pk,
     })
 }
 
@@ -173,6 +181,7 @@ pub async fn store_prepared_secret(
     resource: String,
     permission: String,
     reader_did_pk: Option<String>,
+    derived_pk: Option<Vec<u8>>,
     with_proof: bool,
 ) -> Result<StoreSecretResult> {
     println!("Storing secret via StoreSecret service:");
@@ -196,6 +205,7 @@ pub async fn store_prepared_secret(
         shared_point: prepared.shared_point.clone(),
         challenge: prepared.challenge.clone(),
         response: prepared.response.clone(),
+        derived_pk: derived_pk.clone(),
         with_proof,
     };
 
@@ -215,6 +225,7 @@ pub async fn store_prepared_secret(
             prepared.shared_point.clone(),
             prepared.challenge.clone(),
             prepared.response.clone(),
+            derived_pk,
             with_proof,
         )
         .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
@@ -267,9 +278,16 @@ pub async fn do_store_secret(
     resource: String,
     permission: String,
     reader_did_pk: Option<String>,
+    derivation: Option<Vec<u8>>,
     with_proof: bool,
 ) -> Result<StoreSecretResult> {
-    let prepared = prepare_secret(secret, &ring_pk_hex)?;
+    let prepared = prepare_secret(secret, &ring_pk_hex, derivation.clone())?;
+    // If derivation was provided, compute derived_pk from the proof
+    let derived_pk = if derivation.is_some() {
+        prepared.derived_pk.clone()
+    } else {
+        None
+    };
     store_prepared_secret(
         endpoint,
         &prepared,
@@ -279,6 +297,7 @@ pub async fn do_store_secret(
         resource,
         permission,
         reader_did_pk,
+        derived_pk,
         with_proof,
     )
     .await
@@ -292,6 +311,7 @@ pub async fn do_pre(
     object_id: String,
     reader_did_pk: Option<String>,
     namespace: String,
+    derivation: Option<Vec<u8>>,
 ) -> Result<Vec<u8>> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
@@ -321,6 +341,7 @@ pub async fn do_pre(
         rdr_pk: reader_pk.clone(),
         object_id: object_id.clone(),
         namespace: namespace.clone(),
+        derivation: derivation.clone(),
     };
 
     // JWT work use determinitic key_pair for now
@@ -328,7 +349,7 @@ pub async fn do_pre(
     let key_pair = generate::<DidEd25519KeyPair>(Some(reader_did_pk.as_bytes()));
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
-        .create_pre_jwt(&reader_pk, &namespace, &object_id)
+        .create_pre_jwt(&reader_pk, &namespace, &object_id, derivation.clone())
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token)
         .map_err(|e| anyhow!("Failed to create_authenticated_request: {}", e))?;
@@ -366,9 +387,17 @@ pub async fn do_pre(
         let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
             .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
+        // Compute effective_pk: use derived_pk if derivation was provided, otherwise ring_pk
+        let effective_pk = if let Some(ref deriv) = derivation {
+            ThresholdDealerNode::derive_public_key(&ring_pk_point, deriv)
+                .map_err(|e| anyhow!("Failed to derive public key: {}", e))?
+        } else {
+            ring_pk_point
+        };
+
         // Decrypt using reader's secret key and the secret from the response
         let decrypted = ThresholdDealerNode::decrypt_secret(
-            &ring_pk_point,
+            &effective_pk,
             &xnc_cmt,
             &reader_sk_scalar,
             &pre_response.secret,
@@ -390,7 +419,11 @@ pub async fn do_pre(
     Err(anyhow!("PRE response did not contain encrypted_secret"))
 }
 
-pub async fn do_encrypt_secret(ring_pk: String, secret: String) -> Result<()> {
+pub async fn do_encrypt_secret(
+    ring_pk: String,
+    secret: String,
+    derivation: Option<Vec<u8>>,
+) -> Result<()> {
     println!("Encrypting secret to ring public key...");
     println!("  Ring PK: {}...", &ring_pk[..ring_pk.len().min(20)]);
     println!();
@@ -403,9 +436,12 @@ pub async fn do_encrypt_secret(ring_pk: String, secret: String) -> Result<()> {
         .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
     // Encrypt the secret
-    let (_enc_cmt, encrypted_secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret.as_bytes())
-            .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+    let (_enc_cmt, encrypted_secret, _proof) = ThresholdDealerNode::encrypt_secret(
+        &ring_pk_point,
+        secret.as_bytes(),
+        derivation.as_deref(),
+    )
+    .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
     // Output the full secret as JSON (this is what PRE expects)
     let secret_json = serde_json::to_string(&encrypted_secret)

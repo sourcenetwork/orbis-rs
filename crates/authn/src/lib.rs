@@ -42,6 +42,8 @@ pub struct PreClaims {
     pub object_id: String,
     /// Serect object namespace
     pub namespace: String,
+    /// Optional derivation path
+    pub derivation: Option<Vec<u8>>,
 }
 
 /// Claims for DKG endpoints
@@ -76,6 +78,8 @@ pub struct StoreSecretClaims {
     pub challenge: Vec<u8>,
     /// proof response (s = k + c*r)
     pub response: Vec<u8>,
+    /// Optional derived public key
+    pub derived_pk: Option<Vec<u8>>,
     /// Add a proof to the store secret call
     pub with_proof: bool,
 }

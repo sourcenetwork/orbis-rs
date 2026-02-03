@@ -135,7 +135,13 @@ where
         // TODO: use token.issuer_id as AuthZ check
 
         // 2. Authorize: Validate JWT claims match request fields
-        validate_pre_claims(&token, &req.rdr_pk, &req.object_id, &req.namespace)?;
+        validate_pre_claims(
+            &token,
+            &req.rdr_pk,
+            &req.object_id,
+            &req.namespace,
+            &req.derivation,
+        )?;
 
         tracing::info!(
             ring_id = %document_payload.ring_id,
@@ -230,6 +236,7 @@ where
                 document_payload.permission,
                 token_str.to_string(),
                 req.namespace,
+                req.derivation,
             )
             .await?;
 
@@ -265,6 +272,7 @@ pub fn validate_pre_claims(
     rdr_pk: &String,
     object_id: &String,
     namespace: &String,
+    derivation: &Option<Vec<u8>>,
 ) -> Result<(), PreError> {
     // Validate rdr_pk matches
     if token.claims.rdr_pk != *rdr_pk {
@@ -285,6 +293,13 @@ pub fn validate_pre_claims(
         return Err(PreError::Unauthorized(format!(
             "Token namespace '{}' does not match request namespace '{}'",
             token.claims.namespace, namespace
+        )));
+    }
+
+    if token.claims.derivation != *derivation {
+        return Err(PreError::Unauthorized(format!(
+            "Token derivation '{:?}' does not match request derivation '{:?}'",
+            token.claims.derivation, derivation
         )));
     }
 

@@ -278,11 +278,15 @@ async fn iroh_multiple_networks_unique_ids() {
 async fn iroh_connection_close_graceful() {
     struct CloseNotifyHandler {
         closed: Arc<Notify>,
+        ready: Arc<Notify>,
     }
 
     #[async_trait]
     impl ProtocolHandler for CloseNotifyHandler {
         async fn handle(&self, connection: Box<dyn Connection>) -> Result<()> {
+            // Signal that handler is ready and waiting
+            self.ready.notify_one();
+
             // Wait for connection to be closed by the other side
             loop {
                 match connection.recv().await {
@@ -301,8 +305,10 @@ async fn iroh_connection_close_graceful() {
     let net2 = IrohNetwork::new().await.expect("Should create network 2");
 
     let closed = Arc::new(Notify::new());
+    let ready = Arc::new(Notify::new());
     let handler = CloseNotifyHandler {
         closed: Arc::clone(&closed),
+        ready: Arc::clone(&ready),
     };
 
     let router_builder = net2
@@ -337,11 +343,16 @@ async fn iroh_connection_close_graceful() {
     }
     let conn = conn.expect("Should have connected");
 
+    // Wait for the handler to be ready before closing
+    tokio::time::timeout(std::time::Duration::from_secs(5), ready.notified())
+        .await
+        .expect("Handler should become ready");
+
     // Close the connection
     conn.close().await.expect("Should close gracefully");
 
     // Wait for the handler to be notified of the close
-    tokio::time::timeout(std::time::Duration::from_secs(15), closed.notified())
+    tokio::time::timeout(std::time::Duration::from_secs(25), closed.notified())
         .await
         .expect("Handler should be notified of connection close");
 

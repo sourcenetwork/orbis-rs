@@ -21,6 +21,7 @@ pub enum PreMessage {
         permission: String,
         token_string: String, // Client's token passed to ring nodes for auth
         namespace: String,
+        derivation: Option<Vec<u8>>,
     },
     /// Response from ring node to coordinator with reencryption share
     ReencryptResponse {
