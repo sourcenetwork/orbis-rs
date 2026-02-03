@@ -245,7 +245,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .rpc_url(args.chain_rpc.clone())
         .rest_url(args.chain_rest.clone())
         .denom(args.denom.clone());
-    // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
+
     let authz: Arc<dyn Authz> = Arc::new(
         SourceHubAuth::new(authz_chain_config)
             .await
