@@ -583,6 +583,19 @@ pub trait ThresholdDealer {
         rdr_sk: &Self::ShareValue,
         secret: &Self::Secret,
     ) -> Result<Vec<u8>>;
+
+    /// Derive the effective public key from the DKG public key and derivation bytes.
+    ///
+    /// Input:
+    ///   dkg_pk     - Aggregate public key of the DKG (sG).
+    ///   derivation - Capability derivation bytes.
+    ///
+    /// Output:
+    ///   derived_pk = d * dkg_pk where d = H(DERIVATION_DOMAIN || derivation)
+    ///
+    /// This is used by the decryptor to compute the effective_pk needed for decryption
+    /// when capability derivation was used during encryption.
+    fn derive_public_key(dkg_pk: &Self::PublicKey, derivation: &[u8]) -> Result<Self::PublicKey>;
 }
 
 pub trait ThresholdSigner {

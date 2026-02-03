@@ -85,6 +85,7 @@ fn create_dummy_request() -> StoreSecretRequest {
         shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
+        derived_pk: None,
         with_proof: false,
     }
 }
@@ -103,7 +104,6 @@ fn create_test_jwt(test_keys: &TestKeyPair) -> String {
             TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
-            None,
             None,
             false,
         )
@@ -324,6 +324,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
+        derived_pk: None,
         with_proof: false,
     };
 
@@ -402,6 +403,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
         shared_point: invalid_shared_point,
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
+        derived_pk: None,
         with_proof: false,
     };
 
@@ -525,7 +527,7 @@ async fn test_store_secret_idempotent() {
     // Generate valid encryption proof using ThresholdDealerNode
     let plaintext = b"test secret data";
     let (_enc_cmt, secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext).expect("encrypt with proof");
+        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None).expect("encrypt with proof");
 
     let encrypted_doc = serde_json::to_string(&secret).expect("serialize Secret");
     let enc_cmt_hex = hex::encode(secret.enc_cmt.clone());
@@ -552,6 +554,7 @@ async fn test_store_secret_idempotent() {
             shared_point_bytes.clone(),
             challenge_bytes.clone(),
             response_bytes.clone(),
+            None,
             false,
         )
         .expect("Failed to create JWT");
@@ -567,6 +570,7 @@ async fn test_store_secret_idempotent() {
         shared_point: shared_point_bytes.clone(),
         challenge: challenge_bytes.clone(),
         response: response_bytes.clone(),
+        derived_pk: None,
         with_proof: false,
     };
 
@@ -602,6 +606,7 @@ async fn test_store_secret_idempotent() {
         shared_point: shared_point_bytes.clone(),
         challenge: challenge_bytes.clone(),
         response: response_bytes.clone(),
+        derived_pk: None,
         with_proof: false,
     };
 

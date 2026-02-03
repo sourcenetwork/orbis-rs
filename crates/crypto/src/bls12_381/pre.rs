@@ -414,6 +414,12 @@ impl ThresholdDealer for ThresholdDealerNode {
 
         Ok(plaintext)
     }
+
+    fn derive_public_key(dkg_pk: &Self::PublicKey, derivation: &[u8]) -> Result<Self::PublicKey> {
+        let d = Self::derive_capability_scalar(derivation);
+        let derived_pk: G1Affine = (G1Projective::from(*dkg_pk) * d).into();
+        Ok(derived_pk)
+    }
 }
 
 impl ThresholdDealerNode {

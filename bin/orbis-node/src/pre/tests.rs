@@ -110,7 +110,7 @@ async fn test_dkg_then_pre_end_to_end() {
 
     // Alice encrypts the message using the DKG aggregate public key
     let (enc_cmt, encrypted_secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret_message)
+        ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret_message, None)
             .expect("Encryption should succeed");
 
     println!("Message encrypted successfully!");
@@ -170,7 +170,7 @@ async fn test_dkg_then_pre_end_to_end() {
     let namespace = "namespace_test".to_string();
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id)
+        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id, None)
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
@@ -190,6 +190,7 @@ async fn test_dkg_then_pre_end_to_end() {
             "".to_string(),
             pre_token,
             namespace,
+            None,
         )
         .await
         .expect("PRE should succeed");
@@ -338,8 +339,8 @@ async fn test_pre_with_large_secret() {
     println!("Large secret size: {} bytes", large_secret.len());
 
     // Alice encrypts
-    let (_, encrypted_secret, _) =
-        PreImpl::encrypt_secret(&aggregate_pk, &large_secret).expect("Encryption should succeed");
+    let (_, encrypted_secret, _) = PreImpl::encrypt_secret(&aggregate_pk, &large_secret, None)
+        .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys using trait method
@@ -354,7 +355,7 @@ async fn test_pre_with_large_secret() {
     let namespace = "namespace_test".to_string();
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id)
+        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id, None)
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
@@ -374,6 +375,7 @@ async fn test_pre_with_large_secret() {
             "".to_string(),
             pre_token,
             namespace,
+            None,
         )
         .await
         .expect("PRE should succeed");
@@ -454,8 +456,8 @@ async fn test_pre_fails_with_wrong_key() {
 
     // Alice encrypts
     let secret_message = b"Secret that should not be decrypted with wrong key";
-    let (_, encrypted_secret, _) =
-        PreImpl::encrypt_secret(&aggregate_pk, secret_message).expect("Encryption should succeed");
+    let (_, encrypted_secret, _) = PreImpl::encrypt_secret(&aggregate_pk, secret_message, None)
+        .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's real keys
@@ -475,7 +477,7 @@ async fn test_pre_fails_with_wrong_key() {
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id)
+        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id, None)
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
@@ -495,6 +497,7 @@ async fn test_pre_fails_with_wrong_key() {
             "".to_string(),
             pre_token,
             namespace,
+            None,
         )
         .await
         .expect("PRE should succeed");
@@ -576,8 +579,8 @@ async fn test_pre_fails_with_invalid_jwt_token() {
 
     // Alice encrypts
     let secret_message = b"Secret that should not be re-encrypted with bad token";
-    let (_, encrypted_secret, _) =
-        PreImpl::encrypt_secret(&aggregate_pk, secret_message).expect("Encryption should succeed");
+    let (_, encrypted_secret, _) = PreImpl::encrypt_secret(&aggregate_pk, secret_message, None)
+        .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys
@@ -611,6 +614,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
             "".to_string(),
             invalid_token,
             namespace,
+            None,
         )
         .await;
 
@@ -702,8 +706,8 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
 
     // Alice encrypts
     let secret_message = b"Secret with mismatched claims";
-    let (_, encrypted_secret, _) =
-        PreImpl::encrypt_secret(&aggregate_pk, secret_message).expect("Encryption should succeed");
+    let (_, encrypted_secret, _) = PreImpl::encrypt_secret(&aggregate_pk, secret_message, None)
+        .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys
@@ -725,6 +729,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             wrong_rdr_pk, // Wrong rdr_pk - doesn't match bob_pk_bytes
             &namespace,
             &object_id,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -745,6 +750,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             "".to_string(),
             mismatched_token,
             namespace,
+            None,
         )
         .await;
 
@@ -798,6 +804,7 @@ async fn test_start_pre_fails_missing_auth_header() {
         rdr_pk: "def456".to_string(),
         namespace: "".to_string(),
         object_id: "".to_string(),
+        derivation: None,
     };
 
     // Create request WITHOUT authentication header
@@ -836,6 +843,7 @@ async fn test_start_pre_fails_malformed_jwt() {
         rdr_pk: "def456".to_string(),
         namespace: "".to_string(),
         object_id: "".to_string(),
+        derivation: None,
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -870,7 +878,7 @@ async fn test_start_pre_fails_wrong_signature() {
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
     let valid_token = key_pair_1
-        .create_pre_jwt("def456", &namespace, &object_id)
+        .create_pre_jwt("def456", &namespace, &object_id, None)
         .expect("Failed to create JWT");
 
     // Tamper with the signature by changing a character
@@ -891,6 +899,7 @@ async fn test_start_pre_fails_wrong_signature() {
         rdr_pk: "def456".to_string(),
         namespace: "".to_string(),
         object_id: "".to_string(),
+        derivation: None,
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();

@@ -349,7 +349,7 @@ pub async fn do_pre(
     let key_pair = generate::<DidEd25519KeyPair>(Some(reader_did_pk.as_bytes()));
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
-        .create_pre_jwt(&reader_pk, &namespace, &object_id, derivation)
+        .create_pre_jwt(&reader_pk, &namespace, &object_id, derivation.clone())
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token)
         .map_err(|e| anyhow!("Failed to create_authenticated_request: {}", e))?;
@@ -387,9 +387,17 @@ pub async fn do_pre(
         let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
             .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
+        // Compute effective_pk: use derived_pk if derivation was provided, otherwise ring_pk
+        let effective_pk = if let Some(ref deriv) = derivation {
+            ThresholdDealerNode::derive_public_key(&ring_pk_point, deriv)
+                .map_err(|e| anyhow!("Failed to derive public key: {}", e))?
+        } else {
+            ring_pk_point
+        };
+
         // Decrypt using reader's secret key and the secret from the response
         let decrypted = ThresholdDealerNode::decrypt_secret(
-            &ring_pk_point,
+            &effective_pk,
             &xnc_cmt,
             &reader_sk_scalar,
             &pre_response.secret,

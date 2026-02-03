@@ -602,9 +602,12 @@ mod cli_tool_integration {
 
         // MANUAL PATH: Encrypt and post directly to bulletin
         let object_id_manual = {
-            let (_enc_cmt, encrypted_secret, _proof) =
-                ThresholdDealerNode::encrypt_secret(&ring_pk_point, b"Hello from manual path!")
-                    .expect("encrypt secret");
+            let (_enc_cmt, encrypted_secret, _proof) = ThresholdDealerNode::encrypt_secret(
+                &ring_pk_point,
+                b"Hello from manual path!",
+                None,
+            )
+            .expect("encrypt secret");
             let payload = DocumentPayload {
                 ring_id: ring_id.clone(),
                 document: serde_json::to_string(&encrypted_secret).expect("serialize"),
@@ -621,8 +624,12 @@ mod cli_tool_integration {
 
         // SERVICE PATH: Prepare secret once (encrypt locally), then store
         // This allows testing idempotency by reusing the same prepared data
-        let prepared_secret =
-            cli_tool::prepare_secret(secret, &ring_pk_hex).expect("prepare_secret should succeed");
+        let prepared_secret = cli_tool::prepare_secret(secret, &ring_pk_hex, None)
+            .expect("prepare_secret should succeed");
+        let derivation = b"test_derivation".to_vec();
+        let prepared_secret_derived =
+            cli_tool::prepare_secret(secret, &ring_pk_hex, Some(derivation.clone()))
+                .expect("prepare_secret should succeed");
 
         // Get sequence before first store to verify transaction is broadcast
         let sequence_before_first = cli_tool::get_account_sequence(&node1_address)
@@ -642,12 +649,30 @@ mod cli_tool_integration {
             resource.clone(),
             permission.clone(),
             Some(did_pk_string.clone()),
+            None,
             true,
         )
         .await
         .expect("store_prepared_secret");
+
         let object_id_service = object_response.object_id.clone();
         let signature_hex = object_response.signature.clone();
+
+        let object_response_derived = cli_tool::store_prepared_secret(
+            endpoint.clone(),
+            &prepared_secret_derived.clone(),
+            ring_id.clone(),
+            namespace.clone(),
+            policy_id.clone(),
+            resource.clone(),
+            permission.clone(),
+            Some(did_pk_string.clone()),
+            prepared_secret_derived.derived_pk,
+            false,
+        )
+        .await
+        .expect("store_prepared_secret_derived");
+        let object_id_derived = object_response_derived.object_id.clone();
 
         // Wait for block confirmation and check sequence incremented
         sleep(Duration::from_secs(2)).await;
@@ -718,11 +743,31 @@ mod cli_tool_integration {
             policy_id.clone(),
             object_id_manual.clone(),
             resource.clone(),
+            relation.clone(),
+            Some(did_pk_string.clone()),
+        )
+        .await
+        .expect("set_relationship_on_chain");
+
+        // register derived encrypted object to chain
+        cli_tool::register_object_to_chain(
+            policy_id.clone(),
+            object_id_derived.clone(),
+            resource.clone(),
+        )
+        .await
+        .expect("register_object_to_chain");
+
+        cli_tool::set_relationship_on_chain(
+            policy_id.clone(),
+            object_id_derived.clone(),
+            resource.clone(),
             relation,
             Some(did_pk_string.clone()),
         )
         .await
         .expect("set_relationship_on_chain");
+
         // Step 3: Run PRE via CLI
         println!("Running PRE...");
         let pre_result = cli_tool::do_pre(
@@ -733,6 +778,7 @@ mod cli_tool_integration {
             object_id_service.clone(),
             Some(did_pk_string.clone()),
             full_namespace.clone(),
+            None,
         )
         .await;
 
@@ -751,6 +797,25 @@ mod cli_tool_integration {
         );
         println!("PRE decryption verified: decrypted data matches original secret!");
 
+        // testing derivition pre
+        let pre_result_derived = cli_tool::do_pre(
+            endpoint.clone(),
+            ring_pk_hex.clone(),
+            reader_pk_hex.clone(),
+            reader_sk_hex.clone(),
+            object_id_derived.clone(),
+            Some(did_pk_string.clone()),
+            full_namespace.clone(),
+            Some(derivation),
+        )
+        .await;
+
+        let decrypted_derived = pre_result_derived.unwrap();
+
+        assert_eq!(
+            decrypted_derived, secret,
+            "Decrypted secret should match original plaintext"
+        );
         // Test idempotency: store the same prepared secret again
         // This should succeed and return the same object_id (no duplicate post)
         println!("Testing idempotency: storing same secret again...");
@@ -773,6 +838,7 @@ mod cli_tool_integration {
             resource.clone(),
             permission.clone(),
             Some(did_pk_string.clone()),
+            None,
             true,
         )
         .await
