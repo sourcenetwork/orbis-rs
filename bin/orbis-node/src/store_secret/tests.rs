@@ -103,6 +103,8 @@ fn create_test_jwt(test_keys: &TestKeyPair) -> String {
             TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            None,
+            None,
             false,
         )
         .expect("Failed to create JWT")
@@ -194,6 +196,7 @@ async fn test_store_secret_fails_claims_mismatch() {
             TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            None,
             false,
         )
         .expect("Failed to create JWT");
@@ -247,6 +250,7 @@ async fn test_store_secret_fails_namespace_mismatch() {
             TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            None,
             false,
         )
         .expect("Failed to create JWT");
@@ -303,6 +307,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
             TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            None,
             false,
         )
         .expect("Failed to create JWT");
@@ -381,6 +386,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
             invalid_shared_point.clone(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
+            None,
             false,
         )
         .expect("Failed to create JWT");

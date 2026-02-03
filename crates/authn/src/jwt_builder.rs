@@ -87,14 +87,22 @@ impl JwtSigner {
     /// * `rdr_pk` - Reader's public key
     /// * `object_id` - secret id
     /// * `peer_ids` - List of peer IDs (will be joined with commas)
+    /// * `derivation` - Optional derivation path
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour
-    pub fn create_pre_jwt(&self, rdr_pk: &str, namespace: &str, object_id: &str) -> Result<String> {
+    pub fn create_pre_jwt(
+        &self,
+        rdr_pk: &str,
+        namespace: &str,
+        object_id: &str,
+        derivation: Option<Vec<u8>>,
+    ) -> Result<String> {
         let claims = PreClaims {
             rdr_pk: rdr_pk.to_string(),
             object_id: object_id.to_string(),
             namespace: namespace.to_string(),
+            derivation,
         };
         self.sign(claims, Duration::from_hours(1))
     }
@@ -128,6 +136,7 @@ impl JwtSigner {
         shared_point: Vec<u8>,
         challenge: Vec<u8>,
         response: Vec<u8>,
+        derived_pk: Option<Vec<u8>>,
         with_proof: bool,
     ) -> Result<String> {
         let claims = StoreSecretClaims {
@@ -141,6 +150,7 @@ impl JwtSigner {
             shared_point: shared_point,
             challenge: challenge,
             response: response,
+            derived_pk,
             with_proof,
         };
         self.sign(claims, Duration::from_hours(1))
@@ -247,7 +257,7 @@ mod tests {
     #[test]
     fn test_create_pre_jwt() {
         let signer = JwtSigner::new();
-        let token = signer.create_pre_jwt("rdr_pk_value", "namespace", "object_id");
+        let token = signer.create_pre_jwt("rdr_pk_value", "namespace", "object_id", None);
         assert!(token.is_ok());
     }
 
@@ -265,6 +275,7 @@ mod tests {
             b"shared_point".to_vec(),
             b"challenge".to_vec(),
             b"response".to_vec(),
+            None,
             false,
         );
         assert!(token.is_ok());

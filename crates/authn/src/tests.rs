@@ -17,6 +17,7 @@ fn create_test_jwt_with_pre_claims(
         rdr_pk: token.claims.rdr_pk.clone(),
         object_id: "".to_string(),
         namespace: "".to_string(),
+        derivation: None,
     };
 
     let mut jwt_claims =
@@ -65,6 +66,7 @@ fn test_resolve_jwt_did_with_pre_claims() {
             rdr_pk: "test_rdr_pk".to_string(),
             object_id: "".to_string(),
             namespace: "".to_string(),
+            derivation: None,
         },
     };
 
@@ -114,6 +116,7 @@ fn test_resolve_jwt_did_expired() {
             rdr_pk: "test_rdr_pk".to_string(),
             object_id: "".to_string(),
             namespace: "".to_string(),
+            derivation: None,
         },
     };
 
@@ -138,6 +141,7 @@ fn test_resolve_jwt_did_future_issued_time() {
             rdr_pk: "test_rdr_pk".to_string(),
             object_id: "".to_string(),
             namespace: "".to_string(),
+            derivation: None,
         },
     };
 
@@ -163,6 +167,7 @@ fn test_resolve_jwt_did_invalid_signature() {
             rdr_pk: "test_rdr_pk".to_string(),
             object_id: "".to_string(),
             namespace: "".to_string(),
+            derivation: None,
         },
     };
 

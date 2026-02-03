@@ -737,8 +737,7 @@ fn test_reencrypt_extra_derivation_fails_at_decrypt() {
 
     // Decrypt fails - re-encryption applied derivation but encryption didn't
     // Use dkg_pk since there's no derived_pk
-    let result =
-        ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret);
+    let result = ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret);
 
     assert!(result.is_err());
     assert!(result
@@ -796,7 +795,12 @@ fn test_dkg_encrypt_decrypt_with_derivation_integration() {
 
         // Re-encrypt with derivation
         let reply = dealer
-            .reencrypt(&dist_key_share, &encrypted_secret, &rdr_pk, Some(derivation))
+            .reencrypt(
+                &dist_key_share,
+                &encrypted_secret,
+                &rdr_pk,
+                Some(derivation),
+            )
             .unwrap();
 
         // Verify with derivation

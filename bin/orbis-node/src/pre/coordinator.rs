@@ -97,6 +97,7 @@ where
                 permission,
                 token_string,
                 namespace,
+                derivation,
             } => {
                 tracing::info!(
                     request_id = %request_id,
@@ -117,6 +118,7 @@ where
                     permission,
                     token_string,
                     namespace,
+                    derivation,
                 )
                 .await
             }
@@ -153,6 +155,7 @@ where
         permission: String,
         token_string: String,
         namespace: String,
+        derivation: Option<Vec<u8>>,
     ) -> Result<Option<PreMessage>> {
         // Get current timestamp (needed for both auth and response)
         let current_time = SystemTime::now()
@@ -165,7 +168,13 @@ where
         // TODO: use token.issuer_id as AuthZ check
 
         // 2. Authorize: Validate JWT claims match request fields
-        validate_pre_claims(&token, &hex::encode(&rdr_pk_bytes), &object_id, &namespace)?;
+        validate_pre_claims(
+            &token,
+            &hex::encode(&rdr_pk_bytes),
+            &object_id,
+            &namespace,
+            &derivation,
+        )?;
 
         let permission_bytes = AccessCheckRequest::new(policy_id, resource, object_id, permission)
             .to_bytes()
@@ -220,7 +229,7 @@ where
         // 7. Perform reencryption
         let dealer = T::new();
         let reply = dealer
-            .reencrypt(&dist_key_share, &secret, &rdr_pk)
+            .reencrypt(&dist_key_share, &secret, &rdr_pk, derivation.as_deref())
             .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;
 
         // 8. Serialize the reply components using trait methods
@@ -375,6 +384,7 @@ where
         permission: String,
         token_string: String,
         namespace: String,
+        derivation: Option<Vec<u8>>,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
         let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
@@ -435,6 +445,7 @@ where
                 node_id,
                 self_in_list,
                 actual_peer_count,
+                derivation,
             )
             .await;
 
@@ -470,6 +481,7 @@ where
         node_id: u32,
         self_in_list: bool,
         actual_peer_count: usize,
+        derivation: Option<Vec<u8>>,
     ) -> Result<Vec<u8>> {
         // 1. Deserialize public polynomial from bulletin data
         let pub_poly_bytes = hex::decode(public_polynomial_hex).map_err(|e| {
@@ -535,6 +547,7 @@ where
                 permission: permission.clone(),
                 token_string: token_string.clone(),
                 namespace: namespace.clone(),
+                derivation: derivation.clone(),
             };
 
             let peer_id = peer_id_str.clone();
@@ -604,7 +617,8 @@ where
                     let dist_key_share = DistKeyShare { pri_share };
 
                     // Perform local reencryption
-                    match dealer.reencrypt(&dist_key_share, &secret, &rdr_pk) {
+                    match dealer.reencrypt(&dist_key_share, &secret, &rdr_pk, derivation.as_deref())
+                    {
                         Ok(reply) => {
                             tracing::debug!(
                                 from_node_id = reply.share.i,
@@ -662,7 +676,7 @@ where
                 };
 
                 // Verify the reply
-                match dealer.verify(&rdr_pk, &pub_poly, &enc_cmt, &reply) {
+                match dealer.verify(&rdr_pk, &pub_poly, &enc_cmt, &reply, derivation.as_deref()) {
                     Ok(_) => {
                         tracing::debug!(
                             from_node_id = from_node_id,

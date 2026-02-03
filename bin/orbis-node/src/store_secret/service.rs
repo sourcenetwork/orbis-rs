@@ -113,6 +113,7 @@ where
             req.shared_point,
             req.challenge,
             req.response,
+            req.derived_pk,
         )?;
 
         // 4. Create DocumentPayload with the pre-encrypted secret
@@ -260,6 +261,7 @@ fn validate_encrypted_document<D>(
     shared_point: Vec<u8>,
     challenge: Vec<u8>,
     response: Vec<u8>,
+    derived_pk: Option<Vec<u8>>,
 ) -> Result<Secret, StoreSecretError>
 where
     D: Dkg<PublicKey = ark_bls12_381::G1Affine>,
@@ -310,6 +312,7 @@ where
         shared_point,
         challenge,
         response,
+        derived_pk,
     };
 
     ThresholdDealerNode::verify_encryption(&ring_key_point, &enc_cmt_point, &proof).map_err(
@@ -388,6 +391,13 @@ fn validate_store_secret_claims(
         return Err(StoreSecretError::Unauthorized(format!(
             "Token response '{:?}' does not match request response '{:?}'",
             token.claims.response, req.response
+        )));
+    }
+
+    if token.claims.derived_pk != req.derived_pk {
+        return Err(StoreSecretError::Unauthorized(format!(
+            "Token derived_pk '{:?}' does not match request derived_pk '{:?}'",
+            token.claims.derived_pk, req.derived_pk
         )));
     }
 

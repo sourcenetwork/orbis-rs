@@ -13,6 +13,8 @@ message StartPreRequest {
   string object_id = 2;
   // object's namespace
   string namespace = 3;
+  // Optional derivation path
+  optional bytes derivation = 4;
 }
 
 message StartPreResponse {
