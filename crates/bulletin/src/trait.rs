@@ -18,6 +18,8 @@ pub struct DocumentPayload {
     pub ring_id: String,
     /// Encrypted document
     pub document: String,
+    /// Chaum-Pedersen NIZK proof of correct encryption (binds policy info to encryption)
+    pub proof: String,
     /// Id of the policy associated with document
     pub policy_id: String,
     /// Resource type on said policy
