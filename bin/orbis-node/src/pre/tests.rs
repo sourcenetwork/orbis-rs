@@ -10,7 +10,7 @@ use crate::helpers::test_helpers::{
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::pre::service::PreServiceImpl;
 use crate::DkgServiceImpl;
-use bulletin::r#trait::RingPayload;
+use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, RingPayload};
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, ThresholdDealer};
@@ -23,6 +23,52 @@ use tonic::Request;
 // Type aliases for tests
 type DkgImpl = DKGNode;
 type PreImpl = ThresholdDealerNode;
+
+use bulletin::dummy::DummyBulletin;
+
+/// Helper to store a DocumentPayload in the bulletin for PRE tests.
+///
+/// This creates the document payload with the encrypted secret and stores it in the bulletin,
+/// returning the computed object_id that can be used in PRE requests.
+fn setup_document_in_bulletin(
+    dummy_bulletin: &DummyBulletin,
+    namespace: &str,
+    secret_bytes: &[u8],
+) -> String {
+    // Get the ring_id from the bulletin post
+    let ring_post = get_test_ring_post(dummy_bulletin);
+    let ring_id = ring_post.id.clone();
+
+    // Create DocumentPayload with the secret and test policy values
+    let document_payload = DocumentPayload {
+        ring_id,
+        document: String::from_utf8(secret_bytes.to_vec())
+            .unwrap_or_else(|_| hex::encode(secret_bytes)),
+        policy_id: "test-policy".to_string(),
+        resource: "test-resource".to_string(),
+        permission: "test-permission".to_string(),
+    };
+    let document_payload_bytes: Vec<u8> = document_payload
+        .try_into()
+        .expect("serialize DocumentPayload");
+
+    // Compute the object_id using the same method as the bulletin
+    let full_namespace = format!("bulletin/{}", namespace);
+    let object_id = dummy_bulletin
+        .get_post_id(&full_namespace, &document_payload_bytes)
+        .expect("compute object_id");
+
+    // Store the document in the bulletin
+    let document_post = BulletinPost {
+        id: object_id.clone(),
+        namespace: namespace.to_string(),
+        payload: document_payload_bytes,
+        proof: vec![],
+    };
+    dummy_bulletin.set_post(namespace.to_string(), object_id.clone(), document_post);
+
+    object_id
+}
 
 /// End-to-end test: DKG → Alice encrypts → PRE to Bob → Bob decrypts
 ///
@@ -166,8 +212,15 @@ async fn test_dkg_then_pre_end_to_end() {
 
     println!("Sending PRE requests to peers: {:?}", pre_peer_ids);
 
-    let object_id = "object_id_test".to_string();
     let namespace = "namespace_test".to_string();
+
+    // Store the document in the bulletin so receiving nodes can fetch secret info
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("PRE tests require DummyBulletin");
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes);
+
     // Create PRE JWT token
     let pre_token = test_keys
         .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id, None)
@@ -184,10 +237,7 @@ async fn test_dkg_then_pre_end_to_end() {
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
-            "".to_string(),
-            "".to_string(),
             object_id,
-            "".to_string(),
             pre_token,
             namespace,
             None,
@@ -351,8 +401,15 @@ async fn test_pre_with_large_secret() {
     let pre_coordinator =
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
-    let object_id = "object_id_test".to_string();
-    let namespace = "namespace_test".to_string();
+    let namespace = "namespace_large_test".to_string();
+
+    // Store the document in the bulletin
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("PRE tests require DummyBulletin");
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes);
+
     // Create PRE JWT token
     let pre_token = test_keys
         .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id, None)
@@ -369,10 +426,7 @@ async fn test_pre_with_large_secret() {
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
-            "".to_string(),
-            "".to_string(),
             object_id,
-            "".to_string(),
             pre_token,
             namespace,
             None,
@@ -472,8 +526,14 @@ async fn test_pre_fails_with_wrong_key() {
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
 
-    let object_id = "object_id_test".to_string();
-    let namespace = "namespace_test".to_string();
+    let namespace = "namespace_wrong_key_test".to_string();
+
+    // Store the document in the bulletin
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("PRE tests require DummyBulletin");
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes);
 
     // Create PRE JWT token
     let pre_token = test_keys
@@ -491,10 +551,7 @@ async fn test_pre_fails_with_wrong_key() {
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
-            "".to_string(),
-            "".to_string(),
             object_id,
-            "".to_string(),
             pre_token,
             namespace,
             None,
@@ -592,10 +649,17 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
 
+    let namespace = "namespace_invalid_jwt_test".to_string();
+
+    // Store the document in the bulletin
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("PRE tests require DummyBulletin");
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes);
+
     // Use a completely invalid JWT token
     let invalid_token = "not-a-valid-jwt-token".to_string();
-    let object_id = "object_id_test".to_string();
-    let namespace = "namespace_test".to_string();
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
     let pre_result = pre_coordinator
@@ -608,10 +672,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
-            "".to_string(),
-            "".to_string(),
             object_id,
-            "".to_string(),
             invalid_token,
             namespace,
             None,
@@ -719,10 +780,17 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
 
+    let namespace = "namespace_mismatched_claims_test".to_string();
+
+    // Store the document in the bulletin
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("PRE tests require DummyBulletin");
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes);
+
     // Create a valid JWT but with wrong rdr_pk claim
     let wrong_rdr_pk = "0000000000000000000000000000000000000000000000000000000000000000";
-    let object_id = "object_id_test".to_string();
-    let namespace = "namespace_test".to_string();
 
     let mismatched_token = test_keys
         .create_pre_jwt(
@@ -744,10 +812,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
-            "".to_string(),
-            "".to_string(),
             object_id,
-            "".to_string(),
             mismatched_token,
             namespace,
             None,
@@ -988,8 +1053,14 @@ async fn test_pre_fails_with_wrong_derivation() {
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
 
-    let object_id = "object_id_derivation_test".to_string();
     let namespace = "namespace_derivation_test".to_string();
+
+    // Store the document in the bulletin
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("PRE tests require DummyBulletin");
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes);
 
     // Create PRE JWT token with CORRECT derivation
     let pre_token = test_keys
@@ -1012,10 +1083,7 @@ async fn test_pre_fails_with_wrong_derivation() {
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
-            "".to_string(),
-            "".to_string(),
             object_id.clone(),
-            "".to_string(),
             pre_token,
             namespace.clone(),
             Some(correct_derivation.clone()),
