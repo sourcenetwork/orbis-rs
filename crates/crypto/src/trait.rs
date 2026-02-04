@@ -540,6 +540,8 @@ pub trait ThresholdDealer {
     ///                   a scalar d = H(derivation) is derived and applied
     ///                   multiplicatively: derived_pk = d * dkg_pk.
     ///                   The shared_point becomes r * derived_pk = r*d*s*G.
+    ///   metadata  - Metadata Added to Chaum-Pedersen NIZK proof of correct encryption
+    ///
     ///
     /// Output:
     ///   enc_cmt  - Schnorr commit (rG)
@@ -549,6 +551,7 @@ pub trait ThresholdDealer {
         dkg_pk: &Self::PublicKey,
         data: &[u8],
         derivation: Option<&[u8]>,
+        metadata: Option<&[u8]>,
     ) -> Result<(Self::PublicKey, Self::Secret, EncryptionProof)>;
 
     /// Verify that a secret was correctly encrypted to the given DKG public key.
@@ -557,6 +560,7 @@ pub trait ThresholdDealer {
         dkg_pk: &Self::PublicKey,
         enc_cmt: &Self::PublicKey,
         proof: &EncryptionProof,
+        metadata: Option<&[u8]>,
     ) -> Result<()>;
 
     /// Decrypt a secret using the reader's secret key.
