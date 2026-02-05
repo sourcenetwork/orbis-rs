@@ -2,7 +2,7 @@
 //!
 //! This module defines the core cryptography abstractions that can be implemented
 //! by various Curves.
-use crate::error::Result;
+use crate::error::{CryptoError, Result};
 use std::collections::HashMap;
 use std::fmt::Debug;
 
@@ -89,6 +89,22 @@ pub struct EncryptionProof {
     /// None when no derivation was used (effective_pk = dkg_pk).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived_pk: Option<Vec<u8>>,
+}
+
+impl TryFrom<String> for EncryptionProof {
+    type Error = CryptoError;
+
+    fn try_from(string: String) -> Result<Self> {
+        serde_json::from_str(&string).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<EncryptionProof> for String {
+    type Error = CryptoError;
+
+    fn try_from(proof: EncryptionProof) -> Result<Self> {
+        serde_json::to_string(&proof).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
 }
 
 /// Re-encryption reply

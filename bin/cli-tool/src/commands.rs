@@ -15,6 +15,7 @@ use common::blockchain::{
     ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::bls12_381::pre::ThresholdDealerNode;
+use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
@@ -139,6 +140,9 @@ pub fn prepare_secret(
     secret: &[u8],
     ring_pk_hex: &str,
     derivation: Option<Vec<u8>>,
+    policy_id: String,
+    resource: String,
+    permission: String,
 ) -> Result<PreparedSecret> {
     // Parse ring public key
     let ring_pk_bytes =
@@ -146,10 +150,16 @@ pub fn prepare_secret(
     let ring_pk_point =
         G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
 
+    let metadata = generate_policy_metadata(&policy_id, &resource, &permission);
+
     // Encrypt locally - node never sees plaintext
-    let (enc_cmt, encrypted_secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&ring_pk_point, secret, derivation.as_deref())
-            .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+    let (enc_cmt, encrypted_secret, proof) = ThresholdDealerNode::encrypt_secret(
+        &ring_pk_point,
+        secret,
+        derivation.as_deref(),
+        Some(&metadata),
+    )
+    .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
     let encrypted_document = serde_json::to_string(&encrypted_secret)
         .map_err(|e| anyhow!("Failed to serialize encrypted secret: {}", e))?;
@@ -281,7 +291,14 @@ pub async fn do_store_secret(
     derivation: Option<Vec<u8>>,
     with_proof: bool,
 ) -> Result<StoreSecretResult> {
-    let prepared = prepare_secret(secret, &ring_pk_hex, derivation.clone())?;
+    let prepared = prepare_secret(
+        secret,
+        &ring_pk_hex,
+        derivation.clone(),
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+    )?;
     // If derivation was provided, compute derived_pk from the proof
     let derived_pk = if derivation.is_some() {
         prepared.derived_pk.clone()
@@ -423,6 +440,9 @@ pub async fn do_encrypt_secret(
     ring_pk: String,
     secret: String,
     derivation: Option<Vec<u8>>,
+    policy_id: String,
+    resource: String,
+    permission: String,
 ) -> Result<()> {
     println!("Encrypting secret to ring public key...");
     println!("  Ring PK: {}...", &ring_pk[..ring_pk.len().min(20)]);
@@ -435,11 +455,14 @@ pub async fn do_encrypt_secret(
     let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
         .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
+    let metadata = generate_policy_metadata(&policy_id, &resource, &permission);
+
     // Encrypt the secret
     let (_enc_cmt, encrypted_secret, _proof) = ThresholdDealerNode::encrypt_secret(
         &ring_pk_point,
         secret.as_bytes(),
         derivation.as_deref(),
+        Some(&metadata),
     )
     .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 

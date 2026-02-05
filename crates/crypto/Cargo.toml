@@ -24,3 +24,4 @@ sha2 = "0.10"
 aes-gcm = "0.10"
 hkdf = "0.12"
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

@@ -81,6 +81,15 @@ pub enum SubCommands {
         /// Optional derivation path (hex encoded)
         #[clap(long)]
         derivation: Option<String>,
+        /// Policy to attach to secret
+        #[clap(long)]
+        policy_id: String,
+        /// Resource type of secret
+        #[clap(long)]
+        resource: String,
+        /// Permission to read secret
+        #[clap(long)]
+        permission: String,
     },
 
     /// Generate a reader keypair for PRE decryption
@@ -173,6 +182,15 @@ pub enum SubCommands {
         /// Optional derivation path (hex encoded)
         #[clap(long)]
         derivation: Option<String>,
+        /// Policy to attach to secret
+        #[clap(long)]
+        policy_id: String,
+        /// Resource type of secret
+        #[clap(long)]
+        resource: String,
+        /// Permission to read secret
+        #[clap(long)]
+        permission: String,
     },
     /// Store a prepared (pre-encrypted) secret - idempotent, safe for retries
     StorePreparedSecret {
@@ -291,10 +309,21 @@ async fn main() -> Result<()> {
             secret,
             ring_pk,
             derivation,
+            policy_id,
+            resource,
+            permission,
         } => {
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
-            do_encrypt_secret(ring_pk, secret, derivation_bytes).await?;
+            do_encrypt_secret(
+                ring_pk,
+                secret,
+                derivation_bytes,
+                policy_id,
+                resource,
+                permission,
+            )
+            .await?;
         }
         SubCommands::GenerateReaderKey => {
             do_generate_reader_key()?;
@@ -350,10 +379,20 @@ async fn main() -> Result<()> {
             secret,
             ring_pk_hex,
             derivation,
+            policy_id,
+            resource,
+            permission,
         } => {
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
-            let prepared = prepare_secret(secret.as_bytes(), &ring_pk_hex, derivation_bytes)?;
+            let prepared = prepare_secret(
+                secret.as_bytes(),
+                &ring_pk_hex,
+                derivation_bytes,
+                policy_id,
+                resource,
+                permission,
+            )?;
             let json = serde_json::to_string_pretty(&prepared)?;
             println!("Prepared Secret (save this for store-prepared-secret):");
             println!("{}", "=".repeat(60));
