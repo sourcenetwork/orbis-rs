@@ -58,10 +58,17 @@ impl BulletinEventSubscription {
         // Subscribe to all Tx events - we filter client-side for robustness
         let query = Query::from(EventType::Tx);
 
-        let subscription = client
-            .subscribe(query)
-            .await
-            .map_err(|e| BlockchainError::Rpc(format!("Event subscription failed: {}", e)))?;
+        let subscription = match client.subscribe(query).await {
+            Ok(sub) => sub,
+            Err(e) => {
+                let _ = client.close();
+                driver_handle.abort();
+                return Err(BlockchainError::Rpc(format!(
+                    "Event subscription failed: {}",
+                    e
+                )));
+            }
+        };
 
         Ok(Self {
             subscription,
@@ -126,14 +133,18 @@ fn find_artifact_event(
     // Cosmos SDK typed events JSON-encode string attributes, wrapping them in
     // literal quotes (e.g., `"\"value\""`), so we strip those before comparing.
     for (key, values) in events {
-        if key.ends_with(".artifact") && values.iter().any(|v| v.trim_matches('"') == artifact) {
+        if !key.ends_with(".artifact") {
+            continue;
+        }
+
+        if let Some(idx) = values.iter().position(|v| v.trim_matches('"') == artifact) {
             // Extract the event type prefix (everything before ".artifact")
             let event_type = key.strip_suffix(".artifact")?;
 
             let get_attr = |attr_key: &str| -> String {
                 events
                     .get(&format!("{}.{}", event_type, attr_key))
-                    .and_then(|v| v.first())
+                    .and_then(|vec| vec.get(idx))
                     .map(|v| v.trim_matches('"').to_string())
                     .unwrap_or_default()
             };
