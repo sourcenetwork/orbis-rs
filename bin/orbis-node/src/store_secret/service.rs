@@ -128,7 +128,9 @@ where
         let document_payload = DocumentPayload {
             ring_id: req.ring_id.clone(),
             document: req.encrypted_document.clone(),
-            proof: proof.try_into().unwrap(),
+            proof: proof.try_into().map_err(|e: crypto::error::CryptoError| {
+                StoreSecretError::Serialization(format!("Failed to serialize proof: {}", e))
+            })?,
             policy_id: req.policy_id,
             resource: req.resource,
             permission: req.permission,

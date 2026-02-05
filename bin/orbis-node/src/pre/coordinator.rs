@@ -272,7 +272,12 @@ where
         } else {
             ring_pk
         };
-        let proof: EncryptionProof = EncryptionProof::try_from(document_payload.proof).unwrap();
+
+        let proof: EncryptionProof =
+            EncryptionProof::try_from(document_payload.proof).map_err(|e| {
+                PreError::Deserialization(format!("Failed to deserialize encryption proof: {}", e))
+            })?;
+
         let enc_cmt = G1Affine::from_bytes(&secret.enc_cmt[..]).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e))
         })?;
