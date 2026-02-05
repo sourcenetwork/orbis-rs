@@ -876,6 +876,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_start_pre_fails_missing_auth_header() {
     let db_name = "test_start_pre_fails_missing_auth_header";
     let db_path = test_db_path(db_name);
@@ -915,6 +916,7 @@ async fn test_start_pre_fails_missing_auth_header() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_start_pre_fails_malformed_jwt() {
     let db_name = "test_start_pre_fails_malformed_jwt";
     let db_path = test_db_path(db_name);
@@ -948,6 +950,7 @@ async fn test_start_pre_fails_malformed_jwt() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_start_pre_fails_wrong_signature() {
     let db_name = "test_start_pre_fails_wrong_signature";
     let db_path = test_db_path(db_name);
