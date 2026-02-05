@@ -771,6 +771,7 @@ impl ThresholdDealerNode {
 
         if let Some(metadata) = metadata_option {
             hasher.update(&(metadata.len() as u64).to_le_bytes());
+            hasher.update(metadata);
         }
 
         // Serialize and hash all points
