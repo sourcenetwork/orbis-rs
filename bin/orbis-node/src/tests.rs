@@ -401,7 +401,6 @@ mod cli_tool_integration {
     use ark_ec::Group;
     use ark_std::UniformRand;
     use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
-    use bulletin::sourcehub::SourceHubBulletin;
     use common::IntegrationTestNetwork;
     use crypto::bls12_381::pre::ThresholdDealerNode;
     use crypto::bls12_381::sign::ThresholdBlsSigner;
@@ -546,24 +545,22 @@ mod cli_tool_integration {
             .await
             .expect("DKG completion event");
 
-        // Read the post payload from the bulletin to parse the RingPayload
-        let posts = cli_tool::list_bulletin_posts(ring_namespace.clone())
-            .await
-            .expect("list bulletin posts after DKG event");
-        assert!(!posts.is_empty(), "Bulletin should have the ring post");
+        // Read the post payload using the post_id from the event
+        let post_payload =
+            cli_tool::read_bulletin_post(ring_namespace.clone(), post_event.post_id.clone())
+                .await
+                .expect("read ring post by event post_id");
 
         let ring_payload: RingPayload =
-            serde_json::from_slice(&posts[0]).expect("parse RingPayload");
+            serde_json::from_slice(&post_payload).expect("parse RingPayload");
         let ring_pk_hex = ring_payload.ring_pk.clone();
-        let full_namespace = format!("bulletin/{}", ring_namespace);
-        let ring_id = SourceHubBulletin::compute_post_id(&full_namespace, &posts[0]);
+        let ring_id = post_event.post_id;
         let _dkg_ring_payload = ring_payload.clone();
 
         println!(
-            "DKG completed! Ring PK: {}..., Ring ID: {}, Event type: {}",
+            "DKG completed! Ring PK: {}..., Ring ID: {}",
             &ring_pk_hex[..40.min(ring_pk_hex.len())],
             &ring_id[..16.min(ring_id.len())],
-            &post_event.event_type,
         );
 
         // Step 2: Generate reader keypair
