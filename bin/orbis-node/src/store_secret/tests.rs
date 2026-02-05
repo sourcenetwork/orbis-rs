@@ -774,7 +774,7 @@ async fn test_store_secret_fails_wrong_derived_pk() {
 
     assert_eq!(
         status.message(),
-        "Validation error: Failed to Validate secret encryption: Dkg error: Encryption proof verification failed",
+        "Validation error: Failed to Validate secret encryption: ElGamal error: Encryption proof verification failed",
     );
 
     cleanup_db(&db_path);
@@ -910,7 +910,7 @@ async fn test_store_secret_fails_with_tampered_proof() {
 
     assert_eq!(
         status.message(),
-        "Validation error: Failed to Validate secret encryption: Dkg error: Encryption proof verification failed",
+        "Validation error: Failed to Validate secret encryption: ElGamal error: Encryption proof verification failed",
     );
 
     cleanup_db(&db_path);

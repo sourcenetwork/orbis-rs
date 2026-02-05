@@ -770,7 +770,7 @@ impl ThresholdDealerNode {
         hasher.update(ENCRYPT_PROOF_DOMAIN);
 
         if let Some(metadata) = metadata_option {
-            hasher.update(metadata);
+            hasher.update(&(metadata.len() as u64).to_le_bytes());
         }
 
         // Serialize and hash all points
