@@ -779,3 +779,139 @@ async fn test_store_secret_fails_wrong_derived_pk() {
 
     cleanup_db(&db_path);
 }
+
+/// Test that StoreSecret fails when the encryption proof has been tampered with
+///
+/// This verifies that the node rejects a store request where the proof bytes
+/// (challenge) have been modified, even though the encrypted document and enc_cmt
+/// are valid. The Chaum-Pedersen verification should catch the mismatch.
+#[tokio::test]
+async fn test_store_secret_fails_with_tampered_proof() {
+    let db_name = "test_store_secret_fails_with_tampered_proof";
+    let db_path = test_db_path(db_name);
+
+    // Create bulletin and keep a reference for verification
+    let bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to create DummyBulletin"),
+    );
+
+    // Create a valid ring with real crypto
+    let ring_pk = G1Affine::generator();
+    let ring_pk_bytes = ring_pk.to_bytes().expect("serialize ring_pk");
+    let ring_pk_hex = hex::encode(&ring_pk_bytes);
+
+    let ring_payload = RingPayload {
+        ring_pk: ring_pk_hex.clone(),
+        peer_ids: vec!["peer1".to_string()],
+        threshold: 1,
+        public_polynomial: "00".to_string(),
+    };
+
+    // Compute the ring_id (deterministic hash of the ring payload)
+    let ring_payload_bytes: Vec<u8> = ring_payload
+        .clone()
+        .try_into()
+        .expect("serialize RingPayload");
+    let full_ring_namespace = format!("bulletin/{}", BULLETIN_RING_NAMESPACE);
+    let ring_id = bulletin
+        .get_post_id(&full_ring_namespace, &ring_payload_bytes)
+        .expect("compute ring_id");
+
+    // Set ring in bulletin
+    let ring_post = BulletinPost {
+        id: ring_id.clone(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        payload: ring_payload_bytes,
+        proof: vec![],
+    };
+    bulletin.set_post(
+        BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id.clone(),
+        ring_post,
+    );
+
+    // Create app state with this bulletin
+    let app_state =
+        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+
+    // Generate valid encryption proof using ThresholdDealerNode
+    let plaintext = b"test secret with tampered proof";
+    let namespace = "test_tampered_proof_namespace";
+    let policy_id = "test_policy";
+    let resource = "test_resource";
+    let permission = "read";
+    let metadata = generate_policy_metadata(policy_id, resource, permission);
+    let (_enc_cmt, secret, proof) =
+        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None, Some(&metadata))
+            .expect("encrypt with proof");
+
+    let encrypted_doc = serde_json::to_string(&secret).expect("serialize Secret");
+    let enc_cmt_hex = hex::encode(secret.enc_cmt.clone());
+    let shared_point_bytes = proof.shared_point.clone();
+    let response_bytes = proof.response.clone();
+
+    // Tamper with the challenge by flipping a byte
+    let mut tampered_challenge = proof.challenge.clone();
+    if let Some(byte) = tampered_challenge.first_mut() {
+        *byte ^= 0xFF;
+    }
+
+    // Create JWT and request with the TAMPERED challenge
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_store_secret_jwt(
+            &encrypted_doc,
+            &enc_cmt_hex,
+            &ring_id,
+            namespace,
+            policy_id,
+            resource,
+            permission,
+            shared_point_bytes.clone(),
+            tampered_challenge.clone(),
+            response_bytes.clone(),
+            None,
+            false,
+        )
+        .expect("Failed to create JWT");
+
+    let request = StoreSecretRequest {
+        encrypted_document: encrypted_doc,
+        enc_cmt: enc_cmt_hex,
+        ring_id: ring_id.clone(),
+        namespace: namespace.to_string(),
+        policy_id: policy_id.to_string(),
+        resource: resource.to_string(),
+        permission: permission.to_string(),
+        shared_point: shared_point_bytes,
+        challenge: tampered_challenge,
+        response: response_bytes,
+        derived_pk: None,
+        with_proof: false,
+    };
+
+    let tonic_request = create_authenticated_request(request, &token).unwrap();
+    let result = service.store_secret(tonic_request).await;
+
+    assert!(
+        result.is_err(),
+        "store_secret should fail with tampered proof challenge"
+    );
+
+    let status = result.unwrap_err();
+    assert_eq!(
+        status.code(),
+        tonic::Code::InvalidArgument,
+        "Error code should be InvalidArgument for tampered proof"
+    );
+
+    assert_eq!(
+        status.message(),
+        "Validation error: Failed to Validate secret encryption: Dkg error: Encryption proof verification failed",
+    );
+
+    cleanup_db(&db_path);
+}

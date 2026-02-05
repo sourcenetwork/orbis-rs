@@ -1169,3 +1169,127 @@ async fn test_pre_fails_with_wrong_derivation() {
         cleanup_db(path);
     }
 }
+
+/// Test that PRE fails when the document has a tampered encryption proof
+///
+/// This test verifies that if a document is stored in the bulletin with a
+/// bad proof (e.g. tampered challenge bytes), the PRE nodes reject the
+/// re-encryption request because policy binding verification fails.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_pre_fails_with_bad_proof() {
+    let db_name = "test_pre_fails_with_bad_proof";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    println!("=== Starting PRE Failure Test (Bad Proof) ===\n");
+
+    // Setup network
+    let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
+    let peer_ids = network.get_all_peer_ids();
+
+    // Run DKG
+    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+
+    let request = StartDkgRequest {
+        threshold: 2,
+        peer_ids: peer_ids.clone(),
+    };
+
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("Failed to create JWT");
+
+    let result = node1_service
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
+        .await;
+    assert!(result.is_ok());
+
+    let ring_payload = wait_for_dkg_completion(
+        &network,
+        result.unwrap().into_inner().session_id.parse().unwrap(),
+    )
+    .await;
+
+    // Deserialize the aggregate public key from the ring payload
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
+
+    // Alice encrypts
+    let secret_message = b"Secret with tampered proof";
+    let metadata = generate_test_policy_metadata();
+    let (_, encrypted_secret, mut proof) =
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
+            .expect("Encryption should succeed");
+    let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
+
+    // Tamper with the proof by flipping a byte in the challenge
+    if let Some(byte) = proof.challenge.first_mut() {
+        *byte ^= 0xFF;
+    }
+
+    // Bob's keys
+    let (_bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
+    let bob_pk_bytes = bob_pk.to_bytes().unwrap();
+
+    // PRE
+    let pre_coordinator =
+        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
+    let namespace = "namespace_bad_proof_test".to_string();
+
+    // Store the document in the bulletin with the TAMPERED proof
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("PRE tests require DummyBulletin");
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
+
+    // Create PRE JWT token
+    let pre_token = test_keys
+        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id, None)
+        .expect("Failed to create PRE JWT");
+
+    // Attempt re-encryption — should fail because proof verification fails on peer nodes
+    let pre_result = pre_coordinator
+        .initiate_reencryption(
+            "bad-proof-pre-request".to_string(),
+            ring_pk_bytes,
+            secret_bytes,
+            bob_pk_bytes,
+            &pre_peer_ids,
+            ring_payload.threshold as usize,
+            ring_payload.peer_ids.len(),
+            &ring_payload.public_polynomial,
+            object_id,
+            pre_token,
+            namespace,
+            None,
+        )
+        .await;
+
+    assert!(
+        pre_result.is_err(),
+        "PRE should fail when document has a tampered proof"
+    );
+
+    let error = pre_result.unwrap_err();
+    println!("PRE correctly failed with error: {}", error);
+    assert_eq!(
+        error.to_string(),
+        "Timeout waiting for responses: Insufficient responses: got 0, need at least 2",
+    );
+
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
