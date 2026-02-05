@@ -41,8 +41,8 @@ form_urlencoded = { version = "1.2", features = ["alloc"] }
 
 # Blockchain / Cosmos SDK
 cosmrs = { version = "0.19", features = ["rpc", "bip32"] }
-tendermint = "0.39"
-tendermint-rpc = { version = "0.39", features = ["http-client", "websocket-client"] }
+tendermint = "0.40"
+tendermint-rpc = { version = "0.40", features = ["http-client", "websocket-client"] }
 reqwest = { version = "0.12", features = ["json"] }
 bip32 = { version = "0.5", features = ["mnemonic", "bip39"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
