@@ -15,6 +15,7 @@ use authz::sourcehub::SourceHubAuth;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::Bulletin;
 use common::blockchain::ChainConfigBuilder;
+use common::SOURCEHUB_RPC_URL;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::Network;
 use std::sync::Arc;
@@ -514,11 +515,10 @@ mod cli_tool_integration {
         // The DKG coordinator will post the ring payload to the bulletin with the
         // session_id as the artifact, emitting an EventPostCreated event.
         println!("Connecting to chain WebSocket for event subscription...");
-        let event_subscription = common::blockchain::events::BulletinEventSubscription::connect(
-            "http://localhost:26657",
-        )
-        .await
-        .expect("WebSocket event subscription");
+        let event_subscription =
+            common::blockchain::events::BulletinEventSubscription::connect(SOURCEHUB_RPC_URL)
+                .await
+                .expect("WebSocket event subscription");
 
         println!(
             "Starting DKG with threshold {} and {} peers...",
