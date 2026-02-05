@@ -13,6 +13,7 @@ pub mod bulletin;
 mod client;
 mod config;
 mod error;
+pub mod events;
 mod signer;
 
 pub use client::{AccountInfo, BroadcastResult, SourceHubClient};
