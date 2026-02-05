@@ -15,7 +15,6 @@ use authz::sourcehub::SourceHubAuth;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::Bulletin;
 use common::blockchain::ChainConfigBuilder;
-use common::SOURCEHUB_RPC_URL;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::Network;
 use std::sync::Arc;
@@ -403,6 +402,7 @@ mod cli_tool_integration {
     use ark_std::UniformRand;
     use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
     use common::IntegrationTestNetwork;
+    use common::SOURCEHUB_RPC_URL;
     use crypto::bls12_381::pre::ThresholdDealerNode;
     use crypto::bls12_381::sign::ThresholdBlsSigner;
     use crypto::helpers::generate_policy_metadata;
@@ -410,7 +410,6 @@ mod cli_tool_integration {
     use crypto::{CryptoDeserialize, CryptoSerialize};
     use rand_core::OsRng;
     use tokio::time::{sleep, Duration};
-
     /// Docker-based integration test: Run DKG and PRE using Docker Compose
     ///
     /// This test spins up a full integration environment with:
