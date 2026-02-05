@@ -405,6 +405,7 @@ mod cli_tool_integration {
     use common::IntegrationTestNetwork;
     use crypto::bls12_381::pre::ThresholdDealerNode;
     use crypto::bls12_381::sign::ThresholdBlsSigner;
+    use crypto::helpers::generate_policy_metadata;
     use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
     use crypto::{CryptoDeserialize, CryptoSerialize};
     use rand_core::OsRng;
@@ -602,15 +603,18 @@ mod cli_tool_integration {
 
         // MANUAL PATH: Encrypt and post directly to bulletin
         let object_id_manual = {
-            let (_enc_cmt, encrypted_secret, _proof) = ThresholdDealerNode::encrypt_secret(
+            let metadata = generate_policy_metadata(&policy_id, &resource, &permission);
+            let (_enc_cmt, encrypted_secret, enc_proof) = ThresholdDealerNode::encrypt_secret(
                 &ring_pk_point,
                 b"Hello from manual path!",
                 None,
+                Some(&metadata),
             )
             .expect("encrypt secret");
             let payload = DocumentPayload {
                 ring_id: ring_id.clone(),
                 document: serde_json::to_string(&encrypted_secret).expect("serialize"),
+                proof: String::try_from(enc_proof).expect("serialize proof"),
                 policy_id: policy_id.clone(),
                 resource: resource.clone(),
                 permission: permission.clone(),
@@ -624,12 +628,25 @@ mod cli_tool_integration {
 
         // SERVICE PATH: Prepare secret once (encrypt locally), then store
         // This allows testing idempotency by reusing the same prepared data
-        let prepared_secret = cli_tool::prepare_secret(secret, &ring_pk_hex, None)
-            .expect("prepare_secret should succeed");
+        let prepared_secret = cli_tool::prepare_secret(
+            secret,
+            &ring_pk_hex,
+            None,
+            policy_id.clone(),
+            resource.clone(),
+            permission.clone(),
+        )
+        .expect("prepare_secret should succeed");
         let derivation = b"test_derivation".to_vec();
-        let prepared_secret_derived =
-            cli_tool::prepare_secret(secret, &ring_pk_hex, Some(derivation.clone()))
-                .expect("prepare_secret should succeed");
+        let prepared_secret_derived = cli_tool::prepare_secret(
+            secret,
+            &ring_pk_hex,
+            Some(derivation.clone()),
+            policy_id.clone(),
+            resource.clone(),
+            permission.clone(),
+        )
+        .expect("prepare_secret should succeed");
 
         // Get sequence before first store to verify transaction is broadcast
         let sequence_before_first = cli_tool::get_account_sequence(&node1_address)

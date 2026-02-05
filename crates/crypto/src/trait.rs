@@ -2,7 +2,7 @@
 //!
 //! This module defines the core cryptography abstractions that can be implemented
 //! by various Curves.
-use crate::error::Result;
+use crate::error::{CryptoError, Result};
 use std::collections::HashMap;
 use std::fmt::Debug;
 
@@ -89,6 +89,22 @@ pub struct EncryptionProof {
     /// None when no derivation was used (effective_pk = dkg_pk).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived_pk: Option<Vec<u8>>,
+}
+
+impl TryFrom<String> for EncryptionProof {
+    type Error = CryptoError;
+
+    fn try_from(string: String) -> Result<Self> {
+        serde_json::from_str(&string).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<EncryptionProof> for String {
+    type Error = CryptoError;
+
+    fn try_from(proof: EncryptionProof) -> Result<Self> {
+        serde_json::to_string(&proof).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
 }
 
 /// Re-encryption reply
@@ -540,6 +556,8 @@ pub trait ThresholdDealer {
     ///                   a scalar d = H(derivation) is derived and applied
     ///                   multiplicatively: derived_pk = d * dkg_pk.
     ///                   The shared_point becomes r * derived_pk = r*d*s*G.
+    ///   metadata  - Metadata Added to Chaum-Pedersen NIZK proof of correct encryption
+    ///
     ///
     /// Output:
     ///   enc_cmt  - Schnorr commit (rG)
@@ -549,6 +567,7 @@ pub trait ThresholdDealer {
         dkg_pk: &Self::PublicKey,
         data: &[u8],
         derivation: Option<&[u8]>,
+        metadata: Option<&[u8]>,
     ) -> Result<(Self::PublicKey, Self::Secret, EncryptionProof)>;
 
     /// Verify that a secret was correctly encrypted to the given DKG public key.
@@ -557,6 +576,7 @@ pub trait ThresholdDealer {
         dkg_pk: &Self::PublicKey,
         enc_cmt: &Self::PublicKey,
         proof: &EncryptionProof,
+        metadata: Option<&[u8]>,
     ) -> Result<()>;
 
     /// Decrypt a secret using the reader's secret key.

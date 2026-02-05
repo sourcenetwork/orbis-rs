@@ -154,6 +154,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         dkg_pk: &Self::PublicKey,
         data: &[u8],
         derivation: Option<&[u8]>,
+        metadata: Option<&[u8]>,
     ) -> Result<(Self::PublicKey, Self::Secret, EncryptionProof)> {
         // Validate dkg_pk is not the identity element
         if dkg_pk.is_zero() {
@@ -193,7 +194,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         // Generate Chaum-Pedersen NIZK proof
         // Proves that enc_cmt = r*G and shared_point = r*effective_pk use the same r
         let (challenge, response) =
-            Self::generate_encryption_proof(&r, &effective_pk, &enc_cmt, &shared_point)?;
+            Self::generate_encryption_proof(&r, &effective_pk, &enc_cmt, &shared_point, metadata)?;
 
         // Serialize proof components
         let mut shared_point_bytes = Vec::new();
@@ -278,6 +279,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         dkg_pk: &Self::PublicKey,
         enc_cmt: &Self::PublicKey,
         proof: &EncryptionProof,
+        metadata: Option<&[u8]>,
     ) -> Result<()> {
         // Validate enc_cmt from untrusted input
         if enc_cmt.is_zero() {
@@ -357,6 +359,7 @@ impl ThresholdDealer for ThresholdDealerNode {
             &shared_point,
             &r1_prime,
             &r2_prime,
+            metadata,
         )?;
         let recomputed_challenge = Fr::from_le_bytes_mod_order(&challenge_hash);
 
@@ -720,6 +723,7 @@ impl ThresholdDealerNode {
         dkg_pk: &G1Affine,
         enc_cmt: &G1Affine,
         shared_point: &G1Affine,
+        metadata: Option<&[u8]>,
     ) -> Result<(Fr, Fr)> {
         let mut rng = OsRng;
 
@@ -732,8 +736,15 @@ impl ThresholdDealerNode {
 
         // 3. c = Hash(ENCRYPT_PROOF_DOMAIN, G, dkg_pk, enc_cmt, shared_point, R1, R2)
         let g = G1Affine::generator();
-        let challenge_hash =
-            Self::hash_encryption_proof_points(&g, dkg_pk, enc_cmt, shared_point, &r1, &r2)?;
+        let challenge_hash = Self::hash_encryption_proof_points(
+            &g,
+            dkg_pk,
+            enc_cmt,
+            shared_point,
+            &r1,
+            &r2,
+            metadata,
+        )?;
         let c = Fr::from_le_bytes_mod_order(&challenge_hash);
 
         // 4. s = k + c * r
@@ -751,11 +762,17 @@ impl ThresholdDealerNode {
         shared_point: &G1Affine,
         r1: &G1Affine,
         r2: &G1Affine,
+        metadata_option: Option<&[u8]>,
     ) -> Result<[u8; 32]> {
         let mut hasher = Sha256::new();
 
         // Add domain separation
         hasher.update(ENCRYPT_PROOF_DOMAIN);
+
+        if let Some(metadata) = metadata_option {
+            hasher.update(&(metadata.len() as u64).to_le_bytes());
+            hasher.update(metadata);
+        }
 
         // Serialize and hash all points
         let mut bytes = Vec::with_capacity(48);

@@ -6,6 +6,7 @@ use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::bls12_381::pre::ThresholdDealerNode;
+use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{CryptoDeserialize, Dkg, EncryptionProof, Secret, ThresholdDealer};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
@@ -105,21 +106,31 @@ where
                 StoreSecretError::Deserialization(format!("Failed to parse ring payload: {}", e))
             })?;
 
+        let policy_metadata =
+            generate_policy_metadata(&req.policy_id, &req.resource, &req.permission);
+        let proof = EncryptionProof {
+            shared_point: req.shared_point,
+            challenge: req.challenge,
+            response: req.response,
+            derived_pk: req.derived_pk,
+        };
+
         // 3. Validate the encrypted document structure
         let _encrypted_secret = validate_encrypted_document::<D>(
             &req.encrypted_document,
             &req.enc_cmt,
             &ring_payload.ring_pk,
-            req.shared_point,
-            req.challenge,
-            req.response,
-            req.derived_pk,
+            proof.clone(),
+            policy_metadata.to_vec(),
         )?;
 
         // 4. Create DocumentPayload with the pre-encrypted secret
         let document_payload = DocumentPayload {
             ring_id: req.ring_id.clone(),
             document: req.encrypted_document.clone(),
+            proof: proof.try_into().map_err(|e: crypto::error::CryptoError| {
+                StoreSecretError::Serialization(format!("Failed to serialize proof: {}", e))
+            })?,
             policy_id: req.policy_id,
             resource: req.resource,
             permission: req.permission,
@@ -258,10 +269,8 @@ fn validate_encrypted_document<D>(
     encrypted_document: &str,
     enc_cmt_hex: &str,
     ring_key: &str,
-    shared_point: Vec<u8>,
-    challenge: Vec<u8>,
-    response: Vec<u8>,
-    derived_pk: Option<Vec<u8>>,
+    proof: EncryptionProof,
+    policy_metadata: Vec<u8>,
 ) -> Result<Secret, StoreSecretError>
 where
     D: Dkg<PublicKey = ark_bls12_381::G1Affine>,
@@ -308,16 +317,15 @@ where
     }
 
     // 5. Validate Encryption of secret validity
-    let proof = EncryptionProof {
-        shared_point,
-        challenge,
-        response,
-        derived_pk,
-    };
-
-    ThresholdDealerNode::verify_encryption(&ring_key_point, &enc_cmt_point, &proof).map_err(
-        |e| StoreSecretError::Validation(format!("Failed to Validate secret encryption: {}", e)),
-    )?;
+    ThresholdDealerNode::verify_encryption(
+        &ring_key_point,
+        &enc_cmt_point,
+        &proof,
+        Some(&policy_metadata),
+    )
+    .map_err(|e| {
+        StoreSecretError::Validation(format!("Failed to Validate secret encryption: {}", e))
+    })?;
 
     Ok(secret)
 }

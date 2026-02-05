@@ -5,7 +5,7 @@ use thiserror::Error;
 pub enum CryptoError {
     #[error("Dkg error: {0}")]
     DKGError(String),
-    #[error("Dkg error: {0}")]
+    #[error("ElGamal error: {0}")]
     ElGamalError(String),
     #[error("Serilization error: {0}")]
     SerializationError(#[from] ark_serialize::SerializationError),
@@ -13,6 +13,8 @@ pub enum CryptoError {
     InvalidSignatureShare,
     #[error("Invalid Signature")]
     InvalidSignature,
+    #[error("Parsing Error: {0}")]
+    ParseError(String),
 }
 
 /// Result type for network operations

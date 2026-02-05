@@ -20,8 +20,10 @@ use ark_bls12_381::{Fr, G1Affine};
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
 use authz::sourcehub::AccessCheckRequest;
 use bulletin::r#trait::{DocumentPayload, RingPayload};
+use crypto::bls12_381::pre::ThresholdDealerNode;
+use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{
-    DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
+    DistKeyShare, Dkg, EncryptionProof, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
 };
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use local_storage::r#trait::LocalStorage;
@@ -195,6 +197,13 @@ where
                 PreError::Deserialization(format!("Failed to parse ring payload: {}", e))
             })?;
 
+        // Generate policy metadata for proof binding verification (before fields are moved)
+        let policy_metadata = generate_policy_metadata(
+            &document_payload.policy_id,
+            &document_payload.resource,
+            &document_payload.permission,
+        );
+
         let permission_bytes = AccessCheckRequest::new(
             document_payload.policy_id,
             document_payload.resource,
@@ -256,6 +265,29 @@ where
 
         // 7. Perform reencryption
         let dealer = T::new();
+        // Check permission binding - verify proof before re-encryption
+        let actual_pk = if let Some(ref derivation) = derivation {
+            ThresholdDealerNode::derive_public_key(&ring_pk, derivation)
+                .map_err(|e| PreError::Crypto(format!("derive_public_key error: {}", e)))?
+        } else {
+            ring_pk
+        };
+
+        let proof: EncryptionProof =
+            EncryptionProof::try_from(document_payload.proof).map_err(|e| {
+                PreError::Deserialization(format!("Failed to deserialize encryption proof: {}", e))
+            })?;
+
+        let enc_cmt = G1Affine::from_bytes(&secret.enc_cmt[..]).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e))
+        })?;
+        ThresholdDealerNode::verify_encryption(
+            &actual_pk,
+            &enc_cmt,
+            &proof,
+            Some(&policy_metadata),
+        )
+        .map_err(|e| PreError::Crypto(format!("Policy binding verification failed: {}", e)))?;
         let reply = dealer
             .reencrypt(&dist_key_share, &secret, &rdr_pk, derivation.as_deref())
             .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;
