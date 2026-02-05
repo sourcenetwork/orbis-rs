@@ -26,6 +26,7 @@ prost = { workspace = true }
 tonic = { workspace = true }
 rand = { workspace = true }
 backoff = { version = "0.4", features = ["tokio"] }
+futures = { workspace = true }
 
 [dev-dependencies]
 serial_test = "3.2.0"

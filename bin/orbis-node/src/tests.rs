@@ -401,8 +401,8 @@ mod cli_tool_integration {
     use ark_ec::Group;
     use ark_std::UniformRand;
     use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
-    use bulletin::sourcehub::SourceHubBulletin;
     use common::IntegrationTestNetwork;
+    use common::SOURCEHUB_RPC_URL;
     use crypto::bls12_381::pre::ThresholdDealerNode;
     use crypto::bls12_381::sign::ThresholdBlsSigner;
     use crypto::helpers::generate_policy_metadata;
@@ -410,7 +410,6 @@ mod cli_tool_integration {
     use crypto::{CryptoDeserialize, CryptoSerialize};
     use rand_core::OsRng;
     use tokio::time::{sleep, Duration};
-
     /// Docker-based integration test: Run DKG and PRE using Docker Compose
     ///
     /// This test spins up a full integration environment with:
@@ -510,6 +509,16 @@ mod cli_tool_integration {
         let ring_namespace = BULLETIN_RING_NAMESPACE.to_string();
 
         // Step 1: Run DKG via CLI to get a ring public key
+        //
+        // Subscribe to chain events BEFORE starting DKG to avoid race conditions.
+        // The DKG coordinator will post the ring payload to the bulletin with the
+        // session_id as the artifact, emitting an EventPostCreated event.
+        println!("Connecting to chain WebSocket for event subscription...");
+        let event_subscription =
+            common::blockchain::events::BulletinEventSubscription::connect(SOURCEHUB_RPC_URL)
+                .await
+                .expect("WebSocket event subscription");
+
         println!(
             "Starting DKG with threshold {} and {} peers...",
             threshold,
@@ -522,47 +531,36 @@ mod cli_tool_integration {
             dkg_result.err()
         );
 
-        let _dkg_result = dkg_result.unwrap();
-        println!("DKG initiated, waiting for completion...");
-
-        // Wait for DKG to complete by polling the bulletin for the ring payload
-        let max_wait = Duration::from_secs(60);
-        let start = std::time::Instant::now();
-        let mut ring_pk_hex = String::new();
-        let mut ring_id = String::new();
-        let mut dkg_ring_payload: Option<RingPayload> = None;
-
-        // Poll bulletin until ring payload is posted (indicates DKG complete)
-        // Bad way to handle this but wtv it is a test
-        while start.elapsed() < max_wait {
-            if let Ok(posts) = cli_tool::list_bulletin_posts(ring_namespace.clone()).await {
-                if !posts.is_empty() {
-                    // Parse the first post as RingPayload to get ring_pk (JSON serialized)
-                    let ring_payload: RingPayload =
-                        serde_json::from_slice(&posts[0]).expect("parse RingPayload");
-                    ring_pk_hex = ring_payload.ring_pk.clone();
-
-                    // Compute the ring_id from the post (it's deterministic based on namespace + payload)
-                    let full_namespace = format!("bulletin/{}", ring_namespace);
-                    ring_id = SourceHubBulletin::compute_post_id(&full_namespace, &posts[0]);
-                    dkg_ring_payload = Some(ring_payload);
-                    println!(
-                        "DKG completed! Ring PK: {}..., Ring ID: {}",
-                        &ring_pk_hex[..40.min(ring_pk_hex.len())],
-                        &ring_id[..16.min(ring_id.len())]
-                    );
-                    break;
-                }
-            }
-            sleep(Duration::from_millis(500)).await;
-        }
-
-        assert!(
-            !ring_pk_hex.is_empty(),
-            "Should have ring public key after DKG"
+        let dkg_result = dkg_result.unwrap();
+        let session_id = dkg_result.session_id.clone();
+        println!(
+            "DKG initiated (session_id: {}), waiting for completion event...",
+            session_id
         );
-        assert!(!ring_id.is_empty(), "Should have ring ID after DKG");
-        let _dkg_ring_payload = dkg_ring_payload.expect("Should have ring payload after DKG");
+
+        // Wait for the event matching our session_id artifact
+        let post_event = event_subscription
+            .wait_for_artifact(&session_id, Duration::from_secs(60))
+            .await
+            .expect("DKG completion event");
+
+        // Read the post payload using the post_id from the event
+        let post_payload =
+            cli_tool::read_bulletin_post(ring_namespace.clone(), post_event.post_id.clone())
+                .await
+                .expect("read ring post by event post_id");
+
+        let ring_payload: RingPayload =
+            serde_json::from_slice(&post_payload).expect("parse RingPayload");
+        let ring_pk_hex = ring_payload.ring_pk.clone();
+        let ring_id = post_event.post_id;
+        let _dkg_ring_payload = ring_payload.clone();
+
+        println!(
+            "DKG completed! Ring PK: {}..., Ring ID: {}",
+            &ring_pk_hex[..40.min(ring_pk_hex.len())],
+            &ring_id[..16.min(ring_id.len())],
+        );
 
         // Step 2: Generate reader keypair
         let mut rng = OsRng;
