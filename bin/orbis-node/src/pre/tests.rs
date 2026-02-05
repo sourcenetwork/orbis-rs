@@ -13,7 +13,8 @@ use crate::DkgServiceImpl;
 use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, RingPayload};
 use crypto::bls12_381::dkg::DKGNode;
 use crypto::bls12_381::pre::ThresholdDealerNode;
-use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, ThresholdDealer};
+use crypto::helpers::generate_policy_metadata;
+use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, EncryptionProof, ThresholdDealer};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest};
 use std::sync::Arc;
@@ -26,6 +27,11 @@ type PreImpl = ThresholdDealerNode;
 
 use bulletin::dummy::DummyBulletin;
 
+/// Generate policy metadata matching the test DocumentPayload fields.
+fn generate_test_policy_metadata() -> [u8; 32] {
+    generate_policy_metadata("test-policy", "test-resource", "test-permission")
+}
+
 /// Helper to store a DocumentPayload in the bulletin for PRE tests.
 ///
 /// This creates the document payload with the encrypted secret and stores it in the bulletin,
@@ -34,6 +40,7 @@ fn setup_document_in_bulletin(
     dummy_bulletin: &DummyBulletin,
     namespace: &str,
     secret_bytes: &[u8],
+    proof: EncryptionProof,
 ) -> String {
     // Get the ring_id from the bulletin post
     let ring_post = get_test_ring_post(dummy_bulletin);
@@ -44,6 +51,7 @@ fn setup_document_in_bulletin(
         ring_id,
         document: String::from_utf8(secret_bytes.to_vec())
             .unwrap_or_else(|_| hex::encode(secret_bytes)),
+        proof: String::try_from(proof).expect("serialize EncryptionProof"),
         policy_id: "test-policy".to_string(),
         resource: "test-resource".to_string(),
         permission: "test-permission".to_string(),
@@ -155,8 +163,9 @@ async fn test_dkg_then_pre_end_to_end() {
     );
 
     // Alice encrypts the message using the DKG aggregate public key
-    let (enc_cmt, encrypted_secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret_message, None)
+    let metadata = generate_test_policy_metadata();
+    let (enc_cmt, encrypted_secret, proof) =
+        ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
             .expect("Encryption should succeed");
 
     println!("Message encrypted successfully!");
@@ -219,7 +228,7 @@ async fn test_dkg_then_pre_end_to_end() {
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
 
     // Create PRE JWT token
     let pre_token = test_keys
@@ -389,8 +398,10 @@ async fn test_pre_with_large_secret() {
     println!("Large secret size: {} bytes", large_secret.len());
 
     // Alice encrypts
-    let (_, encrypted_secret, _) = PreImpl::encrypt_secret(&aggregate_pk, &large_secret, None)
-        .expect("Encryption should succeed");
+    let metadata = generate_test_policy_metadata();
+    let (_, encrypted_secret, proof) =
+        PreImpl::encrypt_secret(&aggregate_pk, &large_secret, None, Some(&metadata))
+            .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys using trait method
@@ -408,7 +419,7 @@ async fn test_pre_with_large_secret() {
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
 
     // Create PRE JWT token
     let pre_token = test_keys
@@ -510,8 +521,10 @@ async fn test_pre_fails_with_wrong_key() {
 
     // Alice encrypts
     let secret_message = b"Secret that should not be decrypted with wrong key";
-    let (_, encrypted_secret, _) = PreImpl::encrypt_secret(&aggregate_pk, secret_message, None)
-        .expect("Encryption should succeed");
+    let metadata = generate_test_policy_metadata();
+    let (_, encrypted_secret, proof) =
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
+            .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's real keys
@@ -533,7 +546,7 @@ async fn test_pre_fails_with_wrong_key() {
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
 
     // Create PRE JWT token
     let pre_token = test_keys
@@ -636,8 +649,10 @@ async fn test_pre_fails_with_invalid_jwt_token() {
 
     // Alice encrypts
     let secret_message = b"Secret that should not be re-encrypted with bad token";
-    let (_, encrypted_secret, _) = PreImpl::encrypt_secret(&aggregate_pk, secret_message, None)
-        .expect("Encryption should succeed");
+    let metadata = generate_test_policy_metadata();
+    let (_, encrypted_secret, proof) =
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
+            .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys
@@ -656,7 +671,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
 
     // Use a completely invalid JWT token
     let invalid_token = "not-a-valid-jwt-token".to_string();
@@ -767,8 +782,10 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
 
     // Alice encrypts
     let secret_message = b"Secret with mismatched claims";
-    let (_, encrypted_secret, _) = PreImpl::encrypt_secret(&aggregate_pk, secret_message, None)
-        .expect("Encryption should succeed");
+    let metadata = generate_test_policy_metadata();
+    let (_, encrypted_secret, proof) =
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
+            .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys
@@ -787,7 +804,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
 
     // Create a valid JWT but with wrong rdr_pk claim
     let wrong_rdr_pk = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -1039,9 +1056,14 @@ async fn test_pre_fails_with_wrong_derivation() {
     let correct_derivation = b"correct_derivation_path".to_vec();
     let wrong_derivation = b"wrong_derivation_path".to_vec();
 
-    let (_, encrypted_secret, _proof) =
-        PreImpl::encrypt_secret(&aggregate_pk, secret_message, Some(&correct_derivation))
-            .expect("Encryption with derivation should succeed");
+    let metadata = generate_test_policy_metadata();
+    let (_, encrypted_secret, proof) = PreImpl::encrypt_secret(
+        &aggregate_pk,
+        secret_message,
+        Some(&correct_derivation),
+        Some(&metadata),
+    )
+    .expect("Encryption with derivation should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys
@@ -1060,7 +1082,7 @@ async fn test_pre_fails_with_wrong_derivation() {
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
 
     // Create PRE JWT token with CORRECT derivation
     let pre_token = test_keys

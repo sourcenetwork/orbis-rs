@@ -241,6 +241,7 @@ async fn create_test_document_and_post(
     let doc_payload = DocumentPayload {
         ring_id: ring_id.to_string(),
         document: "test_encrypted_document".to_string(),
+        proof: "test_proof".to_string(),
         policy_id: "test_policy".to_string(),
         resource: "test_resource".to_string(),
         permission: "read".to_string(),
@@ -730,6 +731,7 @@ async fn test_sign_fails_post_not_on_bulletin() {
     let doc_payload = DocumentPayload {
         ring_id: ring_id.clone(),
         document: "fake_document".to_string(),
+        proof: "test_proof".to_string(),
         policy_id: "fake_policy".to_string(),
         resource: "fake_resource".to_string(),
         permission: "read".to_string(),
@@ -835,6 +837,7 @@ async fn test_sign_fails_tampered_payload() {
     let original_doc = DocumentPayload {
         ring_id: ring_id.clone(),
         document: "original_document".to_string(),
+        proof: "test_proof".to_string(),
         policy_id: "test_policy".to_string(),
         resource: "test_resource".to_string(),
         permission: "read".to_string(),
@@ -867,6 +870,7 @@ async fn test_sign_fails_tampered_payload() {
     let tampered_doc = DocumentPayload {
         ring_id: ring_id.clone(),
         document: "TAMPERED_document".to_string(), // Different content!
+        proof: "test_proof".to_string(),
         policy_id: "test_policy".to_string(),
         resource: "test_resource".to_string(),
         permission: "read".to_string(),
@@ -971,6 +975,7 @@ async fn test_sign_fails_invalid_ring_id() {
     let doc_with_fake_ring = DocumentPayload {
         ring_id: "fake_ring_id_that_doesnt_exist_on_bulletin".to_string(),
         document: "test_document".to_string(),
+        proof: "test_proof".to_string(),
         policy_id: "test_policy".to_string(),
         resource: "test_resource".to_string(),
         permission: "read".to_string(),

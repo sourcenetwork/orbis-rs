@@ -15,6 +15,7 @@ use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{Bulletin, BulletinPost, RingPayload};
 use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::bls12_381::sign::ThresholdBlsSigner;
+use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest,
@@ -526,19 +527,20 @@ async fn test_store_secret_idempotent() {
 
     // Generate valid encryption proof using ThresholdDealerNode
     let plaintext = b"test secret data";
+    let namespace = "test_idempotent_namespace";
+    let policy_id = "test_policy";
+    let resource = "test_resource";
+    let permission = "read";
+    let metadata = generate_policy_metadata(policy_id, resource, permission);
     let (_enc_cmt, secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None).expect("encrypt with proof");
+        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None, Some(&metadata))
+            .expect("encrypt with proof");
 
     let encrypted_doc = serde_json::to_string(&secret).expect("serialize Secret");
     let enc_cmt_hex = hex::encode(secret.enc_cmt.clone());
     let shared_point_bytes = proof.shared_point.clone();
     let challenge_bytes = proof.challenge.clone();
     let response_bytes = proof.response.clone();
-
-    let namespace = "test_idempotent_namespace";
-    let policy_id = "test_policy";
-    let resource = "test_resource";
-    let permission = "read";
 
     // Create JWT and request
     let test_keys = TestKeyPair::new();
@@ -698,8 +700,13 @@ async fn test_store_secret_fails_wrong_derived_pk() {
     // Generate valid encryption with derivation
     let plaintext = b"test secret data with derivation";
     let derivation = b"test_derivation_path";
+    let namespace = "test_wrong_derived_pk_namespace";
+    let policy_id = "test_policy";
+    let resource = "test_resource";
+    let permission = "read";
+    let metadata = generate_policy_metadata(policy_id, resource, permission);
     let (_enc_cmt, secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, Some(derivation))
+        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, Some(derivation), Some(&metadata))
             .expect("encrypt with derivation");
 
     let encrypted_doc = serde_json::to_string(&secret).expect("serialize Secret");
@@ -715,11 +722,6 @@ async fn test_store_secret_fails_wrong_derived_pk() {
     let wrong_derived_pk_bytes = wrong_derived_pk
         .to_bytes()
         .expect("serialize wrong derived_pk");
-
-    let namespace = "test_wrong_derived_pk_namespace";
-    let policy_id = "test_policy";
-    let resource = "test_resource";
-    let permission = "read";
 
     // Create JWT and request with WRONG derived_pk
     let test_keys = TestKeyPair::new();
