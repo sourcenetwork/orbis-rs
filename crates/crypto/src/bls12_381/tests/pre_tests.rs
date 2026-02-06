@@ -1,6 +1,8 @@
 use crate::bls12_381::common::PubPoly;
 use crate::bls12_381::pre::ThresholdDealerNode;
-use crate::r#trait::{DistKeyShare, PriShare, PubPoly as PubPolyTrait, PubShare, ThresholdDealer};
+use crate::r#trait::{
+    DistKeyShare, PriShare, PubPoly as PubPolyTrait, PubShare, Secret, ThresholdDealer,
+};
 use crate::test_helper::DKGCoordinator;
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::{AffineRepr, Group};
@@ -979,5 +981,164 @@ fn test_encryption_proof_metadata_with_derivation() {
     assert!(
         result.is_err(),
         "Proof should fail with wrong metadata even when derivation is correct"
+    );
+}
+
+// ============================================================================
+// AAD Binding Tests (Secret Component Mix-and-Match)
+// ============================================================================
+
+#[test]
+fn test_swap_ciphertext_and_nonce_fails_decrypt() {
+    // Take encrypted_data + nonce from encryption B, keep enc_cmt from encryption A.
+    // Re-encryption uses enc_cmt_A so the derived AES key and AAD won't match ciphertext_B.
+    let secret_a = b"secret A";
+    let secret_b = b"secret B";
+    let mut rng = OsRng;
+
+    let dkg_sk = Fr::rand(&mut rng);
+    let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+    let rdr_sk = Fr::rand(&mut rng);
+    let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
+
+    // Two independent encryptions under the same DKG key
+    let (enc_cmt_a, encrypted_a, _proof_a) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret_a, None, None).unwrap();
+    let (_enc_cmt_b, encrypted_b, _proof_b) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret_b, None, None).unwrap();
+
+    // Frankenstein secret: enc_cmt from A, ciphertext + nonce from B
+    let franken_secret = Secret {
+        enc_cmt: encrypted_a.enc_cmt.clone(),
+        encrypted_data: encrypted_b.encrypted_data.clone(),
+        nonce: encrypted_b.nonce.clone(),
+    };
+
+    // Re-encrypt using enc_cmt_a (which matches the franken secret's enc_cmt)
+    let xr_g = G1Projective::from(rdr_pk) + G1Projective::from(enc_cmt_a);
+    let xnc_cmt: G1Affine = (xr_g * dkg_sk).into();
+
+    // Decryption must fail — ciphertext was encrypted with a different key and AAD
+    let result = ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret);
+    assert!(
+        result.is_err(),
+        "Decryption should fail when encrypted_data and nonce are swapped from another encryption"
+    );
+}
+
+#[test]
+fn test_swap_enc_cmt_fails_decrypt() {
+    // Keep encrypted_data + nonce from encryption A, swap in enc_cmt from encryption B.
+    // The re-encryption will use enc_cmt_B, producing a different shared_point,
+    // so the derived AES key won't match and AAD will differ.
+    let secret_a = b"secret A";
+    let secret_b = b"secret B";
+    let mut rng = OsRng;
+
+    let dkg_sk = Fr::rand(&mut rng);
+    let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+    let rdr_sk = Fr::rand(&mut rng);
+    let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
+
+    let (_enc_cmt_a, encrypted_a, _proof_a) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret_a, None, None).unwrap();
+    let (enc_cmt_b, encrypted_b, _proof_b) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret_b, None, None).unwrap();
+
+    // Frankenstein secret: enc_cmt from B, ciphertext + nonce from A
+    let franken_secret = Secret {
+        enc_cmt: encrypted_b.enc_cmt.clone(),
+        encrypted_data: encrypted_a.encrypted_data.clone(),
+        nonce: encrypted_a.nonce.clone(),
+    };
+
+    // Re-encrypt using enc_cmt_b (which matches the franken secret's enc_cmt)
+    let xr_g = G1Projective::from(rdr_pk) + G1Projective::from(enc_cmt_b);
+    let xnc_cmt: G1Affine = (xr_g * dkg_sk).into();
+
+    let result = ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret);
+    assert!(
+        result.is_err(),
+        "Decryption should fail when enc_cmt is swapped from another encryption"
+    );
+}
+
+#[test]
+fn test_swap_nonce_only_fails_decrypt() {
+    // Keep enc_cmt and encrypted_data from A, swap in only the nonce from B.
+    // AES-GCM authentication will fail with the wrong nonce.
+    let secret_a = b"secret A";
+    let secret_b = b"secret B";
+    let mut rng = OsRng;
+
+    let dkg_sk = Fr::rand(&mut rng);
+    let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+    let rdr_sk = Fr::rand(&mut rng);
+    let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
+
+    let (enc_cmt_a, encrypted_a, _proof_a) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret_a, None, None).unwrap();
+    let (_enc_cmt_b, encrypted_b, _proof_b) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret_b, None, None).unwrap();
+
+    // Frankenstein secret: enc_cmt + ciphertext from A, nonce from B
+    let franken_secret = Secret {
+        enc_cmt: encrypted_a.enc_cmt.clone(),
+        encrypted_data: encrypted_a.encrypted_data.clone(),
+        nonce: encrypted_b.nonce.clone(),
+    };
+
+    let xr_g = G1Projective::from(rdr_pk) + G1Projective::from(enc_cmt_a);
+    let xnc_cmt: G1Affine = (xr_g * dkg_sk).into();
+
+    let result = ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret);
+    assert!(
+        result.is_err(),
+        "Decryption should fail when only the nonce is swapped"
+    );
+}
+
+#[test]
+fn test_swap_enc_cmt_and_proof_fails_decrypt() {
+    // Swap enc_cmt + proof from encryption B, keep encrypted_data + nonce from A.
+    // The proof verifies (it's valid for enc_cmt_B), but decryption fails because
+    // the AES key derived from re-encrypting enc_cmt_B doesn't match ciphertext_A.
+    let secret_a = b"secret A";
+    let secret_b = b"secret B";
+    let mut rng = OsRng;
+
+    let dkg_sk = Fr::rand(&mut rng);
+    let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+    let rdr_sk = Fr::rand(&mut rng);
+    let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
+
+    let (_enc_cmt_a, encrypted_a, _proof_a) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret_a, None, None).unwrap();
+    let (enc_cmt_b, encrypted_b, proof_b) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret_b, None, None).unwrap();
+
+    // The attacker's proof_b is valid for enc_cmt_b
+    let verify_result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt_b, &proof_b, None);
+    assert!(
+        verify_result.is_ok(),
+        "Proof B should verify against enc_cmt_b"
+    );
+
+    // Frankenstein secret: enc_cmt from B (matching proof_b), ciphertext + nonce from A
+    let franken_secret = Secret {
+        enc_cmt: encrypted_b.enc_cmt.clone(),
+        encrypted_data: encrypted_a.encrypted_data.clone(),
+        nonce: encrypted_a.nonce.clone(),
+    };
+
+    // Re-encrypt using enc_cmt_b
+    let xr_g = G1Projective::from(rdr_pk) + G1Projective::from(enc_cmt_b);
+    let xnc_cmt: G1Affine = (xr_g * dkg_sk).into();
+
+    // Proof verification passes, but decryption must fail
+    let result = ThresholdDealerNode::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret);
+    assert!(
+        result.is_err(),
+        "Decryption should fail when enc_cmt + proof are swapped but ciphertext is from another encryption"
     );
 }
