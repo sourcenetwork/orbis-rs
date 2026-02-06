@@ -128,6 +128,10 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
 
 /// Run the gRPC server with the initialized node
 pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize metrics eagerly so registration panics surface here, not in a spawned task
+    metrics::init();
+    network::metrics::init();
+
     tracing::info!("Server is ready to accept connections");
     tracing::info!(grpc_addr = %node.grpc_addr, "Starting gRPC server");
     tracing::info!(p2p_addr = %node.local_address, "P2P address for node-to-node communication");

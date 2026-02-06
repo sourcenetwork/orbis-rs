@@ -87,6 +87,21 @@ lazy_static! {
     .expect("failed to register p2p_errors_total");
 }
 
+/// Force initialization of all metrics. Call early in startup so any
+/// duplicate-name panic crashes the process instead of silently killing a task.
+pub fn init() {
+    lazy_static::initialize(&P2P_CONNECTIONS_TOTAL);
+    lazy_static::initialize(&P2P_ACTIVE_CONNECTIONS);
+    lazy_static::initialize(&P2P_MESSAGES_SENT_TOTAL);
+    lazy_static::initialize(&P2P_MESSAGES_RECEIVED_TOTAL);
+    lazy_static::initialize(&P2P_BYTES_SENT_TOTAL);
+    lazy_static::initialize(&P2P_BYTES_RECEIVED_TOTAL);
+    lazy_static::initialize(&P2P_SEND_DURATION_SECONDS);
+    lazy_static::initialize(&P2P_RECV_DURATION_SECONDS);
+    lazy_static::initialize(&P2P_CONNECT_DURATION_SECONDS);
+    lazy_static::initialize(&P2P_ERRORS_TOTAL);
+}
+
 /// Helper to convert protocol bytes to a string label
 pub fn protocol_label(protocol: &[u8]) -> String {
     std::str::from_utf8(protocol)
