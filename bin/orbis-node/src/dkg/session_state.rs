@@ -7,7 +7,7 @@
 //! message deduplication) and the cryptographic state (the DKG node itself) into
 //! a single unified structure.
 
-use crate::constants::{SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL};
+use crate::constants::{MAX_DKG_SESSIONS, SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL};
 use crate::metrics;
 use crypto::r#trait::Dkg;
 use network::Connection;
@@ -300,6 +300,17 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
 
         let mut states = self.states.write().await;
+
+        // Enforce maximum concurrent session limit to prevent resource exhaustion
+        if states.len() >= MAX_DKG_SESSIONS {
+            tracing::warn!(
+                session_id = session_id,
+                active_sessions = states.len(),
+                max_sessions = MAX_DKG_SESSIONS,
+                "DKG session limit reached, rejecting new session"
+            );
+            return false;
+        }
 
         // Check if session already exists to avoid overwriting existing state
         if states.contains_key(&session_id) {
