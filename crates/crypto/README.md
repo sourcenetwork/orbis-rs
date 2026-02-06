@@ -168,7 +168,6 @@ pub struct Secret {
     pub enc_cmt: Vec<u8>,        // rG - Schnorr commitment
     pub encrypted_data: Vec<u8>, // AES-GCM encrypted data
     pub nonce: Vec<u8>,          // AES-GCM nonce
-    pub auth_tag: Vec<u8>,       // Authentication tag
 }
 
 /// Re-encryption reply with NIZK proof
