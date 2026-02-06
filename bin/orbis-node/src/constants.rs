@@ -45,6 +45,15 @@ pub const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 /// Set to 1 minute for reasonable responsiveness without excessive overhead.
 pub const SESSION_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Timeout for a single DKG phase before the session is considered stalled
+///
+/// If a DKG session remains in the same phase for longer than this duration,
+/// it is removed by the expiration worker. This catches cases where a peer
+/// never sends its commitment or share, rather than waiting the full SESSION_TTL.
+/// Set to 2 minutes, which gives ample headroom over PEER_RESPONSE_TIMEOUT (10s)
+/// even when all peers need to respond.
+pub const DKG_PHASE_TIMEOUT: Duration = Duration::from_secs(120);
+
 // ============================================================================
 // PRE (Proxy Re-Encryption) Constants
 // ============================================================================

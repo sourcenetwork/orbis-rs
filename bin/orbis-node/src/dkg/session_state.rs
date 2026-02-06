@@ -7,7 +7,9 @@
 //! message deduplication) and the cryptographic state (the DKG node itself) into
 //! a single unified structure.
 
-use crate::constants::{SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL};
+use crate::constants::{
+    DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS, SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
+};
 use crate::metrics;
 use crypto::r#trait::Dkg;
 use network::Connection;
@@ -63,6 +65,8 @@ pub struct DkgSessionState<D: Dkg> {
     // === Protocol State ===
     /// Current protocol phase
     pub phase: DkgPhase,
+    /// When the current phase started (reset on every phase transition)
+    pub phase_started_at: Instant,
     /// Connection pool: peer_id_string -> connection
     /// Connections are reused for the duration of the session
     pub connections: HashMap<String, Arc<RwLock<Box<dyn Connection>>>>,
@@ -89,6 +93,7 @@ impl<D: Dkg> DkgSessionState<D> {
             node,
             created_at: Instant::now(),
             phase: DkgPhase::Initializing,
+            phase_started_at: Instant::now(),
             connections: HashMap::new(),
             node_id_to_peer_id: HashMap::new(),
             peer_id_to_node_id: HashMap::new(),
@@ -229,8 +234,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             let initial_count = states.len();
 
             states.retain(|session_id, state| {
+                // Skip completed sessions — they'll be removed by remove_session()
+                if state.phase == DkgPhase::Phase4Complete {
+                    return true;
+                }
+
                 let age = now.duration_since(state.created_at);
-                if age > SESSION_TTL && state.phase != DkgPhase::Phase4Complete {
+                if age > SESSION_TTL {
                     metrics::record_dkg_session_abandoned();
                     tracing::warn!(
                         session_id = session_id,
@@ -238,10 +248,23 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         phase = ?state.phase,
                         "SessionStateManager: Removing expired DKG session"
                     );
-                    false // remove
-                } else {
-                    true // keep
+                    return false;
                 }
+
+                // Phase-level timeout: if a non-initial phase has stalled, remove it
+                let phase_age = now.duration_since(state.phase_started_at);
+                if phase_age > DKG_PHASE_TIMEOUT && state.phase != DkgPhase::Initializing {
+                    metrics::record_dkg_session_abandoned();
+                    tracing::warn!(
+                        session_id = session_id,
+                        phase = ?state.phase,
+                        phase_age_secs = phase_age.as_secs(),
+                        "SessionStateManager: Removing DKG session stalled in phase"
+                    );
+                    return false;
+                }
+
+                true // keep
             });
 
             let removed = initial_count - states.len();
@@ -300,6 +323,17 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
 
         let mut states = self.states.write().await;
+
+        // Enforce maximum concurrent session limit to prevent resource exhaustion
+        if states.len() >= MAX_DKG_SESSIONS {
+            tracing::warn!(
+                session_id = session_id,
+                active_sessions = states.len(),
+                max_sessions = MAX_DKG_SESSIONS,
+                "DKG session limit reached, rejecting new session"
+            );
+            return false;
+        }
 
         // Check if session already exists to avoid overwriting existing state
         if states.contains_key(&session_id) {
@@ -433,6 +467,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.phase = phase;
+            state.phase_started_at = Instant::now();
         }
     }
 
