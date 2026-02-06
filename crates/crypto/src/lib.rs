@@ -10,7 +10,7 @@ pub mod bls12_381;
 
 pub use r#trait::{CryptoDeserialize, CryptoSerialize};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-helpers"))]
 pub mod test_helper;
 
 #[cfg(test)]

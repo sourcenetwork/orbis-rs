@@ -347,7 +347,7 @@ impl DKGNode {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-helpers"))]
 impl crate::test_helper::TestDkgNode for DKGNode {
     fn id(&self) -> u32 {
         self.id

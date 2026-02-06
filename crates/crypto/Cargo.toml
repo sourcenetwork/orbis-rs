@@ -25,3 +25,11 @@ aes-gcm = "0.10"
 hkdf = "0.12"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "pre_benchmarks"
+harness = false
+required-features = ["test-helpers"]
