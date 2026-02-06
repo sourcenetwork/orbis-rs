@@ -229,8 +229,9 @@ let aggregate_pk = node.compute_aggregate_public_key()?;
 Run benchmarks with:
 
 ```bash
-cargo bench --package crypto --features test-helpers
+cargo bench --package crypto --features test-helpers --bench dkg_benchmarks
 ```
+replace dkg_benchmarks with pre, or sign
 
 To save a named baseline (useful for comparing branches):
 

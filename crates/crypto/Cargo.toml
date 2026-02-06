@@ -33,3 +33,8 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "pre_benchmarks"
 harness = false
 required-features = ["test-helpers"]
+
+[[bench]]
+name = "dkg_benchmarks"
+harness = false
+required-features = ["test-helpers"]
