@@ -224,6 +224,34 @@ let aggregate_pk = node.compute_aggregate_public_key()?;
 - **NIZK proofs**: Re-encryption includes zero-knowledge proofs
 - **Constant-time verification**: Share verification uses constant-time comparison
 
+## Benchmarks
+
+Run benchmarks with:
+
+```bash
+cargo bench --package crypto --features test-helpers
+```
+
+To save a named baseline (useful for comparing branches):
+
+```bash
+cargo bench --package crypto --features test-helpers -- --save-baseline main
+```
+
+To view results as a table, install [`critcmp`](https://github.com/BurntSushi/critcmp):
+
+```bash
+cargo install critcmp
+critcmp
+```
+
+To compare two baselines side-by-side:
+
+```bash
+# save baseline on each branch, then compare
+critcmp main feature
+```
+
 ## Dependencies
 
 - `ark-bls12-381` - BLS12-381 curve implementation
