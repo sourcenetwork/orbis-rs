@@ -170,6 +170,29 @@ lazy_static! {
     .expect("failed to register node_info");
 }
 
+/// Force initialization of all metrics. Call early in startup so any
+/// duplicate-name panic crashes the process instead of silently killing a task.
+pub fn init() {
+    lazy_static::initialize(&GRPC_REQUESTS_TOTAL);
+    lazy_static::initialize(&GRPC_REQUEST_DURATION_SECONDS);
+    lazy_static::initialize(&DKG_SESSIONS_TOTAL);
+    lazy_static::initialize(&DKG_ACTIVE_SESSIONS);
+    lazy_static::initialize(&DKG_PHASE_DURATION_SECONDS);
+    lazy_static::initialize(&DKG_MESSAGES_TOTAL);
+    lazy_static::initialize(&DKG_ABANDONED_SESSIONS);
+    lazy_static::initialize(&PRE_REQUESTS_TOTAL);
+    lazy_static::initialize(&PRE_ACTIVE_REQUESTS);
+    lazy_static::initialize(&PRE_REQUEST_DURATION_SECONDS);
+    lazy_static::initialize(&PRE_MESSAGES_TOTAL);
+    lazy_static::initialize(&SIGN_REQUESTS_TOTAL);
+    lazy_static::initialize(&SIGN_ACTIVE_REQUESTS);
+    lazy_static::initialize(&SIGN_REQUEST_DURATION_SECONDS);
+    lazy_static::initialize(&SIGN_MESSAGES_TOTAL);
+    lazy_static::initialize(&STORE_SECRET_REQUESTS_TOTAL);
+    lazy_static::initialize(&STORE_SECRET_REQUEST_DURATION_SECONDS);
+    lazy_static::initialize(&NODE_INFO);
+}
+
 // ============================================================================
 // Helper functions for recording metrics
 // ============================================================================
