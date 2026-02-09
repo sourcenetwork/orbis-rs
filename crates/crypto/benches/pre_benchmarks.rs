@@ -195,47 +195,47 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
 
     // -- end_to_end -----------------------------------------------------------
     {
-    let mut group = c.benchmark_group(format!("{prefix}/end_to_end"));
-    group.measurement_time(std::time::Duration::from_secs(10));
-    group.bench_function("3_of_5", |b| {
-        b.iter(|| {
-            // Encrypt
-            let (_enc_cmt, secret, _proof) = <S::Dealer as ThresholdDealer>::encrypt_secret(
-                &fixture.aggregate_pk,
-                data,
-                None,
-                None,
-            )
-            .unwrap();
-
-            // Re-encrypt with t shares
-            let mut pub_shares = Vec::with_capacity(fixture.t);
-            for dks in fixture.dist_key_shares.iter().take(fixture.t) {
-                let reply = fixture
-                    .dealer
-                    .reencrypt(dks, &secret, &fixture.rdr_pk, None)
-                    .unwrap();
-                pub_shares.push(S::extract_pub_share(&reply));
-            }
-
-            // Recover
-            let xnc_cmt = fixture
-                .dealer
-                .recover(&pub_shares, fixture.t, fixture.n)
-                .unwrap()
+        let mut group = c.benchmark_group(format!("{prefix}/end_to_end"));
+        group.measurement_time(std::time::Duration::from_secs(10));
+        group.bench_function("3_of_5", |b| {
+            b.iter(|| {
+                // Encrypt
+                let (_enc_cmt, secret, _proof) = <S::Dealer as ThresholdDealer>::encrypt_secret(
+                    &fixture.aggregate_pk,
+                    data,
+                    None,
+                    None,
+                )
                 .unwrap();
 
-            // Decrypt
-            <S::Dealer as ThresholdDealer>::decrypt_secret(
-                &fixture.aggregate_pk,
-                &xnc_cmt,
-                &fixture.rdr_sk,
-                &secret,
-            )
-            .unwrap()
-        })
-    });
-    group.finish();
+                // Re-encrypt with t shares
+                let mut pub_shares = Vec::with_capacity(fixture.t);
+                for dks in fixture.dist_key_shares.iter().take(fixture.t) {
+                    let reply = fixture
+                        .dealer
+                        .reencrypt(dks, &secret, &fixture.rdr_pk, None)
+                        .unwrap();
+                    pub_shares.push(S::extract_pub_share(&reply));
+                }
+
+                // Recover
+                let xnc_cmt = fixture
+                    .dealer
+                    .recover(&pub_shares, fixture.t, fixture.n)
+                    .unwrap()
+                    .unwrap();
+
+                // Decrypt
+                <S::Dealer as ThresholdDealer>::decrypt_secret(
+                    &fixture.aggregate_pk,
+                    &xnc_cmt,
+                    &fixture.rdr_sk,
+                    &secret,
+                )
+                .unwrap()
+            })
+        });
+        group.finish();
     }
 }
 

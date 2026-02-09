@@ -7,6 +7,7 @@ pub mod helpers;
 pub mod r#trait;
 
 pub mod bls12_381;
+pub mod decaf377;
 
 pub use r#trait::{CryptoDeserialize, CryptoSerialize};
 

@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::time::Duration;
 
-use crypto::r#trait::{Dkg, DistributedShare};
+use crypto::r#trait::{DistributedShare, Dkg};
 
 #[path = "bls12_381/dkg.rs"]
 mod bls12_381_dkg;
@@ -71,10 +71,8 @@ pub trait DkgBenchSetup {
         }
 
         // Phase 2: generate shares
-        let all_shares: Vec<Vec<DistributedShare<_>>> = nodes
-            .iter()
-            .map(|n| n.generate_shares().unwrap())
-            .collect();
+        let all_shares: Vec<Vec<DistributedShare<_>>> =
+            nodes.iter().map(|n| n.generate_shares().unwrap()).collect();
 
         let prepared_nodes = nodes
             .into_iter()
@@ -116,12 +114,7 @@ fn run_dkg_benchmarks<S: DkgBenchSetup>(c: &mut Criterion, prefix: &str) {
             let fixture = S::create_fixture(t, n);
 
             group.bench_function(BenchmarkId::new("t_of_n", format!("{t}_of_{n}")), |b| {
-                b.iter(|| {
-                    fixture.prepared_nodes[0]
-                        .node
-                        .generate_shares()
-                        .unwrap()
-                })
+                b.iter(|| fixture.prepared_nodes[0].node.generate_shares().unwrap())
             });
         }
 
@@ -242,9 +235,8 @@ fn run_dkg_benchmarks<S: DkgBenchSetup>(c: &mut Criterion, prefix: &str) {
         for &(t, n) in &[(2, 3), (3, 5), (5, 9)] {
             group.bench_function(BenchmarkId::new("t_of_n", format!("{t}_of_{n}")), |b| {
                 b.iter(|| {
-                    let mut nodes: Vec<Box<S::Node>> = (1..=n as u32)
-                        .map(|id| S::create_node(id, t, n))
-                        .collect();
+                    let mut nodes: Vec<Box<S::Node>> =
+                        (1..=n as u32).map(|id| S::create_node(id, t, n)).collect();
 
                     // Shared session ID
                     for node in &mut nodes {
@@ -270,10 +262,8 @@ fn run_dkg_benchmarks<S: DkgBenchSetup>(c: &mut Criterion, prefix: &str) {
                     }
 
                     // Phase 2: generate + distribute shares
-                    let all_shares: Vec<Vec<DistributedShare<_>>> = nodes
-                        .iter()
-                        .map(|n| n.generate_shares().unwrap())
-                        .collect();
+                    let all_shares: Vec<Vec<DistributedShare<_>>> =
+                        nodes.iter().map(|n| n.generate_shares().unwrap()).collect();
 
                     for shares_from in &all_shares {
                         for share in shares_from {

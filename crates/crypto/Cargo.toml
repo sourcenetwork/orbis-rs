@@ -13,6 +13,7 @@ test-helpers = []
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 ark-bls12-381 = "0.4"
+decaf377 = "0.10"
 ark-ec = "0.4"
 ark-ff = "0.4"
 ark-std = "0.4"
