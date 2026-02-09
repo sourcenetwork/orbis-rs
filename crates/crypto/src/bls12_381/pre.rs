@@ -82,7 +82,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         // If wrong derivation is provided, decryption will fail at user level
         // (AES-GCM auth failure). Attacker cannot brute-force without reader's private key.
         let (xnc_ski, chlgi, proofi) =
-            Self::reencrypt_internal(&ski, rdr_pk, &enc_cmt, derivation_scalar)?;
+            Self::reencrypt_internal(idx, &ski, rdr_pk, &enc_cmt, derivation_scalar)?;
 
         Ok(ReencryptReply {
             share: PubShare { i: idx, v: xnc_ski },
@@ -113,6 +113,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         };
 
         Self::verify_internal(
+            idx,
             rdr_pk,
             enc_cmt,
             &xnc_ski,
@@ -499,6 +500,7 @@ impl ThresholdDealerNode {
     /// Otherwise:
     ///   xnc_ski = ski * (xG + rG)
     fn reencrypt_internal(
+        idx: u32,
         dkg_ski: &Fr,
         rdr_pk: &G1Affine,
         enc_cmt: &G1Affine,
@@ -530,14 +532,23 @@ impl ThresholdDealerNode {
         let xr_g = G1Projective::from(*rdr_pk) + G1Projective::from(*enc_cmt); // xrG = xG + rG
         let xnc_ski = (xr_g * effective_ski).into(); // Ui = effective_ski * (xG + rG)
 
+        // Compute effective commitment for binding into challenge hash
+        let effective_cmt: G1Affine = (G1Projective::generator() * effective_ski).into();
+
         // Produce random oracle challenge (ei)
-        // ei = Hash(Ui + UiHat + HiHat)
+        // ei = Hash(PROTOCOL, idx, rdr_pk, enc_cmt, effective_cmt, Ui, UiHat, HiHat)
         let mut rng = OsRng;
         let ri = Fr::rand(&mut rng); // ri = Random scalar
         let ui_hat = (xr_g * ri).into(); // UiHat = ri * (xG + rG)
         let hi_hat = (G1Projective::generator() * ri).into(); // HiHat = ri * G
 
-        let challenge_hash = Self::hash_reencrypt_proof_points(&[xnc_ski, ui_hat, hi_hat])?;
+        let challenge_hash = Self::hash_reencrypt_proof_points(
+            idx,
+            rdr_pk,
+            enc_cmt,
+            &effective_cmt,
+            &[xnc_ski, ui_hat, hi_hat],
+        )?;
         let chlgi = Fr::from_le_bytes_mod_order(&challenge_hash);
 
         // Produce NIZK proof of re-encryption (fi)
@@ -553,6 +564,7 @@ impl ThresholdDealerNode {
     /// - d * dkg_cmt.eval(idx) if derivation was used
     /// - dkg_cmt.eval(idx) otherwise
     fn verify_internal(
+        idx: u32,
         rdr_pk: &G1Affine,
         enc_cmt: &G1Affine,
         xnc_ski: &G1Affine,
@@ -575,8 +587,14 @@ impl ThresholdDealerNode {
         let hi_hat = (fi_g - ei_ci).into(); // HiHat = fi * G - ei * effective_cmt
 
         // Reconstruct random oracle challenge (ei)
-        // ei = Hash(Ui + UiHat + HiHat)
-        let challenge_hash = Self::hash_reencrypt_proof_points(&[*xnc_ski, ui_hat, hi_hat])?;
+        // ei = Hash(PROTOCOL, idx, rdr_pk, enc_cmt, effective_cmt, Ui, UiHat, HiHat)
+        let challenge_hash = Self::hash_reencrypt_proof_points(
+            idx,
+            rdr_pk,
+            enc_cmt,
+            effective_cmt,
+            &[*xnc_ski, ui_hat, hi_hat],
+        )?;
         let chlg = Fr::from_le_bytes_mod_order(&challenge_hash);
 
         // Verify local challenge using constant-time comparison
@@ -658,17 +676,36 @@ impl ThresholdDealerNode {
         Ok(Some(result.into()))
     }
 
-    /// Hash multiple points together with domain separation
-    fn hash_reencrypt_proof_points(points: &[G1Affine]) -> Result<[u8; 32]> {
+    /// Hash re-encryption proof with all public inputs bound into the challenge.
+    ///
+    /// Binds: PROTOCOL domain, share index, reader public key, encryption commitment,
+    /// effective DKG commitment (with derivation applied), and the proof points
+    /// (xnc_ski, UiHat, HiHat). This prevents proof replay across different
+    /// ciphertexts, readers, DKG sessions, or share indices.
+    fn hash_reencrypt_proof_points(
+        idx: u32,
+        rdr_pk: &G1Affine,
+        enc_cmt: &G1Affine,
+        effective_cmt: &G1Affine,
+        proof_points: &[G1Affine],
+    ) -> Result<[u8; 32]> {
         let mut hasher = Sha256::new();
 
         // Add domain separation to prevent cross-protocol attacks
         hasher.update(PROTOCOL);
 
-        // Reuse buffer to avoid allocating for each point
+        // Bind share index
+        hasher.update(&idx.to_le_bytes());
+
+        // Serialize and hash all public inputs then proof points
         // Compressed G1 points are 48 bytes
         let mut bytes = Vec::with_capacity(48);
-        for point in points {
+        for point in [rdr_pk, enc_cmt, effective_cmt] {
+            bytes.clear();
+            point.serialize_compressed(&mut bytes)?;
+            hasher.update(&bytes);
+        }
+        for point in proof_points {
             bytes.clear();
             point.serialize_compressed(&mut bytes)?;
             hasher.update(&bytes);
