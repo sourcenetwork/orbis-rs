@@ -329,6 +329,27 @@ fn test_args_custom_address() {
     assert_eq!(args.addr, "127.0.0.1:9000");
 }
 
+/// ThresholdDealer::name() reflects the compiled crypto backend (elgamal/decaf377 vs elgamal/bls12_381).
+#[test]
+fn test_pre_impl_name_matches_backend() {
+    use crypto::r#trait::ThresholdDealer;
+    use crypto::PreImpl;
+    let dealer = PreImpl::new();
+
+    #[cfg(feature = "decaf377")]
+    assert_eq!(
+        dealer.name(),
+        "elgamal/decaf377",
+        "decaf377 build should report elgamal/decaf377"
+    );
+    #[cfg(feature = "bls12-381")]
+    assert_eq!(
+        dealer.name(),
+        "elgamal/bls12_381",
+        "bls12-381 build should report elgamal/bls12_381"
+    );
+}
+
 /// Test that encrypted storage works with the node
 #[tokio::test]
 #[serial_test::serial]

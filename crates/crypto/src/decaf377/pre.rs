@@ -19,7 +19,7 @@ use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-const NAME: &str = "elgamal";
+const NAME: &str = "elgamal/decaf377";
 
 const ENCRYPT_PROOF_DOMAIN: &[u8; 24] = b"elgamal-encrypt-proof-v1";
 const PROTOCOL: &[u8; 30] = b"elgamal-reencrypt-challenge-v1";
