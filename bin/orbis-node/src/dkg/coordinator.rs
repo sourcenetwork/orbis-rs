@@ -389,12 +389,14 @@ where
                             .with_state(&session_id, |state| {
                                 let mut bytes = Vec::new();
                                 for coeff in &state.node.commitment().coefficients {
-                                    let coeff_bytes = coeff.to_bytes().map_err(|e| {
-                                        DkgError::Serialization(format!(
-                                            "Failed to serialize commitment: {}",
-                                            e
-                                        ))
-                                    })?;
+                                    let coeff_bytes = CryptoSerialize::to_bytes(coeff).map_err(
+                                        |e| {
+                                            DkgError::Serialization(format!(
+                                                "Failed to serialize commitment: {}",
+                                                e
+                                            ))
+                                        },
+                                    )?;
                                     bytes.extend_from_slice(&coeff_bytes);
                                 }
                                 Ok::<_, DkgError>((bytes, state.node.node_id()))
@@ -728,12 +730,13 @@ where
                 // Serialize commitment
                 let mut bytes = Vec::new();
                 for coeff in &state.node.commitment().coefficients {
-                    let coeff_bytes = coeff.to_bytes().map_err(|e| {
-                        DkgError::Serialization(format!(
-                            "Failed to serialize commitment coefficient: {}",
-                            e
-                        ))
-                    })?;
+                    let coeff_bytes =
+                        CryptoSerialize::to_bytes(coeff).map_err(|e| {
+                            DkgError::Serialization(format!(
+                                "Failed to serialize commitment coefficient: {}",
+                                e
+                            ))
+                        })?;
                     bytes.extend_from_slice(&coeff_bytes);
                 }
 
@@ -950,7 +953,7 @@ where
             }
 
             // Serialize share value
-            let share_value_bytes = share.value.to_bytes().map_err(|e| {
+            let share_value_bytes = CryptoSerialize::to_bytes(&share.value).map_err(|e| {
                 DkgError::Serialization(format!("Failed to serialize share value: {}", e))
             })?;
 
@@ -1171,7 +1174,7 @@ where
                 );
 
                 // Serialize the final share for storage using trait method
-                let final_share_bytes = final_share.to_bytes().map_err(|e| {
+                let final_share_bytes = CryptoSerialize::to_bytes(&final_share).map_err(|e| {
                     DkgError::Serialization(format!("Failed to serialize final share: {}", e))
                 })?;
 
@@ -1179,7 +1182,7 @@ where
                 let pub_poly = state.node.compute_public_polynomial().map_err(|e| {
                     DkgError::Crypto(format!("Failed to compute public polynomial: {}", e))
                 })?;
-                let pub_poly_bytes = pub_poly.to_bytes().map_err(|e| {
+                let pub_poly_bytes = CryptoSerialize::to_bytes(&pub_poly).map_err(|e| {
                     DkgError::Serialization(format!("Failed to serialize public polynomial: {}", e))
                 })?;
 
@@ -1217,7 +1220,7 @@ where
             .await;
 
         // Serialize ring_pk for logging and bulletin post
-        let ring_pk_bytes = aggregate_pk.to_bytes().map_err(|e| {
+        let ring_pk_bytes = CryptoSerialize::to_bytes(&aggregate_pk).map_err(|e| {
             DkgError::Serialization(format!("Failed to serialize aggregate public key: {}", e))
         })?;
 

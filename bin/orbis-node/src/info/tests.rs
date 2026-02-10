@@ -5,9 +5,8 @@ use common::blockchain::ChainConfigBuilder;
 use proto::info_service::{info_service_server::InfoService, GetNodeInfoRequest};
 use tonic::Request;
 
-// Concrete crypto implementations for tests
-use crypto::bls12_381::dkg::DKGNode;
-type DkgImpl = DKGNode;
+// Concrete crypto implementation for tests (selected via crypto crate features)
+use crypto::DkgImpl;
 
 /// Test that get_node_info returns both public_address and peer_id
 #[tokio::test]

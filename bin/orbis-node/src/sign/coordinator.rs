@@ -166,7 +166,7 @@ where
             .map_err(|e| SignError::Crypto(format!("Signing failed: {}", e)))?;
 
         // 7. Serialize the signature share
-        let sig_share_bytes = sig_share.v.to_bytes().map_err(|e| {
+        let sig_share_bytes = CryptoSerialize::to_bytes(&sig_share.v).map_err(|e| {
             SignError::Serialization(format!("Failed to serialize signature share: {}", e))
         })?;
 
@@ -576,7 +576,7 @@ where
             .ok_or_else(|| SignError::RecoveryFailed("Recovery returned None".to_string()))?;
 
         // 7. Serialize signature to bytes then hex
-        let signature_bytes = signature.to_bytes().map_err(|e| {
+        let signature_bytes = CryptoSerialize::to_bytes(&signature).map_err(|e| {
             SignError::Serialization(format!("Failed to serialize signature: {}", e))
         })?;
         let signature_hex = hex::encode(&signature_bytes);

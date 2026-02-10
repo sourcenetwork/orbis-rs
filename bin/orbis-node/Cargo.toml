@@ -49,14 +49,14 @@ ark-bls12-381 = "0.4"
 ark-ec = "0.4"
 ark-std = "0.4"
 rand_core = "0.6"
-crypto = { path = "../../crates/crypto", features = ["test-helpers"] }
+crypto = { path = "../../crates/crypto", default-features = false, features = ["test-helpers"] }
 tokio-stream = "0.1"
-cli-tool = { path = "../cli-tool" }
+cli-tool = { path = "../cli-tool", default-features = false }
 
 [features]
 default = ["local-storage/redb", "bls12-381"]
-bls12-381 = ["crypto/bls12-381"]
-decaf377 = ["crypto/decaf377"]
+bls12-381 = ["crypto/bls12-381", "cli-tool?/bls12-381"]
+decaf377 = ["crypto/decaf377", "cli-tool?/decaf377"]
 redb = ["local-storage/redb"]
 memory = ["local-storage/memory"]
 integration-test = ["cli-tool"]

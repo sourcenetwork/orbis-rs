@@ -948,9 +948,6 @@ name = "cli-tool"
 version = "0.0.1"
 dependencies = [
  "anyhow",
- "ark-bls12-381",
- "ark-ec",
- "ark-std",
  "authn",
  "authz",
  "bulletin",
@@ -961,7 +958,6 @@ dependencies = [
  "futures",
  "hex",
  "proto",
- "rand_core 0.6.4",
  "serde",
  "serde_json",
  "tokio",

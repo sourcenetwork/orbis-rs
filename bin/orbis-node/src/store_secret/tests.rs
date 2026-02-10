@@ -9,23 +9,16 @@ use crate::helpers::test_helpers::{
     create_test_app_state_with_bulletin, test_db_path, TestKeyPair,
 };
 use crate::store_secret::StoreSecretServiceImpl;
-use ark_bls12_381::G1Affine;
-use ark_ec::AffineRepr;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{Bulletin, BulletinPost, RingPayload};
-use crypto::bls12_381::pre::ThresholdDealerNode;
-use crypto::bls12_381::sign::ThresholdBlsSigner;
 use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
+use crypto::{DkgImpl, PreImpl as ThresholdDealerNode, SignImpl};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest,
 };
 use std::sync::Arc;
 use tonic::Request;
-// Concrete crypto implementations for tests
-use crypto::bls12_381::dkg::DKGNode;
-type DkgImpl = DKGNode;
-pub type SignImpl = ThresholdBlsSigner;
 
 /// Default test values for StoreSecret requests
 const TEST_ENCRYPTED_DOC: &str = "{}";
@@ -38,8 +31,19 @@ const TEST_PERMISSION: &str = "test-permission";
 const TEST_SHARED_POINT: &str = "test-shared-point";
 const TEST_CHALLENGE: &str = "test-challenge";
 const TEST_RESPONSE: &str = "test-response";
-/// A valid hex-encoded G1 point for testing (generator point)
-const TEST_RING_PK: &str = "97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb";
+
+
+/// A valid hex-encoded group point for testing (curve-specific generator).
+/// This is computed at runtime using the selected curve's generator.
+fn test_ring_pk_hex() -> String {
+    use crypto::CryptoSerialize;
+
+    // For both curves, use the generic helper to generate a keypair and
+    // take the public key as a valid group element.
+    let (_sk, pk) = crypto::helpers::generate_keypair().expect("generate test keypair");
+    let bytes = CryptoSerialize::to_bytes(&pk).expect("serialize generator");
+    hex::encode(bytes)
+}
 
 /// Helper to create an AppState with a pre-configured test ring in the bulletin
 async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState<DkgImpl> {
@@ -47,9 +51,9 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         .await
         .expect("Failed to create DummyBulletin");
 
-    // Create a test RingPayload
+    // Create a test RingPayload using curve-specific generator
     let ring_payload = RingPayload {
-        ring_pk: TEST_RING_PK.to_string(),
+        ring_pk: test_ring_pk_hex(),
         peer_ids: vec!["peer1".to_string()],
         threshold: 1,
         public_polynomial: "00".to_string(),
@@ -361,8 +365,8 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
     let app_state = create_app_state_with_ring(db_name).await;
     let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
-    // Create a valid Secret struct with enc_cmt matching TEST_RING_PK format
-    let enc_cmt_bytes = hex::decode(TEST_RING_PK).expect("decode TEST_RING_PK");
+    // Create a valid Secret struct with enc_cmt matching the ring_pk format
+    let enc_cmt_bytes = hex::decode(test_ring_pk_hex()).expect("decode TEST_RING_PK");
     let secret = crypto::r#trait::Secret {
         enc_cmt: enc_cmt_bytes.clone(),
         encrypted_data: vec![0u8; 32],
@@ -484,9 +488,9 @@ async fn test_store_secret_idempotent() {
             .expect("Failed to create DummyBulletin"),
     );
 
-    // Create a valid ring with real crypto
-    let ring_pk = G1Affine::generator();
-    let ring_pk_bytes = ring_pk.to_bytes().expect("serialize ring_pk");
+    // Create a valid ring with real crypto using the generic curve implementation
+    let (_sk, ring_pk) = ThresholdDealerNode::generate_keypair();
+    let ring_pk_bytes = CryptoSerialize::to_bytes(&ring_pk).expect("serialize ring_pk");
     let ring_pk_hex = hex::encode(&ring_pk_bytes);
 
     let ring_payload = RingPayload {
@@ -656,9 +660,9 @@ async fn test_store_secret_fails_wrong_derived_pk() {
             .expect("Failed to create DummyBulletin"),
     );
 
-    // Create a valid ring with real crypto
-    let ring_pk = G1Affine::generator();
-    let ring_pk_bytes = ring_pk.to_bytes().expect("serialize ring_pk");
+    // Create a valid ring with real crypto using the generic curve implementation
+    let (_sk, ring_pk) = ThresholdDealerNode::generate_keypair();
+    let ring_pk_bytes = CryptoSerialize::to_bytes(&ring_pk).expect("serialize ring_pk");
     let ring_pk_hex = hex::encode(&ring_pk_bytes);
 
     let ring_payload = RingPayload {
@@ -796,9 +800,9 @@ async fn test_store_secret_fails_with_tampered_proof() {
             .expect("Failed to create DummyBulletin"),
     );
 
-    // Create a valid ring with real crypto
-    let ring_pk = G1Affine::generator();
-    let ring_pk_bytes = ring_pk.to_bytes().expect("serialize ring_pk");
+    // Create a valid ring with real crypto using the generic curve implementation
+    let (_sk, ring_pk) = ThresholdDealerNode::generate_keypair();
+    let ring_pk_bytes = CryptoSerialize::to_bytes(&ring_pk).expect("serialize ring_pk");
     let ring_pk_hex = hex::encode(&ring_pk_bytes);
 
     let ring_payload = RingPayload {

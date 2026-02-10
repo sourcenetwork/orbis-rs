@@ -11,8 +11,7 @@ use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::pre::service::PreServiceImpl;
 use crate::DkgServiceImpl;
 use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, RingPayload};
-use crypto::bls12_381::dkg::DKGNode;
-use crypto::bls12_381::pre::ThresholdDealerNode;
+use crypto::{DkgImpl, PreImpl};
 use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, EncryptionProof, ThresholdDealer};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
@@ -20,10 +19,6 @@ use proto::pre_service::{pre_service_server::PreService, StartPreRequest};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tonic::Request;
-
-// Type aliases for tests
-type DkgImpl = DKGNode;
-type PreImpl = ThresholdDealerNode;
 
 use bulletin::dummy::DummyBulletin;
 
@@ -165,7 +160,7 @@ async fn test_dkg_then_pre_end_to_end() {
     // Alice encrypts the message using the DKG aggregate public key
     let metadata = generate_test_policy_metadata();
     let (enc_cmt, encrypted_secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
             .expect("Encryption should succeed");
 
     println!("Message encrypted successfully!");
@@ -183,19 +178,17 @@ async fn test_dkg_then_pre_end_to_end() {
     // =========================================================================
     println!("\nStep 4: Bob generates his keypair...");
 
-    let (bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
+    let (bob_sk, bob_pk) = PreImpl::generate_keypair();
 
     println!("Bob's keypair generated!");
     println!("  - Bob's public key: {:?}", bob_pk);
 
     // Serialize Bob's public key using trait method
-    let bob_pk_bytes = bob_pk
-        .to_bytes()
+    let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk)
         .expect("Failed to serialize Bob's public key");
 
     // Serialize the ring (DKG) public key using trait method
-    let ring_pk_bytes = aggregate_pk
-        .to_bytes()
+    let ring_pk_bytes = CryptoSerialize::to_bytes(&aggregate_pk)
         .expect("Failed to serialize ring public key");
 
     // =========================================================================
@@ -405,8 +398,8 @@ async fn test_pre_with_large_secret() {
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys using trait method
-    let (bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
-    let bob_pk_bytes = bob_pk.to_bytes().unwrap();
+    let (bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE
     let pre_coordinator =
@@ -528,11 +521,11 @@ async fn test_pre_fails_with_wrong_key() {
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's real keys
-    let (_bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
-    let bob_pk_bytes = bob_pk.to_bytes().unwrap();
+    let (_bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // Wrong private key (Eve trying to decrypt)
-    let (eve_sk, _eve_pk) = ThresholdDealerNode::generate_keypair();
+    let (eve_sk, _eve_pk) = PreImpl::generate_keypair();
 
     // PRE to Bob's public key
     let pre_coordinator =
@@ -656,8 +649,8 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys
-    let (_bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
-    let bob_pk_bytes = bob_pk.to_bytes().unwrap();
+    let (_bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE with invalid token
     let pre_coordinator =
@@ -789,8 +782,8 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys
-    let (_bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
-    let bob_pk_bytes = bob_pk.to_bytes().unwrap();
+    let (_bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE with token that has WRONG claims (different rdr_pk)
     let pre_coordinator =
@@ -1070,8 +1063,8 @@ async fn test_pre_fails_with_wrong_derivation() {
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys
-    let (bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
-    let bob_pk_bytes = bob_pk.to_bytes().unwrap();
+    let (bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE with CORRECT derivation (re-encryption should work)
     let pre_coordinator =
@@ -1237,8 +1230,8 @@ async fn test_pre_fails_with_bad_proof() {
     }
 
     // Bob's keys
-    let (_bob_sk, bob_pk) = ThresholdDealerNode::generate_keypair();
-    let bob_pk_bytes = bob_pk.to_bytes().unwrap();
+    let (_bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE
     let pre_coordinator =
