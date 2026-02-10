@@ -32,18 +32,18 @@ where
 
 impl<D, S> SignProtocolHandler<D, S>
 where
-    D: crypto::r#trait::Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+    D: crypto::r#trait::Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
         + Clone
         + Send
         + Sync
         + 'static,
     S: crypto::r#trait::ThresholdSigner<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
             PubPoly = D::PubPoly,
-            Signature = crypto::bls12_381::common::G2Point,
-            SigShare = crypto::r#trait::PubShare<crypto::bls12_381::common::G2Point>,
+            Signature = crypto::SignaturePoint,
+            SigShare = crypto::r#trait::PubShare<crypto::SignaturePoint>,
         > + Send
         + Sync
         + 'static,
@@ -58,18 +58,18 @@ where
 #[async_trait]
 impl<D, S> ProtocolHandler for SignProtocolHandler<D, S>
 where
-    D: crypto::r#trait::Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+    D: crypto::r#trait::Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
         + Clone
         + Send
         + Sync
         + 'static,
     S: crypto::r#trait::ThresholdSigner<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
             PubPoly = D::PubPoly,
-            Signature = crypto::bls12_381::common::G2Point,
-            SigShare = crypto::r#trait::PubShare<crypto::bls12_381::common::G2Point>,
+            Signature = crypto::SignaturePoint,
+            SigShare = crypto::r#trait::PubShare<crypto::SignaturePoint>,
         > + Send
         + Sync
         + 'static,

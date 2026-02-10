@@ -39,9 +39,9 @@ where
 impl<D> DkgProtocolHandler<D>
 where
     D: crypto::r#trait::Dkg<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            PolynomialCommitment = crypto::bls12_381::common::PolynomialCommitment,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
         > + Clone,
 {
     /// Create a new DKG protocol handler with access to app state
@@ -55,9 +55,9 @@ where
 impl<D> ProtocolHandler for DkgProtocolHandler<D>
 where
     D: crypto::r#trait::Dkg<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            PolynomialCommitment = crypto::bls12_381::common::PolynomialCommitment,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
         > + Clone
         + Send
         + Sync

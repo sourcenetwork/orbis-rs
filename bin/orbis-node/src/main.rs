@@ -33,15 +33,8 @@ use network::{Network, Router};
 use std::{net::SocketAddr, sync::Arc};
 // Concrete crypto implementations
 use constants::MIN_NODE_BALANCE;
-use crypto::bls12_381::dkg::DKGNode;
-use crypto::bls12_381::pre::ThresholdDealerNode;
-use crypto::bls12_381::sign::ThresholdBlsSigner;
+use crypto::{DkgImpl, PreImpl, SignImpl};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-// Type aliases for concrete implementations
-pub type DkgImpl = DKGNode;
-pub type PreImpl = ThresholdDealerNode;
-pub type SignImpl = ThresholdBlsSigner;
 
 use proto::dkg_service::dkg_service_server::DkgServiceServer;
 use proto::info_service::info_service_server::InfoServiceServer;

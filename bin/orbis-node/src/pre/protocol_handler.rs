@@ -32,19 +32,19 @@ where
 
 impl<D, T> PreProtocolHandler<D, T>
 where
-    D: crypto::r#trait::Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+    D: crypto::r#trait::Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
         + Clone
         + Send
         + Sync
         + 'static,
     T: crypto::r#trait::ThresholdDealer<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
             Secret = crypto::r#trait::Secret,
             ReencryptReply = crypto::r#trait::ReencryptReply<
-                ark_bls12_381::Fr,
-                ark_bls12_381::G1Affine,
+                crypto::ScalarField,
+                crypto::GroupAffine,
             >,
             PubPoly = D::PubPoly,
         > + Send
@@ -61,19 +61,19 @@ where
 #[async_trait]
 impl<D, T> ProtocolHandler for PreProtocolHandler<D, T>
 where
-    D: crypto::r#trait::Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+    D: crypto::r#trait::Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
         + Clone
         + Send
         + Sync
         + 'static,
     T: crypto::r#trait::ThresholdDealer<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
             Secret = crypto::r#trait::Secret,
             ReencryptReply = crypto::r#trait::ReencryptReply<
-                ark_bls12_381::Fr,
-                ark_bls12_381::G1Affine,
+                crypto::ScalarField,
+                crypto::GroupAffine,
             >,
             PubPoly = D::PubPoly,
         > + Send
@@ -179,19 +179,19 @@ pub fn create_router_with_pre_handler<D, T>(
     app_state: Arc<AppState<D>>,
 ) -> NetworkResult<Box<dyn Router>>
 where
-    D: crypto::r#trait::Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+    D: crypto::r#trait::Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
         + Clone
         + Send
         + Sync
         + 'static,
     T: crypto::r#trait::ThresholdDealer<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
             Secret = crypto::r#trait::Secret,
             ReencryptReply = crypto::r#trait::ReencryptReply<
-                ark_bls12_381::Fr,
-                ark_bls12_381::G1Affine,
+                crypto::ScalarField,
+                crypto::GroupAffine,
             >,
             PubPoly = D::PubPoly,
         > + Send

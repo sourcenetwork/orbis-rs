@@ -16,16 +16,16 @@ use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_sel
 use crate::pre::error::{PreError, Result};
 use crate::pre::messages::PreMessage;
 use crate::pre::service::validate_pre_claims;
-use ark_bls12_381::{Fr, G1Affine};
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
 use authz::sourcehub::AccessCheckRequest;
 use bulletin::r#trait::{DocumentPayload, RingPayload};
-use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{
     DistKeyShare, Dkg, EncryptionProof, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
 };
+use crypto::PreImpl as ThresholdDealerNode;
 use crypto::{CryptoDeserialize, CryptoSerialize};
+use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::LocalStorage;
 use network::Message as NetworkMessage;
 use network::REENCRYPT;

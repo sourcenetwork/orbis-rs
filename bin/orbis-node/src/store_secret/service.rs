@@ -5,9 +5,9 @@ use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
-use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{CryptoDeserialize, Dkg, EncryptionProof, Secret, ThresholdDealer};
+use crypto::PreImpl as ThresholdDealerNode;
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
 };
@@ -46,18 +46,18 @@ where
 #[tonic::async_trait]
 impl<D, S> StoreSecretService for StoreSecretServiceImpl<D, S>
 where
-    D: Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+    D: Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
         + Clone
         + Send
         + Sync
         + 'static,
     S: crypto::r#trait::ThresholdSigner<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
             PubPoly = D::PubPoly,
-            Signature = crypto::bls12_381::common::G2Point,
-            SigShare = crypto::r#trait::PubShare<crypto::bls12_381::common::G2Point>,
+            Signature = crypto::SignaturePoint,
+            SigShare = crypto::r#trait::PubShare<crypto::SignaturePoint>,
         > + Send
         + Sync
         + 'static,
@@ -273,7 +273,7 @@ fn validate_encrypted_document<D>(
     policy_metadata: Vec<u8>,
 ) -> Result<Secret, StoreSecretError>
 where
-    D: Dkg<PublicKey = ark_bls12_381::G1Affine>,
+    D: Dkg<PublicKey = crypto::GroupAffine>,
 {
     // 1. Parse the encrypted document as a Secret struct
     let secret: Secret = serde_json::from_str(encrypted_document).map_err(|e| {

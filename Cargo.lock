@@ -3936,7 +3936,6 @@ dependencies = [
  "anyhow",
  "ark-bls12-381",
  "ark-ec",
- "ark-serialize",
  "ark-std",
  "async-trait",
  "authn",

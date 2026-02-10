@@ -24,13 +24,16 @@ use crate::dkg::service::validate_dkg_claims;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase};
 use crate::helpers::helpers::is_self_peer_id;
 use crate::metrics;
-use ark_bls12_381::{Fr, G1Affine};
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use bulletin::r#trait::RingPayload;
-use crypto::bls12_381::common::{PolynomialCommitment, FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE};
 use crypto::r#trait::DistributedShare;
 use crypto::r#trait::Dkg;
 use crypto::{CryptoDeserialize, CryptoSerialize};
+use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
+use crypto::{
+    PolynomialCommitmentImpl as PolynomialCommitment, GROUP_POINT_SIZE as G1_COMPRESSED_SIZE,
+    SCALAR_SIZE as FR_COMPRESSED_SIZE,
+};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::Message as NetworkMessage;
 use network::DKG;

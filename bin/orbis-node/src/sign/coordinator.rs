@@ -15,12 +15,12 @@ use crate::constants::{BULLETIN_RING_NAMESPACE, PEER_RESPONSE_TIMEOUT};
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::sign::error::{Result, SignError};
 use crate::sign::messages::SignMessage;
-use ark_bls12_381::{Fr, G1Affine};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
-use crypto::bls12_381::common::G2Point;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ThresholdSigner,
 };
+use crypto::SignaturePoint as G2Point;
+use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::LocalStorage;
 use network::Message as NetworkMessage;
 use network::SIGN;

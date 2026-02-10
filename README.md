@@ -93,10 +93,12 @@ cargo build --no-default-features --features=<alternative>
 | `local-storage` | `redb` | `RedbStorage` | Persistent embedded DB (redb) | Yes |
 | `local-storage` | `memory` | `MemoryStorage` | In-memory HashMap (testing only) | No |
 | `network` | `iroh` | `IrohNetwork` | QUIC-based P2P (iroh) | Yes |
-| `crypto` | `bls` | `Bls12381Impl` | BLS12-381 curve | Yes |
+| `crypto` | `bls12-381` | `DKG, PRE, SIGN` | BLS12-381 curve | Yes |
+| `crypto` | `decaf377` | `DKG, PRE, SIGN` |  Decaf377 curve | No |
 | `authz` | `sourcehub` | `SourceHubAuth` | SourceHub authorization | Yes |
 | `authz` | `dummy` | `DummyAuthZ` | Permissive (testing only) | No |
-| `bulletin` | *TBD* | *TBD* | Bulletin board backends | - |
+| `bulletin` | `sourcehub` | `SourceHubBulletin` | Bulletin board backends | Yes |
+| `bulletin` | `dummy` | `DummyBulletin` | Permissive (testing only) | No |
 
 ### Example: Switching Storage Backend
 

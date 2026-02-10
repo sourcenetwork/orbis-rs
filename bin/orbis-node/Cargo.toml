@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 network = { path = "../../crates/network" }
-crypto = { path = "../../crates/crypto" }
+crypto = { path = "../../crates/crypto", default-features = false }
 local-storage = { path = "../../crates/local-storage", default-features = false }
 proto = { path = "../../crates/proto" }
 authn = { path = "../../crates/authn" }
@@ -24,8 +24,6 @@ thiserror = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-ark-serialize = "0.4"
-ark-bls12-381 = "0.4"
 rand = "0.9.2"
 getrandom = "0.2"
 base64 = "0.22.1"
@@ -47,6 +45,7 @@ hyper-util = { workspace = true }
 
 [dev-dependencies]
 serial_test = "3.2.0"
+ark-bls12-381 = "0.4"
 ark-ec = "0.4"
 ark-std = "0.4"
 rand_core = "0.6"
@@ -55,7 +54,9 @@ tokio-stream = "0.1"
 cli-tool = { path = "../cli-tool" }
 
 [features]
-default = ["local-storage/redb"]
+default = ["local-storage/redb", "bls12-381"]
+bls12-381 = ["crypto/bls12-381"]
+decaf377 = ["crypto/decaf377"]
 redb = ["local-storage/redb"]
 memory = ["local-storage/memory"]
 integration-test = ["cli-tool"]
