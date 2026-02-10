@@ -293,9 +293,8 @@ where
             .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;
 
         // 8. Serialize the reply components using trait methods
-        let share_bytes = CryptoSerialize::to_bytes(&reply.share.v).map_err(|e| {
-            PreError::Serialization(format!("Failed to serialize share: {}", e))
-        })?;
+        let share_bytes = CryptoSerialize::to_bytes(&reply.share.v)
+            .map_err(|e| PreError::Serialization(format!("Failed to serialize share: {}", e)))?;
 
         let challenge_bytes = CryptoSerialize::to_bytes(&reply.challenge).map_err(|e| {
             PreError::Serialization(format!("Failed to serialize challenge: {}", e))
@@ -757,9 +756,8 @@ where
             .ok_or_else(|| PreError::RecoveryFailed("Recovery returned None".to_string()))?;
 
         // 10. Serialize xnc_cmt to bytes then hex using trait method
-        let xnc_cmt_bytes = CryptoSerialize::to_bytes(&xnc_cmt).map_err(|e| {
-            PreError::Serialization(format!("Failed to serialize xnc_cmt: {}", e))
-        })?;
+        let xnc_cmt_bytes = CryptoSerialize::to_bytes(&xnc_cmt)
+            .map_err(|e| PreError::Serialization(format!("Failed to serialize xnc_cmt: {}", e)))?;
         let xnc_cmt_hex = hex::encode(&xnc_cmt_bytes);
 
         // 11. Deserialize secret from bytes (use cloned version)

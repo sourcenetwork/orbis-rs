@@ -11,8 +11,8 @@ use crate::helpers::test_helpers::{
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::DkgServiceImpl;
 use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, RingPayload};
-use crypto::{DkgImpl, SignImpl};
 use crypto::r#trait::{CryptoDeserialize, Dkg, ThresholdSigner};
+use crypto::{DkgImpl, SignImpl};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};

@@ -21,10 +21,13 @@ COPY bin ./bin
 
 # Build argument to conditionally enable integration-test feature
 ARG ENABLE_INTEGRATION_TEST=false
+# Build argument to select crypto implementation: bls12-381 (default) or decaf377
+ARG CRYPTO_FEATURE=bls12-381
 
-# Build release binary, conditionally with integration-test feature
+# Build release binary. With integration-test: use CRYPTO_FEATURE and no default features.
 RUN if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then \
-        cargo build --release --bin orbis-node --features integration-test; \
+        cargo build --release --bin orbis-node --no-default-features \
+            --features "redb,integration-test,${CRYPTO_FEATURE}"; \
     else \
         cargo build --release --bin orbis-node; \
     fi

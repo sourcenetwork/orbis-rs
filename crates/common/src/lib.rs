@@ -1,5 +1,6 @@
 pub mod blockchain;
 
+use std::env;
 use std::process::Command;
 use std::time::Duration;
 
@@ -116,7 +117,13 @@ pub struct NodeInfo {
     pub public_address: String,
 }
 
-/// Integration test network that spins up sourcehub + 3 orbis nodes via Docker Compose
+/// Integration test network that spins up sourcehub + 3 orbis nodes via Docker Compose.
+///
+/// The node image is built with the crypto implementation selected by the
+/// `ORBIS_INTEGRATION_CRYPTO` env var (e.g. `bls12-381` or `decaf377`). When that var is set,
+/// `docker compose up` is run with `--build` so the image matches. When unset, default is
+/// bls12-381. Run the test with the same feature so host and containers match, e.g.:
+/// `ORBIS_INTEGRATION_CRYPTO=decaf377 cargo test test_cli_calls_dkg_and_pre_endpoint --no-default-features --features integration-test,decaf377`
 pub struct IntegrationTestNetwork {
     compose_file: String,
 }
@@ -135,9 +142,16 @@ impl IntegrationTestNetwork {
     pub fn new() -> Self {
         let compose_file = INTEGRATION_TEST_COMPOSE_FILE.to_string();
 
-        // Start the containers
+        // When ORBIS_INTEGRATION_CRYPTO is set (e.g. decaf377), pass --build so the node
+        // image is built with that crypto feature; otherwise existing images are used.
+        let use_build = env::var("ORBIS_INTEGRATION_CRYPTO").is_ok();
+        let mut args = vec!["compose", "-f", &compose_file, "up", "-d"];
+        if use_build {
+            args.push("--build");
+        }
+
         let status = Command::new("docker")
-            .args(["compose", "-f", &compose_file, "up", "-d"])
+            .args(&args)
             .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..")
             .status()
             .expect("Failed to start docker compose");

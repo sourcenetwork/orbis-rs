@@ -725,9 +725,8 @@ mod cli_tool_integration {
         // Verify the threshold signature against the ring public key
         // The signature was created over the serialized BulletinPost
         let signature_bytes = hex::decode(&signature_hex).expect("decode signature hex");
-        let signature =
-            <SignImpl as ThresholdSigner>::Signature::from_bytes(&signature_bytes)
-                .expect("deserialize signature");
+        let signature = <SignImpl as ThresholdSigner>::Signature::from_bytes(&signature_bytes)
+            .expect("deserialize signature");
 
         let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
         let ring_pk = GroupAffine::from_bytes(&ring_pk_bytes).expect("deserialize ring public key");

@@ -236,6 +236,13 @@ RUST_LOG=debug cargo run -p orbis-node
 
 # Docker 3 node network (for testing only)
 docker compose -f docker/docker-compose.3-node.yml up
+
+# With default impl
+docker compose -f docker/docker-compose-integration-test.yml build
+
+# Docker for integration test with different impl
+ORBIS_INTEGRATION_CRYPTO=decaf377 docker compose -f docker/docker-compose-integration-test.yml build
+
 ```
 
 ## Documentation

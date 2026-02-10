@@ -32,7 +32,6 @@ const TEST_SHARED_POINT: &str = "test-shared-point";
 const TEST_CHALLENGE: &str = "test-challenge";
 const TEST_RESPONSE: &str = "test-response";
 
-
 /// A valid hex-encoded group point for testing (curve-specific generator).
 /// This is computed at runtime using the selected curve's generator.
 fn test_ring_pk_hex() -> String {

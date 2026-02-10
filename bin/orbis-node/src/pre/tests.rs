@@ -11,9 +11,9 @@ use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::pre::service::PreServiceImpl;
 use crate::DkgServiceImpl;
 use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, RingPayload};
-use crypto::{DkgImpl, PreImpl};
 use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, EncryptionProof, ThresholdDealer};
+use crypto::{DkgImpl, PreImpl};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest};
 use std::sync::Arc;
@@ -184,12 +184,12 @@ async fn test_dkg_then_pre_end_to_end() {
     println!("  - Bob's public key: {:?}", bob_pk);
 
     // Serialize Bob's public key using trait method
-    let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk)
-        .expect("Failed to serialize Bob's public key");
+    let bob_pk_bytes =
+        CryptoSerialize::to_bytes(&bob_pk).expect("Failed to serialize Bob's public key");
 
     // Serialize the ring (DKG) public key using trait method
-    let ring_pk_bytes = CryptoSerialize::to_bytes(&aggregate_pk)
-        .expect("Failed to serialize ring public key");
+    let ring_pk_bytes =
+        CryptoSerialize::to_bytes(&aggregate_pk).expect("Failed to serialize ring public key");
 
     // =========================================================================
     // Step 5: Initiate PRE to re-encrypt to Bob's public key

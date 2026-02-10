@@ -389,14 +389,13 @@ where
                             .with_state(&session_id, |state| {
                                 let mut bytes = Vec::new();
                                 for coeff in &state.node.commitment().coefficients {
-                                    let coeff_bytes = CryptoSerialize::to_bytes(coeff).map_err(
-                                        |e| {
+                                    let coeff_bytes =
+                                        CryptoSerialize::to_bytes(coeff).map_err(|e| {
                                             DkgError::Serialization(format!(
                                                 "Failed to serialize commitment: {}",
                                                 e
                                             ))
-                                        },
-                                    )?;
+                                        })?;
                                     bytes.extend_from_slice(&coeff_bytes);
                                 }
                                 Ok::<_, DkgError>((bytes, state.node.node_id()))
@@ -730,13 +729,12 @@ where
                 // Serialize commitment
                 let mut bytes = Vec::new();
                 for coeff in &state.node.commitment().coefficients {
-                    let coeff_bytes =
-                        CryptoSerialize::to_bytes(coeff).map_err(|e| {
-                            DkgError::Serialization(format!(
-                                "Failed to serialize commitment coefficient: {}",
-                                e
-                            ))
-                        })?;
+                    let coeff_bytes = CryptoSerialize::to_bytes(coeff).map_err(|e| {
+                        DkgError::Serialization(format!(
+                            "Failed to serialize commitment coefficient: {}",
+                            e
+                        ))
+                    })?;
                     bytes.extend_from_slice(&coeff_bytes);
                 }
 
