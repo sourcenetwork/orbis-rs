@@ -2,8 +2,13 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use crypto::r#trait::{EncryptionProof, PubShare, ThresholdDealer};
 
+#[cfg(feature = "bls12-381")]
 #[path = "bls12_381/pre.rs"]
 mod bls12_381_pre;
+
+#[cfg(feature = "decaf377")]
+#[path = "decaf377/pre.rs"]
+mod decaf377_pre;
 
 // ---------------------------------------------------------------------------
 // Generic benchmark infrastructure
@@ -240,11 +245,14 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Benchmark registration
+// Benchmark registration (one curve per build; features are mutually exclusive)
 // ---------------------------------------------------------------------------
-fn bls12_381_benchmarks(c: &mut Criterion) {
+fn run_all_pre_benchmarks(c: &mut Criterion) {
+    #[cfg(feature = "bls12-381")]
     run_pre_benchmarks::<bls12_381_pre::Bls12381Bench>(c, "bls12_381");
+    #[cfg(feature = "decaf377")]
+    run_pre_benchmarks::<decaf377_pre::Decaf377Bench>(c, "decaf377");
 }
 
-criterion_group!(benches, bls12_381_benchmarks);
+criterion_group!(benches, run_all_pre_benchmarks);
 criterion_main!(benches);

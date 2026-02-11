@@ -233,6 +233,11 @@ cargo bench --package crypto --features test-helpers --bench dkg_benchmarks
 ```
 replace dkg_benchmarks with pre, or sign
 
+To Run a different impl
+```bash
+cargo bench --package crypto --no-default-features --features "test-helpers,decaf377" --bench dkg_benchmarks
+```
+
 To save a named baseline (useful for comparing branches):
 
 ```bash
