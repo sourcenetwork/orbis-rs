@@ -76,6 +76,12 @@ pub const MAX_PRE_RESPONSES: usize = 1000;
 /// many concurrent signing operations while maintaining reasonable memory usage.
 pub const MAX_SIGN_RESPONSES: usize = 1000;
 
+/// Maximum number of pending FROST nonce states
+///
+/// Nonce states are held on responder nodes between FROST Round 1 (nonce generation)
+/// and Round 2 (signing). This limit prevents unbounded memory growth.
+pub const MAX_NONCE_STATES: usize = 1000;
+
 // ============================================================================
 // Peer ID Validation Constants
 // ============================================================================

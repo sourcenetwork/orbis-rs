@@ -58,6 +58,10 @@ pub enum SignError {
     #[error("Invalid state: {0}")]
     InvalidState(String),
 
+    /// Nonce state error (FROST nonce management)
+    #[error("Nonce state error: {0}")]
+    NonceState(String),
+
     /// Protocol error (violations of protocol rules)
     #[error("Protocol error: {0}")]
     ProtocolError(String),

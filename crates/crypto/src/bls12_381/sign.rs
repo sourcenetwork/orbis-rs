@@ -30,12 +30,16 @@ const BLS_SIG_DOMAIN: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 pub struct ThresholdBlsSigner;
 
 impl ThresholdSigner for ThresholdBlsSigner {
+    const INTERACTIVE: bool = false;
+
     type ShareValue = Fr;
     type Signature = G2Point;
     type PublicKey = G1Affine;
     type PubPoly = PubPoly;
     type DistKeyShare = DistKeyShare<Fr>;
     type SigShare = PubShare<G2Point>;
+    type NonceCommitment = ();
+    type SigningState = ();
 
     fn new() -> Self {
         ThresholdBlsSigner
@@ -49,7 +53,21 @@ impl ThresholdSigner for ThresholdBlsSigner {
         hash_to_g2(msg)
     }
 
-    fn sign(&self, dist_key_share: &Self::DistKeyShare, msg: &[u8]) -> Result<Self::SigShare> {
+    fn generate_nonces(
+        &self,
+        _dist_key_share: &Self::DistKeyShare,
+    ) -> Result<(Self::NonceCommitment, Self::SigningState)> {
+        Ok(((), ()))
+    }
+
+    fn sign(
+        &self,
+        dist_key_share: &Self::DistKeyShare,
+        msg: &[u8],
+        _pub_poly: &Self::PubPoly,
+        _signing_state: Option<&Self::SigningState>,
+        _all_commitments: &[(u32, Self::NonceCommitment)],
+    ) -> Result<Self::SigShare> {
         let idx = dist_key_share.pri_share.i;
         let ski = dist_key_share.pri_share.v;
 
@@ -75,6 +93,7 @@ impl ThresholdSigner for ThresholdBlsSigner {
         msg: &[u8],
         pub_poly: &Self::PubPoly,
         sig_share: &Self::SigShare,
+        _all_commitments: &[(u32, Self::NonceCommitment)],
     ) -> Result<()> {
         // Get the public key share for this index
         let pk_share = pub_poly.eval(sig_share.i);
@@ -118,6 +137,8 @@ impl ThresholdSigner for ThresholdBlsSigner {
         shares: &[Self::SigShare],
         t: usize,
         n: usize,
+        _msg: &[u8],
+        _all_commitments: &[(u32, Self::NonceCommitment)],
     ) -> Result<Option<Self::Signature>> {
         // Validate parameters
         if t == 0 {

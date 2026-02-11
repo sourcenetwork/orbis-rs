@@ -117,7 +117,7 @@ where
             DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
             PubPoly = D::PubPoly,
             Signature = crypto::SignaturePoint,
-            SigShare = crypto::r#trait::PubShare<crypto::SignaturePoint>,
+            SigShare = crypto::r#trait::PubShare<crypto::SigShareInner>,
         > + Send
         + Sync
         + 'static,

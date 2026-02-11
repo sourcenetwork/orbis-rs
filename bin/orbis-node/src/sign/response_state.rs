@@ -4,7 +4,7 @@
 //! When a sign request is initiated, responses are collected from multiple nodes
 //! and stored here until the threshold is met.
 
-use crate::constants::MAX_SIGN_RESPONSES;
+use crate::constants::{MAX_NONCE_STATES, MAX_SIGN_RESPONSES};
 use crate::sign::messages::SignMessage;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -22,15 +22,22 @@ pub struct SignResponseEntry {
 /// Manages the collection of signature share responses from multiple nodes.
 /// Each sign request gets a unique request_id and collects responses
 /// until the threshold is met.
+///
+/// Also holds FROST nonce signing state on the responder side between
+/// Round 1 (nonce generation) and Round 2 (signing). Nonce state entries
+/// are consumed on read to prevent nonce reuse.
 pub struct SignResponseManager {
     /// request_id -> response entry
     states: Arc<RwLock<HashMap<String, SignResponseEntry>>>,
+    /// request_id -> serialized signing state bytes (FROST only, responder side)
+    nonce_states: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
 
 impl SignResponseManager {
     pub fn new() -> Self {
         Self {
             states: Arc::new(RwLock::new(HashMap::new())),
+            nonce_states: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -106,6 +113,40 @@ impl SignResponseManager {
     pub async fn pending_count(&self) -> usize {
         let responses = self.states.read().await;
         responses.len()
+    }
+
+    // ========================================================================
+    // Nonce state methods (FROST responder side)
+    // ========================================================================
+
+    /// Store signing state bytes for a request.
+    /// Returns false if the limit is exceeded or the key already exists.
+    pub async fn store_nonce(&self, request_id: String, bytes: Vec<u8>) -> bool {
+        let mut states = self.nonce_states.write().await;
+        if states.len() >= MAX_NONCE_STATES {
+            tracing::error!(
+                pending = states.len(),
+                max = MAX_NONCE_STATES,
+                "Nonce state limit exceeded"
+            );
+            return false;
+        }
+        if states.contains_key(&request_id) {
+            tracing::warn!(
+                request_id = %request_id,
+                "Nonce state already exists for request_id"
+            );
+            return false;
+        }
+        states.insert(request_id, bytes);
+        true
+    }
+
+    /// Take (consume) signing state bytes for a request.
+    /// Returns None if not found. Removes the entry to prevent nonce reuse.
+    pub async fn take_nonce(&self, request_id: &str) -> Option<Vec<u8>> {
+        let mut states = self.nonce_states.write().await;
+        states.remove(request_id)
     }
 }
 

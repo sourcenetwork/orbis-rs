@@ -30,9 +30,11 @@ pub use bls12_381::dkg::DKGNode as DkgImpl;
 pub use bls12_381::pre::ThresholdDealerNode as PreImpl;
 #[cfg(feature = "bls12-381")]
 pub use bls12_381::sign::ThresholdBlsSigner as SignImpl;
+#[cfg(feature = "bls12-381")]
+pub use bls12_381::common::G2Point as SigShareInner;
 
 #[cfg(feature = "decaf377")]
-pub use ::decaf377::{Element as GroupAffine, Element as SignaturePoint, Fr as ScalarField};
+pub use ::decaf377::{Element as GroupAffine, Fr as ScalarField};
 #[cfg(feature = "decaf377")]
 pub use decaf377::common::{
     PolynomialCommitment as PolynomialCommitmentImpl, PubPoly as PubPolyImpl,
@@ -44,6 +46,10 @@ pub use decaf377::dkg::DKGNode as DkgImpl;
 pub use decaf377::pre::ThresholdDealerNode as PreImpl;
 #[cfg(feature = "decaf377")]
 pub use decaf377::sign::ThresholdDecafSigner as SignImpl;
+#[cfg(feature = "decaf377")]
+pub use ::decaf377::Fr as SigShareInner;
+#[cfg(feature = "decaf377")]
+pub use decaf377::sign::SchnorrSignature as SignaturePoint;
 
 pub use r#trait::{CryptoDeserialize, CryptoSerialize};
 
