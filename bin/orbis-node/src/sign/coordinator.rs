@@ -264,14 +264,9 @@ where
                         request_id
                     ))
                 })?;
-            Some(
-                <S::SigningState>::from_bytes(&state_bytes).map_err(|e| {
-                    SignError::Deserialization(format!(
-                        "Failed to deserialize signing state: {}",
-                        e
-                    ))
-                })?,
-            )
+            Some(<S::SigningState>::from_bytes(&state_bytes).map_err(|e| {
+                SignError::Deserialization(format!("Failed to deserialize signing state: {}", e))
+            })?)
         } else {
             None
         };
@@ -528,14 +523,8 @@ where
         // ROUND 1 (FROST only): Collect nonce commitments
         // =====================================================================
         let (all_commitments, local_signing_state) = if S::INTERACTIVE {
-            self.collect_nonces(
-                &request_id,
-                &ring_pk_bytes,
-                peer_ids,
-                node_id,
-                self_in_list,
-            )
-            .await?
+            self.collect_nonces(&request_id, &ring_pk_bytes, peer_ids, node_id, self_in_list)
+                .await?
         } else {
             (Vec::new(), None)
         };
@@ -677,13 +666,9 @@ where
                 }
 
                 // Deserialize signature share using SigShareInner
-                let sig_share_v =
-                    SigShareInner::from_bytes(&sig_share_bytes[..]).map_err(|e| {
-                        SignError::Deserialization(format!(
-                            "Failed to deserialize sig_share: {}",
-                            e
-                        ))
-                    })?;
+                let sig_share_v = SigShareInner::from_bytes(&sig_share_bytes[..]).map_err(|e| {
+                    SignError::Deserialization(format!("Failed to deserialize sig_share: {}", e))
+                })?;
 
                 let sig_share = PubShare {
                     i: from_node_id,
@@ -767,10 +752,7 @@ where
         peer_ids: &[String],
         node_id: u32,
         self_in_list: bool,
-    ) -> Result<(
-        Vec<(u32, S::NonceCommitment)>,
-        Option<S::SigningState>,
-    )> {
+    ) -> Result<(Vec<(u32, S::NonceCommitment)>, Option<S::SigningState>)> {
         let nonce_request_id = format!("nonce-{}", request_id);
         let mut all_commitments: Vec<(u32, S::NonceCommitment)> = Vec::new();
         let mut local_signing_state: Option<S::SigningState> = None;
@@ -787,9 +769,8 @@ where
                 if let Ok(pri_share) = PriShare::<D::ShareValue>::from_bytes(&final_share_bytes) {
                     let dist_key_share = DistKeyShare { pri_share };
                     let signer = S::new();
-                    let (commitment, state) = signer
-                        .generate_nonces(&dist_key_share)
-                        .map_err(|e| {
+                    let (commitment, state) =
+                        signer.generate_nonces(&dist_key_share).map_err(|e| {
                             SignError::Crypto(format!("Local nonce generation failed: {}", e))
                         })?;
                     all_commitments.push((node_id, commitment));
@@ -967,7 +948,6 @@ where
 
         Ok((ring_payload.ring_pk, pub_poly))
     }
-
 }
 
 // ============================================================================
@@ -1035,9 +1015,7 @@ fn deserialize_commitments<S: ThresholdSigner>(
         let commitment_len = u32::from_le_bytes(
             bytes[offset..offset + 4]
                 .try_into()
-                .map_err(|_| {
-                    SignError::Deserialization("Invalid commitment length".to_string())
-                })?,
+                .map_err(|_| SignError::Deserialization("Invalid commitment length".to_string()))?,
         ) as usize;
         offset += 4;
 
@@ -1047,15 +1025,10 @@ fn deserialize_commitments<S: ThresholdSigner>(
             ));
         }
 
-        let commitment =
-            <S::NonceCommitment>::from_bytes(&bytes[offset..offset + commitment_len]).map_err(
-                |e| {
-                    SignError::Deserialization(format!(
-                        "Failed to deserialize commitment: {}",
-                        e
-                    ))
-                },
-            )?;
+        let commitment = <S::NonceCommitment>::from_bytes(&bytes[offset..offset + commitment_len])
+            .map_err(|e| {
+                SignError::Deserialization(format!("Failed to deserialize commitment: {}", e))
+            })?;
         offset += commitment_len;
 
         commitments.push((id, commitment));

@@ -77,9 +77,7 @@ fn test_verify_fails_with_wrong_message() {
 
     // Sign one message
 
-    let pub_poly = PubPoly {
-        commits: vec![pk],
-    };
+    let pub_poly = PubPoly { commits: vec![pk] };
     let sig_share = signer
         .sign(&dist_key_share, b"original message", &pub_poly, None, &[])
         .unwrap();
@@ -106,11 +104,8 @@ fn test_verify_fails_with_wrong_key() {
         pri_share: PriShare { i: 1, v: sk },
     };
 
-
     let pk: G1Affine = (G1Projective::generator() * sk).into();
-    let pub_poly = PubPoly {
-        commits: vec![pk],
-    };
+    let pub_poly = PubPoly { commits: vec![pk] };
     let sig_share = signer
         .sign(&dist_key_share, msg, &pub_poly, None, &[])
         .unwrap();
@@ -313,10 +308,7 @@ fn test_empty_message() {
         pri_share: PriShare { i: 1, v: sk },
     };
 
-
-    let pub_poly = PubPoly {
-        commits: vec![pk],
-    };
+    let pub_poly = PubPoly { commits: vec![pk] };
     let sig_share = signer
         .sign(&dist_key_share, msg, &pub_poly, None, &[])
         .unwrap();
@@ -337,10 +329,7 @@ fn test_large_message() {
         pri_share: PriShare { i: 1, v: sk },
     };
 
-
-    let pub_poly = PubPoly {
-        commits: vec![pk],
-    };
+    let pub_poly = PubPoly { commits: vec![pk] };
     let sig_share = signer
         .sign(&dist_key_share, &msg, &pub_poly, None, &[])
         .unwrap();

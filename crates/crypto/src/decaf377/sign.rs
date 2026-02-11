@@ -96,8 +96,7 @@ impl CryptoDeserialize for FrostNonceCommitment {
             return Err(CryptoError::InvalidSignatureShare);
         }
         let hiding = Element::deserialize_compressed(&bytes[..ELEMENT_COMPRESSED_SIZE])?;
-        let binding =
-            Element::deserialize_compressed(&bytes[ELEMENT_COMPRESSED_SIZE..expected])?;
+        let binding = Element::deserialize_compressed(&bytes[ELEMENT_COMPRESSED_SIZE..expected])?;
         Ok(Self { hiding, binding })
     }
 }
@@ -135,10 +134,8 @@ impl CryptoDeserialize for FrostSigningState {
                 .try_into()
                 .map_err(|_| CryptoError::InvalidSignatureShare)?,
         );
-        let hiding_nonce =
-            Fr::deserialize_compressed(&bytes[4..4 + FR_COMPRESSED_SIZE])?;
-        let binding_nonce =
-            Fr::deserialize_compressed(&bytes[4 + FR_COMPRESSED_SIZE..expected])?;
+        let hiding_nonce = Fr::deserialize_compressed(&bytes[4..4 + FR_COMPRESSED_SIZE])?;
+        let binding_nonce = Fr::deserialize_compressed(&bytes[4 + FR_COMPRESSED_SIZE..expected])?;
         Ok(Self {
             hiding_nonce,
             binding_nonce,
@@ -238,9 +235,7 @@ fn lagrange_coefficient(idx: u32, participant_ids: &[u32]) -> Result<Fr> {
         den *= xj - xi;
     }
 
-    let den_inv = den
-        .inverse()
-        .ok_or(CryptoError::InvalidSignatureShare)?;
+    let den_inv = den.inverse().ok_or(CryptoError::InvalidSignatureShare)?;
 
     Ok(num * den_inv)
 }
@@ -320,8 +315,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         signing_state: Option<&Self::SigningState>,
         all_commitments: &[(u32, Self::NonceCommitment)],
     ) -> Result<Self::SigShare> {
-        let signing_state =
-            signing_state.ok_or_else(|| CryptoError::InvalidSignatureShare)?;
+        let signing_state = signing_state.ok_or_else(|| CryptoError::InvalidSignatureShare)?;
 
         let idx = dist_key_share.pri_share.i;
         let s_i = dist_key_share.pri_share.v;
@@ -351,9 +345,8 @@ impl ThresholdSigner for ThresholdDecafSigner {
         let lambda_i = lagrange_coefficient(idx, &participant_ids)?;
 
         // Partial signature: z_i = d_i + rho_i * e_i + lambda_i * s_i * c
-        let z_i = signing_state.hiding_nonce
-            + rho_i * signing_state.binding_nonce
-            + lambda_i * s_i * c;
+        let z_i =
+            signing_state.hiding_nonce + rho_i * signing_state.binding_nonce + lambda_i * s_i * c;
 
         Ok(PubShare { i: idx, v: z_i })
     }
@@ -430,12 +423,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         Ok(Some(SchnorrSignature { r_point, z }))
     }
 
-    fn verify(
-        &self,
-        pk: &Self::PublicKey,
-        msg: &[u8],
-        sig: &Self::Signature,
-    ) -> Result<()> {
+    fn verify(&self, pk: &Self::PublicKey, msg: &[u8], sig: &Self::Signature) -> Result<()> {
         // Verify: z * G == R + c * Y
         let c = compute_challenge(&sig.r_point, pk, msg)?;
         let lhs = Element::GENERATOR * sig.z;

@@ -39,8 +39,10 @@ fn test_frost_full_flow_3_of_5() {
     let participants: Vec<_> = secret_shares.iter().take(t).collect();
 
     // Round 1: Generate nonces
-    let mut commitments: Vec<(u32, <ThresholdDecafSigner as ThresholdSigner>::NonceCommitment)> =
-        Vec::new();
+    let mut commitments: Vec<(
+        u32,
+        <ThresholdDecafSigner as ThresholdSigner>::NonceCommitment,
+    )> = Vec::new();
     let mut signing_states = Vec::new();
 
     for share in &participants {
@@ -191,13 +193,7 @@ fn test_frost_tampered_share_rejected() {
         pri_share: participants[0].clone(),
     };
     let mut sig_share = signer
-        .sign(
-            &dks,
-            msg,
-            &pub_poly,
-            Some(&signing_states[0]),
-            &commitments,
-        )
+        .sign(&dks, msg, &pub_poly, Some(&signing_states[0]), &commitments)
         .unwrap();
 
     // Tamper with the share
@@ -256,11 +252,9 @@ fn test_frost_single_key_threshold_1() {
         .sign(&dks, msg, &pub_poly, Some(&state), &commitments)
         .unwrap();
 
-    assert!(
-        signer
-            .verify_share(msg, &pub_poly, &sig_share, &commitments)
-            .is_ok()
-    );
+    assert!(signer
+        .verify_share(msg, &pub_poly, &sig_share, &commitments)
+        .is_ok());
 
     let sig = signer
         .recover(&[sig_share], t, n, msg, &commitments)
