@@ -15,7 +15,9 @@
 //! commitment round is performed before the signing round.
 
 use crate::app_state::AppState;
-use crate::constants::{BULLETIN_RING_NAMESPACE, PEER_RESPONSE_TIMEOUT};
+use crate::constants::{
+    BULLETIN_RING_NAMESPACE, MAX_COMMITMENT_COEFFICIENTS, PEER_RESPONSE_TIMEOUT,
+};
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::sign::error::{Result, SignError};
 use crate::sign::messages::SignMessage;
@@ -823,24 +825,25 @@ where
             }
         }
 
-        // Collect nonce responses
+        // Collect nonce responses and always cleanup, even on error
         let nonce_responses = self
             .app_state
             .sign_response_state
             .get_responses(&nonce_request_id)
-            .await
-            .ok_or_else(|| {
-                SignError::Timeout(format!(
-                    "No nonce responses found for request {}",
-                    nonce_request_id
-                ))
-            })?;
+            .await;
 
-        // Cleanup nonce response state
+        // Cleanup nonce response state before any fallible operations
         self.app_state
             .sign_response_state
             .remove_response(&nonce_request_id)
             .await;
+
+        let nonce_responses = nonce_responses.ok_or_else(|| {
+            SignError::Timeout(format!(
+                "No nonce responses found for request {}",
+                nonce_request_id
+            ))
+        })?;
 
         for response in nonce_responses {
             if let SignMessage::NonceResponse {
@@ -972,6 +975,18 @@ fn serialize_commitments<S: ThresholdSigner>(
     Ok(bytes)
 }
 
+/// Maximum number of commitments in a single deserialized batch.
+/// Matches MAX_COMMITMENT_COEFFICIENTS since the number of signers
+/// can never exceed the polynomial degree bound.
+const MAX_COMMITMENTS: usize = MAX_COMMITMENT_COEFFICIENTS;
+
+/// Maximum byte size for a single serialized nonce commitment.
+/// Two compressed group elements should never exceed this.
+const MAX_COMMITMENT_SIZE: usize = 1024;
+
+/// Minimum bytes per commitment item: 4 (node_id) + 4 (length) + 1 (min payload).
+const MIN_ITEM_SIZE: usize = 9;
+
 /// Deserialize a list of (node_id, commitment) pairs from bytes
 fn deserialize_commitments<S: ThresholdSigner>(
     bytes: &[u8],
@@ -992,11 +1007,27 @@ fn deserialize_commitments<S: ThresholdSigner>(
             .map_err(|_| SignError::Deserialization("Invalid commitment count".to_string()))?,
     ) as usize;
 
-    let mut offset = 4;
+    if count > MAX_COMMITMENTS {
+        return Err(SignError::Deserialization(format!(
+            "Commitment count {} exceeds maximum {}",
+            count, MAX_COMMITMENTS
+        )));
+    }
+
+    // Verify the payload can physically hold `count` items
+    let remaining = bytes.len() - 4;
+    if count > remaining / MIN_ITEM_SIZE {
+        return Err(SignError::Deserialization(format!(
+            "Commitment count {} exceeds what fits in {} remaining bytes",
+            count, remaining
+        )));
+    }
+
+    let mut offset = 4usize;
     let mut commitments = Vec::with_capacity(count);
 
     for _ in 0..count {
-        if offset + 8 > bytes.len() {
+        if offset.checked_add(8).map_or(true, |end| end > bytes.len()) {
             return Err(SignError::Deserialization(
                 "Commitment bytes truncated".to_string(),
             ));
@@ -1016,7 +1047,17 @@ fn deserialize_commitments<S: ThresholdSigner>(
         ) as usize;
         offset += 4;
 
-        if offset + commitment_len > bytes.len() {
+        if commitment_len > MAX_COMMITMENT_SIZE {
+            return Err(SignError::Deserialization(format!(
+                "Commitment length {} exceeds maximum {}",
+                commitment_len, MAX_COMMITMENT_SIZE
+            )));
+        }
+
+        if offset
+            .checked_add(commitment_len)
+            .map_or(true, |end| end > bytes.len())
+        {
             return Err(SignError::Deserialization(
                 "Commitment data truncated".to_string(),
             ));
@@ -1029,6 +1070,14 @@ fn deserialize_commitments<S: ThresholdSigner>(
         offset += commitment_len;
 
         commitments.push((id, commitment));
+    }
+
+    if offset != bytes.len() {
+        return Err(SignError::Deserialization(format!(
+            "Trailing bytes: consumed {} of {} bytes",
+            offset,
+            bytes.len()
+        )));
     }
 
     Ok(commitments)

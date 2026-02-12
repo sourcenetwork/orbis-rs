@@ -10,7 +10,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
-use ark_ff::One;
+use ark_ff::{One, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{collections::HashSet, vec::Vec};
 use decaf377::{Element, Fr};
@@ -163,14 +163,29 @@ impl ThresholdDealer for ThresholdDealerNode {
         // all deserialized points are in the prime-order group.
 
         let mut rng = OsRng;
-        // Generate random r
-        let r = Fr::rand(&mut rng);
+        // Generate random non-zero r to avoid identity commitment and fixed AES key
+        let r = loop {
+            let candidate = Fr::rand(&mut rng);
+            if candidate != Fr::zero() {
+                break candidate;
+            }
+        };
         let enc_cmt = Element::GENERATOR * r; // rG
 
         // Compute derived public key if derivation is provided
         let (effective_pk, derived_pk_bytes) = if let Some(deriv_bytes) = derivation {
             let d = Self::derive_capability_scalar(deriv_bytes);
+            if d == Fr::zero() {
+                return Err(CryptoError::ElGamalError(
+                    "Derivation produced zero scalar: use different derivation bytes".to_string(),
+                ));
+            }
             let derived_pk = *dkg_pk * d;
+            if derived_pk == Element::default() {
+                return Err(CryptoError::ElGamalError(
+                    "Derived public key is the identity element".to_string(),
+                ));
+            }
             let mut bytes = Vec::new();
             derived_pk.serialize_compressed(&mut bytes)?;
             (derived_pk, Some(bytes))

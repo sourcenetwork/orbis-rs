@@ -223,6 +223,13 @@ impl Dkg for DKGNode {
     }
 
     fn compute_secret_share(&self) -> Result<PriShare<Self::ShareValue>> {
+        // Verify local polynomial was generated
+        if self.polynomial_coeffs.is_empty() {
+            return Err(CryptoError::DKGError(
+                "Local polynomial not generated: call generate_polynomial before compute_secret_share".to_string(),
+            ));
+        }
+
         // Verify we have received shares from all OTHER nodes
         if self.received_shares.len() != self.total_nodes - 1 {
             return Err(CryptoError::DKGError(format!(
@@ -246,6 +253,13 @@ impl Dkg for DKGNode {
     }
 
     fn compute_aggregate_public_key(&self) -> Result<Self::PublicKey> {
+        // Verify local commitment was generated
+        if self.commitment.coefficients.is_empty() {
+            return Err(CryptoError::DKGError(
+                "Local commitment not generated: call generate_polynomial before compute_aggregate_public_key".to_string(),
+            ));
+        }
+
         // Verify we have received commitments from all OTHER nodes
         if self.received_commitments.len() != self.total_nodes - 1 {
             return Err(CryptoError::DKGError(format!(
@@ -278,6 +292,13 @@ impl Dkg for DKGNode {
     }
 
     fn compute_public_polynomial(&self) -> Result<Self::PubPoly> {
+        // Verify local commitment was generated
+        if self.commitment.coefficients.is_empty() {
+            return Err(CryptoError::DKGError(
+                "Local commitment not generated: call generate_polynomial before compute_public_polynomial".to_string(),
+            ));
+        }
+
         // Verify we have received commitments from all OTHER nodes
         if self.received_commitments.len() != self.total_nodes - 1 {
             return Err(CryptoError::DKGError(format!(
