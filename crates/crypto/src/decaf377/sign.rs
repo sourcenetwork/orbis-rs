@@ -60,7 +60,7 @@ impl CryptoSerialize for SchnorrSignature {
 impl CryptoDeserialize for SchnorrSignature {
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let expected = ELEMENT_COMPRESSED_SIZE + FR_COMPRESSED_SIZE;
-        if bytes.len() < expected {
+        if bytes.len() != expected {
             return Err(CryptoError::InvalidSignature);
         }
         let r_point = Element::deserialize_compressed(&bytes[..ELEMENT_COMPRESSED_SIZE])?;
@@ -92,7 +92,7 @@ impl CryptoSerialize for FrostNonceCommitment {
 impl CryptoDeserialize for FrostNonceCommitment {
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let expected = 2 * ELEMENT_COMPRESSED_SIZE;
-        if bytes.len() < expected {
+        if bytes.len() != expected {
             return Err(CryptoError::InvalidSignatureShare);
         }
         let hiding = Element::deserialize_compressed(&bytes[..ELEMENT_COMPRESSED_SIZE])?;
@@ -126,7 +126,7 @@ impl CryptoSerialize for FrostSigningState {
 impl CryptoDeserialize for FrostSigningState {
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let expected = 4 + 2 * FR_COMPRESSED_SIZE;
-        if bytes.len() < expected {
+        if bytes.len() != expected {
             return Err(CryptoError::InvalidSignatureShare);
         }
         let participant_index = u32::from_le_bytes(

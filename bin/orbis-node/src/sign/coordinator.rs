@@ -16,7 +16,8 @@
 
 use crate::app_state::AppState;
 use crate::constants::{
-    BULLETIN_RING_NAMESPACE, MAX_COMMITMENT_COEFFICIENTS, PEER_RESPONSE_TIMEOUT,
+    BULLETIN_RING_NAMESPACE, MAX_COMMITMENTS, MAX_COMMITMENT_COEFFICIENTS, MAX_COMMITMENT_SIZE,
+    MIN_ITEM_SIZE, PEER_RESPONSE_TIMEOUT,
 };
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::sign::error::{Result, SignError};
@@ -974,18 +975,6 @@ fn serialize_commitments<S: ThresholdSigner>(
     }
     Ok(bytes)
 }
-
-/// Maximum number of commitments in a single deserialized batch.
-/// Matches MAX_COMMITMENT_COEFFICIENTS since the number of signers
-/// can never exceed the polynomial degree bound.
-const MAX_COMMITMENTS: usize = MAX_COMMITMENT_COEFFICIENTS;
-
-/// Maximum byte size for a single serialized nonce commitment.
-/// Two compressed group elements should never exceed this.
-const MAX_COMMITMENT_SIZE: usize = 1024;
-
-/// Minimum bytes per commitment item: 4 (node_id) + 4 (length) + 1 (min payload).
-const MIN_ITEM_SIZE: usize = 9;
 
 /// Deserialize a list of (node_id, commitment) pairs from bytes
 fn deserialize_commitments<S: ThresholdSigner>(
