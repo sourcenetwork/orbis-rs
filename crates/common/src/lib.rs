@@ -142,13 +142,30 @@ impl IntegrationTestNetwork {
     pub fn new() -> Self {
         let compose_file = INTEGRATION_TEST_COMPOSE_FILE.to_string();
 
-        // When ORBIS_INTEGRATION_CRYPTO is set (e.g. decaf377), pass --build so the node
-        // image is built with that crypto feature; otherwise existing images are used.
-        let use_build = env::var("ORBIS_INTEGRATION_CRYPTO").is_ok();
-        let mut args = vec!["compose", "-f", &compose_file, "up", "-d"];
-        if use_build {
-            args.push("--build");
+        // Derive the crypto feature from compile-time cfg so the docker image
+        // always matches the test binary. An explicit ORBIS_INTEGRATION_CRYPTO
+        // env var overrides the compile-time default.
+        let crypto_feature = if env::var("ORBIS_INTEGRATION_CRYPTO").is_ok() {
+            // Honour explicit override (already in env for docker-compose)
+            None
+        } else {
+            // Set env var from compile-time feature so docker-compose picks it up
+            #[cfg(feature = "bls12-381")]
+            {
+                Some("bls12-381")
+            }
+            #[cfg(feature = "decaf377")]
+            {
+                Some("decaf377")
+            }
+        };
+
+        if let Some(feat) = crypto_feature {
+            env::set_var("ORBIS_INTEGRATION_CRYPTO", feat);
         }
+
+        // Always rebuild so the node image matches the selected crypto feature
+        let args = vec!["compose", "-f", &compose_file, "up", "-d", "--build"];
 
         let status = Command::new("docker")
             .args(&args)
