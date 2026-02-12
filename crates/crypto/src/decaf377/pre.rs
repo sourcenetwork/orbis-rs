@@ -76,6 +76,15 @@ impl ThresholdDealer for ThresholdDealerNode {
         // Compute derivation scalar if provided
         let derivation_scalar = derivation.map(Self::derive_capability_scalar);
 
+        // Reject zero derivation scalar (same as encrypt_secret)
+        if let Some(ref d) = derivation_scalar {
+            if *d == Fr::zero() {
+                return Err(CryptoError::ElGamalError(
+                    "Derivation produced zero scalar: use different derivation bytes".to_string(),
+                ));
+            }
+        }
+
         // Compute re-encrypted share with optional derivation
         let (xnc_ski, chlgi, proofi) =
             Self::reencrypt_internal(idx, &ski, rdr_pk, &enc_cmt, derivation_scalar)?;

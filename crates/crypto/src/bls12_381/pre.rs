@@ -78,6 +78,15 @@ impl ThresholdDealer for ThresholdDealerNode {
         // d = H(DERIVATION_DOMAIN || derivation)
         let derivation_scalar = derivation.map(Self::derive_capability_scalar);
 
+        // Reject zero derivation scalar (same as encrypt_secret)
+        if let Some(ref d) = derivation_scalar {
+            if *d == Fr::zero() {
+                return Err(CryptoError::ElGamalError(
+                    "Derivation produced zero scalar: use different derivation bytes".to_string(),
+                ));
+            }
+        }
+
         // Compute re-encrypted share with optional derivation
         // If wrong derivation is provided, decryption will fail at user level
         // (AES-GCM auth failure). Attacker cannot brute-force without reader's private key.

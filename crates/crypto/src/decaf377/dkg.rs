@@ -136,6 +136,19 @@ impl Dkg for DKGNode {
     }
 
     fn receive_share(&mut self, share: DistributedShare<Self::ShareValue>) -> Result<()> {
+        // Validate from_id is in the expected participant set (1..=total_nodes, not self)
+        if share.from_id == 0 || share.from_id > self.total_nodes as u32 {
+            return Err(CryptoError::DKGError(format!(
+                "Invalid from_id: {} (must be between 1 and {})",
+                share.from_id, self.total_nodes
+            )));
+        }
+        if share.from_id == self.id {
+            return Err(CryptoError::DKGError(
+                "Invalid from_id: cannot receive share from self".to_string(),
+            ));
+        }
+
         // Verify the share is intended for us
         if share.to_id != self.id {
             return Err(CryptoError::DKGError(
