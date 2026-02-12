@@ -1,5 +1,6 @@
 pub mod blockchain;
 
+use std::env;
 use std::process::Command;
 use std::time::Duration;
 
@@ -116,7 +117,13 @@ pub struct NodeInfo {
     pub public_address: String,
 }
 
-/// Integration test network that spins up sourcehub + 3 orbis nodes via Docker Compose
+/// Integration test network that spins up sourcehub + 3 orbis nodes via Docker Compose.
+///
+/// The node image is built with the crypto implementation selected by the
+/// `ORBIS_INTEGRATION_CRYPTO` env var (e.g. `bls12-381` or `decaf377`). When that var is set,
+/// `docker compose up` is run with `--build` so the image matches. When unset, default is
+/// bls12-381. Run the test with the same feature so host and containers match, e.g.:
+/// `ORBIS_INTEGRATION_CRYPTO=decaf377 cargo test test_cli_calls_dkg_and_pre_endpoint --no-default-features --features integration-test,decaf377`
 pub struct IntegrationTestNetwork {
     compose_file: String,
 }
@@ -135,9 +142,33 @@ impl IntegrationTestNetwork {
     pub fn new() -> Self {
         let compose_file = INTEGRATION_TEST_COMPOSE_FILE.to_string();
 
-        // Start the containers
+        // Derive the crypto feature from compile-time cfg so the docker image
+        // always matches the test binary. An explicit ORBIS_INTEGRATION_CRYPTO
+        // env var overrides the compile-time default.
+        let crypto_feature = if env::var("ORBIS_INTEGRATION_CRYPTO").is_ok() {
+            // Honour explicit override (already in env for docker-compose)
+            None
+        } else {
+            // Set env var from compile-time feature so docker-compose picks it up
+            #[cfg(feature = "bls12-381")]
+            {
+                Some("bls12-381")
+            }
+            #[cfg(feature = "decaf377")]
+            {
+                Some("decaf377")
+            }
+        };
+
+        if let Some(feat) = crypto_feature {
+            env::set_var("ORBIS_INTEGRATION_CRYPTO", feat);
+        }
+
+        // Always rebuild so the node image matches the selected crypto feature
+        let args = vec!["compose", "-f", &compose_file, "up", "-d", "--build"];
+
         let status = Command::new("docker")
-            .args(["compose", "-f", &compose_file, "up", "-d"])
+            .args(&args)
             .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..")
             .status()
             .expect("Failed to start docker compose");

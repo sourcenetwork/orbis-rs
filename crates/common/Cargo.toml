@@ -28,5 +28,9 @@ rand = { workspace = true }
 backoff = { version = "0.4", features = ["tokio"] }
 futures = { workspace = true }
 
+[features]
+bls12-381 = []
+decaf377 = []
+
 [dev-dependencies]
 serial_test = "3.2.0"

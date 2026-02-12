@@ -93,10 +93,12 @@ cargo build --no-default-features --features=<alternative>
 | `local-storage` | `redb` | `RedbStorage` | Persistent embedded DB (redb) | Yes |
 | `local-storage` | `memory` | `MemoryStorage` | In-memory HashMap (testing only) | No |
 | `network` | `iroh` | `IrohNetwork` | QUIC-based P2P (iroh) | Yes |
-| `crypto` | `bls` | `Bls12381Impl` | BLS12-381 curve | Yes |
+| `crypto` | `bls12-381` | `DKG, PRE, SIGN` | BLS12-381 curve | Yes |
+| `crypto` | `decaf377` | `DKG, PRE, SIGN` |  Decaf377 curve | No |
 | `authz` | `sourcehub` | `SourceHubAuth` | SourceHub authorization | Yes |
 | `authz` | `dummy` | `DummyAuthZ` | Permissive (testing only) | No |
-| `bulletin` | *TBD* | *TBD* | Bulletin board backends | - |
+| `bulletin` | `sourcehub` | `SourceHubBulletin` | Bulletin board backends | Yes |
+| `bulletin` | `dummy` | `DummyBulletin` | Permissive (testing only) | No |
 
 ### Example: Switching Storage Backend
 
@@ -226,6 +228,9 @@ cargo test -p crypto
 cargo test -p network
 cargo test -p local-storage
 
+# Run tests for a different impl
+cargo test --no-default-features --features=decaf377,redb
+
 # Check compilation
 cargo check
 
@@ -234,6 +239,13 @@ RUST_LOG=debug cargo run -p orbis-node
 
 # Docker 3 node network (for testing only)
 docker compose -f docker/docker-compose.3-node.yml up
+
+# With default impl
+docker compose -f docker/docker-compose-integration-test.yml build
+
+# Docker for integration test with different impl
+ORBIS_INTEGRATION_CRYPTO=decaf377 docker compose -f docker/docker-compose-integration-test.yml build
+
 ```
 
 ## Documentation

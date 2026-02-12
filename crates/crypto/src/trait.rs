@@ -384,6 +384,26 @@ impl<
     }
 }
 
+// ============================================================================
+// CryptoSerialize/CryptoDeserialize for unit type (used by non-interactive schemes)
+// ============================================================================
+
+impl CryptoSerialize for () {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
+
+    fn serialized_size() -> usize {
+        0
+    }
+}
+
+impl CryptoDeserialize for () {
+    fn from_bytes(_bytes: &[u8]) -> Result<Self> {
+        Ok(())
+    }
+}
+
 pub trait PubPoly: Clone + Debug + Send + Sync + CryptoSerialize + CryptoDeserialize {
     type PublicKey: CryptoSerialize + CryptoDeserialize;
     /// Evaluate the public polynomial at index i
@@ -618,6 +638,9 @@ pub trait ThresholdDealer {
 }
 
 pub trait ThresholdSigner {
+    /// Whether this scheme requires interactive nonce commitment rounds (FROST = true, BLS = false)
+    const INTERACTIVE: bool;
+
     /// Scalar field (Fr for BLS12-381)
     type ShareValue;
 
@@ -636,17 +659,36 @@ pub trait ThresholdSigner {
     /// Signature share type
     type SigShare;
 
+    /// Nonce commitment broadcast in Round 1 (BLS: `()`, FROST: nonce pair)
+    type NonceCommitment: CryptoSerialize + CryptoDeserialize + Clone + Send + Sync;
+
+    /// Secret state held between Round 1 and Round 2 (BLS: `()`, FROST: secret nonces)
+    type SigningState: CryptoSerialize + CryptoDeserialize + Send + Sync;
+
     /// Construct a new signer
     fn new() -> Self;
 
     /// Domain-separated name for the protocol
     fn name(&self) -> &str;
 
-    /// Hash a message to the signing group
+    /// Hash a message to the signing group (BLS only; FROST returns Err)
     fn hash_message(&self, msg: &[u8]) -> Result<Self::Signature>;
 
+    /// Generate nonce commitments and secret signing state for Round 1
+    fn generate_nonces(
+        &self,
+        dist_key_share: &Self::DistKeyShare,
+    ) -> Result<(Self::NonceCommitment, Self::SigningState)>;
+
     /// Locally sign a message using a DKG share
-    fn sign(&self, dist_key_share: &Self::DistKeyShare, msg: &[u8]) -> Result<Self::SigShare>;
+    fn sign(
+        &self,
+        dist_key_share: &Self::DistKeyShare,
+        msg: &[u8],
+        pub_poly: &Self::PubPoly,
+        signing_state: Option<&Self::SigningState>,
+        all_commitments: &[(u32, Self::NonceCommitment)],
+    ) -> Result<Self::SigShare>;
 
     /// Verify a single signature share against the DKG commitments
     fn verify_share(
@@ -654,6 +696,7 @@ pub trait ThresholdSigner {
         msg: &[u8],
         pub_poly: &Self::PubPoly,
         sig_share: &Self::SigShare,
+        all_commitments: &[(u32, Self::NonceCommitment)],
     ) -> Result<()>;
 
     /// Recover a full signature from shares
@@ -662,6 +705,8 @@ pub trait ThresholdSigner {
         shares: &[Self::SigShare],
         t: usize,
         n: usize,
+        msg: &[u8],
+        all_commitments: &[(u32, Self::NonceCommitment)],
     ) -> Result<Option<Self::Signature>>;
 
     /// Verify the final signature

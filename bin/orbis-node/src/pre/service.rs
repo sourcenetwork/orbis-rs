@@ -44,17 +44,17 @@ where
 #[tonic::async_trait]
 impl<D, T> PreService for PreServiceImpl<D, T>
 where
-    D: Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+    D: Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
         + Clone
         + Send
         + Sync
         + 'static,
     T: ThresholdDealer<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            DistKeyShare = DistKeyShare<ark_bls12_381::Fr>,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = DistKeyShare<crypto::ScalarField>,
             Secret = Secret,
-            ReencryptReply = ReencryptReply<ark_bls12_381::Fr, ark_bls12_381::G1Affine>,
+            ReencryptReply = ReencryptReply<crypto::ScalarField, crypto::GroupAffine>,
             PubPoly = D::PubPoly,
         > + Send
         + Sync

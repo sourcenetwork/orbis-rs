@@ -10,17 +10,16 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
-use ark_bls12_381::{Fr, G1Affine, G1Projective};
-use ark_ec::{AffineRepr, Group};
-use ark_ff::{Field, One, PrimeField, Zero};
+use ark_ff::{One, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::{collections::HashSet, vec::Vec, UniformRand};
+use ark_std::{collections::HashSet, vec::Vec};
+use decaf377::{Element, Fr};
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-const NAME: &str = "elgamal/bls12_381";
+const NAME: &str = "elgamal/decaf377";
 
 const ENCRYPT_PROOF_DOMAIN: &[u8; 24] = b"elgamal-encrypt-proof-v1";
 const PROTOCOL: &[u8; 30] = b"elgamal-reencrypt-challenge-v1";
@@ -32,7 +31,7 @@ pub struct ThresholdDealerNode {}
 
 impl ThresholdDealer for ThresholdDealerNode {
     type ShareValue = Fr;
-    type PublicKey = G1Affine;
+    type PublicKey = Element;
     type PubPoly = PubPoly;
     type DistKeyShare = DistKeyShare<Self::ShareValue>;
     type Secret = Secret;
@@ -75,7 +74,6 @@ impl ThresholdDealer for ThresholdDealerNode {
         let enc_cmt = Self::decompress_point(&scrt.enc_cmt)?;
 
         // Compute derivation scalar if provided
-        // d = H(DERIVATION_DOMAIN || derivation)
         let derivation_scalar = derivation.map(Self::derive_capability_scalar);
 
         // Reject zero derivation scalar (same as encrypt_secret)
@@ -88,8 +86,6 @@ impl ThresholdDealer for ThresholdDealerNode {
         }
 
         // Compute re-encrypted share with optional derivation
-        // If wrong derivation is provided, decryption will fail at user level
-        // (AES-GCM auth failure). Attacker cannot brute-force without reader's private key.
         let (xnc_ski, chlgi, proofi) =
             Self::reencrypt_internal(idx, &ski, rdr_pk, &enc_cmt, derivation_scalar)?;
 
@@ -99,6 +95,7 @@ impl ThresholdDealer for ThresholdDealerNode {
             proof: proofi,
         })
     }
+
     fn verify(
         &self,
         rdr_pk: &Self::PublicKey,
@@ -112,11 +109,9 @@ impl ThresholdDealer for ThresholdDealerNode {
         let dkg_cmt_eval = dkg_cmt.eval(idx);
 
         // If derivation is provided, apply it to the commitment for verification
-        // The node computed xnc_ski = (d * ski) * (xG + rG), so we need to verify
-        // against d * (ski * G) = d * dkg_cmt_eval
         let effective_cmt = if let Some(deriv_bytes) = derivation {
             let d = Self::derive_capability_scalar(deriv_bytes);
-            (G1Projective::from(dkg_cmt_eval) * d).into()
+            dkg_cmt_eval * d
         } else {
             dkg_cmt_eval
         };
@@ -160,6 +155,7 @@ impl ThresholdDealer for ThresholdDealerNode {
 
         Self::recover_commit(xnc_ski, t, n)
     }
+
     fn encrypt_secret(
         dkg_pk: &Self::PublicKey,
         data: &[u8],
@@ -167,30 +163,38 @@ impl ThresholdDealer for ThresholdDealerNode {
         metadata: Option<&[u8]>,
     ) -> Result<(Self::PublicKey, Self::Secret, EncryptionProof)> {
         // Validate dkg_pk is not the identity element
-        if dkg_pk.is_zero() {
+        if *dkg_pk == Element::default() {
             return Err(CryptoError::ElGamalError(
                 "Invalid dkg_pk: cannot be the identity element".to_string(),
             ));
         }
-
-        // Validate dkg_pk is in correct subgroup
-        if !dkg_pk.is_in_correct_subgroup_assuming_on_curve() {
-            return Err(CryptoError::ElGamalError(
-                "Invalid dkg_pk: not in correct subgroup".to_string(),
-            ));
-        }
+        // decaf377: No subgroup check needed — the decaf construction guarantees
+        // all deserialized points are in the prime-order group.
 
         let mut rng = OsRng;
-        // Generate random r
-        let r = Fr::rand(&mut rng);
-        let enc_cmt: G1Affine = (G1Projective::generator() * r).into(); // rG
+        // Generate random non-zero r to avoid identity commitment and fixed AES key
+        let r = loop {
+            let candidate = Fr::rand(&mut rng);
+            if candidate != Fr::zero() {
+                break candidate;
+            }
+        };
+        let enc_cmt = Element::GENERATOR * r; // rG
 
         // Compute derived public key if derivation is provided
-        // derived_pk = d * dkg_pk where d = H(DERIVATION_DOMAIN || derivation)
         let (effective_pk, derived_pk_bytes) = if let Some(deriv_bytes) = derivation {
             let d = Self::derive_capability_scalar(deriv_bytes);
-            let derived_pk: G1Affine = (G1Projective::from(*dkg_pk) * d).into();
-            // Serialize derived_pk for storage in proof (allows verification without derivation)
+            if d == Fr::zero() {
+                return Err(CryptoError::ElGamalError(
+                    "Derivation produced zero scalar: use different derivation bytes".to_string(),
+                ));
+            }
+            let derived_pk = *dkg_pk * d;
+            if derived_pk == Element::default() {
+                return Err(CryptoError::ElGamalError(
+                    "Derived public key is the identity element".to_string(),
+                ));
+            }
             let mut bytes = Vec::new();
             derived_pk.serialize_compressed(&mut bytes)?;
             (derived_pk, Some(bytes))
@@ -198,11 +202,10 @@ impl ThresholdDealer for ThresholdDealerNode {
             (*dkg_pk, None)
         };
 
-        // shared_point = r * effective_pk = r*d*s*G (with derivation) or r*s*G (without)
-        let shared_point: G1Affine = (G1Projective::from(effective_pk) * r).into();
+        // shared_point = r * effective_pk
+        let shared_point = effective_pk * r;
 
         // Generate Chaum-Pedersen NIZK proof
-        // Proves that enc_cmt = r*G and shared_point = r*effective_pk use the same r
         let (challenge, response) =
             Self::generate_encryption_proof(&r, &effective_pk, &enc_cmt, &shared_point, metadata)?;
 
@@ -257,33 +260,6 @@ impl ThresholdDealer for ThresholdDealerNode {
         ))
     }
 
-    /// Verify the Chaum-Pedersen NIZK proof for encryption.
-    ///
-    /// This verifies that `enc_cmt` and `shared_point` (in the proof) share the same
-    /// discrete logarithm relative to G and effective_pk respectively. In other words:
-    ///   enc_cmt = r * G  AND  shared_point = r * effective_pk  for some r
-    ///
-    /// When `proof.derived_pk` is present:
-    ///   effective_pk = derived_pk (the pre-computed d * dkg_pk)
-    /// Otherwise:
-    ///   effective_pk = dkg_pk
-    ///
-    /// This allows verification without knowing the derivation pre-image.
-    ///
-    /// ## What this DOES verify:
-    /// - The mathematical relationship between enc_cmt and shared_point
-    /// - That the encryptor knew the discrete log (randomness r)
-    /// - Point validity (not identity, correct subgroup)
-    ///
-    /// ## What this does NOT verify:
-    /// - That the ciphertext was actually encrypted using shared_point
-    /// - Ciphertext integrity (that's verified at decrypt time via AES-GCM)
-    /// - That derived_pk is actually d * dkg_pk for some valid derivation
-    ///   (the verifier trusts that the encryptor used a valid derivation)
-    ///
-    /// The ciphertext binding is enforced via AAD in AES-GCM: if the wrong
-    /// shared_point was used during encryption, decryption will fail with
-    /// an authentication error.
     fn verify_encryption(
         dkg_pk: &Self::PublicKey,
         enc_cmt: &Self::PublicKey,
@@ -291,32 +267,23 @@ impl ThresholdDealer for ThresholdDealerNode {
         metadata: Option<&[u8]>,
     ) -> Result<()> {
         // Validate enc_cmt from untrusted input
-        if enc_cmt.is_zero() {
+        if *enc_cmt == Element::default() {
             return Err(CryptoError::ElGamalError(
                 "Invalid enc_cmt: cannot be the identity element".to_string(),
             ));
         }
-        if !enc_cmt.is_in_correct_subgroup_assuming_on_curve() {
-            return Err(CryptoError::ElGamalError(
-                "Invalid enc_cmt: not in correct subgroup".to_string(),
-            ));
-        }
+        // decaf377: No subgroup check needed.
 
         // Get effective public key from proof (derived_pk if present, otherwise dkg_pk)
-        let effective_pk: G1Affine = if let Some(ref derived_pk_bytes) = proof.derived_pk {
+        let effective_pk = if let Some(ref derived_pk_bytes) = proof.derived_pk {
             let derived_pk =
-                G1Affine::deserialize_compressed(&derived_pk_bytes[..]).map_err(|e| {
+                Element::deserialize_compressed(&derived_pk_bytes[..]).map_err(|e| {
                     CryptoError::ElGamalError(format!("Failed to deserialize derived_pk: {:?}", e))
                 })?;
             // Validate derived_pk
-            if derived_pk.is_zero() {
+            if derived_pk == Element::default() {
                 return Err(CryptoError::ElGamalError(
                     "Invalid derived_pk: cannot be the identity element".to_string(),
-                ));
-            }
-            if !derived_pk.is_in_correct_subgroup_assuming_on_curve() {
-                return Err(CryptoError::ElGamalError(
-                    "Invalid derived_pk: not in correct subgroup".to_string(),
                 ));
             }
             derived_pk
@@ -326,19 +293,14 @@ impl ThresholdDealer for ThresholdDealerNode {
 
         // Deserialize proof components
         let shared_point =
-            G1Affine::deserialize_compressed(&proof.shared_point[..]).map_err(|e| {
+            Element::deserialize_compressed(&proof.shared_point[..]).map_err(|e| {
                 CryptoError::ElGamalError(format!("Failed to deserialize shared_point: {:?}", e))
             })?;
 
-        // Validate shared_point is not the identity element and is in correct subgroup
-        if shared_point.is_zero() {
+        // Validate shared_point is not the identity element
+        if shared_point == Element::default() {
             return Err(CryptoError::ElGamalError(
                 "Invalid shared_point: cannot be the identity element".to_string(),
-            ));
-        }
-        if !shared_point.is_in_correct_subgroup_assuming_on_curve() {
-            return Err(CryptoError::ElGamalError(
-                "Invalid shared_point: not in correct subgroup".to_string(),
             ));
         }
 
@@ -350,17 +312,13 @@ impl ThresholdDealer for ThresholdDealerNode {
         })?;
 
         // Verify: R1' = s*G - c*enc_cmt
-        let r1_prime: G1Affine = (G1Projective::generator() * response
-            - G1Projective::from(*enc_cmt) * challenge)
-            .into();
+        let r1_prime = Element::GENERATOR * response - *enc_cmt * challenge;
 
         // Verify: R2' = s*effective_pk - c*shared_point
-        let r2_prime: G1Affine = (G1Projective::from(effective_pk) * response
-            - G1Projective::from(shared_point) * challenge)
-            .into();
+        let r2_prime = effective_pk * response - shared_point * challenge;
 
-        // Recompute challenge: c' = Hash(ENCRYPT_PROOF_DOMAIN, G, effective_pk, enc_cmt, shared_point, R1', R2')
-        let g = G1Affine::generator();
+        // Recompute challenge
+        let g = Element::GENERATOR;
         let challenge_hash = Self::hash_encryption_proof_points(
             &g,
             &effective_pk,
@@ -373,7 +331,6 @@ impl ThresholdDealer for ThresholdDealerNode {
         let recomputed_challenge = Fr::from_le_bytes_mod_order(&challenge_hash);
 
         // Compare challenges using constant-time comparison
-        // Fr serializes to exactly 32 bytes for BLS12-381
         let mut challenge_bytes = [0u8; 32];
         let mut recomputed_bytes = [0u8; 32];
         challenge
@@ -391,9 +348,10 @@ impl ThresholdDealer for ThresholdDealerNode {
 
         Ok(())
     }
+
     fn decrypt_secret(
         effective_pk: &Self::PublicKey,
-        xnc_cmt: &Self::PublicKey, // Recovered from re-encryption
+        xnc_cmt: &Self::PublicKey,
         rdr_sk: &Self::ShareValue,
         secret: &Self::Secret,
     ) -> Result<Vec<u8>> {
@@ -415,18 +373,9 @@ impl ThresholdDealer for ThresholdDealerNode {
         }
 
         // Recover shared_point from re-encryption result
-        //
-        // Without derivation:
-        //   xnc_cmt = (x+r)*s*G
-        //   effective_pk = s*G
-        //   shared_point = xnc_cmt - x*effective_pk = r*s*G
-        //
-        // With derivation (d applied at re-encrypt time):
-        //   xnc_cmt = d*(x+r)*s*G
-        //   effective_pk = d*s*G (derived_pk from proof)
-        //   shared_point = xnc_cmt - x*effective_pk = d*r*s*G
-        let xs_g = G1Projective::from(*effective_pk) * rdr_sk; // x * effective_pk
-        let shared_point: G1Affine = (G1Projective::from(*xnc_cmt) - xs_g).into();
+        // shared_point = xnc_cmt - rdr_sk * effective_pk
+        let xs_g = *effective_pk * rdr_sk;
+        let shared_point = *xnc_cmt - xs_g;
 
         // Derive AES key
         let aes_key = Self::derive_key_from_point(&shared_point)?;
@@ -452,7 +401,7 @@ impl ThresholdDealer for ThresholdDealerNode {
 
     fn derive_public_key(dkg_pk: &Self::PublicKey, derivation: &[u8]) -> Result<Self::PublicKey> {
         let d = Self::derive_capability_scalar(derivation);
-        let derived_pk: G1Affine = (G1Projective::from(*dkg_pk) * d).into();
+        let derived_pk = *dkg_pk * d;
         Ok(derived_pk)
     }
 }
@@ -460,17 +409,14 @@ impl ThresholdDealer for ThresholdDealerNode {
 impl ThresholdDealerNode {
     /// Generate a new keypair for encryption/decryption (test-only).
     #[cfg(any(test, feature = "test-helpers"))]
-    pub fn generate_keypair() -> (Fr, G1Affine) {
+    pub fn generate_keypair() -> (Fr, Element) {
         let mut rng = OsRng;
         let sk = Fr::rand(&mut rng);
-        let pk: G1Affine = (G1Projective::generator() * sk).into();
+        let pk = Element::GENERATOR * sk;
         (sk, pk)
     }
 
     /// Derive a capability scalar from derivation bytes.
-    ///
-    /// Uses domain-separated hashing to derive a scalar d = H(DERIVATION_DOMAIN || derivation).
-    /// The scalar is used multiplicatively: derived_pk = d * dkg_pk.
     fn derive_capability_scalar(derivation: &[u8]) -> Fr {
         let mut hasher = Sha256::new();
         hasher.update(DERIVATION_DOMAIN);
@@ -480,76 +426,63 @@ impl ThresholdDealerNode {
     }
 
     /// Decompress a point from bytes and validate it's a valid curve point
-    fn decompress_point(bytes: &[u8]) -> Result<G1Affine> {
-        let point = G1Affine::deserialize_compressed(bytes).map_err(|e| {
+    fn decompress_point(bytes: &[u8]) -> Result<Element> {
+        let point = Element::deserialize_compressed(bytes).map_err(|e| {
             CryptoError::ElGamalError(format!("failed to decompress point: {:?}", e))
         })?;
 
         // Verify point is not the identity element (security check)
-        if point.is_zero() {
+        if point == Element::default() {
             return Err(CryptoError::ElGamalError(
                 "Invalid point: cannot be the identity element".to_string(),
             ));
         }
 
-        // Verify point is in correct subgroup (defense in depth)
-        if !point.is_in_correct_subgroup_assuming_on_curve() {
-            return Err(CryptoError::ElGamalError(
-                "Invalid point: not in correct subgroup".to_string(),
-            ));
-        }
+        // decaf377: No subgroup check needed — the decaf construction guarantees
+        // all deserialized points are in the prime-order group.
 
         Ok(point)
     }
 
     /// Internal re-encryption with optional derivation scalar.
-    ///
-    /// When derivation_scalar is Some(d):
-    ///   xnc_ski = (d * ski) * (xG + rG)
-    /// Otherwise:
-    ///   xnc_ski = ski * (xG + rG)
     fn reencrypt_internal(
         idx: u32,
         dkg_ski: &Fr,
-        rdr_pk: &G1Affine,
-        enc_cmt: &G1Affine,
+        rdr_pk: &Element,
+        enc_cmt: &Element,
         derivation_scalar: Option<Fr>,
-    ) -> Result<(G1Affine, Fr, Fr)> {
-        // Validate inputs are not zero points
-        if rdr_pk.is_zero() {
+    ) -> Result<(Element, Fr, Fr)> {
+        // Validate inputs are not identity points
+        if *rdr_pk == Element::default() {
             return Err(CryptoError::ElGamalError(
                 "Invalid reader public key: cannot be zero point".to_string(),
             ));
         }
-        if enc_cmt.is_zero() {
+        if *enc_cmt == Element::default() {
             return Err(CryptoError::ElGamalError(
                 "Invalid commitment: cannot be zero point".to_string(),
             ));
         }
 
         // Apply derivation scalar if provided
-        // effective_ski = d * ski (with derivation) or ski (without)
         let effective_ski = match derivation_scalar {
             Some(d) => d * dkg_ski,
             None => *dkg_ski,
         };
 
-        // Re-encrypted secret share (Ui)
-        // Ui = effective_ski * (xG + rG)
-        // With derivation: Ui = (d * ski) * (xG + rG)
-        // Without: Ui = ski * (xG + rG)
-        let xr_g = G1Projective::from(*rdr_pk) + G1Projective::from(*enc_cmt); // xrG = xG + rG
-        let xnc_ski = (xr_g * effective_ski).into(); // Ui = effective_ski * (xG + rG)
+        // Re-encrypted secret share: Ui = effective_ski * (xG + rG)
+        let xr_g = *rdr_pk + *enc_cmt;
+        let xnc_ski = xr_g * effective_ski;
 
         // Compute effective commitment for binding into challenge hash
-        let effective_cmt: G1Affine = (G1Projective::generator() * effective_ski).into();
+        let effective_cmt = Element::GENERATOR * effective_ski;
 
-        // Produce random oracle challenge (ei)
+        // Produce random oracle challenge
         // ei = Hash(PROTOCOL, idx, rdr_pk, enc_cmt, effective_cmt, Ui, UiHat, HiHat)
         let mut rng = OsRng;
-        let ri = Fr::rand(&mut rng); // ri = Random scalar
-        let ui_hat = (xr_g * ri).into(); // UiHat = ri * (xG + rG)
-        let hi_hat = (G1Projective::generator() * ri).into(); // HiHat = ri * G
+        let ri = Fr::rand(&mut rng);
+        let ui_hat = xr_g * ri;
+        let hi_hat = Element::GENERATOR * ri;
 
         let challenge_hash = Self::hash_reencrypt_proof_points(
             idx,
@@ -560,42 +493,34 @@ impl ThresholdDealerNode {
         )?;
         let chlgi = Fr::from_le_bytes_mod_order(&challenge_hash);
 
-        // Produce NIZK proof of re-encryption (fi)
-        // fi = ri + ei * effective_ski
+        // Produce NIZK proof: fi = ri + ei * effective_ski
         let proofi = ri + (chlgi * effective_ski);
 
         Ok((xnc_ski, chlgi, proofi))
     }
 
     /// Internal verification of re-encryption proof.
-    ///
-    /// The effective_cmt should be:
-    /// - d * dkg_cmt.eval(idx) if derivation was used
-    /// - dkg_cmt.eval(idx) otherwise
     fn verify_internal(
         idx: u32,
-        rdr_pk: &G1Affine,
-        enc_cmt: &G1Affine,
-        xnc_ski: &G1Affine,
+        rdr_pk: &Element,
+        enc_cmt: &Element,
+        xnc_ski: &Element,
         chlgi: &Fr,
         proofi: &Fr,
-        effective_cmt: &G1Affine,
+        effective_cmt: &Element,
     ) -> Result<()> {
-        // Reconstruct UiHat
-        // UiHat = fi * (xG + rG) - ei * Ui
-        let xr_g = G1Projective::from(*rdr_pk) + G1Projective::from(*enc_cmt); // xG + rG
-        let fi_xr_g = xr_g * proofi; // fi * (xG + rG)
-        let ei_ui = G1Projective::from(*xnc_ski) * chlgi; // ei * Ui
-        let ui_hat = (fi_xr_g - ei_ui).into(); // UiHat = fi * (xG + rG) - ei * Ui
+        // Reconstruct UiHat = fi * (xG + rG) - ei * Ui
+        let xr_g = *rdr_pk + *enc_cmt;
+        let fi_xr_g = xr_g * proofi;
+        let ei_ui = *xnc_ski * chlgi;
+        let ui_hat = fi_xr_g - ei_ui;
 
-        // Reconstruct HiHat
-        // HiHat = fi * G - ei * effective_cmt
-        // effective_cmt = d * (ski * G) if derivation, else ski * G
-        let fi_g = G1Projective::generator() * proofi; // fi * G
-        let ei_ci = G1Projective::from(*effective_cmt) * chlgi; // ei * effective_cmt
-        let hi_hat = (fi_g - ei_ci).into(); // HiHat = fi * G - ei * effective_cmt
+        // Reconstruct HiHat = fi * G - ei * effective_cmt
+        let fi_g = Element::GENERATOR * proofi;
+        let ei_ci = *effective_cmt * chlgi;
+        let hi_hat = fi_g - ei_ci;
 
-        // Reconstruct random oracle challenge (ei)
+        // Reconstruct random oracle challenge
         // ei = Hash(PROTOCOL, idx, rdr_pk, enc_cmt, effective_cmt, Ui, UiHat, HiHat)
         let challenge_hash = Self::hash_reencrypt_proof_points(
             idx,
@@ -606,8 +531,7 @@ impl ThresholdDealerNode {
         )?;
         let chlg = Fr::from_le_bytes_mod_order(&challenge_hash);
 
-        // Verify local challenge using constant-time comparison
-        // Fr serializes to exactly 32 bytes for BLS12-381
+        // Verify using constant-time comparison
         let mut chlg_bytes = [0u8; 32];
         let mut chlgi_bytes = [0u8; 32];
         chlg.serialize_compressed(&mut &mut chlg_bytes[..])
@@ -616,7 +540,6 @@ impl ThresholdDealerNode {
             .serialize_compressed(&mut &mut chlgi_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
 
-        // Constant-time comparison
         if chlg_bytes.ct_ne(&chlgi_bytes).into() {
             return Err(CryptoError::ElGamalError(
                 "Cryptographic verification failed".to_string(),
@@ -626,11 +549,7 @@ impl ThresholdDealerNode {
         Ok(())
     }
 
-    fn recover_commit(
-        shares: &[PubShare<G1Affine>],
-        t: usize,
-        n: usize,
-    ) -> Result<Option<G1Affine>> {
+    fn recover_commit(shares: &[PubShare<Element>], t: usize, n: usize) -> Result<Option<Element>> {
         let shares_to_use = &shares[..t];
 
         // Validate all share indices are distinct
@@ -638,7 +557,6 @@ impl ThresholdDealerNode {
         for share in shares_to_use {
             let idx = share.i;
 
-            // Validate index is in valid range [1, n]
             if idx < 1 || idx > n as u32 {
                 return Err(CryptoError::ElGamalError(format!(
                     "Invalid share index: {} (must be in range [1, {}])",
@@ -646,7 +564,6 @@ impl ThresholdDealerNode {
                 )));
             }
 
-            // Check for duplicates
             if !seen_indices.insert(idx) {
                 return Err(CryptoError::ElGamalError(format!(
                     "Duplicate share index: {}",
@@ -655,7 +572,7 @@ impl ThresholdDealerNode {
             }
         }
 
-        let mut result = G1Projective::zero();
+        let mut result = Element::default();
 
         for (i, share_i) in shares_to_use.iter().enumerate() {
             let mut num = Fr::one();
@@ -671,18 +588,16 @@ impl ThresholdDealerNode {
                 }
             }
 
-            // At this point, we've validated indices are distinct, so den should never be zero
-            // But we still check for safety
             let lambda = num
-            * den.inverse().ok_or_else(|| {
-                CryptoError::ElGamalError(
-                    "Division by zero in Lagrange interpolation - this should not happen after validation".to_string(),
-                )
-            })?;
-            result += G1Projective::from(share_i.v) * lambda;
+                * den.inverse().ok_or_else(|| {
+                    CryptoError::ElGamalError(
+                        "Division by zero in Lagrange interpolation - this should not happen after validation".to_string(),
+                    )
+                })?;
+            result += share_i.v * lambda;
         }
 
-        Ok(Some(result.into()))
+        Ok(Some(result))
     }
 
     /// Hash re-encryption proof with all public inputs bound into the challenge.
@@ -693,10 +608,10 @@ impl ThresholdDealerNode {
     /// ciphertexts, readers, DKG sessions, or share indices.
     fn hash_reencrypt_proof_points(
         idx: u32,
-        rdr_pk: &G1Affine,
-        enc_cmt: &G1Affine,
-        effective_cmt: &G1Affine,
-        proof_points: &[G1Affine],
+        rdr_pk: &Element,
+        enc_cmt: &Element,
+        effective_cmt: &Element,
+        proof_points: &[Element],
     ) -> Result<[u8; 32]> {
         let mut hasher = Sha256::new();
 
@@ -707,8 +622,8 @@ impl ThresholdDealerNode {
         hasher.update(&idx.to_le_bytes());
 
         // Serialize and hash all public inputs then proof points
-        // Compressed G1 points are 48 bytes
-        let mut bytes = Vec::with_capacity(48);
+        // Compressed decaf377 points are 32 bytes
+        let mut bytes = Vec::with_capacity(32);
         for point in [rdr_pk, enc_cmt, effective_cmt] {
             bytes.clear();
             point.serialize_compressed(&mut bytes)?;
@@ -728,15 +643,6 @@ impl ThresholdDealerNode {
     }
 
     /// Build AAD (Additional Authenticated Data) for AES-GCM encryption/decryption.
-    ///
-    /// AAD format: H(AAD_DOMAIN || enc_cmt || shared_point)
-    ///
-    /// This binds the ciphertext to both the ElGamal commitment and the shared point,
-    /// ensuring that:
-    /// 1. The ciphertext cannot be transplanted to a different commitment
-    /// 2. The shared_point used for key derivation matches what's in the proof
-    ///
-    /// Using a hash ensures consistent length and provides domain separation.
     fn build_aad(enc_cmt_bytes: &[u8], shared_point_bytes: &[u8]) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(AAD_DOMAIN);
@@ -749,7 +655,7 @@ impl ThresholdDealerNode {
     }
 
     /// Derive AES key from elliptic curve point
-    pub fn derive_key_from_point(point: &G1Affine) -> Result<[u8; 32]> {
+    pub fn derive_key_from_point(point: &Element) -> Result<[u8; 32]> {
         let mut point_bytes = Vec::new();
         point.serialize_compressed(&mut point_bytes)?;
 
@@ -762,12 +668,11 @@ impl ThresholdDealerNode {
     }
 
     /// Generate Chaum-Pedersen NIZK proof for encryption
-    /// Proves that enc_cmt = r*G and shared_point = r*dkg_pk use the same randomness r
     fn generate_encryption_proof(
         r: &Fr,
-        dkg_pk: &G1Affine,
-        enc_cmt: &G1Affine,
-        shared_point: &G1Affine,
+        dkg_pk: &Element,
+        enc_cmt: &Element,
+        shared_point: &Element,
         metadata: Option<&[u8]>,
     ) -> Result<(Fr, Fr)> {
         let mut rng = OsRng;
@@ -776,11 +681,11 @@ impl ThresholdDealerNode {
         let k = Fr::rand(&mut rng);
 
         // 2. R1 = k * G, R2 = k * dkg_pk
-        let r1: G1Affine = (G1Projective::generator() * k).into();
-        let r2: G1Affine = (G1Projective::from(*dkg_pk) * k).into();
+        let r1 = Element::GENERATOR * k;
+        let r2 = *dkg_pk * k;
 
         // 3. c = Hash(ENCRYPT_PROOF_DOMAIN, G, dkg_pk, enc_cmt, shared_point, R1, R2)
-        let g = G1Affine::generator();
+        let g = Element::GENERATOR;
         let challenge_hash = Self::hash_encryption_proof_points(
             &g,
             dkg_pk,
@@ -795,18 +700,17 @@ impl ThresholdDealerNode {
         // 4. s = k + c * r
         let s = k + (c * r);
 
-        // 5. Output: (c, s)
         Ok((c, s))
     }
 
     /// Hash points for encryption proof with domain separation
     fn hash_encryption_proof_points(
-        g: &G1Affine,
-        dkg_pk: &G1Affine,
-        enc_cmt: &G1Affine,
-        shared_point: &G1Affine,
-        r1: &G1Affine,
-        r2: &G1Affine,
+        g: &Element,
+        dkg_pk: &Element,
+        enc_cmt: &Element,
+        shared_point: &Element,
+        r1: &Element,
+        r2: &Element,
         metadata_option: Option<&[u8]>,
     ) -> Result<[u8; 32]> {
         let mut hasher = Sha256::new();
@@ -819,8 +723,8 @@ impl ThresholdDealerNode {
             hasher.update(metadata);
         }
 
-        // Serialize and hash all points
-        let mut bytes = Vec::with_capacity(48);
+        // Serialize and hash all points (32 bytes each for decaf377)
+        let mut bytes = Vec::with_capacity(32);
         for point in &[g, dkg_pk, enc_cmt, shared_point, r1, r2] {
             bytes.clear();
             point.serialize_compressed(&mut bytes)?;

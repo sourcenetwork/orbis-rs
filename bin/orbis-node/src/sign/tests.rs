@@ -11,16 +11,11 @@ use crate::helpers::test_helpers::{
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::DkgServiceImpl;
 use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, RingPayload};
-use crypto::bls12_381::dkg::DKGNode;
-use crypto::bls12_381::sign::ThresholdBlsSigner;
 use crypto::r#trait::{CryptoDeserialize, Dkg, ThresholdSigner};
+use crypto::{DkgImpl, SignImpl};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
-
-// Type aliases for tests
-type DkgImpl = DKGNode;
-type SignImpl = ThresholdBlsSigner;
 
 /// End-to-end test: DKG → Sign message → Verify signature
 ///

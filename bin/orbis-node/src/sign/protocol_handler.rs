@@ -32,18 +32,18 @@ where
 
 impl<D, S> SignProtocolHandler<D, S>
 where
-    D: crypto::r#trait::Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+    D: crypto::r#trait::Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
         + Clone
         + Send
         + Sync
         + 'static,
     S: crypto::r#trait::ThresholdSigner<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
             PubPoly = D::PubPoly,
-            Signature = crypto::bls12_381::common::G2Point,
-            SigShare = crypto::r#trait::PubShare<crypto::bls12_381::common::G2Point>,
+            Signature = crypto::SignaturePoint,
+            SigShare = crypto::r#trait::PubShare<crypto::SigShareInner>,
         > + Send
         + Sync
         + 'static,
@@ -58,18 +58,18 @@ where
 #[async_trait]
 impl<D, S> ProtocolHandler for SignProtocolHandler<D, S>
 where
-    D: crypto::r#trait::Dkg<ShareValue = ark_bls12_381::Fr, PublicKey = ark_bls12_381::G1Affine>
+    D: crypto::r#trait::Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
         + Clone
         + Send
         + Sync
         + 'static,
     S: crypto::r#trait::ThresholdSigner<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
             PubPoly = D::PubPoly,
-            Signature = crypto::bls12_381::common::G2Point,
-            SigShare = crypto::r#trait::PubShare<crypto::bls12_381::common::G2Point>,
+            Signature = crypto::SignaturePoint,
+            SigShare = crypto::r#trait::PubShare<crypto::SigShareInner>,
         > + Send
         + Sync
         + 'static,
@@ -125,10 +125,16 @@ where
             );
 
             // Special handling for responses - store them for the initiator
-            if let SignMessage::SignResponse { .. } = &sign_message {
+            if matches!(
+                &sign_message,
+                SignMessage::SignResponse { .. } | SignMessage::NonceResponse { .. }
+            ) {
                 self.coordinator.store_response(sign_message).await;
                 continue;
             }
+
+            // Capture request_id before moving sign_message into handle_message
+            let req_id = sign_message.request_id().to_string();
 
             // Route message to coordinator
             match self.coordinator.handle_message(sign_message).await {
@@ -148,9 +154,9 @@ where
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "Sign Protocol: Error handling message");
-                    // Send error response
+                    // Send error response with the actual request_id
                     let error_msg = SignMessage::Error {
-                        request_id: String::from("unknown"),
+                        request_id: req_id,
                         error: e.to_string(),
                     };
                     if let Ok(error_data) = serde_json::to_vec(&error_msg) {

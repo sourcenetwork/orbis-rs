@@ -6,13 +6,12 @@ authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-[features]
-test-helpers = []
 
 [dependencies]
 thiserror = { workspace = true }
 anyhow = { workspace = true }
-ark-bls12-381 = "0.4"
+ark-bls12-381 = { version = "0.4", optional = true }
+decaf377 = { version = "0.10", optional = true }
 ark-ec = "0.4"
 ark-ff = "0.4"
 ark-std = "0.4"
@@ -28,6 +27,12 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+
+[features]
+default = ["bls12-381"]
+test-helpers = []
+bls12-381 = ["dep:ark-bls12-381"]
+decaf377 = ["dep:decaf377"]
 
 [[bench]]
 name = "pre_benchmarks"

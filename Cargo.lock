@@ -159,6 +159,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ark-bls12-377"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb00293ba84f51ce3bd026bd0de55899c4e68f0a39a5728cebae3a73ffdc0a4f"
+dependencies = [
+ "ark-ec",
+ "ark-ff",
+ "ark-std",
+]
+
+[[package]]
 name = "ark-bls12-381"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -185,6 +196,18 @@ dependencies = [
  "itertools 0.10.5",
  "num-traits",
  "zeroize",
+]
+
+[[package]]
+name = "ark-ed-on-bls12-377"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b10d901b9ac4b38f9c32beacedfadcdd64e46f8d7f8e88c1ae1060022cf6f6c6"
+dependencies = [
+ "ark-bls12-377",
+ "ark-ec",
+ "ark-ff",
+ "ark-std",
 ]
 
 [[package]]
@@ -925,9 +948,6 @@ name = "cli-tool"
 version = "0.0.1"
 dependencies = [
  "anyhow",
- "ark-bls12-381",
- "ark-ec",
- "ark-std",
  "authn",
  "authz",
  "bulletin",
@@ -938,7 +958,6 @@ dependencies = [
  "futures",
  "hex",
  "proto",
- "rand_core 0.6.4",
  "serde",
  "serde_json",
  "tokio",
@@ -1204,6 +1223,7 @@ dependencies = [
  "ark-serialize",
  "ark-std",
  "criterion",
+ "decaf377",
  "hkdf 0.12.4",
  "rand 0.8.5",
  "rand_core 0.6.4",
@@ -1386,6 +1406,28 @@ name = "data-encoding"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a2330da5de22e8a3cb63252ce2abb30116bf5265e89c0e01bc17015ce30a476"
+
+[[package]]
+name = "decaf377"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2097c5f69d06259112bea2024ddc41095c5001b503448f84ac169efc7cc8fd75"
+dependencies = [
+ "ark-bls12-377",
+ "ark-ec",
+ "ark-ed-on-bls12-377",
+ "ark-ff",
+ "ark-serialize",
+ "ark-std",
+ "cfg-if",
+ "hashbrown 0.14.5",
+ "hex",
+ "num-bigint",
+ "once_cell",
+ "rand_core 0.6.4",
+ "subtle",
+ "zeroize",
+]
 
 [[package]]
 name = "der"
@@ -2234,6 +2276,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43a3c133739dddd0d2990f9a4bdf8eb4b21ef50e4851ca85ab661199821d510e"
 dependencies = [
  "ahash",
+]
+
+[[package]]
+name = "hashbrown"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+dependencies = [
+ "ahash",
+ "allocator-api2",
 ]
 
 [[package]]
@@ -3880,7 +3932,6 @@ dependencies = [
  "anyhow",
  "ark-bls12-381",
  "ark-ec",
- "ark-serialize",
  "ark-std",
  "async-trait",
  "authn",

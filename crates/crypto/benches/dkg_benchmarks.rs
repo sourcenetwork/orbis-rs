@@ -1,10 +1,15 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::time::Duration;
 
-use crypto::r#trait::{Dkg, DistributedShare};
+use crypto::r#trait::{DistributedShare, Dkg};
 
+#[cfg(feature = "bls12-381")]
 #[path = "bls12_381/dkg.rs"]
 mod bls12_381_dkg;
+
+#[cfg(feature = "decaf377")]
+#[path = "decaf377/dkg.rs"]
+mod decaf377_dkg;
 
 // ---------------------------------------------------------------------------
 // Generic benchmark infrastructure
@@ -71,10 +76,8 @@ pub trait DkgBenchSetup {
         }
 
         // Phase 2: generate shares
-        let all_shares: Vec<Vec<DistributedShare<_>>> = nodes
-            .iter()
-            .map(|n| n.generate_shares().unwrap())
-            .collect();
+        let all_shares: Vec<Vec<DistributedShare<_>>> =
+            nodes.iter().map(|n| n.generate_shares().unwrap()).collect();
 
         let prepared_nodes = nodes
             .into_iter()
@@ -116,12 +119,7 @@ fn run_dkg_benchmarks<S: DkgBenchSetup>(c: &mut Criterion, prefix: &str) {
             let fixture = S::create_fixture(t, n);
 
             group.bench_function(BenchmarkId::new("t_of_n", format!("{t}_of_{n}")), |b| {
-                b.iter(|| {
-                    fixture.prepared_nodes[0]
-                        .node
-                        .generate_shares()
-                        .unwrap()
-                })
+                b.iter(|| fixture.prepared_nodes[0].node.generate_shares().unwrap())
             });
         }
 
@@ -242,9 +240,8 @@ fn run_dkg_benchmarks<S: DkgBenchSetup>(c: &mut Criterion, prefix: &str) {
         for &(t, n) in &[(2, 3), (3, 5), (5, 9)] {
             group.bench_function(BenchmarkId::new("t_of_n", format!("{t}_of_{n}")), |b| {
                 b.iter(|| {
-                    let mut nodes: Vec<Box<S::Node>> = (1..=n as u32)
-                        .map(|id| S::create_node(id, t, n))
-                        .collect();
+                    let mut nodes: Vec<Box<S::Node>> =
+                        (1..=n as u32).map(|id| S::create_node(id, t, n)).collect();
 
                     // Shared session ID
                     for node in &mut nodes {
@@ -270,10 +267,8 @@ fn run_dkg_benchmarks<S: DkgBenchSetup>(c: &mut Criterion, prefix: &str) {
                     }
 
                     // Phase 2: generate + distribute shares
-                    let all_shares: Vec<Vec<DistributedShare<_>>> = nodes
-                        .iter()
-                        .map(|n| n.generate_shares().unwrap())
-                        .collect();
+                    let all_shares: Vec<Vec<DistributedShare<_>>> =
+                        nodes.iter().map(|n| n.generate_shares().unwrap()).collect();
 
                     for shares_from in &all_shares {
                         for share in shares_from {
@@ -302,12 +297,14 @@ fn run_dkg_benchmarks<S: DkgBenchSetup>(c: &mut Criterion, prefix: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Benchmark registration
+// Benchmark registration (one curve per build; features are mutually exclusive)
 // ---------------------------------------------------------------------------
-
-fn bls12_381_dkg_benchmarks(c: &mut Criterion) {
+fn run_all_dkg_benchmarks(c: &mut Criterion) {
+    #[cfg(feature = "bls12-381")]
     run_dkg_benchmarks::<bls12_381_dkg::Bls12381DkgBench>(c, "bls12_381");
+    #[cfg(feature = "decaf377")]
+    run_dkg_benchmarks::<decaf377_dkg::Decaf377DkgBench>(c, "decaf377");
 }
 
-criterion_group!(benches, bls12_381_dkg_benchmarks);
+criterion_group!(benches, run_all_dkg_benchmarks);
 criterion_main!(benches);

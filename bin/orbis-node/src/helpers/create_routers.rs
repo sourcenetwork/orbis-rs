@@ -19,9 +19,9 @@ pub fn create_router_with_dkg_handler<D>(
 ) -> NetworkResult<Box<dyn Router>>
 where
     D: crypto::r#trait::Dkg<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            PolynomialCommitment = crypto::bls12_381::common::PolynomialCommitment,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
         > + Clone
         + Send
         + Sync
@@ -47,21 +47,21 @@ pub fn create_router_with_handlers<D, T>(
 ) -> NetworkResult<Box<dyn Router>>
 where
     D: crypto::r#trait::Dkg<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            PolynomialCommitment = crypto::bls12_381::common::PolynomialCommitment,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
         > + Clone
         + Send
         + Sync
         + 'static,
     T: crypto::r#trait::ThresholdDealer<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
             Secret = crypto::r#trait::Secret,
             ReencryptReply = crypto::r#trait::ReencryptReply<
-                ark_bls12_381::Fr,
-                ark_bls12_381::G1Affine,
+                crypto::ScalarField,
+                crypto::GroupAffine,
             >,
             PubPoly = D::PubPoly,
         > + Send
@@ -91,33 +91,33 @@ pub fn create_router_with_all_handlers<D, T, S>(
 ) -> NetworkResult<Box<dyn Router>>
 where
     D: crypto::r#trait::Dkg<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            PolynomialCommitment = crypto::bls12_381::common::PolynomialCommitment,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
         > + Clone
         + Send
         + Sync
         + 'static,
     T: crypto::r#trait::ThresholdDealer<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
             Secret = crypto::r#trait::Secret,
             ReencryptReply = crypto::r#trait::ReencryptReply<
-                ark_bls12_381::Fr,
-                ark_bls12_381::G1Affine,
+                crypto::ScalarField,
+                crypto::GroupAffine,
             >,
             PubPoly = D::PubPoly,
         > + Send
         + Sync
         + 'static,
     S: crypto::r#trait::ThresholdSigner<
-            ShareValue = ark_bls12_381::Fr,
-            PublicKey = ark_bls12_381::G1Affine,
-            DistKeyShare = crypto::r#trait::DistKeyShare<ark_bls12_381::Fr>,
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
             PubPoly = D::PubPoly,
-            Signature = crypto::bls12_381::common::G2Point,
-            SigShare = crypto::r#trait::PubShare<crypto::bls12_381::common::G2Point>,
+            Signature = crypto::SignaturePoint,
+            SigShare = crypto::r#trait::PubShare<crypto::SigShareInner>,
         > + Send
         + Sync
         + 'static,

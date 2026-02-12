@@ -25,6 +25,7 @@ where
     /// PRE response state manager - handles PRE response collection
     pub pre_response_state: Arc<PreResponseManager>,
     /// Sign response state manager - handles threshold signing response collection
+    /// and FROST nonce state between Round 1 and Round 2
     pub sign_response_state: Arc<SignResponseManager>,
     /// Authz implementation
     pub authz: Arc<dyn Authz + Send + Sync>,

@@ -4,9 +4,6 @@
 //! separated from main.rs so they can be used in integration tests.
 
 use anyhow::{anyhow, Result};
-use ark_bls12_381::{Fr, G1Affine, G1Projective};
-use ark_ec::Group;
-use ark_std::UniformRand;
 use authn::{create_authenticated_request, JwtSigner};
 use bulletin::r#trait::Bulletin;
 use bulletin::sourcehub::SourceHubBulletin;
@@ -14,12 +11,11 @@ use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
     ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
 };
-use crypto::bls12_381::pre::ThresholdDealerNode;
 use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, CryptoSerialize};
+use crypto::{GroupAffine as G1Affine, PreImpl as ThresholdDealerNode, ScalarField as Fr};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
-use rand_core::OsRng;
 use serde::Deserialize;
 
 use proto::dkg_service::dkg_service_client::DkgServiceClient;
@@ -478,20 +474,13 @@ pub async fn do_encrypt_secret(
 }
 
 pub fn do_generate_reader_key() -> Result<()> {
-    let mut rng = OsRng;
+    let (sk, pk) = crypto::helpers::generate_keypair()
+        .map_err(|e| anyhow!("Failed to generate keypair: {}", e))?;
 
-    // Generate random secret key (scalar)
-    let sk = Fr::rand(&mut rng);
-
-    // Derive public key: pk = sk * G
-    let pk: G1Affine = (G1Projective::generator() * sk).into();
-
-    // Serialize to bytes then hex
-    let sk_bytes = sk
-        .to_bytes()
+    // Serialize to bytes then hex (use trait method explicitly to avoid inherent method shadowing)
+    let sk_bytes = CryptoSerialize::to_bytes(&sk)
         .map_err(|e| anyhow!("Failed to serialize secret key: {}", e))?;
-    let pk_bytes = pk
-        .to_bytes()
+    let pk_bytes = CryptoSerialize::to_bytes(&pk)
         .map_err(|e| anyhow!("Failed to serialize public key: {}", e))?;
 
     let sk_hex = hex::encode(&sk_bytes);

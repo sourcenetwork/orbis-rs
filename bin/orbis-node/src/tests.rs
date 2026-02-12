@@ -329,6 +329,27 @@ fn test_args_custom_address() {
     assert_eq!(args.addr, "127.0.0.1:9000");
 }
 
+/// ThresholdDealer::name() reflects the compiled crypto backend (elgamal/decaf377 vs elgamal/bls12_381).
+#[test]
+fn test_pre_impl_name_matches_backend() {
+    use crypto::r#trait::ThresholdDealer;
+    use crypto::PreImpl;
+    let dealer = PreImpl::new();
+
+    #[cfg(feature = "decaf377")]
+    assert_eq!(
+        dealer.name(),
+        "elgamal/decaf377",
+        "decaf377 build should report elgamal/decaf377"
+    );
+    #[cfg(feature = "bls12-381")]
+    assert_eq!(
+        dealer.name(),
+        "elgamal/bls12_381",
+        "bls12-381 build should report elgamal/bls12_381"
+    );
+}
+
 /// Test that encrypted storage works with the node
 #[tokio::test]
 #[serial_test::serial]
@@ -397,18 +418,12 @@ async fn test_init_node_with_encrypted_storage() {
 
 mod cli_tool_integration {
     use crate::constants::{BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE};
-    use ark_bls12_381::{Fr, G1Affine, G1Projective};
-    use ark_ec::Group;
-    use ark_std::UniformRand;
     use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
     use common::IntegrationTestNetwork;
     use common::SOURCEHUB_RPC_URL;
-    use crypto::bls12_381::pre::ThresholdDealerNode;
-    use crypto::bls12_381::sign::ThresholdBlsSigner;
-    use crypto::helpers::generate_policy_metadata;
+    use crypto::helpers::{generate_keypair, generate_policy_metadata};
     use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
-    use crypto::{CryptoDeserialize, CryptoSerialize};
-    use rand_core::OsRng;
+    use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, PreImpl, SignImpl};
     use tokio::time::{sleep, Duration};
     /// Docker-based integration test: Run DKG and PRE using Docker Compose
     ///
@@ -562,13 +577,11 @@ mod cli_tool_integration {
             &ring_id[..16.min(ring_id.len())],
         );
 
-        // Step 2: Generate reader keypair
-        let mut rng = OsRng;
-        let reader_sk = Fr::rand(&mut rng);
-        let reader_pk: G1Affine = (G1Projective::generator() * reader_sk).into();
+        // Step 2: Generate reader keypair (uses selected curve impl from crypto crate)
+        let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
 
-        let reader_sk_bytes = reader_sk.to_bytes().expect("serialize reader sk");
-        let reader_pk_bytes = reader_pk.to_bytes().expect("serialize reader pk");
+        let reader_sk_bytes = CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk");
+        let reader_pk_bytes = CryptoSerialize::to_bytes(&reader_pk).expect("serialize reader pk");
         let reader_sk_hex = hex::encode(&reader_sk_bytes);
         let reader_pk_hex = hex::encode(&reader_pk_bytes);
 
@@ -597,12 +610,12 @@ mod cli_tool_integration {
 
         // Parse ring public key for encryption
         let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
-        let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes).expect("deserialize ring_pk");
+        let ring_pk_point = GroupAffine::from_bytes(&ring_pk_bytes).expect("deserialize ring_pk");
 
         // MANUAL PATH: Encrypt and post directly to bulletin
         let object_id_manual = {
             let metadata = generate_policy_metadata(&policy_id, &resource, &permission);
-            let (_enc_cmt, encrypted_secret, enc_proof) = ThresholdDealerNode::encrypt_secret(
+            let (_enc_cmt, encrypted_secret, enc_proof) = PreImpl::encrypt_secret(
                 &ring_pk_point,
                 b"Hello from manual path!",
                 None,
@@ -730,17 +743,16 @@ mod cli_tool_integration {
         assert_eq!(manual.resource, service.resource, "resource mismatch");
         assert_eq!(manual.permission, service.permission, "permission mismatch");
 
-        // Verify the BLS signature against the ring public key
+        // Verify the threshold signature against the ring public key
         // The signature was created over the serialized BulletinPost
         let signature_bytes = hex::decode(&signature_hex).expect("decode signature hex");
-        let signature =
-            <ThresholdBlsSigner as ThresholdSigner>::Signature::from_bytes(&signature_bytes)
-                .expect("deserialize BLS signature");
+        let signature = <SignImpl as ThresholdSigner>::Signature::from_bytes(&signature_bytes)
+            .expect("deserialize signature");
 
         let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
-        let ring_pk = G1Affine::from_bytes(&ring_pk_bytes).expect("deserialize ring public key");
+        let ring_pk = GroupAffine::from_bytes(&ring_pk_bytes).expect("deserialize ring public key");
 
-        let signer = ThresholdBlsSigner::new();
+        let signer = SignImpl::new();
         signer
             .verify(&ring_pk, &message_bytes, &signature)
             .expect("BLS signature should verify against ring public key");

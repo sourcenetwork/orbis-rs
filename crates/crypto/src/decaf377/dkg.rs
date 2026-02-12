@@ -1,7 +1,5 @@
-use ark_bls12_381::{Fr, G1Affine, G1Projective};
-use ark_ec::{AffineRepr, Group};
 use ark_ff::Zero;
-use ark_std::{vec::Vec, UniformRand};
+use decaf377::{Element, Fr};
 use rand_core::{OsRng, RngCore};
 use std::collections::{HashMap, HashSet};
 
@@ -14,7 +12,7 @@ use crate::{
 /// Maximum number of nonces to store per node to prevent memory exhaustion
 const MAX_NONCES_PER_NODE: usize = 1000;
 
-/// Complete DKG state for a single node
+/// Complete DKG state for a single node (decaf377)
 #[derive(Clone, Debug)]
 pub struct DKGNode {
     pub id: u32,
@@ -45,7 +43,7 @@ pub struct DKGNode {
 
 impl Dkg for DKGNode {
     type ShareValue = Fr;
-    type PublicKey = G1Affine;
+    type PublicKey = Element;
     type PubPoly = PubPoly;
     type PolynomialCommitment = PolynomialCommitment;
 
@@ -102,7 +100,7 @@ impl Dkg for DKGNode {
         self.commitment.coefficients = self
             .polynomial_coeffs
             .iter()
-            .map(|coeff| (G1Projective::generator() * coeff).into())
+            .map(|coeff| Element::GENERATOR * coeff)
             .collect();
 
         Ok(())
@@ -138,6 +136,19 @@ impl Dkg for DKGNode {
     }
 
     fn receive_share(&mut self, share: DistributedShare<Self::ShareValue>) -> Result<()> {
+        // Validate from_id is in the expected participant set (1..=total_nodes, not self)
+        if share.from_id == 0 || share.from_id > self.total_nodes as u32 {
+            return Err(CryptoError::DKGError(format!(
+                "Invalid from_id: {} (must be between 1 and {})",
+                share.from_id, self.total_nodes
+            )));
+        }
+        if share.from_id == self.id {
+            return Err(CryptoError::DKGError(
+                "Invalid from_id: cannot receive share from self".to_string(),
+            ));
+        }
+
         // Verify the share is intended for us
         if share.to_id != self.id {
             return Err(CryptoError::DKGError(
@@ -231,8 +242,14 @@ impl Dkg for DKGNode {
     }
 
     fn compute_secret_share(&self) -> Result<PriShare<Self::ShareValue>> {
+        // Verify local polynomial was generated
+        if self.polynomial_coeffs.is_empty() {
+            return Err(CryptoError::DKGError(
+                "Local polynomial not generated: call generate_polynomial before compute_secret_share".to_string(),
+            ));
+        }
+
         // Verify we have received shares from all OTHER nodes
-        // (we don't send a share to ourselves over the network)
         if self.received_shares.len() != self.total_nodes - 1 {
             return Err(CryptoError::DKGError(format!(
                 "Missing shares: received {}, expected {}",
@@ -255,6 +272,13 @@ impl Dkg for DKGNode {
     }
 
     fn compute_aggregate_public_key(&self) -> Result<Self::PublicKey> {
+        // Verify local commitment was generated
+        if self.commitment.coefficients.is_empty() {
+            return Err(CryptoError::DKGError(
+                "Local commitment not generated: call generate_polynomial before compute_aggregate_public_key".to_string(),
+            ));
+        }
+
         // Verify we have received commitments from all OTHER nodes
         if self.received_commitments.len() != self.total_nodes - 1 {
             return Err(CryptoError::DKGError(format!(
@@ -266,28 +290,34 @@ impl Dkg for DKGNode {
 
         // Sum all constant terms (first coefficient of each polynomial)
         // Start with our own commitment
-        let mut aggregate_pk = G1Projective::from(self.commitment.coefficients[0]);
+        let mut aggregate_pk = self.commitment.coefficients[0];
 
         for (_, commitment) in &self.received_commitments {
-            aggregate_pk += G1Projective::from(commitment.coefficients[0]);
+            aggregate_pk += commitment.coefficients[0];
         }
 
-        let result: G1Affine = aggregate_pk.into();
-
         // Validate aggregate key is not zero
-        if result == G1Affine::zero() {
+        if aggregate_pk == Element::default() {
             return Err(CryptoError::DKGError(
                 "Aggregate public key is zero - this should not happen".to_string(),
             ));
         }
 
-        Ok(result)
+        Ok(aggregate_pk)
     }
+
     fn get_complaints(&self) -> &HashMap<u32, Vec<u32>> {
         &self.complaints
     }
 
     fn compute_public_polynomial(&self) -> Result<Self::PubPoly> {
+        // Verify local commitment was generated
+        if self.commitment.coefficients.is_empty() {
+            return Err(CryptoError::DKGError(
+                "Local commitment not generated: call generate_polynomial before compute_public_polynomial".to_string(),
+            ));
+        }
+
         // Verify we have received commitments from all OTHER nodes
         if self.received_commitments.len() != self.total_nodes - 1 {
             return Err(CryptoError::DKGError(format!(
@@ -303,8 +333,7 @@ impl Dkg for DKGNode {
         // Add all other commitments
         for (_, commitment) in &self.received_commitments {
             for (i, coeff) in commitment.coefficients.iter().enumerate() {
-                aggregated_coeffs[i] =
-                    (G1Projective::from(aggregated_coeffs[i]) + G1Projective::from(*coeff)).into();
+                aggregated_coeffs[i] += coeff;
             }
         }
 

@@ -1,23 +1,21 @@
-use ark_bls12_381::{Fr, G1Affine, G1Projective};
-use ark_ec::Group;
-use ark_std::UniformRand;
+use decaf377::{Element, Fr};
 use rand_core::OsRng;
 
-use crypto::bls12_381::pre::ThresholdDealerNode;
+use crypto::decaf377::pre::ThresholdDealerNode;
 use crypto::r#trait::{DistKeyShare, PubShare, ThresholdDealer};
 use crypto::test_helper::DKGCoordinator;
 
 use crate::{BenchFixture, BenchSetup};
 
-pub struct Bls12381Bench;
+pub struct Decaf377Bench;
 
-impl BenchSetup for Bls12381Bench {
+impl BenchSetup for Decaf377Bench {
     type Dealer = ThresholdDealerNode;
 
     fn create_fixture(t: usize, n: usize) -> BenchFixture<ThresholdDealerNode> {
         let mut coordinator = DKGCoordinator::new(
             |id: u32, threshold: usize, total_nodes: usize| {
-                <crypto::bls12_381::dkg::DKGNode as crypto::r#trait::Dkg>::new(
+                <crypto::decaf377::dkg::DKGNode as crypto::r#trait::Dkg>::new(
                     id,
                     threshold,
                     total_nodes,
@@ -31,7 +29,7 @@ impl BenchSetup for Bls12381Bench {
 
         let mut rng = OsRng;
         let rdr_sk = Fr::rand(&mut rng);
-        let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
+        let rdr_pk = Element::GENERATOR * rdr_sk;
 
         let data = b"benchmark secret payload - 36 bytes!";
         let (enc_cmt, secret, proof) =
@@ -75,7 +73,7 @@ impl BenchSetup for Bls12381Bench {
 
     fn extract_pub_share(
         reply: &<ThresholdDealerNode as ThresholdDealer>::ReencryptReply,
-    ) -> PubShare<G1Affine> {
+    ) -> PubShare<Element> {
         reply.share.clone()
     }
 }

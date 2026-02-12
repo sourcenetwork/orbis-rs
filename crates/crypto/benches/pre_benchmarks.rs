@@ -2,8 +2,13 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use crypto::r#trait::{EncryptionProof, PubShare, ThresholdDealer};
 
+#[cfg(feature = "bls12-381")]
 #[path = "bls12_381/pre.rs"]
 mod bls12_381_pre;
+
+#[cfg(feature = "decaf377")]
+#[path = "decaf377/pre.rs"]
+mod decaf377_pre;
 
 // ---------------------------------------------------------------------------
 // Generic benchmark infrastructure
@@ -195,56 +200,59 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
 
     // -- end_to_end -----------------------------------------------------------
     {
-    let mut group = c.benchmark_group(format!("{prefix}/end_to_end"));
-    group.measurement_time(std::time::Duration::from_secs(10));
-    group.bench_function("3_of_5", |b| {
-        b.iter(|| {
-            // Encrypt
-            let (_enc_cmt, secret, _proof) = <S::Dealer as ThresholdDealer>::encrypt_secret(
-                &fixture.aggregate_pk,
-                data,
-                None,
-                None,
-            )
-            .unwrap();
-
-            // Re-encrypt with t shares
-            let mut pub_shares = Vec::with_capacity(fixture.t);
-            for dks in fixture.dist_key_shares.iter().take(fixture.t) {
-                let reply = fixture
-                    .dealer
-                    .reencrypt(dks, &secret, &fixture.rdr_pk, None)
-                    .unwrap();
-                pub_shares.push(S::extract_pub_share(&reply));
-            }
-
-            // Recover
-            let xnc_cmt = fixture
-                .dealer
-                .recover(&pub_shares, fixture.t, fixture.n)
-                .unwrap()
+        let mut group = c.benchmark_group(format!("{prefix}/end_to_end"));
+        group.measurement_time(std::time::Duration::from_secs(10));
+        group.bench_function("3_of_5", |b| {
+            b.iter(|| {
+                // Encrypt
+                let (_enc_cmt, secret, _proof) = <S::Dealer as ThresholdDealer>::encrypt_secret(
+                    &fixture.aggregate_pk,
+                    data,
+                    None,
+                    None,
+                )
                 .unwrap();
 
-            // Decrypt
-            <S::Dealer as ThresholdDealer>::decrypt_secret(
-                &fixture.aggregate_pk,
-                &xnc_cmt,
-                &fixture.rdr_sk,
-                &secret,
-            )
-            .unwrap()
-        })
-    });
-    group.finish();
+                // Re-encrypt with t shares
+                let mut pub_shares = Vec::with_capacity(fixture.t);
+                for dks in fixture.dist_key_shares.iter().take(fixture.t) {
+                    let reply = fixture
+                        .dealer
+                        .reencrypt(dks, &secret, &fixture.rdr_pk, None)
+                        .unwrap();
+                    pub_shares.push(S::extract_pub_share(&reply));
+                }
+
+                // Recover
+                let xnc_cmt = fixture
+                    .dealer
+                    .recover(&pub_shares, fixture.t, fixture.n)
+                    .unwrap()
+                    .unwrap();
+
+                // Decrypt
+                <S::Dealer as ThresholdDealer>::decrypt_secret(
+                    &fixture.aggregate_pk,
+                    &xnc_cmt,
+                    &fixture.rdr_sk,
+                    &secret,
+                )
+                .unwrap()
+            })
+        });
+        group.finish();
     }
 }
 
 // ---------------------------------------------------------------------------
-// Benchmark registration
+// Benchmark registration (one curve per build; features are mutually exclusive)
 // ---------------------------------------------------------------------------
-fn bls12_381_benchmarks(c: &mut Criterion) {
+fn run_all_pre_benchmarks(c: &mut Criterion) {
+    #[cfg(feature = "bls12-381")]
     run_pre_benchmarks::<bls12_381_pre::Bls12381Bench>(c, "bls12_381");
+    #[cfg(feature = "decaf377")]
+    run_pre_benchmarks::<decaf377_pre::Decaf377Bench>(c, "decaf377");
 }
 
-criterion_group!(benches, bls12_381_benchmarks);
+criterion_group!(benches, run_all_pre_benchmarks);
 criterion_main!(benches);

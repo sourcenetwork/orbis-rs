@@ -1,4 +1,4 @@
-use crate::bls12_381::common::G2Point;
+use crate::bls12_381::common::{G2Point, PubPoly};
 use crate::bls12_381::dkg::DKGNode;
 use crate::bls12_381::sign::{hash_to_g2, ThresholdBlsSigner};
 use crate::r#trait::{DistKeyShare, Dkg, PriShare, PubShare, ThresholdSigner};
@@ -44,8 +44,16 @@ fn test_sign_and_verify_single_key() {
         pri_share: PriShare { i: 1, v: sk },
     };
 
+    // For BLS, we need a PubPoly for the sign call (though it's unused internally)
+    // Create a minimal one - in practice this comes from DKG
+    let pub_poly = PubPoly {
+        commits: vec![pk], // aggregate pk as constant term
+    };
+
     // Sign
-    let sig_share = signer.sign(&dist_key_share, msg).unwrap();
+    let sig_share = signer
+        .sign(&dist_key_share, msg, &pub_poly, None, &[])
+        .unwrap();
 
     // The signature share IS the full signature for a single signer
     let sig = sig_share.v;
@@ -68,7 +76,11 @@ fn test_verify_fails_with_wrong_message() {
     };
 
     // Sign one message
-    let sig_share = signer.sign(&dist_key_share, b"original message").unwrap();
+
+    let pub_poly = PubPoly { commits: vec![pk] };
+    let sig_share = signer
+        .sign(&dist_key_share, b"original message", &pub_poly, None, &[])
+        .unwrap();
 
     // Verify with different message
     let result = signer.verify(&pk, b"different message", &sig_share.v);
@@ -92,7 +104,11 @@ fn test_verify_fails_with_wrong_key() {
         pri_share: PriShare { i: 1, v: sk },
     };
 
-    let sig_share = signer.sign(&dist_key_share, msg).unwrap();
+    let pk: G1Affine = (G1Projective::generator() * sk).into();
+    let pub_poly = PubPoly { commits: vec![pk] };
+    let sig_share = signer
+        .sign(&dist_key_share, msg, &pub_poly, None, &[])
+        .unwrap();
 
     // Verify with wrong public key
     let result = signer.verify(&wrong_pk, msg, &sig_share.v);
@@ -134,10 +150,12 @@ fn test_threshold_signing_3_of_5() {
             pri_share: share.clone(),
         };
 
-        let sig_share = signer.sign(&dist_key_share, msg).unwrap();
+        let sig_share = signer
+            .sign(&dist_key_share, msg, &pub_poly, None, &[])
+            .unwrap();
 
         // Verify the signature share
-        let verify_result = signer.verify_share(msg, &pub_poly, &sig_share);
+        let verify_result = signer.verify_share(msg, &pub_poly, &sig_share, &[]);
         assert!(
             verify_result.is_ok(),
             "Signature share {} should verify",
@@ -150,7 +168,7 @@ fn test_threshold_signing_3_of_5() {
     assert_eq!(sig_shares.len(), t);
 
     // Step 2: Recover the full signature
-    let recovered_sig = signer.recover(&sig_shares, t, n).unwrap();
+    let recovered_sig = signer.recover(&sig_shares, t, n, msg, &[]).unwrap();
     assert!(recovered_sig.is_some(), "Should recover signature");
 
     let sig = recovered_sig.unwrap();
@@ -189,17 +207,19 @@ fn test_threshold_signing_different_share_subsets() {
             let dist_key_share = DistKeyShare {
                 pri_share: share.clone(),
             };
-            signer.sign(&dist_key_share, msg).unwrap()
+            signer
+                .sign(&dist_key_share, msg, &_pub_poly, None, &[])
+                .unwrap()
         })
         .collect();
 
     // Recover using shares 1, 2, 3
     let subset1: Vec<_> = all_sig_shares.iter().take(3).cloned().collect();
-    let sig1 = signer.recover(&subset1, t, n).unwrap().unwrap();
+    let sig1 = signer.recover(&subset1, t, n, msg, &[]).unwrap().unwrap();
 
     // Recover using shares 3, 4, 5
     let subset2: Vec<_> = all_sig_shares.iter().skip(2).take(3).cloned().collect();
-    let sig2 = signer.recover(&subset2, t, n).unwrap().unwrap();
+    let sig2 = signer.recover(&subset2, t, n, msg, &[]).unwrap().unwrap();
 
     // Both should produce the same signature
     assert_eq!(
@@ -228,7 +248,7 @@ fn test_insufficient_shares() {
         },
     ];
 
-    let result = signer.recover(&shares, 3, 5).unwrap();
+    let result = signer.recover(&shares, 3, 5, b"test", &[]).unwrap();
     assert!(
         result.is_none(),
         "Should return None with insufficient shares"
@@ -259,14 +279,16 @@ fn test_verify_share_fails_with_wrong_share() {
     let dist_key_share = DistKeyShare {
         pri_share: secret_shares[0].clone(),
     };
-    let mut sig_share = signer.sign(&dist_key_share, msg).unwrap();
+    let mut sig_share = signer
+        .sign(&dist_key_share, msg, &pub_poly, None, &[])
+        .unwrap();
 
     // Tamper with the signature share
     let mut rng = OsRng;
     sig_share.v = G2Point::from(G2Projective::generator() * Fr::rand(&mut rng));
 
     // Verification should fail
-    let result = signer.verify_share(msg, &pub_poly, &sig_share);
+    let result = signer.verify_share(msg, &pub_poly, &sig_share, &[]);
     assert!(
         result.is_err(),
         "Tampered signature share should not verify"
@@ -286,7 +308,10 @@ fn test_empty_message() {
         pri_share: PriShare { i: 1, v: sk },
     };
 
-    let sig_share = signer.sign(&dist_key_share, msg).unwrap();
+    let pub_poly = PubPoly { commits: vec![pk] };
+    let sig_share = signer
+        .sign(&dist_key_share, msg, &pub_poly, None, &[])
+        .unwrap();
     let result = signer.verify(&pk, msg, &sig_share.v);
     assert!(result.is_ok(), "Empty message signature should verify");
 }
@@ -304,7 +329,10 @@ fn test_large_message() {
         pri_share: PriShare { i: 1, v: sk },
     };
 
-    let sig_share = signer.sign(&dist_key_share, &msg).unwrap();
+    let pub_poly = PubPoly { commits: vec![pk] };
+    let sig_share = signer
+        .sign(&dist_key_share, &msg, &pub_poly, None, &[])
+        .unwrap();
     let result = signer.verify(&pk, &msg, &sig_share.v);
     assert!(result.is_ok(), "Large message signature should verify");
 }

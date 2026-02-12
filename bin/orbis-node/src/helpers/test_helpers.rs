@@ -22,15 +22,8 @@ use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::Router;
 use std::{fs, sync::Arc};
 
-// Concrete crypto implementations for tests
-use crypto::bls12_381::dkg::DKGNode;
-use crypto::bls12_381::pre::ThresholdDealerNode;
-use crypto::bls12_381::sign::ThresholdBlsSigner;
-
-// Type aliases matching main.rs
-type DkgImpl = DKGNode;
-type PreImpl = ThresholdDealerNode;
-type SignImpl = ThresholdBlsSigner;
+// Concrete crypto implementations for tests (selected via crypto crate features)
+use crypto::{DkgImpl, PreImpl, SignImpl};
 
 // Re-export JWT utilities from authn for test convenience
 pub use authn::{add_auth_header, create_authenticated_request, JwtSigner};

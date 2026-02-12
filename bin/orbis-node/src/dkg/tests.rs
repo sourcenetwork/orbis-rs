@@ -13,9 +13,8 @@ use tokio::time::{sleep, Duration};
 use tonic::{Request, Response};
 use tracing_subscriber;
 
-// Concrete crypto implementations for tests
-use crypto::bls12_381::dkg::DKGNode;
-type DkgImpl = DKGNode;
+// Concrete crypto implementation for tests (selected via crypto crate features)
+use crypto::DkgImpl;
 
 /// Unit test: Test start_dkg with empty participant list returns error
 #[tokio::test]

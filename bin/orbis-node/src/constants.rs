@@ -76,6 +76,12 @@ pub const MAX_PRE_RESPONSES: usize = 1000;
 /// many concurrent signing operations while maintaining reasonable memory usage.
 pub const MAX_SIGN_RESPONSES: usize = 1000;
 
+/// Maximum number of pending FROST nonce states
+///
+/// Nonce states are held on responder nodes between FROST Round 1 (nonce generation)
+/// and Round 2 (signing). This limit prevents unbounded memory growth.
+pub const MAX_NONCE_STATES: usize = 1000;
+
 // ============================================================================
 // Peer ID Validation Constants
 // ============================================================================
@@ -178,3 +184,19 @@ pub const PEER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 /// A proper implementation should generate a ZK proof or signature that
 /// validates the DKG completion.
 pub const BULLETIN_PLACEHOLDER_PROOF: &[u8] = &[0x01];
+
+// ============================================================================
+// Nonce Serialization Constants (FROST)
+// ============================================================================
+
+/// Maximum number of commitments in a single deserialized batch.
+/// Matches MAX_COMMITMENT_COEFFICIENTS since the number of signers
+/// can never exceed the polynomial degree bound.
+pub const MAX_COMMITMENTS: usize = MAX_COMMITMENT_COEFFICIENTS;
+
+/// Maximum byte size for a single serialized nonce commitment.
+/// Two compressed group elements should never exceed this.
+pub const MAX_COMMITMENT_SIZE: usize = 1024;
+
+/// Minimum bytes per commitment item: 4 (node_id) + 4 (length) + 1 (min payload).
+pub const MIN_ITEM_SIZE: usize = 9;
