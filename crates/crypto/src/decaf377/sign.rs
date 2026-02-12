@@ -180,11 +180,22 @@ fn compute_group_commitment(
     all_commitments: &[(u32, FrostNonceCommitment)],
     msg: &[u8],
 ) -> Result<(Element, Vec<(u32, Fr)>)> {
-    let mut r = Element::default(); // identity
-    let mut binding_factors = Vec::with_capacity(all_commitments.len());
+    // Canonicalize: sort by participant_id so compute_binding_factor sees deterministic ordering
+    let mut canonical: Vec<(u32, FrostNonceCommitment)> = all_commitments.to_vec();
+    canonical.sort_by_key(|(id, _)| *id);
 
-    for (id, commitment) in all_commitments {
-        let rho = compute_binding_factor(*id, msg, all_commitments)?;
+    // Reject duplicate participant_ids
+    for i in 1..canonical.len() {
+        if canonical[i].0 == canonical[i - 1].0 {
+            return Err(CryptoError::InvalidSignatureShare);
+        }
+    }
+
+    let mut r = Element::default(); // identity
+    let mut binding_factors = Vec::with_capacity(canonical.len());
+
+    for (id, commitment) in &canonical {
+        let rho = compute_binding_factor(*id, msg, &canonical)?;
         r += commitment.hiding + commitment.binding * rho;
         binding_factors.push((*id, rho));
     }
