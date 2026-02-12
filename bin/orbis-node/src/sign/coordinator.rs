@@ -211,7 +211,7 @@ where
         all_commitments_bytes: Vec<u8>,
     ) -> Result<Option<SignMessage>> {
         // 1. Verify the message exists on bulletin and get the associated ring_pk
-        let (ring_pk_hex, pub_poly) = self.verify_message_and_get_pub_poly(&message).await?;
+        let (ring_pk_hex, pub_poly) = self.verify_message_and_get_info(&message).await?;
 
         // 2. Deserialize ring public key to get the storage key
         let ring_pk_bytes = hex::decode(&ring_pk_hex).map_err(|e| {
@@ -877,10 +877,7 @@ where
     }
 
     /// Verify that a message exists on the bulletin and return the ring_pk and pub_poly
-    async fn verify_message_and_get_pub_poly(
-        &self,
-        message: &[u8],
-    ) -> Result<(String, D::PubPoly)> {
+    async fn verify_message_and_get_info(&self, message: &[u8]) -> Result<(String, D::PubPoly)> {
         // 1. Deserialize the BulletinPost from the message
         let post: BulletinPost = message.to_vec().try_into().map_err(|e| {
             SignError::Deserialization(format!("Failed to deserialize BulletinPost: {}", e))

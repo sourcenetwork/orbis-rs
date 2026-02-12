@@ -33,7 +33,7 @@ impl BenchSetup for Bls12381Bench {
         let rdr_sk = Fr::rand(&mut rng);
         let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
 
-        let data = b"benchmark secret payload - 32 bytes!";
+        let data = b"benchmark secret payload - 36 bytes!";
         let (enc_cmt, secret, proof) =
             ThresholdDealerNode::encrypt_secret(&aggregate_pk, data, None, None).unwrap();
 
