@@ -223,6 +223,12 @@ impl Dkg for DKGNode {
             )));
         }
 
+        if from_id == self.id {
+            return Err(CryptoError::DKGError(
+                "Cannot receive commitment from self".to_string(),
+            ));
+        }
+
         if commitment.coefficients.len() != self.threshold {
             return Err(CryptoError::DKGError(format!(
                 "Invalid commitment length: expected {}, got {}",

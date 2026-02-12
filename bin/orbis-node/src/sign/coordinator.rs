@@ -16,8 +16,8 @@
 
 use crate::app_state::AppState;
 use crate::constants::{
-    BULLETIN_RING_NAMESPACE, MAX_COMMITMENTS, MAX_COMMITMENT_SIZE,
-    MIN_ITEM_SIZE, PEER_RESPONSE_TIMEOUT,
+    BULLETIN_RING_NAMESPACE, MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE,
+    PEER_RESPONSE_TIMEOUT,
 };
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::sign::error::{Result, SignError};
