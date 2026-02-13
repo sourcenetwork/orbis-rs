@@ -335,6 +335,23 @@ impl ThresholdSigner for ThresholdDecafSigner {
             return Err(CryptoError::InvalidSignatureShare);
         }
 
+        // Verify our own commitment wasn't tampered with by the coordinator.
+        // Recompute from our secret nonces and check against what's in all_commitments.
+        let our_commitment = all_commitments
+            .iter()
+            .find(|(id, _)| *id == idx)
+            .map(|(_, c)| c)
+            .ok_or(CryptoError::InvalidSignatureShare)?;
+
+        let expected_hiding = Element::GENERATOR * signing_state.hiding_nonce;
+        let expected_binding = Element::GENERATOR * signing_state.binding_nonce;
+        if our_commitment.hiding != expected_hiding || our_commitment.binding != expected_binding {
+            return Err(CryptoError::SigningError(
+                "Commitment mismatch: coordinator may have tampered with our nonce commitment"
+                    .to_string(),
+            ));
+        }
+
         // Compute group commitment R and binding factors
         let (r_point, binding_factors) = compute_group_commitment(all_commitments, msg)?;
 

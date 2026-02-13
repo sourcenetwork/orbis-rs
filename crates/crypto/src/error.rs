@@ -13,6 +13,8 @@ pub enum CryptoError {
     InvalidSignatureShare,
     #[error("Invalid Signature")]
     InvalidSignature,
+    #[error("Signing error: {0}")]
+    SigningError(String),
     #[error("Parsing Error: {0}")]
     ParseError(String),
 }
