@@ -266,3 +266,54 @@ critcmp main feature
 - `ark-serialize` - Serialization for arkworks types
 - `aes-gcm` - Authenticated encryption for secrets
 - `sha2` - Hash function for challenges
+
+## ⚠️ Virtual Machines & Entropy
+
+This project relies on cryptographically secure randomness provided by the operating system via:
+
+```rust
+OsRng
+```
+
+All key material, nonces, and ephemeral secrets across the protocol stack (e.g., DKG, signing, encryption, re-encryption, etc.) are generated from the OS CSPRNG.
+
+### Entropy in Virtualized Environments
+
+When running inside:
+
+* Virtual machines
+* Containers
+* CI pipelines
+* Fresh cloud instances
+* Snapshot / cloned environments
+
+the OS entropy pool may not be properly initialized.
+
+Potential issues include:
+
+* Insufficient entropy during early boot
+* VM snapshots duplicating RNG state
+* Misconfigured or missing virtual RNG devices
+* Deterministic entropy sources in constrained environments
+
+If multiple instances start from identical RNG state, they could generate identical private keys, nonces, or ephemeral secrets. In cryptographic systems, reuse of randomness can result in:
+
+* Private key compromise
+* Loss of forward secrecy
+* Broken threshold assumptions
+* Invalid or forgeable proofs
+
+### Recommendations
+
+To mitigate entropy-related risks:
+
+* Ensure the system entropy pool is fully initialized before starting services.
+* Avoid snapshotting or cloning VMs before sufficient entropy has accumulated.
+* Prefer hypervisors with `virtio-rng` or equivalent hardware RNG passthrough.
+* On Linux, verify entropy availability (e.g., `/proc/sys/kernel/random/entropy_avail`).
+* Avoid custom or userland RNG implementations.
+* Never persist or reuse ephemeral randomness across restarts.
+
+### Security Assumption
+
+This system assumes a correctly functioning, cryptographically secure OS RNG. If the underlying entropy source is compromised, duplicated, or predictable, the security guarantees of the protocol no longer hold.
