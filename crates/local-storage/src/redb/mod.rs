@@ -18,6 +18,8 @@ const INTERNAL_SALT_KEY: &[u8] = b"__internal__salt";
 const INTERNAL_PASSWORD_CHECK_KEY: &[u8] = b"__internal__password_check";
 const PASSWORD_CHECK_VALUE: &[u8] = b"password_check_ok";
 
+const NAME: &str = "local-storage/redb";
+
 #[derive(Clone)]
 pub struct RedbStorage {
     pub store: Arc<Database>,
@@ -29,6 +31,10 @@ pub struct RedbStorage {
 mod tests;
 
 impl LocalStorage for RedbStorage {
+    fn name(&self) -> &str {
+        NAME
+    }
+
     fn new(password: Option<String>, db_path: String) -> Result<Self> {
         // Create parent directories if they don't exist
         if let Some(parent) = Path::new(&db_path).parent() {

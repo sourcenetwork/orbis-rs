@@ -12,6 +12,8 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+const NAME: &str = "local-storage/memory";
+
 #[derive(Clone)]
 pub struct MemoryStorage {
     pub store: Arc<RwLock<HashMap<LocalStorageKeys, Vec<u8>>>>,
@@ -23,6 +25,10 @@ pub struct MemoryStorage {
 mod tests;
 
 impl LocalStorage for MemoryStorage {
+    fn name(&self) -> &str {
+        NAME
+    }
+
     // TODO: determine how to handle poisoned mutex
 
     fn new(password: Option<String>, _db_path: String) -> Result<Self> {

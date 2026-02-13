@@ -7,6 +7,13 @@ use crate::tests::{
 };
 use std::fs;
 
+#[test]
+fn test_local_storage_name() {
+    let path = test_db_path("test_local_storage_name");
+    let storage = RedbStorage::new(None, path.clone()).unwrap();
+    assert_eq!(storage.name(), "local-storage/redb");
+}
+
 fn test_db_path(name: &str) -> String {
     let project_root = project_root::get_project_root().unwrap();
     format!("{}/test_dbs/{}.redb", project_root.display(), name)

@@ -12,3 +12,9 @@ fn test_db_functions_memory() {
         MemoryStorage::new(Some("test_password".to_string()), "".to_string()).unwrap(),
     );
 }
+
+#[test]
+fn test_local_storage_name() {
+    let storage = MemoryStorage::new().unwrap();
+    assert_eq!(storage.name(), "local-storage/memory");
+}
