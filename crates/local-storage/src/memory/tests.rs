@@ -15,6 +15,5 @@ fn test_db_functions_memory() {
 
 #[test]
 fn test_local_storage_name() {
-    let storage = MemoryStorage::new().unwrap();
-    assert_eq!(storage.name(), "local-storage/memory");
+    assert_eq!(MemoryStorage::name(), "local-storage/memory");
 }

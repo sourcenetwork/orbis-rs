@@ -45,8 +45,8 @@ impl ThresholdSigner for ThresholdBlsSigner {
         ThresholdBlsSigner
     }
 
-    fn name(&self) -> &str {
-        "threshold-bls-g2"
+    fn name() -> String {
+        "threshold-bls-g2".to_string()
     }
 
     fn hash_message(&self, msg: &[u8]) -> Result<Self::Signature> {

@@ -31,8 +31,8 @@ pub struct RedbStorage {
 mod tests;
 
 impl LocalStorage for RedbStorage {
-    fn name(&self) -> &str {
-        NAME
+    fn name() -> String {
+        NAME.to_string()
     }
 
     fn new(password: Option<String>, db_path: String) -> Result<Self> {

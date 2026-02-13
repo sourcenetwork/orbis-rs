@@ -289,8 +289,8 @@ impl ThresholdSigner for ThresholdDecafSigner {
         ThresholdDecafSigner
     }
 
-    fn name(&self) -> &str {
-        "threshold-frost-decaf377"
+    fn name() -> String {
+        "threshold-frost-decaf377".to_string()
     }
 
     fn hash_message(&self, _msg: &[u8]) -> Result<Self::Signature> {

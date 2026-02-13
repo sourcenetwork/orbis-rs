@@ -25,8 +25,8 @@ pub struct MemoryStorage {
 mod tests;
 
 impl LocalStorage for MemoryStorage {
-    fn name(&self) -> &str {
-        NAME
+    fn name() -> String {
+        NAME.to_string()
     }
 
     // TODO: determine how to handle poisoned mutex
