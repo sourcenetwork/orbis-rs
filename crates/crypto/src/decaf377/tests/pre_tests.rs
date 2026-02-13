@@ -12,8 +12,7 @@ use rand_core::OsRng;
 
 #[test]
 fn test_threshold_dealer_creation() {
-    let dealer = ThresholdDealerNode::new();
-    assert_eq!(dealer.name(), "elgamal/decaf377");
+    assert_eq!(ThresholdDealerNode::name(), "elgamal/decaf377");
 }
 
 #[test]
