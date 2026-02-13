@@ -216,7 +216,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing with optional Loki support
     init_tracing(&args)?;
 
-     // List implementaions used for sanity
+    // List implementaions used for sanity
     tracing::info!("Crypto PRE implementation: {}", PreImpl::name());
     tracing::info!("Crypto Sign implementation: {}", SignImpl::name());
     tracing::info!("local-storage implementation: {}", LocalStorageImpl::name());

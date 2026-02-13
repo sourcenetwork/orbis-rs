@@ -10,8 +10,7 @@ use rand_core::OsRng;
 
 #[test]
 fn test_signer_creation() {
-    let signer = ThresholdBlsSigner::new();
-    assert_eq!(signer.name(), "threshold-bls-g2");
+    assert_eq!(ThresholdBlsSigner::name(), "threshold-bls-g2".to_string());
 }
 
 #[test]

@@ -8,8 +8,10 @@ use rand_core::OsRng;
 
 #[test]
 fn test_signer_creation() {
-    let signer = ThresholdDecafSigner::new();
-    assert_eq!(signer.name(), "threshold-frost-decaf377");
+    assert_eq!(
+        ThresholdDecafSigner::name(),
+        "threshold-frost-decaf377".to_string()
+    );
 }
 
 #[test]
