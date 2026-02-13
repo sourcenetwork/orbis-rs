@@ -505,7 +505,7 @@ pub trait ThresholdDealer {
     type PubPoly: PubPoly<PublicKey = Self::PublicKey>;
 
     fn new() -> Self;
-    fn name(&self) -> &str;
+    fn name() -> String;
 
     /// Re-encrypt a secret share using the receiver's public key.
     ///
@@ -669,7 +669,7 @@ pub trait ThresholdSigner {
     fn new() -> Self;
 
     /// Domain-separated name for the protocol
-    fn name(&self) -> &str;
+    fn name() -> String;
 
     /// Hash a message to the signing group (BLS only; FROST returns Err)
     fn hash_message(&self, msg: &[u8]) -> Result<Self::Signature>;

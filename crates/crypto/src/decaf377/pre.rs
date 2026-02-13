@@ -41,8 +41,8 @@ impl ThresholdDealer for ThresholdDealerNode {
         ThresholdDealerNode {}
     }
 
-    fn name(&self) -> &str {
-        NAME
+    fn name() -> String {
+        NAME.to_string()
     }
 
     fn reencrypt(

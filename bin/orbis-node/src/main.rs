@@ -28,6 +28,7 @@ use authz::sourcehub::SourceHubAuth;
 use bulletin::{r#trait::Bulletin, BulletinImpl};
 use clap::Parser;
 use common::blockchain::ChainConfigBuilder;
+use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, Router};
 use std::{net::SocketAddr, sync::Arc};
@@ -214,6 +215,11 @@ fn init_tracing(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing with optional Loki support
     init_tracing(&args)?;
+
+    // List implementaions used for sanity
+    tracing::info!("Crypto PRE implementation: {}", PreImpl::name());
+    tracing::info!("Crypto Sign implementation: {}", SignImpl::name());
+    tracing::info!("local-storage implementation: {}", LocalStorageImpl::name());
 
     // Get password for encrypting ring key shares
     let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;

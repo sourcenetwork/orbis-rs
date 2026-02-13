@@ -12,3 +12,8 @@ fn test_db_functions_memory() {
         MemoryStorage::new(Some("test_password".to_string()), "".to_string()).unwrap(),
     );
 }
+
+#[test]
+fn test_local_storage_name() {
+    assert_eq!(MemoryStorage::name(), "local-storage/memory");
+}
