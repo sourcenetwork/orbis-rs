@@ -28,6 +28,7 @@ use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::LocalStorage;
 use network::Message as NetworkMessage;
+use network::PeerId;
 use network::REENCRYPT;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -104,6 +105,7 @@ where
                 );
 
                 // Handle the reencryption request
+                // Note: from_node_id is not validated here (initiator may not be in ring).
                 self.handle_reencrypt_request(
                     request_id,
                     from_node_id,
@@ -196,6 +198,9 @@ where
             serde_json::from_slice::<RingPayload>(&ring_info.payload).map_err(|e| {
                 PreError::Deserialization(format!("Failed to parse ring payload: {}", e))
             })?;
+
+        // Note: We do NOT validate from_node_id here because the reencrypt request initiator
+        // may not be in the ring (external requesters use node_id=0).
 
         // Generate policy metadata for proof binding verification (before fields are moved)
         let policy_metadata = generate_policy_metadata(
@@ -411,8 +416,9 @@ where
             PreError::Deserialization(format!("Failed to deserialize response: {}", e))
         })?;
 
-        // Store the response
-        self.store_response(response).await;
+        // Store the response with the authenticated peer identity
+        let authenticated_peer_id = connection.peer_id().clone();
+        self.store_response(response, &authenticated_peer_id).await;
 
         Ok(())
     }
@@ -464,13 +470,20 @@ where
             "PRE Coordinator: Initiating reencryption"
         );
 
+        // Build the list of peers we expect responses from (everyone except self)
+        let expected_peers: Vec<String> = peer_ids
+            .iter()
+            .filter(|pid| !is_self_peer_id(&self.app_state.network, pid))
+            .cloned()
+            .collect();
+
         // Initialize response collection before calling inner function
         // This allows us to guarantee cleanup regardless of how inner function exits
         let request_id_for_cleanup = request_id.clone();
         if !self
             .app_state
             .pre_response_state
-            .init_response(request_id.clone())
+            .init_response(request_id.clone(), &expected_peers)
             .await
         {
             return Err(PreError::ProtocolError(
@@ -786,12 +799,23 @@ where
     }
 
     /// Store a received response (called by protocol handler)
-    pub async fn store_response(&self, message: PreMessage) {
+    ///
+    /// The response is only accepted if the authenticated `sender_peer_id` is in the
+    /// expected responder set (established at init time). This rejects both unknown peers
+    /// and duplicate responses from the same peer. Fake `from_node_id` values are caught
+    /// downstream by crypto verification (`dealer.verify()`).
+    pub async fn store_response(&self, message: PreMessage, sender_peer_id: &PeerId) {
         let request_id = message.request_id().to_string();
+
+        tracing::debug!(
+            request_id = %request_id,
+            from_node_id = ?message.from_node_id(),
+            sender_peer = %hex::encode(sender_peer_id.as_bytes()),
+            "PRE Coordinator: Storing response"
+        );
         self.app_state
             .pre_response_state
-            .store_response(&request_id, message)
+            .store_response(&request_id, message, sender_peer_id.as_bytes())
             .await;
-        tracing::debug!(request_id = %request_id, "PRE Coordinator: Stored response");
     }
 }

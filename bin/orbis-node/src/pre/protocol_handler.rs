@@ -132,11 +132,11 @@ where
 
             // Special handling for responses - store them for the initiator
             if let PreMessage::ReencryptResponse { .. } = &pre_message {
-                self.coordinator.store_response(pre_message).await;
+                self.coordinator.store_response(pre_message, &peer_id).await;
                 continue;
             }
 
-            // Route message to coordinator
+            // Route message to coordinator with authenticated peer identity
             match self.coordinator.handle_message(pre_message).await {
                 Ok(Some(response)) => {
                     // Send response back

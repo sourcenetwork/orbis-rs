@@ -31,6 +31,7 @@ use crypto::SignaturePoint;
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::LocalStorage;
 use network::Message as NetworkMessage;
+use network::PeerId;
 use network::SIGN;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -86,7 +87,11 @@ where
     /// Handle an incoming Sign message
     ///
     /// Routes the message to the appropriate handler based on message type.
-    pub async fn handle_message(&self, message: SignMessage) -> Result<Option<SignMessage>> {
+    pub async fn handle_message(
+        &self,
+        message: SignMessage,
+        sender_peer_id: &PeerId,
+    ) -> Result<Option<SignMessage>> {
         match message {
             SignMessage::NonceRequest {
                 request_id,
@@ -96,8 +101,12 @@ where
                 tracing::info!(
                     request_id = %request_id,
                     from_node_id = from_node_id,
+                    sender_peer = %hex::encode(sender_peer_id.as_bytes()),
                     "Sign Coordinator: Received NonceRequest"
                 );
+                // Note: from_node_id is informational only for nonce requests (unused in handler).
+                // Sender validation for sign protocol is done in handle_sign_request where
+                // the ring's peer list is available from the bulletin lookup.
                 self.handle_nonce_request(request_id, from_node_id, ring_pk)
                     .await
             }
@@ -213,8 +222,11 @@ where
         message: Vec<u8>,
         all_commitments_bytes: Vec<u8>,
     ) -> Result<Option<SignMessage>> {
-        // 1. Verify the message exists on bulletin and get the associated ring_pk
+        // 1. Verify the message exists on bulletin and get the associated ring_pk and peer list
         let (ring_pk_hex, pub_poly) = self.verify_message_and_get_info(&message).await?;
+
+        // Note: We do NOT validate from_node_id here because the sign request initiator
+        // may not be in the ring (external requesters use node_id=0).
 
         // 2. Deserialize ring public key to get the storage key
         let ring_pk_bytes = hex::decode(&ring_pk_hex).map_err(|e| {
@@ -397,8 +409,9 @@ where
             SignError::Deserialization(format!("Failed to deserialize response: {}", e))
         })?;
 
-        // Store the response
-        self.store_response(response).await;
+        // Store the response with the authenticated peer identity
+        let authenticated_peer_id = connection.peer_id().clone();
+        self.store_response(response, &authenticated_peer_id).await;
 
         Ok(())
     }
@@ -444,13 +457,20 @@ where
             interactive = S::INTERACTIVE,
             "Sign Coordinator: Initiating signing"
         );
+        // Build the list of peers we expect responses from (everyone except self)
+        let expected_peers: Vec<String> = peer_ids
+            .iter()
+            .filter(|pid| !is_self_peer_id(&self.app_state.network, pid))
+            .cloned()
+            .collect();
+
         // Initialize response collection before calling inner function
         // This allows us to guarantee cleanup regardless of how inner function exits
         let request_id_for_cleanup = request_id.clone();
         if !self
             .app_state
             .sign_response_state
-            .init_response(request_id.clone())
+            .init_response(request_id.clone(), &expected_peers)
             .await
         {
             return Err(SignError::ProtocolError(
@@ -782,11 +802,18 @@ where
             }
         }
 
+        // Build expected peers for nonce round (everyone except self)
+        let nonce_expected_peers: Vec<String> = peer_ids
+            .iter()
+            .filter(|pid| !is_self_peer_id(&self.app_state.network, pid))
+            .cloned()
+            .collect();
+
         // Initialize response collection for nonce round using existing SignResponseManager
         if !self
             .app_state
             .sign_response_state
-            .init_response(nonce_request_id.clone())
+            .init_response(nonce_request_id.clone(), &nonce_expected_peers)
             .await
         {
             return Err(SignError::ProtocolError(
@@ -871,16 +898,27 @@ where
     }
 
     /// Store a received response (called by protocol handler)
-    pub async fn store_response(&self, message: SignMessage) {
+    ///
+    /// The response is only accepted if the authenticated `sender_peer_id` is in the
+    /// expected responder set (established at init time). This rejects both unknown peers
+    /// and duplicate responses from the same peer. Fake `from_node_id` values are caught
+    /// downstream by crypto verification (`signer.verify_share()`).
+    pub async fn store_response(&self, message: SignMessage, sender_peer_id: &PeerId) {
         let request_id = message.request_id().to_string();
+
+        tracing::debug!(
+            request_id = %request_id,
+            from_node_id = ?message.from_node_id(),
+            sender_peer = %hex::encode(sender_peer_id.as_bytes()),
+            "Sign Coordinator: Storing response"
+        );
         self.app_state
             .sign_response_state
-            .store_response(&request_id, message)
+            .store_response(&request_id, message, sender_peer_id.as_bytes())
             .await;
-        tracing::debug!(request_id = %request_id, "Sign Coordinator: Stored response");
     }
 
-    /// Verify that a message exists on the bulletin and return the ring_pk and pub_poly
+    /// Verify that a message exists on the bulletin and return the ring_pk, pub_poly, and peer_ids
     async fn verify_message_and_get_info(&self, message: &[u8]) -> Result<(String, D::PubPoly)> {
         // 1. Deserialize the BulletinPost from the message
         let post: BulletinPost = message.to_vec().try_into().map_err(|e| {
