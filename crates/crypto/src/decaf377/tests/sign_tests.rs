@@ -1,5 +1,5 @@
 use crate::decaf377::dkg::DKGNode;
-use crate::decaf377::sign::ThresholdDecafSigner;
+use crate::decaf377::sign::{FrostNonceCommitment, ThresholdDecafSigner};
 use crate::r#trait::{DistKeyShare, Dkg, PriShare, PubShare, ThresholdSigner};
 use crate::test_helper::DKGCoordinator;
 use ark_ff::UniformRand;
@@ -325,4 +325,80 @@ fn test_frost_different_share_subsets_produce_valid_signatures() {
     // Both should verify (but will have different R values since nonces are random)
     assert!(signer.verify(&aggregate_pk, msg, &sig1).is_ok());
     assert!(signer.verify(&aggregate_pk, msg, &sig2).is_ok());
+}
+
+#[test]
+fn test_frost_rejects_tampered_commitment_from_coordinator() {
+    let n = 3;
+    let t = 2;
+
+    let mut coordinator = DKGCoordinator::new(
+        |id: u32, threshold: usize, total_nodes: usize| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes)
+        },
+        n,
+        t,
+    )
+    .unwrap();
+
+    let (_aggregate_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
+
+    let signer = ThresholdDecafSigner::new();
+    let msg = b"tampered commitment test";
+
+    let participants: Vec<_> = secret_shares.iter().take(t).collect();
+
+    // Generate nonces honestly
+    let mut commitments = Vec::new();
+    let mut signing_states = Vec::new();
+    for share in &participants {
+        let dks = DistKeyShare {
+            pri_share: (*share).clone(),
+        };
+        let (c, s) = signer.generate_nonces(&dks).unwrap();
+        commitments.push((share.i, c));
+        signing_states.push(s);
+    }
+
+    // Coordinator tampers with signer 0's commitment before relaying
+    let mut tampered_commitments = commitments.clone();
+    tampered_commitments[0].1 = FrostNonceCommitment {
+        hiding: Element::GENERATOR * Fr::rand(&mut OsRng),
+        binding: Element::GENERATOR * Fr::rand(&mut OsRng),
+    };
+
+    // Signer 0 should reject because its commitment doesn't match its nonces
+    let dks = DistKeyShare {
+        pri_share: participants[0].clone(),
+    };
+    let result = signer.sign(
+        &dks,
+        msg,
+        &pub_poly,
+        Some(&signing_states[0]),
+        &tampered_commitments,
+    );
+    assert!(result.is_err(), "Should reject tampered own commitment");
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("tampered"),
+        "Error should mention tampering: {err_msg}"
+    );
+
+    // Signer 1's commitment wasn't tampered, so they would sign (but with wrong R)
+    // This is fine — the coordinator can't produce a valid aggregate signature anyway
+    let dks1 = DistKeyShare {
+        pri_share: participants[1].clone(),
+    };
+    let result1 = signer.sign(
+        &dks1,
+        msg,
+        &pub_poly,
+        Some(&signing_states[1]),
+        &tampered_commitments,
+    );
+    assert!(
+        result1.is_ok(),
+        "Signer 1's commitment wasn't tampered — they sign (though R is wrong)"
+    );
 }
