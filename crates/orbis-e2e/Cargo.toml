@@ -14,7 +14,6 @@ eyre = "0.6"
 rand = { workspace = true }
 libc = "0.2"
 tracing = "0.1"
-regex = "1"
 
 # HTTP client for SourceHub health checks
 reqwest = { workspace = true }

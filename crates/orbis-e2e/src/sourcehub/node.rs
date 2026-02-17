@@ -2,8 +2,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use crate::observe::patterns::sourcehub_patterns;
-use crate::observe::LogTracker;
 use crate::ManagedProcess;
 
 use super::genesis;
@@ -24,8 +22,6 @@ const TEST_ACCOUNT_HEX_KEY: &str =
 pub struct SourceHubNode {
     #[allow(dead_code)]
     process: ManagedProcess,
-    #[allow(dead_code)]
-    log_tracker: LogTracker,
     /// Cosmos LCD/REST API URL (e.g. "http://127.0.0.1:1317").
     pub lcd_url: String,
     /// CometBFT RPC URL (e.g. "http://127.0.0.1:26657").
@@ -84,20 +80,11 @@ impl SourceHubNode {
         cmd.arg("--minimum-gas-prices").arg("0uopen");
         cmd.arg("--log_no_color");
 
-        let stdout_path = log_dir.join("stdout.log");
-        let log_tracker = LogTracker::start(stdout_path, sourcehub_patterns());
-
         let process = ManagedProcess::spawn("sourcehub", &mut cmd, &log_dir)?;
-
-        // Wait for first block to be committed
-        let _first_block: String = log_tracker
-            .wait_for_pattern("first_block", ready_timeout)
-            .await
-            .map_err(|e| eyre::eyre!("sourcehubd did not produce first block: {}", e))?;
 
         let lcd_url = format!("http://127.0.0.1:{}", ports.lcd);
 
-        // Health check: wait for LCD to respond
+        // Wait for chain to produce its first block by polling the LCD endpoint
         let client = reqwest::Client::new();
         let health_url = format!(
             "{}/cosmos/base/tendermint/v1beta1/blocks/latest",
@@ -127,7 +114,6 @@ impl SourceHubNode {
 
         Ok(Self {
             process,
-            log_tracker,
             lcd_url,
             comet_rpc_url: format!("http://127.0.0.1:{}", ports.comet_rpc),
             grpc_url: format!("http://127.0.0.1:{}", ports.grpc),
