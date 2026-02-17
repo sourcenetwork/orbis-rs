@@ -68,6 +68,20 @@ impl ChainConfig {
         }
     }
 
+    /// Convert this config into a builder with all fields pre-populated.
+    pub fn to_builder(&self) -> ChainConfigBuilder {
+        ChainConfigBuilder {
+            chain_id: Some(self.chain_id.clone()),
+            rpc_url: Some(self.rpc_url.clone()),
+            rest_url: Some(self.rest_url.clone()),
+            grpc_url: Some(self.grpc_url.clone()),
+            account_prefix: Some(self.account_prefix.clone()),
+            default_gas_limit: Some(self.default_gas_limit),
+            gas_price: Some(self.gas_price.clone()),
+            gas_multiplier: Some(self.gas_multiplier),
+        }
+    }
+
     /// Calculate fee from gas limit.
     pub fn calculate_fee(&self, gas_limit: u64) -> u64 {
         ((gas_limit as f64) * self.gas_price.amount).ceil() as u64

@@ -9,7 +9,7 @@ use bulletin::r#trait::Bulletin;
 use bulletin::sourcehub::SourceHubBulletin;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
-    ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+    ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{Secret, ThresholdDealer};
@@ -515,10 +515,10 @@ resources:
         expr: creator
 "#;
 
-pub async fn add_policy_to_chain() -> Result<String> {
+pub async fn add_policy_to_chain(config: ChainConfig) -> Result<String> {
     let client = SourceHubClient::with_signer(
-        ChainConfig::local(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
+        config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
     )
     .await
     .map_err(|e| anyhow!("client builder issue: {}", e))?;
@@ -543,10 +543,11 @@ pub async fn register_object_to_chain(
     policy_id: String,
     object_id: String,
     resource: String,
+    config: ChainConfig,
 ) -> Result<()> {
     let client = SourceHubClient::with_signer(
-        ChainConfig::local(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
+        config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
     )
     .await
     .expect("client builder issue");
@@ -568,10 +569,11 @@ pub async fn set_relationship_on_chain(
     resource: String,
     relation: String,
     reader_did_pk: Option<String>,
+    config: ChainConfig,
 ) -> Result<()> {
     let client = SourceHubClient::with_signer(
-        ChainConfig::local(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
+        config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
     )
     .await
     .expect("client builder issue");
@@ -601,11 +603,11 @@ pub async fn set_relationship_on_chain(
     Ok(())
 }
 
-pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+pub async fn register_bulletin_namespace(namespace: String, config: ChainConfig) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(config.to_builder(), signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -621,11 +623,12 @@ pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
 pub async fn add_bulletin_collaborator(
     namespace: String,
     collaborator_address: String,
+    config: ChainConfig,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let client = SourceHubClient::with_signer(ChainConfig::local(), signer)
+    let client = SourceHubClient::with_signer(config, signer)
         .await
         .map_err(|e| anyhow!("Failed to create blockchain client: {}", e))?;
 
@@ -649,11 +652,12 @@ pub async fn create_bulletin_post(
     namespace: String,
     payload: Vec<u8>,
     proof: Vec<u8>,
+    config: ChainConfig,
 ) -> Result<String> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(config.to_builder(), signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -672,8 +676,8 @@ pub async fn create_bulletin_post(
 }
 
 /// Read a bulletin post by namespace and ID
-pub async fn read_bulletin_post(namespace: String, id: String) -> Result<Vec<u8>> {
-    let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
+pub async fn read_bulletin_post(namespace: String, id: String, config: ChainConfig) -> Result<Vec<u8>> {
+    let bulletin = SourceHubBulletin::new(config.to_builder())
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -686,8 +690,8 @@ pub async fn read_bulletin_post(namespace: String, id: String) -> Result<Vec<u8>
 }
 
 /// List all bulletin posts in a namespace
-pub async fn list_bulletin_posts(namespace: String) -> Result<Vec<Vec<u8>>> {
-    let client = SourceHubClient::new(ChainConfig::local())
+pub async fn list_bulletin_posts(namespace: String, config: ChainConfig) -> Result<Vec<Vec<u8>>> {
+    let client = SourceHubClient::new(config)
         .await
         .map_err(|e| anyhow!("Failed to create client: {}", e))?;
 
@@ -742,8 +746,8 @@ pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
 
 /// Get the current sequence number for an account address.
 /// Useful for verifying if a transaction was broadcast (sequence increments after each tx).
-pub async fn get_account_sequence(address: &str) -> Result<u64> {
-    let client = SourceHubClient::new(ChainConfig::local())
+pub async fn get_account_sequence(address: &str, config: ChainConfig) -> Result<u64> {
+    let client = SourceHubClient::new(config)
         .await
         .map_err(|e| anyhow!("Failed to create client: {}", e))?;
 

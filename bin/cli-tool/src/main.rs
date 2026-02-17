@@ -7,7 +7,7 @@ pub use commands::{
     do_encrypt_secret, do_generate_reader_key, do_pre, do_store_secret, fund, get_account_sequence,
     list_bulletin_posts, prepare_secret, query_node_info, read_bulletin_post,
     register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
-    store_prepared_secret, PreparedSecret,
+    store_prepared_secret, DkgResult, NodeInfoResult, PreparedSecret, StoreSecretResult,
 };
 use common::blockchain::ChainConfig;
 use hex;
@@ -329,14 +329,14 @@ async fn main() -> Result<()> {
             do_generate_reader_key()?;
         }
         SubCommands::AddPolicyToChain => {
-            add_policy_to_chain().await?;
+            add_policy_to_chain(ChainConfig::local()).await?;
         }
         SubCommands::RegisterObjectToChain {
             policy_id,
             object_id,
             resource,
         } => {
-            register_object_to_chain(policy_id, object_id, resource).await?;
+            register_object_to_chain(policy_id, object_id, resource, ChainConfig::local()).await?;
         }
         SubCommands::SetRelationshipOnChain {
             policy_id,
@@ -345,17 +345,17 @@ async fn main() -> Result<()> {
             relation,
             reader_did_pk,
         } => {
-            set_relationship_on_chain(policy_id, object_id, resource, relation, reader_did_pk)
+            set_relationship_on_chain(policy_id, object_id, resource, relation, reader_did_pk, ChainConfig::local())
                 .await?;
         }
         SubCommands::RegisterBulletinNamespace { namespace } => {
-            register_bulletin_namespace(namespace).await?;
+            register_bulletin_namespace(namespace, ChainConfig::local()).await?;
         }
         SubCommands::AddBulletinCollaborator {
             namespace,
             collaborator,
         } => {
-            add_bulletin_collaborator(namespace, collaborator).await?;
+            add_bulletin_collaborator(namespace, collaborator, ChainConfig::local()).await?;
         }
         SubCommands::CreateBulletinPost {
             namespace,
@@ -364,16 +364,16 @@ async fn main() -> Result<()> {
         } => {
             let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
             let proof_bytes = hex::decode(&proof).expect("Failed to decode proof hex");
-            create_bulletin_post(namespace, payload_bytes, proof_bytes).await?;
+            create_bulletin_post(namespace, payload_bytes, proof_bytes, ChainConfig::local()).await?;
         }
         SubCommands::Fund { address } => {
             fund(address, ChainConfig::local()).await?;
         }
         SubCommands::ReadBulletinPost { namespace, id } => {
-            read_bulletin_post(namespace, id).await?;
+            read_bulletin_post(namespace, id, ChainConfig::local()).await?;
         }
         SubCommands::ListBulletinPost { namespace } => {
-            list_bulletin_posts(namespace).await?;
+            list_bulletin_posts(namespace, ChainConfig::local()).await?;
         }
         SubCommands::PrepareSecret {
             secret,

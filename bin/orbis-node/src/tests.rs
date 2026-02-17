@@ -424,6 +424,7 @@ async fn test_init_node_with_encrypted_storage() {
 mod cli_tool_integration {
     use crate::constants::{BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE};
     use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
+    use common::blockchain::ChainConfig;
     use common::IntegrationTestNetwork;
     use common::SOURCEHUB_RPC_URL;
     use crypto::helpers::{generate_keypair, generate_policy_metadata};
@@ -480,24 +481,28 @@ mod cli_tool_integration {
         println!("Node 3 P2P address: {}", node3_info.p2p_address);
 
         // Register the namespace and add collaborators
-        cli_tool::register_bulletin_namespace(BULLETIN_RING_NAMESPACE.to_string())
+        let chain_config = ChainConfig::local();
+        cli_tool::register_bulletin_namespace(BULLETIN_RING_NAMESPACE.to_string(), chain_config.clone())
             .await
             .expect("Failed to register namespace");
         cli_tool::add_bulletin_collaborator(
             BULLETIN_RING_NAMESPACE.to_string(),
             node1_info.public_address.clone(),
+            chain_config.clone(),
         )
         .await
         .expect("add_bulletin_collaborator");
         cli_tool::add_bulletin_collaborator(
             BULLETIN_RING_NAMESPACE.to_string(),
             node2_info.public_address.clone(),
+            chain_config.clone(),
         )
         .await
         .expect("add_bulletin_collaborator");
         cli_tool::add_bulletin_collaborator(
             BULLETIN_RING_NAMESPACE.to_string(),
             node3_info.public_address.clone(),
+            chain_config.clone(),
         )
         .await
         .expect("add_bulletin_collaborator");
@@ -566,7 +571,7 @@ mod cli_tool_integration {
 
         // Read the post payload using the post_id from the event
         let post_payload =
-            cli_tool::read_bulletin_post(ring_namespace.clone(), post_event.post_id.clone())
+            cli_tool::read_bulletin_post(ring_namespace.clone(), post_event.post_id.clone(), chain_config.clone())
                 .await
                 .expect("read ring post by event post_id");
 
@@ -596,15 +601,15 @@ mod cli_tool_integration {
         let did_pk_string = "test_did_secret".to_string();
         let namespace = "docker_test_namespace".to_string();
         let full_namespace = format!("bulletin/{}", namespace);
-        let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
+        let policy_id = cli_tool::add_policy_to_chain(chain_config.clone()).await.expect("policy_id");
         let proof = vec![0x01];
 
-        cli_tool::register_bulletin_namespace(namespace.clone())
+        cli_tool::register_bulletin_namespace(namespace.clone(), chain_config.clone())
             .await
             .expect("Failed to register namespace");
 
         // Add node1 as collaborator on the user namespace so it can post on user's behalf
-        cli_tool::add_bulletin_collaborator(namespace.clone(), node1_info.public_address.clone())
+        cli_tool::add_bulletin_collaborator(namespace.clone(), node1_info.public_address.clone(), chain_config.clone())
             .await
             .expect("add node as collaborator on user namespace");
 
@@ -636,7 +641,7 @@ mod cli_tool_integration {
                 permission: permission.clone(),
             };
             let serialized: Vec<u8> = payload.try_into().expect("serialize payload");
-            cli_tool::create_bulletin_post(namespace.clone(), serialized, proof)
+            cli_tool::create_bulletin_post(namespace.clone(), serialized, proof, chain_config.clone())
                 .await
                 .expect("create_bulletin_post")
         };
@@ -665,7 +670,7 @@ mod cli_tool_integration {
         .expect("prepare_secret should succeed");
 
         // Get sequence before first store to verify transaction is broadcast
-        let sequence_before_first = cli_tool::get_account_sequence(&node1_address)
+        let sequence_before_first = cli_tool::get_account_sequence(&node1_address, chain_config.clone())
             .await
             .expect("get sequence before first store");
         println!(
@@ -709,7 +714,7 @@ mod cli_tool_integration {
 
         // Wait for block confirmation and check sequence incremented
         sleep(Duration::from_secs(2)).await;
-        let sequence_after_first = cli_tool::get_account_sequence(&node1_address)
+        let sequence_after_first = cli_tool::get_account_sequence(&node1_address, chain_config.clone())
             .await
             .expect("get sequence after first store");
         println!("Node1 sequence after first store: {}", sequence_after_first);
@@ -720,11 +725,11 @@ mod cli_tool_integration {
 
         // Read both from bulletin and compare metadata
         let manual_bytes =
-            cli_tool::read_bulletin_post(full_namespace.clone(), object_id_manual.clone())
+            cli_tool::read_bulletin_post(full_namespace.clone(), object_id_manual.clone(), chain_config.clone())
                 .await
                 .expect("read manual post");
         let service_bytes =
-            cli_tool::read_bulletin_post(full_namespace.clone(), object_id_service.clone())
+            cli_tool::read_bulletin_post(full_namespace.clone(), object_id_service.clone(), chain_config.clone())
                 .await
                 .expect("read service post");
 
@@ -767,6 +772,7 @@ mod cli_tool_integration {
             policy_id.clone(),
             object_id_manual.clone(),
             resource.clone(),
+            chain_config.clone(),
         )
         .await
         .expect("register_object_to_chain");
@@ -777,6 +783,7 @@ mod cli_tool_integration {
             resource.clone(),
             relation.clone(),
             Some(did_pk_string.clone()),
+            chain_config.clone(),
         )
         .await
         .expect("set_relationship_on_chain");
@@ -786,6 +793,7 @@ mod cli_tool_integration {
             policy_id.clone(),
             object_id_derived.clone(),
             resource.clone(),
+            chain_config.clone(),
         )
         .await
         .expect("register_object_to_chain");
@@ -796,6 +804,7 @@ mod cli_tool_integration {
             resource.clone(),
             relation,
             Some(did_pk_string.clone()),
+            chain_config.clone(),
         )
         .await
         .expect("set_relationship_on_chain");
@@ -853,7 +862,7 @@ mod cli_tool_integration {
         println!("Testing idempotency: storing same secret again...");
 
         // Get sequence before second store
-        let sequence_before_second = cli_tool::get_account_sequence(&node1_address)
+        let sequence_before_second = cli_tool::get_account_sequence(&node1_address, chain_config.clone())
             .await
             .expect("get sequence before second store");
         println!(
@@ -878,7 +887,7 @@ mod cli_tool_integration {
 
         // Wait and check sequence did NOT change (no tx broadcast for idempotent call)
         sleep(Duration::from_secs(2)).await;
-        let sequence_after_second = cli_tool::get_account_sequence(&node1_address)
+        let sequence_after_second = cli_tool::get_account_sequence(&node1_address, chain_config.clone())
             .await
             .expect("get sequence after second store");
         println!(

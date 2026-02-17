@@ -8,6 +8,7 @@ use crate::{
     allocate_ports, find_orbis_node_binary, generate_run_id, ManagedProcess, TestRunDir,
 };
 use crate::sourcehub::{self, SourceHubNode};
+use common::blockchain::ChainConfig;
 use std::{
     fmt,
     process::Command,
@@ -69,6 +70,24 @@ impl OrbisRing {
     /// Access the SourceHub node (if started).
     pub fn sourcehub(&self) -> Option<&SourceHubNode> {
         self.sourcehub.as_ref()
+    }
+
+    /// Get a `ChainConfig` pointing at the ring's SourceHub instance.
+    ///
+    /// Panics if the ring was built without SourceHub.
+    /// Use this to pass to cli-tool functions that need chain connectivity.
+    pub fn chain_config(&self) -> ChainConfig {
+        let sh = self.sourcehub.as_ref().expect("ring was built without SourceHub");
+        ChainConfig {
+            chain_id: "sourcehub-localnet".to_string(),
+            rpc_url: sh.comet_rpc_url.clone(),
+            rest_url: sh.lcd_url.clone(),
+            grpc_url: sh.grpc_url.clone(),
+            account_prefix: "source".to_string(),
+            default_gas_limit: 300_000,
+            gas_price: common::blockchain::GasPrice::default(),
+            gas_multiplier: 1.2,
+        }
     }
 
     /// Wait for all nodes' gRPC endpoints to become responsive.
