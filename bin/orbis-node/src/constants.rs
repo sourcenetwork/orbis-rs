@@ -82,6 +82,28 @@ pub const MAX_SIGN_RESPONSES: usize = 1000;
 /// and Round 2 (signing). This limit prevents unbounded memory growth.
 pub const MAX_NONCE_STATES: usize = 1000;
 
+/// Time-to-live for FROST nonce states before they are eligible for cleanup
+///
+/// Nonce states should be consumed within seconds (between Round 1 and Round 2).
+/// If a nonce is not consumed within this duration, the signing process was likely
+/// abandoned (e.g., initiator crashed after Round 1). Set to 2 minutes to match
+/// DKG_PHASE_TIMEOUT.
+pub const SIGN_NONCE_TTL: Duration = Duration::from_secs(120);
+
+/// Time-to-live for sign response entries before they are eligible for cleanup
+///
+/// Sign response entries should complete within seconds. If an entry is not
+/// cleaned up within this duration, the signing coordinator was likely abandoned.
+/// Set to 2 minutes as defense-in-depth behind the normal outer-function cleanup.
+pub const SIGN_RESPONSE_TTL: Duration = Duration::from_secs(120);
+
+/// Interval between sign state expiration checks
+///
+/// The sign expiration worker runs periodically to clean up abandoned nonce states
+/// and stale response entries. Set to 30 seconds since signing operations are
+/// faster than DKG and stale entries should be detected promptly.
+pub const SIGN_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+
 // ============================================================================
 // Peer ID Validation Constants
 // ============================================================================
