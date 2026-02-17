@@ -8,6 +8,7 @@
 //! - Auto-assigned ports (no conflicts between parallel runs)
 //! - `Drop` cleans up unless `ORBIS_E2E_KEEP=1`
 
+pub mod fixture;
 pub mod observe;
 pub mod ring;
 pub mod sourcehub;

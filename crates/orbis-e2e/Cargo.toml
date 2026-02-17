@@ -33,8 +33,11 @@ hex = { workspace = true }
 # CLI tool for driving DKG, PRE, ACP, bulletin, and secret operations in tests
 cli-tool = { path = "../../bin/cli-tool", default-features = false }
 
-# Blockchain client types (ChainConfig, ChainConfigBuilder)
+# Blockchain client types (ChainConfig, ChainConfigBuilder, events)
 common = { path = "../common", default-features = false }
+
+# Bulletin types (RingPayload, DocumentPayload, BulletinPost)
+bulletin = { path = "../bulletin" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
@@ -42,9 +45,6 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 # Crypto types for reader keypair generation, encryption, and verification
 crypto = { path = "../crypto", default-features = false }
-
-# Bulletin types (RingPayload, DocumentPayload, BulletinPost)
-bulletin = { path = "../bulletin" }
 
 [features]
 default = ["bls12-381"]

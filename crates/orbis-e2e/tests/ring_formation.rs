@@ -1,79 +1,78 @@
 //! Ring formation tests: verify DKG ceremony completes and collective key is produced.
 //!
-//! These tests exercise the core Orbis use case: N nodes form a ring, run DKG,
-//! and produce a collective public key. The ring state should transition through:
-//!   UNSPECIFIED -> INITIALIZED -> STARTED -> ... -> CERTIFIED
-//!
-//! Requires: DKG service, P2P transport, bulletin board (at least in-memory)
+//! Uses the shared DKG fixture so DKG only runs once per test binary.
 
-use std::time::Duration;
+use orbis_e2e::fixture::shared_dkg_fixture;
 
-use orbis_e2e::ring::OrbisRing;
-
-/// N=3, T=2 ring formation with DKG.
-///
-/// 1. Start 3 nodes
-/// 2. Get peer IDs from each node (InfoService.GetNodeInfo)
-/// 3. POST StartDkg to each node with the other nodes' peer IDs
-/// 4. Wait for DKG to complete (all nodes reach CERTIFIED state)
-/// 5. Verify collective public key exists and is consistent across nodes
+/// Verify the shared fixture produces a valid DKG'd ring with N=3, T=2.
 #[tokio::test]
-#[ignore = "requires DKG implementation with bulletin board"]
 async fn ring_n3_t2_forms_and_certifies() {
-    let ring = OrbisRing::builder()
-        .nodes(3)
-        .threshold(2)
-        .log_level("debug")
-        .build()
-        .await
-        .expect("ring should start");
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .with_test_writer()
+        .try_init();
 
-    ring.wait_ready(Duration::from_secs(30))
-        .await
-        .expect("all nodes should be healthy");
+    let fixture = shared_dkg_fixture().await;
 
-    // TODO: Get peer IDs from each node via InfoService
-    // TODO: Send StartDkg request to each node
-    // TODO: Wait for DKG state to reach CERTIFIED
-    // TODO: Verify collective public key is consistent across all nodes
-    todo!("implement when DKG e2e flow is working");
+    assert_eq!(fixture.ring.node_count(), 3);
+    assert_eq!(fixture.ring.threshold(), 2);
+    assert!(!fixture.ring_pk_hex.is_empty(), "ring_pk should not be empty");
+    assert!(!fixture.ring_id.is_empty(), "ring_id should not be empty");
+    assert_eq!(fixture.node_infos.len(), 3);
+
+    // Verify all nodes have unique peer IDs
+    let peer_ids: Vec<&str> = fixture.node_infos.iter().map(|n| n.peer_id.as_str()).collect();
+    for i in 0..peer_ids.len() {
+        for j in (i + 1)..peer_ids.len() {
+            assert_ne!(peer_ids[i], peer_ids[j], "peer IDs must be unique");
+        }
+    }
+
+    // Verify all nodes have unique public addresses
+    let addrs: Vec<&str> = fixture
+        .node_infos
+        .iter()
+        .map(|n| n.public_address.as_str())
+        .collect();
+    for i in 0..addrs.len() {
+        for j in (i + 1)..addrs.len() {
+            assert_ne!(addrs[i], addrs[j], "public addresses must be unique");
+        }
+    }
+
+    // Verify ring public key is valid hex and has expected length
+    let pk_bytes = hex::decode(&fixture.ring_pk_hex).expect("ring_pk should be valid hex");
+    assert!(pk_bytes.len() > 32, "ring_pk should be a group element (>32 bytes)");
+
+    println!(
+        "Ring formed: {} nodes, threshold {}, pk={}...",
+        fixture.ring.node_count(),
+        fixture.ring.threshold(),
+        &fixture.ring_pk_hex[..40],
+    );
 }
 
-/// N=5, T=3 ring — larger ring to test scalability.
+/// Verify the ring payload was posted to the bulletin and can be read back.
 #[tokio::test]
-#[ignore = "requires DKG implementation"]
-async fn ring_n5_t3_forms() {
-    let ring = OrbisRing::builder()
-        .nodes(5)
-        .threshold(3)
-        .build()
-        .await
-        .expect("ring should start");
+async fn ring_payload_readable_from_bulletin() {
+    let fixture = shared_dkg_fixture().await;
+    let chain_config = fixture.chain_config();
 
-    ring.wait_ready(Duration::from_secs(30))
-        .await
-        .expect("all nodes should be healthy");
+    let payload_bytes = cli_tool::read_bulletin_post(
+        "orbis".to_string(),
+        fixture.ring_id.clone(),
+        chain_config,
+    )
+    .await
+    .expect("should read ring payload from bulletin");
 
-    todo!("implement when DKG e2e flow is working");
-}
+    let payload: bulletin::r#trait::RingPayload =
+        serde_json::from_slice(&payload_bytes).expect("should parse RingPayload");
 
-/// Minimum viable ring: N=3, T=2 (Rabin DKG requires T >= 2).
-#[tokio::test]
-#[ignore = "requires DKG implementation"]
-async fn minimum_viable_ring() {
-    let ring = OrbisRing::builder()
-        .nodes(3)
-        .threshold(2)
-        .build()
-        .await
-        .expect("ring should start");
+    assert_eq!(payload.ring_pk, fixture.ring_pk_hex);
+    assert_eq!(payload.threshold, fixture.ring.threshold());
+    assert_eq!(payload.peer_ids.len(), fixture.ring.node_count());
 
-    ring.wait_ready(Duration::from_secs(30))
-        .await
-        .expect("all nodes should be healthy");
-
-    // Verify minimum threshold is enforced
-    assert!(ring.threshold() >= 2, "Rabin DKG requires T >= 2");
-
-    todo!("implement when DKG e2e flow is working");
+    println!("Ring payload verified on bulletin: {} peers, threshold {}",
+        payload.peer_ids.len(), payload.threshold);
 }
