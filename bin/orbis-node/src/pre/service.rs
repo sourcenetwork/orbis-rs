@@ -9,7 +9,11 @@ use crate::pre::error::PreError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, PreClaims};
 use authz::sourcehub::AccessCheckRequest;
 use bulletin::r#trait::{DocumentPayload, RingPayload};
-use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
+use crypto::helpers::generate_policy_metadata;
+use crypto::r#trait::{
+    DistKeyShare, Dkg, EncryptionProof, ReencryptReply, Secret, ThresholdDealer,
+};
+use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
 use network::REENCRYPT;
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
 use std::sync::Arc;
@@ -142,6 +146,34 @@ where
             &req.derivation,
         )?;
 
+        // Validate metadata not tampered
+        // Generate policy metadata for proof binding verification (before fields are moved)
+        let policy_metadata = generate_policy_metadata(
+            &document_payload.policy_id,
+            &document_payload.resource,
+            &document_payload.permission,
+        );
+        // ring_pk: hex-encoded compressed G1Affine bytes
+        let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
+            .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
+
+        let ring_pk = G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize ring_pk: {}", e))
+        })?;
+
+        let secret: Secret = serde_json::from_slice(&document_payload.document.as_bytes().to_vec())
+            .map_err(|e| {
+                PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
+            })?;
+
+        verify_encryption_binding(
+            &ring_pk,
+            req.derivation.as_deref(),
+            document_payload.proof,
+            &secret.enc_cmt,
+            &policy_metadata,
+        )?;
+
         tracing::info!(
             ring_id = %document_payload.ring_id,
             ring_pk = %ring_payload.ring_pk,
@@ -154,10 +186,6 @@ where
         let created_at = current_time as i64;
 
         // 1. Parse JSON and hex inputs
-        // ring_pk: hex-encoded compressed G1Affine bytes
-        let ring_pk = hex::decode(&ring_payload.ring_pk)
-            .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
-
         // Use original string bytes instead of re-serializing
         let secret_bytes = document_payload.document.as_bytes().to_vec();
 
@@ -222,7 +250,7 @@ where
         let result = coordinator
             .initiate_reencryption(
                 request_id,
-                ring_pk,
+                ring_pk_bytes,
                 secret_bytes,
                 rdr_pk,
                 &ring_payload.peer_ids,
@@ -260,6 +288,37 @@ where
 
         Ok(Response::new(response))
     }
+}
+
+/// Verifies the encryption proof binds the ciphertext to the correct public key and policy.
+///
+/// Derives the actual public key (applying derivation if present), deserializes the
+/// encryption proof and commitment, then verifies via `ThresholdDealerNode::verify_encryption`.
+pub fn verify_encryption_binding(
+    ring_pk: &G1Affine,
+    derivation: Option<&[u8]>,
+    proof_str: String,
+    enc_cmt_bytes: &[u8],
+    policy_metadata: &[u8],
+) -> Result<(), PreError> {
+    let actual_pk = if let Some(derivation) = derivation {
+        ThresholdDealerNode::derive_public_key(ring_pk, derivation)
+            .map_err(|e| PreError::Crypto(format!("derive_public_key error: {}", e)))?
+    } else {
+        *ring_pk
+    };
+
+    let proof: EncryptionProof = EncryptionProof::try_from(proof_str).map_err(|e| {
+        PreError::Deserialization(format!("Failed to deserialize encryption proof: {}", e))
+    })?;
+
+    let enc_cmt = G1Affine::from_bytes(enc_cmt_bytes)
+        .map_err(|e| PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e)))?;
+
+    ThresholdDealerNode::verify_encryption(&actual_pk, &enc_cmt, &proof, Some(policy_metadata))
+        .map_err(|e| PreError::Crypto(format!("Policy binding verification failed: {}", e)))?;
+
+    Ok(())
 }
 
 /// Validates JWT claims against the PRE request
