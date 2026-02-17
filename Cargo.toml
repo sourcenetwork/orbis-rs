@@ -11,6 +11,7 @@ members = [
     "crates/authz", 
     "crates/common", 
     "crates/bulletin",
+    "crates/orbis-e2e",
 ]
 
 [workspace.package]

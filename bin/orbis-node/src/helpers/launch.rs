@@ -37,6 +37,10 @@ pub struct Args {
     /// denomination of chain gas tokens
     #[arg(long)]
     pub denom: Option<String>,
+    /// Data directory for all node state (database, keys). Isolates this node's
+    /// storage from other nodes on the same machine.
+    #[arg(short = 'd', long)]
+    pub data_dir: Option<String>,
     /// Address for Prometheus metrics HTTP server (e.g., "0.0.0.0:9090")
     #[arg(short = 'm', long)]
     pub metrics_addr: Option<String>,
@@ -288,15 +292,29 @@ impl From<LogLevel> for tracing::Level {
     }
 }
 
-pub fn db_path(name: &str) -> String {
-    // Try to get project root (works in dev environment), fall back to /data for Docker
+pub fn db_path(name: &str, data_dir: Option<&str>) -> String {
+    // 1. Explicit --data-dir flag (highest priority)
+    if let Some(dir) = data_dir {
+        let db_dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&db_dir).ok();
+        return format!("{}/{}.redb", db_dir.display(), name);
+    }
+
+    // 2. ORBIS_DB_PATH environment variable
+    if let Ok(path) = env::var("ORBIS_DB_PATH") {
+        if !path.is_empty() {
+            return path;
+        }
+    }
+
+    // 3. Try to get project root (works in dev environment), fall back to /data for Docker
     let base_path = match project_root::get_project_root() {
         Ok(root) => root,
         Err(_) => {
             // In Docker or other environments without Cargo.toml, use /data or current dir
-            let data_dir = std::path::PathBuf::from("/data");
-            if data_dir.exists() {
-                data_dir
+            let dir = std::path::PathBuf::from("/data");
+            if dir.exists() {
+                dir
             } else {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             }
@@ -311,17 +329,24 @@ pub fn db_path(name: &str) -> String {
 pub fn create_and_store_node_key(
     local_storage: LocalStorageImpl,
     config: ChainConfig,
+    data_dir: Option<&str>,
 ) -> Result<TxSigner, String> {
-    // Write public key to file - try project root first, fall back to /data or current dir
-    let base_path = match project_root::get_project_root() {
-        Ok(root) => root,
-        Err(_) => {
-            // In Docker or other environments without Cargo.toml, use /data or current dir
-            let data_dir = std::path::PathBuf::from("/data");
-            if data_dir.exists() {
-                data_dir
-            } else {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    // Write public key to file - use data_dir if provided, else project root, else /data or cwd
+    let base_path = if let Some(dir) = data_dir {
+        let p = PathBuf::from(dir);
+        std::fs::create_dir_all(&p).ok();
+        p
+    } else {
+        match project_root::get_project_root() {
+            Ok(root) => root,
+            Err(_) => {
+                // In Docker or other environments without Cargo.toml, use /data or current dir
+                let d = std::path::PathBuf::from("/data");
+                if d.exists() {
+                    d
+                } else {
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                }
             }
         }
     };

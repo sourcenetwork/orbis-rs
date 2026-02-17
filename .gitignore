@@ -53,3 +53,8 @@ orbis_db
 test_dbs
 dbs
 public_key.txt
+
+# Local agent context
+CLAUDE.md
+SESSION-PROMPT.md
+.claude/

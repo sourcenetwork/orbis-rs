@@ -1,0 +1,46 @@
+[package]
+name = "orbis-e2e"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+eyre = "0.6"
+rand = { workspace = true }
+libc = "0.2"
+tracing = "0.1"
+regex = "1"
+
+# HTTP client for SourceHub health checks
+reqwest = { workspace = true }
+
+# gRPC client for orbis-node health checks
+tonic = "0.14.2"
+prost = "0.13"
+
+# Proto definitions for gRPC client
+proto = { path = "../proto" }
+
+# Identity derivation (secp256k1 -> source1... address)
+cosmrs = { workspace = true }
+hex = { workspace = true }
+
+# CLI tool for driving DKG, PRE, ACP, bulletin, and secret operations in tests
+cli-tool = { path = "../../bin/cli-tool", default-features = false }
+
+# Blockchain client types (ChainConfig, ChainConfigBuilder)
+common = { path = "../common", default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[features]
+default = ["bls12-381"]
+bls12-381 = ["cli-tool/bls12-381", "common/bls12-381"]
+decaf377 = ["cli-tool/decaf377", "common/decaf377"]

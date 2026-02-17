@@ -223,8 +223,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // Get password for encrypting ring key shares
     let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
-    let local_storage = LocalStorageImpl::new(Some(password), db_path("orbis"))
-        .map_err(|e| format!("Failed to create local storage: {}", e))?;
+    let local_storage =
+        LocalStorageImpl::new(Some(password), db_path("orbis", args.data_dir.as_deref()))
+            .map_err(|e| format!("Failed to create local storage: {}", e))?;
     // Get node secret hex for netwokring
     let node_secret_hex = get_network_key_secret(None, local_storage.clone())
         .map_err(|e| format!("Failed to get node secret: {}", e))?;
@@ -261,7 +262,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .rest_url(args.chain_rest.clone())
         .denom(args.denom.clone());
     let chain_config = bulletin_chain_config.clone().build();
-    let signer = create_and_store_node_key(local_storage.clone(), chain_config)
+    let signer = create_and_store_node_key(local_storage.clone(), chain_config, args.data_dir.as_deref())
         .map_err(|e| format!("Failed to create or store node key: {}", e))?;
 
     // For integration tests, this funds the account, this is handled differently live

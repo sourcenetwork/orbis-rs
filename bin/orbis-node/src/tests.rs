@@ -52,6 +52,7 @@ async fn test_init_node_success() {
             chain_rest: None,
             chain_rpc: None,
             denom: None,
+            data_dir: None,
             metrics_addr: None,
             loki_url: None,
         },
@@ -113,6 +114,7 @@ async fn test_init_node_invalid_address() {
             chain_rest: None,
             chain_rpc: None,
             denom: None,
+            data_dir: None,
             metrics_addr: None,
             loki_url: None,
         },
@@ -164,6 +166,7 @@ async fn test_init_node_app_state_configuration() {
             chain_rest: None,
             chain_rpc: None,
             denom: None,
+            data_dir: None,
             metrics_addr: None,
             loki_url: None,
         },
@@ -246,6 +249,7 @@ async fn test_init_multiple_nodes() {
             chain_rest: None,
             chain_rpc: None,
             denom: None,
+            data_dir: None,
             metrics_addr: None,
             loki_url: None,
         },
@@ -265,6 +269,7 @@ async fn test_init_multiple_nodes() {
             chain_rest: None,
             chain_rpc: None,
             denom: None,
+            data_dir: None,
             metrics_addr: None,
             loki_url: None,
         },
@@ -386,6 +391,7 @@ async fn test_init_node_with_encrypted_storage() {
             chain_rest: None,
             chain_rpc: None,
             denom: None,
+            data_dir: None,
             metrics_addr: None,
             loki_url: None,
         },
@@ -989,7 +995,7 @@ fn test_create_and_store_node_key() {
     let config = ChainConfig::local();
 
     // First call should create a new key
-    let result = create_and_store_node_key(local_storage.clone(), config.clone());
+    let result = create_and_store_node_key(local_storage.clone(), config.clone(), None);
     assert!(
         result.is_ok(),
         "Should create key successfully: {:?}",
@@ -1005,7 +1011,7 @@ fn test_create_and_store_node_key() {
     );
 
     // Second call should return the same address (idempotent)
-    let result2 = create_and_store_node_key(local_storage.clone(), config);
+    let result2 = create_and_store_node_key(local_storage.clone(), config, None);
     assert!(result2.is_ok(), "Second call should succeed");
 
     let signer2 = result2.unwrap();
