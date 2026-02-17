@@ -1,7 +1,9 @@
-//! Secret lifecycle tests: DKG → StoreSecret → PRE → Decrypt.
+//! Secret lifecycle test: DKG → StoreSecret → PRE → Decrypt.
 //!
-//! All tests in this file share a single DKG fixture via `shared_dkg_fixture()`.
-//! The first test to run pays the ~30-40s DKG cost; subsequent tests start instantly.
+//! Native equivalent of the Docker-based `test_cli_calls_dkg_and_pre_endpoint`.
+//! Starts a 3-node ring with SourceHub, runs the full pipeline, and verifies
+//! encryption, signatures, re-encryption, and idempotency. All processes are
+//! cleaned up on drop.
 
 use std::time::Duration;
 
@@ -9,15 +11,20 @@ use bulletin::r#trait::{BulletinPost, DocumentPayload};
 use crypto::helpers::{generate_keypair, generate_policy_metadata};
 use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, PreImpl, SignImpl};
-use orbis_e2e::fixture::shared_dkg_fixture;
+use orbis_e2e::fixture::setup_dkg;
 
 /// Placeholder proof (must match orbis-node constant).
 const BULLETIN_PLACEHOLDER_PROOF: &[u8] = &[0x01];
 
 /// Full DKG → StoreSecret → PRE → Decrypt pipeline.
 ///
-/// This is the comprehensive test that covers the entire flow. Uses the
-/// shared DKG fixture so subsequent runs within the same test binary skip DKG.
+/// Mirrors the Docker-based test_cli_calls_dkg_and_pre_endpoint:
+/// 1. Start 3 nodes + SourceHub, run DKG
+/// 2. Store secrets (manual + service paths, with/without derivation)
+/// 3. Verify BLS threshold signatures
+/// 4. Register ACP objects + relationships
+/// 5. PRE re-encryption + decrypt (normal + derived key)
+/// 6. Idempotent store verification
 #[tokio::test]
 async fn dkg_store_pre_decrypt_full_pipeline() {
     let _ = tracing_subscriber::fmt()
@@ -25,14 +32,14 @@ async fn dkg_store_pre_decrypt_full_pipeline() {
         .with_test_writer()
         .try_init();
 
-    let fixture = shared_dkg_fixture().await;
+    let fixture = setup_dkg().await;
     let chain_config = fixture.chain_config();
     let endpoint = fixture.endpoint();
     let ring_pk_hex = &fixture.ring_pk_hex;
     let ring_id = &fixture.ring_id;
     let node1_address = &fixture.node_infos[0].public_address;
 
-    println!("Using shared fixture: ring_pk={}...", &ring_pk_hex[..40]);
+    println!("Ring ready: pk={}...", &ring_pk_hex[..40]);
 
     // ================================================================
     // Setup: ACP policy + user namespace

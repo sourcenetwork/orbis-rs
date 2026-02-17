@@ -9,7 +9,7 @@
 //! - `Drop` cleans up unless `ORBIS_E2E_KEEP=1`
 
 pub mod fixture;
-pub mod ring;
+pub mod orbis;
 pub mod sourcehub;
 
 use std::{

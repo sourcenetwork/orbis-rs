@@ -1,41 +1,38 @@
-//! Shared DKG fixture for e2e tests.
+//! DKG fixture for e2e tests.
 //!
-//! Running DKG is expensive (~30-40s). This module provides a way to run it
-//! once per test binary and share the formed ring across multiple tests.
+//! Running DKG is expensive (~30-40s). This module provides a helper that
+//! starts a 3-node ring, runs DKG, and returns the results.
+//!
+//! The returned `DkgFixture` owns the `OrbisRing` — when it's dropped, all
+//! managed processes (orbis-node, sourcehubd) are killed via SIGTERM/SIGKILL.
 //!
 //! # Usage
 //!
 //! ```ignore
-//! use orbis_e2e::fixture::shared_dkg_fixture;
+//! use orbis_e2e::fixture::setup_dkg;
 //!
 //! #[tokio::test]
-//! async fn test_pre_flow() {
-//!     let fixture = shared_dkg_fixture().await;
+//! async fn test_pipeline() {
+//!     let fixture = setup_dkg().await;
 //!     // Use fixture.ring, fixture.ring_pk_hex, fixture.chain_config(), etc.
-//! }
-//!
-//! #[tokio::test]
-//! async fn test_store_secret() {
-//!     let fixture = shared_dkg_fixture().await;
-//!     // Same ring, no second DKG ceremony
+//!     // Processes are cleaned up when `fixture` is dropped.
 //! }
 //! ```
 
 use common::blockchain::events::BulletinEventSubscription;
 use common::blockchain::ChainConfig;
 use std::time::Duration;
-use tokio::sync::OnceCell;
 
-use crate::ring::OrbisRing;
+use crate::orbis::OrbisRing;
 
 /// The bulletin namespace used for ring payloads (must match orbis-node constant).
 const BULLETIN_RING_NAMESPACE: &str = "orbis";
 
 /// Results of a completed DKG ceremony, ready for use by tests.
+///
+/// Owns the `OrbisRing` — dropping this struct kills all managed processes.
 pub struct DkgFixture {
-    /// The running ring (3 nodes + SourceHub). Processes stay alive for the
-    /// lifetime of this struct (leaked into a static OnceCell, cleaned up
-    /// when the test binary exits).
+    /// The running ring (3 nodes + SourceHub). Processes are killed on drop.
     pub ring: OrbisRing,
     /// Hex-encoded collective public key from DKG.
     pub ring_pk_hex: String,
@@ -57,22 +54,12 @@ impl DkgFixture {
     }
 }
 
-/// Global shared fixture — initialized once, reused across all tests in the binary.
-static SHARED_FIXTURE: OnceCell<DkgFixture> = OnceCell::const_new();
-
-/// Get (or create) the shared DKG fixture.
+/// Start a 3-node ring with SourceHub, run DKG, and return the fixture.
 ///
-/// First call runs the full ceremony (~30-40s). Subsequent calls return instantly.
-/// The ring processes stay alive until the test binary exits.
-pub async fn shared_dkg_fixture() -> &'static DkgFixture {
-    SHARED_FIXTURE
-        .get_or_init(|| async { init_dkg_fixture().await })
-        .await
-}
-
-/// Run the full DKG ceremony and return the fixture.
-async fn init_dkg_fixture() -> DkgFixture {
-    eprintln!("[fixture] Starting shared DKG fixture (3 nodes + SourceHub)...");
+/// This takes ~30-40s. The returned fixture owns all processes — they are
+/// killed when the fixture is dropped.
+pub async fn setup_dkg() -> DkgFixture {
+    eprintln!("[fixture] Starting DKG fixture (3 nodes + SourceHub)...");
 
     let ring = OrbisRing::builder()
         .nodes(3)
