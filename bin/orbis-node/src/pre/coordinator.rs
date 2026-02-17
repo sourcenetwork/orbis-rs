@@ -15,15 +15,14 @@ use crate::constants::{BULLETIN_RING_NAMESPACE, PEER_RESPONSE_TIMEOUT};
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::pre::error::{PreError, Result};
 use crate::pre::messages::PreMessage;
-use crate::pre::service::validate_pre_claims;
+use crate::pre::service::{validate_pre_claims, verify_encryption_binding};
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
 use authz::sourcehub::AccessCheckRequest;
 use bulletin::r#trait::{DocumentPayload, RingPayload};
 use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{
-    DistKeyShare, Dkg, EncryptionProof, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
+    DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
 };
-use crypto::PreImpl as ThresholdDealerNode;
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::LocalStorage;
@@ -271,28 +270,13 @@ where
         // 7. Perform reencryption
         let dealer = T::new();
         // Check permission binding - verify proof before re-encryption
-        let actual_pk = if let Some(ref derivation) = derivation {
-            ThresholdDealerNode::derive_public_key(&ring_pk, derivation)
-                .map_err(|e| PreError::Crypto(format!("derive_public_key error: {}", e)))?
-        } else {
-            ring_pk
-        };
-
-        let proof: EncryptionProof =
-            EncryptionProof::try_from(document_payload.proof).map_err(|e| {
-                PreError::Deserialization(format!("Failed to deserialize encryption proof: {}", e))
-            })?;
-
-        let enc_cmt = G1Affine::from_bytes(&secret.enc_cmt[..]).map_err(|e| {
-            PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e))
-        })?;
-        ThresholdDealerNode::verify_encryption(
-            &actual_pk,
-            &enc_cmt,
-            &proof,
-            Some(&policy_metadata),
-        )
-        .map_err(|e| PreError::Crypto(format!("Policy binding verification failed: {}", e)))?;
+        verify_encryption_binding(
+            &ring_pk,
+            derivation.as_deref(),
+            document_payload.proof,
+            &secret.enc_cmt,
+            &policy_metadata,
+        )?;
         let reply = dealer
             .reencrypt(&dist_key_share, &secret, &rdr_pk, derivation.as_deref())
             .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;
