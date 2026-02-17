@@ -136,7 +136,7 @@ where
                 continue;
             }
 
-            // Route message to coordinator with authenticated peer identity
+            // Route message to coordinator
             match self.coordinator.handle_message(pre_message).await {
                 Ok(Some(response)) => {
                     // Send response back

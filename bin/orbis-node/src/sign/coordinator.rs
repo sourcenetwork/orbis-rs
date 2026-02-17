@@ -918,7 +918,7 @@ where
             .await;
     }
 
-    /// Verify that a message exists on the bulletin and return the ring_pk, pub_poly, and peer_ids
+    /// Verify that a message exists on the bulletin and return the ring_pk, pub_poly
     async fn verify_message_and_get_info(&self, message: &[u8]) -> Result<(String, D::PubPoly)> {
         // 1. Deserialize the BulletinPost from the message
         let post: BulletinPost = message.to_vec().try_into().map_err(|e| {
