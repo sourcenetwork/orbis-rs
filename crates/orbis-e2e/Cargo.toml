@@ -40,7 +40,13 @@ common = { path = "../common", default-features = false }
 tokio = { version = "1", features = ["full", "test-util"] }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
+# Crypto types for reader keypair generation, encryption, and verification
+crypto = { path = "../crypto", default-features = false }
+
+# Bulletin types (RingPayload, DocumentPayload, BulletinPost)
+bulletin = { path = "../bulletin" }
+
 [features]
 default = ["bls12-381"]
-bls12-381 = ["cli-tool/bls12-381", "common/bls12-381"]
-decaf377 = ["cli-tool/decaf377", "common/decaf377"]
+bls12-381 = ["cli-tool/bls12-381", "common/bls12-381", "crypto/bls12-381"]
+decaf377 = ["cli-tool/decaf377", "common/decaf377", "crypto/decaf377"]
