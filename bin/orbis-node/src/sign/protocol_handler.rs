@@ -129,15 +129,21 @@ where
                 &sign_message,
                 SignMessage::SignResponse { .. } | SignMessage::NonceResponse { .. }
             ) {
-                self.coordinator.store_response(sign_message).await;
+                self.coordinator
+                    .store_response(sign_message, &peer_id)
+                    .await;
                 continue;
             }
 
             // Capture request_id before moving sign_message into handle_message
             let req_id = sign_message.request_id().to_string();
 
-            // Route message to coordinator
-            match self.coordinator.handle_message(sign_message).await {
+            // Route message to coordinator with authenticated peer identity
+            match self
+                .coordinator
+                .handle_message(sign_message, &peer_id)
+                .await
+            {
                 Ok(Some(response)) => {
                     // Send response back
                     if let Ok(response_data) = serde_json::to_vec(&response) {

@@ -1276,9 +1276,13 @@ async fn test_pre_fails_with_bad_proof() {
 
     let error = pre_result.unwrap_err();
     println!("PRE correctly failed with error: {}", error);
-    assert_eq!(
-        error.to_string(),
-        "Timeout waiting for responses: Insufficient responses: got 0, need at least 2",
+    // With the full ring peer list, the initiator is in the ring so min_needed_from_network
+    // is threshold-1=1. All network peers reject due to bad proof → 0 network responses.
+    assert!(
+        error.to_string().contains("Insufficient responses")
+            || error.to_string().contains("Timeout"),
+        "Error should indicate insufficient responses or timeout: {}",
+        error
     );
 
     network

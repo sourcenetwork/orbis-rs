@@ -22,7 +22,7 @@ use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::DkgMessage;
 use crate::dkg::service::validate_dkg_claims;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase};
-use crate::helpers::helpers::is_self_peer_id;
+use crate::helpers::helpers::{extract_node_part, is_self_peer_id};
 use crate::metrics;
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use bulletin::r#trait::RingPayload;
@@ -36,6 +36,7 @@ use crypto::{
 };
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::Message as NetworkMessage;
+use network::PeerId;
 use network::DKG;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -80,7 +81,11 @@ where
     ///
     /// Routes the message to the appropriate session and processes it
     /// according to the DKG protocol phase.
-    pub async fn handle_message(&self, message: DkgMessage) -> Result<Option<DkgMessage>> {
+    pub async fn handle_message(
+        &self,
+        message: DkgMessage,
+        sender_peer_id: &PeerId,
+    ) -> Result<Option<DkgMessage>> {
         let session_id = message.session_id();
 
         // Get message type and from_node_id for deduplication
@@ -238,6 +243,55 @@ where
                 "DKG session {} not found",
                 session_id
             )));
+        }
+
+        // Validate sender identity for messages that carry from_node_id
+        if let Some(claimed_node_id) = from_node_id_opt {
+            let sender_hex = hex::encode(sender_peer_id.as_bytes());
+            // Look up the expected node_id for this peer, comparing just the hex part
+            // since session state keys may include @address suffixes
+            let expected_node_id = self
+                .app_state
+                .dkg_session_state
+                .with_state(&session_id, |state| {
+                    state
+                        .peer_id_to_node_id
+                        .iter()
+                        .find(|(peer_id, _)| extract_node_part(peer_id) == sender_hex)
+                        .map(|(_, node_id)| *node_id)
+                })
+                .await
+                .flatten();
+
+            match expected_node_id {
+                Some(expected) if expected == claimed_node_id => {
+                    // Identity matches - proceed
+                }
+                Some(expected) => {
+                    tracing::warn!(
+                        claimed_node_id = claimed_node_id,
+                        expected_node_id = expected,
+                        sender_peer = %sender_hex,
+                        session_id = session_id,
+                        "DKG Coordinator: Rejecting message - sender identity mismatch"
+                    );
+                    return Err(DkgError::Unauthorized(format!(
+                        "Sender identity mismatch: peer claims node_id={}, but authenticated peer maps to node_id={}",
+                        claimed_node_id, expected
+                    )));
+                }
+                None => {
+                    tracing::warn!(
+                        sender_peer = %sender_hex,
+                        session_id = session_id,
+                        "DKG Coordinator: Rejecting message - sender peer not found in session"
+                    );
+                    return Err(DkgError::Unauthorized(format!(
+                        "Sender peer {} not found in session peer mappings",
+                        sender_hex
+                    )));
+                }
+            }
         }
 
         // Process the message based on its type

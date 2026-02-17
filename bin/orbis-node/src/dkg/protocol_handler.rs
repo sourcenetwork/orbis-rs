@@ -65,7 +65,6 @@ where
 {
     async fn handle(&self, connection: Box<dyn Connection>) -> NetworkResult<()> {
         let peer_id = connection.peer_id().clone();
-        // TODO: Authentic nodes?
         tracing::info!(peer_id = ?peer_id, "DKG Protocol: Accepted connection from peer");
 
         // Read messages from the connection and route them to the coordinator
@@ -114,8 +113,8 @@ where
                 "DKG Protocol: Received message"
             );
 
-            // Route message to coordinator
-            match self.coordinator.handle_message(dkg_message).await {
+            // Route message to coordinator with authenticated peer identity
+            match self.coordinator.handle_message(dkg_message, &peer_id).await {
                 Ok(Some(response)) => {
                     // Send response back
                     if let Ok(response_data) = serde_json::to_vec(&response) {

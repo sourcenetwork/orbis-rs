@@ -6,6 +6,10 @@ use thiserror::Error;
 /// Sign (Threshold BLS Signing) related errors
 #[derive(Error, Debug)]
 pub enum SignError {
+    /// Authentication/authorization error (e.g., sender identity mismatch)
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     /// Serialization error
     #[error("Serialization error: {0}")]
     Serialization(String),
@@ -79,6 +83,9 @@ impl From<SignError> for tonic::Status {
     fn from(error: SignError) -> Self {
         use tonic::Code;
         match error {
+            SignError::Unauthorized(_) => {
+                tonic::Status::new(Code::Unauthenticated, error.to_string())
+            }
             SignError::InvalidInput(_) => {
                 tonic::Status::new(Code::InvalidArgument, error.to_string())
             }

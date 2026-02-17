@@ -1,4 +1,10 @@
-use crate::dkg::{coordinator::DkgCoordinator, messages::DkgMessage};
+use crate::constants::MAX_DKG_SESSIONS;
+use crate::dkg::{
+    coordinator::DkgCoordinator,
+    messages::DkgMessage,
+    session_state::{DkgMessageType, DkgPhase, SessionStateManager},
+};
+use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
     get_test_ring_post, setup_three_node_network, test_db_path, TestKeyPair,
@@ -9,6 +15,7 @@ use crypto::r#trait::{CryptoDeserialize, Dkg};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::time::{sleep, Duration};
 use tonic::{Request, Response};
 use tracing_subscriber;
@@ -487,7 +494,10 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
     };
 
     // Try to handle the message - should fail due to invalid JWT
-    let result = coordinator.handle_message(session_init).await;
+    let dummy_peer_id = network::PeerId::new(b"dummy-peer".to_vec());
+    let result = coordinator
+        .handle_message(session_init, &dummy_peer_id)
+        .await;
 
     assert!(
         result.is_err(),
@@ -550,7 +560,10 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
     };
 
     // Try to handle the message - should fail due to claim mismatch
-    let result = coordinator.handle_message(session_init).await;
+    let dummy_peer_id = network::PeerId::new(b"dummy-peer".to_vec());
+    let result = coordinator
+        .handle_message(session_init, &dummy_peer_id)
+        .await;
 
     assert!(
         result.is_err(),
@@ -610,7 +623,10 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
     };
 
     // Try to handle the message - should fail due to peer_ids mismatch
-    let result = coordinator.handle_message(session_init).await;
+    let dummy_peer_id = network::PeerId::new(b"dummy-peer".to_vec());
+    let result = coordinator
+        .handle_message(session_init, &dummy_peer_id)
+        .await;
 
     assert!(
         result.is_err(),
@@ -641,8 +657,6 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
 /// automatically cleaned up via the background worker.
 #[tokio::test]
 async fn test_session_cleanup_guard_cleans_up_on_drop() {
-    use crate::dkg::session_state::SessionStateManager;
-
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     // Create a mock DKG node and session
@@ -685,8 +699,6 @@ async fn test_session_cleanup_guard_cleans_up_on_drop() {
 /// When defuse() is called on the guard, the session should NOT be cleaned up.
 #[tokio::test]
 async fn test_session_cleanup_guard_defuse_prevents_cleanup() {
-    use crate::dkg::session_state::SessionStateManager;
-
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     // Create a mock DKG node and session
@@ -733,9 +745,6 @@ async fn test_session_cleanup_guard_defuse_prevents_cleanup() {
 /// removed by the expiration worker.
 #[tokio::test]
 async fn test_session_expiration_removes_old_sessions() {
-    use crate::dkg::session_state::{DkgPhase, SessionStateManager};
-    use std::time::Instant;
-
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     // Create a session
@@ -807,4 +816,341 @@ async fn test_session_expiration_removes_old_sessions() {
     );
 
     println!("SUCCESS! Expired session was automatically removed");
+}
+
+// ============================================================================
+// Message Deduplication Tests
+// ============================================================================
+
+/// Test: Verify that duplicate messages are correctly detected
+#[tokio::test]
+async fn test_message_dedup_detects_duplicates() {
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+
+    let session_id = 100u64;
+    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    manager.create_session(session_id, dkg_node, 3).await;
+
+    // First message should not be seen as processed
+    assert!(
+        !manager
+            .is_message_processed(&session_id, 2, DkgMessageType::Commitment)
+            .await,
+        "First message should not be processed"
+    );
+
+    // Mark it as processed
+    manager
+        .mark_message_processed(&session_id, 2, DkgMessageType::Commitment)
+        .await;
+
+    // Now it should be detected as a duplicate
+    assert!(
+        manager
+            .is_message_processed(&session_id, 2, DkgMessageType::Commitment)
+            .await,
+        "Same message should now be detected as duplicate"
+    );
+
+    manager.remove_session(&session_id).await;
+}
+
+/// Test: Different message types from the same node are not duplicates
+#[tokio::test]
+async fn test_message_dedup_different_types_not_duplicate() {
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+
+    let session_id = 101u64;
+    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    manager.create_session(session_id, dkg_node, 3).await;
+
+    // Mark commitment from node 2 as processed
+    manager
+        .mark_message_processed(&session_id, 2, DkgMessageType::Commitment)
+        .await;
+
+    // Share from same node should NOT be a duplicate (different message type)
+    assert!(
+        !manager
+            .is_message_processed(&session_id, 2, DkgMessageType::Share)
+            .await,
+        "Different message type from same node should not be duplicate"
+    );
+
+    manager.remove_session(&session_id).await;
+}
+
+/// Test: Same message type from different nodes are not duplicates
+#[tokio::test]
+async fn test_message_dedup_different_nodes_not_duplicate() {
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+
+    let session_id = 102u64;
+    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    manager.create_session(session_id, dkg_node, 3).await;
+
+    // Mark commitment from node 2 as processed
+    manager
+        .mark_message_processed(&session_id, 2, DkgMessageType::Commitment)
+        .await;
+
+    // Commitment from node 3 should NOT be a duplicate (different sender)
+    assert!(
+        !manager
+            .is_message_processed(&session_id, 3, DkgMessageType::Commitment)
+            .await,
+        "Same message type from different node should not be duplicate"
+    );
+
+    manager.remove_session(&session_id).await;
+}
+
+/// Test: Messages for different sessions are not duplicates
+#[tokio::test]
+async fn test_message_dedup_different_sessions_isolated() {
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+
+    let session_1 = 103u64;
+    let session_2 = 104u64;
+    let dkg_node_1 = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node_2 = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    manager.create_session(session_1, dkg_node_1, 3).await;
+    manager.create_session(session_2, dkg_node_2, 3).await;
+
+    // Mark message in session 1
+    manager
+        .mark_message_processed(&session_1, 2, DkgMessageType::Commitment)
+        .await;
+
+    // Same (node_id, type) in session 2 should NOT be a duplicate
+    assert!(
+        !manager
+            .is_message_processed(&session_2, 2, DkgMessageType::Commitment)
+            .await,
+        "Messages in different sessions should be isolated"
+    );
+
+    manager.remove_session(&session_1).await;
+    manager.remove_session(&session_2).await;
+}
+
+/// Test: Dedup state is cleaned up when session is removed
+#[tokio::test]
+async fn test_message_dedup_cleaned_up_with_session() {
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+
+    let session_id = 105u64;
+    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    manager.create_session(session_id, dkg_node, 3).await;
+
+    manager
+        .mark_message_processed(&session_id, 2, DkgMessageType::Commitment)
+        .await;
+    assert!(
+        manager
+            .is_message_processed(&session_id, 2, DkgMessageType::Commitment)
+            .await
+    );
+
+    // Remove session
+    manager.remove_session(&session_id).await;
+
+    // Dedup check on removed session returns false (no session = no duplicate)
+    assert!(
+        !manager
+            .is_message_processed(&session_id, 2, DkgMessageType::Commitment)
+            .await,
+        "Dedup state should be gone after session removal"
+    );
+}
+
+// ============================================================================
+// Peer Identity Mapping Tests
+// ============================================================================
+
+/// Test: Peer-to-node and node-to-peer mappings are consistent
+#[tokio::test]
+async fn test_peer_node_mappings_consistent() {
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+
+    let session_id = 200u64;
+    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    manager.create_session(session_id, dkg_node, 3).await;
+
+    let mut mappings = std::collections::HashMap::new();
+    mappings.insert(1, "aaa@192.168.1.1:4000".to_string());
+    mappings.insert(2, "bbb@192.168.1.2:4000".to_string());
+    mappings.insert(3, "ccc@192.168.1.3:4000".to_string());
+
+    manager.set_node_peer_mappings(&session_id, mappings).await;
+
+    // Forward lookup: node_id -> peer_id
+    assert_eq!(
+        manager.get_peer_id_for_node(&session_id, 1).await,
+        Some("aaa@192.168.1.1:4000".to_string())
+    );
+    assert_eq!(
+        manager.get_peer_id_for_node(&session_id, 2).await,
+        Some("bbb@192.168.1.2:4000".to_string())
+    );
+
+    // Reverse lookup: peer_id -> node_id (via with_state)
+    let node_id = manager
+        .with_state(&session_id, |state| {
+            state
+                .peer_id_to_node_id
+                .get("bbb@192.168.1.2:4000")
+                .copied()
+        })
+        .await
+        .flatten();
+    assert_eq!(node_id, Some(2));
+
+    // Unknown node_id returns None
+    assert_eq!(manager.get_peer_id_for_node(&session_id, 99).await, None);
+
+    manager.remove_session(&session_id).await;
+}
+
+/// Test: Peer identity validation rejects unknown peers
+#[tokio::test]
+async fn test_peer_identity_unknown_peer_not_in_mapping() {
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+
+    let session_id = 201u64;
+    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    manager.create_session(session_id, dkg_node, 3).await;
+
+    let mut mappings = std::collections::HashMap::new();
+    mappings.insert(1, "aaa@192.168.1.1:4000".to_string());
+    mappings.insert(2, "bbb@192.168.1.2:4000".to_string());
+    manager.set_node_peer_mappings(&session_id, mappings).await;
+
+    // Simulate what the coordinator does: look up peer in mapping
+    let unknown_peer_hex = "zzz";
+    let found = manager
+        .with_state(&session_id, |state| {
+            state
+                .peer_id_to_node_id
+                .iter()
+                .find(|(peer_id, _)| extract_node_part(peer_id) == unknown_peer_hex)
+                .map(|(_, node_id)| *node_id)
+        })
+        .await
+        .flatten();
+
+    assert_eq!(found, None, "Unknown peer should not be found in mappings");
+
+    manager.remove_session(&session_id).await;
+}
+
+// ============================================================================
+// Session Limit Tests
+// ============================================================================
+
+/// Test: Session creation is rejected when limit is reached
+#[tokio::test]
+async fn test_session_limit_enforced() {
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+
+    // Fill up to the limit
+    for i in 0..MAX_DKG_SESSIONS {
+        let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+        assert!(
+            manager.create_session(i as u64, dkg_node, 3).await,
+            "Session {} should be created within limit",
+            i
+        );
+    }
+
+    assert_eq!(manager.session_count().await, MAX_DKG_SESSIONS);
+
+    // One more should be rejected
+    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    assert!(
+        !manager
+            .create_session(MAX_DKG_SESSIONS as u64, dkg_node, 3)
+            .await,
+        "Session beyond limit should be rejected"
+    );
+
+    // Clean up
+    for i in 0..MAX_DKG_SESSIONS {
+        manager.remove_session(&(i as u64)).await;
+    }
+}
+
+/// Test: Duplicate session_id is rejected
+#[tokio::test]
+async fn test_duplicate_session_id_rejected() {
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+
+    let session_id = 300u64;
+    let dkg_node_1 = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node_2 = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+
+    assert!(manager.create_session(session_id, dkg_node_1, 3).await);
+    assert!(
+        !manager.create_session(session_id, dkg_node_2, 3).await,
+        "Duplicate session_id should be rejected"
+    );
+
+    manager.remove_session(&session_id).await;
+}
+
+/// Test: Commitment and share counters track correctly
+#[tokio::test]
+async fn test_commitment_and_share_counters() {
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+
+    let session_id = 400u64;
+    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    manager.create_session(session_id, dkg_node, 3).await;
+
+    // Initially zero
+    let (commitments, shares) = manager
+        .with_state(&session_id, |state| {
+            (state.commitments_received, state.shares_received)
+        })
+        .await
+        .unwrap();
+    assert_eq!(commitments, 0);
+    assert_eq!(shares, 0);
+
+    // Increment commitments
+    manager.increment_commitments(&session_id).await;
+    manager.increment_commitments(&session_id).await;
+
+    // Increment shares
+    manager.increment_shares(&session_id).await;
+
+    let (commitments, shares) = manager
+        .with_state(&session_id, |state| {
+            (state.commitments_received, state.shares_received)
+        })
+        .await
+        .unwrap();
+    assert_eq!(commitments, 2);
+    assert_eq!(shares, 1);
+
+    // Check completion helpers (3 participants, need 2 from others)
+    let all_commitments = manager
+        .with_state(&session_id, |state| state.all_commitments_received())
+        .await
+        .unwrap();
+    assert!(
+        all_commitments,
+        "2 commitments should satisfy 3-participant session (need 2)"
+    );
+
+    let all_shares = manager
+        .with_state(&session_id, |state| state.all_shares_received())
+        .await
+        .unwrap();
+    assert!(
+        !all_shares,
+        "1 share should not satisfy 3-participant session (need 2)"
+    );
+
+    manager.remove_session(&session_id).await;
 }

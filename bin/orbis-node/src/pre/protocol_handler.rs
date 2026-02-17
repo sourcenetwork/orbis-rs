@@ -132,7 +132,7 @@ where
 
             // Special handling for responses - store them for the initiator
             if let PreMessage::ReencryptResponse { .. } = &pre_message {
-                self.coordinator.store_response(pre_message).await;
+                self.coordinator.store_response(pre_message, &peer_id).await;
                 continue;
             }
 
