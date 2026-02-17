@@ -26,6 +26,7 @@ const BULLETIN_PLACEHOLDER_PROOF: &[u8] = &[0x01];
 /// 5. PRE re-encryption + decrypt (normal + derived key)
 /// 6. Idempotent store verification
 #[tokio::test]
+#[ignore = "requires sourcehubd on PATH and ~2 min runtime"]
 async fn dkg_store_pre_decrypt_full_pipeline() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("info")
