@@ -140,6 +140,12 @@ lazy_static! {
     )
     .expect("failed to register sign_messages_total");
 
+    pub static ref SIGN_ABANDONED_STATES: Gauge = register_gauge!(
+        "sign_abandoned_states",
+        "Number of sign states abandoned (expired nonces or stale responses)"
+    )
+    .expect("failed to register sign_abandoned_states");
+
     // ============================================================================
     // StoreSecret Metrics
     // ============================================================================
@@ -188,6 +194,7 @@ pub fn init() {
     lazy_static::initialize(&SIGN_ACTIVE_REQUESTS);
     lazy_static::initialize(&SIGN_REQUEST_DURATION_SECONDS);
     lazy_static::initialize(&SIGN_MESSAGES_TOTAL);
+    lazy_static::initialize(&SIGN_ABANDONED_STATES);
     lazy_static::initialize(&STORE_SECRET_REQUESTS_TOTAL);
     lazy_static::initialize(&STORE_SECRET_REQUEST_DURATION_SECONDS);
     lazy_static::initialize(&NODE_INFO);
@@ -341,6 +348,11 @@ pub fn record_sign_message_sent(message_type: &str) {
     SIGN_MESSAGES_TOTAL
         .with_label_values(&[message_type, "sent"])
         .inc();
+}
+
+/// Record sign state abandoned (expired nonce or stale response entry)
+pub fn record_sign_state_abandoned() {
+    SIGN_ABANDONED_STATES.inc();
 }
 
 /// Record Sign message received
