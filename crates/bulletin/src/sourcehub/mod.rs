@@ -3,7 +3,7 @@ use crate::{
     r#trait::{Bulletin, BulletinPost},
 };
 use async_trait::async_trait;
-use common::blockchain::{ChainConfigBuilder, SourceHubClient, TxSigner};
+use common::blockchain::{ChainConfig, SourceHubClient, TxSigner};
 use sha2::{Digest, Sha256};
 
 #[cfg(test)]
@@ -79,29 +79,25 @@ impl Bulletin for SourceHubBulletin {
 }
 
 impl SourceHubBulletin {
-    pub async fn new(chain_config_builder: ChainConfigBuilder) -> Result<Self> {
+    pub async fn new(config: ChainConfig) -> Result<Self> {
         Ok(SourceHubBulletin {
-            chain_client: SourceHubClient::new(chain_config_builder.build())
+            chain_client: SourceHubClient::new(config)
                 .await
                 .map_err(|e| BulletinError::ChainError(e.to_string()))?,
         })
     }
 
     pub async fn with_signer(
-        chain_config_builder: ChainConfigBuilder,
+        config: ChainConfig,
         signer: TxSigner,
         balance_check_amount: Option<u64>,
     ) -> Result<Self> {
         // Get the address before moving the signer
         let address = signer.address();
-        let denom = chain_config_builder
-            .clone()
-            .gas_price
-            .map(|gp| gp.denom)
-            .unwrap_or_else(|| "uopen".to_string());
+        let denom = config.gas_price.denom.clone();
 
         let client = SourceHubBulletin {
-            chain_client: SourceHubClient::with_signer(chain_config_builder.build(), signer)
+            chain_client: SourceHubClient::with_signer(config, signer)
                 .await
                 .map_err(|e| BulletinError::ChainError(e.to_string()))?,
         };

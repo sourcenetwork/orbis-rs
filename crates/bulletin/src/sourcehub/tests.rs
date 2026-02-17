@@ -1,7 +1,7 @@
 use super::SourceHubBulletin;
 use crate::r#trait::{Bulletin, DocumentPayload, RingPayload};
 use common::{
-    blockchain::{ChainConfig, ChainConfigBuilder, TxSigner, TEST_ACCOUNT_HEX_KEY},
+    blockchain::{ChainConfig, TxSigner, TEST_ACCOUNT_HEX_KEY},
     SourceHubTestContainer,
 };
 
@@ -14,7 +14,7 @@ async fn test_bulletin_document() {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(config, signer, None)
         .await
         .unwrap();
 
@@ -62,7 +62,7 @@ async fn test_bulletin_ring() {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(config, signer, None)
         .await
         .unwrap();
 

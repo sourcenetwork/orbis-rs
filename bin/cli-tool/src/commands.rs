@@ -607,7 +607,7 @@ pub async fn register_bulletin_namespace(namespace: String, config: ChainConfig)
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(config.to_builder(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(config, signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -657,7 +657,7 @@ pub async fn create_bulletin_post(
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(config.to_builder(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(config, signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -677,7 +677,7 @@ pub async fn create_bulletin_post(
 
 /// Read a bulletin post by namespace and ID
 pub async fn read_bulletin_post(namespace: String, id: String, config: ChainConfig) -> Result<Vec<u8>> {
-    let bulletin = SourceHubBulletin::new(config.to_builder())
+    let bulletin = SourceHubBulletin::new(config)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 

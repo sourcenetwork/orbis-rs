@@ -16,7 +16,7 @@ use bulletin::{
     BulletinImpl,
 };
 use cli_tool;
-use common::blockchain::ChainConfigBuilder;
+use common::blockchain::{ChainConfig, ChainConfigBuilder};
 use hex;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::Router;
@@ -66,7 +66,7 @@ pub async fn create_test_app_state(
         )
     } else {
         Arc::new(
-            BulletinImpl::new(ChainConfigBuilder::default())
+            BulletinImpl::new(ChainConfig::local())
                 .await
                 .expect("Failed to initialize bulletin"),
         )
@@ -426,7 +426,7 @@ pub async fn setup_three_node_network_with_pre(
     } else {
         (
             Arc::new(
-                BulletinImpl::new(ChainConfigBuilder::default())
+                BulletinImpl::new(ChainConfig::local())
                     .await
                     .expect("Failed to initialize shared bulletin"),
             ),
@@ -613,7 +613,7 @@ pub async fn setup_three_node_network_with_sign(
     } else {
         (
             Arc::new(
-                BulletinImpl::new(ChainConfigBuilder::default())
+                BulletinImpl::new(ChainConfig::local())
                     .await
                     .expect("Failed to initialize shared bulletin"),
             ),

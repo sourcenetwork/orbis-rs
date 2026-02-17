@@ -256,33 +256,27 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("Failed to initialize authz: {}", e))?,
     );
 
-    let bulletin_chain_config = ChainConfigBuilder::default()
+    let chain_config = ChainConfigBuilder::default()
         .grpc_url(args.bulletin_grpc.clone())
         .rpc_url(args.chain_rpc.clone())
         .rest_url(args.chain_rest.clone())
-        .denom(args.denom.clone());
-    let chain_config = bulletin_chain_config.clone().build();
-    let signer = create_and_store_node_key(local_storage.clone(), chain_config, args.data_dir.as_deref())
+        .denom(args.denom.clone())
+        .build();
+    let signer = create_and_store_node_key(local_storage.clone(), chain_config.clone(), args.data_dir.as_deref())
         .map_err(|e| format!("Failed to create or store node key: {}", e))?;
 
     // For integration tests, this funds the account, this is handled differently live
     // Only fund if both the feature is enabled AND we're in the integration test network
     #[cfg(feature = "integration-test")]
     {
-        // Build chain config with the provided RPC/REST URLs
-        let fund_config = ChainConfigBuilder::default()
-            .rpc_url(args.chain_rpc.clone())
-            .rest_url(args.chain_rest.clone())
-            .grpc_url(args.bulletin_grpc.clone())
-            .build();
-        cli_tool::fund(signer.address(), fund_config)
+        cli_tool::fund(signer.address(), chain_config.clone())
             .await
             .expect("issue with faucet");
     }
 
     // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
     let bulletin: Arc<BulletinImpl> = Arc::new(
-        BulletinImpl::with_signer(bulletin_chain_config, signer, Some(MIN_NODE_BALANCE))
+        BulletinImpl::with_signer(chain_config, signer, Some(MIN_NODE_BALANCE))
             .await
             .map_err(|e| format!("Failed to initialize bulletin: {}", e))?,
     );
