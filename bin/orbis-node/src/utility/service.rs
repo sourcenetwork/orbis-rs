@@ -4,26 +4,43 @@ use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::utility::error::UtilityError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, SignClaims};
 use bulletin::r#trait::RingPayload;
-use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, ThresholdDealer};
+use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, ThresholdDealer, ThresholdSigner};
 use crypto::PreImpl as ThresholdDealerNode;
 use proto::utility_service::{
     utility_service_server::UtilityService, DerivePublicKeyRequest, DerivePublicKeyResponse,
-    SignRequest, SignResponse as ProtoSignResponse,
+    SignAlgorithm, SignRequest, SignResponse as ProtoSignResponse,
 };
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
+
+/// Map a ThresholdSigner::name() string to the proto SignAlgorithm enum.
+///
+/// This is the single mapping point between the compile-time crypto
+/// implementation and the wire protocol. When a new signing scheme is
+/// added, register its name() string here.
+fn signer_algorithm<S: ThresholdSigner>() -> SignAlgorithm {
+    match S::name().as_str() {
+        "threshold-bls-g2" => SignAlgorithm::Bls,
+        "threshold-frost-decaf377" => SignAlgorithm::FrostDecaf377,
+        _ => SignAlgorithm::Unspecified,
+    }
+}
 
 /// Implementation of the UtilityService
 ///
 /// Provides two RPCs:
 /// - DerivePublicKey: derive a public key from a ring's master PK + label (unauthenticated)
 /// - Sign: perform T-of-N threshold signing (authenticated)
+///
+/// The signing algorithm is determined at compile time by the `S` type parameter
+/// (BLS12-381 or FROST/Decaf377). The proto `SignAlgorithm` enum communicates
+/// this to clients so they know how to verify signatures.
 #[derive(Debug)]
 pub struct UtilityServiceImpl<D, S>
 where
     D: Dkg + Clone + 'static,
-    S: crypto::r#trait::ThresholdSigner,
+    S: ThresholdSigner,
 {
     pub state: AppState<D>,
     _phantom: std::marker::PhantomData<S>,
@@ -32,7 +49,7 @@ where
 impl<D, S> UtilityServiceImpl<D, S>
 where
     D: Dkg + Clone + 'static,
-    S: crypto::r#trait::ThresholdSigner,
+    S: ThresholdSigner,
 {
     pub fn new(state: AppState<D>) -> Self {
         Self {
@@ -50,7 +67,7 @@ where
         + Send
         + Sync
         + 'static,
-    S: crypto::r#trait::ThresholdSigner<
+    S: ThresholdSigner<
             ShareValue = crypto::ScalarField,
             PublicKey = crypto::GroupAffine,
             DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
@@ -106,13 +123,14 @@ where
                 UtilityError::Crypto(format!("Failed to derive public key: {}", e))
             })?;
 
-        // 4. Serialize to hex
+        // 4. Serialize derived key
         let derived_pk_bytes = CryptoSerialize::to_bytes(&derived_pk).map_err(|e| {
             UtilityError::Crypto(format!("Failed to serialize derived public key: {}", e))
         })?;
 
         Ok(Response::new(DerivePublicKeyResponse {
             public_key: derived_pk_bytes,
+            algorithm: signer_algorithm::<S>().into(),
         }))
     }
 
@@ -136,7 +154,19 @@ where
 
         let req = request.into_inner();
 
-        // 2. Validate JWT claims match request
+        // 2. Algorithm guard: if the client specified an algorithm, verify it matches
+        let ring_algorithm = signer_algorithm::<S>();
+        let requested = SignAlgorithm::try_from(req.algorithm).unwrap_or(SignAlgorithm::Unspecified);
+        if requested != SignAlgorithm::Unspecified && requested != ring_algorithm {
+            return Err(UtilityError::UnsupportedAlgorithm(format!(
+                "requested algorithm {:?} but ring uses {:?}",
+                requested.as_str_name(),
+                ring_algorithm.as_str_name(),
+            ))
+            .into());
+        }
+
+        // 3. Validate JWT claims match request
         if token.claims.ring_id != req.ring_id {
             return Err(UtilityError::Unauthorized(format!(
                 "Token ring_id '{}' does not match request ring_id '{}'",
@@ -166,11 +196,12 @@ where
         tracing::info!(
             ring_id = %req.ring_id,
             message_len = req.message.len(),
+            algorithm = %ring_algorithm.as_str_name(),
             issuer = %token.issuer_id,
             "Authenticated Sign request"
         );
 
-        // 3. Read ring info from bulletin
+        // 4. Read ring info from bulletin
         let ring_info = self
             .state
             .bulletin
@@ -188,7 +219,23 @@ where
                 UtilityError::Deserialization(format!("Failed to parse ring payload: {}", e))
             })?;
 
-        // 4. Initiate threshold signing
+        // 5. Compute the public key that will verify this signature
+        let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).map_err(|e| {
+            UtilityError::Deserialization(format!("Invalid ring_pk hex: {}", e))
+        })?;
+        let verification_pk = if req.derivation.is_empty() {
+            ring_pk_bytes.clone()
+        } else {
+            let ring_pk = <D::PublicKey>::from_bytes(&ring_pk_bytes).map_err(|e| {
+                UtilityError::Deserialization(format!("Invalid ring_pk curve point: {}", e))
+            })?;
+            let derived = ThresholdDealerNode::derive_public_key(&ring_pk, &req.derivation)
+                .map_err(|e| UtilityError::Crypto(format!("Failed to derive public key: {}", e)))?;
+            CryptoSerialize::to_bytes(&derived)
+                .map_err(|e| UtilityError::Crypto(format!("Failed to serialize public key: {}", e)))?
+        };
+
+        // 6. Initiate threshold signing
         let session_id: u64 = rand::random();
         let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
         let response_bytes = coordinator
@@ -217,6 +264,9 @@ where
 
         Ok(Response::new(ProtoSignResponse {
             signature: signature_bytes,
+            algorithm: ring_algorithm.into(),
+            public_key: verification_pk,
+            metadata: std::collections::HashMap::new(),
         }))
     }
 }

@@ -925,6 +925,7 @@ pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
 #[derive(Debug)]
 pub struct DerivePublicKeyResult {
     pub derived_public_key: String,
+    pub algorithm: String,
 }
 
 pub async fn derive_public_key(
@@ -954,13 +955,18 @@ pub async fn derive_public_key(
 
     let response = response.into_inner();
     let derived_pk_hex = hex::encode(&response.public_key);
+    let algorithm = proto::utility_service::SignAlgorithm::try_from(response.algorithm)
+        .map(|a| a.as_str_name().to_string())
+        .unwrap_or_else(|_| format!("UNKNOWN({})", response.algorithm));
 
     println!("DerivePublicKey Result:");
     println!("{}", "=".repeat(60));
     println!("  Derived PK: {}", derived_pk_hex);
+    println!("  Algorithm:  {}", algorithm);
 
     Ok(DerivePublicKeyResult {
         derived_public_key: derived_pk_hex,
+        algorithm,
     })
 }
 
@@ -968,6 +974,8 @@ pub async fn derive_public_key(
 #[derive(Debug)]
 pub struct SignResult {
     pub signature: String,
+    pub algorithm: String,
+    pub public_key: String,
 }
 
 pub async fn do_sign(
@@ -992,6 +1000,8 @@ pub async fn do_sign(
         ring_id: ring_id.clone(),
         message: message.clone(),
         derivation: derivation_bytes,
+        algorithm: 0, // UNSPECIFIED — use ring's native algorithm
+        options: std::collections::HashMap::new(),
     };
 
     // Create JWT for authentication
@@ -1012,12 +1022,20 @@ pub async fn do_sign(
 
     let response = response.into_inner();
     let signature_hex = hex::encode(&response.signature);
+    let algorithm = proto::utility_service::SignAlgorithm::try_from(response.algorithm)
+        .map(|a| a.as_str_name().to_string())
+        .unwrap_or_else(|_| format!("UNKNOWN({})", response.algorithm));
+    let public_key_hex = hex::encode(&response.public_key);
 
     println!("Sign Result:");
     println!("{}", "=".repeat(60));
-    println!("  Signature: {}", signature_hex);
+    println!("  Signature:  {}", signature_hex);
+    println!("  Algorithm:  {}", algorithm);
+    println!("  Public Key: {}", public_key_hex);
 
     Ok(SignResult {
         signature: signature_hex,
+        algorithm,
+        public_key: public_key_hex,
     })
 }

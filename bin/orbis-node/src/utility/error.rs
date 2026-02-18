@@ -18,6 +18,9 @@ pub enum UtilityError {
     #[error("Signing error: {0}")]
     Signing(String),
 
+    #[error("Unsupported algorithm: {0}")]
+    UnsupportedAlgorithm(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -29,6 +32,9 @@ impl From<UtilityError> for tonic::Status {
             UtilityError::Unauthorized(_) => tonic::Status::unauthenticated(error.to_string()),
             UtilityError::RingNotFound(_) => tonic::Status::not_found(error.to_string()),
             UtilityError::Deserialization(_) => tonic::Status::invalid_argument(error.to_string()),
+            UtilityError::UnsupportedAlgorithm(_) => {
+                tonic::Status::invalid_argument(error.to_string())
+            }
             UtilityError::Crypto(_) | UtilityError::Signing(_) | UtilityError::Internal(_) => {
                 tonic::Status::internal(error.to_string())
             }
