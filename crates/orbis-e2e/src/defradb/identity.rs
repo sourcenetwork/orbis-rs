@@ -7,12 +7,15 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use eyre::{eyre, Result};
 use k256::ecdsa::{signature::Signer, Signature, SigningKey};
-use sha2::{Digest, Sha256};
+use k256::elliptic_curve::sec1::ToEncodedPoint;
 
 /// Derive a `did:key:z...` from a secp256k1 private key hex string.
 ///
 /// Uses the multicodec prefix `0xe7 0x01` for secp256k1-pub and
 /// base58btc encoding with the `z` multibase prefix.
+///
+/// DefraDB uses the **uncompressed** (65-byte) public key for did:key
+/// derivation (matching Go's SerializeUncompressed), so we do the same.
 ///
 /// Returns `(did_key_string, compressed_public_key_bytes)`.
 pub fn did_key_from_secp256k1(private_key_hex: &str) -> Result<(String, Vec<u8>)> {
@@ -23,9 +26,12 @@ pub fn did_key_from_secp256k1(private_key_hex: &str) -> Result<(String, Vec<u8>)
     let verifying_key = signing_key.verifying_key();
     let compressed = verifying_key.to_sec1_bytes();
 
+    // DID uses uncompressed key (65 bytes: 0x04 || x || y) to match DefraDB/Go
+    let uncompressed = verifying_key.to_encoded_point(false);
+
     // multicodec: varint(0xe7) = [0xe7, 0x01] for secp256k1-pub
     let mut multicodec = vec![0xe7, 0x01];
-    multicodec.extend_from_slice(&compressed);
+    multicodec.extend_from_slice(uncompressed.as_bytes());
 
     let encoded = bs58::encode(&multicodec).into_string();
     let did = format!("did:key:z{}", encoded);
@@ -79,15 +85,16 @@ pub fn generate_defra_jwt(private_key_hex: &str, audience: &str) -> Result<Strin
     });
     let claims_b64 = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
 
-    // Sign: SHA-256(header.claims), then ECDSA-secp256k1
+    // Sign: ECDSA-secp256k1 over SHA-256(header.claims)
+    // The Signer trait hashes internally, so pass raw message bytes.
     let message = format!("{}.{}", header_b64, claims_b64);
-    let digest = Sha256::digest(message.as_bytes());
 
     let signature: Signature = signing_key
-        .try_sign(&digest)
+        .try_sign(message.as_bytes())
         .map_err(|e| eyre!("signing failed: {}", e))?;
 
-    let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes());
+    // DefraDB expects raw 64-byte signature (r || s), not DER-encoded
+    let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
     Ok(format!("{}.{}", message, sig_b64))
 }
