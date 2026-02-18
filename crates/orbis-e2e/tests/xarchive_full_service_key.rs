@@ -530,7 +530,210 @@ async fn xarchive_full_service_key_architecture() {
     );
 
     // ================================================================
+    // 14. Write more tweets (batch content pattern)
+    // ================================================================
+    // A compartment accumulates documents over time. Each write goes
+    // through the same ACP-check → Orbis-sign → store pipeline.
+
+    let tweets_data = vec![
+        ("1730", "the Hardy-Ramanujan number is 1729"),
+        ("1731", "orbis threshold signing: no single point of failure"),
+        ("1732", "x-archive: my personal tweet vault"),
+    ];
+
+    for (id, text) in &tweets_data {
+        let mutation = format!(
+            r#"mutation {{ create_Tweet(input: {{ tweet_id: "{}", text: "{}" }}) {{ _docID }} }}"#,
+            id, text
+        );
+        let resp = http
+            .post(format!("{}/api/v0/graphql", defra.http_url))
+            .json(&serde_json::json!({"query": mutation}))
+            .send()
+            .await
+            .expect("batch create request");
+        assert!(resp.status().is_success(), "batch create failed for {}", id);
+    }
+    eprintln!("[xarchive] Wrote {} more tweets (4 total)", tweets_data.len());
+
+    // Query all tweets — should have 4
+    let all_query = r#"query { Tweet { _docID tweet_id text } }"#;
+    let all_resp = http
+        .post(format!("{}/api/v0/graphql", defra.http_url))
+        .json(&serde_json::json!({"query": all_query}))
+        .send()
+        .await
+        .expect("query all tweets");
+    let all_body: serde_json::Value = all_resp.json().await.expect("parse all tweets");
+    let all_tweets = all_body
+        .pointer("/data/Tweet")
+        .and_then(|v| v.as_array())
+        .expect("Tweet array");
+    assert_eq!(all_tweets.len(), 4, "should have 4 tweets total");
+    eprintln!("[xarchive] Verified: {} tweets in store", all_tweets.len());
+
+    // ================================================================
+    // 15. Second schema type: Bookmark (multi-type compartment)
+    // ================================================================
+    // A real compartment stores multiple document types. x-archive
+    // has tweets, bookmarks, notes, etc. Each type gets its own schema
+    // but all are owned by the same COMPARTMENT_DID.
+
+    let bookmark_schema = "type Bookmark { url: String  title: String  notes: String }";
+    let schema_resp = http
+        .post(format!("{}/api/v0/schema", defra.http_url))
+        .header("Content-Type", "text/plain")
+        .body(bookmark_schema)
+        .send()
+        .await
+        .expect("bookmark schema request");
+    assert!(
+        schema_resp.status().is_success(),
+        "bookmark schema failed: {}",
+        schema_resp.text().await.unwrap_or_default()
+    );
+    eprintln!("[xarchive] Schema added: Bookmark {{ url, title, notes }}");
+
+    let bookmark_mutation = r#"mutation {
+        create_Bookmark(input: {
+            url: "https://en.wikipedia.org/wiki/1729_(number)",
+            title: "1729 (number) - Wikipedia",
+            notes: "Hardy-Ramanujan number, the smallest number expressible as the sum of two cubes in two different ways"
+        }) {
+            _docID
+            url
+            title
+        }
+    }"#;
+
+    let bm_resp = http
+        .post(format!("{}/api/v0/graphql", defra.http_url))
+        .json(&serde_json::json!({"query": bookmark_mutation}))
+        .send()
+        .await
+        .expect("create bookmark");
+    assert!(
+        bm_resp.status().is_success(),
+        "bookmark create failed: {}",
+        bm_resp.text().await.unwrap_or_default()
+    );
+    let bm_body: serde_json::Value = bm_resp.json().await.expect("parse bookmark response");
+    eprintln!("[xarchive] Bookmark created: {}", bm_body);
+
+    // Verify bookmark exists
+    let bm_query = r#"query { Bookmark { _docID url title notes } }"#;
+    let bm_query_resp = http
+        .post(format!("{}/api/v0/graphql", defra.http_url))
+        .json(&serde_json::json!({"query": bm_query}))
+        .send()
+        .await
+        .expect("query bookmarks");
+    let bm_query_body: serde_json::Value = bm_query_resp.json().await.expect("parse bookmarks");
+    let bookmarks = bm_query_body
+        .pointer("/data/Bookmark")
+        .and_then(|v| v.as_array())
+        .expect("Bookmark array");
+    assert_eq!(bookmarks.len(), 1, "should have 1 bookmark");
+    assert_eq!(
+        bookmarks[0]["title"].as_str().unwrap_or(""),
+        "1729 (number) - Wikipedia"
+    );
+    eprintln!("[xarchive] Bookmark verified: {}", bookmarks[0]["title"]);
+
+    // ================================================================
+    // 16. Update a tweet (mutation → re-sign pattern)
+    // ================================================================
+    // When a document is updated, DefraDB sends the new version to
+    // Orbis for signing. The ring produces a fresh threshold signature.
+
+    // Get the docID of the first tweet we created
+    let first_doc_id = tweets[0]["_docID"]
+        .as_str()
+        .expect("first tweet should have _docID");
+
+    let update_mutation = format!(
+        r#"mutation {{ update_Tweet(docID: "{}", input: {{ text: "first orbis-signed tweet from x-archive (edited)" }}) {{ _docID text }} }}"#,
+        first_doc_id
+    );
+
+    let update_resp = http
+        .post(format!("{}/api/v0/graphql", defra.http_url))
+        .json(&serde_json::json!({"query": update_mutation}))
+        .send()
+        .await
+        .expect("update tweet request");
+    assert!(
+        update_resp.status().is_success(),
+        "update tweet failed: {}",
+        update_resp.text().await.unwrap_or_default()
+    );
+    let update_body: serde_json::Value = update_resp.json().await.expect("parse update response");
+    eprintln!("[xarchive] Tweet updated: {}", update_body);
+
+    // Verify the update persisted
+    let verify_query = format!(
+        r#"query {{ Tweet(docID: "{}") {{ _docID tweet_id text }} }}"#,
+        first_doc_id
+    );
+    let verify_resp = http
+        .post(format!("{}/api/v0/graphql", defra.http_url))
+        .json(&serde_json::json!({"query": verify_query}))
+        .send()
+        .await
+        .expect("verify update request");
+    let verify_body: serde_json::Value = verify_resp.json().await.expect("parse verify response");
+    let updated_text = verify_body
+        .pointer("/data/Tweet/0/text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(
+        updated_text,
+        "first orbis-signed tweet from x-archive (edited)"
+    );
+    eprintln!("[xarchive] Update verified: text = {:?}", updated_text);
+
+    // ================================================================
+    // 17. Multi-compartment key derivation
+    // ================================================================
+    // The same ring serves multiple compartments. Each gets a unique
+    // derived key via a different derivation label. This shows that one
+    // ring can back many identities without any per-compartment setup.
+
+    let hiking_derived = cli_tool::derive_public_key(
+        ring.node(0).grpc_addr(),
+        ring_id.clone(),
+        b"hiking".to_vec(),
+    )
+    .await
+    .expect("derive hiking public key");
+
+    let hiking_did = format!("did:bls:{}", &hiking_derived.derived_public_key[..40]);
+    eprintln!("[xarchive] HIKING_DID: {}", hiking_did);
+
+    // The three derived keys should all be different
+    assert_ne!(
+        jack_derived.derived_public_key, compartment_derived.derived_public_key,
+        "jack and x-archive keys must differ"
+    );
+    assert_ne!(
+        compartment_derived.derived_public_key, hiking_derived.derived_public_key,
+        "x-archive and hiking keys must differ"
+    );
+    assert_ne!(
+        jack_derived.derived_public_key, hiking_derived.derived_public_key,
+        "jack and hiking keys must differ"
+    );
+    eprintln!("[xarchive] Verified: 3 unique derived keys from same ring");
+
+    // ================================================================
     // Done. Drop order: ring → defra → sourcehub → run_dir
     // ================================================================
     eprintln!("[xarchive] === Full service key architecture test complete ===");
+    eprintln!("[xarchive] Summary:");
+    eprintln!("[xarchive]   Ring: {} (T=2, N=3)", &ring_id[..16.min(ring_id.len())]);
+    eprintln!("[xarchive]   JACK_DID:        {}", jack_did);
+    eprintln!("[xarchive]   COMPARTMENT_DID: {}", compartment_did);
+    eprintln!("[xarchive]   HIKING_DID:      {}", hiking_did);
+    eprintln!("[xarchive]   Tweets: 4 (1 updated)");
+    eprintln!("[xarchive]   Bookmarks: 1");
 }
