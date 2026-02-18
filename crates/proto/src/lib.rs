@@ -13,3 +13,7 @@ pub mod info_service {
 pub mod store_secret_service {
     tonic::include_proto!("store_secret_service");
 }
+
+pub mod utility_service {
+    tonic::include_proto!("utility_service");
+}

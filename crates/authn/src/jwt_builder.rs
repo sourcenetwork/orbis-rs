@@ -5,7 +5,7 @@
 //! - Extracting bearer tokens from gRPC request metadata
 
 use crate::error::{AuthNError, Result};
-use crate::{DkgClaims, PreClaims, StoreSecretClaims};
+use crate::{DkgClaims, PreClaims, SignClaims, StoreSecretClaims};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint, KeyMaterial};
 use jwt_simple::prelude::*;
 use serde::{de::DeserializeOwned, Serialize};
@@ -102,6 +102,29 @@ impl JwtSigner {
             rdr_pk: rdr_pk.to_string(),
             object_id: object_id.to_string(),
             namespace: namespace.to_string(),
+            derivation,
+        };
+        self.sign(claims, Duration::from_hours(1))
+    }
+
+    /// Create a JWT with Sign claims (threshold signing).
+    ///
+    /// # Arguments
+    /// * `ring_id` - The ring ID to sign with
+    /// * `message` - Message bytes to sign
+    /// * `derivation` - Optional derivation path
+    ///
+    /// # Returns
+    /// The signed JWT string valid for 1 hour
+    pub fn create_sign_jwt(
+        &self,
+        ring_id: &str,
+        message: Vec<u8>,
+        derivation: Option<Vec<u8>>,
+    ) -> Result<String> {
+        let claims = SignClaims {
+            ring_id: ring_id.to_string(),
+            message,
             derivation,
         };
         self.sign(claims, Duration::from_hours(1))

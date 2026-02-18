@@ -9,6 +9,7 @@ pub mod metrics;
 pub mod pre;
 pub mod sign;
 pub mod store_secret;
+pub mod utility;
 
 #[cfg(test)]
 mod tests;
@@ -22,6 +23,7 @@ use crate::helpers::launch::{
 use crate::info::InfoServiceImpl;
 use crate::pre::service::PreServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
+use crate::utility::UtilityServiceImpl;
 use app_state::AppState;
 use authz::r#trait::Authz;
 use authz::sourcehub::SourceHubAuth;
@@ -41,6 +43,7 @@ use proto::dkg_service::dkg_service_server::DkgServiceServer;
 use proto::info_service::info_service_server::InfoServiceServer;
 use proto::pre_service::pre_service_server::PreServiceServer;
 use proto::store_secret_service::store_secret_service_server::StoreSecretServiceServer;
+use proto::utility_service::utility_service_server::UtilityServiceServer;
 
 /// Configuration for running the node, allowing dependency injection for testing
 pub struct NodeConfig {
@@ -145,13 +148,16 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
     let store_secret_service =
         StoreSecretServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
+    let utility_service =
+        UtilityServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
 
-    // Start gRPC server with DKG, PRE, Info, and StoreSecret services
+    // Start gRPC server with DKG, PRE, Info, StoreSecret, and Utility services
     let grpc_server = tonic::transport::Server::builder()
         .add_service(DkgServiceServer::new(dkg_service))
         .add_service(PreServiceServer::new(pre_service))
         .add_service(InfoServiceServer::new(info_service))
         .add_service(StoreSecretServiceServer::new(store_secret_service))
+        .add_service(UtilityServiceServer::new(utility_service))
         .serve(node.grpc_addr);
 
     // Run gRPC server (router runs in background automatically)

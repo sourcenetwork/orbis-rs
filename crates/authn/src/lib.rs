@@ -55,6 +55,17 @@ pub struct DkgClaims {
     pub peer_ids: String,
 }
 
+/// Claims for Sign endpoints (threshold signing)
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct SignClaims {
+    /// Ring ID to sign with
+    pub ring_id: String,
+    /// Message bytes to sign
+    pub message: Vec<u8>,
+    /// Optional derivation path
+    pub derivation: Option<Vec<u8>>,
+}
+
 /// Claims for StoreSecret endpoints
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct StoreSecretClaims {

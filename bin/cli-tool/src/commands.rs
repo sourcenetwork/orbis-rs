@@ -22,6 +22,7 @@ use proto::dkg_service::dkg_service_client::DkgServiceClient;
 use proto::info_service::info_service_client::InfoServiceClient;
 use proto::pre_service::pre_service_client::PreServiceClient;
 use proto::store_secret_service::store_secret_service_client::StoreSecretServiceClient;
+use proto::utility_service::utility_service_client::UtilityServiceClient;
 use tonic::Request;
 
 /// Response structure from PRE server
@@ -819,4 +820,105 @@ pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
         max_retries,
         last_error.map(|e| e.to_string()).unwrap_or_default()
     ))
+}
+
+/// Result of a DerivePublicKey operation
+#[derive(Debug)]
+pub struct DerivePublicKeyResult {
+    pub derived_public_key: String,
+    pub ring_public_key: String,
+}
+
+pub async fn derive_public_key(
+    endpoint: String,
+    ring_id: String,
+    derivation: Vec<u8>,
+) -> Result<DerivePublicKeyResult> {
+    println!("Deriving public key:");
+    println!("  Endpoint: {}", endpoint);
+    println!("  Ring ID: {}", ring_id);
+    println!("  Derivation: {}", hex::encode(&derivation));
+    println!();
+
+    let mut client = UtilityServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+
+    let request = Request::new(proto::utility_service::DerivePublicKeyRequest {
+        ring_id,
+        derivation,
+    });
+
+    let response = client
+        .derive_public_key(request)
+        .await
+        .map_err(|e| anyhow!("DerivePublicKey request failed: {}", e))?;
+
+    let response = response.into_inner();
+
+    println!("DerivePublicKey Result:");
+    println!("{}", "=".repeat(60));
+    println!("  Derived PK: {}", response.derived_public_key);
+    println!("  Ring PK:    {}", response.ring_public_key);
+
+    Ok(DerivePublicKeyResult {
+        derived_public_key: response.derived_public_key,
+        ring_public_key: response.ring_public_key,
+    })
+}
+
+/// Result of a Sign operation
+#[derive(Debug)]
+pub struct SignResult {
+    pub signature: String,
+}
+
+pub async fn do_sign(
+    endpoint: String,
+    ring_id: String,
+    message: Vec<u8>,
+    derivation: Option<Vec<u8>>,
+    signer_did_pk: Option<String>,
+) -> Result<SignResult> {
+    println!("Threshold signing:");
+    println!("  Endpoint: {}", endpoint);
+    println!("  Ring ID: {}", ring_id);
+    println!("  Message len: {}", message.len());
+    println!();
+
+    let mut client = UtilityServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+
+    let request = proto::utility_service::SignRequest {
+        ring_id: ring_id.clone(),
+        message: message.clone(),
+        derivation: derivation.clone(),
+    };
+
+    // Create JWT for authentication
+    let signer_did_pk = signer_did_pk.unwrap_or("test_jwt".to_string());
+    let key_pair = generate::<DidEd25519KeyPair>(Some(signer_did_pk.as_bytes()));
+    let jwt_signer = JwtSigner::from_key_pair(key_pair);
+    let token = jwt_signer
+        .create_sign_jwt(&ring_id, message, derivation)
+        .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
+
+    let tonic_request = create_authenticated_request(request, &token)
+        .map_err(|e| anyhow!("Failed to create authenticated request: {}", e))?;
+
+    let response = client
+        .sign(tonic_request)
+        .await
+        .map_err(|e| anyhow!("Sign request failed: {}", e))?;
+
+    let response = response.into_inner();
+
+    println!("Sign Result:");
+    println!("{}", "=".repeat(60));
+    println!("  Signature: {}", response.signature);
+
+    Ok(SignResult {
+        signature: response.signature,
+    })
 }

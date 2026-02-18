@@ -3,11 +3,12 @@ mod commands;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 pub use commands::{
-    add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg,
-    do_encrypt_secret, do_generate_reader_key, do_pre, do_store_secret, fund, get_account_sequence,
-    list_bulletin_posts, prepare_secret, query_node_info, read_bulletin_post,
+    add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, derive_public_key,
+    do_dkg, do_encrypt_secret, do_generate_reader_key, do_pre, do_sign, do_store_secret, fund,
+    get_account_sequence, list_bulletin_posts, prepare_secret, query_node_info, read_bulletin_post,
     register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
-    store_prepared_secret, DkgResult, NodeInfoResult, PreparedSecret, StoreSecretResult,
+    store_prepared_secret, DerivePublicKeyResult, DkgResult, NodeInfoResult, PreparedSecret,
+    SignResult, StoreSecretResult,
 };
 use common::blockchain::ChainConfig;
 use hex;
@@ -267,6 +268,36 @@ pub enum SubCommands {
         #[clap(short, long, default_value = "http://localhost:50051")]
         endpoint: String,
     },
+    /// Derive a public key from a ring's master PK + label
+    DerivePublicKey {
+        /// gRPC endpoint of the node
+        #[clap(short, long, default_value = "http://localhost:50051")]
+        endpoint: String,
+        /// Ring ID to derive from
+        #[clap(long)]
+        ring_id: String,
+        /// Derivation label (hex encoded)
+        #[clap(long)]
+        derivation: String,
+    },
+    /// Perform threshold signing with a ring
+    Sign {
+        /// gRPC endpoint of the node
+        #[clap(short, long, default_value = "http://localhost:50051")]
+        endpoint: String,
+        /// Ring ID to sign with
+        #[clap(long)]
+        ring_id: String,
+        /// Message to sign (hex encoded)
+        #[clap(long)]
+        message: String,
+        /// Optional derivation path (hex encoded)
+        #[clap(long)]
+        derivation: Option<String>,
+        /// A private key to generate a signer did
+        #[clap(long)]
+        signer_did_pk: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -460,6 +491,27 @@ async fn main() -> Result<()> {
         }
         SubCommands::Info { endpoint } => {
             query_node_info(endpoint).await?;
+        }
+        SubCommands::DerivePublicKey {
+            endpoint,
+            ring_id,
+            derivation,
+        } => {
+            let derivation_bytes =
+                hex::decode(&derivation).expect("Failed to decode derivation hex");
+            derive_public_key(endpoint, ring_id, derivation_bytes).await?;
+        }
+        SubCommands::Sign {
+            endpoint,
+            ring_id,
+            message,
+            derivation,
+            signer_did_pk,
+        } => {
+            let message_bytes = hex::decode(&message).expect("Failed to decode message hex");
+            let derivation_bytes =
+                derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
+            do_sign(endpoint, ring_id, message_bytes, derivation_bytes, signer_did_pk).await?;
         }
     }
 
