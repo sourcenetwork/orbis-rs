@@ -93,9 +93,9 @@ resources:
           - actor
     permissions:
       - name: read
-        expr: owner + writer + reader
+        expr: writer + reader
       - name: write
-        expr: owner + writer
+        expr: writer
   - name: bookmark
     relations:
       - name: reader
@@ -106,9 +106,9 @@ resources:
           - actor
     permissions:
       - name: read
-        expr: owner + writer + reader
+        expr: writer + reader
       - name: write
-        expr: owner + writer
+        expr: writer
 "#;
 
 const HIKING_POLICY_YAML: &str = r#"
@@ -124,9 +124,9 @@ resources:
           - actor
     permissions:
       - name: read
-        expr: owner + writer + reader
+        expr: writer + reader
       - name: write
-        expr: owner + writer
+        expr: writer
 "#;
 
 // ============================================================================

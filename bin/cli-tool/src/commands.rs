@@ -517,28 +517,7 @@ resources:
 "#;
 
 pub async fn add_policy_to_chain(config: ChainConfig) -> Result<String> {
-    let client = SourceHubClient::with_signer(
-        config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
-    )
-    .await
-    .map_err(|e| anyhow!("client builder issue: {}", e))?;
-
-    let _result = client
-        .acp_create_policy(TEST_POLICY_YAML, 1)
-        .await
-        .map_err(|e| anyhow!("Failed to create policy: {}", e))?;
-
-    // TODO: This is dumb grabs the last policy id that exists, fine for now but fix later by grabbing policy id from event or something
-    let policy_ids = client
-        .acp_list_policy_ids()
-        .await
-        .map_err(|e| anyhow!("Failed to list policy IDs: {}", e))?;
-    Ok(policy_ids
-        .ids
-        .last()
-        .ok_or_else(|| anyhow!("No policy IDs found"))?
-        .clone())
+    create_policy_on_chain(TEST_POLICY_YAML, config).await
 }
 pub async fn register_object_to_chain(
     policy_id: String,
@@ -605,6 +584,10 @@ pub async fn set_relationship_on_chain(
 }
 
 /// Create a policy on-chain with custom YAML (not hardcoded TEST_POLICY_YAML).
+///
+/// Returns the newly created policy ID by diffing the policy ID list
+/// before and after creation (since the broadcast response doesn't
+/// include the policy ID directly).
 pub async fn create_policy_on_chain(yaml: &str, config: ChainConfig) -> Result<String> {
     let client = SourceHubClient::with_signer(
         config.clone(),
@@ -613,20 +596,31 @@ pub async fn create_policy_on_chain(yaml: &str, config: ChainConfig) -> Result<S
     .await
     .map_err(|e| anyhow!("client builder issue: {}", e))?;
 
+    // Snapshot policy IDs before creation
+    let before = client
+        .acp_list_policy_ids()
+        .await
+        .map_err(|e| anyhow!("Failed to list policy IDs (before): {}", e))?;
+    let before_set: std::collections::HashSet<_> = before.ids.into_iter().collect();
+
     let _result = client
         .acp_create_policy(yaml, 1)
         .await
         .map_err(|e| anyhow!("Failed to create policy: {}", e))?;
 
-    let policy_ids = client
+    // Find the new policy ID by diffing
+    let after = client
         .acp_list_policy_ids()
         .await
-        .map_err(|e| anyhow!("Failed to list policy IDs: {}", e))?;
-    Ok(policy_ids
+        .map_err(|e| anyhow!("Failed to list policy IDs (after): {}", e))?;
+
+    let new_id = after
         .ids
-        .last()
-        .ok_or_else(|| anyhow!("No policy IDs found"))?
-        .clone())
+        .into_iter()
+        .find(|id| !before_set.contains(id))
+        .ok_or_else(|| anyhow!("Policy creation succeeded but no new policy ID found"))?;
+
+    Ok(new_id)
 }
 
 /// Set a relationship using an explicit actor DID (no re-derivation).
