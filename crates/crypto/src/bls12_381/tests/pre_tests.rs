@@ -966,8 +966,12 @@ fn test_encryption_proof_metadata_with_derivation() {
         "Proof should contain derived_pk when derivation is used"
     );
 
-    // Verify with correct metadata - should succeed
-    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(metadata));
+    // verify_encryption expects the already-derived key (as verify_encryption_binding does)
+    let derived_pk = ThresholdDealerNode::derive_public_key(&dkg_pk, derivation).unwrap();
+
+    // Verify with correct metadata and derived key - should succeed
+    let result =
+        ThresholdDealerNode::verify_encryption(&derived_pk, &enc_cmt, &proof, Some(metadata));
     assert!(
         result.is_ok(),
         "Proof should verify with correct metadata and derivation"
@@ -976,10 +980,76 @@ fn test_encryption_proof_metadata_with_derivation() {
     // Verify with wrong metadata - should fail even with correct derivation in proof
     let wrong_metadata = b"policy_id:000|resource:other|permission:none";
     let result =
-        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(wrong_metadata));
+        ThresholdDealerNode::verify_encryption(&derived_pk, &enc_cmt, &proof, Some(wrong_metadata));
     assert!(
         result.is_err(),
         "Proof should fail with wrong metadata even when derivation is correct"
+    );
+}
+
+#[test]
+fn test_verify_encryption_wrong_derivation_fails_loudly() {
+    // Verify that supplying the wrong derivation to verify_encryption fails immediately
+    // with a derivation mismatch error, rather than silently producing an unusable result
+    // that only fails at AES-GCM decrypt time.
+    let secret = b"test secret";
+    let metadata = b"policy_id:123|resource:doc|permission:read";
+    let correct_derivation = b"alice-capability-v1";
+    let wrong_derivation = b"eve-capability-v1";
+    let mut rng = OsRng;
+
+    let dkg_sk = Fr::rand(&mut rng);
+    let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+
+    let (enc_cmt, _encrypted_secret, proof) = ThresholdDealerNode::encrypt_secret(
+        &dkg_pk,
+        secret,
+        Some(correct_derivation),
+        Some(metadata),
+    )
+    .unwrap();
+
+    assert!(
+        proof.derived_pk.is_some(),
+        "Proof should contain derived_pk"
+    );
+
+    // Wrong derivation: verify_encryption should fail immediately
+    let wrong_derived_pk =
+        ThresholdDealerNode::derive_public_key(&dkg_pk, wrong_derivation).unwrap();
+    let result =
+        ThresholdDealerNode::verify_encryption(&wrong_derived_pk, &enc_cmt, &proof, Some(metadata));
+    assert!(
+        result.is_err(),
+        "verify_encryption should fail with wrong derivation"
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Derivation mismatch"),
+        "Error should be a derivation mismatch, not a NIZK or AES failure"
+    );
+
+    // No derivation when one was used: should also fail (derived_pk != dkg_pk)
+    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(metadata));
+    assert!(
+        result.is_err(),
+        "verify_encryption should fail when derivation is omitted but proof has derived_pk"
+    );
+
+    // Correct derivation: should succeed
+    let correct_derived_pk =
+        ThresholdDealerNode::derive_public_key(&dkg_pk, correct_derivation).unwrap();
+    let result = ThresholdDealerNode::verify_encryption(
+        &correct_derived_pk,
+        &enc_cmt,
+        &proof,
+        Some(metadata),
+    );
+    assert!(
+        result.is_ok(),
+        "verify_encryption should succeed with correct derivation"
     );
 }
 
