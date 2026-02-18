@@ -148,6 +148,7 @@ where
         // 1. Authenticate: Extract and validate JWT
         let token_str = extract_bearer_token(&request)
             .map_err(|e| UtilityError::Unauthorized(e.to_string()))?;
+        let jwt_string = token_str.to_string(); // Save for forwarding to responder nodes
         let token: BearerToken<SignClaims> = resolve_jwt_did(token_str, current_time)
             .map_err(|e| {
                 UtilityError::Unauthorized(format!("JWT validation failed: {}", e))
@@ -251,7 +252,7 @@ where
                 ring_payload.peer_ids.len(),
                 &ring_payload.public_polynomial,
                 req.ring_id.clone(),
-                SignVerification::Authenticated,
+                SignVerification::Authenticated { jwt: jwt_string },
             )
             .await
             .map_err(|e| UtilityError::Signing(format!("Signing failed: {}", e)))?;

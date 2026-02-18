@@ -22,6 +22,7 @@ use crate::constants::{
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::sign::error::{Result, SignError};
 use crate::sign::messages::{SignMessage, SignVerification};
+use authn::{resolve_jwt_did, BearerToken, SignClaims};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ThresholdSigner,
@@ -36,6 +37,7 @@ use network::SIGN;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Response structure containing the recovered signature
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,14 +242,45 @@ where
             SignVerification::Bulletin => {
                 let verified_ring_id = self.verify_bulletin_message(&message).await?;
                 if verified_ring_id != ring_id {
-                    return Err(SignError::VerificationFailed(
-                        "ring_id in message does not match request ring_id".into(),
-                    ));
+                    return Err(SignError::VerificationFailed(format!(
+                        "ring_id in bulletin message '{}' does not match request ring_id '{}'",
+                        verified_ring_id, ring_id
+                    )));
                 }
             }
-            SignVerification::Authenticated => {
-                // JWT was verified by the initiator at the gRPC layer.
-                // Ring routing comes from ring_id field.
+            SignVerification::Authenticated { jwt } => {
+                // Each responder independently validates the JWT
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| {
+                        SignError::VerificationFailed(format!("Failed to get timestamp: {}", e))
+                    })?
+                    .as_secs();
+
+                let token: BearerToken<SignClaims> =
+                    resolve_jwt_did(&jwt, current_time).map_err(|e| {
+                        SignError::Unauthorized(format!("JWT validation failed: {}", e))
+                    })?;
+
+                // Verify JWT claims match the sign request
+                if token.claims.ring_id != ring_id {
+                    return Err(SignError::Unauthorized(format!(
+                        "JWT ring_id '{}' does not match request ring_id '{}'",
+                        token.claims.ring_id, ring_id
+                    )));
+                }
+                if token.claims.message != message {
+                    return Err(SignError::Unauthorized(
+                        "JWT message does not match request message".to_string(),
+                    ));
+                }
+
+                tracing::debug!(
+                    request_id = %request_id,
+                    issuer = %token.issuer_id,
+                    ring_id = %ring_id,
+                    "Sign Coordinator: JWT independently verified by responder"
+                );
             }
         }
 

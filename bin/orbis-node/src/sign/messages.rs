@@ -9,14 +9,17 @@ use serde::{Deserialize, Serialize};
 ///
 /// Determines how responder nodes verify that a message should be signed.
 /// The initiator sets this based on the signing context (store_secret vs utility service).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SignVerification {
     /// Verify message exists on bulletin (store_secret path).
     /// Responder deserializes message as BulletinPost, reads from bulletin, verifies payload match.
     Bulletin,
-    /// Message was authenticated at the gRPC layer (utility service path).
-    /// Responder trusts that the initiator verified the JWT. Ring routing comes from ring_id field.
-    Authenticated,
+    /// Message was authenticated via JWT (utility service path).
+    /// Each responder independently validates the JWT and verifies claims match the request.
+    Authenticated {
+        /// The raw JWT string so each responder can verify independently.
+        jwt: String,
+    },
 }
 
 /// Sign protocol message types
