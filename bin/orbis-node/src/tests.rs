@@ -440,6 +440,7 @@ mod cli_tool_integration {
     /// Then runs the full DKG -> PRE workflow via CLI commands.
     #[tokio::test]
     #[serial_test::serial]
+    #[ignore = "replaced by native e2e test in orbis-e2e crate"]
     async fn test_cli_calls_dkg_and_pre_endpoint() {
         // use tracing_subscriber;
         // // Initialize tracing for debugging
