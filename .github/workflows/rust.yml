@@ -95,7 +95,7 @@ jobs:
       run: |
         docker pull ghcr.io/sourcenetwork/sourcehub:dev
         id=$(docker create ghcr.io/sourcenetwork/sourcehub:dev)
-        docker cp "$id:/usr/bin/sourcehubd" /usr/local/bin/sourcehubd
+        docker cp "$id:/usr/local/bin/sourcehubd" /usr/local/bin/sourcehubd
         docker rm "$id"
         sourcehubd version
 
