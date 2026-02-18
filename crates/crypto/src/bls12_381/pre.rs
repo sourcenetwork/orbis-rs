@@ -319,6 +319,16 @@ impl ThresholdDealer for ThresholdDealerNode {
                     "Invalid derived_pk: not in correct subgroup".to_string(),
                 ));
             }
+            // Verify the caller's dkg_pk (already derived from supplied derivation bytes)
+            // matches proof.derived_pk. This enforces that the correct derivation was known
+            // at re-encryption time — wrong derivation fails loudly here rather than silently
+            // at AES-GCM decrypt time.
+            if derived_pk != *dkg_pk {
+                return Err(CryptoError::ElGamalError(
+                    "Derivation mismatch: supplied derivation does not match encryption"
+                        .to_string(),
+                ));
+            }
             derived_pk
         } else {
             *dkg_pk

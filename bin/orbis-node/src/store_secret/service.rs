@@ -317,8 +317,19 @@ where
     }
 
     // 5. Validate Encryption of secret validity
+    // The store service never has derivation bytes, so when proof.derived_pk is present
+    // we use it directly as the effective key. The NIZK proves it was used correctly.
+    // Derivation byte correctness (d * ring_pk == derived_pk) is enforced by the PRE
+    // service via verify_encryption_binding, which does have the derivation bytes.
+    let effective_key = if let Some(ref derived_pk_bytes) = proof.derived_pk {
+        D::PublicKey::from_bytes(derived_pk_bytes).map_err(|e| {
+            StoreSecretError::Validation(format!("derived_pk is not a valid curve point: {}", e))
+        })?
+    } else {
+        ring_key_point
+    };
     ThresholdDealerNode::verify_encryption(
-        &ring_key_point,
+        &effective_key,
         &enc_cmt_point,
         &proof,
         Some(&policy_metadata),
