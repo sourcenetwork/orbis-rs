@@ -145,7 +145,7 @@ impl IntegrationTestNetwork {
         // Derive the crypto feature from compile-time cfg so the docker image
         // always matches the test binary. An explicit ORBIS_INTEGRATION_CRYPTO
         // env var overrides the compile-time default.
-        let crypto_feature = if env::var("ORBIS_INTEGRATION_CRYPTO").is_ok() {
+        let crypto_feature: Option<&'static str> = if env::var("ORBIS_INTEGRATION_CRYPTO").is_ok() {
             // Honour explicit override (already in env for docker-compose)
             None
         } else {
@@ -154,9 +154,13 @@ impl IntegrationTestNetwork {
             {
                 Some("bls12-381")
             }
-            #[cfg(feature = "decaf377")]
+            #[cfg(all(not(feature = "bls12-381"), feature = "decaf377"))]
             {
                 Some("decaf377")
+            }
+            #[cfg(not(any(feature = "bls12-381", feature = "decaf377")))]
+            {
+                None
             }
         };
 

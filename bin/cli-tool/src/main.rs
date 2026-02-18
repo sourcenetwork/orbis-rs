@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg,
     do_encrypt_secret, do_generate_reader_key, do_pre, do_store_secret, fund, get_account_sequence,
-    list_bulletin_posts, prepare_secret, query_node_info, read_bulletin_post,
+    get_latest_ring, list_bulletin_posts, prepare_secret, query_node_info, read_bulletin_post,
     register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
     store_prepared_secret, PreparedSecret,
 };
@@ -267,6 +267,12 @@ pub enum SubCommands {
         #[clap(short, long, default_value = "http://localhost:50051")]
         endpoint: String,
     },
+    /// Get latest ring from bulletin (after DKG). Prints RING_ID and RING_PK for sourcing in scripts.
+    GetLatestRing {
+        /// Bulletin namespace for ring payloads [default: orbis]
+        #[clap(long)]
+        namespace: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -329,7 +335,8 @@ async fn main() -> Result<()> {
             do_generate_reader_key()?;
         }
         SubCommands::AddPolicyToChain => {
-            add_policy_to_chain().await?;
+            let policy_id = add_policy_to_chain().await?;
+            println!("POLICY_ID={}", policy_id);
         }
         SubCommands::RegisterObjectToChain {
             policy_id,
@@ -460,6 +467,11 @@ async fn main() -> Result<()> {
         }
         SubCommands::Info { endpoint } => {
             query_node_info(endpoint).await?;
+        }
+        SubCommands::GetLatestRing { namespace } => {
+            let (ring_id, ring_pk) = get_latest_ring(namespace).await?;
+            println!("RING_ID={}", ring_id);
+            println!("RING_PK={}", ring_pk);
         }
     }
 

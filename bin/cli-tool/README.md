@@ -26,6 +26,7 @@ Optional crypto backends (see `Cargo.toml`):
 | `info` | Query node info (public address, peer ID, P2P address). Default endpoint: `http://localhost:50051`. |
 | `dkg` | Start a Distributed Key Generation session. Requires `--threshold`, `--peer-ids` (one or more), and optionally `--endpoint`. |
 | `generate-reader-key` | Generate a reader keypair (hex). Use the output as `--reader-pk` / `--reader-sk` for PRE. |
+| `get-latest-ring` | Read the latest ring from the bulletin (e.g. after DKG). Prints `RING_ID=` and `RING_PK=` for use in scripts. Optional `--namespace` (default: `orbis`). |
 
 ### Secrets: encrypt, store, re-encrypt
 
@@ -96,6 +97,18 @@ cargo run -p cli-tool -- fund --address <ADDRESS>
 cargo run -p cli-tool -- add-policy-to-chain
 cargo run -p cli-tool -- register-bulletin-namespace --namespace my-ns
 ```
+
+## Scripts
+
+A full walkthrough is available as shell scripts in `scripts/`. From the workspace root:
+
+- **Docker integration (3 nodes, threshold 2)** — matches `test_cli_calls_dkg_and_pre_endpoint` and uses `docker/docker-compose-integration-test.yml`:
+  ```bash
+  docker compose -f docker/docker-compose-integration-test.yml up -d --build
+  ./bin/cli-tool/scripts/run_integration.sh
+  ```
+
+See [scripts/README.md](scripts/README.md) for step-by-step usage and variables.
 
 ## Integration tests
 
