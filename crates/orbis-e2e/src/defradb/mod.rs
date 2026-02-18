@@ -1,3 +1,4 @@
+pub mod identity;
 mod node;
 
 pub use node::{DefraDbNode, OrbisSignerConfig, SourceHubConfig};

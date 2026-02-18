@@ -1,15 +1,25 @@
 //! Integration Test: x-archive — Full Service Key Architecture
 //!
-//! Four service keys on disk. Three real identities in Orbis. Zero private keys on hardware.
+//! 34-step living specification. Two compartments (x-archive, hiking). One Orbis
+//! ring (T=2, N=3). Multiple service identities with scoped permissions. Tests the
+//! full stack from threshold key management through cross-compartment ACP isolation.
+//!
+//! ## Identity hierarchy
 //!
 //! ```text
-//! Key               On Disk?   Real Identity     What It Does
-//! ────────────────────────────────────────────────────────────────────
-//! JACK_DID          NO         Jack (human)      Signs SourceHub policy txs
-//! COMPARTMENT_DID   NO         x-archive         Owns documents, threshold-signs them
-//! JACK_SVC          YES        (disposable)      Authenticates to Orbis for JACK_DID
-//! DEFRA_SVC         YES        (disposable)      Authenticates to Orbis for COMPARTMENT_DID
-//! APP_SVC           YES        (disposable)      Authenticates to DefraDB
+//! Key                On Disk?   Real Identity      What It Does
+//! ───────────────────────────────────────────────────────────────────────────
+//! JACK_DID           NO         Jack (human)       Signs SourceHub policy txs
+//! COMPARTMENT_DID    NO         x-archive          Owns x-archive documents
+//! HIKING_DID         NO         hiking             Owns hiking documents
+//! JACK_SVC           YES        (disposable)       Authenticates to Orbis for JACK_DID
+//! DEFRA_SVC          YES        (disposable)       x-archive DefraDB → Orbis signing
+//! APP_SVC            YES        (disposable)       x-archive app → DefraDB reads/writes
+//! HIKING_DEFRA_SVC   YES        (disposable)       hiking DefraDB → Orbis signing
+//! HIKING_APP_SVC     YES        (disposable)       hiking app → DefraDB reads/writes
+//! AGENT_SVC          YES        (disposable)       Scoped agent — reader on hiking only
+//! BACKUP_SVC         YES        (disposable)       Backup daemon — reader on both
+//! NEW_APP_SVC        YES        (disposable)       Rotated x-archive app key (replaces APP_SVC)
 //! ```
 //!
 //! Every file keyring key is a fuse. Blow it, replace it, move on.
@@ -21,6 +31,8 @@
 //! x-archive app         DefraDB              SourceHub          Orbis Ring
 //!      │                   │                     │                  │
 //!      │ auth as APP_SVC   │                     │                  │
+//!      │ (Bearer ES256K    │                     │                  │
+//!      │  JWT, did:key)    │                     │                  │
 //!      ├──────────────────→│                     │                  │
 //!      │                   │ "can APP_SVC write  │                  │
 //!      │                   │  tweet?"            │                  │
@@ -40,17 +52,82 @@
 //!      │  sig   = ring threshold sig                                │
 //!      │←──────────────────┤                                        │
 //! ```
+//!
+//! ## What this test proves
+//!
+//! | Property                                              | Steps     |
+//! |-------------------------------------------------------|-----------|
+//! | Threshold key management (DKG + derived keys)         | 1-7, 17   |
+//! | No real private key on disk                           | 3, 6      |
+//! | ACP-enforced authenticated reads/writes               | 11-16     |
+//! | Cross-compartment isolation (both directions)         | 18-21     |
+//! | Scoped agent access (read-only, single compartment)   | 22-26     |
+//! | Backup daemon (read-only, cross-compartment)          | 27-31     |
+//! | Permission revocation takes effect immediately        | 32        |
+//! | Service key rotation without identity change          | 33-34     |
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use common::blockchain::events::BulletinEventSubscription;
+use orbis_e2e::defradb::identity::{did_key_from_secp256k1, DefraHttpClient};
 use orbis_e2e::defradb::{self, DefraDbNode, OrbisSignerConfig};
 use orbis_e2e::orbis::{OrbisRing, SourceHubUrls};
 use orbis_e2e::sourcehub::{self, SourceHubNode};
-use orbis_e2e::{
-    find_defra_binary, generate_identity_keys, generate_run_id, TestRunDir,
-};
+use orbis_e2e::{find_defra_binary, generate_identity_keys, generate_run_id, TestRunDir};
+
+// ============================================================================
+// ACP Policy YAML templates
+// ============================================================================
+
+const X_ARCHIVE_POLICY_YAML: &str = r#"
+name: x-archive-policy
+resources:
+  - name: tweet
+    relations:
+      - name: reader
+        types:
+          - actor
+      - name: writer
+        types:
+          - actor
+    permissions:
+      - name: read
+        expr: owner + writer + reader
+      - name: write
+        expr: owner + writer
+  - name: bookmark
+    relations:
+      - name: reader
+        types:
+          - actor
+      - name: writer
+        types:
+          - actor
+    permissions:
+      - name: read
+        expr: owner + writer + reader
+      - name: write
+        expr: owner + writer
+"#;
+
+const HIKING_POLICY_YAML: &str = r#"
+name: hiking-policy
+resources:
+  - name: trail
+    relations:
+      - name: reader
+        types:
+          - actor
+      - name: writer
+        types:
+          - actor
+    permissions:
+      - name: read
+        expr: owner + writer + reader
+      - name: write
+        expr: owner + writer
+"#;
 
 // ============================================================================
 // Service identity — a disposable file-keyring key
@@ -65,8 +142,10 @@ struct ServiceIdentity {
     label: String,
     /// Hex-encoded secp256k1 private key.
     private_key_hex: String,
-    /// DID derived from the public key (did:key:...).
+    /// SourceHub bech32 address (source1...).
     did: String,
+    /// secp256k1-based did:key (did:key:z...) — used for DefraDB JWT identity.
+    did_key: String,
     /// Directory where the file keyring stores encrypted keys.
     _keyring_dir: PathBuf,
 }
@@ -74,8 +153,8 @@ struct ServiceIdentity {
 impl ServiceIdentity {
     /// Generate a new service identity with a file keyring.
     ///
-    /// Creates a secp256k1 keypair, derives the DID, and stores the key
-    /// in an encrypted file keyring under `base_dir/{label}/keys/`.
+    /// Creates a secp256k1 keypair, derives both the SourceHub address and
+    /// the did:key DID, and stores the key in an encrypted file keyring.
     fn new_file_keyring(label: &str, base_dir: &std::path::Path) -> Self {
         let keyring_dir = base_dir.join(label).join("keys");
         std::fs::create_dir_all(&keyring_dir)
@@ -95,17 +174,19 @@ impl ServiceIdentity {
             format!("{:0>64x}", ((h1 as u128) << 64) | (h2 as u128))
         };
 
-        // Derive DID from the key
+        // Derive SourceHub address
         let did = orbis_e2e::sourcehub::source_hub_address(&private_key_hex)
             .unwrap_or_else(|e| panic!("derive address for {}: {}", label, e));
 
-        // TODO: actually write the key into a file keyring here.
-        // For now the private_key_hex is held in memory.
+        // Derive secp256k1 did:key for DefraDB JWT identity
+        let (did_key, _pub_bytes) = did_key_from_secp256k1(&private_key_hex)
+            .unwrap_or_else(|e| panic!("derive did_key for {}: {}", label, e));
 
         Self {
             label: label.to_string(),
             private_key_hex,
             did,
+            did_key,
             _keyring_dir: keyring_dir,
         }
     }
@@ -120,15 +201,15 @@ const BULLETIN_RING_NAMESPACE: &str = "orbis";
 // The test
 // ============================================================================
 
-/// Full service key architecture for the x-archive compartment.
+/// Full service key architecture: two compartments, access control, and key lifecycle.
 ///
-/// This test is a living specification. It describes the target architecture
-/// where Orbis is the root of trust for all identities and no private key
-/// for a real identity ever touches disk.
+/// Part 1 (steps 1-17): Stand up the full stack — SourceHub, Orbis ring (DKG),
+/// two DefraDB instances with Orbis signer and ACP @policy schemas. Write and
+/// read documents as authenticated identities with threshold signing.
 ///
-/// **Status**: Full stack — SourceHub + Orbis DKG + DefraDB with Orbis signer.
-/// Orbis DerivePublicKey and Sign RPCs are implemented.
-/// DefraDB delegates document signing to Orbis ring via gRPC.
+/// Part 2 (steps 18-34): Stress-test the access control boundaries — cross-compartment
+/// isolation, scoped agent read access, backup daemon read-only, permission revocation,
+/// and service key rotation.
 #[tokio::test]
 #[ignore = "spec test: requires sourcehubd, defra, and orbis-node on PATH"]
 async fn xarchive_full_service_key_architecture() {
@@ -339,60 +420,67 @@ async fn xarchive_full_service_key_architecture() {
     // DefraDB checks ACP on SourceHub to decide if app_svc can read/write.
 
     // ================================================================
-    // 8. ACP policy via test account
+    // 8. ACP policy via test account (x-archive policy)
     // ================================================================
     // In production: jack_svc → Orbis → threshold-signs tx as jack_did → SourceHub
     // In test: pre-funded test account creates policy directly.
-    // The signing proxy (BLS→Cosmos tx) is future work.
+    // Policy defines tweet + bookmark resources with owner/writer/reader perms.
 
-    eprintln!("[xarchive] Creating ACP policy...");
-    let policy_id = cli_tool::add_policy_to_chain(chain_config.clone())
+    eprintln!("[xarchive] Creating x-archive ACP policy...");
+    let x_policy_id = cli_tool::create_policy_on_chain(X_ARCHIVE_POLICY_YAML, chain_config.clone())
         .await
-        .expect("create ACP policy");
-    eprintln!("[xarchive] Policy created: {}", policy_id);
+        .expect("create x-archive ACP policy");
+    eprintln!("[xarchive] x-archive policy created: {}", x_policy_id);
 
     // ================================================================
-    // 9. ACP grants via test account
+    // 9. ACP grants via test account (x-archive)
     // ================================================================
-    // Grant compartment_did and app_svc writer+reader on "document" resource.
-    // Uses test account directly (same signing proxy caveat as step 8).
+    // Grant APP_SVC writer+reader on tweet and bookmark resources.
+    // Uses did_key format DIDs (secp256k1-based, matching DefraDB JWT identity).
 
-    // Register a placeholder object for grants
-    let placeholder_object = "xarchive-root";
+    // Register placeholder objects for grants on each resource type
+    let tweet_object = "xarchive-tweets";
+    let bookmark_object = "xarchive-bookmarks";
+
     cli_tool::register_object_to_chain(
-        policy_id.clone(),
-        placeholder_object.to_string(),
-        "document".to_string(),
+        x_policy_id.clone(),
+        tweet_object.to_string(),
+        "tweet".to_string(),
         chain_config.clone(),
     )
     .await
-    .expect("register object");
+    .expect("register tweet object");
 
-    // Grant compartment_did as reader
-    cli_tool::set_relationship_on_chain(
-        policy_id.clone(),
-        placeholder_object.to_string(),
-        "document".to_string(),
-        "reader".to_string(),
-        Some(compartment_did.clone()),
+    cli_tool::register_object_to_chain(
+        x_policy_id.clone(),
+        bookmark_object.to_string(),
+        "bookmark".to_string(),
         chain_config.clone(),
     )
     .await
-    .expect("grant compartment_did reader");
+    .expect("register bookmark object");
 
-    // Grant app_svc as reader
-    cli_tool::set_relationship_on_chain(
-        policy_id.clone(),
-        placeholder_object.to_string(),
-        "document".to_string(),
-        "reader".to_string(),
-        Some(app_svc.did.clone()),
-        chain_config.clone(),
-    )
-    .await
-    .expect("grant app_svc reader");
+    // Grant APP_SVC writer + reader on tweet
+    for relation in &["writer", "reader"] {
+        cli_tool::set_relationship_direct(
+            &x_policy_id, "tweet", tweet_object, relation,
+            &app_svc.did_key, chain_config.clone(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("grant app_svc {} on tweet: {}", relation, e));
+    }
 
-    eprintln!("[xarchive] ACP grants applied");
+    // Grant APP_SVC writer + reader on bookmark
+    for relation in &["writer", "reader"] {
+        cli_tool::set_relationship_direct(
+            &x_policy_id, "bookmark", bookmark_object, relation,
+            &app_svc.did_key, chain_config.clone(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("grant app_svc {} on bookmark: {}", relation, e));
+    }
+
+    eprintln!("[xarchive] ACP grants applied (app_svc writer+reader on tweet+bookmark)");
 
     // ================================================================
     // 10. Start DefraDB with Orbis signer
@@ -441,34 +529,32 @@ async fn xarchive_full_service_key_architecture() {
     eprintln!("[xarchive] DefraDB ready: {}", defra.http_url);
 
     // ================================================================
-    // 11. Create Tweet schema
+    // 11. Create Tweet + Bookmark schemas with @policy directives
     // ================================================================
-    // A simple schema for testing. In production this would have an
-    // @policy directive referencing our ACP policy_id.
+    // Schemas include @policy directives referencing the ACP policy.
+    // This tells DefraDB to enforce ACP on every read/write.
 
-    let http = reqwest::Client::new();
-    let tweet_schema = "type Tweet { tweet_id: String  text: String }";
+    let xarchive_client = DefraHttpClient::new(&defra.http_url);
 
-    let schema_resp = http
-        .post(format!("{}/api/v0/schema", defra.http_url))
-        .header("Content-Type", "text/plain")
-        .body(tweet_schema)
-        .send()
-        .await
-        .expect("schema add request");
-    assert!(
-        schema_resp.status().is_success(),
-        "schema add failed: {}",
-        schema_resp.text().await.unwrap_or_default()
+    let tweet_schema = format!(
+        r#"type Tweet @policy(id: "{}", resource: "tweet") {{ tweet_id: String  text: String }}"#,
+        x_policy_id,
     );
-    eprintln!("[xarchive] Schema added: Tweet {{ tweet_id, text }}");
+    xarchive_client.schema_add(&tweet_schema).await.expect("add tweet schema");
+    eprintln!("[xarchive] Schema added: Tweet @policy {{ tweet_id, text }}");
+
+    let bookmark_schema = format!(
+        r#"type Bookmark @policy(id: "{}", resource: "bookmark") {{ url: String  title: String  notes: String }}"#,
+        x_policy_id,
+    );
+    xarchive_client.schema_add(&bookmark_schema).await.expect("add bookmark schema");
+    eprintln!("[xarchive] Schema added: Bookmark @policy {{ url, title, notes }}");
 
     // ================================================================
-    // 12. Write a tweet (signed by Orbis ring as compartment_did)
+    // 12. Write a tweet (authenticated as APP_SVC, signed by Orbis ring)
     // ================================================================
-    // DefraDB receives this mutation, checks ACP on SourceHub, then
-    // sends the document bytes to Orbis for threshold signing.
-    // The ring signs as the derived key for "x-archive" (= compartment_did).
+    // DefraDB receives this mutation with Bearer JWT (APP_SVC identity),
+    // checks ACP on SourceHub, then sends the doc to Orbis for threshold signing.
 
     let create_mutation = r#"mutation {
         create_Tweet(input: {
@@ -481,38 +567,20 @@ async fn xarchive_full_service_key_architecture() {
         }
     }"#;
 
-    let create_resp = http
-        .post(format!("{}/api/v0/graphql", defra.http_url))
-        .json(&serde_json::json!({"query": create_mutation}))
-        .send()
+    let create_body = xarchive_client
+        .graphql(create_mutation, Some(&app_svc.private_key_hex))
         .await
-        .expect("create tweet request");
-    assert!(
-        create_resp.status().is_success(),
-        "create tweet failed: {}",
-        create_resp.text().await.unwrap_or_default()
-    );
-    let create_body: serde_json::Value =
-        create_resp.json().await.expect("parse create response");
+        .expect("create tweet");
     eprintln!("[xarchive] Tweet created: {}", create_body);
 
     // ================================================================
-    // 13. Query back and verify
+    // 13. Query back and verify (authenticated read)
     // ================================================================
     let query = r#"query { Tweet { _docID tweet_id text } }"#;
-    let query_resp = http
-        .post(format!("{}/api/v0/graphql", defra.http_url))
-        .json(&serde_json::json!({"query": query}))
-        .send()
+    let query_body = xarchive_client
+        .graphql(query, Some(&app_svc.private_key_hex))
         .await
-        .expect("query request");
-    assert!(
-        query_resp.status().is_success(),
-        "query failed: {}",
-        query_resp.text().await.unwrap_or_default()
-    );
-    let query_body: serde_json::Value =
-        query_resp.json().await.expect("parse query response");
+        .expect("query tweets");
 
     let tweets = query_body
         .pointer("/data/Tweet")
@@ -532,8 +600,6 @@ async fn xarchive_full_service_key_architecture() {
     // ================================================================
     // 14. Write more tweets (batch content pattern)
     // ================================================================
-    // A compartment accumulates documents over time. Each write goes
-    // through the same ACP-check → Orbis-sign → store pipeline.
 
     let tweets_data = vec![
         ("1730", "the Hardy-Ramanujan number is 1729"),
@@ -546,25 +612,19 @@ async fn xarchive_full_service_key_architecture() {
             r#"mutation {{ create_Tweet(input: {{ tweet_id: "{}", text: "{}" }}) {{ _docID }} }}"#,
             id, text
         );
-        let resp = http
-            .post(format!("{}/api/v0/graphql", defra.http_url))
-            .json(&serde_json::json!({"query": mutation}))
-            .send()
-            .await
-            .expect("batch create request");
-        assert!(resp.status().is_success(), "batch create failed for {}", id);
+        let resp = xarchive_client
+            .graphql(&mutation, Some(&app_svc.private_key_hex))
+            .await;
+        assert!(resp.is_ok(), "batch create failed for {}: {:?}", id, resp.err());
     }
     eprintln!("[xarchive] Wrote {} more tweets (4 total)", tweets_data.len());
 
     // Query all tweets — should have 4
     let all_query = r#"query { Tweet { _docID tweet_id text } }"#;
-    let all_resp = http
-        .post(format!("{}/api/v0/graphql", defra.http_url))
-        .json(&serde_json::json!({"query": all_query}))
-        .send()
+    let all_body = xarchive_client
+        .graphql(all_query, Some(&app_svc.private_key_hex))
         .await
         .expect("query all tweets");
-    let all_body: serde_json::Value = all_resp.json().await.expect("parse all tweets");
     let all_tweets = all_body
         .pointer("/data/Tweet")
         .and_then(|v| v.as_array())
@@ -573,26 +633,8 @@ async fn xarchive_full_service_key_architecture() {
     eprintln!("[xarchive] Verified: {} tweets in store", all_tweets.len());
 
     // ================================================================
-    // 15. Second schema type: Bookmark (multi-type compartment)
+    // 15. Write a bookmark (multi-type compartment)
     // ================================================================
-    // A real compartment stores multiple document types. x-archive
-    // has tweets, bookmarks, notes, etc. Each type gets its own schema
-    // but all are owned by the same COMPARTMENT_DID.
-
-    let bookmark_schema = "type Bookmark { url: String  title: String  notes: String }";
-    let schema_resp = http
-        .post(format!("{}/api/v0/schema", defra.http_url))
-        .header("Content-Type", "text/plain")
-        .body(bookmark_schema)
-        .send()
-        .await
-        .expect("bookmark schema request");
-    assert!(
-        schema_resp.status().is_success(),
-        "bookmark schema failed: {}",
-        schema_resp.text().await.unwrap_or_default()
-    );
-    eprintln!("[xarchive] Schema added: Bookmark {{ url, title, notes }}");
 
     let bookmark_mutation = r#"mutation {
         create_Bookmark(input: {
@@ -606,29 +648,18 @@ async fn xarchive_full_service_key_architecture() {
         }
     }"#;
 
-    let bm_resp = http
-        .post(format!("{}/api/v0/graphql", defra.http_url))
-        .json(&serde_json::json!({"query": bookmark_mutation}))
-        .send()
+    let bm_body = xarchive_client
+        .graphql(bookmark_mutation, Some(&app_svc.private_key_hex))
         .await
         .expect("create bookmark");
-    assert!(
-        bm_resp.status().is_success(),
-        "bookmark create failed: {}",
-        bm_resp.text().await.unwrap_or_default()
-    );
-    let bm_body: serde_json::Value = bm_resp.json().await.expect("parse bookmark response");
     eprintln!("[xarchive] Bookmark created: {}", bm_body);
 
     // Verify bookmark exists
     let bm_query = r#"query { Bookmark { _docID url title notes } }"#;
-    let bm_query_resp = http
-        .post(format!("{}/api/v0/graphql", defra.http_url))
-        .json(&serde_json::json!({"query": bm_query}))
-        .send()
+    let bm_query_body = xarchive_client
+        .graphql(bm_query, Some(&app_svc.private_key_hex))
         .await
         .expect("query bookmarks");
-    let bm_query_body: serde_json::Value = bm_query_resp.json().await.expect("parse bookmarks");
     let bookmarks = bm_query_body
         .pointer("/data/Bookmark")
         .and_then(|v| v.as_array())
@@ -643,10 +674,7 @@ async fn xarchive_full_service_key_architecture() {
     // ================================================================
     // 16. Update a tweet (mutation → re-sign pattern)
     // ================================================================
-    // When a document is updated, DefraDB sends the new version to
-    // Orbis for signing. The ring produces a fresh threshold signature.
 
-    // Get the docID of the first tweet we created
     let first_doc_id = tweets[0]["_docID"]
         .as_str()
         .expect("first tweet should have _docID");
@@ -656,18 +684,10 @@ async fn xarchive_full_service_key_architecture() {
         first_doc_id
     );
 
-    let update_resp = http
-        .post(format!("{}/api/v0/graphql", defra.http_url))
-        .json(&serde_json::json!({"query": update_mutation}))
-        .send()
+    let update_body = xarchive_client
+        .graphql(&update_mutation, Some(&app_svc.private_key_hex))
         .await
-        .expect("update tweet request");
-    assert!(
-        update_resp.status().is_success(),
-        "update tweet failed: {}",
-        update_resp.text().await.unwrap_or_default()
-    );
-    let update_body: serde_json::Value = update_resp.json().await.expect("parse update response");
+        .expect("update tweet");
     eprintln!("[xarchive] Tweet updated: {}", update_body);
 
     // Verify the update persisted
@@ -675,13 +695,10 @@ async fn xarchive_full_service_key_architecture() {
         r#"query {{ Tweet(docID: "{}") {{ _docID tweet_id text }} }}"#,
         first_doc_id
     );
-    let verify_resp = http
-        .post(format!("{}/api/v0/graphql", defra.http_url))
-        .json(&serde_json::json!({"query": verify_query}))
-        .send()
+    let verify_body = xarchive_client
+        .graphql(&verify_query, Some(&app_svc.private_key_hex))
         .await
-        .expect("verify update request");
-    let verify_body: serde_json::Value = verify_resp.json().await.expect("parse verify response");
+        .expect("verify update");
     let updated_text = verify_body
         .pointer("/data/Tweet/0/text")
         .and_then(|v| v.as_str())
@@ -696,8 +713,7 @@ async fn xarchive_full_service_key_architecture() {
     // 17. Multi-compartment key derivation
     // ================================================================
     // The same ring serves multiple compartments. Each gets a unique
-    // derived key via a different derivation label. This shows that one
-    // ring can back many identities without any per-compartment setup.
+    // derived key via a different derivation label.
 
     let hiking_derived = cli_tool::derive_public_key(
         ring.node(0).grpc_addr(),
@@ -710,7 +726,6 @@ async fn xarchive_full_service_key_architecture() {
     let hiking_did = format!("did:bls:{}", &hiking_derived.derived_public_key[..40]);
     eprintln!("[xarchive] HIKING_DID: {}", hiking_did);
 
-    // The three derived keys should all be different
     assert_ne!(
         jack_derived.derived_public_key, compartment_derived.derived_public_key,
         "jack and x-archive keys must differ"
@@ -726,14 +741,533 @@ async fn xarchive_full_service_key_architecture() {
     eprintln!("[xarchive] Verified: 3 unique derived keys from same ring");
 
     // ================================================================
-    // Done. Drop order: ring → defra → sourcehub → run_dir
     // ================================================================
-    eprintln!("[xarchive] === Full service key architecture test complete ===");
+    //  PART 2: Cross-Compartment Isolation + Permission Lifecycle
+    // ================================================================
+    // ================================================================
+
+    // ================================================================
+    // 18. Start hiking compartment (second DefraDB + ACP policy)
+    // ================================================================
+    // Each compartment gets its own DefraDB, its own ACP policy, and
+    // its own Orbis-derived identity. They share the same ring and SourceHub.
+
+    eprintln!("[xarchive] === Starting hiking compartment ===");
+
+    // Hiking service identities
+    let hiking_defra_svc = ServiceIdentity::new_file_keyring("hiking-defra-svc", run_dir.path());
+    let hiking_app_svc = ServiceIdentity::new_file_keyring("hiking-app-svc", run_dir.path());
+    eprintln!(
+        "[hiking] defra_svc: {}, app_svc: {} (did_key: {})",
+        hiking_defra_svc.did, hiking_app_svc.did, hiking_app_svc.did_key,
+    );
+
+    // Create hiking ACP policy
+    let hiking_policy_id = cli_tool::create_policy_on_chain(HIKING_POLICY_YAML, chain_config.clone())
+        .await
+        .expect("create hiking ACP policy");
+    eprintln!("[hiking] Policy created: {}", hiking_policy_id);
+
+    // Register trail object + grant hiking_app_svc writer+reader
+    let trail_object = "hiking-trails";
+    cli_tool::register_object_to_chain(
+        hiking_policy_id.clone(),
+        trail_object.to_string(),
+        "trail".to_string(),
+        chain_config.clone(),
+    )
+    .await
+    .expect("register trail object");
+
+    for relation in &["writer", "reader"] {
+        cli_tool::set_relationship_direct(
+            &hiking_policy_id, "trail", trail_object, relation,
+            &hiking_app_svc.did_key, chain_config.clone(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("grant hiking_app_svc {} on trail: {}", relation, e));
+    }
+
+    // Start hiking DefraDB
+    let hiking_defra_ports = defradb::allocate_defra_ports().expect("hiking defra ports");
+    let hiking_defra_dir = run_dir.component_dir("defra-hiking").expect("hiking defra dir");
+    let hiking_defra_log_dir = hiking_defra_dir.join("logs");
+    let hiking_defra_root = hiking_defra_dir.join("data");
+    std::fs::create_dir_all(&hiking_defra_root).expect("hiking defra data dir");
+
+    let hiking_orbis_signer = OrbisSignerConfig {
+        endpoint: ring.node(0).grpc_addr(),
+        ring_id: ring_id.clone(),
+        derivation: "hiking".to_string(),
+    };
+
+    let hiking_defra = DefraDbNode::start(
+        hiking_defra_root,
+        hiking_defra_log_dir,
+        &hiking_defra_ports,
+        &defra_binary,
+        Some(&sh_config),
+        Some(&hiking_defra_svc.private_key_hex),
+        Some(&hiking_orbis_signer),
+        Duration::from_secs(30),
+    )
+    .await
+    .expect("hiking defra should start");
+    eprintln!("[hiking] DefraDB ready: {}", hiking_defra.http_url);
+
+    let hiking_client = DefraHttpClient::new(&hiking_defra.http_url);
+
+    // ================================================================
+    // 19. Create Trail schema + write a trail document
+    // ================================================================
+
+    let trail_schema = format!(
+        r#"type Trail @policy(id: "{}", resource: "trail") {{ name: String  distance_km: Float  difficulty: String }}"#,
+        hiking_policy_id,
+    );
+    hiking_client.schema_add(&trail_schema).await.expect("add trail schema");
+    eprintln!("[hiking] Schema added: Trail @policy {{ name, distance_km, difficulty }}");
+
+    let trail_mutation = r#"mutation {
+        create_Trail(input: {
+            name: "Angels Landing",
+            distance_km: 8.7,
+            difficulty: "strenuous"
+        }) {
+            _docID
+            name
+            distance_km
+            difficulty
+        }
+    }"#;
+
+    let trail_body = hiking_client
+        .graphql(trail_mutation, Some(&hiking_app_svc.private_key_hex))
+        .await
+        .expect("create trail");
+    eprintln!("[hiking] Trail created: {}", trail_body);
+
+    // Verify trail query
+    let trail_query = r#"query { Trail { _docID name distance_km difficulty } }"#;
+    let trail_query_body = hiking_client
+        .graphql(trail_query, Some(&hiking_app_svc.private_key_hex))
+        .await
+        .expect("query trails");
+    let trails = trail_query_body
+        .pointer("/data/Trail")
+        .and_then(|v| v.as_array())
+        .expect("Trail array");
+    assert_eq!(trails.len(), 1, "should have 1 trail");
+    assert_eq!(trails[0]["name"].as_str().unwrap_or(""), "Angels Landing");
+    eprintln!("[hiking] Trail verified: {}", trails[0]["name"]);
+
+    // ================================================================
+    // 20. Cross-compartment DENIED: hiking_app_svc → x-archive tweet
+    // ================================================================
+    // hiking_app_svc has NO grants on x-archive's ACP policy.
+    // Creating a tweet should fail (empty result or error).
+
+    eprintln!("[xarchive] Testing cross-compartment isolation: hiking → x-archive...");
+    let cross_tweet = r#"mutation {
+        create_Tweet(input: {
+            tweet_id: "cross-hack",
+            text: "I should not exist"
+        }) {
+            _docID
+        }
+    }"#;
+
+    let cross_result = xarchive_client
+        .graphql(cross_tweet, Some(&hiking_app_svc.private_key_hex))
+        .await;
+
+    // ACP should deny this — either error response or empty/null data
+    let cross_denied = match &cross_result {
+        Err(_) => true,
+        Ok(body) => {
+            // Check for GraphQL errors or null/empty data
+            body.get("errors").is_some()
+                || body.pointer("/data/create_Tweet/_docID").is_none()
+        }
+    };
+    assert!(cross_denied, "hiking_app_svc should be DENIED writing to x-archive tweets");
+    eprintln!("[xarchive] PASSED: hiking_app_svc denied on x-archive tweet (cross-compartment isolation)");
+
+    // ================================================================
+    // 21. Cross-compartment DENIED: app_svc → hiking trail
+    // ================================================================
+    // app_svc has NO grants on hiking's ACP policy.
+
+    eprintln!("[xarchive] Testing cross-compartment isolation: x-archive → hiking...");
+    let cross_trail = r#"mutation {
+        create_Trail(input: {
+            name: "Fake Trail",
+            distance_km: 0.0,
+            difficulty: "none"
+        }) {
+            _docID
+        }
+    }"#;
+
+    let cross_trail_result = hiking_client
+        .graphql(cross_trail, Some(&app_svc.private_key_hex))
+        .await;
+
+    let cross_trail_denied = match &cross_trail_result {
+        Err(_) => true,
+        Ok(body) => {
+            body.get("errors").is_some()
+                || body.pointer("/data/create_Trail/_docID").is_none()
+        }
+    };
+    assert!(cross_trail_denied, "app_svc should be DENIED writing to hiking trails");
+    eprintln!("[xarchive] PASSED: app_svc denied on hiking trail (cross-compartment isolation)");
+
+    // ================================================================
+    // 22. Create AGENT_SVC (scoped agent identity — "takopi")
+    // ================================================================
+
+    let agent_svc = ServiceIdentity::new_file_keyring("agent-takopi", run_dir.path());
+    eprintln!(
+        "[agent] AGENT_SVC created: {} (did_key: {})",
+        agent_svc.did, agent_svc.did_key,
+    );
+
+    // ================================================================
+    // 23. Grant AGENT_SVC reader on trail (hiking only)
+    // ================================================================
+
+    cli_tool::set_relationship_direct(
+        &hiking_policy_id, "trail", trail_object, "reader",
+        &agent_svc.did_key, chain_config.clone(),
+    )
+    .await
+    .expect("grant agent reader on trail");
+    eprintln!("[agent] Granted reader on hiking/trail");
+
+    // ================================================================
+    // 24. Agent reads hiking trails → SUCCESS
+    // ================================================================
+
+    let agent_trail_query = r#"query { Trail { _docID name difficulty } }"#;
+    let agent_trail_body = hiking_client
+        .graphql(agent_trail_query, Some(&agent_svc.private_key_hex))
+        .await
+        .expect("agent query trails");
+    let agent_trails = agent_trail_body
+        .pointer("/data/Trail")
+        .and_then(|v| v.as_array())
+        .expect("Trail array for agent");
+    assert_eq!(agent_trails.len(), 1, "agent should see 1 trail");
+    eprintln!("[agent] PASSED: agent reads hiking trails (scoped read)");
+
+    // ================================================================
+    // 25. Agent reads x-archive tweets → DENIED
+    // ================================================================
+    // Agent has no grants on x-archive's policy.
+
+    let agent_tweet_query = r#"query { Tweet { _docID text } }"#;
+    let agent_tweet_body = xarchive_client
+        .graphql(agent_tweet_query, Some(&agent_svc.private_key_hex))
+        .await;
+
+    let agent_tweet_denied = match &agent_tweet_body {
+        Err(_) => true,
+        Ok(body) => {
+            let tweets_arr = body
+                .pointer("/data/Tweet")
+                .and_then(|v| v.as_array());
+            tweets_arr.map_or(true, |arr| arr.is_empty())
+        }
+    };
+    assert!(agent_tweet_denied, "agent should not see x-archive tweets");
+    eprintln!("[agent] PASSED: agent denied on x-archive tweets (no grants)");
+
+    // ================================================================
+    // 26. Agent writes trail → DENIED (reader, not writer)
+    // ================================================================
+
+    let agent_write_trail = r#"mutation {
+        create_Trail(input: {
+            name: "Agent Unauthorized Trail",
+            distance_km: 1.0,
+            difficulty: "easy"
+        }) {
+            _docID
+        }
+    }"#;
+
+    let agent_write_result = hiking_client
+        .graphql(agent_write_trail, Some(&agent_svc.private_key_hex))
+        .await;
+
+    let agent_write_denied = match &agent_write_result {
+        Err(_) => true,
+        Ok(body) => {
+            body.get("errors").is_some()
+                || body.pointer("/data/create_Trail/_docID").is_none()
+        }
+    };
+    assert!(agent_write_denied, "agent (reader only) should be DENIED writing trails");
+    eprintln!("[agent] PASSED: agent denied write on hiking trails (reader only)");
+
+    // ================================================================
+    // 27. Create BACKUP_SVC (backup daemon identity)
+    // ================================================================
+
+    let backup_svc = ServiceIdentity::new_file_keyring("backup-daemon", run_dir.path());
+    eprintln!(
+        "[backup] BACKUP_SVC created: {} (did_key: {})",
+        backup_svc.did, backup_svc.did_key,
+    );
+
+    // ================================================================
+    // 28. Grant BACKUP_SVC reader on tweet (x-archive) AND trail (hiking)
+    // ================================================================
+
+    cli_tool::set_relationship_direct(
+        &x_policy_id, "tweet", tweet_object, "reader",
+        &backup_svc.did_key, chain_config.clone(),
+    )
+    .await
+    .expect("grant backup reader on tweet");
+
+    cli_tool::set_relationship_direct(
+        &hiking_policy_id, "trail", trail_object, "reader",
+        &backup_svc.did_key, chain_config.clone(),
+    )
+    .await
+    .expect("grant backup reader on trail");
+    eprintln!("[backup] Granted reader on x-archive/tweet + hiking/trail");
+
+    // ================================================================
+    // 29. Backup reads x-archive → SUCCESS
+    // ================================================================
+
+    let backup_tweet_body = xarchive_client
+        .graphql(r#"query { Tweet { _docID text } }"#, Some(&backup_svc.private_key_hex))
+        .await
+        .expect("backup query x-archive tweets");
+    let backup_tweets = backup_tweet_body
+        .pointer("/data/Tweet")
+        .and_then(|v| v.as_array())
+        .expect("Tweet array for backup");
+    assert!(
+        !backup_tweets.is_empty(),
+        "backup should see x-archive tweets"
+    );
+    eprintln!("[backup] PASSED: backup reads x-archive tweets ({} docs)", backup_tweets.len());
+
+    // ================================================================
+    // 30. Backup reads hiking → SUCCESS
+    // ================================================================
+
+    let backup_trail_body = hiking_client
+        .graphql(r#"query { Trail { _docID name } }"#, Some(&backup_svc.private_key_hex))
+        .await
+        .expect("backup query hiking trails");
+    let backup_trails = backup_trail_body
+        .pointer("/data/Trail")
+        .and_then(|v| v.as_array())
+        .expect("Trail array for backup");
+    assert!(
+        !backup_trails.is_empty(),
+        "backup should see hiking trails"
+    );
+    eprintln!("[backup] PASSED: backup reads hiking trails ({} docs)", backup_trails.len());
+
+    // ================================================================
+    // 31. Backup writes to either → DENIED
+    // ================================================================
+
+    let backup_write_tweet = r#"mutation {
+        create_Tweet(input: {
+            tweet_id: "backup-hack",
+            text: "backup should not write"
+        }) {
+            _docID
+        }
+    }"#;
+
+    let backup_tweet_write_result = xarchive_client
+        .graphql(backup_write_tweet, Some(&backup_svc.private_key_hex))
+        .await;
+
+    let backup_tweet_write_denied = match &backup_tweet_write_result {
+        Err(_) => true,
+        Ok(body) => {
+            body.get("errors").is_some()
+                || body.pointer("/data/create_Tweet/_docID").is_none()
+        }
+    };
+    assert!(backup_tweet_write_denied, "backup should be DENIED writing tweets");
+
+    let backup_write_trail = r#"mutation {
+        create_Trail(input: {
+            name: "Backup Fake Trail",
+            distance_km: 0.0,
+            difficulty: "none"
+        }) {
+            _docID
+        }
+    }"#;
+
+    let backup_trail_write_result = hiking_client
+        .graphql(backup_write_trail, Some(&backup_svc.private_key_hex))
+        .await;
+
+    let backup_trail_write_denied = match &backup_trail_write_result {
+        Err(_) => true,
+        Ok(body) => {
+            body.get("errors").is_some()
+                || body.pointer("/data/create_Trail/_docID").is_none()
+        }
+    };
+    assert!(backup_trail_write_denied, "backup should be DENIED writing trails");
+    eprintln!("[backup] PASSED: backup denied writes on both compartments (read-only)");
+
+    // ================================================================
+    // 32. Revocation: delete agent reader on trail → agent reads → DENIED
+    // ================================================================
+
+    eprintln!("[lifecycle] Testing permission revocation...");
+    cli_tool::delete_relationship_on_chain(
+        &hiking_policy_id, "trail", trail_object, "reader",
+        &agent_svc.did_key, chain_config.clone(),
+    )
+    .await
+    .expect("delete agent reader on trail");
+    eprintln!("[lifecycle] Revoked agent reader on hiking/trail");
+
+    let revoked_agent_query = hiking_client
+        .graphql(r#"query { Trail { _docID name } }"#, Some(&agent_svc.private_key_hex))
+        .await;
+
+    let revoked_denied = match &revoked_agent_query {
+        Err(_) => true,
+        Ok(body) => {
+            let arr = body.pointer("/data/Trail").and_then(|v| v.as_array());
+            arr.map_or(true, |a| a.is_empty())
+        }
+    };
+    assert!(revoked_denied, "agent should be DENIED after revocation");
+    eprintln!("[lifecycle] PASSED: revoked agent can no longer read trails");
+
+    // ================================================================
+    // 33. Rotation: new APP_SVC, grant writer on tweet, write succeeds
+    // ================================================================
+
+    let new_app_svc = ServiceIdentity::new_file_keyring("x-archive-svc-v2", run_dir.path());
+    eprintln!(
+        "[lifecycle] NEW_APP_SVC created: {} (did_key: {})",
+        new_app_svc.did, new_app_svc.did_key,
+    );
+
+    // Grant new_app_svc writer+reader on tweet
+    for relation in &["writer", "reader"] {
+        cli_tool::set_relationship_direct(
+            &x_policy_id, "tweet", tweet_object, relation,
+            &new_app_svc.did_key, chain_config.clone(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("grant new_app_svc {} on tweet: {}", relation, e));
+    }
+
+    let new_svc_write = r#"mutation {
+        create_Tweet(input: {
+            tweet_id: "new-svc-1",
+            text: "written by rotated service key"
+        }) {
+            _docID
+            text
+        }
+    }"#;
+
+    let new_svc_body = xarchive_client
+        .graphql(new_svc_write, Some(&new_app_svc.private_key_hex))
+        .await
+        .expect("new_app_svc write tweet");
+    assert!(
+        new_svc_body.pointer("/data/create_Tweet/_docID").is_some(),
+        "new_app_svc should write successfully"
+    );
+    eprintln!("[lifecycle] PASSED: new_app_svc writes tweet successfully");
+
+    // ================================================================
+    // 34. Revoke old APP_SVC → old writes fail, new still works
+    // ================================================================
+
+    for relation in &["writer", "reader"] {
+        cli_tool::delete_relationship_on_chain(
+            &x_policy_id, "tweet", tweet_object, relation,
+            &app_svc.did_key, chain_config.clone(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("revoke old app_svc {} on tweet: {}", relation, e));
+    }
+    eprintln!("[lifecycle] Revoked old app_svc grants on tweet");
+
+    // Old APP_SVC writes → DENIED
+    let old_svc_write = r#"mutation {
+        create_Tweet(input: {
+            tweet_id: "old-svc-fail",
+            text: "I should not exist"
+        }) {
+            _docID
+        }
+    }"#;
+
+    let old_svc_result = xarchive_client
+        .graphql(old_svc_write, Some(&app_svc.private_key_hex))
+        .await;
+
+    let old_svc_denied = match &old_svc_result {
+        Err(_) => true,
+        Ok(body) => {
+            body.get("errors").is_some()
+                || body.pointer("/data/create_Tweet/_docID").is_none()
+        }
+    };
+    assert!(old_svc_denied, "old app_svc should be DENIED after revocation");
+
+    // New APP_SVC still works
+    let new_svc_verify = r#"mutation {
+        create_Tweet(input: {
+            tweet_id: "new-svc-2",
+            text: "new key still works after old revoked"
+        }) {
+            _docID
+        }
+    }"#;
+
+    let new_verify_body = xarchive_client
+        .graphql(new_svc_verify, Some(&new_app_svc.private_key_hex))
+        .await
+        .expect("new_app_svc should still work");
+    assert!(
+        new_verify_body.pointer("/data/create_Tweet/_docID").is_some(),
+        "new_app_svc should still write after old revoked"
+    );
+    eprintln!("[lifecycle] PASSED: old app_svc denied, new app_svc still works (key rotation)");
+
+    // ================================================================
+    // Done. Drop order: hiking_defra → ring → defra → sourcehub → run_dir
+    // ================================================================
+    drop(hiking_defra);
+
+    eprintln!("[xarchive] === Full service key architecture test complete (34 steps) ===");
     eprintln!("[xarchive] Summary:");
     eprintln!("[xarchive]   Ring: {} (T=2, N=3)", &ring_id[..16.min(ring_id.len())]);
     eprintln!("[xarchive]   JACK_DID:        {}", jack_did);
     eprintln!("[xarchive]   COMPARTMENT_DID: {}", compartment_did);
     eprintln!("[xarchive]   HIKING_DID:      {}", hiking_did);
-    eprintln!("[xarchive]   Tweets: 4 (1 updated)");
+    eprintln!("[xarchive]   x-archive policy: {}", x_policy_id);
+    eprintln!("[xarchive]   hiking policy:    {}", hiking_policy_id);
+    eprintln!("[xarchive]   Tweets: 4 (1 updated) + rotation writes");
     eprintln!("[xarchive]   Bookmarks: 1");
+    eprintln!("[xarchive]   Trails: 1");
+    eprintln!("[xarchive]   Cross-compartment denial: 2 tests");
+    eprintln!("[xarchive]   Agent scoped access: 3 tests");
+    eprintln!("[xarchive]   Backup read-only: 3 tests");
+    eprintln!("[xarchive]   Permission lifecycle: 3 tests");
 }

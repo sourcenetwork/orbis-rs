@@ -604,6 +604,105 @@ pub async fn set_relationship_on_chain(
     Ok(())
 }
 
+/// Create a policy on-chain with custom YAML (not hardcoded TEST_POLICY_YAML).
+pub async fn create_policy_on_chain(yaml: &str, config: ChainConfig) -> Result<String> {
+    let client = SourceHubClient::with_signer(
+        config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
+    )
+    .await
+    .map_err(|e| anyhow!("client builder issue: {}", e))?;
+
+    let _result = client
+        .acp_create_policy(yaml, 1)
+        .await
+        .map_err(|e| anyhow!("Failed to create policy: {}", e))?;
+
+    let policy_ids = client
+        .acp_list_policy_ids()
+        .await
+        .map_err(|e| anyhow!("Failed to list policy IDs: {}", e))?;
+    Ok(policy_ids
+        .ids
+        .last()
+        .ok_or_else(|| anyhow!("No policy IDs found"))?
+        .clone())
+}
+
+/// Set a relationship using an explicit actor DID (no re-derivation).
+pub async fn set_relationship_direct(
+    policy_id: &str,
+    resource: &str,
+    object_id: &str,
+    relation: &str,
+    actor_did: &str,
+    config: ChainConfig,
+) -> Result<()> {
+    let client = SourceHubClient::with_signer(
+        config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
+    )
+    .await
+    .map_err(|e| anyhow!("client builder issue: {}", e))?;
+
+    let relationship = Relationship {
+        object: Some(Object {
+            resource: resource.to_string(),
+            id: object_id.to_string(),
+        }),
+        relation: relation.to_string(),
+        subject: Some(Subject {
+            kind: Some(SubjectKind::Actor(Actor {
+                id: actor_did.to_string(),
+            })),
+        }),
+    };
+
+    client
+        .acp_set_relationship(policy_id, relationship)
+        .await
+        .map_err(|e| anyhow!("Failed to set relationship: {}", e))?;
+
+    Ok(())
+}
+
+/// Delete a relationship (revoke access) using an explicit actor DID.
+pub async fn delete_relationship_on_chain(
+    policy_id: &str,
+    resource: &str,
+    object_id: &str,
+    relation: &str,
+    actor_did: &str,
+    config: ChainConfig,
+) -> Result<()> {
+    let client = SourceHubClient::with_signer(
+        config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
+    )
+    .await
+    .map_err(|e| anyhow!("client builder issue: {}", e))?;
+
+    let relationship = Relationship {
+        object: Some(Object {
+            resource: resource.to_string(),
+            id: object_id.to_string(),
+        }),
+        relation: relation.to_string(),
+        subject: Some(Subject {
+            kind: Some(SubjectKind::Actor(Actor {
+                id: actor_did.to_string(),
+            })),
+        }),
+    };
+
+    client
+        .acp_delete_relationship(policy_id, relationship)
+        .await
+        .map_err(|e| anyhow!("Failed to delete relationship: {}", e))?;
+
+    Ok(())
+}
+
 pub async fn register_bulletin_namespace(namespace: String, config: ChainConfig) -> Result<()> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;

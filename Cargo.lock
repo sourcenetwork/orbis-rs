@@ -757,6 +757,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf88ba1141d185c399bee5288d850d63b8369520c1eafc32a0430b5b6c287bf4"
 dependencies = [
  "sha2 0.10.9",
+ "tinyvec",
 ]
 
 [[package]]
@@ -3929,6 +3930,8 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 name = "orbis-e2e"
 version = "0.0.1"
 dependencies = [
+ "base64 0.22.1",
+ "bs58 0.5.1",
  "bulletin",
  "cli-tool",
  "common",
@@ -3936,6 +3939,7 @@ dependencies = [
  "crypto",
  "eyre",
  "hex",
+ "k256",
  "libc",
  "prost 0.13.5",
  "proto",
@@ -3943,6 +3947,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tonic 0.14.2",
  "tracing",

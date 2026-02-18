@@ -29,6 +29,12 @@ proto = { path = "../proto" }
 cosmrs = { workspace = true }
 hex = { workspace = true }
 
+# DefraDB identity: did:key derivation + ES256K JWT generation
+k256 = { version = "0.13", features = ["ecdsa"] }
+bs58 = "0.5"
+base64 = "0.22"
+sha2 = "0.10"
+
 # CLI tool for driving DKG, PRE, ACP, bulletin, and secret operations in tests
 cli-tool = { path = "../../bin/cli-tool", default-features = false }
 
