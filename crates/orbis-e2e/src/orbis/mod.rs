@@ -4,26 +4,43 @@ mod node;
 pub use health::HealthCheckConfig;
 pub use node::OrbisNode;
 
-use crate::{
-    allocate_ports, find_orbis_node_binary, generate_run_id, ManagedProcess, TestRunDir,
-};
-use crate::sourcehub::{self, SourceHubNode};
-use common::blockchain::ChainConfig;
+use crate::{allocate_ports, find_orbis_node_binary, ManagedProcess};
+use crate::sourcehub::SourceHubNode;
 use std::{
     fmt,
+    path::{Path, PathBuf},
     process::Command,
     time::Duration,
 };
 
+/// SourceHub URLs needed by orbis-node CLI args.
+///
+/// Data-only carrier — does not own or manage the SourceHub process.
+#[derive(Clone, Debug)]
+pub struct SourceHubUrls {
+    pub grpc_url: String,
+    pub comet_rpc_url: String,
+    pub lcd_url: String,
+}
+
+impl From<&SourceHubNode> for SourceHubUrls {
+    fn from(sh: &SourceHubNode) -> Self {
+        Self {
+            grpc_url: sh.grpc_url.clone(),
+            comet_rpc_url: sh.comet_rpc_url.clone(),
+            lcd_url: sh.lcd_url.clone(),
+        }
+    }
+}
+
 /// A running Orbis ring with managed node processes.
 ///
-/// Field order matters: `nodes` must be dropped before `sourcehub` and `_run_dir`
-/// so orbis processes are killed before SourceHub and the data directory.
+/// Does not own infrastructure (SourceHub, DefraDB, TestRunDir).
+/// The caller is responsible for managing those lifetimes and ensuring
+/// correct drop order (ring before infrastructure before run dir).
 pub struct OrbisRing {
     nodes: Vec<OrbisNode>,
     threshold: u32,
-    sourcehub: Option<SourceHubNode>,
-    _run_dir: TestRunDir,
 }
 
 impl fmt::Debug for OrbisRing {
@@ -31,7 +48,6 @@ impl fmt::Debug for OrbisRing {
         f.debug_struct("OrbisRing")
             .field("node_count", &self.nodes.len())
             .field("threshold", &self.threshold)
-            .field("has_sourcehub", &self.sourcehub.is_some())
             .finish()
     }
 }
@@ -67,29 +83,6 @@ impl OrbisRing {
         self.nodes.iter().map(|n| n.grpc_addr()).collect()
     }
 
-    /// Access the SourceHub node (if started).
-    pub fn sourcehub(&self) -> Option<&SourceHubNode> {
-        self.sourcehub.as_ref()
-    }
-
-    /// Get a `ChainConfig` pointing at the ring's SourceHub instance.
-    ///
-    /// Panics if the ring was built without SourceHub.
-    /// Use this to pass to cli-tool functions that need chain connectivity.
-    pub fn chain_config(&self) -> ChainConfig {
-        let sh = self.sourcehub.as_ref().expect("ring was built without SourceHub");
-        ChainConfig {
-            chain_id: "sourcehub-localnet".to_string(),
-            rpc_url: sh.comet_rpc_url.clone(),
-            rest_url: sh.lcd_url.clone(),
-            grpc_url: sh.grpc_url.clone(),
-            account_prefix: "source".to_string(),
-            default_gas_limit: 300_000,
-            gas_price: common::blockchain::GasPrice::default(),
-            gas_multiplier: 1.2,
-        }
-    }
-
     /// Wait for all nodes' gRPC endpoints to become responsive.
     ///
     /// Polls each node's InfoService.GetNodeInfo in parallel.
@@ -103,12 +96,16 @@ impl OrbisRing {
 }
 
 /// Builder for `OrbisRing`.
+///
+/// Requires `base_dir` and `identity_keys` to be set. Optionally accepts
+/// `sourcehub_urls` to point orbis-node processes at a SourceHub instance.
 pub struct OrbisRingBuilder {
     node_count: usize,
     threshold: u32,
     log_level: String,
-    with_sourcehub: bool,
-    sourcehub_timeout: Duration,
+    base_dir: Option<PathBuf>,
+    identity_keys: Option<Vec<String>>,
+    sourcehub_urls: Option<SourceHubUrls>,
 }
 
 impl fmt::Debug for OrbisRingBuilder {
@@ -117,7 +114,9 @@ impl fmt::Debug for OrbisRingBuilder {
             .field("node_count", &self.node_count)
             .field("threshold", &self.threshold)
             .field("log_level", &self.log_level)
-            .field("with_sourcehub", &self.with_sourcehub)
+            .field("has_base_dir", &self.base_dir.is_some())
+            .field("has_identity_keys", &self.identity_keys.is_some())
+            .field("has_sourcehub_urls", &self.sourcehub_urls.is_some())
             .finish()
     }
 }
@@ -128,8 +127,9 @@ impl Default for OrbisRingBuilder {
             node_count: 3,
             threshold: 2,
             log_level: "info".to_string(),
-            with_sourcehub: false,
-            sourcehub_timeout: Duration::from_secs(60),
+            base_dir: None,
+            identity_keys: None,
+            sourcehub_urls: None,
         }
     }
 }
@@ -156,18 +156,32 @@ impl OrbisRingBuilder {
         self
     }
 
-    /// Enable SourceHub devnet. Provisions genesis, starts the chain, and
-    /// points all orbis-node processes at it.
+    /// Set the base directory for node subdirectories.
+    ///
+    /// Each node gets a `node{i}/` subdirectory under this path.
     #[must_use]
-    pub fn with_sourcehub(mut self) -> Self {
-        self.with_sourcehub = true;
+    pub fn base_dir(mut self, path: &Path) -> Self {
+        self.base_dir = Some(path.to_path_buf());
         self
     }
 
-    /// Set the SourceHub startup timeout (default: 60s).
+    /// Set pre-generated identity keys (hex-encoded secp256k1 private keys).
+    ///
+    /// Must have exactly `node_count` keys. These are set as `ORBIS_SECRET_KEY`
+    /// for each orbis-node process.
     #[must_use]
-    pub fn sourcehub_timeout(mut self, timeout: Duration) -> Self {
-        self.sourcehub_timeout = timeout;
+    pub fn identity_keys(mut self, keys: Vec<String>) -> Self {
+        self.identity_keys = Some(keys);
+        self
+    }
+
+    /// Set SourceHub URLs for orbis-node CLI args.
+    ///
+    /// If set, each orbis-node process gets `--authz-grpc`, `--bulletin-grpc`,
+    /// `--chain-rpc`, and `--chain-rest` flags.
+    #[must_use]
+    pub fn sourcehub_urls(mut self, urls: SourceHubUrls) -> Self {
+        self.sourcehub_urls = Some(urls);
         self
     }
 
@@ -175,51 +189,36 @@ impl OrbisRingBuilder {
     ///
     /// This will:
     /// 1. Find the orbis-node binary
-    /// 2. If `with_sourcehub`: start a SourceHub devnet (genesis, first block)
-    /// 3. Allocate ports (gRPC per node)
-    /// 4. Generate deterministic secrets per node
-    /// 5. Spawn orbis-node processes pointed at SourceHub (if enabled)
-    /// 6. Return an OrbisRing handle (caller should call `wait_ready()`)
+    /// 2. Allocate gRPC ports
+    /// 3. Create node subdirectories under `base_dir`
+    /// 4. Spawn orbis-node processes with identity keys and optional SourceHub args
+    /// 5. Return an OrbisRing handle (caller should call `wait_ready()`)
     pub async fn build(self) -> eyre::Result<OrbisRing> {
         let n = self.node_count;
         let binary = find_orbis_node_binary()?;
-        let run_id = generate_run_id();
-        let run_dir = TestRunDir::new(&run_id)?;
 
-        // Generate deterministic identity keys for each node
-        // These are used both as ORBIS_SECRET_KEY and for SourceHub genesis funding
-        let identity_keys: Vec<String> = (0..n)
-            .map(|i| format!("{:0>64x}", u256_from_seed(&run_id, i)))
-            .collect();
+        let base_dir = self
+            .base_dir
+            .ok_or_else(|| eyre::eyre!("OrbisRingBuilder: base_dir is required"))?;
 
-        // Optionally start SourceHub
-        let sourcehub = if self.with_sourcehub {
-            let sh_ports = sourcehub::allocate_source_hub_ports()?;
-            let sh_home = run_dir.component_dir("sourcehub")?;
-            let sh_log_dir = sh_home.join("logs");
-            std::fs::create_dir_all(&sh_log_dir)?;
+        let identity_keys = self
+            .identity_keys
+            .ok_or_else(|| eyre::eyre!("OrbisRingBuilder: identity_keys is required"))?;
 
-            let sh_node = SourceHubNode::start(
-                sh_home,
-                sh_log_dir,
-                &sh_ports,
-                &identity_keys,
-                self.sourcehub_timeout,
-            )
-            .await?;
+        if identity_keys.len() != n {
+            return Err(eyre::eyre!(
+                "OrbisRingBuilder: expected {} identity keys, got {}",
+                n,
+                identity_keys.len()
+            ));
+        }
 
-            Some(sh_node)
-        } else {
-            None
-        };
-
-        // Allocate one gRPC port per node
         let grpc_ports = allocate_ports(n)?;
-
         let mut nodes = Vec::with_capacity(n);
 
         for i in 0..n {
-            let node_dir = run_dir.component_dir(&format!("node{}", i))?;
+            let node_dir = base_dir.join(format!("node{}", i));
+            std::fs::create_dir_all(&node_dir)?;
             let log_dir = node_dir.join("logs");
             let data_dir = node_dir.join("data");
             std::fs::create_dir_all(&data_dir)?;
@@ -236,21 +235,19 @@ impl OrbisRingBuilder {
                 data_dir.to_str().unwrap_or("data"),
             ]);
 
-            // Point at SourceHub if running
-            if let Some(ref sh) = sourcehub {
+            if let Some(ref urls) = self.sourcehub_urls {
                 cmd.args([
                     "--authz-grpc",
-                    &sh.grpc_url,
+                    &urls.grpc_url,
                     "--bulletin-grpc",
-                    &sh.grpc_url,
+                    &urls.grpc_url,
                     "--chain-rpc",
-                    &sh.comet_rpc_url,
+                    &urls.comet_rpc_url,
                     "--chain-rest",
-                    &sh.lcd_url,
+                    &urls.lcd_url,
                 ]);
             }
 
-            // Set env vars for password and secret key (avoid interactive prompt)
             cmd.env("ORBIS_PASSWORD", "e2e-test-password");
             cmd.env("ORBIS_SECRET_KEY", secret_hex);
             cmd.env("NO_COLOR", "1");
@@ -259,8 +256,7 @@ impl OrbisRingBuilder {
                 std::env::var("RUST_LOG").unwrap_or_else(|_| self.log_level.clone()),
             );
 
-            let process =
-                ManagedProcess::spawn(&format!("node{}", i), &mut cmd, &log_dir)?;
+            let process = ManagedProcess::spawn(&format!("node{}", i), &mut cmd, &log_dir)?;
 
             nodes.push(OrbisNode {
                 index: i,
@@ -274,27 +270,6 @@ impl OrbisRingBuilder {
         Ok(OrbisRing {
             nodes,
             threshold: self.threshold,
-            sourcehub,
-            _run_dir: run_dir,
         })
     }
-}
-
-/// Generate a deterministic 256-bit value from run_id and node index.
-/// Used for reproducible secret keys in tests.
-fn u256_from_seed(run_id: &str, node_index: usize) -> u128 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    run_id.hash(&mut hasher);
-    node_index.hash(&mut hasher);
-    let h1 = hasher.finish();
-
-    let mut hasher2 = DefaultHasher::new();
-    h1.hash(&mut hasher2);
-    node_index.hash(&mut hasher2);
-    let h2 = hasher2.finish();
-
-    ((h1 as u128) << 64) | (h2 as u128)
 }

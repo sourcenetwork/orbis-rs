@@ -8,6 +8,7 @@
 //! - Auto-assigned ports (no conflicts between parallel runs)
 //! - `Drop` cleans up unless `ORBIS_E2E_KEEP=1`
 
+pub mod defradb;
 pub mod fixture;
 pub mod orbis;
 pub mod sourcehub;
@@ -21,6 +22,8 @@ use std::{
 };
 
 use rand::Rng;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 /// Generate a unique run ID based on timestamp + random suffix.
 pub fn generate_run_id() -> String {
@@ -35,6 +38,32 @@ pub fn generate_run_id() -> String {
 /// Whether to keep test artifacts after completion.
 pub fn keep_artifacts() -> bool {
     std::env::var("ORBIS_E2E_KEEP").map_or(false, |v| v == "1" || v == "true")
+}
+
+/// Generate a deterministic 256-bit value from run_id and node index.
+/// Used for reproducible secret keys in tests.
+pub fn u256_from_seed(run_id: &str, node_index: usize) -> u128 {
+    let mut hasher = DefaultHasher::new();
+    run_id.hash(&mut hasher);
+    node_index.hash(&mut hasher);
+    let h1 = hasher.finish();
+
+    let mut hasher2 = DefaultHasher::new();
+    h1.hash(&mut hasher2);
+    node_index.hash(&mut hasher2);
+    let h2 = hasher2.finish();
+
+    ((h1 as u128) << 64) | (h2 as u128)
+}
+
+/// Generate deterministic identity keys for N nodes.
+///
+/// Returns hex-encoded 256-bit secret keys derived from the run_id.
+/// These are used both as `ORBIS_SECRET_KEY` and for SourceHub genesis funding.
+pub fn generate_identity_keys(run_id: &str, n: usize) -> Vec<String> {
+    (0..n)
+        .map(|i| format!("{:0>64x}", u256_from_seed(run_id, i)))
+        .collect()
 }
 
 /// Allocate N unique ports using OS auto-assignment.
@@ -237,6 +266,51 @@ pub fn find_orbis_node_binary() -> eyre::Result<PathBuf> {
 
     Err(eyre::eyre!(
         "orbis-node binary not found. Run `cargo build -p orbis-node` first.\n\
+         Looked at:\n  {}\n  {}",
+        debug_binary.display(),
+        release_binary.display()
+    ))
+}
+
+/// Find the defra binary (DefraDB v0.5.0).
+///
+/// Search order:
+/// 1. defradb.rs sibling repo: `../defradb.rs/target/{debug,release}/defra`
+/// 2. PATH lookup via `which defra`
+pub fn find_defra_binary() -> eyre::Result<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(Path::new("."));
+
+    // Check sibling defradb.rs repo (debug first, then release)
+    let defra_repo = workspace_root.parent().unwrap_or(Path::new(".")).join("defradb.rs");
+    let debug_binary = defra_repo.join("target").join("debug").join("defra");
+    if debug_binary.exists() {
+        return Ok(debug_binary);
+    }
+    let release_binary = defra_repo.join("target").join("release").join("defra");
+    if release_binary.exists() {
+        return Ok(release_binary);
+    }
+
+    // Fall back to PATH
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("defra")
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Ok(PathBuf::from(path));
+            }
+        }
+    }
+
+    Err(eyre::eyre!(
+        "defra binary not found.\n\
+         Build defradb.rs: cd ../defradb.rs && cargo build -p cli\n\
          Looked at:\n  {}\n  {}",
         debug_binary.display(),
         release_binary.display()

@@ -2,6 +2,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
+use common::blockchain::ChainConfig;
+
+use crate::defradb::SourceHubConfig;
 use crate::ManagedProcess;
 
 use super::genesis;
@@ -120,5 +123,28 @@ impl SourceHubNode {
             chain_id,
             home_dir,
         })
+    }
+
+    /// Build a `ChainConfig` pointing at this SourceHub instance.
+    pub fn chain_config(&self) -> ChainConfig {
+        ChainConfig {
+            chain_id: self.chain_id.clone(),
+            rpc_url: self.comet_rpc_url.clone(),
+            rest_url: self.lcd_url.clone(),
+            grpc_url: self.grpc_url.clone(),
+            account_prefix: "source".to_string(),
+            default_gas_limit: 300_000,
+            gas_price: common::blockchain::GasPrice::default(),
+            gas_multiplier: 1.2,
+        }
+    }
+
+    /// Build a `SourceHubConfig` for DefraDB's ACP integration.
+    pub fn defra_config(&self) -> SourceHubConfig {
+        SourceHubConfig {
+            lcd_url: self.lcd_url.clone(),
+            comet_rpc_url: self.comet_rpc_url.clone(),
+            chain_id: self.chain_id.clone(),
+        }
     }
 }
