@@ -112,8 +112,7 @@ where
         })?;
 
         Ok(Response::new(DerivePublicKeyResponse {
-            derived_public_key: hex::encode(&derived_pk_bytes),
-            ring_public_key: ring_payload.ring_pk,
+            public_key: derived_pk_bytes,
         }))
     }
 
@@ -151,7 +150,13 @@ where
                     .into(),
             );
         }
-        if token.claims.derivation != req.derivation {
+        // Compare derivation: JWT has Option<Vec<u8>>, proto has Vec<u8> (empty = none)
+        let req_derivation = if req.derivation.is_empty() {
+            None
+        } else {
+            Some(req.derivation.clone())
+        };
+        if token.claims.derivation != req_derivation {
             return Err(UtilityError::Unauthorized(
                 "Token derivation does not match request".to_string(),
             )
@@ -206,8 +211,12 @@ where
                 UtilityError::Signing(format!("Failed to parse sign response: {}", e))
             })?;
 
+        let signature_bytes = hex::decode(&sign_response.signature).map_err(|e| {
+            UtilityError::Signing(format!("Failed to decode signature hex: {}", e))
+        })?;
+
         Ok(Response::new(ProtoSignResponse {
-            signature: sign_response.signature,
+            signature: signature_bytes,
         }))
     }
 }

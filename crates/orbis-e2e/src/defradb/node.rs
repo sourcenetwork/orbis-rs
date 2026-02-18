@@ -42,6 +42,7 @@ impl DefraDbNode {
         binary: &std::path::Path,
         sourcehub: Option<&SourceHubConfig>,
         identity_key: Option<&str>,
+        orbis_signer: Option<&OrbisSignerConfig>,
         ready_timeout: Duration,
     ) -> eyre::Result<Self> {
         let http_addr = format!("127.0.0.1:{}", ports.http);
@@ -70,7 +71,17 @@ impl DefraDbNode {
         cmd.arg("--store").arg("memory");
         cmd.arg("--no-telemetry");
         cmd.arg("--no-encryption");
-        cmd.arg("--no-signing");
+
+        // Signing: either delegate to Orbis ring or disable entirely
+        if let Some(signer) = orbis_signer {
+            cmd.arg("--signer-type").arg("orbis");
+            cmd.arg("--signer-orbis-endpoint").arg(&signer.endpoint);
+            cmd.arg("--signer-orbis-ring-id").arg(&signer.ring_id);
+            cmd.arg("--signer-orbis-derivation").arg(&signer.derivation);
+        } else {
+            cmd.arg("--no-signing");
+        }
+
         cmd.arg("--p2paddr").arg(&p2p_addr);
 
         if let Some(sh) = sourcehub {
@@ -133,4 +144,17 @@ pub struct SourceHubConfig {
     pub lcd_url: String,
     pub comet_rpc_url: String,
     pub chain_id: String,
+}
+
+/// Configuration for DefraDB's Orbis signer integration.
+///
+/// When provided, DefraDB delegates document signing to an Orbis ring
+/// via gRPC threshold signing instead of using a local key.
+pub struct OrbisSignerConfig {
+    /// gRPC endpoint of an Orbis node (e.g. "http://127.0.0.1:8081").
+    pub endpoint: String,
+    /// Ring ID to sign with (from DKG bulletin post).
+    pub ring_id: String,
+    /// Derivation label (e.g. "x-archive") for derived key signing.
+    pub derivation: String,
 }

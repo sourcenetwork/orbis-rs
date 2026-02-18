@@ -15,5 +15,5 @@ pub mod store_secret_service {
 }
 
 pub mod utility_service {
-    tonic::include_proto!("utility_service");
+    tonic::include_proto!("orbis.utility.v1");
 }

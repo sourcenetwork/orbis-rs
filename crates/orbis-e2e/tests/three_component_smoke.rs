@@ -96,6 +96,7 @@ async fn three_component_smoke() {
         &defra_binary,
         Some(&sh_config),
         Some(defra_key),
+        None, // no Orbis signer for smoke test
         Duration::from_secs(30),
     )
     .await

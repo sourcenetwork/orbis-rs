@@ -826,7 +826,6 @@ pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
 #[derive(Debug)]
 pub struct DerivePublicKeyResult {
     pub derived_public_key: String,
-    pub ring_public_key: String,
 }
 
 pub async fn derive_public_key(
@@ -855,15 +854,14 @@ pub async fn derive_public_key(
         .map_err(|e| anyhow!("DerivePublicKey request failed: {}", e))?;
 
     let response = response.into_inner();
+    let derived_pk_hex = hex::encode(&response.public_key);
 
     println!("DerivePublicKey Result:");
     println!("{}", "=".repeat(60));
-    println!("  Derived PK: {}", response.derived_public_key);
-    println!("  Ring PK:    {}", response.ring_public_key);
+    println!("  Derived PK: {}", derived_pk_hex);
 
     Ok(DerivePublicKeyResult {
-        derived_public_key: response.derived_public_key,
-        ring_public_key: response.ring_public_key,
+        derived_public_key: derived_pk_hex,
     })
 }
 
@@ -890,10 +888,11 @@ pub async fn do_sign(
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
+    let derivation_bytes = derivation.clone().unwrap_or_default();
     let request = proto::utility_service::SignRequest {
         ring_id: ring_id.clone(),
         message: message.clone(),
-        derivation: derivation.clone(),
+        derivation: derivation_bytes,
     };
 
     // Create JWT for authentication
@@ -913,12 +912,13 @@ pub async fn do_sign(
         .map_err(|e| anyhow!("Sign request failed: {}", e))?;
 
     let response = response.into_inner();
+    let signature_hex = hex::encode(&response.signature);
 
     println!("Sign Result:");
     println!("{}", "=".repeat(60));
-    println!("  Signature: {}", response.signature);
+    println!("  Signature: {}", signature_hex);
 
     Ok(SignResult {
-        signature: response.signature,
+        signature: signature_hex,
     })
 }

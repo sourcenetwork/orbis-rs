@@ -1,6 +1,6 @@
 mod node;
 
-pub use node::{DefraDbNode, SourceHubConfig};
+pub use node::{DefraDbNode, OrbisSignerConfig, SourceHubConfig};
 
 /// Ports assigned to a DefraDB node.
 pub struct DefraDbPorts {

@@ -1,6 +1,8 @@
 syntax = "proto3";
 
-package utility_service;
+// Package must match defradb.rs/crates/orbis/proto/orbis.proto
+// so gRPC routes correctly when DefraDB calls Orbis.
+package orbis.utility.v1;
 
 service UtilityService {
   rpc DerivePublicKey(DerivePublicKeyRequest) returns (DerivePublicKeyResponse);
@@ -8,29 +10,20 @@ service UtilityService {
 }
 
 message DerivePublicKeyRequest {
-  // Ring to derive from (reads ring_pk from bulletin)
   string ring_id = 1;
-  // Label bytes (e.g. b"jack", b"x-archive")
   bytes derivation = 2;
 }
 
 message DerivePublicKeyResponse {
-  // Hex-encoded derived G1 point
-  string derived_public_key = 1;
-  // Hex-encoded original ring PK (for reference)
-  string ring_public_key = 2;
+  bytes public_key = 1;
 }
 
 message SignRequest {
-  // Ring to sign with
   string ring_id = 1;
-  // Arbitrary message bytes to threshold-sign
   bytes message = 2;
-  // Optional derivation path for derived key signing
-  optional bytes derivation = 3;
+  bytes derivation = 3;
 }
 
 message SignResponse {
-  // Hex-encoded threshold signature
-  string signature = 1;
+  bytes signature = 1;
 }

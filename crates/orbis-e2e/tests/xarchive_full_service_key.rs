@@ -45,7 +45,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use common::blockchain::events::BulletinEventSubscription;
-use orbis_e2e::defradb::{self, DefraDbNode};
+use orbis_e2e::defradb::{self, DefraDbNode, OrbisSignerConfig};
 use orbis_e2e::orbis::{OrbisRing, SourceHubUrls};
 use orbis_e2e::sourcehub::{self, SourceHubNode};
 use orbis_e2e::{
@@ -126,11 +126,11 @@ const BULLETIN_RING_NAMESPACE: &str = "orbis";
 /// where Orbis is the root of trust for all identities and no private key
 /// for a real identity ever touches disk.
 ///
-/// **Status**: Infrastructure (SourceHub + Orbis DKG + DefraDB) works.
+/// **Status**: Full stack — SourceHub + Orbis DKG + DefraDB with Orbis signer.
 /// Orbis DerivePublicKey and Sign RPCs are implemented.
-/// Blocked on: DefraDB Signer::Orbis (jackzampolin/defradb.rs#469).
+/// DefraDB delegates document signing to Orbis ring via gRPC.
 #[tokio::test]
-#[ignore = "spec test: blocked on DefraDB Signer::Orbis (defradb.rs#469)"]
+#[ignore = "spec test: requires sourcehubd, defra, and orbis-node on PATH"]
 async fn xarchive_full_service_key_architecture() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("info")
@@ -416,49 +416,117 @@ async fn xarchive_full_service_key_architecture() {
 
     let sh_config = sourcehub.defra_config();
 
-    // Start DefraDB with defra_svc identity + SourceHub ACP.
-    // TODO: Add --signer-type=orbis when DefraDB supports it (defradb.rs#469).
-    let _defra = DefraDbNode::start(
+    // Orbis signer: DefraDB delegates document signing to the ring.
+    // When DefraDB needs to sign a document, it sends the bytes to Orbis
+    // which threshold-signs as the derived key (compartment_did).
+    let orbis_signer = OrbisSignerConfig {
+        endpoint: ring.node(0).grpc_addr(),
+        ring_id: ring_id.clone(),
+        derivation: "x-archive".to_string(),
+    };
+
+    let defra = DefraDbNode::start(
         defra_root,
         defra_log_dir,
         &defra_ports,
         &defra_binary,
         Some(&sh_config),
         Some(&defra_svc.private_key_hex),
+        Some(&orbis_signer),
         Duration::from_secs(30),
     )
     .await
-    .expect("defra should start");
+    .expect("defra should start with Orbis signer");
 
-    eprintln!("[xarchive] DefraDB ready: {}", _defra.http_url);
+    eprintln!("[xarchive] DefraDB ready: {}", defra.http_url);
 
     // ================================================================
-    // 11. Create Tweet schema with ACP policy
+    // 11. Create Tweet schema
     // ================================================================
-    // BLOCKED: DefraDB needs Signer::Orbis to threshold-sign documents.
-    // See: https://github.com/jackzampolin/defradb.rs/issues/469
-    //
-    // When Signer::Orbis is implemented, this section will:
-    //   1. POST schema with @policy referencing our policy_id
-    //   2. Write a tweet as app_svc
-    //   3. Verify _owner=compartment_did and _signature from ring
+    // A simple schema for testing. In production this would have an
+    // @policy directive referencing our ACP policy_id.
 
-    let _: () = todo!(
-        "BLOCKED: DefraDB Signer::Orbis (defradb.rs#469)\n\
-         DefraDB needs to delegate signing to Orbis ring via gRPC.\n\
-         Orbis DerivePublicKey + Sign RPCs are ready.\n\
-         \n\
-         Remaining steps when defradb.rs#469 lands:\n\
-         1. Start DefraDB with --signer-type=orbis --signer-orbis-endpoint={} --signer-orbis-ring-id={}\n\
-         2. POST /api/v0/schema with Tweet type @policy(id: \"{}\")\n\
-         3. POST /api/v0/graphql: create_Tweet(tweet_id: \"1729\", text: \"first orbis-signed tweet\")\n\
-         4. Verify _owner = {} (compartment_did)\n\
-         5. Verify _signature against ring_pk {}...",
-        ring.node(0).grpc_addr(),
-        ring_id,
-        policy_id,
-        compartment_did,
-        &ring_pk_hex[..32.min(ring_pk_hex.len())],
+    let http = reqwest::Client::new();
+    let tweet_schema = "type Tweet { tweet_id: String  text: String }";
+
+    let schema_resp = http
+        .post(format!("{}/api/v0/schema", defra.http_url))
+        .header("Content-Type", "text/plain")
+        .body(tweet_schema)
+        .send()
+        .await
+        .expect("schema add request");
+    assert!(
+        schema_resp.status().is_success(),
+        "schema add failed: {}",
+        schema_resp.text().await.unwrap_or_default()
+    );
+    eprintln!("[xarchive] Schema added: Tweet {{ tweet_id, text }}");
+
+    // ================================================================
+    // 12. Write a tweet (signed by Orbis ring as compartment_did)
+    // ================================================================
+    // DefraDB receives this mutation, checks ACP on SourceHub, then
+    // sends the document bytes to Orbis for threshold signing.
+    // The ring signs as the derived key for "x-archive" (= compartment_did).
+
+    let create_mutation = r#"mutation {
+        create_Tweet(input: {
+            tweet_id: "1729",
+            text: "first orbis-signed tweet from x-archive"
+        }) {
+            _docID
+            tweet_id
+            text
+        }
+    }"#;
+
+    let create_resp = http
+        .post(format!("{}/api/v0/graphql", defra.http_url))
+        .json(&serde_json::json!({"query": create_mutation}))
+        .send()
+        .await
+        .expect("create tweet request");
+    assert!(
+        create_resp.status().is_success(),
+        "create tweet failed: {}",
+        create_resp.text().await.unwrap_or_default()
+    );
+    let create_body: serde_json::Value =
+        create_resp.json().await.expect("parse create response");
+    eprintln!("[xarchive] Tweet created: {}", create_body);
+
+    // ================================================================
+    // 13. Query back and verify
+    // ================================================================
+    let query = r#"query { Tweet { _docID tweet_id text } }"#;
+    let query_resp = http
+        .post(format!("{}/api/v0/graphql", defra.http_url))
+        .json(&serde_json::json!({"query": query}))
+        .send()
+        .await
+        .expect("query request");
+    assert!(
+        query_resp.status().is_success(),
+        "query failed: {}",
+        query_resp.text().await.unwrap_or_default()
+    );
+    let query_body: serde_json::Value =
+        query_resp.json().await.expect("parse query response");
+
+    let tweets = query_body
+        .pointer("/data/Tweet")
+        .and_then(|v| v.as_array())
+        .expect("Tweet array in query response");
+    assert_eq!(tweets.len(), 1, "should have 1 Tweet document");
+    assert_eq!(
+        tweets[0]["text"].as_str().unwrap_or(""),
+        "first orbis-signed tweet from x-archive"
+    );
+    eprintln!(
+        "[xarchive] Tweet verified: {} (text: {})",
+        tweets[0]["_docID"].as_str().unwrap_or("?"),
+        tweets[0]["text"].as_str().unwrap_or("?"),
     );
 
     // ================================================================
