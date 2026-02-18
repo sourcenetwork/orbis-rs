@@ -1,248 +1,115 @@
-# CLI Tool
+# Orbis CLI Tool
 
-A command-line tool for interacting with an orbis network node. This tool allows you to start DKG (Distributed Key Generation) sessions, perform PRE (Proxy Re-Encryption) operations, and query node information.
+A command-line tool for interacting with an **Orbis** network. Intended for **development and testing only** — not for production use.
 
-## Installation
+Requires a running orbis node (gRPC, default `http://localhost:50051`) and, for chain/bulletin commands, a local chain (e.g. SourceHub) with the test account pre-funded.
 
-Build the CLI tool from the repository root:
+## Building
+
+From the workspace root:
 
 ```bash
-cargo build --release --bin cli-tool
+cargo build -p cli-tool
 ```
 
-The binary will be located at `target/release/cli-tool` (or `target/debug/cli-tool` for debug builds).
+Optional crypto backends (see `Cargo.toml`):
+
+- `default`: BLS12-381
+- `decaf377`: enable with `--features decaf377`
 
 ## Commands
 
-### DKG - Start a Distributed Key Generation Session
+### Node & key management
 
-Start a DKG session to generate a distributed key across multiple nodes.
+| Command | Description |
+|--------|-------------|
+| `info` | Query node info (public address, peer ID, P2P address). Default endpoint: `http://localhost:50051`. |
+| `dkg` | Start a Distributed Key Generation session. Requires `--threshold`, `--peer-ids` (one or more), and optionally `--endpoint`. |
+| `generate-reader-key` | Generate a reader keypair (hex). Use the output as `--reader-pk` / `--reader-sk` for PRE. |
+| `get-latest-ring` | Read the latest ring from the bulletin (e.g. after DKG). Prints `RING_ID=` and `RING_PK=` for use in scripts. Optional `--namespace` (default: `orbis`). |
 
-**Basic Usage:**
-```bash
-cli-tool dkg \
-  --endpoint http://localhost:50051 \
-  --threshold 2 \
-  --peer-ids abc123def456...@127.0.0.1:8080 def789ghi012...@127.0.0.1:8081
-```
+### Secrets: encrypt, store, re-encrypt
 
-**With Custom Session ID:**
-```bash
-cli-tool dkg \
-  --endpoint http://localhost:50051 \
-  --threshold 2 \
-  --session-id my-custom-session-123 \
-  --peer-ids abc123def456...@127.0.0.1:8080 def789ghi012...@127.0.0.1:8081
-```
+| Command | Description |
+|--------|-------------|
+| `encrypt-secret` | Encrypt a secret to a ring public key locally (no node). Outputs encrypted secret JSON. Options: `--secret`, `--ring-pk`, `--policy-id`, `--resource`, `--permission`, optional `--derivation` (hex). |
+| `prepare-secret` | Encrypt a secret locally and print a **prepared secret** JSON. Use this with `store-prepared-secret` for idempotent storage (same input → same object ID on retries). Same policy/resource/permission/derivation options as above. |
+| `store-prepared-secret` | Send a prepared secret (from `prepare-secret`) to the node. Options: `--endpoint`, `--prepared-json`, `--ring-id`, `--namespace`, `--policy-id`, `--resource`, `--permission`, optional `--reader-did-pk`, `--derived-pk`, `--with-proof`. |
+| `store-secret` | One-shot: encrypt locally and store on the node. Same args as above plus `--secret`, `--ring-pk-hex`; optional `--derivation`, `--reader-did-pk`, `--with-proof`. |
+| `pre` | Run Proxy Re-Encryption: re-encrypt a stored secret for a reader and decrypt with reader keys. Options: `--endpoint`, `--ring-pk`, `--reader-pk`, `--reader-sk`, `--object-id`, `--namespace`, optional `--reader-did-pk`, `--derivation`. |
 
-**Using Short Flags:**
-```bash
-cli-tool dkg -e http://localhost:50051 -t 2 \
-  --peer-ids abc123def456...@127.0.0.1:8080 def789ghi012...@127.0.0.1:8081
-```
+### Chain (policy, objects, relationships)
 
-**Parameters:**
-- `--endpoint` / `-e`: gRPC endpoint of the node (default: `http://localhost:50051`)
-- `--threshold` / `-t`: Number of nodes required to reconstruct the key (required)
-- `--session-id` / `-s`: Optional session ID (auto-generated UUID if not provided)
-- `--peer-ids`: Peer IDs for P2P connections in format `peer_id@host:port` (required, one or more)
+These use the **local** chain config and a built-in test account; for dev/test only.
 
-**Example Output:**
-```
-Starting DKG session:
-  Endpoint: http://localhost:50051
-  Session ID: 550e8400-e29b-41d4-a716-446655440000
-  Threshold: 2/3
-  Peer IDs: ["abc123def456...@127.0.0.1:8080", "def789ghi012...@127.0.0.1:8081"]
+| Command | Description |
+|--------|-------------|
+| `add-policy-to-chain` | Create the default test policy on chain. Returns the new policy ID (from listing). |
+| `register-object-to-chain` | Register an object under a policy. Options: `--policy-id`, `--object-id`, `--resource`. |
+| `set-relationship-on-chain` | Set a relationship on an object (e.g. reader). Options: `--policy-id`, `--object-id`, `--resource`, `--relation`, optional `--reader-did-pk`. |
 
-Connecting to http://localhost:50051...
-DKG Result:
-============================================================
-  Session ID: 550e8400-e29b-41d4-a716-446655440000
-  Status: started
-  Message: DKG session started with threshold 2 and 3 participants
-```
+### Bulletin
 
-### PRE - Start a Proxy Re-Encryption Session
+Bulletin commands also target the local chain and test account.
 
-Perform proxy re-encryption to encrypt a secret for a reader using a ring public key from DKG. This command performs a complete workflow:
-1. Encrypts the plaintext secret to the ring public key
-2. Sends the encrypted secret to the PRE service for re-encryption
-3. Decrypts the re-encrypted secret using the reader's secret key
+| Command | Description |
+|--------|-------------|
+| `register-bulletin-namespace` | Register a bulletin namespace. Option: `--namespace`. |
+| `add-bulletin-collaborator` | Add a collaborator to a namespace. Options: `--namespace`, `--collaborator`. |
+| `create-bulletin-post` | Create a post. Options: `--namespace`, `--payload` (hex), `--proof` (hex). |
+| `read-bulletin-post` | Read a post by namespace and ID. Options: `--namespace`, `--id`. |
+| `list-bulletin-post` | List posts in a namespace. Option: `--namespace`. |
 
-**Basic Usage:**
-```bash
-cli-tool pre \
-  --endpoint http://localhost:50051 \
-  --ring-pk <ring_public_key_from_dkg> \
-  --secret "my-secret-data" \
-  --reader-pk <reader_public_key> \
-  --reader-sk <reader_secret_key> \
-  --peer-ids abc123def456...@127.0.0.1:8080 def789ghi012...@127.0.0.1:8081
-```
+### Dev / testing
 
-**Using Short Flags:**
-```bash
-cli-tool pre -e http://localhost:50051 \
-  --ring-pk <ring_public_key_from_dkg> \
-  --secret "my-secret-data" \
-  --reader-pk <reader_public_key> \
-  --reader-sk <reader_secret_key> \
-  --peer-ids abc123def456...@127.0.0.1:8080 def789ghi012...@127.0.0.1:8081
-```
-
-**Parameters:**
-- `--endpoint` / `-e`: gRPC endpoint of the node (default: `http://localhost:50051`)
-- `--ring-pk`: Ring public key obtained from a completed DKG session in hex format (required)
-- `--secret`: Plaintext secret data to encrypt and re-encrypt (required)
-- `--reader-pk`: Reader's public key in hex format (from `generate-reader-key`) (required)
-- `--reader-sk`: Reader's secret key in hex format (from `generate-reader-key`) (required)
-- `--peer-ids`: Peer IDs of nodes to participate in PRE (required, one or more)
-
-**Example Output:**
-```
-Starting PRE session:
-  Endpoint: http://localhost:50051
-  Ring PK: abc123def456ghi789...
-  Reader PK: def789ghi012jkl345...
-  Peer IDs: ["abc123def456...@127.0.0.1:8080", "def789ghi012...@127.0.0.1:8081"]
-
-Step 1: Encrypting secret to ring public key...
-  Encrypted secret created
-
-Step 2: Sending to PRE service for re-encryption...
-PRE Result:
-============================================================
-  Status: completed
-  Message: PRE operation completed successfully
-
-Step 3: Decrypting with reader secret key...
-  Decrypted Secret: my-secret-data
-```
-
-### EncryptSecret - Encrypt a Secret to Ring Public Key
-
-Encrypt a plaintext secret to a ring public key (from DKG). This is useful for encrypting data that will later be used in PRE operations.
-
-**Basic Usage:**
-```bash
-cli-tool encrypt-secret \
-  --secret "my-secret-data" \
-  --ring-pk <ring_public_key_from_dkg>
-```
-
-**Parameters:**
-- `--secret`: Plaintext secret to encrypt (required)
-- `--ring-pk`: Ring public key from DKG in hex format (required)
-
-**Example Output:**
-```
-Encrypting secret to ring public key...
-  Ring PK: abc123def456ghi789...
-
-Encrypted Secret (JSON):
-============================================================
-{"enc_cmt":"...","enc_secret":"..."}
-```
-
-The output is a JSON-encoded encrypted secret that can be used with the PRE service.
-
-### GenerateReaderKey - Generate Reader Keypair
-
-Generate a reader keypair (public and secret keys) for PRE decryption. The reader's public key is used during PRE operations, and the secret key is used to decrypt the re-encrypted data.
-
-**Usage:**
-```bash
-cli-tool generate-reader-key
-```
-
-**Example Output:**
-```
-Generated Reader Keypair:
-============================================================
-Reader Secret Key (--reader-sk):
-a1b2c3d4e5f6...
-Reader Public Key (--reader-pk):
-f6e5d4c3b2a1...
-```
-
-**Note:** Save both keys securely. The public key (`--reader-pk`) is used in PRE operations, and the secret key (`--reader-sk`) is needed to decrypt the re-encrypted data.
-
-### Info - Query Node Information
-
-Query information about a node (not yet implemented on server).
-
-**Usage:**
-```bash
-cli-tool info --endpoint http://localhost:50051
-```
-
-**Using Short Flag:**
-```bash
-cli-tool info -e http://localhost:50051
-```
-
-**Parameters:**
-- `--endpoint` / `-e`: gRPC endpoint of the node (default: `http://localhost:50051`)
-
-## Getting Peer IDs
-
-To get the peer ID and endpoint for a node, check the startup logs when running `orbis-node`. You should see a log entry like:
-
-```
-Iroh connection string (peer_id@host:port): abc123def456...@127.0.0.1:8080
-```
-
-Use this full connection string (including the `@` and host:port) as the `--peer-ids` value.
+| Command | Description |
+|--------|-------------|
+| `fund` | Fund an address from the pre-funded test account on the local chain. Option: `--address`. |
 
 ## Examples
 
-### Three-Node DKG Session
-
-Start a DKG session with 3 nodes (threshold 2):
-
 ```bash
-# On node 1 (localhost:50051)
-cli-tool dkg -t 2 \
-  --peer-ids node2_peer_id@127.0.0.1:8081 node3_peer_id@127.0.0.1:8082
+# Node info
+cargo run -p cli-tool -- info
+cargo run -p cli-tool -- info --endpoint http://localhost:50051
+
+# DKG (e.g. 2-of-2 with one peer)
+cargo run -p cli-tool -- dkg --threshold 2 --peer-ids <PEER_ID>
+
+# Reader keypair for PRE
+cargo run -p cli-tool -- generate-reader-key
+
+# Encrypt secret locally (no node)
+cargo run -p cli-tool -- encrypt-secret --secret "my secret" --ring-pk <HEX> --policy-id <ID> --resource document --permission read
+
+# Prepare then store (idempotent)
+cargo run -p cli-tool -- prepare-secret --secret "data" --ring-pk-hex <HEX> --policy-id <ID> --resource document --permission read
+cargo run -p cli-tool -- store-prepared-secret --endpoint http://localhost:50051 --prepared-json '<JSON>' --ring-id <ID> --namespace <NS> --policy-id <ID> --resource document --permission read
+
+# One-shot store
+cargo run -p cli-tool -- store-secret --endpoint http://localhost:50051 --secret "data" --ring-pk-hex <HEX> --ring-id <ID> --namespace <NS> --policy-id <ID> --resource document --permission read
+
+# PRE (after storing a secret and setting relationship)
+cargo run -p cli-tool -- pre --endpoint http://localhost:50051 --ring-pk <HEX> --reader-pk <HEX> --reader-sk <HEX> --object-id <ID> --namespace <NS>
+
+# Local chain / bulletin
+cargo run -p cli-tool -- fund --address <ADDRESS>
+cargo run -p cli-tool -- add-policy-to-chain
+cargo run -p cli-tool -- register-bulletin-namespace --namespace my-ns
 ```
 
-### Complete PRE Workflow
+## Scripts
 
-1. First, generate a reader keypair:
-```bash
-cli-tool generate-reader-key
-```
+A full walkthrough is available as shell scripts in `scripts/`. From the workspace root:
 
-2. Then perform PRE with the generated keys:
-```bash
-cli-tool pre \
-  --ring-pk <hex_from_dkg> \
-  --secret "my-secret-data" \
-  --reader-pk <hex_from_generate_reader_key> \
-  --reader-sk <hex_from_generate_reader_key> \
-  --peer-ids node1@127.0.0.1:8080 node2@127.0.0.1:8081 node3@127.0.0.1:8082
-```
+- **Docker integration (3 nodes, threshold 2)** — matches `test_cli_calls_dkg_and_pre_endpoint` and uses `docker/docker-compose-integration-test.yml`:
+  ```bash
+  docker compose -f docker/docker-compose-integration-test.yml up -d --build
+  ./bin/cli-tool/scripts/run_integration.sh
+  ```
 
-### Encrypt Secret Separately
+See [scripts/README.md](scripts/README.md) for step-by-step usage and variables.
 
-If you want to encrypt a secret without immediately performing PRE:
+## Integration tests
 
-```bash
-cli-tool encrypt-secret \
-  --secret "my-secret-data" \
-  --ring-pk <hex_from_dkg>
-```
-
-This outputs a JSON-encoded encrypted secret that can be stored or used later.
-
-### Using Different Endpoints
-
-Connect to a node on a different host:
-
-```bash
-cli-tool dkg \
-  --endpoint http://192.168.1.100:50051 \
-  --threshold 2 \
-  --peer-ids remote_peer_id@192.168.1.101:8080
-```
+The command implementations live in `src/commands.rs` and are re-exported from `src/lib.rs` so they can be called from integration tests without invoking the CLI binary.

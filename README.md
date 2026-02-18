@@ -246,7 +246,32 @@ docker compose -f docker/docker-compose-integration-test.yml build
 # Docker for integration test with different impl
 ORBIS_INTEGRATION_CRYPTO=decaf377 docker compose -f docker/docker-compose-integration-test.yml build
 
+# Metrics network test (3 nodes + Prometheus + Grafana)
+docker compose -f docker/docker-compose-metrics-network-test.yml up --build
+
 ```
+
+### Metrics & Monitoring
+
+The metrics compose file (`docker/docker-compose-metrics-network-test.yml`) spins up 3 Orbis nodes alongside Prometheus and Grafana.
+
+**Ports:**
+
+| Service    | Host Port | Description              |
+|------------|-----------|--------------------------|
+| Grafana    | 3000      | Dashboard UI             |
+| Prometheus | 9099      | Metrics scrape endpoint  |
+| node1      | 9091      | Node metrics (`/metrics`)|
+| node2      | 9092      | Node metrics (`/metrics`)|
+| node3      | 9093      | Node metrics (`/metrics`)|
+
+Grafana is auto-provisioned on startup:
+- **Prometheus data source** is pre-configured pointing at `http://prometheus:9090`
+- **Orbis Node Metrics** dashboard loads automatically under the **Orbis** folder
+
+Open [http://localhost:3000](http://localhost:3000), log in with `admin` / `admin`, and the dashboard will be ready.
+
+Provisioning files live in `docker/grafana/` and are mounted into the container at startup.
 
 ## Documentation
 

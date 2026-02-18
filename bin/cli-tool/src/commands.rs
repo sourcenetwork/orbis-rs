@@ -5,7 +5,7 @@
 
 use anyhow::{anyhow, Result};
 use authn::{create_authenticated_request, JwtSigner};
-use bulletin::r#trait::Bulletin;
+use bulletin::r#trait::{Bulletin, RingPayload};
 use bulletin::sourcehub::SourceHubBulletin;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
@@ -602,6 +602,15 @@ pub async fn set_relationship_on_chain(
 }
 
 pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
+    let read_client = SourceHubClient::new(ChainConfig::local())
+        .await
+        .map_err(|e| anyhow!("Failed to create chain client: {}", e))?;
+
+    if read_client.bulletin_get_namespace(&namespace).await.is_ok() {
+        println!("Bulletin namespace already exists: {}", namespace);
+        return Ok(());
+    }
+
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
@@ -609,10 +618,14 @@ pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
-    bulletin
-        .register(namespace.clone())
-        .await
-        .map_err(|e| anyhow!("Failed to register namespace: {}", e))?;
+    if let Err(e) = bulletin.register(namespace.clone()).await {
+        let msg = e.to_string();
+        if msg.contains("already exists") || msg.contains("namespace already exists") {
+            println!("Bulletin namespace already exists: {}", namespace);
+            return Ok(());
+        }
+        return Err(anyhow!("Failed to register namespace: {}", e));
+    }
 
     println!("Registered bulletin namespace: {}", namespace);
     Ok(())
@@ -629,13 +642,34 @@ pub async fn add_bulletin_collaborator(
         .await
         .map_err(|e| anyhow!("Failed to create blockchain client: {}", e))?;
 
-    let result = client
+    let result = match client
         .bulletin_add_collaborator(&namespace, &collaborator_address)
         .await
-        .map_err(|e| anyhow!("Failed to add collaborator: {}", e))?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("already exists") || msg.contains("collaborator already exists") {
+                println!(
+                    "Collaborator {} already on namespace {}",
+                    collaborator_address, namespace
+                );
+                return Ok(());
+            }
+            return Err(anyhow!("Failed to add collaborator: {}", e));
+        }
+    };
 
     if result.code != 0 {
-        return Err(anyhow!("Failed to add collaborator: code {}", result.code));
+        let log = result.log;
+        if log.contains("already exists") || log.contains("collaborator already exists") {
+            println!(
+                "Collaborator {} already on namespace {}",
+                collaborator_address, namespace
+            );
+            return Ok(());
+        }
+        return Err(anyhow!("Failed to add collaborator: code {} {}", result.code, log));
     }
 
     println!(
@@ -697,6 +731,29 @@ pub async fn list_bulletin_posts(namespace: String) -> Result<Vec<Vec<u8>>> {
         .map_err(|e| anyhow!("Failed to list bulletin posts: {}", e))?;
 
     Ok(posts.into_iter().map(|p| p.payload).collect())
+}
+
+/// Fetch the latest ring from the bulletin (e.g. after DKG).
+/// Returns (ring_id, ring_pk_hex). Uses namespace "orbis" by default.
+pub async fn get_latest_ring(namespace: Option<String>) -> Result<(String, String)> {
+    let namespace = namespace.as_deref().unwrap_or("orbis");
+    let client = SourceHubClient::new(ChainConfig::local())
+        .await
+        .map_err(|e| anyhow!("Failed to create client: {}", e))?;
+
+    let posts = client
+        .bulletin_list_posts(namespace)
+        .await
+        .map_err(|e| anyhow!("Failed to list bulletin posts: {}", e))?;
+
+    let post = posts
+        .last()
+        .ok_or_else(|| anyhow!("No posts in namespace {:?}; run DKG first", namespace))?;
+
+    let ring_payload: RingPayload = serde_json::from_slice(&post.payload)
+        .map_err(|e| anyhow!("Failed to parse ring payload: {}", e))?;
+
+    Ok((post.id.clone(), ring_payload.ring_pk))
 }
 
 /// Result of querying node info
