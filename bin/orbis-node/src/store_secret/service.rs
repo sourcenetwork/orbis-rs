@@ -2,6 +2,7 @@ use crate::app_state::AppState;
 use crate::constants::{BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE};
 use crate::metrics;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
+use crate::sign::messages::SignVerification;
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
@@ -237,6 +238,8 @@ where
                     ring_payload.threshold as usize,
                     ring_payload.peer_ids.len(),
                     &ring_payload.public_polynomial,
+                    req.ring_id.clone(),
+                    SignVerification::Bulletin,
                 )
                 .await
                 .map_err(|e| StoreSecretError::Signing(format!("Signing failed: {}", e)))?;

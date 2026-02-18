@@ -5,6 +5,20 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Verification strategy for sign requests.
+///
+/// Determines how responder nodes verify that a message should be signed.
+/// The initiator sets this based on the signing context (store_secret vs utility service).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SignVerification {
+    /// Verify message exists on bulletin (store_secret path).
+    /// Responder deserializes message as BulletinPost, reads from bulletin, verifies payload match.
+    Bulletin,
+    /// Message was authenticated at the gRPC layer (utility service path).
+    /// Responder trusts that the initiator verified the JWT. Ring routing comes from ring_id field.
+    Authenticated,
+}
+
 /// Sign protocol message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SignMessage {
@@ -30,6 +44,10 @@ pub enum SignMessage {
         message: Vec<u8>,
         /// Serialized list of (node_id, commitment_bytes) for FROST; empty for BLS
         all_commitments: Vec<u8>,
+        /// Ring ID for routing (used to look up ring info on bulletin)
+        ring_id: String,
+        /// How responders should verify this message before signing
+        verification: SignVerification,
     },
     /// Response from ring node to coordinator with signature share
     SignResponse {

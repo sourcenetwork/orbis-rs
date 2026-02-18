@@ -21,7 +21,7 @@ use crate::constants::{
 };
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::sign::error::{Result, SignError};
-use crate::sign::messages::SignMessage;
+use crate::sign::messages::{SignMessage, SignVerification};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ThresholdSigner,
@@ -115,14 +115,25 @@ where
                 from_node_id,
                 message,
                 all_commitments,
+                ring_id,
+                verification,
             } => {
                 tracing::info!(
                     request_id = %request_id,
                     from_node_id = from_node_id,
+                    ring_id = %ring_id,
+                    verification = ?verification,
                     "Sign Coordinator: Received SignRequest"
                 );
-                self.handle_sign_request(request_id, from_node_id, message, all_commitments)
-                    .await
+                self.handle_sign_request(
+                    request_id,
+                    from_node_id,
+                    message,
+                    all_commitments,
+                    ring_id,
+                    verification,
+                )
+                .await
             }
             SignMessage::SignResponse { .. } | SignMessage::NonceResponse { .. } => {
                 tracing::debug!(
@@ -221,9 +232,27 @@ where
         from_node_id: u32,
         message: Vec<u8>,
         all_commitments_bytes: Vec<u8>,
+        ring_id: String,
+        verification: SignVerification,
     ) -> Result<Option<SignMessage>> {
-        // 1. Verify the message exists on bulletin and get the associated ring_pk and peer list
-        let (ring_pk_hex, pub_poly) = self.verify_message_and_get_info(&message).await?;
+        // 1. Verify based on mode
+        match verification {
+            SignVerification::Bulletin => {
+                let verified_ring_id = self.verify_bulletin_message(&message).await?;
+                if verified_ring_id != ring_id {
+                    return Err(SignError::VerificationFailed(
+                        "ring_id in message does not match request ring_id".into(),
+                    ));
+                }
+            }
+            SignVerification::Authenticated => {
+                // JWT was verified by the initiator at the gRPC layer.
+                // Ring routing comes from ring_id field.
+            }
+        }
+
+        // 2. Look up ring info (always the same path regardless of verification mode)
+        let (ring_pk_hex, pub_poly) = self.resolve_ring_info(&ring_id).await?;
 
         // Note: We do NOT validate from_node_id here because the sign request initiator
         // may not be in the ring (external requesters use node_id=0).
@@ -431,6 +460,8 @@ where
         threshold: usize,
         total_participants: usize,
         public_polynomial_hex: &str,
+        ring_id: String,
+        verification: SignVerification,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
         let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
@@ -491,6 +522,8 @@ where
                 node_id,
                 self_in_list,
                 actual_peer_count,
+                ring_id,
+                verification,
             )
             .await;
 
@@ -519,6 +552,8 @@ where
         node_id: u32,
         self_in_list: bool,
         actual_peer_count: usize,
+        ring_id: String,
+        verification: SignVerification,
     ) -> Result<Vec<u8>> {
         // 1. Deserialize public polynomial from bulletin data
         let pub_poly_bytes = hex::decode(public_polynomial_hex).map_err(|e| {
@@ -573,6 +608,8 @@ where
                 from_node_id: node_id,
                 message: message.clone(),
                 all_commitments: all_commitments_bytes.clone(),
+                ring_id: ring_id.clone(),
+                verification: verification.clone(),
             };
 
             let peer_id = peer_id_str.clone();
@@ -918,8 +955,11 @@ where
             .await;
     }
 
-    /// Verify that a message exists on the bulletin and return the ring_pk, pub_poly
-    async fn verify_message_and_get_info(&self, message: &[u8]) -> Result<(String, D::PubPoly)> {
+    /// Verify that a message exists on the bulletin and return the ring_id from the document.
+    ///
+    /// Deserializes the message as a BulletinPost, reads the corresponding post from the
+    /// bulletin, and verifies the payload matches. Returns the ring_id from the DocumentPayload.
+    async fn verify_bulletin_message(&self, message: &[u8]) -> Result<String> {
         // 1. Deserialize the BulletinPost from the message
         let post: BulletinPost = message.to_vec().try_into().map_err(|e| {
             SignError::Deserialization(format!("Failed to deserialize BulletinPost: {}", e))
@@ -950,19 +990,28 @@ where
             SignError::Deserialization(format!("Failed to parse DocumentPayload: {}", e))
         })?;
 
-        // 5. Look up ring info from bulletin
+        tracing::debug!(
+            post_id = %post.id,
+            ring_id = %doc_payload.ring_id,
+            "Sign Coordinator: Message verified on bulletin"
+        );
+
+        Ok(doc_payload.ring_id)
+    }
+
+    /// Look up ring info from the bulletin by ring_id and return (ring_pk_hex, pub_poly).
+    ///
+    /// This is the routing concern — always the same regardless of verification mode.
+    async fn resolve_ring_info(&self, ring_id: &str) -> Result<(String, D::PubPoly)> {
         let ring_info = self
             .app_state
             .bulletin
-            .read(
-                BULLETIN_RING_NAMESPACE.to_string(),
-                doc_payload.ring_id.clone(),
-            )
+            .read(BULLETIN_RING_NAMESPACE.to_string(), ring_id.to_string())
             .await
             .map_err(|e| {
                 SignError::VerificationFailed(format!(
                     "Failed to read ring info for ring_id={}: {}",
-                    doc_payload.ring_id, e
+                    ring_id, e
                 ))
             })?;
 
@@ -971,19 +1020,12 @@ where
                 SignError::Deserialization(format!("Failed to parse RingPayload: {}", e))
             })?;
 
-        // 6. Deserialize pub_poly
         let pub_poly_bytes = hex::decode(&ring_payload.public_polynomial).map_err(|e| {
             SignError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
         })?;
         let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
             SignError::Deserialization(format!("Failed to deserialize public polynomial: {}", e))
         })?;
-
-        tracing::debug!(
-            post_id = %post.id,
-            ring_id = %doc_payload.ring_id,
-            "Sign Coordinator: Message verified on bulletin"
-        );
 
         Ok((ring_payload.ring_pk, pub_poly))
     }
