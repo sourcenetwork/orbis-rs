@@ -127,10 +127,10 @@ const BULLETIN_RING_NAMESPACE: &str = "orbis";
 /// for a real identity ever touches disk.
 ///
 /// **Status**: Infrastructure (SourceHub + Orbis DKG + DefraDB) works.
-/// Orbis key generation, service key authorization, and signing proxy APIs
-/// do not exist yet. See `todo!()` markers for each missing piece.
+/// Orbis DerivePublicKey and Sign RPCs are implemented.
+/// Blocked on: DefraDB Signer::Orbis (jackzampolin/defradb.rs#469).
 #[tokio::test]
-#[ignore = "spec test: Orbis key gen + signing proxy APIs not yet implemented"]
+#[ignore = "spec test: blocked on DefraDB Signer::Orbis (defradb.rs#469)"]
 async fn xarchive_full_service_key_architecture() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("info")
@@ -261,19 +261,19 @@ async fn xarchive_full_service_key_architecture() {
     // Jack's real identity. The private key is threshold-held by the ring.
     // No single machine ever has it. Orbis derives it from the ring master
     // key using key derivation: derived_pk = H("jack") * ring_pk
-    //
-    // NEEDS: Orbis gRPC API — GenerateKey(ring_id, label) -> DID
-    //   - Derives public key: crypto::derive_public_key(ring_pk, "jack")
-    //   - Returns DID(derived_pk)
-    //   - Ring can sign for this DID using the derivation path
 
-    let _jack_did: String = todo!(
-        "NEEDS: orbis GenerateKey gRPC API\n\
-         Call: orbis.generate_key(ring_id, \"jack\")\n\
-         Impl: crypto::derive_public_key(ring_pk, b\"jack\") -> derived_pk\n\
-         Return: DID derived from derived_pk\n\
-         The ring can threshold-sign for this DID using derivation=\"jack\""
-    );
+    let jack_derived = cli_tool::derive_public_key(
+        ring.node(0).grpc_addr(),
+        ring_id.clone(),
+        b"jack".to_vec(),
+    )
+    .await
+    .expect("derive jack public key");
+
+    // DID is the hex-encoded BLS derived public key
+    // In production this would be a proper did:key: with BLS multicodec prefix
+    let jack_did = format!("did:bls:{}", &jack_derived.derived_public_key[..40]);
+    eprintln!("[xarchive] JACK_DID: {}", jack_did);
 
     // ================================================================
     // 4. Create JACK_SVC (service account, file keyring)
@@ -287,51 +287,35 @@ async fn xarchive_full_service_key_architecture() {
         jack_svc.did, jack_svc.label
     );
 
-    // Register jack_svc as authorized to act for jack_did in Orbis.
-    // In production this would be a bootstrap ceremony (biometric-gated).
-    //
-    // NEEDS: Orbis gRPC API — AuthorizeServiceKey(ring_id, real_did, service_did)
-    //   - Stores mapping: (ring_id, jack_did) -> [jack_svc.did]
-    //   - Future calls from jack_svc.did are allowed to request
-    //     threshold signatures as jack_did
-
-    // orbis.authorize_service_key(&ring_id, &jack_did, &jack_svc.did).await;
-    let _: () = todo!(
-        "NEEDS: orbis AuthorizeServiceKey gRPC API\n\
-         Call: orbis.authorize_service_key(ring_id, jack_did, jack_svc.did)\n\
-         Stores: (ring_id, jack_did) permits [jack_svc.did]\n\
-         Storage: SourceHub bulletin post or new on-chain module"
-    );
+    // AuthorizeServiceKey: In production, Orbis would track which service
+    // keys can act for which DIDs. For now, the Sign RPC accepts any valid
+    // JWT — authorization enforcement is future work (SourceHub ACP-based).
+    eprintln!("[xarchive] (skipping AuthorizeServiceKey — not enforced yet)");
 
     // ================================================================
-    // 5. Fund JACK_DID on SourceHub
+    // 5. Fund JACK_DID on SourceHub — SKIPPED
     // ================================================================
-    // JACK_DID needs uopen to submit policy txs.
-    // In test: faucet transfer. In prod: genesis allocation.
-
-    // sourcehub.fund_from_faucet(&jack_did).await;
-    let _: () = todo!(
-        "NEEDS: Fund jack_did on SourceHub\n\
-         This requires the address derived from jack_did's public key.\n\
-         The public key comes from Orbis (it's the derived key).\n\
-         cli_tool::fund(jack_did_address, chain_config) should work\n\
-         once we have the address."
-    );
+    // JACK_DID is a BLS identity. SourceHub addresses use secp256k1.
+    // In the test, the pre-funded test account creates ACP policies directly.
+    // In production, a Cosmos tx signing proxy would bridge BLS→secp256k1.
+    eprintln!("[xarchive] (skipping JACK_DID funding — test account creates policies)");
 
     // ================================================================
     // 6. Generate COMPARTMENT_DID via Orbis (x-archive identity)
     // ================================================================
     // The compartment's identity. Owns all documents in x-archive.
     // Threshold-held by the ring, same as JACK_DID.
-    //
-    // NEEDS: Same GenerateKey API as step 3
 
-    let _compartment_did: String = todo!(
-        "NEEDS: orbis GenerateKey gRPC API (same as step 3)\n\
-         Call: orbis.generate_key(ring_id, \"x-archive\")\n\
-         Impl: crypto::derive_public_key(ring_pk, b\"x-archive\") -> derived_pk\n\
-         Return: DID derived from derived_pk"
-    );
+    let compartment_derived = cli_tool::derive_public_key(
+        ring.node(0).grpc_addr(),
+        ring_id.clone(),
+        b"x-archive".to_vec(),
+    )
+    .await
+    .expect("derive x-archive public key");
+
+    let compartment_did = format!("did:bls:{}", &compartment_derived.derived_public_key[..40]);
+    eprintln!("[xarchive] COMPARTMENT_DID: {}", compartment_did);
 
     // ================================================================
     // 7. Create DEFRA_SVC + APP_SVC (service accounts, file keyring)
@@ -343,15 +327,8 @@ async fn xarchive_full_service_key_architecture() {
         defra_svc.did, defra_svc.label
     );
 
-    // Register defra_svc as authorized to act for compartment_did
-    //
-    // NEEDS: Same AuthorizeServiceKey API as step 4
-
-    // orbis.authorize_service_key(&ring_id, &compartment_did, &defra_svc.did).await;
-    let _: () = todo!(
-        "NEEDS: orbis AuthorizeServiceKey gRPC API (same as step 4)\n\
-         Call: orbis.authorize_service_key(ring_id, compartment_did, defra_svc.did)"
-    );
+    // AuthorizeServiceKey for defra_svc → compartment_did (same as step 4)
+    eprintln!("[xarchive] (skipping AuthorizeServiceKey for defra_svc)");
 
     let app_svc = ServiceIdentity::new_file_keyring("x-archive-svc", run_dir.path());
     eprintln!(
@@ -362,63 +339,60 @@ async fn xarchive_full_service_key_architecture() {
     // DefraDB checks ACP on SourceHub to decide if app_svc can read/write.
 
     // ================================================================
-    // 8. ACP policy: jack_svc → Orbis → signs as jack_did → SourceHub
+    // 8. ACP policy via test account
     // ================================================================
-    // Jack's laptop sends the policy definition to Orbis.
-    // Orbis verifies jack_svc is authorized for jack_did.
-    // Orbis threshold-signs the MsgCreatePolicy tx as jack_did.
-    // Jack's laptop submits the signed tx to SourceHub.
-    //
-    // NEEDS: Orbis signing proxy gRPC API — SignTransaction(
-    //          service_key_jwt,   // jack_svc authenticates
-    //          target_did,        // sign as jack_did
-    //          tx_bytes,          // the unsigned MsgCreatePolicy
-    //        ) -> signed_tx_bytes
-    //
-    // Alternatively: higher-level API that builds + signs + submits in one call.
+    // In production: jack_svc → Orbis → threshold-signs tx as jack_did → SourceHub
+    // In test: pre-funded test account creates policy directly.
+    // The signing proxy (BLS→Cosmos tx) is future work.
 
-    // let policy_id = sourcehub.create_policy_via_orbis(
-    //     &orbis, &ring_id,
-    //     &jack_svc, &jack_did,
-    //     "x-archive-access",
-    //     resources: [tweet { reader, writer, read="owner|reader", write="owner|writer" }],
-    // ).await;
-    let _policy_id: String = todo!(
-        "NEEDS: Orbis SignTransaction gRPC API (or higher-level proxy)\n\
-         Flow:\n\
-         1. Build unsigned MsgCreatePolicy tx\n\
-         2. jack_svc sends to Orbis: sign as jack_did\n\
-         3. Orbis verifies jack_svc authorization\n\
-         4. Orbis threshold-signs (2-of-3 BLS)\n\
-         5. Submit signed tx to SourceHub\n\
-         6. Return policy_id\n\
-         \n\
-         Policy: x-archive-access\n\
-           resource: tweet\n\
-           relations: reader, writer\n\
-           permissions: read = owner|reader, write = owner|writer"
-    );
+    eprintln!("[xarchive] Creating ACP policy...");
+    let policy_id = cli_tool::add_policy_to_chain(chain_config.clone())
+        .await
+        .expect("create ACP policy");
+    eprintln!("[xarchive] Policy created: {}", policy_id);
 
     // ================================================================
-    // 9. ACP grants via Orbis
+    // 9. ACP grants via test account
     // ================================================================
-    // Grant compartment_did → writer + reader on tweet
-    // Grant app_svc.did → writer + reader on tweet
-    //
-    // Same signing proxy pattern: jack_svc → Orbis → signs as jack_did
-    //
-    // NEEDS: Same SignTransaction API as step 8
+    // Grant compartment_did and app_svc writer+reader on "document" resource.
+    // Uses test account directly (same signing proxy caveat as step 8).
 
-    // sourcehub.grant_via_orbis(&orbis, &ring_id, &jack_svc, &jack_did,
-    //     &policy_id, &compartment_did, &["writer", "reader"], "tweet").await;
-    // sourcehub.grant_via_orbis(&orbis, &ring_id, &jack_svc, &jack_did,
-    //     &policy_id, &app_svc.did, &["writer", "reader"], "tweet").await;
-    let _: () = todo!(
-        "NEEDS: Orbis SignTransaction gRPC API (same as step 8)\n\
-         Two grant txs, both signed by Orbis as jack_did:\n\
-         1. Grant compartment_did writer+reader on tweet\n\
-         2. Grant app_svc.did writer+reader on tweet"
-    );
+    // Register a placeholder object for grants
+    let placeholder_object = "xarchive-root";
+    cli_tool::register_object_to_chain(
+        policy_id.clone(),
+        placeholder_object.to_string(),
+        "document".to_string(),
+        chain_config.clone(),
+    )
+    .await
+    .expect("register object");
+
+    // Grant compartment_did as reader
+    cli_tool::set_relationship_on_chain(
+        policy_id.clone(),
+        placeholder_object.to_string(),
+        "document".to_string(),
+        "reader".to_string(),
+        Some(compartment_did.clone()),
+        chain_config.clone(),
+    )
+    .await
+    .expect("grant compartment_did reader");
+
+    // Grant app_svc as reader
+    cli_tool::set_relationship_on_chain(
+        policy_id.clone(),
+        placeholder_object.to_string(),
+        "document".to_string(),
+        "reader".to_string(),
+        Some(app_svc.did.clone()),
+        chain_config.clone(),
+    )
+    .await
+    .expect("grant app_svc reader");
+
+    eprintln!("[xarchive] ACP grants applied");
 
     // ================================================================
     // 10. Start DefraDB with Orbis signer
@@ -432,13 +406,6 @@ async fn xarchive_full_service_key_architecture() {
     //   1. Checks ACP on SourceHub (can this actor write?)
     //   2. Sends doc bytes to Orbis for signing as compartment_did
     //   3. Stores doc with _owner=compartment_did, _signature=ring BLS sig
-    //
-    // NEEDS: DefraDB Signer::Orbis backend
-    //   New signer in defradb.rs that delegates to Orbis gRPC:
-    //     - endpoint: orbis grpc url
-    //     - ring_id: which ring to use
-    //     - compartment_did: sign as this identity
-    //     - defra_svc credentials: authenticate to Orbis
 
     let defra_binary = find_defra_binary().expect("find defra binary");
     let defra_ports = defradb::allocate_defra_ports().expect("defra ports");
@@ -450,9 +417,7 @@ async fn xarchive_full_service_key_architecture() {
     let sh_config = sourcehub.defra_config();
 
     // Start DefraDB with defra_svc identity + SourceHub ACP.
-    // TODO: Add Orbis signer configuration when DefraDB supports it.
-    // For now, DefraDB starts with its own identity (defra_svc) and
-    // signs locally. The Orbis signing proxy integration is future work.
+    // TODO: Add --signer-type=orbis when DefraDB supports it (defradb.rs#469).
     let _defra = DefraDbNode::start(
         defra_root,
         defra_log_dir,
@@ -467,86 +432,33 @@ async fn xarchive_full_service_key_architecture() {
 
     eprintln!("[xarchive] DefraDB ready: {}", _defra.http_url);
 
-    // NEEDS: DefraDB Signer::Orbis configuration
-    //   defra start \
-    //     --signer-type orbis \
-    //     --signer-orbis-endpoint <orbis_grpc_url> \
-    //     --signer-orbis-ring-id <ring_id> \
-    //     --signer-orbis-did <compartment_did>
-
     // ================================================================
     // 11. Create Tweet schema with ACP policy
     // ================================================================
-    // NEEDS: policy_id from step 8
+    // BLOCKED: DefraDB needs Signer::Orbis to threshold-sign documents.
+    // See: https://github.com/jackzampolin/defradb.rs/issues/469
+    //
+    // When Signer::Orbis is implemented, this section will:
+    //   1. POST schema with @policy referencing our policy_id
+    //   2. Write a tweet as app_svc
+    //   3. Verify _owner=compartment_did and _signature from ring
 
-    // let schema = format!(r#"
-    //     type Tweet @policy(id: "{policy_id}", resource: "tweet") {{
-    //         tweet_id: String @index(unique: true)
-    //         text: String
-    //     }}
-    // "#);
-    // http.post(format!("{}/api/v0/schema", defra.http_url))
-    //     .header("Content-Type", "text/plain")
-    //     .body(schema).send().await;
     let _: () = todo!(
-        "NEEDS: policy_id from step 8\n\
-         Then: POST /api/v0/schema with SDL referencing the policy"
-    );
-
-    // ================================================================
-    // 12. Write a tweet as app_svc
-    // ================================================================
-    // app_svc authenticates to DefraDB.
-    // DefraDB checks SourceHub ACP: can app_svc write tweet? → YES
-    // DefraDB authenticates to Orbis as defra_svc.
-    // DefraDB sends doc bytes to Orbis: sign as compartment_did.
-    // Orbis threshold-signs (2-of-3 BLS).
-    // Document stored with _owner=compartment_did, _signature=ring sig.
-    //
-    // NEEDS: All previous steps + DefraDB Orbis signer
-
-    // let doc = http.post(format!("{}/api/v0/graphql", defra.http_url))
-    //     .header("Authorization", bearer_token(&app_svc))
-    //     .json(&json!({"query": r#"mutation {
-    //         create_Tweet(input: {tweet_id: "1729", text: "first orbis-signed tweet"}) {
-    //             _docID tweet_id text _owner _signature
-    //         }
-    //     }"#}))
-    //     .send().await;
-    let _: () = todo!(
-        "NEEDS: All previous steps complete\n\
-         Then: POST /api/v0/graphql with app_svc bearer token\n\
-         mutation create_Tweet(input: {{tweet_id: \"1729\", text: \"first orbis-signed tweet\"}})\n\
-         Verify: _owner = compartment_did, _signature verifies against ring_pk"
-    );
-
-    // ================================================================
-    // 13. Read it back and verify
-    // ================================================================
-    // Assert: tweet_id = "1729"
-    // Assert: text = "first orbis-signed tweet"
-    // Assert: _owner = compartment_did (NOT app_svc.did, NOT defra_svc.did)
-    // Assert: _signature verifies against ring collective pubkey
-    //
-    // This proves: the document was signed by the Orbis ring on behalf
-    // of the compartment identity. No single machine held the signing key.
-
-    // let result = http.post(format!("{}/api/v0/graphql", defra.http_url))
-    //     .header("Authorization", bearer_token(&app_svc))
-    //     .json(&json!({"query": "{ Tweet { tweet_id text _owner _signature } }"}))
-    //     .send().await;
-    //
-    // assert_eq!(result[0]["tweet_id"], "1729");
-    // assert_eq!(result[0]["_owner"], compartment_did);
-    //
-    // let sig_bytes = hex::decode(&result[0]["_signature"]).unwrap();
-    // let sig = <SignImpl as ThresholdSigner>::Signature::from_bytes(&sig_bytes).unwrap();
-    // let ring_pk = GroupAffine::from_bytes(&hex::decode(&ring_pk_hex).unwrap()).unwrap();
-    // SignImpl::new().verify(&ring_pk, &doc_bytes, &sig).expect("ring sig should verify");
-    let _: () = todo!(
-        "NEEDS: All previous steps complete\n\
-         Then: Query Tweet, verify _owner=compartment_did,\n\
-         verify _signature against ring_pk_hex using SignImpl::verify"
+        "BLOCKED: DefraDB Signer::Orbis (defradb.rs#469)\n\
+         DefraDB needs to delegate signing to Orbis ring via gRPC.\n\
+         Orbis DerivePublicKey + Sign RPCs are ready.\n\
+         \n\
+         Remaining steps when defradb.rs#469 lands:\n\
+         1. Start DefraDB with --signer-type=orbis --signer-orbis-endpoint={} --signer-orbis-ring-id={}\n\
+         2. POST /api/v0/schema with Tweet type @policy(id: \"{}\")\n\
+         3. POST /api/v0/graphql: create_Tweet(tweet_id: \"1729\", text: \"first orbis-signed tweet\")\n\
+         4. Verify _owner = {} (compartment_did)\n\
+         5. Verify _signature against ring_pk {}...",
+        ring.node(0).grpc_addr(),
+        ring_id,
+        policy_id,
+        compartment_did,
+        &ring_pk_hex[..32.min(ring_pk_hex.len())],
     );
 
     // ================================================================
