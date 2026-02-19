@@ -12,6 +12,9 @@ pub use jwt_builder::{
     add_auth_header, create_authenticated_request, extract_bearer_token, JwtSigner,
 };
 
+/// Re-export jwt_simple Duration for callers that need to create JWTs
+pub use jwt_simple::prelude::Duration as JwtDuration;
+
 #[cfg(test)]
 mod tests;
 
@@ -64,6 +67,18 @@ pub struct SignClaims {
     pub message: Vec<u8>,
     /// Optional derivation path
     pub derivation: Option<Vec<u8>>,
+    /// ACP policy ID (empty = ACP not enforced)
+    #[serde(default)]
+    pub policy_id: String,
+    /// ACP resource type
+    #[serde(default)]
+    pub resource: String,
+    /// ACP object ID
+    #[serde(default)]
+    pub object_id: String,
+    /// ACP permission/relationship to check
+    #[serde(default)]
+    pub permission: String,
 }
 
 /// Claims for StoreSecret endpoints

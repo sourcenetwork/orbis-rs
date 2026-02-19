@@ -511,7 +511,7 @@ async fn main() -> Result<()> {
             let message_bytes = hex::decode(&message).expect("Failed to decode message hex");
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
-            do_sign(endpoint, ring_id, message_bytes, derivation_bytes, signer_did_pk).await?;
+            do_sign(endpoint, ring_id, message_bytes, derivation_bytes, signer_did_pk, None).await?;
         }
     }
 

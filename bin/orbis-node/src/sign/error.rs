@@ -70,6 +70,10 @@ pub enum SignError {
     #[error("Protocol error: {0}")]
     ProtocolError(String),
 
+    /// Authorization failed (ACP check denied)
+    #[error("Authorization failed: {0}")]
+    AuthZ(String),
+
     /// Generic Sign error
     #[error("Sign error: {0}")]
     Generic(String),
@@ -105,6 +109,10 @@ impl From<SignError> for tonic::Status {
             SignError::VerificationFailed(_) => {
                 metrics::record_sign_request_failed();
                 tonic::Status::new(Code::InvalidArgument, error.to_string())
+            }
+            SignError::AuthZ(_) => {
+                metrics::record_sign_request_failed();
+                tonic::Status::new(Code::PermissionDenied, error.to_string())
             }
             _ => {
                 metrics::record_sign_request_failed();

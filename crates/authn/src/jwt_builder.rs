@@ -113,6 +113,10 @@ impl JwtSigner {
     /// * `ring_id` - The ring ID to sign with
     /// * `message` - Message bytes to sign
     /// * `derivation` - Optional derivation path
+    /// * `policy_id` - ACP policy ID (empty string = ACP not enforced)
+    /// * `resource` - ACP resource type
+    /// * `object_id` - ACP object ID
+    /// * `permission` - ACP permission/relationship to check
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour
@@ -121,11 +125,19 @@ impl JwtSigner {
         ring_id: &str,
         message: Vec<u8>,
         derivation: Option<Vec<u8>>,
+        policy_id: &str,
+        resource: &str,
+        object_id: &str,
+        permission: &str,
     ) -> Result<String> {
         let claims = SignClaims {
             ring_id: ring_id.to_string(),
             message,
             derivation,
+            policy_id: policy_id.to_string(),
+            resource: resource.to_string(),
+            object_id: object_id.to_string(),
+            permission: permission.to_string(),
         };
         self.sign(claims, Duration::from_hours(1))
     }

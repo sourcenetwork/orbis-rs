@@ -11,6 +11,6 @@ pub use commands::{
     do_generate_reader_key, do_pre, do_sign, do_store_secret, fund, get_account_sequence,
     list_bulletin_posts, prepare_secret, query_node_info, read_bulletin_post,
     register_bulletin_namespace, register_object_to_chain, set_relationship_direct,
-    set_relationship_on_chain, store_prepared_secret, DerivePublicKeyResult, DkgResult,
-    NodeInfoResult, PreparedSecret, SignResult, StoreSecretResult,
+    set_relationship_on_chain, signer_did_for_pk, store_prepared_secret, DerivePublicKeyResult,
+    DkgResult, NodeInfoResult, PreparedSecret, SignAcpFields, SignResult, StoreSecretResult,
 };

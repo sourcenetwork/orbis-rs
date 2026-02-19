@@ -129,6 +129,22 @@ resources:
         expr: writer
 "#;
 
+/// ACP policy for ring-level signing authorization.
+/// Service keys must be granted `signer` on the ring object to request
+/// threshold signing. This is separate from document-level ACP (tweet/bookmark).
+const RING_SIGNING_POLICY_YAML: &str = r#"
+name: ring-signing-policy
+resources:
+  - name: ring
+    relations:
+      - name: signer
+        types:
+          - actor
+    permissions:
+      - name: sign
+        expr: signer
+"#;
+
 // ============================================================================
 // Service identity — a disposable file-keyring key
 // ============================================================================
@@ -337,6 +353,30 @@ async fn xarchive_full_service_key_architecture() {
     );
 
     // ================================================================
+    // 2b. Ring-level ACP policy (signing authorization)
+    // ================================================================
+    // Separate from document-level ACP. This policy controls who can
+    // request threshold signing from the ring. Service keys must be
+    // granted the `signer` relationship on the ring object.
+
+    eprintln!("[xarchive] Creating ring signing ACP policy...");
+    let ring_policy_id = cli_tool::create_policy_on_chain(RING_SIGNING_POLICY_YAML, chain_config.clone())
+        .await
+        .expect("create ring signing ACP policy");
+    eprintln!("[xarchive] Ring signing policy created: {}", ring_policy_id);
+
+    // Register the ring itself as the protected object
+    cli_tool::register_object_to_chain(
+        ring_policy_id.clone(),
+        ring_id.clone(),
+        "ring".to_string(),
+        chain_config.clone(),
+    )
+    .await
+    .expect("register ring object");
+    eprintln!("[xarchive] Ring registered as ACP object: {}", &ring_id[..16.min(ring_id.len())]);
+
+    // ================================================================
     // 3. Generate JACK_DID via Orbis (system identity)
     // ================================================================
     // Jack's real identity. The private key is threshold-held by the ring.
@@ -368,10 +408,20 @@ async fn xarchive_full_service_key_architecture() {
         jack_svc.did, jack_svc.label
     );
 
-    // AuthorizeServiceKey: In production, Orbis would track which service
-    // keys can act for which DIDs. For now, the Sign RPC accepts any valid
-    // JWT — authorization enforcement is future work (SourceHub ACP-based).
-    eprintln!("[xarchive] (skipping AuthorizeServiceKey — not enforced yet)");
+    // AuthorizeServiceKey: grant jack_svc's signer DID the `signer`
+    // relationship on the ring object. The signer DID is the Ed25519
+    // did:key that `do_sign` produces from the service key's private key.
+    let jack_svc_signer_did = cli_tool::signer_did_for_pk(&jack_svc.private_key_hex);
+    cli_tool::set_relationship_direct(
+        &ring_policy_id, "ring", &ring_id, "signer",
+        &jack_svc_signer_did, chain_config.clone(),
+    )
+    .await
+    .expect("grant jack_svc signer on ring");
+    eprintln!(
+        "[xarchive] jack_svc authorized as ring signer (DID: {}...)",
+        &jack_svc_signer_did[..32.min(jack_svc_signer_did.len())]
+    );
 
     // ================================================================
     // 5. Fund JACK_DID on SourceHub — SKIPPED
@@ -408,8 +458,18 @@ async fn xarchive_full_service_key_architecture() {
         defra_svc.did, defra_svc.label
     );
 
-    // AuthorizeServiceKey for defra_svc → compartment_did (same as step 4)
-    eprintln!("[xarchive] (skipping AuthorizeServiceKey for defra_svc)");
+    // AuthorizeServiceKey for defra_svc → grant signer on ring (same pattern as step 4)
+    let defra_svc_signer_did = cli_tool::signer_did_for_pk(&defra_svc.private_key_hex);
+    cli_tool::set_relationship_direct(
+        &ring_policy_id, "ring", &ring_id, "signer",
+        &defra_svc_signer_did, chain_config.clone(),
+    )
+    .await
+    .expect("grant defra_svc signer on ring");
+    eprintln!(
+        "[xarchive] defra_svc authorized as ring signer (DID: {}...)",
+        &defra_svc_signer_did[..32.min(defra_svc_signer_did.len())]
+    );
 
     let app_svc = ServiceIdentity::new_file_keyring("x-archive-svc", run_dir.path());
     eprintln!(
@@ -741,6 +801,92 @@ async fn xarchive_full_service_key_architecture() {
     eprintln!("[xarchive] Verified: 3 unique derived keys from same ring");
 
     // ================================================================
+    // 17b. Direct Sign-with-ACP: authorized signer succeeds
+    // ================================================================
+    // defra_svc was granted `signer` on the ring. A direct Sign call
+    // with ACP fields should succeed.
+
+    let sign_acp = cli_tool::SignAcpFields {
+        policy_id: ring_policy_id.clone(),
+        resource: "ring".to_string(),
+        object_id: ring_id.clone(),
+        permission: "sign".to_string(),
+    };
+
+    let sign_message = b"test message for ACP-enforced signing".to_vec();
+    let sign_result = cli_tool::do_sign(
+        ring.node(0).grpc_addr(),
+        ring_id.clone(),
+        sign_message.clone(),
+        Some(b"x-archive".to_vec()),
+        Some(defra_svc.private_key_hex.clone()),
+        Some(sign_acp.clone()),
+    )
+    .await;
+
+    assert!(
+        sign_result.is_ok(),
+        "authorized signer (defra_svc) should succeed with ACP: {:?}",
+        sign_result.err()
+    );
+    let sign_result = sign_result.unwrap();
+    assert!(!sign_result.signature.is_empty(), "signature should be non-empty");
+    eprintln!(
+        "[xarchive] PASSED: defra_svc ACP-authorized sign succeeded (sig: {}...)",
+        &sign_result.signature[..32.min(sign_result.signature.len())]
+    );
+
+    // ================================================================
+    // 17c. Direct Sign-with-ACP: unauthorized signer denied
+    // ================================================================
+    // app_svc has document-level ACP grants (tweet writer) but NO ring
+    // signer grant. A direct Sign call with ACP fields should fail with
+    // PermissionDenied.
+
+    let unauthorized_result = cli_tool::do_sign(
+        ring.node(0).grpc_addr(),
+        ring_id.clone(),
+        sign_message.clone(),
+        Some(b"x-archive".to_vec()),
+        Some(app_svc.private_key_hex.clone()),
+        Some(sign_acp.clone()),
+    )
+    .await;
+
+    assert!(
+        unauthorized_result.is_err(),
+        "unauthorized signer (app_svc) should be denied by ring ACP"
+    );
+    let err_msg = unauthorized_result.unwrap_err().to_string();
+    eprintln!(
+        "[xarchive] PASSED: app_svc denied ring signing (ACP enforced): {}",
+        err_msg
+    );
+
+    // ================================================================
+    // 17d. Direct Sign without ACP: backward compatible (warning logged)
+    // ================================================================
+    // A Sign call with empty ACP fields should still succeed (graceful
+    // degradation). The node logs a warning but doesn't block.
+
+    let no_acp_result = cli_tool::do_sign(
+        ring.node(0).grpc_addr(),
+        ring_id.clone(),
+        sign_message,
+        Some(b"x-archive".to_vec()),
+        Some(defra_svc.private_key_hex.clone()),
+        None, // no ACP fields
+    )
+    .await;
+
+    assert!(
+        no_acp_result.is_ok(),
+        "sign without ACP fields should succeed (backward compat): {:?}",
+        no_acp_result.err()
+    );
+    eprintln!("[xarchive] PASSED: sign without ACP fields succeeds (backward compat, warning logged)");
+
+    // ================================================================
     // ================================================================
     //  PART 2: Cross-Compartment Isolation + Permission Lifecycle
     // ================================================================
@@ -760,6 +906,19 @@ async fn xarchive_full_service_key_architecture() {
     eprintln!(
         "[hiking] defra_svc: {}, app_svc: {} (did_key: {})",
         hiking_defra_svc.did, hiking_app_svc.did, hiking_app_svc.did_key,
+    );
+
+    // AuthorizeServiceKey for hiking_defra_svc → grant signer on ring
+    let hiking_defra_svc_signer_did = cli_tool::signer_did_for_pk(&hiking_defra_svc.private_key_hex);
+    cli_tool::set_relationship_direct(
+        &ring_policy_id, "ring", &ring_id, "signer",
+        &hiking_defra_svc_signer_did, chain_config.clone(),
+    )
+    .await
+    .expect("grant hiking_defra_svc signer on ring");
+    eprintln!(
+        "[hiking] hiking_defra_svc authorized as ring signer (DID: {}...)",
+        &hiking_defra_svc_signer_did[..32.min(hiking_defra_svc_signer_did.len())]
     );
 
     // Create hiking ACP policy
@@ -1314,6 +1473,8 @@ async fn xarchive_full_service_key_architecture() {
     eprintln!("[xarchive]   Tweets: 4 (1 updated) + rotation writes");
     eprintln!("[xarchive]   Bookmarks: 1");
     eprintln!("[xarchive]   Trails: 1");
+    eprintln!("[xarchive]   Ring signing policy:  {}", ring_policy_id);
+    eprintln!("[xarchive]   Ring ACP enforcement: 3 tests (authorized, denied, backward compat)");
     eprintln!("[xarchive]   Cross-compartment denial: 2 tests");
     eprintln!("[xarchive]   Agent scoped access: 3 tests");
     eprintln!("[xarchive]   Backup read-only: 3 tests");

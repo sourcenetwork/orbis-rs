@@ -23,6 +23,7 @@ use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_sel
 use crate::sign::error::{Result, SignError};
 use crate::sign::messages::{SignMessage, SignVerification};
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
+use authz::sourcehub::AccessCheckRequest;
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ThresholdSigner,
@@ -239,16 +240,70 @@ where
     ) -> Result<Option<SignMessage>> {
         // 1. Verify based on mode
         match verification {
-            SignVerification::Bulletin => {
-                let verified_ring_id = self.verify_bulletin_message(&message).await?;
+            SignVerification::Bulletin { jwt } => {
+                let (verified_ring_id, post_id, doc_payload) =
+                    self.verify_bulletin_message(&message).await?;
                 if verified_ring_id != ring_id {
                     return Err(SignError::VerificationFailed(format!(
                         "ring_id in bulletin message '{}' does not match request ring_id '{}'",
                         verified_ring_id, ring_id
                     )));
                 }
+
+                // ACP check: validate JWT identity + check authorization from DocumentPayload
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| {
+                        SignError::VerificationFailed(format!("Failed to get timestamp: {}", e))
+                    })?
+                    .as_secs();
+
+                let token: BearerToken<()> =
+                    resolve_jwt_did(&jwt, current_time).map_err(|e| {
+                        SignError::Unauthorized(format!("JWT validation failed: {}", e))
+                    })?;
+
+                if !doc_payload.policy_id.is_empty() {
+                    let permission_bytes = AccessCheckRequest::new(
+                        &doc_payload.policy_id,
+                        &doc_payload.resource,
+                        &post_id,
+                        &doc_payload.permission,
+                    )
+                    .to_bytes()
+                    .map_err(|e| {
+                        SignError::AuthZ(format!("Error formatting access request: {}", e))
+                    })?;
+                    self.app_state
+                        .authz
+                        .check(permission_bytes, &token.issuer_id)
+                        .await
+                        .map_err(|e| {
+                            SignError::AuthZ(format!("ACP authorization failed: {}", e))
+                        })?;
+                } else {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        ring_id = %ring_id,
+                        issuer = %token.issuer_id,
+                        "Bulletin sign request without ACP policy — authorization not enforced"
+                    );
+                }
+
+                tracing::debug!(
+                    request_id = %request_id,
+                    issuer = %token.issuer_id,
+                    ring_id = %ring_id,
+                    "Sign Coordinator: Bulletin message verified with ACP"
+                );
             }
-            SignVerification::Authenticated { jwt } => {
+            SignVerification::Authenticated {
+                jwt,
+                policy_id,
+                resource,
+                object_id,
+                permission,
+            } => {
                 // Each responder independently validates the JWT
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -273,6 +328,34 @@ where
                     return Err(SignError::Unauthorized(
                         "JWT message does not match request message".to_string(),
                     ));
+                }
+
+                // ACP check (if policy_id provided)
+                if !policy_id.is_empty() {
+                    let permission_bytes = AccessCheckRequest::new(
+                        &policy_id,
+                        &resource,
+                        &object_id,
+                        &permission,
+                    )
+                    .to_bytes()
+                    .map_err(|e| {
+                        SignError::AuthZ(format!("Error formatting access request: {}", e))
+                    })?;
+                    self.app_state
+                        .authz
+                        .check(permission_bytes, &token.issuer_id)
+                        .await
+                        .map_err(|e| {
+                            SignError::AuthZ(format!("ACP authorization failed: {}", e))
+                        })?;
+                } else {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        ring_id = %ring_id,
+                        issuer = %token.issuer_id,
+                        "Authenticated sign request without ACP fields — authorization not enforced"
+                    );
                 }
 
                 tracing::debug!(
@@ -988,11 +1071,15 @@ where
             .await;
     }
 
-    /// Verify that a message exists on the bulletin and return the ring_id from the document.
+    /// Verify that a message exists on the bulletin and return ring_id, post_id, and DocumentPayload.
     ///
     /// Deserializes the message as a BulletinPost, reads the corresponding post from the
-    /// bulletin, and verifies the payload matches. Returns the ring_id from the DocumentPayload.
-    async fn verify_bulletin_message(&self, message: &[u8]) -> Result<String> {
+    /// bulletin, and verifies the payload matches. Returns the ring_id, post_id (for ACP object_id),
+    /// and the full DocumentPayload (for ACP policy fields).
+    async fn verify_bulletin_message(
+        &self,
+        message: &[u8],
+    ) -> Result<(String, String, DocumentPayload)> {
         // 1. Deserialize the BulletinPost from the message
         let post: BulletinPost = message.to_vec().try_into().map_err(|e| {
             SignError::Deserialization(format!("Failed to deserialize BulletinPost: {}", e))
@@ -1018,18 +1105,21 @@ where
             ));
         }
 
-        // 4. Parse the DocumentPayload to get ring_id
+        // 4. Parse the DocumentPayload to get ring_id and ACP fields
         let doc_payload: DocumentPayload = serde_json::from_slice(&post.payload).map_err(|e| {
             SignError::Deserialization(format!("Failed to parse DocumentPayload: {}", e))
         })?;
 
+        let post_id = post.id.clone();
+        let ring_id = doc_payload.ring_id.clone();
+
         tracing::debug!(
-            post_id = %post.id,
-            ring_id = %doc_payload.ring_id,
+            post_id = %post_id,
+            ring_id = %ring_id,
             "Sign Coordinator: Message verified on bulletin"
         );
 
-        Ok(doc_payload.ring_id)
+        Ok((ring_id, post_id, doc_payload))
     }
 
     /// Look up ring info from the bulletin by ring_id and return (ring_pk_hex, pub_poly).

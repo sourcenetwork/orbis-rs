@@ -4,6 +4,7 @@ use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::messages::SignVerification;
 use crate::utility::error::UtilityError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, SignClaims};
+use authz::sourcehub::AccessCheckRequest;
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, ThresholdDealer, ThresholdSigner};
 use crypto::PreImpl as ThresholdDealerNode;
@@ -195,6 +196,61 @@ where
             .into());
         }
 
+        // Validate ACP claims match request
+        if token.claims.policy_id != req.policy_id {
+            return Err(UtilityError::Unauthorized(format!(
+                "Token policy_id '{}' does not match request policy_id '{}'",
+                token.claims.policy_id, req.policy_id
+            ))
+            .into());
+        }
+        if token.claims.resource != req.resource {
+            return Err(UtilityError::Unauthorized(format!(
+                "Token resource '{}' does not match request resource '{}'",
+                token.claims.resource, req.resource
+            ))
+            .into());
+        }
+        if token.claims.object_id != req.object_id {
+            return Err(UtilityError::Unauthorized(format!(
+                "Token object_id '{}' does not match request object_id '{}'",
+                token.claims.object_id, req.object_id
+            ))
+            .into());
+        }
+        if token.claims.permission != req.permission {
+            return Err(UtilityError::Unauthorized(format!(
+                "Token permission '{}' does not match request permission '{}'",
+                token.claims.permission, req.permission
+            ))
+            .into());
+        }
+
+        // Check ACP authorization on SourceHub (if policy_id is provided)
+        if !req.policy_id.is_empty() {
+            let permission_bytes = AccessCheckRequest::new(
+                &req.policy_id,
+                &req.resource,
+                &req.object_id,
+                &req.permission,
+            )
+            .to_bytes()
+            .map_err(|e| {
+                UtilityError::Signing(format!("Error formatting access request: {}", e))
+            })?;
+            self.state
+                .authz
+                .check(permission_bytes, &token.issuer_id)
+                .await
+                .map_err(|e| UtilityError::Signing(format!("ACP authorization failed: {}", e)))?;
+        } else {
+            tracing::warn!(
+                ring_id = %req.ring_id,
+                issuer = %token.issuer_id,
+                "Sign request without ACP fields — authorization not enforced"
+            );
+        }
+
         tracing::info!(
             ring_id = %req.ring_id,
             message_len = req.message.len(),
@@ -252,7 +308,13 @@ where
                 ring_payload.peer_ids.len(),
                 &ring_payload.public_polynomial,
                 req.ring_id.clone(),
-                SignVerification::Authenticated { jwt: jwt_string },
+                SignVerification::Authenticated {
+                    jwt: jwt_string,
+                    policy_id: req.policy_id.clone(),
+                    resource: req.resource.clone(),
+                    object_id: req.object_id.clone(),
+                    permission: req.permission.clone(),
+                },
             )
             .await
             .map_err(|e| UtilityError::Signing(format!("Signing failed: {}", e)))?;

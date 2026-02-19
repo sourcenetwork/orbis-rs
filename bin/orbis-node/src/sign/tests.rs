@@ -11,12 +11,22 @@ use crate::helpers::test_helpers::{
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::messages::SignVerification;
 use crate::DkgServiceImpl;
+use authn::JwtSigner;
 use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, ThresholdSigner};
 use crypto::{DkgImpl, SignImpl};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
+
+/// Create a test JWT for the Bulletin sign verification path.
+/// The Bulletin path uses BearerToken<()> (no custom claims needed).
+fn create_test_bulletin_jwt() -> String {
+    let signer = JwtSigner::new();
+    signer
+        .sign((), authn::JwtDuration::from_hours(1))
+        .expect("Failed to create test JWT")
+}
 
 /// End-to-end test: DKG → Sign message → Verify signature
 ///
@@ -140,7 +150,7 @@ async fn test_dkg_then_sign_end_to_end() {
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
             ring_id.clone(),
-            SignVerification::Bulletin,
+            SignVerification::Bulletin { jwt: create_test_bulletin_jwt() },
         )
         .await
         .expect("Signing should succeed");
@@ -357,7 +367,7 @@ async fn test_sign_different_messages() {
                 ring_payload.peer_ids.len(),
                 &ring_payload.public_polynomial,
                 ring_id.clone(),
-                SignVerification::Bulletin,
+                SignVerification::Bulletin { jwt: create_test_bulletin_jwt() },
             )
             .await
             .expect("Signing should succeed");
@@ -463,7 +473,7 @@ async fn test_sign_fails_wrong_message() {
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
             ring_id.clone(),
-            SignVerification::Bulletin,
+            SignVerification::Bulletin { jwt: create_test_bulletin_jwt() },
         )
         .await
         .expect("Signing should succeed");
@@ -574,7 +584,7 @@ async fn test_sign_response_cleanup() {
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
             ring_id.clone(),
-            SignVerification::Bulletin,
+            SignVerification::Bulletin { jwt: create_test_bulletin_jwt() },
         )
         .await
         .expect("Signing should succeed");
@@ -671,7 +681,7 @@ async fn test_sign_fails_invalid_bulletin_post() {
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
             "fake_ring_id".to_string(),
-            SignVerification::Bulletin,
+            SignVerification::Bulletin { jwt: create_test_bulletin_jwt() },
         )
         .await;
 
@@ -778,7 +788,7 @@ async fn test_sign_fails_post_not_on_bulletin() {
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
             ring_id.clone(),
-            SignVerification::Bulletin,
+            SignVerification::Bulletin { jwt: create_test_bulletin_jwt() },
         )
         .await;
 
@@ -918,7 +928,7 @@ async fn test_sign_fails_tampered_payload() {
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
             ring_id.clone(),
-            SignVerification::Bulletin,
+            SignVerification::Bulletin { jwt: create_test_bulletin_jwt() },
         )
         .await;
 
@@ -1044,7 +1054,7 @@ async fn test_sign_fails_invalid_ring_id() {
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
             "fake_ring_id_that_doesnt_exist_on_bulletin".to_string(),
-            SignVerification::Bulletin,
+            SignVerification::Bulletin { jwt: create_test_bulletin_jwt() },
         )
         .await;
 

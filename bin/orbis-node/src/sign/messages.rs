@@ -11,14 +11,25 @@ use serde::{Deserialize, Serialize};
 /// The initiator sets this based on the signing context (store_secret vs utility service).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SignVerification {
-    /// Verify message exists on bulletin (store_secret path).
-    /// Responder deserializes message as BulletinPost, reads from bulletin, verifies payload match.
-    Bulletin,
-    /// Message was authenticated via JWT (utility service path).
+    /// Bulletin path: verify message exists on bulletin + check ACP from DocumentPayload.
+    /// JWT provides the subject identity for the ACP check.
+    Bulletin {
+        /// The raw JWT string so each responder can verify identity for ACP.
+        jwt: String,
+    },
+    /// Authenticated path: JWT-verified + check ACP with caller-provided policy fields.
     /// Each responder independently validates the JWT and verifies claims match the request.
     Authenticated {
         /// The raw JWT string so each responder can verify independently.
         jwt: String,
+        /// ACP policy ID (empty = ACP not enforced, with warning)
+        policy_id: String,
+        /// ACP resource type
+        resource: String,
+        /// ACP object ID
+        object_id: String,
+        /// ACP permission/relationship to check
+        permission: String,
     },
 }
 

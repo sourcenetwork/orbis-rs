@@ -972,12 +972,30 @@ pub struct SignResult {
     pub public_key: String,
 }
 
+/// ACP authorization fields for Sign requests.
+/// When all fields are empty, ACP is not enforced (backward compatible).
+#[derive(Debug, Clone, Default)]
+pub struct SignAcpFields {
+    pub policy_id: String,
+    pub resource: String,
+    pub object_id: String,
+    pub permission: String,
+}
+
+/// Compute the Ed25519 did:key that `do_sign` will use for a given signer private key.
+/// This is useful for registering the signer DID in ACP before making Sign calls.
+pub fn signer_did_for_pk(signer_did_pk: &str) -> String {
+    let key_pair = generate::<DidEd25519KeyPair>(Some(signer_did_pk.as_bytes()));
+    format!("did:key:{}", key_pair.fingerprint())
+}
+
 pub async fn do_sign(
     endpoint: String,
     ring_id: String,
     message: Vec<u8>,
     derivation: Option<Vec<u8>>,
     signer_did_pk: Option<String>,
+    acp: Option<SignAcpFields>,
 ) -> Result<SignResult> {
     println!("Threshold signing:");
     println!("  Endpoint: {}", endpoint);
@@ -989,6 +1007,7 @@ pub async fn do_sign(
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
+    let acp = acp.unwrap_or_default();
     let derivation_bytes = derivation.clone().unwrap_or_default();
     let request = proto::utility_service::SignRequest {
         ring_id: ring_id.clone(),
@@ -996,6 +1015,10 @@ pub async fn do_sign(
         derivation: derivation_bytes,
         algorithm: 0, // UNSPECIFIED — use ring's native algorithm
         options: std::collections::HashMap::new(),
+        policy_id: acp.policy_id.clone(),
+        resource: acp.resource.clone(),
+        object_id: acp.object_id.clone(),
+        permission: acp.permission.clone(),
     };
 
     // Create JWT for authentication
@@ -1003,7 +1026,10 @@ pub async fn do_sign(
     let key_pair = generate::<DidEd25519KeyPair>(Some(signer_did_pk.as_bytes()));
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
-        .create_sign_jwt(&ring_id, message, derivation)
+        .create_sign_jwt(
+            &ring_id, message, derivation,
+            &acp.policy_id, &acp.resource, &acp.object_id, &acp.permission,
+        )
         .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
 
     let tonic_request = create_authenticated_request(request, &token)
