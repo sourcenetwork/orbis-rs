@@ -13,6 +13,11 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[features]
+default = ["sourcehub"]
+sourcehub = []
+dummy = []
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "process"] }
 serial_test = "3.2.0"

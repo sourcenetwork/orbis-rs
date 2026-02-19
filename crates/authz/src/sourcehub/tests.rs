@@ -8,6 +8,11 @@ use common::blockchain::{
 use common::{blockchain::ChainConfigBuilder, SourceHubTestContainer};
 use did_key::{generate, Ed25519KeyPair, Fingerprint};
 
+#[test]
+fn test_name() {
+    assert_eq!(SourceHubAuth::name(), "authz/sourcehub");
+}
+
 /// Test policy for ACP - simple document access control
 const TEST_POLICY_YAML: &str = r#"
 name: test-policy

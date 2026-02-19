@@ -79,6 +79,10 @@ impl Authz for SourceHubAuth {
 }
 
 impl SourceHubAuth {
+    pub fn name() -> String {
+        "authz/sourcehub".to_string()
+    }
+
     pub async fn new(chain_config_builder: ChainConfigBuilder) -> Result<Self> {
         Ok(SourceHubAuth {
             chain_client: SourceHubClient::new(chain_config_builder.build())

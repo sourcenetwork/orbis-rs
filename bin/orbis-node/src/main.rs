@@ -24,7 +24,7 @@ use crate::pre::service::PreServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use app_state::AppState;
 use authz::r#trait::Authz;
-use authz::sourcehub::SourceHubAuth;
+use authz::AuthzImpl;
 use bulletin::{r#trait::Bulletin, BulletinImpl};
 use clap::Parser;
 use common::blockchain::ChainConfigBuilder;
@@ -220,6 +220,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Crypto PRE implementation: {}", PreImpl::name());
     tracing::info!("Crypto Sign implementation: {}", SignImpl::name());
     tracing::info!("local-storage implementation: {}", LocalStorageImpl::name());
+    tracing::info!("authz implementation: {}", AuthzImpl::name());
 
     // Get password for encrypting ring key shares
     let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
@@ -250,7 +251,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .denom(args.denom.clone());
 
     let authz: Arc<dyn Authz> = Arc::new(
-        SourceHubAuth::new(authz_chain_config)
+        AuthzImpl::new(authz_chain_config)
             .await
             .map_err(|e| format!("Failed to initialize authz: {}", e))?,
     );

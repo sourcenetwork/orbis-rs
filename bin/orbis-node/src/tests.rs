@@ -11,7 +11,7 @@ use crate::{
     init_node, Args, NodeConfig,
 };
 use authz::r#trait::Authz;
-use authz::sourcehub::SourceHubAuth;
+use authz::AuthzImpl;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::Bulletin;
 use common::blockchain::ChainConfigBuilder;
@@ -32,7 +32,7 @@ async fn test_init_node_success() {
     );
 
     let authz: Arc<dyn Authz> = Arc::new(
-        SourceHubAuth::new(ChainConfigBuilder::default())
+        AuthzImpl::new(ChainConfigBuilder::default())
             .await
             .expect("Failed to initialize Authz"),
     );
@@ -93,7 +93,7 @@ async fn test_init_node_invalid_address() {
     );
 
     let authz: Arc<dyn Authz> = Arc::new(
-        SourceHubAuth::new(ChainConfigBuilder::default())
+        AuthzImpl::new(ChainConfigBuilder::default())
             .await
             .expect("Failed to initialize Authz"),
     );
@@ -143,7 +143,7 @@ async fn test_init_node_app_state_configuration() {
     );
 
     let authz: Arc<dyn Authz> = Arc::new(
-        SourceHubAuth::new(ChainConfigBuilder::default())
+        AuthzImpl::new(ChainConfigBuilder::default())
             .await
             .expect("Failed to initialize Authz"),
     );
@@ -215,12 +215,12 @@ async fn test_init_multiple_nodes() {
     );
 
     let authz1: Arc<dyn Authz> = Arc::new(
-        SourceHubAuth::new(ChainConfigBuilder::default())
+        AuthzImpl::new(ChainConfigBuilder::default())
             .await
             .expect("Failed to initialize Authz"),
     );
     let authz2: Arc<dyn Authz> = Arc::new(
-        SourceHubAuth::new(ChainConfigBuilder::default())
+        AuthzImpl::new(ChainConfigBuilder::default())
             .await
             .expect("Failed to initialize Authz"),
     );
@@ -366,7 +366,7 @@ async fn test_init_node_with_encrypted_storage() {
     let local_storage = LocalStorageImpl::new(Some(password), db_path.clone())
         .expect("Failed to create local storage");
     let authz: Arc<dyn Authz> = Arc::new(
-        SourceHubAuth::new(ChainConfigBuilder::default())
+        AuthzImpl::new(ChainConfigBuilder::default())
             .await
             .expect("Failed to initialize Authz"),
     );

@@ -11,6 +11,10 @@ impl Authz for DummyAuthZ {
 }
 
 impl DummyAuthZ {
+    pub fn name() -> String {
+        "authz/dummy".to_string()
+    }
+
     pub async fn new() -> Result<Self> {
         Ok(DummyAuthZ)
     }

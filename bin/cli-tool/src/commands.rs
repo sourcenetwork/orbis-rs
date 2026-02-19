@@ -669,7 +669,11 @@ pub async fn add_bulletin_collaborator(
             );
             return Ok(());
         }
-        return Err(anyhow!("Failed to add collaborator: code {} {}", result.code, log));
+        return Err(anyhow!(
+            "Failed to add collaborator: code {} {}",
+            result.code,
+            log
+        ));
     }
 
     println!(
