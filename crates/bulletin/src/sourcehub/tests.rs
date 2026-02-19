@@ -5,6 +5,10 @@ use common::{
     SourceHubTestContainer,
 };
 
+#[test]
+fn test_name() {
+    assert_eq!(SourceHubBulletin::name(), "bulletin/sourcehub");
+}
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bulletin_document() {

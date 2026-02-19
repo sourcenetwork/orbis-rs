@@ -221,6 +221,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Crypto Sign implementation: {}", SignImpl::name());
     tracing::info!("local-storage implementation: {}", LocalStorageImpl::name());
     tracing::info!("authz implementation: {}", AuthzImpl::name());
+    tracing::info!("bulletin implementation: {}", BulletinImpl::name());
 
     // Get password for encrypting ring key shares
     let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;

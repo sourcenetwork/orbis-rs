@@ -16,4 +16,3 @@ compile_error!("Features 'sourcehub' and 'dummy' are mutually exclusive. Use --n
 pub use dummy::DummyAuthZ as AuthzImpl;
 #[cfg(feature = "sourcehub")]
 pub use sourcehub::SourceHubAuth as AuthzImpl;
-
