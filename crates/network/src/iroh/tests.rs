@@ -3,15 +3,21 @@
 //! This module runs the generic trait tests against the IrohNetwork implementation
 //! and includes iroh-specific test cases.
 
+use super::IrohNetwork;
 use crate::r#trait::{Connection, Message, Network, ProtocolHandler};
 use crate::tests as trait_tests;
-use crate::{IrohNetwork, PeerId, Result, SecretKey};
+use crate::{PeerId, Result, SecretKey};
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Notify;
 // ============================================================================
 // Run Generic Trait Tests Against IrohNetwork
 // ============================================================================
+
+#[test]
+fn test_name() {
+    assert_eq!(IrohNetwork::name(), "network/iroh");
+}
 
 #[tokio::test]
 #[serial_test::serial]

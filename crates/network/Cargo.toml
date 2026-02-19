@@ -19,7 +19,8 @@ prometheus = { workspace = true }
 lazy_static = { workspace = true }
 
 [features]
-default = []
+default = ["iroh"]
+iroh = []
 gossip = ["dep:iroh-gossip"]
 
 [dependencies.iroh-gossip]

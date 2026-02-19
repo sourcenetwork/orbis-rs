@@ -5,15 +5,22 @@
 //! iroh's QUIC-based networking.
 
 pub mod error;
-pub mod iroh;
 pub mod metrics;
 pub mod protocol;
 pub mod r#trait;
 
+#[cfg(feature = "iroh")]
+pub mod iroh;
+
 pub use error::{NetworkError, Result};
-pub use iroh::{IrohNetwork, IrohNetworkBuilder, IrohRouterBuilder, IrohRouterWrapper, SecretKey};
 pub use protocol::{DKG, REENCRYPT, SIGN};
 pub use r#trait::{Connection, Message, Network, PeerId, ProtocolHandler, Router, RouterBuilder};
+
+// Export the selected implementation
+#[cfg(feature = "iroh")]
+pub use iroh::{
+    IrohNetwork as NetworkImpl, IrohNetworkBuilder, IrohRouterBuilder, IrohRouterWrapper, SecretKey,
+};
 
 #[cfg(test)]
 mod tests;

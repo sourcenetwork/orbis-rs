@@ -16,7 +16,7 @@ use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::Bulletin;
 use common::blockchain::ChainConfigBuilder;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
-use network::Network;
+use network::{Network, NetworkImpl};
 use std::sync::Arc;
 
 /// Test that the node initializes successfully with valid configuration
@@ -25,11 +25,8 @@ async fn test_init_node_success() {
     let db_path = test_db_path("test_init_node_success");
 
     // Create a real network for testing
-    let network: Arc<dyn Network> = Arc::new(
-        network::IrohNetwork::new()
-            .await
-            .expect("Failed to create network"),
-    );
+    let network: Arc<dyn Network> =
+        Arc::new(NetworkImpl::new().await.expect("Failed to create network"));
 
     let authz: Arc<dyn Authz> = Arc::new(
         AuthzImpl::new(ChainConfigBuilder::default())
@@ -86,11 +83,8 @@ async fn test_init_node_success() {
 async fn test_init_node_invalid_address() {
     let db_path = test_db_path("test_init_node_invalid_address");
 
-    let network: Arc<dyn Network> = Arc::new(
-        network::IrohNetwork::new()
-            .await
-            .expect("Failed to create network"),
-    );
+    let network: Arc<dyn Network> =
+        Arc::new(NetworkImpl::new().await.expect("Failed to create network"));
 
     let authz: Arc<dyn Authz> = Arc::new(
         AuthzImpl::new(ChainConfigBuilder::default())
@@ -136,11 +130,8 @@ async fn test_init_node_invalid_address() {
 async fn test_init_node_app_state_configuration() {
     let db_path = test_db_path("test_init_node_app_state_configuration");
 
-    let network: Arc<dyn Network> = Arc::new(
-        network::IrohNetwork::new()
-            .await
-            .expect("Failed to create network"),
-    );
+    let network: Arc<dyn Network> =
+        Arc::new(NetworkImpl::new().await.expect("Failed to create network"));
 
     let authz: Arc<dyn Authz> = Arc::new(
         AuthzImpl::new(ChainConfigBuilder::default())
@@ -204,12 +195,12 @@ async fn test_init_multiple_nodes() {
     let db_path2 = test_db_path("test_init_multiple_nodes_2");
 
     let network1: Arc<dyn Network> = Arc::new(
-        network::IrohNetwork::new()
+        NetworkImpl::new()
             .await
             .expect("Failed to create network 1"),
     );
     let network2: Arc<dyn Network> = Arc::new(
-        network::IrohNetwork::new()
+        NetworkImpl::new()
             .await
             .expect("Failed to create network 2"),
     );
@@ -355,11 +346,8 @@ fn test_pre_impl_name_matches_backend() {
 async fn test_init_node_with_encrypted_storage() {
     let db_path = test_db_path("test_init_node_with_encrypted_storage");
 
-    let network: Arc<dyn Network> = Arc::new(
-        network::IrohNetwork::new()
-            .await
-            .expect("Failed to create network"),
-    );
+    let network: Arc<dyn Network> =
+        Arc::new(NetworkImpl::new().await.expect("Failed to create network"));
 
     // Create storage with a password
     let password = "test-password-123".to_string();
@@ -950,7 +938,7 @@ async fn test_deterministic_peer_id_from_secret() {
 
     // Create first network with secret key
     let secret_key1 = network::SecretKey::from_bytes(&secret_key_bytes);
-    let network1 = network::IrohNetwork::builder()
+    let network1 = NetworkImpl::builder()
         .secret_key(secret_key1)
         .build()
         .await
@@ -959,7 +947,7 @@ async fn test_deterministic_peer_id_from_secret() {
 
     // Create second network with same secret key
     let secret_key2 = network::SecretKey::from_bytes(&secret_key_bytes);
-    let network2 = network::IrohNetwork::builder()
+    let network2 = NetworkImpl::builder()
         .secret_key(secret_key2)
         .build()
         .await

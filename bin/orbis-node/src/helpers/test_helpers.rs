@@ -19,7 +19,7 @@ use cli_tool;
 use common::blockchain::ChainConfigBuilder;
 use hex;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
-use network::Router;
+use network::{NetworkImpl, Router};
 use std::{fs, sync::Arc};
 
 // Concrete crypto implementations for tests (selected via crypto crate features)
@@ -87,7 +87,7 @@ pub async fn create_test_app_state_with_bulletin(
 
     // Initialize network for testing
     let network: Arc<dyn network::Network> = Arc::new(
-        network::IrohNetwork::new()
+        NetworkImpl::new()
             .await
             .expect("Failed to initialize network for testing"),
     );

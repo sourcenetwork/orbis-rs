@@ -42,6 +42,9 @@ pub struct IrohNetwork {
 }
 
 impl IrohNetwork {
+    pub fn name() -> String {
+        "network/iroh".to_string()
+    }
     /// Create a new builder for IrohNetwork
     pub fn builder() -> IrohNetworkBuilder {
         IrohNetworkBuilder::default()
