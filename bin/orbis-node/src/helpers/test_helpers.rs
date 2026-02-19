@@ -9,7 +9,7 @@ use crate::helpers::create_routers::{
 };
 use authz::dummy::DummyAuthZ;
 use authz::r#trait::Authz;
-use authz::sourcehub::SourceHubAuth;
+use authz::AuthzImpl;
 use bulletin::{
     dummy::DummyBulletin,
     r#trait::{Bulletin, BulletinPost},
@@ -19,7 +19,7 @@ use cli_tool;
 use common::blockchain::ChainConfigBuilder;
 use hex;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
-use network::Router;
+use network::{NetworkImpl, Router};
 use std::{fs, sync::Arc};
 
 // Concrete crypto implementations for tests (selected via crypto crate features)
@@ -87,14 +87,14 @@ pub async fn create_test_app_state_with_bulletin(
 
     // Initialize network for testing
     let network: Arc<dyn network::Network> = Arc::new(
-        network::IrohNetwork::new()
+        NetworkImpl::new()
             .await
             .expect("Failed to initialize network for testing"),
     );
     let local_storage =
         LocalStorageImpl::new(None, test_db_path(db_name)).expect("Failed to create local storage");
     let mut authz: Arc<dyn Authz> = Arc::new(
-        SourceHubAuth::new(ChainConfigBuilder::default())
+        AuthzImpl::new(ChainConfigBuilder::default())
             .await
             .expect("Failed to initialize Authz"),
     );

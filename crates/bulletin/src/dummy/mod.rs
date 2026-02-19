@@ -56,6 +56,9 @@ impl Bulletin for DummyBulletin {
 }
 
 impl DummyBulletin {
+    pub fn name() -> String {
+        "bulletin/dummy".to_string()
+    }
     pub async fn new() -> Result<Self> {
         Ok(DummyBulletin {
             posts: Mutex::new(HashMap::new()),

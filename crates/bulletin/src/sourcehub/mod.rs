@@ -79,6 +79,10 @@ impl Bulletin for SourceHubBulletin {
 }
 
 impl SourceHubBulletin {
+    pub fn name() -> String {
+        "bulletin/sourcehub".to_string()
+    }
+
     pub async fn new(chain_config_builder: ChainConfigBuilder) -> Result<Self> {
         Ok(SourceHubBulletin {
             chain_client: SourceHubClient::new(chain_config_builder.build())
