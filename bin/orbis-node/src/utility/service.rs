@@ -238,11 +238,19 @@ where
             .map_err(|e| {
                 UtilityError::Signing(format!("Error formatting access request: {}", e))
             })?;
-            self.state
+            let authorized = self
+                .state
                 .authz
                 .check(permission_bytes, &token.issuer_id)
                 .await
                 .map_err(|e| UtilityError::Signing(format!("ACP authorization failed: {}", e)))?;
+            if !authorized {
+                return Err(UtilityError::Unauthorized(format!(
+                    "ACP denied: {} not authorized for {}/{}/{}",
+                    token.issuer_id, req.resource, req.object_id, req.permission,
+                ))
+                .into());
+            }
         } else {
             tracing::warn!(
                 ring_id = %req.ring_id,

@@ -274,13 +274,23 @@ where
                     .map_err(|e| {
                         SignError::AuthZ(format!("Error formatting access request: {}", e))
                     })?;
-                    self.app_state
+                    let authorized = self
+                        .app_state
                         .authz
                         .check(permission_bytes, &token.issuer_id)
                         .await
                         .map_err(|e| {
                             SignError::AuthZ(format!("ACP authorization failed: {}", e))
                         })?;
+                    if !authorized {
+                        return Err(SignError::AuthZ(format!(
+                            "ACP denied: {} not authorized for {}/{}/{}",
+                            token.issuer_id,
+                            doc_payload.resource,
+                            post_id,
+                            doc_payload.permission,
+                        )));
+                    }
                 } else {
                     tracing::warn!(
                         request_id = %request_id,
@@ -342,13 +352,20 @@ where
                     .map_err(|e| {
                         SignError::AuthZ(format!("Error formatting access request: {}", e))
                     })?;
-                    self.app_state
+                    let authorized = self
+                        .app_state
                         .authz
                         .check(permission_bytes, &token.issuer_id)
                         .await
                         .map_err(|e| {
                             SignError::AuthZ(format!("ACP authorization failed: {}", e))
                         })?;
+                    if !authorized {
+                        return Err(SignError::AuthZ(format!(
+                            "ACP denied: {} not authorized for {}/{}/{}",
+                            token.issuer_id, resource, object_id, permission,
+                        )));
+                    }
                 } else {
                     tracing::warn!(
                         request_id = %request_id,
@@ -830,48 +847,74 @@ where
             }
         }
 
+        let mut responder_errors: Vec<String> = Vec::new();
         for response in collected_responses {
-            if let SignMessage::SignResponse {
-                from_node_id,
-                sig_share: sig_share_bytes,
-                ..
-            } = response
-            {
-                if seen_node_ids.contains(&from_node_id) {
-                    continue;
-                }
-
-                // Deserialize signature share using SigShareInner
-                let sig_share_v = SigShareInner::from_bytes(&sig_share_bytes[..]).map_err(|e| {
-                    SignError::Deserialization(format!("Failed to deserialize sig_share: {}", e))
-                })?;
-
-                let sig_share = PubShare {
-                    i: from_node_id,
-                    v: sig_share_v,
-                };
-
-                match signer.verify_share(&message, &pub_poly, &sig_share, &all_commitments) {
-                    Ok(_) => {
-                        tracing::debug!(
-                            from_node_id = from_node_id,
-                            "Sign Coordinator: Verified share"
-                        );
-                        verified_shares.push(sig_share);
+            match response {
+                SignMessage::SignResponse {
+                    from_node_id,
+                    sig_share: sig_share_bytes,
+                    ..
+                } => {
+                    if seen_node_ids.contains(&from_node_id) {
+                        continue;
                     }
-                    Err(e) => {
-                        tracing::error!(
-                            from_node_id = from_node_id,
-                            error = %e,
-                            "Sign Coordinator: Failed to verify share"
-                        );
+
+                    // Deserialize signature share using SigShareInner
+                    let sig_share_v =
+                        SigShareInner::from_bytes(&sig_share_bytes[..]).map_err(|e| {
+                            SignError::Deserialization(format!(
+                                "Failed to deserialize sig_share: {}",
+                                e
+                            ))
+                        })?;
+
+                    let sig_share = PubShare {
+                        i: from_node_id,
+                        v: sig_share_v,
+                    };
+
+                    match signer.verify_share(&message, &pub_poly, &sig_share, &all_commitments) {
+                        Ok(_) => {
+                            tracing::debug!(
+                                from_node_id = from_node_id,
+                                "Sign Coordinator: Verified share"
+                            );
+                            verified_shares.push(sig_share);
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                from_node_id = from_node_id,
+                                error = %e,
+                                "Sign Coordinator: Failed to verify share"
+                            );
+                        }
                     }
                 }
+                SignMessage::Error {
+                    request_id: ref err_req_id,
+                    ref error,
+                } => {
+                    tracing::error!(
+                        request_id = %err_req_id,
+                        error = %error,
+                        "Sign Coordinator: Responder returned error"
+                    );
+                    responder_errors.push(error.clone());
+                }
+                _ => {}
             }
         }
 
         // 5. Check if we have enough verified shares
         if verified_shares.len() < threshold {
+            if !responder_errors.is_empty() {
+                tracing::error!(
+                    errors = ?responder_errors,
+                    verified = verified_shares.len(),
+                    threshold = threshold,
+                    "Sign Coordinator: Insufficient shares due to responder errors"
+                );
+            }
             return Err(SignError::InsufficientShares {
                 got: verified_shares.len(),
                 need: threshold,

@@ -806,11 +806,13 @@ async fn xarchive_full_service_key_architecture() {
     // defra_svc was granted `signer` on the ring. A direct Sign call
     // with ACP fields should succeed.
 
+    // Note: `permission` field is the ACP *relationship* name (not the permission expression).
+    // The "signer" relationship is what grants the "sign" permission via `expr: signer`.
     let sign_acp = cli_tool::SignAcpFields {
         policy_id: ring_policy_id.clone(),
         resource: "ring".to_string(),
         object_id: ring_id.clone(),
-        permission: "sign".to_string(),
+        permission: "signer".to_string(),
     };
 
     let sign_message = b"test message for ACP-enforced signing".to_vec();

@@ -985,7 +985,8 @@ pub struct SignAcpFields {
 /// Compute the Ed25519 did:key that `do_sign` will use for a given signer private key.
 /// This is useful for registering the signer DID in ACP before making Sign calls.
 pub fn signer_did_for_pk(signer_did_pk: &str) -> String {
-    let key_pair = generate::<DidEd25519KeyPair>(Some(signer_did_pk.as_bytes()));
+    let seed_bytes = hex::decode(signer_did_pk).expect("signer_did_pk must be valid hex");
+    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed_bytes));
     format!("did:key:{}", key_pair.fingerprint())
 }
 
@@ -1021,9 +1022,11 @@ pub async fn do_sign(
         permission: acp.permission.clone(),
     };
 
-    // Create JWT for authentication
+    // Create JWT for authentication — decode hex to 32 bytes for deterministic Ed25519 key
     let signer_did_pk = signer_did_pk.unwrap_or("test_jwt".to_string());
-    let key_pair = generate::<DidEd25519KeyPair>(Some(signer_did_pk.as_bytes()));
+    let seed_bytes = hex::decode(&signer_did_pk)
+        .unwrap_or_else(|_| signer_did_pk.as_bytes().to_vec());
+    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed_bytes));
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
         .create_sign_jwt(
