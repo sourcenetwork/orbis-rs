@@ -329,6 +329,13 @@ impl ThresholdDealer for ThresholdDealerNode {
         let r2_prime = effective_pk * response - shared_point * challenge;
 
         // Recompute challenge
+        let metadata_arr: Option<[u8; 32]> = metadata
+            .map(|m| {
+                m.try_into().map_err(|_| {
+                    CryptoError::ElGamalError("Metadata must be exactly 32 bytes".to_string())
+                })
+            })
+            .transpose()?;
         let g = Element::GENERATOR;
         let recomputed_challenge = Self::hash_encryption_proof_points(
             &g,
@@ -337,7 +344,7 @@ impl ThresholdDealer for ThresholdDealerNode {
             &shared_point,
             &r1_prime,
             &r2_prime,
-            metadata,
+            metadata_arr.as_ref(),
         )?;
 
         // Compare challenges using constant-time comparison
@@ -741,6 +748,14 @@ impl ThresholdDealerNode {
         shared_point: &Element,
         metadata: Option<&[u8]>,
     ) -> Result<(Fr, Fr)> {
+        let metadata_arr: Option<[u8; 32]> = metadata
+            .map(|m| {
+                m.try_into().map_err(|_| {
+                    CryptoError::ElGamalError("Metadata must be exactly 32 bytes".to_string())
+                })
+            })
+            .transpose()?;
+
         let mut rng = OsRng;
 
         // 1. k ← random scalar
@@ -759,7 +774,7 @@ impl ThresholdDealerNode {
             shared_point,
             &r1,
             &r2,
-            metadata,
+            metadata_arr.as_ref(),
         )?;
 
         // 4. s = k + c * r
@@ -781,18 +796,13 @@ impl ThresholdDealerNode {
         shared_point: &Element,
         r1: &Element,
         r2: &Element,
-        metadata_option: Option<&[u8]>,
+        metadata_option: Option<&[u8; 32]>,
     ) -> Result<Fr> {
         // None  → Fq::zero() (no-metadata sentinel)
         // Some  → interpret bytes as a Fq element (output of encode_metadata)
         let meta_fq: Fq = match metadata_option {
             None => Fq::zero(),
-            Some(metadata) => {
-                if metadata.len() != 32 {
-                    return Err(CryptoError::ElGamalError("Missized metadata".to_string()));
-                }
-                Fq::from_le_bytes_mod_order(metadata)
-            }
+            Some(metadata) => Fq::from_le_bytes_mod_order(metadata),
         };
 
         let domain = Fq::from_le_bytes_mod_order(ENCRYPT_PROOF_DOMAIN);

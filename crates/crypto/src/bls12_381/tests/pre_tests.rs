@@ -861,7 +861,7 @@ fn test_different_derivations_produce_different_keys() {
 #[test]
 fn test_encryption_proof_with_metadata_valid() {
     let secret = b"test secret data";
-    let metadata = b"policy_id:123|resource:file.txt|permission:read";
+    let metadata = ThresholdDealerNode::encode_metadata("123", "file.txt", "read");
     let mut rng = OsRng;
 
     let dkg_sk = Fr::rand(&mut rng);
@@ -869,10 +869,11 @@ fn test_encryption_proof_with_metadata_valid() {
 
     // Encrypt with metadata
     let (enc_cmt, _encrypted_secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None, Some(metadata)).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None, Some(&metadata)).unwrap();
 
     // Verify with same metadata - should succeed
-    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(metadata));
+    let result =
+        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&metadata));
     assert!(
         result.is_ok(),
         "Valid encryption proof with metadata should verify"
@@ -882,8 +883,8 @@ fn test_encryption_proof_with_metadata_valid() {
 #[test]
 fn test_encryption_proof_wrong_metadata_fails() {
     let secret = b"test secret data";
-    let correct_metadata = b"policy_id:123|resource:file.txt|permission:read";
-    let wrong_metadata = b"policy_id:456|resource:other.txt|permission:write";
+    let correct_metadata = ThresholdDealerNode::encode_metadata("123", "file.txt", "read");
+    let wrong_metadata = ThresholdDealerNode::encode_metadata("456", "other.txt", "write");
     let mut rng = OsRng;
 
     let dkg_sk = Fr::rand(&mut rng);
@@ -891,11 +892,12 @@ fn test_encryption_proof_wrong_metadata_fails() {
 
     // Encrypt with correct metadata
     let (enc_cmt, _encrypted_secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None, Some(correct_metadata)).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None, Some(&correct_metadata))
+            .unwrap();
 
     // Verify with wrong metadata - should fail
     let result =
-        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(wrong_metadata));
+        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&wrong_metadata));
     assert!(
         result.is_err(),
         "Encryption proof should fail with wrong metadata (policy tampering attempt)"
@@ -905,7 +907,7 @@ fn test_encryption_proof_wrong_metadata_fails() {
 #[test]
 fn test_encryption_proof_missing_metadata_fails() {
     let secret = b"test secret data";
-    let metadata = b"policy_id:123|resource:file.txt|permission:read";
+    let metadata = ThresholdDealerNode::encode_metadata("123", "file.txt", "read");
     let mut rng = OsRng;
 
     let dkg_sk = Fr::rand(&mut rng);
@@ -913,7 +915,7 @@ fn test_encryption_proof_missing_metadata_fails() {
 
     // Encrypt with metadata
     let (enc_cmt, _encrypted_secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None, Some(metadata)).unwrap();
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None, Some(&metadata)).unwrap();
 
     // Verify without metadata - should fail
     let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, None);
@@ -926,7 +928,7 @@ fn test_encryption_proof_missing_metadata_fails() {
 #[test]
 fn test_encryption_proof_extra_metadata_fails() {
     let secret = b"test secret data";
-    let metadata = b"policy_id:123|resource:file.txt|permission:read";
+    let metadata = ThresholdDealerNode::encode_metadata("123", "file.txt", "read");
     let mut rng = OsRng;
 
     let dkg_sk = Fr::rand(&mut rng);
@@ -937,7 +939,8 @@ fn test_encryption_proof_extra_metadata_fails() {
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None, None).unwrap();
 
     // Verify WITH metadata - should fail
-    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(metadata));
+    let result =
+        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&metadata));
     assert!(
         result.is_err(),
         "Encryption proof should fail when metadata is provided but was not used at encryption"
@@ -948,7 +951,7 @@ fn test_encryption_proof_extra_metadata_fails() {
 fn test_encryption_proof_metadata_with_derivation() {
     // Test that metadata binding works correctly when combined with capability derivation
     let secret = b"test secret with both metadata and derivation";
-    let metadata = b"policy_id:789|resource:sensitive.doc|permission:decrypt";
+    let metadata = ThresholdDealerNode::encode_metadata("789", "sensitive.doc", "decrypt");
     let derivation = b"alice-capability-v1";
     let mut rng = OsRng;
 
@@ -957,7 +960,7 @@ fn test_encryption_proof_metadata_with_derivation() {
 
     // Encrypt with both metadata and derivation
     let (enc_cmt, _encrypted_secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation), Some(metadata))
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, Some(derivation), Some(&metadata))
             .unwrap();
 
     // Verify proof contains derived_pk
@@ -971,16 +974,16 @@ fn test_encryption_proof_metadata_with_derivation() {
 
     // Verify with correct metadata and derived key - should succeed
     let result =
-        ThresholdDealerNode::verify_encryption(&derived_pk, &enc_cmt, &proof, Some(metadata));
+        ThresholdDealerNode::verify_encryption(&derived_pk, &enc_cmt, &proof, Some(&metadata));
     assert!(
         result.is_ok(),
         "Proof should verify with correct metadata and derivation"
     );
 
     // Verify with wrong metadata - should fail even with correct derivation in proof
-    let wrong_metadata = b"policy_id:000|resource:other|permission:none";
+    let wrong_metadata = ThresholdDealerNode::encode_metadata("000", "other", "none");
     let result =
-        ThresholdDealerNode::verify_encryption(&derived_pk, &enc_cmt, &proof, Some(wrong_metadata));
+        ThresholdDealerNode::verify_encryption(&derived_pk, &enc_cmt, &proof, Some(&wrong_metadata));
     assert!(
         result.is_err(),
         "Proof should fail with wrong metadata even when derivation is correct"
@@ -993,7 +996,7 @@ fn test_verify_encryption_wrong_derivation_fails_loudly() {
     // with a derivation mismatch error, rather than silently producing an unusable result
     // that only fails at AES-GCM decrypt time.
     let secret = b"test secret";
-    let metadata = b"policy_id:123|resource:doc|permission:read";
+    let metadata = ThresholdDealerNode::encode_metadata("123", "doc", "read");
     let correct_derivation = b"alice-capability-v1";
     let wrong_derivation = b"eve-capability-v1";
     let mut rng = OsRng;
@@ -1005,7 +1008,7 @@ fn test_verify_encryption_wrong_derivation_fails_loudly() {
         &dkg_pk,
         secret,
         Some(correct_derivation),
-        Some(metadata),
+        Some(&metadata),
     )
     .unwrap();
 
@@ -1017,8 +1020,12 @@ fn test_verify_encryption_wrong_derivation_fails_loudly() {
     // Wrong derivation: verify_encryption should fail immediately
     let wrong_derived_pk =
         ThresholdDealerNode::derive_public_key(&dkg_pk, wrong_derivation).unwrap();
-    let result =
-        ThresholdDealerNode::verify_encryption(&wrong_derived_pk, &enc_cmt, &proof, Some(metadata));
+    let result = ThresholdDealerNode::verify_encryption(
+        &wrong_derived_pk,
+        &enc_cmt,
+        &proof,
+        Some(&metadata),
+    );
     assert!(
         result.is_err(),
         "verify_encryption should fail with wrong derivation"
@@ -1032,7 +1039,8 @@ fn test_verify_encryption_wrong_derivation_fails_loudly() {
     );
 
     // No derivation when one was used: should also fail (derived_pk != dkg_pk)
-    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(metadata));
+    let result =
+        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&metadata));
     assert!(
         result.is_err(),
         "verify_encryption should fail when derivation is omitted but proof has derived_pk"
@@ -1045,7 +1053,7 @@ fn test_verify_encryption_wrong_derivation_fails_loudly() {
         &correct_derived_pk,
         &enc_cmt,
         &proof,
-        Some(metadata),
+        Some(&metadata),
     );
     assert!(
         result.is_ok(),

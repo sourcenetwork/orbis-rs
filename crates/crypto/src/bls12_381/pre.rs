@@ -371,6 +371,13 @@ impl ThresholdDealer for ThresholdDealerNode {
             .into();
 
         // Recompute challenge: c' = Hash(ENCRYPT_PROOF_DOMAIN, G, effective_pk, enc_cmt, shared_point, R1', R2')
+        let metadata_arr: Option<[u8; 32]> = metadata
+            .map(|m| {
+                m.try_into().map_err(|_| {
+                    CryptoError::ElGamalError("Metadata must be exactly 32 bytes".to_string())
+                })
+            })
+            .transpose()?;
         let g = G1Affine::generator();
         let challenge_hash = Self::hash_encryption_proof_points(
             &g,
@@ -379,7 +386,7 @@ impl ThresholdDealer for ThresholdDealerNode {
             &shared_point,
             &r1_prime,
             &r2_prime,
-            metadata,
+            metadata_arr.as_ref(),
         )?;
         let recomputed_challenge = Fr::from_le_bytes_mod_order(&challenge_hash);
 
@@ -793,6 +800,14 @@ impl ThresholdDealerNode {
         shared_point: &G1Affine,
         metadata: Option<&[u8]>,
     ) -> Result<(Fr, Fr)> {
+        let metadata_arr: Option<[u8; 32]> = metadata
+            .map(|m| {
+                m.try_into().map_err(|_| {
+                    CryptoError::ElGamalError("Metadata must be exactly 32 bytes".to_string())
+                })
+            })
+            .transpose()?;
+
         let mut rng = OsRng;
 
         // 1. k ← random scalar
@@ -811,7 +826,7 @@ impl ThresholdDealerNode {
             shared_point,
             &r1,
             &r2,
-            metadata,
+            metadata_arr.as_ref(),
         )?;
         let c = Fr::from_le_bytes_mod_order(&challenge_hash);
 
@@ -830,7 +845,7 @@ impl ThresholdDealerNode {
         shared_point: &G1Affine,
         r1: &G1Affine,
         r2: &G1Affine,
-        metadata_option: Option<&[u8]>,
+        metadata_option: Option<&[u8; 32]>,
     ) -> Result<[u8; 32]> {
         let mut hasher = Sha256::new();
 
@@ -838,7 +853,6 @@ impl ThresholdDealerNode {
         hasher.update(ENCRYPT_PROOF_DOMAIN);
 
         if let Some(metadata) = metadata_option {
-            hasher.update(&(metadata.len() as u64).to_le_bytes());
             hasher.update(metadata);
         }
 
