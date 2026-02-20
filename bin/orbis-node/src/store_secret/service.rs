@@ -120,7 +120,7 @@ where
             &req.enc_cmt,
             &ring_payload.ring_pk,
             proof.clone(),
-            policy_metadata.to_vec(),
+            policy_metadata,
         )?;
 
         // 4. Create DocumentPayload with the pre-encrypted secret

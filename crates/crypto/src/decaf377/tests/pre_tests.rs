@@ -751,8 +751,7 @@ fn test_encryption_proof_with_metadata_valid() {
     let (enc_cmt, _encrypted_secret, proof) =
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None, Some(&metadata)).unwrap();
 
-    let result =
-        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&metadata));
+    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&metadata));
     assert!(
         result.is_ok(),
         "Valid encryption proof with metadata should verify"
@@ -812,8 +811,7 @@ fn test_encryption_proof_extra_metadata_fails() {
     let (enc_cmt, _encrypted_secret, proof) =
         ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None, None).unwrap();
 
-    let result =
-        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&metadata));
+    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&metadata));
     assert!(
         result.is_err(),
         "Encryption proof should fail when metadata is provided but was not used at encryption"
@@ -850,8 +848,12 @@ fn test_encryption_proof_metadata_with_derivation() {
     );
 
     let wrong_metadata = ThresholdDealerNode::encode_metadata("000", "other", "none");
-    let result =
-        ThresholdDealerNode::verify_encryption(&derived_pk, &enc_cmt, &proof, Some(&wrong_metadata));
+    let result = ThresholdDealerNode::verify_encryption(
+        &derived_pk,
+        &enc_cmt,
+        &proof,
+        Some(&wrong_metadata),
+    );
     assert!(
         result.is_err(),
         "Proof should fail with wrong metadata even when derivation is correct"
@@ -1026,8 +1028,12 @@ fn test_verify_encryption_wrong_derivation_fails_loudly() {
     // Wrong derivation: verify_encryption should fail immediately
     let wrong_derived_pk =
         ThresholdDealerNode::derive_public_key(&dkg_pk, wrong_derivation).unwrap();
-    let result =
-        ThresholdDealerNode::verify_encryption(&wrong_derived_pk, &enc_cmt, &proof, Some(&metadata));
+    let result = ThresholdDealerNode::verify_encryption(
+        &wrong_derived_pk,
+        &enc_cmt,
+        &proof,
+        Some(&metadata),
+    );
     assert!(
         result.is_err(),
         "verify_encryption should fail with wrong derivation"
@@ -1041,8 +1047,7 @@ fn test_verify_encryption_wrong_derivation_fails_loudly() {
     );
 
     // No derivation when one was used: should also fail (derived_pk != dkg_pk)
-    let result =
-        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&metadata));
+    let result = ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&metadata));
     assert!(
         result.is_err(),
         "verify_encryption should fail when derivation is omitted but proof has derived_pk"
