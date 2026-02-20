@@ -11,7 +11,6 @@ use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::pre::service::PreServiceImpl;
 use crate::DkgServiceImpl;
 use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, RingPayload};
-use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, EncryptionProof, ThresholdDealer};
 use crypto::{DkgImpl, PreImpl};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
@@ -23,8 +22,8 @@ use tonic::Request;
 use bulletin::dummy::DummyBulletin;
 
 /// Generate policy metadata matching the test DocumentPayload fields.
-fn generate_test_policy_metadata() -> [u8; 32] {
-    generate_policy_metadata("test-policy", "test-resource", "test-permission")
+fn generate_test_policy_metadata() -> Vec<u8> {
+    PreImpl::encode_metadata("test-policy", "test-resource", "test-permission")
 }
 
 /// Helper to store a DocumentPayload in the bulletin for PRE tests.

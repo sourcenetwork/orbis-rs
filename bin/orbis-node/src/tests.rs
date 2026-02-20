@@ -408,7 +408,7 @@ mod cli_tool_integration {
     use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
     use common::IntegrationTestNetwork;
     use common::SOURCEHUB_RPC_URL;
-    use crypto::helpers::{generate_keypair, generate_policy_metadata};
+    use crypto::helpers::generate_keypair;
     use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
     use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, PreImpl, SignImpl};
     use tokio::time::{sleep, Duration};
@@ -601,7 +601,7 @@ mod cli_tool_integration {
 
         // MANUAL PATH: Encrypt and post directly to bulletin
         let object_id_manual = {
-            let metadata = generate_policy_metadata(&policy_id, &resource, &permission);
+            let metadata = PreImpl::encode_metadata(&policy_id, &resource, &permission);
             let (_enc_cmt, encrypted_secret, enc_proof) = PreImpl::encrypt_secret(
                 &ring_pk_point,
                 b"Hello from manual path!",

@@ -11,7 +11,6 @@ use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
     ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
 };
-use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{GroupAffine as G1Affine, PreImpl as ThresholdDealerNode, ScalarField as Fr};
@@ -146,7 +145,7 @@ pub fn prepare_secret(
     let ring_pk_point =
         G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
 
-    let metadata = generate_policy_metadata(&policy_id, &resource, &permission);
+    let metadata = ThresholdDealerNode::encode_metadata(&policy_id, &resource, &permission);
 
     // Encrypt locally - node never sees plaintext
     let (enc_cmt, encrypted_secret, proof) = ThresholdDealerNode::encrypt_secret(
@@ -451,7 +450,7 @@ pub async fn do_encrypt_secret(
     let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
         .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
-    let metadata = generate_policy_metadata(&policy_id, &resource, &permission);
+    let metadata = ThresholdDealerNode::encode_metadata(&policy_id, &resource, &permission);
 
     // Encrypt the secret
     let (_enc_cmt, encrypted_secret, _proof) = ThresholdDealerNode::encrypt_secret(

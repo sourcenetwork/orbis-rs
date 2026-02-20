@@ -9,7 +9,6 @@ use crate::pre::error::PreError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, PreClaims};
 use authz::sourcehub::AccessCheckRequest;
 use bulletin::r#trait::{DocumentPayload, RingPayload};
-use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{
     DistKeyShare, Dkg, EncryptionProof, ReencryptReply, Secret, ThresholdDealer,
 };
@@ -148,7 +147,7 @@ where
 
         // Validate metadata not tampered
         // Generate policy metadata for proof binding verification (before fields are moved)
-        let policy_metadata = generate_policy_metadata(
+        let policy_metadata = ThresholdDealerNode::encode_metadata(
             &document_payload.policy_id,
             &document_payload.resource,
             &document_payload.permission,
