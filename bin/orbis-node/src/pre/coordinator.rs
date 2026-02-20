@@ -19,7 +19,6 @@ use crate::pre::service::{validate_pre_claims, verify_encryption_binding};
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
 use authz::sourcehub::AccessCheckRequest;
 use bulletin::r#trait::{DocumentPayload, RingPayload};
-use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{
     DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
 };
@@ -202,7 +201,7 @@ where
         // may not be in the ring (external requesters use node_id=0).
 
         // Generate policy metadata for proof binding verification (before fields are moved)
-        let policy_metadata = generate_policy_metadata(
+        let policy_metadata = T::encode_metadata(
             &document_payload.policy_id,
             &document_payload.resource,
             &document_payload.permission,

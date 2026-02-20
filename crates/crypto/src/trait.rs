@@ -635,6 +635,17 @@ pub trait ThresholdDealer {
     /// This is used by the decryptor to compute the effective_pk needed for decryption
     /// when capability derivation was used during encryption.
     fn derive_public_key(dkg_pk: &Self::PublicKey, derivation: &[u8]) -> Result<Self::PublicKey>;
+
+    /// Encode policy metadata fields into a 32-byte commitment for proof binding.
+    ///
+    /// Both the encrypter and the PRE verification nodes must call this function
+    /// with the same inputs to produce a consistent metadata commitment to pass
+    /// to `encrypt_secret` and `verify_encryption`.
+    ///
+    /// For decaf377 implementations, the output is the LE serialization of a
+    /// Poseidon377 Fq hash, enabling efficient in-circuit verification of the
+    /// raw policy fields without SHA256. For bls12-381, SHA256 is used.
+    fn encode_metadata(policy_id: &str, resource: &str, permission: &str) -> Vec<u8>;
 }
 
 pub trait ThresholdSigner {

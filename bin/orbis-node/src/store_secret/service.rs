@@ -5,7 +5,6 @@ use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
-use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{CryptoDeserialize, Dkg, EncryptionProof, Secret, ThresholdDealer};
 use crypto::PreImpl as ThresholdDealerNode;
 use proto::store_secret_service::{
@@ -107,7 +106,7 @@ where
             })?;
 
         let policy_metadata =
-            generate_policy_metadata(&req.policy_id, &req.resource, &req.permission);
+            ThresholdDealerNode::encode_metadata(&req.policy_id, &req.resource, &req.permission);
         let proof = EncryptionProof {
             shared_point: req.shared_point,
             challenge: req.challenge,

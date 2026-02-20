@@ -11,7 +11,6 @@ use crate::helpers::test_helpers::{
 use crate::store_secret::StoreSecretServiceImpl;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{Bulletin, BulletinPost, RingPayload};
-use crypto::helpers::generate_policy_metadata;
 use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
 use crypto::{DkgImpl, PreImpl as ThresholdDealerNode, SignImpl};
 use proto::store_secret_service::{
@@ -533,7 +532,7 @@ async fn test_store_secret_idempotent() {
     let policy_id = "test_policy";
     let resource = "test_resource";
     let permission = "read";
-    let metadata = generate_policy_metadata(policy_id, resource, permission);
+    let metadata = ThresholdDealerNode::encode_metadata(policy_id, resource, permission);
     let (_enc_cmt, secret, proof) =
         ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None, Some(&metadata))
             .expect("encrypt with proof");
@@ -706,7 +705,7 @@ async fn test_store_secret_fails_wrong_derived_pk() {
     let policy_id = "test_policy";
     let resource = "test_resource";
     let permission = "read";
-    let metadata = generate_policy_metadata(policy_id, resource, permission);
+    let metadata = ThresholdDealerNode::encode_metadata(policy_id, resource, permission);
     let (_enc_cmt, secret, proof) =
         ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, Some(derivation), Some(&metadata))
             .expect("encrypt with derivation");
@@ -845,7 +844,7 @@ async fn test_store_secret_fails_with_tampered_proof() {
     let policy_id = "test_policy";
     let resource = "test_resource";
     let permission = "read";
-    let metadata = generate_policy_metadata(policy_id, resource, permission);
+    let metadata = ThresholdDealerNode::encode_metadata(policy_id, resource, permission);
     let (_enc_cmt, secret, proof) =
         ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None, Some(&metadata))
             .expect("encrypt with proof");
