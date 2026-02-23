@@ -601,7 +601,8 @@ mod cli_tool_integration {
 
         // MANUAL PATH: Encrypt and post directly to bulletin
         let object_id_manual = {
-            let metadata = PreImpl::encode_metadata(&policy_id, &resource, &permission);
+            let metadata =
+                PreImpl::encode_metadata(&policy_id, &resource, &permission, None, None, None);
             let (_enc_cmt, encrypted_secret, enc_proof) = PreImpl::encrypt_secret(
                 &ring_pk_point,
                 b"Hello from manual path!",

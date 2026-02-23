@@ -205,6 +205,9 @@ where
             &document_payload.policy_id,
             &document_payload.resource,
             &document_payload.permission,
+            None,
+            None,
+            None,
         );
 
         let permission_bytes = AccessCheckRequest::new(

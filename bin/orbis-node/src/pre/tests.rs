@@ -23,7 +23,14 @@ use bulletin::dummy::DummyBulletin;
 
 /// Generate policy metadata matching the test DocumentPayload fields.
 fn generate_test_policy_metadata() -> Vec<u8> {
-    PreImpl::encode_metadata("test-policy", "test-resource", "test-permission")
+    PreImpl::encode_metadata(
+        "test-policy",
+        "test-resource",
+        "test-permission",
+        None,
+        None,
+        None,
+    )
 }
 
 /// Helper to store a DocumentPayload in the bulletin for PRE tests.

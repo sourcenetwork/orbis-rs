@@ -145,7 +145,8 @@ pub fn prepare_secret(
     let ring_pk_point =
         G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
 
-    let metadata = ThresholdDealerNode::encode_metadata(&policy_id, &resource, &permission);
+    let metadata =
+        ThresholdDealerNode::encode_metadata(&policy_id, &resource, &permission, None, None, None);
 
     // Encrypt locally - node never sees plaintext
     let (enc_cmt, encrypted_secret, proof) = ThresholdDealerNode::encrypt_secret(
@@ -450,7 +451,8 @@ pub async fn do_encrypt_secret(
     let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
         .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
-    let metadata = ThresholdDealerNode::encode_metadata(&policy_id, &resource, &permission);
+    let metadata =
+        ThresholdDealerNode::encode_metadata(&policy_id, &resource, &permission, None, None, None);
 
     // Encrypt the secret
     let (_enc_cmt, encrypted_secret, _proof) = ThresholdDealerNode::encrypt_secret(

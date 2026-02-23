@@ -151,6 +151,9 @@ where
             &document_payload.policy_id,
             &document_payload.resource,
             &document_payload.permission,
+            None,
+            None,
+            None,
         );
         // ring_pk: hex-encoded compressed G1Affine bytes
         let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)

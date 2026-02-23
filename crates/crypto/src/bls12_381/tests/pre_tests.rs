@@ -861,7 +861,8 @@ fn test_different_derivations_produce_different_keys() {
 #[test]
 fn test_encryption_proof_with_metadata_valid() {
     let secret = b"test secret data";
-    let metadata = ThresholdDealerNode::encode_metadata("123", "file.txt", "read");
+    let metadata =
+        ThresholdDealerNode::encode_metadata("123", "file.txt", "read", None, None, None);
     let mut rng = OsRng;
 
     let dkg_sk = Fr::rand(&mut rng);
@@ -882,8 +883,10 @@ fn test_encryption_proof_with_metadata_valid() {
 #[test]
 fn test_encryption_proof_wrong_metadata_fails() {
     let secret = b"test secret data";
-    let correct_metadata = ThresholdDealerNode::encode_metadata("123", "file.txt", "read");
-    let wrong_metadata = ThresholdDealerNode::encode_metadata("456", "other.txt", "write");
+    let correct_metadata =
+        ThresholdDealerNode::encode_metadata("123", "file.txt", "read", None, None, None);
+    let wrong_metadata =
+        ThresholdDealerNode::encode_metadata("456", "other.txt", "write", None, None, None);
     let mut rng = OsRng;
 
     let dkg_sk = Fr::rand(&mut rng);
@@ -906,7 +909,8 @@ fn test_encryption_proof_wrong_metadata_fails() {
 #[test]
 fn test_encryption_proof_missing_metadata_fails() {
     let secret = b"test secret data";
-    let metadata = ThresholdDealerNode::encode_metadata("123", "file.txt", "read");
+    let metadata =
+        ThresholdDealerNode::encode_metadata("123", "file.txt", "read", None, None, None);
     let mut rng = OsRng;
 
     let dkg_sk = Fr::rand(&mut rng);
@@ -927,7 +931,8 @@ fn test_encryption_proof_missing_metadata_fails() {
 #[test]
 fn test_encryption_proof_extra_metadata_fails() {
     let secret = b"test secret data";
-    let metadata = ThresholdDealerNode::encode_metadata("123", "file.txt", "read");
+    let metadata =
+        ThresholdDealerNode::encode_metadata("123", "file.txt", "read", None, None, None);
     let mut rng = OsRng;
 
     let dkg_sk = Fr::rand(&mut rng);
@@ -949,7 +954,8 @@ fn test_encryption_proof_extra_metadata_fails() {
 fn test_encryption_proof_metadata_with_derivation() {
     // Test that metadata binding works correctly when combined with capability derivation
     let secret = b"test secret with both metadata and derivation";
-    let metadata = ThresholdDealerNode::encode_metadata("789", "sensitive.doc", "decrypt");
+    let metadata =
+        ThresholdDealerNode::encode_metadata("789", "sensitive.doc", "decrypt", None, None, None);
     let derivation = b"alice-capability-v1";
     let mut rng = OsRng;
 
@@ -979,7 +985,8 @@ fn test_encryption_proof_metadata_with_derivation() {
     );
 
     // Verify with wrong metadata - should fail even with correct derivation in proof
-    let wrong_metadata = ThresholdDealerNode::encode_metadata("000", "other", "none");
+    let wrong_metadata =
+        ThresholdDealerNode::encode_metadata("000", "other", "none", None, None, None);
     let result = ThresholdDealerNode::verify_encryption(
         &derived_pk,
         &enc_cmt,
@@ -998,7 +1005,7 @@ fn test_verify_encryption_wrong_derivation_fails_loudly() {
     // with a derivation mismatch error, rather than silently producing an unusable result
     // that only fails at AES-GCM decrypt time.
     let secret = b"test secret";
-    let metadata = ThresholdDealerNode::encode_metadata("123", "doc", "read");
+    let metadata = ThresholdDealerNode::encode_metadata("123", "doc", "read", None, None, None);
     let correct_derivation = b"alice-capability-v1";
     let wrong_derivation = b"eve-capability-v1";
     let mut rng = OsRng;

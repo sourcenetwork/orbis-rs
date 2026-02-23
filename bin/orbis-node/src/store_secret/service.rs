@@ -105,8 +105,14 @@ where
                 StoreSecretError::Deserialization(format!("Failed to parse ring payload: {}", e))
             })?;
 
-        let policy_metadata =
-            ThresholdDealerNode::encode_metadata(&req.policy_id, &req.resource, &req.permission);
+        let policy_metadata = ThresholdDealerNode::encode_metadata(
+            &req.policy_id,
+            &req.resource,
+            &req.permission,
+            None,
+            None,
+            None,
+        );
         let proof = EncryptionProof {
             shared_point: req.shared_point,
             challenge: req.challenge,

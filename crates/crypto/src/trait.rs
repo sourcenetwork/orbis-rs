@@ -645,7 +645,14 @@ pub trait ThresholdDealer {
     /// For decaf377 implementations, the output is the LE serialization of a
     /// Poseidon377 Fq hash, enabling efficient in-circuit verification of the
     /// raw policy fields without SHA256. For bls12-381, SHA256 is used.
-    fn encode_metadata(policy_id: &str, resource: &str, permission: &str) -> Vec<u8>;
+    fn encode_metadata(
+        policy_id: &str,
+        resource: &str,
+        permission: &str,
+        tier: Option<&str>,
+        data: Option<&str>,
+        salt: Option<&str>,
+    ) -> Vec<u8>;
 }
 
 pub trait ThresholdSigner {
