@@ -106,14 +106,19 @@ where
             })?;
 
         // TODO: remove and pass the metadata hash
-        let policy_metadata = ThresholdDealerNode::encode_metadata(
-            &req.policy_id,
-            &req.resource,
-            &req.permission,
-            req.tier.as_deref(),
-            req.date.as_deref(),
-            req.salt.as_deref(),
-        );
+        let policy_metadata = if let Some(metadata_hash) = req.metadata_hash {
+            metadata_hash
+        } else {
+            ThresholdDealerNode::encode_metadata(
+                &req.policy_id,
+                &req.resource,
+                &req.permission,
+                req.tier.as_deref(),
+                req.date.as_deref(),
+                None,
+            )
+        };
+
         let proof = EncryptionProof {
             shared_point: req.shared_point,
             challenge: req.challenge,
@@ -434,25 +439,25 @@ fn validate_store_secret_claims(
             token.claims.with_proof, req.with_proof
         )));
     }
-    // TODO; remove for metadata hash
-    //  if token.claims.tier != req.tier {
-    //     return Err(StoreSecretError::Unauthorized(format!(
-    //         "Token tier '{:?}' does not match request tier '{:?}'",
-    //         token.claims.tier, req.tier
-    //     )));
-    // }
-    //  if token.claims.date != req.date {
-    //     return Err(StoreSecretError::Unauthorized(format!(
-    //         "Token date '{:?}' does not match request date '{:?}'",
-    //         token.claims.date, req.date
-    //     )));
-    // }
-    //  if token.claims.salt != req.salt {
-    //     return Err(StoreSecretError::Unauthorized(format!(
-    //         "Token salt '{:?}' does not match request salt '{:?}'",
-    //         token.claims.salt, req.salt
-    //     )));
-    // }
+
+    if token.claims.tier != req.tier {
+        return Err(StoreSecretError::Unauthorized(format!(
+            "Token tier '{:?}' does not match request tier '{:?}'",
+            token.claims.tier, req.tier
+        )));
+    }
+    if token.claims.date != req.date {
+        return Err(StoreSecretError::Unauthorized(format!(
+            "Token date '{:?}' does not match request date '{:?}'",
+            token.claims.date, req.date
+        )));
+    }
+    if token.claims.metadata_hash != req.metadata_hash {
+        return Err(StoreSecretError::Unauthorized(format!(
+            "Token metadata_hash '{:?}' does not match request metadata_hash '{:?}'",
+            token.claims.metadata_hash, req.metadata_hash
+        )));
+    }
 
     Ok(())
 }

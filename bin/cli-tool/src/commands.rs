@@ -123,6 +123,8 @@ pub struct PreparedSecret {
     pub challenge: Vec<u8>,
     /// Response for encryption proof
     pub response: Vec<u8>,
+    /// Policy metadata hash
+    pub metadata: Vec<u8>,
     /// Optional derived public key (when derivation was used)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived_pk: Option<Vec<u8>>,
@@ -180,6 +182,7 @@ pub fn prepare_secret(
         shared_point: proof.shared_point,
         challenge: proof.challenge,
         response: proof.response,
+        metadata,
         derived_pk: proof.derived_pk,
     })
 }
@@ -200,7 +203,7 @@ pub async fn store_prepared_secret(
     with_proof: bool,
     tier: Option<String>,
     date: Option<String>,
-    salt: Option<String>,
+    metadata_hash: Option<Vec<u8>>,
 ) -> Result<StoreSecretResult> {
     println!("Storing secret via StoreSecret service:");
     println!("  Endpoint: {}", endpoint);
@@ -227,7 +230,7 @@ pub async fn store_prepared_secret(
         with_proof,
         tier: tier.clone(),
         date: date.clone(),
-        salt: salt.clone(),
+        metadata_hash: metadata_hash.clone(),
     };
 
     // Create JWT for authentication with all request fields
@@ -248,6 +251,9 @@ pub async fn store_prepared_secret(
             prepared.response.clone(),
             derived_pk,
             with_proof,
+            tier,
+            date,
+            metadata_hash,
         )
         .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
 
@@ -324,7 +330,7 @@ pub async fn do_store_secret(
     };
     store_prepared_secret(
         endpoint,
-        &prepared,
+        &prepared.clone(),
         ring_id,
         namespace,
         policy_id,
@@ -335,7 +341,7 @@ pub async fn do_store_secret(
         with_proof,
         tier,
         date,
-        salt,
+        Some(prepared.metadata),
     )
     .await
 }

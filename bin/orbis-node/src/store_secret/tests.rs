@@ -92,7 +92,7 @@ fn create_dummy_request() -> StoreSecretRequest {
         with_proof: false,
         tier: None,
         date: None,
-        salt: None,
+        metadata_hash: None,
     }
 }
 
@@ -112,6 +112,9 @@ fn create_test_jwt(test_keys: &TestKeyPair) -> String {
             TEST_RESPONSE.into(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT")
 }
@@ -204,6 +207,9 @@ async fn test_store_secret_fails_claims_mismatch() {
             TEST_RESPONSE.into(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -258,6 +264,9 @@ async fn test_store_secret_fails_namespace_mismatch() {
             TEST_RESPONSE.into(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -315,6 +324,9 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
             TEST_RESPONSE.into(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -334,7 +346,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         with_proof: false,
         tier: None,
         date: None,
-        salt: None,
+        metadata_hash: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -397,6 +409,9 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
             TEST_RESPONSE.into(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -415,7 +430,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
         with_proof: false,
         tier: None,
         date: None,
-        salt: None,
+        metadata_hash: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -569,6 +584,9 @@ async fn test_store_secret_idempotent() {
             response_bytes.clone(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -587,7 +605,7 @@ async fn test_store_secret_idempotent() {
         with_proof: false,
         tier: None,
         date: None,
-        salt: None,
+        metadata_hash: None,
     };
 
     // First store - should succeed
@@ -626,7 +644,7 @@ async fn test_store_secret_idempotent() {
         with_proof: false,
         tier: None,
         date: None,
-        salt: None,
+        metadata_hash: None,
     };
 
     let tonic_request2 = create_authenticated_request(request2, &token).unwrap();
@@ -757,6 +775,9 @@ async fn test_store_secret_fails_wrong_derived_pk() {
             response_bytes.clone(),
             Some(wrong_derived_pk_bytes.clone()), // Wrong derived_pk
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -775,7 +796,7 @@ async fn test_store_secret_fails_wrong_derived_pk() {
         with_proof: false,
         tier: None,
         date: None,
-        salt: None,
+        metadata_hash: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -897,6 +918,9 @@ async fn test_store_secret_fails_with_tampered_proof() {
             response_bytes.clone(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -915,7 +939,7 @@ async fn test_store_secret_fails_with_tampered_proof() {
         with_proof: false,
         tier: None,
         date: None,
-        salt: None,
+        metadata_hash: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();

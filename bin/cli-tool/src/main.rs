@@ -253,7 +253,7 @@ pub enum SubCommands {
         date: Option<String>,
         /// Optional salt
         #[clap(long)]
-        salt: Option<String>,
+        metadata_hash: Option<String>,
     },
     /// Store secret by sending it to node (encrypts and stores in one step)
     StoreSecret {
@@ -471,10 +471,12 @@ async fn main() -> Result<()> {
             with_proof,
             tier,
             date,
-            salt,
+            metadata_hash,
         } => {
             let derived_pk_bytes =
                 derived_pk.map(|d| hex::decode(&d).expect("Failed to decode derived_pk hex"));
+            let metadata_hash_bytes =
+                metadata_hash.map(|d| hex::decode(&d).expect("Failed to decode metadata_hash hex"));
             let prepared: PreparedSecret = serde_json::from_str(&prepared_json)
                 .map_err(|e| anyhow::anyhow!("Invalid prepared_json: {}", e))?;
             store_prepared_secret(
@@ -490,7 +492,7 @@ async fn main() -> Result<()> {
                 with_proof,
                 tier,
                 date,
-                salt,
+                metadata_hash_bytes,
             )
             .await?;
         }

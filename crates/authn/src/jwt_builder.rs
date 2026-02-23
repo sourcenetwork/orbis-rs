@@ -141,6 +141,9 @@ impl JwtSigner {
         response: Vec<u8>,
         derived_pk: Option<Vec<u8>>,
         with_proof: bool,
+        tier: Option<String>,
+        date: Option<String>,
+        metadata_hash: Option<Vec<u8>>,
     ) -> Result<String> {
         let claims = StoreSecretClaims {
             encrypted_document: encrypted_document.to_string(),
@@ -155,6 +158,9 @@ impl JwtSigner {
             response: response,
             derived_pk,
             with_proof,
+            tier,
+            date,
+            metadata_hash,
         };
         self.sign(claims, Duration::from_hours(1))
     }
@@ -280,6 +286,9 @@ mod tests {
             b"response".to_vec(),
             None,
             false,
+            None,
+            None,
+            None,
         );
         assert!(token.is_ok());
 

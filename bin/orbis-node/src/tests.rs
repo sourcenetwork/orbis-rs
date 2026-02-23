@@ -701,7 +701,7 @@ mod cli_tool_integration {
             false,
             tier.clone(),
             date.clone(),
-            salt.clone(),
+            Some(prepared_secret_derived.metadata.clone()),
         )
         .await
         .expect("store_prepared_secret_derived");

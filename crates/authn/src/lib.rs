@@ -84,6 +84,12 @@ pub struct StoreSecretClaims {
     pub derived_pk: Option<Vec<u8>>,
     /// Add a proof to the store secret call
     pub with_proof: bool,
+    /// tier required for policy
+    pub tier: Option<String>,
+    /// date required for policy
+    pub date: Option<String>,
+    /// metadata hash if using a salt
+    pub metadata_hash: Option<Vec<u8>>,
 }
 
 /// Resolves and verifies a JWT token, returning the decoded BearerToken with custom claims.
