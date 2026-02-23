@@ -251,7 +251,7 @@ pub enum SubCommands {
         /// Optional date
         #[clap(long)]
         date: Option<String>,
-        /// Optional salt
+        /// Optional metadata hash
         #[clap(long)]
         metadata_hash: Option<String>,
     },

@@ -69,6 +69,7 @@ impl Authz for SourceHubAuth {
         // Decode the access check request from bytes
         let request = AccessCheckRequest::from_bytes(&permission)?;
 
+        // TODO: pass through date and tier when acp is updated
         // Check if the actor has any of the relations that grant the permission
         let is_authorized = self
             .chain_client
