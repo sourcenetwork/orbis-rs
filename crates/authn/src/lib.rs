@@ -44,6 +44,8 @@ pub struct PreClaims {
     pub namespace: String,
     /// Optional derivation path
     pub derivation: Option<Vec<u8>>,
+    /// Optional salt for proof
+    pub salt: Option<String>,
 }
 
 /// Claims for DKG endpoints

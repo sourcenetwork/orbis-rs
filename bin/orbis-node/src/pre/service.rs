@@ -127,6 +127,8 @@ where
             document_payload.resource.clone(),
             req.object_id.clone(),
             document_payload.permission.clone(),
+            document_payload.tier.clone(),
+            document_payload.date.clone(),
         )
         .to_bytes()
         .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
@@ -143,6 +145,7 @@ where
             &req.object_id,
             &req.namespace,
             &req.derivation,
+            &req.salt,
         )?;
 
         // Validate metadata not tampered
@@ -151,9 +154,9 @@ where
             &document_payload.policy_id,
             &document_payload.resource,
             &document_payload.permission,
-            None,
-            None,
-            None,
+            document_payload.tier.clone().as_deref(),
+            document_payload.date.clone().as_deref(),
+            req.salt.as_deref(),
         );
         // ring_pk: hex-encoded compressed G1Affine bytes
         let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
@@ -263,6 +266,7 @@ where
                 token_str.to_string(),
                 req.namespace,
                 req.derivation,
+                req.salt,
             )
             .await?;
 
@@ -330,6 +334,7 @@ pub fn validate_pre_claims(
     object_id: &String,
     namespace: &String,
     derivation: &Option<Vec<u8>>,
+    salt: &Option<String>,
 ) -> Result<(), PreError> {
     // Validate rdr_pk matches
     if token.claims.rdr_pk != *rdr_pk {
@@ -357,6 +362,13 @@ pub fn validate_pre_claims(
         return Err(PreError::Unauthorized(format!(
             "Token derivation '{:?}' does not match request derivation '{:?}'",
             token.claims.derivation, derivation
+        )));
+    }
+
+    if token.claims.salt != *salt {
+        return Err(PreError::Unauthorized(format!(
+            "Token salt '{:?}' does not match request salt '{:?}'",
+            token.claims.salt, salt
         )));
     }
 

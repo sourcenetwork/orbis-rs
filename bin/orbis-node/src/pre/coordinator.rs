@@ -95,6 +95,7 @@ where
                 token_string,
                 namespace,
                 derivation,
+                salt,
             } => {
                 tracing::info!(
                     request_id = %request_id,
@@ -112,6 +113,7 @@ where
                     token_string,
                     namespace,
                     derivation,
+                    salt,
                 )
                 .await
             }
@@ -144,6 +146,7 @@ where
         token_string: String, // Client's token passed to ring nodes for auth
         namespace: String,
         derivation: Option<Vec<u8>>,
+        salt: Option<String>,
     ) -> Result<Option<PreMessage>> {
         // Get current timestamp (needed for both auth and response)
         let current_time = SystemTime::now()
@@ -161,6 +164,7 @@ where
             &object_id,
             &namespace,
             &derivation,
+            &salt,
         )?;
 
         let object_info = self
@@ -205,9 +209,9 @@ where
             &document_payload.policy_id,
             &document_payload.resource,
             &document_payload.permission,
-            None,
-            None,
-            None,
+            document_payload.tier.as_deref(),
+            document_payload.date.as_deref(),
+            salt.as_deref(),
         );
 
         let permission_bytes = AccessCheckRequest::new(
@@ -215,6 +219,8 @@ where
             document_payload.resource,
             object_id,
             document_payload.permission,
+            document_payload.tier,
+            document_payload.date,
         )
         .to_bytes()
         .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
@@ -430,6 +436,7 @@ where
         token_string: String,
         namespace: String,
         derivation: Option<Vec<u8>>,
+        salt: Option<String>,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
         let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
@@ -495,6 +502,7 @@ where
                 self_in_list,
                 actual_peer_count,
                 derivation,
+                salt,
             )
             .await;
 
@@ -528,6 +536,7 @@ where
         self_in_list: bool,
         actual_peer_count: usize,
         derivation: Option<Vec<u8>>,
+        salt: Option<String>,
     ) -> Result<Vec<u8>> {
         // 1. Deserialize public polynomial from bulletin data
         let pub_poly_bytes = hex::decode(public_polynomial_hex).map_err(|e| {
@@ -589,6 +598,7 @@ where
                 token_string: token_string.clone(),
                 namespace: namespace.clone(),
                 derivation: derivation.clone(),
+                salt: salt.clone(),
             };
 
             let peer_id = peer_id_str.clone();

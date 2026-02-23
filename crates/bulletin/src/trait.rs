@@ -24,8 +24,12 @@ pub struct DocumentPayload {
     pub policy_id: String,
     /// Resource type on said policy
     pub resource: String,
-    /// does the DID have this permission on the policy (the policy expected with this document)
+    /// Does the DID have this permission on the policy (the policy expected with this document)
     pub permission: String,
+    /// Optional tier for acp check
+    pub tier: Option<String>,
+    /// Optional date for acp check
+    pub date: Option<String>,
 }
 /// Payload for ring information ring_id => payload
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]

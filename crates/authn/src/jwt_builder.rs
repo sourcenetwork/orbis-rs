@@ -88,6 +88,7 @@ impl JwtSigner {
     /// * `object_id` - secret id
     /// * `peer_ids` - List of peer IDs (will be joined with commas)
     /// * `derivation` - Optional derivation path
+    /// * `salt` - Optional salt for proof
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour
@@ -97,12 +98,14 @@ impl JwtSigner {
         namespace: &str,
         object_id: &str,
         derivation: Option<Vec<u8>>,
+        salt: Option<String>,
     ) -> Result<String> {
         let claims = PreClaims {
             rdr_pk: rdr_pk.to_string(),
             object_id: object_id.to_string(),
             namespace: namespace.to_string(),
             derivation,
+            salt,
         };
         self.sign(claims, Duration::from_hours(1))
     }
@@ -257,7 +260,7 @@ mod tests {
     #[test]
     fn test_create_pre_jwt() {
         let signer = JwtSigner::new();
-        let token = signer.create_pre_jwt("rdr_pk_value", "namespace", "object_id", None);
+        let token = signer.create_pre_jwt("rdr_pk_value", "namespace", "object_id", None, None);
         assert!(token.is_ok());
     }
 

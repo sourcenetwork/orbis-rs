@@ -69,6 +69,9 @@ pub enum SubCommands {
         /// Optional derivation path (hex encoded)
         #[clap(long)]
         derivation: Option<String>,
+        /// Optional salt
+        #[clap(long)]
+        salt: Option<String>,
     },
     /// Encrypts a secret to the ring public key (from DKG)
     EncryptSecret {
@@ -296,6 +299,7 @@ async fn main() -> Result<()> {
             reader_did_pk,
             namespace,
             derivation,
+            salt,
         } => {
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
@@ -308,6 +312,7 @@ async fn main() -> Result<()> {
                 reader_did_pk,
                 namespace,
                 derivation_bytes,
+                salt,
             )
             .await?;
         }

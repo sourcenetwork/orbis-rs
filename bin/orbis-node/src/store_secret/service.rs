@@ -139,6 +139,8 @@ where
             policy_id: req.policy_id,
             resource: req.resource,
             permission: req.permission,
+            tier: None,
+            date: None,
         };
 
         let payload_bytes: Vec<u8> =

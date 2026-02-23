@@ -20,20 +20,28 @@ pub struct AccessCheckRequest {
     pub object_id: String,
     /// Relationship needed to check this document
     pub relationship: String,
+    /// Optional tier for acp check
+    pub tier: Option<String>,
+    /// Optional date for acp check
+    pub date: Option<String>,
 }
 
 impl AccessCheckRequest {
     pub fn new(
-        policy_id: impl Into<String>,
-        resource: impl Into<String>,
-        object_id: impl Into<String>,
-        relationship: impl Into<String>,
+        policy_id: String,
+        resource: String,
+        object_id: String,
+        relationship: String,
+        tier: Option<String>,
+        date: Option<String>,
     ) -> Self {
         Self {
-            policy_id: policy_id.into(),
-            resource: resource.into(),
-            object_id: object_id.into(),
-            relationship: relationship.into(),
+            policy_id,
+            resource,
+            object_id,
+            relationship,
+            date,
+            tier,
         }
     }
 

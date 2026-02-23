@@ -325,6 +325,7 @@ pub async fn do_pre(
     reader_did_pk: Option<String>,
     namespace: String,
     derivation: Option<Vec<u8>>,
+    salt: Option<String>,
 ) -> Result<Vec<u8>> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
@@ -355,6 +356,7 @@ pub async fn do_pre(
         object_id: object_id.clone(),
         namespace: namespace.clone(),
         derivation: derivation.clone(),
+        salt: salt.clone(),
     };
 
     // JWT work use determinitic key_pair for now
@@ -362,7 +364,13 @@ pub async fn do_pre(
     let key_pair = generate::<DidEd25519KeyPair>(Some(reader_did_pk.as_bytes()));
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
-        .create_pre_jwt(&reader_pk, &namespace, &object_id, derivation.clone())
+        .create_pre_jwt(
+            &reader_pk,
+            &namespace,
+            &object_id,
+            derivation.clone(),
+            salt.clone(),
+        )
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token)
         .map_err(|e| anyhow!("Failed to create_authenticated_request: {}", e))?;
