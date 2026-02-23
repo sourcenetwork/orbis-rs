@@ -93,6 +93,15 @@ pub enum SubCommands {
         /// Permission to read secret
         #[clap(long)]
         permission: String,
+        /// Optional tier
+        #[clap(long)]
+        tier: Option<String>,
+        /// Optional date
+        #[clap(long)]
+        date: Option<String>,
+        /// Optional salt
+        #[clap(long)]
+        salt: Option<String>,
     },
 
     /// Generate a reader keypair for PRE decryption
@@ -194,6 +203,15 @@ pub enum SubCommands {
         /// Permission to read secret
         #[clap(long)]
         permission: String,
+        /// Optional tier
+        #[clap(long)]
+        tier: Option<String>,
+        /// Optional date
+        #[clap(long)]
+        date: Option<String>,
+        /// Optional salt
+        #[clap(long)]
+        salt: Option<String>,
     },
     /// Store a prepared (pre-encrypted) secret - idempotent, safe for retries
     StorePreparedSecret {
@@ -227,6 +245,15 @@ pub enum SubCommands {
         /// Request a proof
         #[clap(long)]
         with_proof: bool,
+        /// Optional tier
+        #[clap(long)]
+        tier: Option<String>,
+        /// Optional date
+        #[clap(long)]
+        date: Option<String>,
+        /// Optional salt
+        #[clap(long)]
+        salt: Option<String>,
     },
     /// Store secret by sending it to node (encrypts and stores in one step)
     StoreSecret {
@@ -263,6 +290,15 @@ pub enum SubCommands {
         /// Request a proof
         #[clap(long)]
         with_proof: bool,
+        /// Optional tier
+        #[clap(long)]
+        tier: Option<String>,
+        /// Optional date
+        #[clap(long)]
+        date: Option<String>,
+        /// Optional salt
+        #[clap(long)]
+        salt: Option<String>,
     },
     /// Query node info
     Info {
@@ -323,6 +359,9 @@ async fn main() -> Result<()> {
             policy_id,
             resource,
             permission,
+            tier,
+            date,
+            salt,
         } => {
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
@@ -333,6 +372,9 @@ async fn main() -> Result<()> {
                 policy_id,
                 resource,
                 permission,
+                tier,
+                date,
+                salt,
             )
             .await?;
         }
@@ -394,6 +436,9 @@ async fn main() -> Result<()> {
             policy_id,
             resource,
             permission,
+            tier,
+            date,
+            salt,
         } => {
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
@@ -404,6 +449,9 @@ async fn main() -> Result<()> {
                 policy_id,
                 resource,
                 permission,
+                tier,
+                date,
+                salt,
             )?;
             let json = serde_json::to_string_pretty(&prepared)?;
             println!("Prepared Secret (save this for store-prepared-secret):");
@@ -421,6 +469,9 @@ async fn main() -> Result<()> {
             reader_did_pk,
             derived_pk,
             with_proof,
+            tier,
+            date,
+            salt,
         } => {
             let derived_pk_bytes =
                 derived_pk.map(|d| hex::decode(&d).expect("Failed to decode derived_pk hex"));
@@ -437,6 +488,9 @@ async fn main() -> Result<()> {
                 reader_did_pk,
                 derived_pk_bytes,
                 with_proof,
+                tier,
+                date,
+                salt,
             )
             .await?;
         }
@@ -449,6 +503,9 @@ async fn main() -> Result<()> {
             policy_id,
             resource,
             permission,
+            tier,
+            date,
+            salt,
             reader_did_pk,
             derivation,
             with_proof,
@@ -464,6 +521,9 @@ async fn main() -> Result<()> {
                 policy_id,
                 resource,
                 permission,
+                tier,
+                date,
+                salt,
                 reader_did_pk,
                 derivation_bytes,
                 with_proof,

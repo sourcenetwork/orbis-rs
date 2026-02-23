@@ -578,6 +578,9 @@ mod cli_tool_integration {
         let did_pk_string = "test_did_secret".to_string();
         let namespace = "docker_test_namespace".to_string();
         let full_namespace = format!("bulletin/{}", namespace);
+        let tier = Some("tier".to_string());
+        let date = Some("date".to_string());
+        let salt = Some("salt".to_string());
         let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
         let proof = vec![0x01];
 
@@ -617,6 +620,8 @@ mod cli_tool_integration {
                 policy_id: policy_id.clone(),
                 resource: resource.clone(),
                 permission: permission.clone(),
+                tier: tier.clone(),
+                date: date.clone(),
             };
             let serialized: Vec<u8> = payload.try_into().expect("serialize payload");
             cli_tool::create_bulletin_post(namespace.clone(), serialized, proof)
@@ -634,6 +639,9 @@ mod cli_tool_integration {
             policy_id.clone(),
             resource.clone(),
             permission.clone(),
+            None,
+            None,
+            None,
         )
         .expect("prepare_secret should succeed");
         let derivation = b"test_derivation".to_vec();
@@ -644,6 +652,9 @@ mod cli_tool_integration {
             policy_id.clone(),
             resource.clone(),
             permission.clone(),
+            tier.clone(),
+            date.clone(),
+            salt.clone(),
         )
         .expect("prepare_secret should succeed");
 
@@ -667,6 +678,9 @@ mod cli_tool_integration {
             Some(did_pk_string.clone()),
             None,
             true,
+            None,
+            None,
+            None,
         )
         .await
         .expect("store_prepared_secret");
@@ -685,6 +699,9 @@ mod cli_tool_integration {
             Some(did_pk_string.clone()),
             prepared_secret_derived.derived_pk,
             false,
+            tier.clone(),
+            date.clone(),
+            salt.clone(),
         )
         .await
         .expect("store_prepared_secret_derived");
@@ -794,6 +811,7 @@ mod cli_tool_integration {
             Some(did_pk_string.clone()),
             full_namespace.clone(),
             None,
+            None,
         )
         .await;
 
@@ -822,6 +840,7 @@ mod cli_tool_integration {
             Some(did_pk_string.clone()),
             full_namespace.clone(),
             Some(derivation),
+            salt.clone(),
         )
         .await;
 
@@ -855,6 +874,9 @@ mod cli_tool_integration {
             Some(did_pk_string.clone()),
             None,
             true,
+            None,
+            None,
+            None,
         )
         .await
         .expect("store_prepared_secret (idempotent call)");

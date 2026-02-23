@@ -138,6 +138,9 @@ pub fn prepare_secret(
     policy_id: String,
     resource: String,
     permission: String,
+    tier: Option<String>,
+    date: Option<String>,
+    salt: Option<String>,
 ) -> Result<PreparedSecret> {
     // Parse ring public key
     let ring_pk_bytes =
@@ -145,8 +148,14 @@ pub fn prepare_secret(
     let ring_pk_point =
         G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
 
-    let metadata =
-        ThresholdDealerNode::encode_metadata(&policy_id, &resource, &permission, None, None, None);
+    let metadata = ThresholdDealerNode::encode_metadata(
+        &policy_id,
+        &resource,
+        &permission,
+        tier.as_deref(),
+        date.as_deref(),
+        salt.as_deref(),
+    );
 
     // Encrypt locally - node never sees plaintext
     let (enc_cmt, encrypted_secret, proof) = ThresholdDealerNode::encrypt_secret(
@@ -189,6 +198,9 @@ pub async fn store_prepared_secret(
     reader_did_pk: Option<String>,
     derived_pk: Option<Vec<u8>>,
     with_proof: bool,
+    tier: Option<String>,
+    date: Option<String>,
+    salt: Option<String>,
 ) -> Result<StoreSecretResult> {
     println!("Storing secret via StoreSecret service:");
     println!("  Endpoint: {}", endpoint);
@@ -213,6 +225,9 @@ pub async fn store_prepared_secret(
         response: prepared.response.clone(),
         derived_pk: derived_pk.clone(),
         with_proof,
+        tier: tier.clone(),
+        date: date.clone(),
+        salt: salt.clone(),
     };
 
     // Create JWT for authentication with all request fields
@@ -283,6 +298,9 @@ pub async fn do_store_secret(
     policy_id: String,
     resource: String,
     permission: String,
+    tier: Option<String>,
+    date: Option<String>,
+    salt: Option<String>,
     reader_did_pk: Option<String>,
     derivation: Option<Vec<u8>>,
     with_proof: bool,
@@ -294,6 +312,9 @@ pub async fn do_store_secret(
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
+        tier.clone(),
+        date.clone(),
+        salt.clone(),
     )?;
     // If derivation was provided, compute derived_pk from the proof
     let derived_pk = if derivation.is_some() {
@@ -312,6 +333,9 @@ pub async fn do_store_secret(
         reader_did_pk,
         derived_pk,
         with_proof,
+        tier,
+        date,
+        salt,
     )
     .await
 }
@@ -447,6 +471,9 @@ pub async fn do_encrypt_secret(
     policy_id: String,
     resource: String,
     permission: String,
+    tier: Option<String>,
+    date: Option<String>,
+    salt: Option<String>,
 ) -> Result<()> {
     println!("Encrypting secret to ring public key...");
     println!("  Ring PK: {}...", &ring_pk[..ring_pk.len().min(20)]);
@@ -459,8 +486,14 @@ pub async fn do_encrypt_secret(
     let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
         .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
-    let metadata =
-        ThresholdDealerNode::encode_metadata(&policy_id, &resource, &permission, None, None, None);
+    let metadata = ThresholdDealerNode::encode_metadata(
+        &policy_id,
+        &resource,
+        &permission,
+        tier.as_deref(),
+        date.as_deref(),
+        salt.as_deref(),
+    );
 
     // Encrypt the secret
     let (_enc_cmt, encrypted_secret, _proof) = ThresholdDealerNode::encrypt_secret(

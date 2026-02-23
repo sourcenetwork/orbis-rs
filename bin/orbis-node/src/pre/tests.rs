@@ -56,6 +56,8 @@ fn setup_document_in_bulletin(
         policy_id: "test-policy".to_string(),
         resource: "test-resource".to_string(),
         permission: "test-permission".to_string(),
+        tier: None,
+        date: None,
     };
     let document_payload_bytes: Vec<u8> = document_payload
         .try_into()
@@ -231,7 +233,13 @@ async fn test_dkg_then_pre_end_to_end() {
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id, None)
+        .create_pre_jwt(
+            &hex::encode(&bob_pk_bytes),
+            &namespace,
+            &object_id,
+            None,
+            None,
+        )
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
@@ -248,6 +256,7 @@ async fn test_dkg_then_pre_end_to_end() {
             object_id,
             pre_token,
             namespace,
+            None,
             None,
         )
         .await
@@ -422,7 +431,13 @@ async fn test_pre_with_large_secret() {
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id, None)
+        .create_pre_jwt(
+            &hex::encode(&bob_pk_bytes),
+            &namespace,
+            &object_id,
+            None,
+            None,
+        )
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
@@ -439,6 +454,7 @@ async fn test_pre_with_large_secret() {
             object_id,
             pre_token,
             namespace,
+            None,
             None,
         )
         .await
@@ -549,7 +565,13 @@ async fn test_pre_fails_with_wrong_key() {
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id, None)
+        .create_pre_jwt(
+            &hex::encode(&bob_pk_bytes),
+            &namespace,
+            &object_id,
+            None,
+            None,
+        )
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
@@ -566,6 +588,7 @@ async fn test_pre_fails_with_wrong_key() {
             object_id,
             pre_token,
             namespace,
+            None,
             None,
         )
         .await
@@ -689,6 +712,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
             object_id,
             invalid_token,
             namespace,
+            None,
             None,
         )
         .await;
@@ -814,6 +838,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             &namespace,
             &object_id,
             None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -831,6 +856,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             object_id,
             mismatched_token,
             namespace,
+            None,
             None,
         )
         .await;
@@ -887,6 +913,7 @@ async fn test_start_pre_fails_missing_auth_header() {
         namespace: "".to_string(),
         object_id: "".to_string(),
         derivation: None,
+        salt: None,
     };
 
     // Create request WITHOUT authentication header
@@ -927,6 +954,7 @@ async fn test_start_pre_fails_malformed_jwt() {
         namespace: "".to_string(),
         object_id: "".to_string(),
         derivation: None,
+        salt: None,
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -962,7 +990,7 @@ async fn test_start_pre_fails_wrong_signature() {
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
     let valid_token = key_pair_1
-        .create_pre_jwt("def456", &namespace, &object_id, None)
+        .create_pre_jwt("def456", &namespace, &object_id, None, None)
         .expect("Failed to create JWT");
 
     // Tamper with the signature by changing a character
@@ -984,6 +1012,7 @@ async fn test_start_pre_fails_wrong_signature() {
         namespace: "".to_string(),
         object_id: "".to_string(),
         derivation: None,
+        salt: None,
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
@@ -1093,6 +1122,7 @@ async fn test_pre_fails_with_wrong_derivation() {
             &namespace,
             &object_id,
             Some(correct_derivation.clone()),
+            None,
         )
         .expect("Failed to create PRE JWT");
 
@@ -1111,6 +1141,7 @@ async fn test_pre_fails_with_wrong_derivation() {
             pre_token,
             namespace.clone(),
             Some(correct_derivation.clone()),
+            None,
         )
         .await
         .expect("PRE with correct derivation should succeed");
@@ -1254,7 +1285,13 @@ async fn test_pre_fails_with_bad_proof() {
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(&hex::encode(&bob_pk_bytes), &namespace, &object_id, None)
+        .create_pre_jwt(
+            &hex::encode(&bob_pk_bytes),
+            &namespace,
+            &object_id,
+            None,
+            None,
+        )
         .expect("Failed to create PRE JWT");
 
     // Attempt re-encryption — should fail because proof verification fails on peer nodes
@@ -1271,6 +1308,7 @@ async fn test_pre_fails_with_bad_proof() {
             object_id,
             pre_token,
             namespace,
+            None,
             None,
         )
         .await;

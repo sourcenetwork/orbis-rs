@@ -90,6 +90,9 @@ fn create_dummy_request() -> StoreSecretRequest {
         response: TEST_RESPONSE.as_bytes().to_vec(),
         derived_pk: None,
         with_proof: false,
+        tier: None,
+        date: None,
+        salt: None,
     }
 }
 
@@ -329,6 +332,9 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         response: TEST_RESPONSE.as_bytes().to_vec(),
         derived_pk: None,
         with_proof: false,
+        tier: None,
+        date: None,
+        salt: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -407,6 +413,9 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
         response: TEST_RESPONSE.as_bytes().to_vec(),
         derived_pk: None,
         with_proof: false,
+        tier: None,
+        date: None,
+        salt: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -576,6 +585,9 @@ async fn test_store_secret_idempotent() {
         response: response_bytes.clone(),
         derived_pk: None,
         with_proof: false,
+        tier: None,
+        date: None,
+        salt: None,
     };
 
     // First store - should succeed
@@ -612,6 +624,9 @@ async fn test_store_secret_idempotent() {
         response: response_bytes.clone(),
         derived_pk: None,
         with_proof: false,
+        tier: None,
+        date: None,
+        salt: None,
     };
 
     let tonic_request2 = create_authenticated_request(request2, &token).unwrap();
@@ -758,6 +773,9 @@ async fn test_store_secret_fails_wrong_derived_pk() {
         response: response_bytes.clone(),
         derived_pk: Some(wrong_derived_pk_bytes), // Wrong derived_pk
         with_proof: false,
+        tier: None,
+        date: None,
+        salt: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -895,6 +913,9 @@ async fn test_store_secret_fails_with_tampered_proof() {
         response: response_bytes,
         derived_pk: None,
         with_proof: false,
+        tier: None,
+        date: None,
+        salt: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
