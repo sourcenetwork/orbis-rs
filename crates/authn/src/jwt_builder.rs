@@ -124,6 +124,9 @@ impl JwtSigner {
     /// * `challenge` - c - Fiat-Shamir challenge
     /// * `response` - s - proof response (s = k + c*r)
     /// * `with_proof` - If a proof should be returned
+    /// * `tier` - Optional tier for policy
+    /// * `date` - Optional date for policy
+    /// * `metadata_hash` - If salt used pass metadata hash
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour

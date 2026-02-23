@@ -427,7 +427,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         resource: &str,
         permission: &str,
         tier: Option<&str>,
-        data: Option<&str>,
+        date: Option<&str>,
         salt: Option<&str>,
     ) -> Vec<u8> {
         let domain = Fq::from_le_bytes_mod_order(POLICY_METADATA_DOMAIN);

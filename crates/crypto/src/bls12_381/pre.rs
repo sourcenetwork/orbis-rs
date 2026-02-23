@@ -479,7 +479,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         resource: &str,
         permission: &str,
         tier: Option<&str>,
-        data: Option<&str>,
+        date: Option<&str>,
         salt: Option<&str>,
     ) -> Vec<u8> {
         let mut hasher = Sha256::new();
@@ -493,9 +493,9 @@ impl ThresholdDealer for ThresholdDealerNode {
         let tier = tier.unwrap_or("");
         hasher.update(&(tier.len() as u64).to_le_bytes());
         hasher.update(tier.as_bytes());
-        let data = data.unwrap_or("");
-        hasher.update(&(data.len() as u64).to_le_bytes());
-        hasher.update(data.as_bytes());
+        let date = date.unwrap_or("");
+        hasher.update(&(date.len() as u64).to_le_bytes());
+        hasher.update(date.as_bytes());
         let salt = salt.unwrap_or("");
         hasher.update(&(salt.len() as u64).to_le_bytes());
         hasher.update(salt.as_bytes());

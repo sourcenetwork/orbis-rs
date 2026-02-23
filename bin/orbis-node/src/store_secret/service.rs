@@ -105,7 +105,6 @@ where
                 StoreSecretError::Deserialization(format!("Failed to parse ring payload: {}", e))
             })?;
 
-        // TODO: remove and pass the metadata hash
         let policy_metadata = if let Some(metadata_hash) = req.metadata_hash {
             metadata_hash
         } else {
