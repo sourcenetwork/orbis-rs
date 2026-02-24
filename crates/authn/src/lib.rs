@@ -179,7 +179,7 @@ where
         ));
     }
 
-    // Check that issued_time not expired
+    // Check that token lifetime does not exceed the maximum allowed
     if bearer_token.expiration_time - bearer_token.issued_time > max_token_lifetime_secs {
         return Err(AuthNError::JwtError(
             "Token lifetime exceeds maximum".to_string(),
