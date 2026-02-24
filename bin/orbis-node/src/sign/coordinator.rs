@@ -15,21 +15,21 @@
 //! commitment round is performed before the signing round.
 
 use crate::app_state::AppState;
-use crate::constants::{
-    BULLETIN_RING_NAMESPACE, MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE,
-    PEER_RESPONSE_TIMEOUT,
-};
+use crate::constants::{BULLETIN_RING_NAMESPACE, PEER_RESPONSE_TIMEOUT};
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::sign::error::{Result, SignError};
+use crate::sign::helpers::{
+    decode_ring_pk_bytes, deserialize_commitments, load_dist_key_share, serialize_commitments,
+    try_load_dist_key_share,
+};
 use crate::sign::messages::SignMessage;
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{
-    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ThresholdSigner,
+    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PubShare, ThresholdSigner,
 };
 use crypto::SigShareInner;
 use crypto::SignaturePoint;
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
-use local_storage::r#trait::LocalStorage;
 use network::Message as NetworkMessage;
 use network::PeerId;
 use network::SIGN;
@@ -151,34 +151,10 @@ where
         _from_node_id: u32,
         ring_pk_bytes: Vec<u8>,
     ) -> Result<Option<SignMessage>> {
-        // 1. Deserialize ring public key
-        let ring_pk = <D::PublicKey>::from_bytes(&ring_pk_bytes[..]).map_err(|e| {
-            SignError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
-        })?;
-
-        // 2. Retrieve DKG share from local storage
-        let final_share_bytes = self
-            .app_state
-            .local_storage
-            .get_encrypted(local_storage::r#trait::LocalStorageKeys::RingKey(
-                ring_pk.to_string(),
-            ))
-            .map_err(|e| {
-                SignError::Storage(format!(
-                    "Failed to retrieve final share from storage: {}",
-                    e
-                ))
-            })?
-            .ok_or_else(|| {
-                SignError::Storage("Final share not found in storage for ring_pk".to_string())
-            })?;
-
-        let pri_share: PriShare<D::ShareValue> =
-            PriShare::from_bytes(&final_share_bytes).map_err(|e| {
-                SignError::Deserialization(format!("Failed to deserialize final share: {}", e))
-            })?;
-        let node_id = pri_share.i;
-        let dist_key_share = DistKeyShare { pri_share };
+        // 1. Deserialize ring public key and load DKG share from local storage
+        let ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
+        let dist_key_share = load_dist_key_share(&self.app_state.local_storage, &ring_pk)?;
+        let node_id = dist_key_share.pri_share.i;
 
         // 3. Generate nonces
         let signer = S::new();
@@ -228,40 +204,13 @@ where
         // Note: We do NOT validate from_node_id here because the sign request initiator
         // may not be in the ring (external requesters use node_id=0).
 
-        // 2. Deserialize ring public key to get the storage key
+        // 2. Deserialize ring public key and load DKG share from local storage
         let ring_pk_bytes = hex::decode(&ring_pk_hex).map_err(|e| {
             SignError::Deserialization(format!("Failed to decode ring_pk hex: {}", e))
         })?;
-        let ring_pk = <D::PublicKey>::from_bytes(&ring_pk_bytes[..]).map_err(|e| {
-            SignError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
-        })?;
-
-        // 3. Retrieve final share from local storage
-        let final_share_bytes = self
-            .app_state
-            .local_storage
-            .get_encrypted(local_storage::r#trait::LocalStorageKeys::RingKey(
-                ring_pk.to_string(),
-            ))
-            .map_err(|e| {
-                SignError::Storage(format!(
-                    "Failed to retrieve final share from storage: {}",
-                    e
-                ))
-            })?
-            .ok_or_else(|| {
-                SignError::Storage("Final share not found in storage for ring_pk".to_string())
-            })?;
-
-        // 4. Deserialize final share
-        let pri_share: PriShare<D::ShareValue> =
-            PriShare::from_bytes(&final_share_bytes).map_err(|e| {
-                SignError::Deserialization(format!("Failed to deserialize final share: {}", e))
-            })?;
-        let node_id = pri_share.i;
-
-        // 5. Create distributed key share
-        let dist_key_share = DistKeyShare { pri_share };
+        let ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
+        let dist_key_share = load_dist_key_share(&self.app_state.local_storage, &ring_pk)?;
+        let node_id = dist_key_share.pri_share.i;
 
         // 6. Deserialize all_commitments and retrieve signing state if interactive
         let all_commitments = deserialize_commitments::<S>(&all_commitments_bytes)?;
@@ -626,52 +575,41 @@ where
 
         // If we're in the peer list, compute our own share locally
         if self_in_list {
-            let ring_pk = <D::PublicKey>::from_bytes(&ring_pk_bytes[..]).map_err(|e| {
-                SignError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
-            })?;
-
-            if let Ok(Some(final_share_bytes)) = self.app_state.local_storage.get_encrypted(
-                local_storage::r#trait::LocalStorageKeys::RingKey(ring_pk.to_string()),
-            ) {
-                if let Ok(pri_share) = PriShare::<D::ShareValue>::from_bytes(&final_share_bytes) {
-                    let dist_key_share = DistKeyShare { pri_share };
-
-                    match signer.sign(
-                        &dist_key_share,
-                        &message,
-                        &pub_poly,
-                        local_signing_state.as_ref(),
-                        &all_commitments,
-                    ) {
-                        Ok(sig_share) => {
-                            match signer.verify_share(
-                                &message,
-                                &pub_poly,
-                                &sig_share,
-                                &all_commitments,
-                            ) {
-                                Ok(_) => {
-                                    tracing::debug!(
-                                        from_node_id = sig_share.i,
-                                        "Sign Coordinator: Added local share"
-                                    );
-                                    seen_node_ids.insert(sig_share.i);
-                                    verified_shares.push(sig_share);
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        error = %e,
-                                        "Sign Coordinator: Local share verification failed"
-                                    );
-                                }
+            let ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
+            if let Some(dist_key_share) =
+                try_load_dist_key_share(&self.app_state.local_storage, &ring_pk)
+            {
+                match signer.sign(
+                    &dist_key_share,
+                    &message,
+                    &pub_poly,
+                    local_signing_state.as_ref(),
+                    &all_commitments,
+                ) {
+                    Ok(sig_share) => {
+                        match signer.verify_share(&message, &pub_poly, &sig_share, &all_commitments)
+                        {
+                            Ok(_) => {
+                                tracing::debug!(
+                                    from_node_id = sig_share.i,
+                                    "Sign Coordinator: Added local share"
+                                );
+                                seen_node_ids.insert(sig_share.i);
+                                verified_shares.push(sig_share);
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    "Sign Coordinator: Local share verification failed"
+                                );
                             }
                         }
-                        Err(e) => {
-                            tracing::error!(
-                                error = %e,
-                                "Sign Coordinator: Local signing failed"
-                            );
-                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "Sign Coordinator: Local signing failed"
+                        );
                     }
                 }
             }
@@ -782,23 +720,16 @@ where
 
         // Generate our own nonces if we're in the ring
         if self_in_list {
-            let ring_pk = <D::PublicKey>::from_bytes(ring_pk_bytes).map_err(|e| {
-                SignError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
-            })?;
-
-            if let Ok(Some(final_share_bytes)) = self.app_state.local_storage.get_encrypted(
-                local_storage::r#trait::LocalStorageKeys::RingKey(ring_pk.to_string()),
-            ) {
-                if let Ok(pri_share) = PriShare::<D::ShareValue>::from_bytes(&final_share_bytes) {
-                    let dist_key_share = DistKeyShare { pri_share };
-                    let signer = S::new();
-                    let (commitment, state) =
-                        signer.generate_nonces(&dist_key_share).map_err(|e| {
-                            SignError::Crypto(format!("Local nonce generation failed: {}", e))
-                        })?;
-                    all_commitments.push((node_id, commitment));
-                    local_signing_state = Some(state);
-                }
+            let ring_pk = decode_ring_pk_bytes(ring_pk_bytes)?;
+            if let Some(dist_key_share) =
+                try_load_dist_key_share(&self.app_state.local_storage, &ring_pk)
+            {
+                let signer = S::new();
+                let (commitment, state) = signer.generate_nonces(&dist_key_share).map_err(|e| {
+                    SignError::Crypto(format!("Local nonce generation failed: {}", e))
+                })?;
+                all_commitments.push((node_id, commitment));
+                local_signing_state = Some(state);
             }
         }
 
@@ -987,125 +918,4 @@ where
 
         Ok((ring_payload.ring_pk, pub_poly))
     }
-}
-
-// ============================================================================
-// Commitment serialization helpers
-// ============================================================================
-
-/// Serialize a list of (node_id, commitment) pairs to bytes
-fn serialize_commitments<S: ThresholdSigner>(
-    commitments: &[(u32, S::NonceCommitment)],
-) -> Result<Vec<u8>> {
-    if commitments.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&(commitments.len() as u32).to_le_bytes());
-    for (id, commitment) in commitments {
-        bytes.extend_from_slice(&id.to_le_bytes());
-        let commitment_bytes = CryptoSerialize::to_bytes(commitment).map_err(|e| {
-            SignError::Serialization(format!("Failed to serialize commitment: {}", e))
-        })?;
-        bytes.extend_from_slice(&(commitment_bytes.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(&commitment_bytes);
-    }
-    Ok(bytes)
-}
-
-/// Deserialize a list of (node_id, commitment) pairs from bytes
-fn deserialize_commitments<S: ThresholdSigner>(
-    bytes: &[u8],
-) -> Result<Vec<(u32, S::NonceCommitment)>> {
-    if bytes.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    if bytes.len() < 4 {
-        return Err(SignError::Deserialization(
-            "Commitment bytes too short".to_string(),
-        ));
-    }
-
-    let count = u32::from_le_bytes(
-        bytes[0..4]
-            .try_into()
-            .map_err(|_| SignError::Deserialization("Invalid commitment count".to_string()))?,
-    ) as usize;
-
-    if count > MAX_COMMITMENTS {
-        return Err(SignError::Deserialization(format!(
-            "Commitment count {} exceeds maximum {}",
-            count, MAX_COMMITMENTS
-        )));
-    }
-
-    // Verify the payload can physically hold `count` items
-    let remaining = bytes.len() - 4;
-    if count > remaining / MIN_ITEM_SIZE {
-        return Err(SignError::Deserialization(format!(
-            "Commitment count {} exceeds what fits in {} remaining bytes",
-            count, remaining
-        )));
-    }
-
-    let mut offset = 4usize;
-    let mut commitments = Vec::with_capacity(count);
-
-    for _ in 0..count {
-        if offset.checked_add(8).map_or(true, |end| end > bytes.len()) {
-            return Err(SignError::Deserialization(
-                "Commitment bytes truncated".to_string(),
-            ));
-        }
-
-        let id = u32::from_le_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .map_err(|_| SignError::Deserialization("Invalid node_id".to_string()))?,
-        );
-        offset += 4;
-
-        let commitment_len = u32::from_le_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .map_err(|_| SignError::Deserialization("Invalid commitment length".to_string()))?,
-        ) as usize;
-        offset += 4;
-
-        if commitment_len > MAX_COMMITMENT_SIZE {
-            return Err(SignError::Deserialization(format!(
-                "Commitment length {} exceeds maximum {}",
-                commitment_len, MAX_COMMITMENT_SIZE
-            )));
-        }
-
-        if offset
-            .checked_add(commitment_len)
-            .map_or(true, |end| end > bytes.len())
-        {
-            return Err(SignError::Deserialization(
-                "Commitment data truncated".to_string(),
-            ));
-        }
-
-        let commitment = <S::NonceCommitment>::from_bytes(&bytes[offset..offset + commitment_len])
-            .map_err(|e| {
-                SignError::Deserialization(format!("Failed to deserialize commitment: {}", e))
-            })?;
-        offset += commitment_len;
-
-        commitments.push((id, commitment));
-    }
-
-    if offset != bytes.len() {
-        return Err(SignError::Deserialization(format!(
-            "Trailing bytes: consumed {} of {} bytes",
-            offset,
-            bytes.len()
-        )));
-    }
-
-    Ok(commitments)
 }
