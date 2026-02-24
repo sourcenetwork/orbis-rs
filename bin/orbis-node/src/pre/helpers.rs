@@ -124,7 +124,7 @@ pub fn verify_encryption_binding(
 /// Validates JWT claims against the PRE request parameters.
 pub fn validate_pre_claims(
     token: &BearerToken<PreClaims>,
-    rdr_pk: &String,
+    rdr_pk: &Vec<u8>,
     object_id: &String,
     namespace: &String,
     derivation: &Option<Vec<u8>>,
@@ -132,7 +132,7 @@ pub fn validate_pre_claims(
 ) -> Result<()> {
     if token.claims.rdr_pk != *rdr_pk {
         return Err(PreError::Unauthorized(format!(
-            "Token rdr_pk '{}' does not match request rdr_pk '{}'",
+            "Token rdr_pk '{:?}' does not match request rdr_pk '{:?}'",
             token.claims.rdr_pk, rdr_pk
         )));
     }

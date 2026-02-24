@@ -132,7 +132,7 @@ where
         tracing::info!(
             ring_id = %document_payload.ring_id,
             ring_pk = %ring_payload.ring_pk,
-            reader_pk = %req.rdr_pk,
+            reader_pk = ?req.rdr_pk,
             peer_ids = ?ring_payload.peer_ids,
             issuer = %token.issuer_id,
             "Authenticated StartPre request"
@@ -140,13 +140,12 @@ where
 
         let created_at = current_time as i64;
 
-        // 1. Parse JSON and hex inputs
+        // 1. Parse inputs
         // Use original string bytes instead of re-serializing
         let secret_bytes = document_payload.document.as_bytes().to_vec();
 
-        // rdr_pk: hex-encoded compressed G1Affine bytes
-        let rdr_pk = hex::decode(&req.rdr_pk)
-            .map_err(|e| PreError::InvalidInput(format!("Invalid rdr_pk hex encoding: {}", e)))?;
+        // rdr_pk: compressed G1Affine bytes (received directly as bytes)
+        let rdr_pk = req.rdr_pk.clone();
 
         // 2. Validate we have peers
         if ring_payload.peer_ids.is_empty() {
@@ -224,7 +223,7 @@ where
         let pre_response: crate::pre::coordinator::PreResponse = serde_json::from_slice(&result)
             .map_err(|e| PreError::Deserialization(format!("Failed to parse PRE result: {}", e)))?;
 
-        let encrypted_secret = serde_json::to_string(&pre_response)
+        let encrypted_secret = serde_json::to_vec(&pre_response)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize response: {}", e)))?;
 
         let response = StartPreResponse {

@@ -64,7 +64,7 @@ fn test_resolve_jwt_did_with_pre_claims() {
         issued_time: 900,
         expiration_time: 2000,
         claims: PreClaims {
-            rdr_pk: "test_rdr_pk".to_string(),
+            rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
             namespace: "".to_string(),
             derivation: None,
@@ -77,7 +77,7 @@ fn test_resolve_jwt_did_with_pre_claims() {
 
     assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
     let decoded = result.unwrap();
-    assert_eq!(decoded.claims.rdr_pk, "test_rdr_pk");
+    assert_eq!(decoded.claims.rdr_pk, b"test_rdr_pk".to_vec());
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn test_resolve_jwt_did_expired() {
         issued_time: 900,
         expiration_time: 2000,
         claims: PreClaims {
-            rdr_pk: "test_rdr_pk".to_string(),
+            rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
             namespace: "".to_string(),
             derivation: None,
@@ -141,7 +141,7 @@ fn test_resolve_jwt_did_future_issued_time() {
         issued_time: 900,
         expiration_time: 2000,
         claims: PreClaims {
-            rdr_pk: "test_rdr_pk".to_string(),
+            rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
             namespace: "".to_string(),
             derivation: None,
@@ -168,7 +168,7 @@ fn test_resolve_jwt_did_invalid_signature() {
         issued_time: 900,
         expiration_time: 2000,
         claims: PreClaims {
-            rdr_pk: "test_rdr_pk".to_string(),
+            rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
             namespace: "".to_string(),
             derivation: None,

@@ -161,7 +161,7 @@ where
         // 2. Authorize: Validate JWT claims match request fields
         validate_pre_claims(
             &token,
-            &hex::encode(&rdr_pk_bytes),
+            &rdr_pk_bytes,
             &object_id,
             &namespace,
             &derivation,
