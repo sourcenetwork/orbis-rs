@@ -3,7 +3,7 @@ use thiserror::Error;
 /// LocalStorage related errors
 #[derive(Error, Debug)]
 pub enum LocalStorageError {
-    #[error("Posion Mutex error: {0}")]
+    #[error("Poison Mutex error: {0}")]
     PoisonError(String),
     #[error("Encryption Error")]
     EncryptionError,

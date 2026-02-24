@@ -173,7 +173,7 @@ fn test_token_lifetime_at_limit() {
     let token = BearerToken {
         issuer_id: did_uri,
         issued_time,
-        expiration_time: issued_time + 86400,
+        expiration_time: issued_time + TEST_MAX_LIFETIME,
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),

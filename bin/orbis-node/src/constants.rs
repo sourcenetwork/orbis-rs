@@ -155,7 +155,7 @@ pub const PASSWORD_FILE_NAME: &str = ".orbis_password";
 
 /// Environment variable name for the encryption password
 ///
-/// This environment variable does not take  precedence over the password file (file has highest priority).
+/// This environment variable does not take precedence over the password file (file has highest priority).
 /// This allows for secure password injection in containerized environments.
 pub const PASSWORD_ENV_VAR: &str = "ORBIS_PASSWORD";
 
