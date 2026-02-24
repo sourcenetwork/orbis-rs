@@ -11,7 +11,7 @@ pub enum LocalStorageError {
     DecryptionError,
     #[error("Item not found")]
     NotFound,
-    #[error("Courrupted Data")]
+    #[error("Corrupted Data")]
     CorruptData,
     #[error("Unique DB Error: {0}")]
     UniqueDBError(String),
