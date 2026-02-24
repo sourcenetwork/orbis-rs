@@ -43,7 +43,7 @@ fn create_test_jwt_no_claims(
 
     let mut jwt_claims = Claims::with_custom_claims(
         DkgClaims {
-            peer_ids: "".to_string(),
+            peer_ids: vec![],
             threshold: 2,
         },
         Duration::from_secs(0),
@@ -94,7 +94,7 @@ fn test_resolve_jwt_did_with_dkg_claims() {
         issued_time: 900,
         expiration_time: 2000,
         claims: DkgClaims {
-            peer_ids: "".to_string(),
+            peer_ids: vec![],
             threshold: 2,
         },
     };

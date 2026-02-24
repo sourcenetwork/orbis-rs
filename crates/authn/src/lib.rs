@@ -53,8 +53,8 @@ pub struct PreClaims {
 pub struct DkgClaims {
     /// Threshold to be set
     pub threshold: u32,
-    /// Peer Id of nodes in ring
-    pub peer_ids: String,
+    /// Peer Ids of nodes in ring
+    pub peer_ids: Vec<String>,
 }
 
 /// Claims for StoreSecret endpoints
