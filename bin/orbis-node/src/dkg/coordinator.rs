@@ -15,6 +15,7 @@
 //! All nodes participate equally in the protocol.
 
 use crate::app_state::AppState;
+use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::constants::{
     BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, MAX_COMMITMENT_COEFFICIENTS,
 };
@@ -149,8 +150,9 @@ where
                 .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
                 .as_secs();
 
-            let token: BearerToken<DkgClaims> = resolve_jwt_did(token_string, current_time)
-                .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+            let token: BearerToken<DkgClaims> =
+                resolve_jwt_did(token_string, current_time, MAX_TOKEN_LIFETIME_SECS)
+                    .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
             // TODO: use token.issuer_id as AuthZ check
             // 2. Authorize: Validate JWT claims match SessionInit fields
             validate_dkg_claims(&token, *threshold, peer_ids)?;

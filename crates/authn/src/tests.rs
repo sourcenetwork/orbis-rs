@@ -2,6 +2,8 @@ use super::*;
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint, KeyMaterial};
 use jwt_simple::prelude::*;
 
+const TEST_MAX_LIFETIME: u64 = 86400; // 24 hours, mirrors the node constant
+
 /// Helper to create a test JWT with PreClaims
 fn create_test_jwt_with_pre_claims(
     key_pair: &did_key::PatchedKeyPair,
@@ -73,7 +75,8 @@ fn test_resolve_jwt_did_with_pre_claims() {
     };
 
     let jwt = create_test_jwt_with_pre_claims(&key_pair, &token);
-    let result: Result<BearerToken<PreClaims>> = resolve_jwt_did(&jwt, current_time);
+    let result: Result<BearerToken<PreClaims>> =
+        resolve_jwt_did(&jwt, current_time, TEST_MAX_LIFETIME);
 
     assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
     let decoded = result.unwrap();
@@ -97,7 +100,8 @@ fn test_resolve_jwt_did_with_dkg_claims() {
     };
 
     let jwt = create_test_jwt_no_claims(&key_pair, &token);
-    let result: Result<BearerToken<DkgClaims>> = resolve_jwt_did(&jwt, current_time);
+    let result: Result<BearerToken<DkgClaims>> =
+        resolve_jwt_did(&jwt, current_time, TEST_MAX_LIFETIME);
 
     assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
     let decoded = result.unwrap();
@@ -124,7 +128,8 @@ fn test_resolve_jwt_did_expired() {
     };
 
     let jwt = create_test_jwt_with_pre_claims(&key_pair, &token);
-    let result: Result<BearerToken<PreClaims>> = resolve_jwt_did(&jwt, current_time);
+    let result: Result<BearerToken<PreClaims>> =
+        resolve_jwt_did(&jwt, current_time, TEST_MAX_LIFETIME);
 
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), AuthNError::JwtError(_)));
@@ -150,10 +155,109 @@ fn test_resolve_jwt_did_future_issued_time() {
     };
 
     let jwt = create_test_jwt_with_pre_claims(&key_pair, &token);
-    let result: Result<BearerToken<PreClaims>> = resolve_jwt_did(&jwt, current_time);
+    let result: Result<BearerToken<PreClaims>> =
+        resolve_jwt_did(&jwt, current_time, TEST_MAX_LIFETIME);
 
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), AuthNError::JwtError(_)));
+}
+
+#[test]
+fn test_token_lifetime_at_limit() {
+    let key_pair = generate::<DidEd25519KeyPair>(None);
+    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+
+    let issued_time = 1000;
+    let current_time = 1001;
+    // Exactly MAX_TOKEN_LIFETIME_SECS (86400) — should be accepted
+    let token = BearerToken {
+        issuer_id: did_uri,
+        issued_time,
+        expiration_time: issued_time + 86400,
+        claims: PreClaims {
+            rdr_pk: b"test_rdr_pk".to_vec(),
+            object_id: "".to_string(),
+            namespace: "".to_string(),
+            derivation: None,
+            salt: None,
+        },
+    };
+
+    let jwt = create_test_jwt_with_pre_claims(&key_pair, &token);
+    let result: Result<BearerToken<PreClaims>> =
+        resolve_jwt_did(&jwt, current_time, TEST_MAX_LIFETIME);
+
+    assert!(
+        result.is_ok(),
+        "Token at exactly the lifetime limit should be accepted, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_token_lifetime_one_second_over_limit() {
+    let key_pair = generate::<DidEd25519KeyPair>(None);
+    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+
+    let issued_time = 1000;
+    let current_time = 1001;
+    // One second over MAX_TOKEN_LIFETIME_SECS — should be rejected
+    let token = BearerToken {
+        issuer_id: did_uri,
+        issued_time,
+        expiration_time: issued_time + 86401,
+        claims: PreClaims {
+            rdr_pk: b"test_rdr_pk".to_vec(),
+            object_id: "".to_string(),
+            namespace: "".to_string(),
+            derivation: None,
+            salt: None,
+        },
+    };
+
+    let jwt = create_test_jwt_with_pre_claims(&key_pair, &token);
+    let result: Result<BearerToken<PreClaims>> =
+        resolve_jwt_did(&jwt, current_time, TEST_MAX_LIFETIME);
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        matches!(&err, AuthNError::JwtError(msg) if msg.contains("lifetime")),
+        "Expected lifetime error, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_token_lifetime_far_future() {
+    let key_pair = generate::<DidEd25519KeyPair>(None);
+    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+
+    let issued_time = 1_000_000;
+    let current_time = 1_000_001;
+    // Expiration decades away — should be rejected
+    let token = BearerToken {
+        issuer_id: did_uri,
+        issued_time,
+        expiration_time: issued_time + (365 * 24 * 60 * 60 * 10), // 10 years
+        claims: PreClaims {
+            rdr_pk: b"test_rdr_pk".to_vec(),
+            object_id: "".to_string(),
+            namespace: "".to_string(),
+            derivation: None,
+            salt: None,
+        },
+    };
+
+    let jwt = create_test_jwt_with_pre_claims(&key_pair, &token);
+    let result: Result<BearerToken<PreClaims>> =
+        resolve_jwt_did(&jwt, current_time, TEST_MAX_LIFETIME);
+
+    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), AuthNError::JwtError(_)),
+        "Expected JwtError for far-future expiry"
+    );
 }
 
 #[test]
@@ -178,7 +282,8 @@ fn test_resolve_jwt_did_invalid_signature() {
 
     // Sign with key_pair2 but claim issuer is key_pair1
     let jwt = create_test_jwt_with_pre_claims(&key_pair2, &token);
-    let result: Result<BearerToken<PreClaims>> = resolve_jwt_did(&jwt, current_time);
+    let result: Result<BearerToken<PreClaims>> =
+        resolve_jwt_did(&jwt, current_time, TEST_MAX_LIFETIME);
 
     assert!(result.is_err());
 }

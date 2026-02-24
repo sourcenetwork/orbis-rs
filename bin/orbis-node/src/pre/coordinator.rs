@@ -11,6 +11,7 @@
 //! - Manages reencryption share collection and recovery
 
 use crate::app_state::AppState;
+use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::constants::PEER_RESPONSE_TIMEOUT;
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::pre::error::{PreError, Result};
@@ -155,8 +156,9 @@ where
             .map_err(|e| PreError::Generic(format!("Failed to get timestamp: {}", e)))?
             .as_secs();
 
-        let token: BearerToken<PreClaims> = resolve_jwt_did(&token_string, current_time)
-            .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+        let token: BearerToken<PreClaims> =
+            resolve_jwt_did(&token_string, current_time, MAX_TOKEN_LIFETIME_SECS)
+                .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 
         // 2. Authorize: Validate JWT claims match request fields
         validate_pre_claims(

@@ -1,4 +1,5 @@
 use crate::app_state::AppState;
+use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::helpers::helpers::{
     connect_to_peers, derive_node_id_from_peer_id_bytes, validate_all_peer_ids,
 };
@@ -83,8 +84,9 @@ where
         let token_str = extract_bearer_token(&request)
             .map_err(|e| PreError::Unauthorized(e.to_string()))?
             .to_string();
-        let token: BearerToken<PreClaims> = resolve_jwt_did(&token_str, current_time)
-            .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+        let token: BearerToken<PreClaims> =
+            resolve_jwt_did(&token_str, current_time, MAX_TOKEN_LIFETIME_SECS)
+                .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 
         let req = request.into_inner();
         let (document_payload, ring_payload) =

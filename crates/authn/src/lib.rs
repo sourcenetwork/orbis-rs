@@ -38,9 +38,9 @@ pub struct BearerToken<T = ()> {
 pub struct PreClaims {
     /// Reader's public key (compressed G1 point bytes)
     pub rdr_pk: Vec<u8>,
-    /// Serect object Id to re-encrypt
+    /// Secret object Id to re-encrypt
     pub object_id: String,
-    /// Serect object namespace
+    /// Secret object namespace
     pub namespace: String,
     /// Optional derivation path
     pub derivation: Option<Vec<u8>>,
@@ -100,16 +100,20 @@ pub struct StoreSecretClaims {
 /// # Examples
 /// ```ignore
 /// // For PRE endpoint with rdr_pk claim
-/// let token: BearerToken<PreClaims> = resolve_jwt_did(token_str, current_time)?;
+/// let token: BearerToken<PreClaims> = resolve_jwt_did(token_str, current_time, max_lifetime)?;
 /// assert_eq!(token.claims.rdr_pk, request.rdr_pk);
 ///
 /// // For DKG endpoint with no custom claims
-/// let token: BearerToken<DkgClaims> = resolve_jwt_did(token_str, current_time)?;
+/// let token: BearerToken<DkgClaims> = resolve_jwt_did(token_str, current_time, max_lifetime)?;
 ///
 /// // Or simply use unit type for basic auth
-/// let token: BearerToken<()> = resolve_jwt_did(token_str, current_time)?;
+/// let token: BearerToken<()> = resolve_jwt_did(token_str, current_time, max_lifetime)?;
 /// ```
-pub fn resolve_jwt_did<T>(token_str: &str, current_time: u64) -> Result<BearerToken<T>>
+pub fn resolve_jwt_did<T>(
+    token_str: &str,
+    current_time: u64,
+    max_token_lifetime_secs: u64,
+) -> Result<BearerToken<T>>
 where
     T: DeserializeOwned + Debug,
 {
@@ -172,6 +176,13 @@ where
     if bearer_token.issued_time > bearer_token.expiration_time {
         return Err(AuthNError::JwtError(
             "Invalid token: issued after expiration".to_string(),
+        ));
+    }
+
+    // Check that issued_time not expired
+    if bearer_token.expiration_time - bearer_token.issued_time > max_token_lifetime_secs {
+        return Err(AuthNError::JwtError(
+            "Token lifetime exceeds maximum".to_string(),
         ));
     }
 

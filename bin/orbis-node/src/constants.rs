@@ -6,6 +6,16 @@
 use std::time::Duration;
 
 // ============================================================================
+// Authentication Constants
+// ============================================================================
+
+/// Maximum allowed lifetime for a JWT bearer token (seconds).
+///
+/// Tokens with `exp - iat` greater than this value are rejected, preventing
+/// long-lived credentials from being issued and then leaked. Set to 24 hours.
+pub const MAX_TOKEN_LIFETIME_SECS: u64 = 24 * 60 * 60;
+
+// ============================================================================
 // Cryptographic Constants
 // ============================================================================
 
