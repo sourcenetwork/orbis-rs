@@ -223,7 +223,30 @@ mod tests {
             "duplicate from same peer should be rejected"
         );
     }
+    #[tokio::test]
+    async fn test_take_responses_consumes_entry() {
+        let mgr = PreResponseManager::new();
+        let expected = vec![PEER_A.to_string()];
 
+        assert!(mgr.init_response("req-take".into(), &expected).await);
+        mgr.store_response(
+            "req-take",
+            dummy_response("req-take", 1),
+            &peer_bytes(PEER_A),
+        )
+        .await;
+
+        // take_responses should return the responses…
+        let taken = mgr.take_responses("req-take").await;
+        assert!(taken.is_some());
+        assert_eq!(taken.unwrap().len(), 1);
+
+        // …and the entry should be gone afterwards
+        assert!(
+            mgr.get_responses("req-take").await.is_none(),
+            "entry must be removed after take_responses"
+        );
+    }
     #[tokio::test]
     async fn test_rejects_peer_impersonating_another_node_id() {
         let mgr = PreResponseManager::new();
