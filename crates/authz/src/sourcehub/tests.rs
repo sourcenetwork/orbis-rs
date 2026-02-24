@@ -111,6 +111,8 @@ async fn test_create_and_query_policy() {
         document.resource.clone(),
         document.id.clone(),
         "reader".to_string(),
+        None,
+        None,
     );
     let is_authorized = auth
         .check(access_request.to_bytes().unwrap(), &reader_did.clone())
@@ -147,8 +149,14 @@ async fn test_create_and_query_policy() {
     assert_eq!(result.code, 0, "Set reader relationship should succeed");
 
     // 6. Test that reader is now authorized via check()
-    let access_request =
-        AccessCheckRequest::new(policy_id.clone(), "document", "doc-123", "reader");
+    let access_request = AccessCheckRequest::new(
+        policy_id.clone(),
+        "document".to_string(),
+        "doc-123".to_string(),
+        "reader".to_string(),
+        None,
+        None,
+    );
 
     let is_authorized = auth
         .check(access_request.to_bytes().unwrap(), &reader_did.clone())
@@ -367,7 +375,14 @@ async fn test_complex_policy_permissions() {
     println!("\n--- Testing ADMIN relationship ---");
 
     // Admin has admin relationship
-    let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "admin");
+    let req = AccessCheckRequest::new(
+        policy_id.to_string(),
+        "project".to_string(),
+        "proj-1".to_string(),
+        "admin".to_string(),
+        None,
+        None,
+    );
     let has_admin = auth
         .check(req.to_bytes().unwrap(), &admin_did.clone())
         .await
@@ -376,7 +391,14 @@ async fn test_complex_policy_permissions() {
     assert!(has_admin, "Admin should have admin relationship");
 
     // Editor does NOT have admin relationship
-    let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "admin");
+    let req = AccessCheckRequest::new(
+        policy_id.to_string(),
+        "project".to_string(),
+        "proj-1".to_string(),
+        "admin".to_string(),
+        None,
+        None,
+    );
     let has_admin = auth
         .check(req.to_bytes().unwrap(), &editor_did.clone())
         .await
@@ -385,7 +407,14 @@ async fn test_complex_policy_permissions() {
     assert!(!has_admin, "Editor should NOT have admin relationship");
 
     // Viewer does NOT have admin relationship
-    let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "admin");
+    let req = AccessCheckRequest::new(
+        policy_id.to_string(),
+        "project".to_string(),
+        "proj-1".to_string(),
+        "admin".to_string(),
+        None,
+        None,
+    );
     let has_admin = auth
         .check(req.to_bytes().unwrap(), &viewer_did.clone())
         .await
@@ -394,7 +423,14 @@ async fn test_complex_policy_permissions() {
     assert!(!has_admin, "Viewer should NOT have admin relationship");
 
     // Outsider does NOT have admin relationship
-    let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "admin");
+    let req = AccessCheckRequest::new(
+        policy_id.to_string(),
+        "project".to_string(),
+        "proj-1".to_string(),
+        "admin".to_string(),
+        None,
+        None,
+    );
     let has_admin = auth
         .check(req.to_bytes().unwrap(), &outsider_did.clone())
         .await
@@ -406,7 +442,14 @@ async fn test_complex_policy_permissions() {
     println!("\n--- Testing EDITOR relationship ---");
 
     // Admin does NOT have editor relationship
-    let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "editor");
+    let req = AccessCheckRequest::new(
+        policy_id.to_string(),
+        "project".to_string(),
+        "proj-1".to_string(),
+        "editor".to_string(),
+        None,
+        None,
+    );
     let has_editor = auth
         .check(req.to_bytes().unwrap(), &admin_did.clone())
         .await
@@ -415,7 +458,14 @@ async fn test_complex_policy_permissions() {
     assert!(!has_editor, "Admin should NOT have editor relationship");
 
     // Editor has editor relationship
-    let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "editor");
+    let req = AccessCheckRequest::new(
+        policy_id.to_string(),
+        "project".to_string(),
+        "proj-1".to_string(),
+        "editor".to_string(),
+        None,
+        None,
+    );
     let has_editor = auth
         .check(req.to_bytes().unwrap(), &editor_did.clone())
         .await
@@ -424,7 +474,14 @@ async fn test_complex_policy_permissions() {
     assert!(has_editor, "Editor should have editor relationship");
 
     // Viewer does NOT have editor relationship
-    let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "editor");
+    let req = AccessCheckRequest::new(
+        policy_id.to_string(),
+        "project".to_string(),
+        "proj-1".to_string(),
+        "editor".to_string(),
+        None,
+        None,
+    );
     let has_editor = auth
         .check(req.to_bytes().unwrap(), &viewer_did.clone())
         .await
@@ -436,7 +493,14 @@ async fn test_complex_policy_permissions() {
     println!("\n--- Testing VIEWER relationship ---");
 
     // Admin does NOT have viewer relationship
-    let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "viewer");
+    let req = AccessCheckRequest::new(
+        policy_id.to_string(),
+        "project".to_string(),
+        "proj-1".to_string(),
+        "viewer".to_string(),
+        None,
+        None,
+    );
     let has_viewer = auth
         .check(req.to_bytes().unwrap(), &admin_did.clone())
         .await
@@ -445,7 +509,14 @@ async fn test_complex_policy_permissions() {
     assert!(!has_viewer, "Admin should NOT have viewer relationship");
 
     // Editor does NOT have viewer relationship
-    let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "viewer");
+    let req = AccessCheckRequest::new(
+        policy_id.to_string(),
+        "project".to_string(),
+        "proj-1".to_string(),
+        "viewer".to_string(),
+        None,
+        None,
+    );
     let has_viewer = auth
         .check(req.to_bytes().unwrap(), &editor_did.clone())
         .await
@@ -454,7 +525,14 @@ async fn test_complex_policy_permissions() {
     assert!(!has_viewer, "Editor should NOT have viewer relationship");
 
     // Viewer has viewer relationship
-    let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "viewer");
+    let req = AccessCheckRequest::new(
+        policy_id.to_string(),
+        "project".to_string(),
+        "proj-1".to_string(),
+        "viewer".to_string(),
+        None,
+        None,
+    );
     let has_viewer = auth
         .check(req.to_bytes().unwrap(), &viewer_did.clone())
         .await
@@ -463,7 +541,14 @@ async fn test_complex_policy_permissions() {
     assert!(has_viewer, "Viewer should have viewer relationship");
 
     // Outsider does NOT have viewer relationship
-    let req = AccessCheckRequest::new(policy_id, "project", "proj-1", "viewer");
+    let req = AccessCheckRequest::new(
+        policy_id.to_string(),
+        "project".to_string(),
+        "proj-1".to_string(),
+        "viewer".to_string(),
+        None,
+        None,
+    );
     let has_viewer = auth
         .check(req.to_bytes().unwrap(), &outsider_did.clone())
         .await

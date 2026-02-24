@@ -90,6 +90,9 @@ fn create_dummy_request() -> StoreSecretRequest {
         response: TEST_RESPONSE.as_bytes().to_vec(),
         derived_pk: None,
         with_proof: false,
+        tier: None,
+        date: None,
+        metadata_hash: None,
     }
 }
 
@@ -109,6 +112,9 @@ fn create_test_jwt(test_keys: &TestKeyPair) -> String {
             TEST_RESPONSE.into(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT")
 }
@@ -201,6 +207,9 @@ async fn test_store_secret_fails_claims_mismatch() {
             TEST_RESPONSE.into(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -255,6 +264,9 @@ async fn test_store_secret_fails_namespace_mismatch() {
             TEST_RESPONSE.into(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -312,6 +324,9 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
             TEST_RESPONSE.into(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -329,6 +344,9 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         response: TEST_RESPONSE.as_bytes().to_vec(),
         derived_pk: None,
         with_proof: false,
+        tier: None,
+        date: None,
+        metadata_hash: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -391,6 +409,9 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
             TEST_RESPONSE.into(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -407,6 +428,9 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
         response: TEST_RESPONSE.as_bytes().to_vec(),
         derived_pk: None,
         with_proof: false,
+        tier: None,
+        date: None,
+        metadata_hash: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -532,7 +556,8 @@ async fn test_store_secret_idempotent() {
     let policy_id = "test_policy";
     let resource = "test_resource";
     let permission = "read";
-    let metadata = ThresholdDealerNode::encode_metadata(policy_id, resource, permission);
+    let metadata =
+        ThresholdDealerNode::encode_metadata(policy_id, resource, permission, None, None, None);
     let (_enc_cmt, secret, proof) =
         ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None, Some(&metadata))
             .expect("encrypt with proof");
@@ -559,6 +584,9 @@ async fn test_store_secret_idempotent() {
             response_bytes.clone(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -575,6 +603,9 @@ async fn test_store_secret_idempotent() {
         response: response_bytes.clone(),
         derived_pk: None,
         with_proof: false,
+        tier: None,
+        date: None,
+        metadata_hash: None,
     };
 
     // First store - should succeed
@@ -611,6 +642,9 @@ async fn test_store_secret_idempotent() {
         response: response_bytes.clone(),
         derived_pk: None,
         with_proof: false,
+        tier: None,
+        date: None,
+        metadata_hash: None,
     };
 
     let tonic_request2 = create_authenticated_request(request2, &token).unwrap();
@@ -705,7 +739,8 @@ async fn test_store_secret_fails_wrong_derived_pk() {
     let policy_id = "test_policy";
     let resource = "test_resource";
     let permission = "read";
-    let metadata = ThresholdDealerNode::encode_metadata(policy_id, resource, permission);
+    let metadata =
+        ThresholdDealerNode::encode_metadata(policy_id, resource, permission, None, None, None);
     let (_enc_cmt, secret, proof) =
         ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, Some(derivation), Some(&metadata))
             .expect("encrypt with derivation");
@@ -740,6 +775,9 @@ async fn test_store_secret_fails_wrong_derived_pk() {
             response_bytes.clone(),
             Some(wrong_derived_pk_bytes.clone()), // Wrong derived_pk
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -756,6 +794,9 @@ async fn test_store_secret_fails_wrong_derived_pk() {
         response: response_bytes.clone(),
         derived_pk: Some(wrong_derived_pk_bytes), // Wrong derived_pk
         with_proof: false,
+        tier: None,
+        date: None,
+        metadata_hash: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -844,7 +885,8 @@ async fn test_store_secret_fails_with_tampered_proof() {
     let policy_id = "test_policy";
     let resource = "test_resource";
     let permission = "read";
-    let metadata = ThresholdDealerNode::encode_metadata(policy_id, resource, permission);
+    let metadata =
+        ThresholdDealerNode::encode_metadata(policy_id, resource, permission, None, None, None);
     let (_enc_cmt, secret, proof) =
         ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None, Some(&metadata))
             .expect("encrypt with proof");
@@ -876,6 +918,9 @@ async fn test_store_secret_fails_with_tampered_proof() {
             response_bytes.clone(),
             None,
             false,
+            None,
+            None,
+            None,
         )
         .expect("Failed to create JWT");
 
@@ -892,6 +937,9 @@ async fn test_store_secret_fails_with_tampered_proof() {
         response: response_bytes,
         derived_pk: None,
         with_proof: false,
+        tier: None,
+        date: None,
+        metadata_hash: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();

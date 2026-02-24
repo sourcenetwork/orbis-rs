@@ -105,8 +105,19 @@ where
                 StoreSecretError::Deserialization(format!("Failed to parse ring payload: {}", e))
             })?;
 
-        let policy_metadata =
-            ThresholdDealerNode::encode_metadata(&req.policy_id, &req.resource, &req.permission);
+        let policy_metadata = if let Some(metadata_hash) = req.metadata_hash {
+            metadata_hash
+        } else {
+            ThresholdDealerNode::encode_metadata(
+                &req.policy_id,
+                &req.resource,
+                &req.permission,
+                req.tier.as_deref(),
+                req.date.as_deref(),
+                None,
+            )
+        };
+
         let proof = EncryptionProof {
             shared_point: req.shared_point,
             challenge: req.challenge,
@@ -133,6 +144,8 @@ where
             policy_id: req.policy_id,
             resource: req.resource,
             permission: req.permission,
+            tier: req.tier,
+            date: req.date,
         };
 
         let payload_bytes: Vec<u8> =
@@ -423,6 +436,25 @@ fn validate_store_secret_claims(
         return Err(StoreSecretError::Unauthorized(format!(
             "Token with_proof '{:?}' does not match request with_proof '{:?}'",
             token.claims.with_proof, req.with_proof
+        )));
+    }
+
+    if token.claims.tier != req.tier {
+        return Err(StoreSecretError::Unauthorized(format!(
+            "Token tier '{:?}' does not match request tier '{:?}'",
+            token.claims.tier, req.tier
+        )));
+    }
+    if token.claims.date != req.date {
+        return Err(StoreSecretError::Unauthorized(format!(
+            "Token date '{:?}' does not match request date '{:?}'",
+            token.claims.date, req.date
+        )));
+    }
+    if token.claims.metadata_hash != req.metadata_hash {
+        return Err(StoreSecretError::Unauthorized(format!(
+            "Token metadata_hash '{:?}' does not match request metadata_hash '{:?}'",
+            token.claims.metadata_hash, req.metadata_hash
         )));
     }
 

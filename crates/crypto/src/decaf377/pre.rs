@@ -422,7 +422,14 @@ impl ThresholdDealer for ThresholdDealerNode {
         Ok(derived_pk)
     }
 
-    fn encode_metadata(policy_id: &str, resource: &str, permission: &str) -> Vec<u8> {
+    fn encode_metadata(
+        policy_id: &str,
+        resource: &str,
+        permission: &str,
+        tier: Option<&str>,
+        date: Option<&str>,
+        salt: Option<&str>,
+    ) -> Vec<u8> {
         let domain = Fq::from_le_bytes_mod_order(POLICY_METADATA_DOMAIN);
 
         // Each field is encoded as: Fq(len) followed by 31-byte chunks (each fits in Fq without reduction)
@@ -431,6 +438,9 @@ impl ThresholdDealer for ThresholdDealerNode {
             policy_id.as_bytes(),
             resource.as_bytes(),
             permission.as_bytes(),
+            tier.unwrap_or("").as_bytes(),
+            date.unwrap_or("").as_bytes(),
+            salt.unwrap_or("").as_bytes(),
         ] {
             inputs.push(Fq::from(field.len() as u64));
             for chunk in field.chunks(31) {

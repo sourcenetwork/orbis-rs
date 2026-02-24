@@ -18,6 +18,7 @@ fn create_test_jwt_with_pre_claims(
         object_id: "".to_string(),
         namespace: "".to_string(),
         derivation: None,
+        salt: None,
     };
 
     let mut jwt_claims =
@@ -67,6 +68,7 @@ fn test_resolve_jwt_did_with_pre_claims() {
             object_id: "".to_string(),
             namespace: "".to_string(),
             derivation: None,
+            salt: None,
         },
     };
 
@@ -117,6 +119,7 @@ fn test_resolve_jwt_did_expired() {
             object_id: "".to_string(),
             namespace: "".to_string(),
             derivation: None,
+            salt: None,
         },
     };
 
@@ -142,6 +145,7 @@ fn test_resolve_jwt_did_future_issued_time() {
             object_id: "".to_string(),
             namespace: "".to_string(),
             derivation: None,
+            salt: None,
         },
     };
 
@@ -168,6 +172,7 @@ fn test_resolve_jwt_did_invalid_signature() {
             object_id: "".to_string(),
             namespace: "".to_string(),
             derivation: None,
+            salt: None,
         },
     };
 

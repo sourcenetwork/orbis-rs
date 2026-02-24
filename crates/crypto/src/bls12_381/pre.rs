@@ -474,7 +474,14 @@ impl ThresholdDealer for ThresholdDealerNode {
         Ok(derived_pk)
     }
 
-    fn encode_metadata(policy_id: &str, resource: &str, permission: &str) -> Vec<u8> {
+    fn encode_metadata(
+        policy_id: &str,
+        resource: &str,
+        permission: &str,
+        tier: Option<&str>,
+        date: Option<&str>,
+        salt: Option<&str>,
+    ) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(POLICY_METADATA_DOMAIN);
         hasher.update(&(policy_id.len() as u64).to_le_bytes());
@@ -483,6 +490,15 @@ impl ThresholdDealer for ThresholdDealerNode {
         hasher.update(resource.as_bytes());
         hasher.update(&(permission.len() as u64).to_le_bytes());
         hasher.update(permission.as_bytes());
+        let tier = tier.unwrap_or("");
+        hasher.update(&(tier.len() as u64).to_le_bytes());
+        hasher.update(tier.as_bytes());
+        let date = date.unwrap_or("");
+        hasher.update(&(date.len() as u64).to_le_bytes());
+        hasher.update(date.as_bytes());
+        let salt = salt.unwrap_or("");
+        hasher.update(&(salt.len() as u64).to_le_bytes());
+        hasher.update(salt.as_bytes());
         hasher.finalize().to_vec()
     }
 }

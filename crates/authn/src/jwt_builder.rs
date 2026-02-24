@@ -88,6 +88,7 @@ impl JwtSigner {
     /// * `object_id` - secret id
     /// * `peer_ids` - List of peer IDs (will be joined with commas)
     /// * `derivation` - Optional derivation path
+    /// * `salt` - Optional salt for proof
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour
@@ -97,12 +98,14 @@ impl JwtSigner {
         namespace: &str,
         object_id: &str,
         derivation: Option<Vec<u8>>,
+        salt: Option<String>,
     ) -> Result<String> {
         let claims = PreClaims {
             rdr_pk: rdr_pk.to_string(),
             object_id: object_id.to_string(),
             namespace: namespace.to_string(),
             derivation,
+            salt,
         };
         self.sign(claims, Duration::from_hours(1))
     }
@@ -121,6 +124,9 @@ impl JwtSigner {
     /// * `challenge` - c - Fiat-Shamir challenge
     /// * `response` - s - proof response (s = k + c*r)
     /// * `with_proof` - If a proof should be returned
+    /// * `tier` - Optional tier for policy
+    /// * `date` - Optional date for policy
+    /// * `metadata_hash` - If salt used pass metadata hash
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour
@@ -138,6 +144,9 @@ impl JwtSigner {
         response: Vec<u8>,
         derived_pk: Option<Vec<u8>>,
         with_proof: bool,
+        tier: Option<String>,
+        date: Option<String>,
+        metadata_hash: Option<Vec<u8>>,
     ) -> Result<String> {
         let claims = StoreSecretClaims {
             encrypted_document: encrypted_document.to_string(),
@@ -152,6 +161,9 @@ impl JwtSigner {
             response: response,
             derived_pk,
             with_proof,
+            tier,
+            date,
+            metadata_hash,
         };
         self.sign(claims, Duration::from_hours(1))
     }
@@ -257,7 +269,7 @@ mod tests {
     #[test]
     fn test_create_pre_jwt() {
         let signer = JwtSigner::new();
-        let token = signer.create_pre_jwt("rdr_pk_value", "namespace", "object_id", None);
+        let token = signer.create_pre_jwt("rdr_pk_value", "namespace", "object_id", None, None);
         assert!(token.is_ok());
     }
 
@@ -277,6 +289,9 @@ mod tests {
             b"response".to_vec(),
             None,
             false,
+            None,
+            None,
+            None,
         );
         assert!(token.is_ok());
 

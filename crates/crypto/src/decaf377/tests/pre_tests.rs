@@ -742,7 +742,8 @@ fn test_different_derivations_produce_different_keys() {
 #[test]
 fn test_encryption_proof_with_metadata_valid() {
     let secret = b"test secret data";
-    let metadata = ThresholdDealerNode::encode_metadata("123", "file.txt", "read");
+    let metadata =
+        ThresholdDealerNode::encode_metadata("123", "file.txt", "read", None, None, None);
     let mut rng = OsRng;
 
     let dkg_sk = Fr::rand(&mut rng);
@@ -761,8 +762,10 @@ fn test_encryption_proof_with_metadata_valid() {
 #[test]
 fn test_encryption_proof_wrong_metadata_fails() {
     let secret = b"test secret data";
-    let correct_metadata = ThresholdDealerNode::encode_metadata("123", "file.txt", "read");
-    let wrong_metadata = ThresholdDealerNode::encode_metadata("456", "other.txt", "write");
+    let correct_metadata =
+        ThresholdDealerNode::encode_metadata("123", "file.txt", "read", None, None, None);
+    let wrong_metadata =
+        ThresholdDealerNode::encode_metadata("456", "other.txt", "write", None, None, None);
     let mut rng = OsRng;
 
     let dkg_sk = Fr::rand(&mut rng);
@@ -783,7 +786,8 @@ fn test_encryption_proof_wrong_metadata_fails() {
 #[test]
 fn test_encryption_proof_missing_metadata_fails() {
     let secret = b"test secret data";
-    let metadata = ThresholdDealerNode::encode_metadata("123", "file.txt", "read");
+    let metadata =
+        ThresholdDealerNode::encode_metadata("123", "file.txt", "read", None, None, None);
     let mut rng = OsRng;
 
     let dkg_sk = Fr::rand(&mut rng);
@@ -802,7 +806,8 @@ fn test_encryption_proof_missing_metadata_fails() {
 #[test]
 fn test_encryption_proof_extra_metadata_fails() {
     let secret = b"test secret data";
-    let metadata = ThresholdDealerNode::encode_metadata("123", "file.txt", "read");
+    let metadata =
+        ThresholdDealerNode::encode_metadata("123", "file.txt", "read", None, None, None);
     let mut rng = OsRng;
 
     let dkg_sk = Fr::rand(&mut rng);
@@ -821,7 +826,8 @@ fn test_encryption_proof_extra_metadata_fails() {
 #[test]
 fn test_encryption_proof_metadata_with_derivation() {
     let secret = b"test secret with both metadata and derivation";
-    let metadata = ThresholdDealerNode::encode_metadata("789", "sensitive.doc", "decrypt");
+    let metadata =
+        ThresholdDealerNode::encode_metadata("789", "sensitive.doc", "decrypt", None, None, None);
     let derivation = b"alice-capability-v1";
     let mut rng = OsRng;
 
@@ -847,7 +853,8 @@ fn test_encryption_proof_metadata_with_derivation() {
         "Proof should verify with correct metadata and derivation"
     );
 
-    let wrong_metadata = ThresholdDealerNode::encode_metadata("000", "other", "none");
+    let wrong_metadata =
+        ThresholdDealerNode::encode_metadata("000", "other", "none", None, None, None);
     let result = ThresholdDealerNode::verify_encryption(
         &derived_pk,
         &enc_cmt,
@@ -1004,7 +1011,7 @@ fn test_verify_encryption_wrong_derivation_fails_loudly() {
     // with a derivation mismatch error, rather than silently producing an unusable result
     // that only fails at AES-GCM decrypt time.
     let secret = b"test secret";
-    let metadata = ThresholdDealerNode::encode_metadata("123", "doc", "read");
+    let metadata = ThresholdDealerNode::encode_metadata("123", "doc", "read", None, None, None);
     let correct_derivation = b"alice-capability-v1";
     let wrong_derivation = b"eve-capability-v1";
     let mut rng = OsRng;
@@ -1066,4 +1073,67 @@ fn test_verify_encryption_wrong_derivation_fails_loudly() {
         result.is_ok(),
         "verify_encryption should succeed with correct derivation"
     );
+}
+
+#[test]
+fn test_metadata_individual_field_tampering_fails() {
+    // Encrypt once with all fields populated. Verify that changing any single
+    // field — including the new tier/date/salt fields — breaks proof verification.
+    let secret = b"test secret";
+    let mut rng = OsRng;
+    let dkg_sk = Fr::rand(&mut rng);
+    let dkg_pk = Element::GENERATOR * dkg_sk;
+    let policy = "policy-1";
+    let resource = "resource-1";
+    let permission = "read";
+    let tier = Some("tier-gold");
+    let date = Some("2025-01-01");
+    let salt = Some("salt-xyz");
+
+    let correct =
+        ThresholdDealerNode::encode_metadata(policy, resource, permission, tier, date, salt);
+
+    let (enc_cmt, _encrypted_secret, proof) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None, Some(&correct)).unwrap();
+
+    // Each entry changes exactly one field relative to `correct`.
+    let tampered: &[Vec<u8>] = &[
+        ThresholdDealerNode::encode_metadata("TAMPERED", resource, permission, tier, date, salt),
+        ThresholdDealerNode::encode_metadata(policy, "TAMPERED", permission, tier, date, salt),
+        ThresholdDealerNode::encode_metadata(policy, resource, "TAMPERED", tier, date, salt),
+        ThresholdDealerNode::encode_metadata(
+            policy,
+            resource,
+            permission,
+            Some("TAMPERED"),
+            date,
+            salt,
+        ),
+        ThresholdDealerNode::encode_metadata(
+            policy,
+            resource,
+            permission,
+            tier,
+            Some("TAMPERED"),
+            salt,
+        ),
+        ThresholdDealerNode::encode_metadata(
+            policy,
+            resource,
+            permission,
+            tier,
+            date,
+            Some("TAMPERED"),
+        ),
+        // Optional fields: Some -> None changes must also fail
+        ThresholdDealerNode::encode_metadata(policy, resource, permission, None, date, salt),
+        ThresholdDealerNode::encode_metadata(policy, resource, permission, tier, None, salt),
+        ThresholdDealerNode::encode_metadata(policy, resource, permission, tier, date, None),
+    ];
+
+    for variant in tampered {
+        let result =
+            ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(variant));
+        assert!(result.is_err(), "Proof should fail with tampered metadata");
+    }
 }

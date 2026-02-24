@@ -26,7 +26,9 @@ impl SignBenchSetup for Bls12381SignBench {
         let dist_key_shares: Vec<DistKeyShare<Fr>> = secret_shares
             .iter()
             .take(t)
-            .map(|s| DistKeyShare { pri_share: s.clone() })
+            .map(|s| DistKeyShare {
+                pri_share: s.clone(),
+            })
             .collect();
 
         let participant_ids: Vec<u32> = secret_shares.iter().take(t).map(|s| s.i).collect();
@@ -34,8 +36,10 @@ impl SignBenchSetup for Bls12381SignBench {
         let signer = ThresholdBlsSigner::new();
 
         // BLS is non-interactive: no nonce commitments or signing state.
-        let commitments: Vec<(u32, <ThresholdBlsSigner as ThresholdSigner>::NonceCommitment)> =
-            Vec::new();
+        let commitments: Vec<(
+            u32,
+            <ThresholdBlsSigner as ThresholdSigner>::NonceCommitment,
+        )> = Vec::new();
         let signing_states: Vec<<ThresholdBlsSigner as ThresholdSigner>::SigningState> = Vec::new();
 
         // Pre-compute signature shares

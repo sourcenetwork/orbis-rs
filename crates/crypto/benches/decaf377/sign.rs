@@ -26,7 +26,9 @@ impl SignBenchSetup for Decaf377SignBench {
         let dist_key_shares: Vec<DistKeyShare<Fr>> = secret_shares
             .iter()
             .take(t)
-            .map(|s| DistKeyShare { pri_share: s.clone() })
+            .map(|s| DistKeyShare {
+                pri_share: s.clone(),
+            })
             .collect();
 
         let participant_ids: Vec<u32> = secret_shares.iter().take(t).map(|s| s.i).collect();

@@ -123,6 +123,8 @@ pub struct PreparedSecret {
     pub challenge: Vec<u8>,
     /// Response for encryption proof
     pub response: Vec<u8>,
+    /// Policy metadata hash
+    pub metadata: Vec<u8>,
     /// Optional derived public key (when derivation was used)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived_pk: Option<Vec<u8>>,
@@ -138,6 +140,9 @@ pub fn prepare_secret(
     policy_id: String,
     resource: String,
     permission: String,
+    tier: Option<String>,
+    date: Option<String>,
+    salt: Option<String>,
 ) -> Result<PreparedSecret> {
     // Parse ring public key
     let ring_pk_bytes =
@@ -145,7 +150,14 @@ pub fn prepare_secret(
     let ring_pk_point =
         G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
 
-    let metadata = ThresholdDealerNode::encode_metadata(&policy_id, &resource, &permission);
+    let metadata = ThresholdDealerNode::encode_metadata(
+        &policy_id,
+        &resource,
+        &permission,
+        tier.as_deref(),
+        date.as_deref(),
+        salt.as_deref(),
+    );
 
     // Encrypt locally - node never sees plaintext
     let (enc_cmt, encrypted_secret, proof) = ThresholdDealerNode::encrypt_secret(
@@ -170,6 +182,7 @@ pub fn prepare_secret(
         shared_point: proof.shared_point,
         challenge: proof.challenge,
         response: proof.response,
+        metadata,
         derived_pk: proof.derived_pk,
     })
 }
@@ -188,6 +201,9 @@ pub async fn store_prepared_secret(
     reader_did_pk: Option<String>,
     derived_pk: Option<Vec<u8>>,
     with_proof: bool,
+    tier: Option<String>,
+    date: Option<String>,
+    metadata_hash: Option<Vec<u8>>,
 ) -> Result<StoreSecretResult> {
     println!("Storing secret via StoreSecret service:");
     println!("  Endpoint: {}", endpoint);
@@ -212,6 +228,9 @@ pub async fn store_prepared_secret(
         response: prepared.response.clone(),
         derived_pk: derived_pk.clone(),
         with_proof,
+        tier: tier.clone(),
+        date: date.clone(),
+        metadata_hash: metadata_hash.clone(),
     };
 
     // Create JWT for authentication with all request fields
@@ -232,6 +251,9 @@ pub async fn store_prepared_secret(
             prepared.response.clone(),
             derived_pk,
             with_proof,
+            tier,
+            date,
+            metadata_hash,
         )
         .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
 
@@ -282,6 +304,9 @@ pub async fn do_store_secret(
     policy_id: String,
     resource: String,
     permission: String,
+    tier: Option<String>,
+    date: Option<String>,
+    salt: Option<String>,
     reader_did_pk: Option<String>,
     derivation: Option<Vec<u8>>,
     with_proof: bool,
@@ -293,6 +318,9 @@ pub async fn do_store_secret(
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
+        tier.clone(),
+        date.clone(),
+        salt.clone(),
     )?;
     // If derivation was provided, compute derived_pk from the proof
     let derived_pk = if derivation.is_some() {
@@ -302,7 +330,7 @@ pub async fn do_store_secret(
     };
     store_prepared_secret(
         endpoint,
-        &prepared,
+        &prepared.clone(),
         ring_id,
         namespace,
         policy_id,
@@ -311,6 +339,9 @@ pub async fn do_store_secret(
         reader_did_pk,
         derived_pk,
         with_proof,
+        tier,
+        date,
+        Some(prepared.metadata),
     )
     .await
 }
@@ -324,6 +355,7 @@ pub async fn do_pre(
     reader_did_pk: Option<String>,
     namespace: String,
     derivation: Option<Vec<u8>>,
+    salt: Option<String>,
 ) -> Result<Vec<u8>> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
@@ -354,6 +386,7 @@ pub async fn do_pre(
         object_id: object_id.clone(),
         namespace: namespace.clone(),
         derivation: derivation.clone(),
+        salt: salt.clone(),
     };
 
     // JWT work use determinitic key_pair for now
@@ -361,7 +394,13 @@ pub async fn do_pre(
     let key_pair = generate::<DidEd25519KeyPair>(Some(reader_did_pk.as_bytes()));
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
-        .create_pre_jwt(&reader_pk, &namespace, &object_id, derivation.clone())
+        .create_pre_jwt(
+            &reader_pk,
+            &namespace,
+            &object_id,
+            derivation.clone(),
+            salt.clone(),
+        )
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token)
         .map_err(|e| anyhow!("Failed to create_authenticated_request: {}", e))?;
@@ -438,6 +477,9 @@ pub async fn do_encrypt_secret(
     policy_id: String,
     resource: String,
     permission: String,
+    tier: Option<String>,
+    date: Option<String>,
+    salt: Option<String>,
 ) -> Result<()> {
     println!("Encrypting secret to ring public key...");
     println!("  Ring PK: {}...", &ring_pk[..ring_pk.len().min(20)]);
@@ -450,7 +492,14 @@ pub async fn do_encrypt_secret(
     let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
         .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
-    let metadata = ThresholdDealerNode::encode_metadata(&policy_id, &resource, &permission);
+    let metadata = ThresholdDealerNode::encode_metadata(
+        &policy_id,
+        &resource,
+        &permission,
+        tier.as_deref(),
+        date.as_deref(),
+        salt.as_deref(),
+    );
 
     // Encrypt the secret
     let (_enc_cmt, encrypted_secret, _proof) = ThresholdDealerNode::encrypt_secret(

@@ -69,6 +69,9 @@ pub enum SubCommands {
         /// Optional derivation path (hex encoded)
         #[clap(long)]
         derivation: Option<String>,
+        /// Optional salt
+        #[clap(long)]
+        salt: Option<String>,
     },
     /// Encrypts a secret to the ring public key (from DKG)
     EncryptSecret {
@@ -90,6 +93,15 @@ pub enum SubCommands {
         /// Permission to read secret
         #[clap(long)]
         permission: String,
+        /// Optional tier
+        #[clap(long)]
+        tier: Option<String>,
+        /// Optional date
+        #[clap(long)]
+        date: Option<String>,
+        /// Optional salt
+        #[clap(long)]
+        salt: Option<String>,
     },
 
     /// Generate a reader keypair for PRE decryption
@@ -191,6 +203,15 @@ pub enum SubCommands {
         /// Permission to read secret
         #[clap(long)]
         permission: String,
+        /// Optional tier
+        #[clap(long)]
+        tier: Option<String>,
+        /// Optional date
+        #[clap(long)]
+        date: Option<String>,
+        /// Optional salt
+        #[clap(long)]
+        salt: Option<String>,
     },
     /// Store a prepared (pre-encrypted) secret - idempotent, safe for retries
     StorePreparedSecret {
@@ -224,6 +245,15 @@ pub enum SubCommands {
         /// Request a proof
         #[clap(long)]
         with_proof: bool,
+        /// Optional tier
+        #[clap(long)]
+        tier: Option<String>,
+        /// Optional date
+        #[clap(long)]
+        date: Option<String>,
+        /// Optional metadata hash
+        #[clap(long)]
+        metadata_hash: Option<String>,
     },
     /// Store secret by sending it to node (encrypts and stores in one step)
     StoreSecret {
@@ -260,6 +290,15 @@ pub enum SubCommands {
         /// Request a proof
         #[clap(long)]
         with_proof: bool,
+        /// Optional tier
+        #[clap(long)]
+        tier: Option<String>,
+        /// Optional date
+        #[clap(long)]
+        date: Option<String>,
+        /// Optional salt
+        #[clap(long)]
+        salt: Option<String>,
     },
     /// Query node info
     Info {
@@ -296,6 +335,7 @@ async fn main() -> Result<()> {
             reader_did_pk,
             namespace,
             derivation,
+            salt,
         } => {
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
@@ -308,6 +348,7 @@ async fn main() -> Result<()> {
                 reader_did_pk,
                 namespace,
                 derivation_bytes,
+                salt,
             )
             .await?;
         }
@@ -318,6 +359,9 @@ async fn main() -> Result<()> {
             policy_id,
             resource,
             permission,
+            tier,
+            date,
+            salt,
         } => {
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
@@ -328,6 +372,9 @@ async fn main() -> Result<()> {
                 policy_id,
                 resource,
                 permission,
+                tier,
+                date,
+                salt,
             )
             .await?;
         }
@@ -389,6 +436,9 @@ async fn main() -> Result<()> {
             policy_id,
             resource,
             permission,
+            tier,
+            date,
+            salt,
         } => {
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
@@ -399,6 +449,9 @@ async fn main() -> Result<()> {
                 policy_id,
                 resource,
                 permission,
+                tier,
+                date,
+                salt,
             )?;
             let json = serde_json::to_string_pretty(&prepared)?;
             println!("Prepared Secret (save this for store-prepared-secret):");
@@ -416,9 +469,14 @@ async fn main() -> Result<()> {
             reader_did_pk,
             derived_pk,
             with_proof,
+            tier,
+            date,
+            metadata_hash,
         } => {
             let derived_pk_bytes =
                 derived_pk.map(|d| hex::decode(&d).expect("Failed to decode derived_pk hex"));
+            let metadata_hash_bytes =
+                metadata_hash.map(|d| hex::decode(&d).expect("Failed to decode metadata_hash hex"));
             let prepared: PreparedSecret = serde_json::from_str(&prepared_json)
                 .map_err(|e| anyhow::anyhow!("Invalid prepared_json: {}", e))?;
             store_prepared_secret(
@@ -432,6 +490,9 @@ async fn main() -> Result<()> {
                 reader_did_pk,
                 derived_pk_bytes,
                 with_proof,
+                tier,
+                date,
+                metadata_hash_bytes,
             )
             .await?;
         }
@@ -444,6 +505,9 @@ async fn main() -> Result<()> {
             policy_id,
             resource,
             permission,
+            tier,
+            date,
+            salt,
             reader_did_pk,
             derivation,
             with_proof,
@@ -459,6 +523,9 @@ async fn main() -> Result<()> {
                 policy_id,
                 resource,
                 permission,
+                tier,
+                date,
+                salt,
                 reader_did_pk,
                 derivation_bytes,
                 with_proof,
