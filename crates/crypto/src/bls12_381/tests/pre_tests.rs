@@ -1227,3 +1227,66 @@ fn test_swap_enc_cmt_and_proof_fails_decrypt() {
         "Decryption should fail when enc_cmt + proof are swapped but ciphertext is from another encryption"
     );
 }
+
+#[test]
+fn test_metadata_individual_field_tampering_fails() {
+    // Encrypt once with all fields populated. Verify that changing any single
+    // field — including the new tier/date/salt fields — breaks proof verification.
+    let secret = b"test secret";
+    let mut rng = OsRng;
+    let dkg_sk = Fr::rand(&mut rng);
+    let dkg_pk: G1Affine = (G1Projective::generator() * dkg_sk).into();
+    let policy = "policy-1";
+    let resource = "resource-1";
+    let permission = "read";
+    let tier = Some("tier-gold");
+    let date = Some("2025-01-01");
+    let salt = Some("salt-xyz");
+
+    let correct =
+        ThresholdDealerNode::encode_metadata(policy, resource, permission, tier, date, salt);
+
+    let (enc_cmt, _encrypted_secret, proof) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, secret, None, Some(&correct)).unwrap();
+
+    // Each entry changes exactly one field relative to `correct`.
+    let tampered: &[Vec<u8>] = &[
+        ThresholdDealerNode::encode_metadata("TAMPERED", resource, permission, tier, date, salt),
+        ThresholdDealerNode::encode_metadata(policy, "TAMPERED", permission, tier, date, salt),
+        ThresholdDealerNode::encode_metadata(policy, resource, "TAMPERED", tier, date, salt),
+        ThresholdDealerNode::encode_metadata(
+            policy,
+            resource,
+            permission,
+            Some("TAMPERED"),
+            date,
+            salt,
+        ),
+        ThresholdDealerNode::encode_metadata(
+            policy,
+            resource,
+            permission,
+            tier,
+            Some("TAMPERED"),
+            salt,
+        ),
+        ThresholdDealerNode::encode_metadata(
+            policy,
+            resource,
+            permission,
+            tier,
+            date,
+            Some("TAMPERED"),
+        ),
+        // Optional fields: Some -> None changes must also fail
+        ThresholdDealerNode::encode_metadata(policy, resource, permission, None, date, salt),
+        ThresholdDealerNode::encode_metadata(policy, resource, permission, tier, None, salt),
+        ThresholdDealerNode::encode_metadata(policy, resource, permission, tier, date, None),
+    ];
+
+    for variant in tampered {
+        let result =
+            ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(variant));
+        assert!(result.is_err(), "Proof should fail with tampered metadata");
+    }
+}
