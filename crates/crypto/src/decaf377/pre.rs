@@ -439,7 +439,7 @@ impl ThresholdDealer for ThresholdDealerNode {
             resource.as_bytes(),
             permission.as_bytes(),
             tier.unwrap_or("").as_bytes(),
-            data.unwrap_or("").as_bytes(),
+            date.unwrap_or("").as_bytes(),
             salt.unwrap_or("").as_bytes(),
         ] {
             inputs.push(Fq::from(field.len() as u64));
