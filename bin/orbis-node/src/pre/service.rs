@@ -1,18 +1,17 @@
 use crate::app_state::AppState;
-use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::helpers::helpers::{
     connect_to_peers, derive_node_id_from_peer_id_bytes, validate_all_peer_ids,
 };
 use crate::metrics;
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
-use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, PreClaims};
-use authz::sourcehub::AccessCheckRequest;
-use bulletin::r#trait::{DocumentPayload, RingPayload};
-use crypto::r#trait::{
-    DistKeyShare, Dkg, EncryptionProof, ReencryptReply, Secret, ThresholdDealer,
+use crate::pre::helpers::{
+    check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
+    validate_pre_claims, verify_encryption_binding,
 };
-use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
+use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, PreClaims};
+use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
+use crypto::PreImpl as ThresholdDealerNode;
 use network::REENCRYPT;
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
 use std::sync::Arc;
@@ -88,55 +87,16 @@ where
             .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 
         let req = request.into_inner();
-        let object_info = self
-            .state
-            .bulletin
-            .read(req.namespace.clone(), req.object_id.clone())
-            .await
-            .map_err(|e| {
-                PreError::Storage(format!("Failed to read object '{}': {}", req.object_id, e))
-            })?;
+        let (document_payload, ring_payload) =
+            fetch_bulletin_payloads(&*self.state.bulletin, &req.namespace, &req.object_id).await?;
 
-        let document_payload = serde_json::from_slice::<DocumentPayload>(&object_info.payload)
-            .map_err(|e| {
-                PreError::Deserialization(format!("Failed to parse document payload: {}", e))
-            })?;
-
-        let ring_info = self
-            .state
-            .bulletin
-            .read(
-                BULLETIN_RING_NAMESPACE.to_string(),
-                document_payload.ring_id.clone(),
-            )
-            .await
-            .map_err(|e| {
-                PreError::Storage(format!(
-                    "Failed to read ring '{}': {}",
-                    document_payload.ring_id, e
-                ))
-            })?;
-
-        let ring_payload =
-            serde_json::from_slice::<RingPayload>(&ring_info.payload).map_err(|e| {
-                PreError::Deserialization(format!("Failed to parse ring payload: {}", e))
-            })?;
-
-        let permission = AccessCheckRequest::new(
-            document_payload.policy_id.clone(),
-            document_payload.resource.clone(),
-            req.object_id.clone(),
-            document_payload.permission.clone(),
-            document_payload.tier.clone(),
-            document_payload.date.clone(),
+        check_policy_access(
+            &*self.state.authz,
+            &document_payload,
+            &req.object_id,
+            &token.issuer_id,
         )
-        .to_bytes()
-        .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
-        self.state
-            .authz
-            .check(permission, &token.issuer_id)
-            .await
-            .map_err(|e| PreError::AuthZ(format!("Error in Authz request: {}", e)))?;
+        .await?;
 
         // 2. Authorize: Validate JWT claims match request fields
         validate_pre_claims(
@@ -158,18 +118,8 @@ where
             document_payload.date.clone().as_deref(),
             req.salt.as_deref(),
         );
-        // ring_pk: hex-encoded compressed G1Affine bytes
-        let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
-            .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
-
-        let ring_pk = G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| {
-            PreError::Deserialization(format!("Failed to deserialize ring_pk: {}", e))
-        })?;
-
-        let secret: Secret = serde_json::from_slice(&document_payload.document.as_bytes().to_vec())
-            .map_err(|e| {
-                PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
-            })?;
+        let (ring_pk_bytes, ring_pk) = decode_ring_pk(&ring_payload.ring_pk)?;
+        let secret = deserialize_secret(&document_payload.document)?;
 
         verify_encryption_binding(
             &ring_pk,
@@ -294,83 +244,4 @@ where
 
         Ok(Response::new(response))
     }
-}
-
-/// Verifies the encryption proof binds the ciphertext to the correct public key and policy.
-///
-/// Derives the actual public key (applying derivation if present), deserializes the
-/// encryption proof and commitment, then verifies via `ThresholdDealerNode::verify_encryption`.
-pub fn verify_encryption_binding(
-    ring_pk: &G1Affine,
-    derivation: Option<&[u8]>,
-    proof_str: String,
-    enc_cmt_bytes: &[u8],
-    policy_metadata: &[u8],
-) -> Result<(), PreError> {
-    let actual_pk = if let Some(derivation) = derivation {
-        ThresholdDealerNode::derive_public_key(ring_pk, derivation)
-            .map_err(|e| PreError::Crypto(format!("derive_public_key error: {}", e)))?
-    } else {
-        *ring_pk
-    };
-
-    let proof: EncryptionProof = EncryptionProof::try_from(proof_str).map_err(|e| {
-        PreError::Deserialization(format!("Failed to deserialize encryption proof: {}", e))
-    })?;
-
-    let enc_cmt = G1Affine::from_bytes(enc_cmt_bytes)
-        .map_err(|e| PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e)))?;
-
-    ThresholdDealerNode::verify_encryption(&actual_pk, &enc_cmt, &proof, Some(policy_metadata))
-        .map_err(|e| PreError::Crypto(format!("Policy binding verification failed: {}", e)))?;
-
-    Ok(())
-}
-
-/// Validates JWT claims against the PRE request
-pub fn validate_pre_claims(
-    token: &BearerToken<PreClaims>,
-    rdr_pk: &String,
-    object_id: &String,
-    namespace: &String,
-    derivation: &Option<Vec<u8>>,
-    salt: &Option<String>,
-) -> Result<(), PreError> {
-    // Validate rdr_pk matches
-    if token.claims.rdr_pk != *rdr_pk {
-        return Err(PreError::Unauthorized(format!(
-            "Token rdr_pk '{}' does not match request rdr_pk '{}'",
-            token.claims.rdr_pk, rdr_pk
-        )));
-    }
-
-    if token.claims.object_id != *object_id {
-        return Err(PreError::Unauthorized(format!(
-            "Token object_id '{}' does not match request object_id '{}'",
-            token.claims.object_id, object_id
-        )));
-    }
-
-    if token.claims.namespace != *namespace {
-        return Err(PreError::Unauthorized(format!(
-            "Token namespace '{}' does not match request namespace '{}'",
-            token.claims.namespace, namespace
-        )));
-    }
-
-    if token.claims.derivation != *derivation {
-        return Err(PreError::Unauthorized(format!(
-            "Token derivation '{:?}' does not match request derivation '{:?}'",
-            token.claims.derivation, derivation
-        )));
-    }
-
-    if token.claims.salt != *salt {
-        return Err(PreError::Unauthorized(format!(
-            "Token salt '{:?}' does not match request salt '{:?}'",
-            token.claims.salt, salt
-        )));
-    }
-
-    Ok(())
 }

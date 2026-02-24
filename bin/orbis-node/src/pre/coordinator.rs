@@ -11,14 +11,15 @@
 //! - Manages reencryption share collection and recovery
 
 use crate::app_state::AppState;
-use crate::constants::{BULLETIN_RING_NAMESPACE, PEER_RESPONSE_TIMEOUT};
+use crate::constants::PEER_RESPONSE_TIMEOUT;
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::pre::error::{PreError, Result};
+use crate::pre::helpers::{
+    check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
+    validate_pre_claims, verify_encryption_binding,
+};
 use crate::pre::messages::PreMessage;
-use crate::pre::service::{validate_pre_claims, verify_encryption_binding};
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
-use authz::sourcehub::AccessCheckRequest;
-use bulletin::r#trait::{DocumentPayload, RingPayload};
 use crypto::r#trait::{
     DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
 };
@@ -167,39 +168,8 @@ where
             &salt,
         )?;
 
-        let object_info = self
-            .app_state
-            .bulletin
-            .read(namespace.clone(), object_id.clone())
-            .await
-            .map_err(|e| {
-                PreError::Storage(format!("Failed to read object '{}': {}", object_id, e))
-            })?;
-
-        let document_payload = serde_json::from_slice::<DocumentPayload>(&object_info.payload)
-            .map_err(|e| {
-                PreError::Deserialization(format!("Failed to parse document payload: {}", e))
-            })?;
-
-        let ring_info = self
-            .app_state
-            .bulletin
-            .read(
-                BULLETIN_RING_NAMESPACE.to_string(),
-                document_payload.ring_id.clone(),
-            )
-            .await
-            .map_err(|e| {
-                PreError::Storage(format!(
-                    "Failed to read ring '{}': {}",
-                    document_payload.ring_id, e
-                ))
-            })?;
-
-        let ring_payload =
-            serde_json::from_slice::<RingPayload>(&ring_info.payload).map_err(|e| {
-                PreError::Deserialization(format!("Failed to parse ring payload: {}", e))
-            })?;
+        let (document_payload, ring_payload) =
+            fetch_bulletin_payloads(&*self.app_state.bulletin, &namespace, &object_id).await?;
 
         // Note: We do NOT validate from_node_id here because the reencrypt request initiator
         // may not be in the ring (external requesters use node_id=0).
@@ -214,27 +184,16 @@ where
             salt.as_deref(),
         );
 
-        let permission_bytes = AccessCheckRequest::new(
-            document_payload.policy_id,
-            document_payload.resource,
-            object_id,
-            document_payload.permission,
-            document_payload.tier,
-            document_payload.date,
+        check_policy_access(
+            &*self.app_state.authz,
+            &document_payload,
+            &object_id,
+            &token.issuer_id,
         )
-        .to_bytes()
-        .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
-        self.app_state
-            .authz
-            .check(permission_bytes, &token.issuer_id)
-            .await
-            .map_err(|e| PreError::AuthZ(format!("Error in Authz request: {}", e)))?;
+        .await?;
 
         // 1. Deserialize the secret
-        let secret: Secret = serde_json::from_slice(&document_payload.document.as_bytes().to_vec())
-            .map_err(|e| {
-                PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
-            })?;
+        let secret = deserialize_secret(&document_payload.document)?;
 
         // 2. Deserialize reader public key
         let rdr_pk = <D::PublicKey>::from_bytes(&rdr_pk_bytes[..]).map_err(|e| {
@@ -242,11 +201,7 @@ where
         })?;
 
         // 3. Deserialize ring public key to get the storage key
-        let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
-            .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
-        let ring_pk = <D::PublicKey>::from_bytes(&ring_pk_bytes[..]).map_err(|e| {
-            PreError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
-        })?;
+        let (_, ring_pk) = decode_ring_pk(&ring_payload.ring_pk)?;
 
         // 4. Retrieve final share from local storage
         let final_share_bytes = self
