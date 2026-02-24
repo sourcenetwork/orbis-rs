@@ -78,8 +78,8 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
 /// These tests fail at auth stage, so encrypted_document and enc_cmt can be dummy values.
 fn create_dummy_request() -> StoreSecretRequest {
     StoreSecretRequest {
-        encrypted_document: TEST_ENCRYPTED_DOC.to_string(),
-        enc_cmt: TEST_ENC_CMT.to_string(),
+        encrypted_document: TEST_ENCRYPTED_DOC.as_bytes().to_vec(),
+        enc_cmt: TEST_ENC_CMT.as_bytes().to_vec(),
         ring_id: TEST_RING_ID.to_string(),
         namespace: TEST_NAMESPACE.to_string(),
         policy_id: TEST_POLICY_ID.to_string(),
@@ -100,8 +100,8 @@ fn create_dummy_request() -> StoreSecretRequest {
 fn create_test_jwt(test_keys: &TestKeyPair) -> String {
     test_keys
         .create_store_secret_jwt(
-            TEST_ENCRYPTED_DOC,
-            TEST_ENC_CMT,
+            TEST_ENCRYPTED_DOC.as_bytes().to_vec(),
+            TEST_ENC_CMT.as_bytes().to_vec(),
             TEST_RING_ID,
             TEST_NAMESPACE,
             TEST_POLICY_ID,
@@ -195,8 +195,8 @@ async fn test_store_secret_fails_claims_mismatch() {
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            TEST_ENCRYPTED_DOC,
-            TEST_ENC_CMT,
+            TEST_ENCRYPTED_DOC.as_bytes().to_vec(),
+            TEST_ENC_CMT.as_bytes().to_vec(),
             "jwt-ring-id", // Different ring_id in JWT
             TEST_NAMESPACE,
             TEST_POLICY_ID,
@@ -252,8 +252,8 @@ async fn test_store_secret_fails_namespace_mismatch() {
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            TEST_ENCRYPTED_DOC,
-            TEST_ENC_CMT,
+            TEST_ENCRYPTED_DOC.as_bytes().to_vec(),
+            TEST_ENC_CMT.as_bytes().to_vec(),
             TEST_RING_ID,
             "jwt-namespace", // Different namespace in JWT
             TEST_POLICY_ID,
@@ -306,14 +306,14 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
     let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     // Use invalid encrypted_document that will fail validation
-    let invalid_encrypted_doc = "not valid json";
+    let invalid_encrypted_doc = b"not valid json";
 
     // Create valid JWT with matching claims (including invalid doc)
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            invalid_encrypted_doc,
-            TEST_ENC_CMT,
+            invalid_encrypted_doc.to_vec(),
+            TEST_ENC_CMT.as_bytes().to_vec(),
             TEST_RING_ID,
             TEST_NAMESPACE,
             TEST_POLICY_ID,
@@ -332,8 +332,8 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
 
     // Create request with invalid encrypted_document (not valid Secret JSON)
     let request = StoreSecretRequest {
-        encrypted_document: invalid_encrypted_doc.to_string(),
-        enc_cmt: TEST_ENC_CMT.to_string(),
+        encrypted_document: invalid_encrypted_doc.to_vec(),
+        enc_cmt: TEST_ENC_CMT.as_bytes().to_vec(),
         ring_id: TEST_RING_ID.to_string(),
         namespace: TEST_NAMESPACE.to_string(),
         policy_id: TEST_POLICY_ID.to_string(),
@@ -388,8 +388,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
         encrypted_data: vec![0u8; 32],
         nonce: vec![0u8; 12], // 12 bytes for AES-GCM
     };
-    let encrypted_doc = serde_json::to_string(&secret).expect("serialize Secret");
-    let enc_cmt_hex = hex::encode(&enc_cmt_bytes);
+    let encrypted_doc = serde_json::to_vec(&secret).expect("serialize Secret");
 
     // Malformed proof - invalid bytes that won't deserialize as valid curve points
     let invalid_shared_point = vec![0xffu8; 48]; // Invalid G1 point bytes
@@ -397,8 +396,8 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            &encrypted_doc,
-            &enc_cmt_hex,
+            encrypted_doc.clone(),
+            enc_cmt_bytes.clone(),
             TEST_RING_ID,
             TEST_NAMESPACE,
             TEST_POLICY_ID,
@@ -417,7 +416,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
 
     let request = StoreSecretRequest {
         encrypted_document: encrypted_doc,
-        enc_cmt: enc_cmt_hex,
+        enc_cmt: enc_cmt_bytes,
         ring_id: TEST_RING_ID.to_string(),
         namespace: TEST_NAMESPACE.to_string(),
         policy_id: TEST_POLICY_ID.to_string(),
@@ -562,8 +561,8 @@ async fn test_store_secret_idempotent() {
         ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None, Some(&metadata))
             .expect("encrypt with proof");
 
-    let encrypted_doc = serde_json::to_string(&secret).expect("serialize Secret");
-    let enc_cmt_hex = hex::encode(secret.enc_cmt.clone());
+    let encrypted_doc = serde_json::to_vec(&secret).expect("serialize Secret");
+    let enc_cmt_bytes = secret.enc_cmt.clone();
     let shared_point_bytes = proof.shared_point.clone();
     let challenge_bytes = proof.challenge.clone();
     let response_bytes = proof.response.clone();
@@ -572,8 +571,8 @@ async fn test_store_secret_idempotent() {
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            &encrypted_doc,
-            &enc_cmt_hex,
+            encrypted_doc.clone(),
+            enc_cmt_bytes.clone(),
             &ring_id,
             namespace,
             policy_id,
@@ -592,7 +591,7 @@ async fn test_store_secret_idempotent() {
 
     let request1 = StoreSecretRequest {
         encrypted_document: encrypted_doc.clone(),
-        enc_cmt: enc_cmt_hex.clone(),
+        enc_cmt: enc_cmt_bytes.clone(),
         ring_id: ring_id.clone(),
         namespace: namespace.to_string(),
         policy_id: policy_id.to_string(),
@@ -631,7 +630,7 @@ async fn test_store_secret_idempotent() {
     // Second store with same data - should also succeed (idempotent)
     let request2 = StoreSecretRequest {
         encrypted_document: encrypted_doc.clone(),
-        enc_cmt: enc_cmt_hex.clone(),
+        enc_cmt: enc_cmt_bytes.clone(),
         ring_id: ring_id.clone(),
         namespace: namespace.to_string(),
         policy_id: policy_id.to_string(),
@@ -745,8 +744,8 @@ async fn test_store_secret_fails_wrong_derived_pk() {
         ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, Some(derivation), Some(&metadata))
             .expect("encrypt with derivation");
 
-    let encrypted_doc = serde_json::to_string(&secret).expect("serialize Secret");
-    let enc_cmt_hex = hex::encode(secret.enc_cmt.clone());
+    let encrypted_doc = serde_json::to_vec(&secret).expect("serialize Secret");
+    let enc_cmt_bytes = secret.enc_cmt.clone();
     let shared_point_bytes = proof.shared_point.clone();
     let challenge_bytes = proof.challenge.clone();
     let response_bytes = proof.response.clone();
@@ -763,8 +762,8 @@ async fn test_store_secret_fails_wrong_derived_pk() {
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            &encrypted_doc,
-            &enc_cmt_hex,
+            encrypted_doc.clone(),
+            enc_cmt_bytes.clone(),
             &ring_id,
             namespace,
             policy_id,
@@ -783,7 +782,7 @@ async fn test_store_secret_fails_wrong_derived_pk() {
 
     let request = StoreSecretRequest {
         encrypted_document: encrypted_doc.clone(),
-        enc_cmt: enc_cmt_hex.clone(),
+        enc_cmt: enc_cmt_bytes.clone(),
         ring_id: ring_id.clone(),
         namespace: namespace.to_string(),
         policy_id: policy_id.to_string(),
@@ -891,8 +890,8 @@ async fn test_store_secret_fails_with_tampered_proof() {
         ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None, Some(&metadata))
             .expect("encrypt with proof");
 
-    let encrypted_doc = serde_json::to_string(&secret).expect("serialize Secret");
-    let enc_cmt_hex = hex::encode(secret.enc_cmt.clone());
+    let encrypted_doc = serde_json::to_vec(&secret).expect("serialize Secret");
+    let enc_cmt_bytes = secret.enc_cmt.clone();
     let shared_point_bytes = proof.shared_point.clone();
     let response_bytes = proof.response.clone();
 
@@ -906,8 +905,8 @@ async fn test_store_secret_fails_with_tampered_proof() {
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            &encrypted_doc,
-            &enc_cmt_hex,
+            encrypted_doc.clone(),
+            enc_cmt_bytes.clone(),
             &ring_id,
             namespace,
             policy_id,
@@ -926,7 +925,7 @@ async fn test_store_secret_fails_with_tampered_proof() {
 
     let request = StoreSecretRequest {
         encrypted_document: encrypted_doc,
-        enc_cmt: enc_cmt_hex,
+        enc_cmt: enc_cmt_bytes,
         ring_id: ring_id.clone(),
         namespace: namespace.to_string(),
         policy_id: policy_id.to_string(),

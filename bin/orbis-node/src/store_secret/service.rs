@@ -135,9 +135,18 @@ where
         )?;
 
         // 4. Create DocumentPayload with the pre-encrypted secret
+        // DocumentPayload.document is a String (JSON), so convert from bytes (valid UTF-8)
+        let encrypted_document_str =
+            String::from_utf8(req.encrypted_document.clone()).map_err(|e| {
+                StoreSecretError::Validation(format!(
+                    "encrypted_document is not valid UTF-8: {}",
+                    e
+                ))
+            })?;
+
         let document_payload = DocumentPayload {
             ring_id: req.ring_id.clone(),
-            document: req.encrypted_document.clone(),
+            document: encrypted_document_str,
             proof: proof.try_into().map_err(|e: crypto::error::CryptoError| {
                 StoreSecretError::Serialization(format!("Failed to serialize proof: {}", e))
             })?,
@@ -278,8 +287,8 @@ where
 /// This function performs structural validation to ensure the encrypted data
 /// is well-formed before posting to the bulletin.
 fn validate_encrypted_document<D>(
-    encrypted_document: &str,
-    enc_cmt_hex: &str,
+    encrypted_document: &[u8],
+    enc_cmt: &[u8],
     ring_key: &str,
     proof: EncryptionProof,
     policy_metadata: Vec<u8>,
@@ -288,20 +297,15 @@ where
     D: Dkg<PublicKey = crypto::GroupAffine>,
 {
     // 1. Parse the encrypted document as a Secret struct
-    let secret: Secret = serde_json::from_str(encrypted_document).map_err(|e| {
+    let secret: Secret = serde_json::from_slice(encrypted_document).map_err(|e| {
         StoreSecretError::Validation(format!(
             "Failed to parse encrypted_document as Secret: {}",
             e
         ))
     })?;
 
-    // 2. Validate enc_cmt is a valid hex-encoded G1 point
-    let enc_cmt_bytes = hex::decode(enc_cmt_hex).map_err(|e| {
-        StoreSecretError::Validation(format!("Invalid enc_cmt hex encoding: {}", e))
-    })?;
-
-    // Validate it's a valid G1 point (48 bytes compressed)
-    let enc_cmt_point = D::PublicKey::from_bytes(&enc_cmt_bytes).map_err(|e| {
+    // 2. Validate enc_cmt is a valid compressed G1 point
+    let enc_cmt_point = D::PublicKey::from_bytes(enc_cmt).map_err(|e| {
         StoreSecretError::Validation(format!("enc_cmt is not a valid G1 curve point: {}", e))
     })?;
 
@@ -314,7 +318,7 @@ where
     })?;
 
     // 3. Validate the enc_cmt in the Secret matches the provided enc_cmt
-    if secret.enc_cmt != enc_cmt_bytes {
+    if secret.enc_cmt != enc_cmt {
         return Err(StoreSecretError::Validation(
             "enc_cmt in encrypted_document does not match provided enc_cmt".to_string(),
         ));

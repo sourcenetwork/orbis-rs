@@ -8,7 +8,7 @@ service PreService {
 
 message StartPreRequest {
   // reader public key
-  string rdr_pk = 1;
+  bytes rdr_pk = 1;
   // Object Id should be the only one not on bulletin but passed in here
   string object_id = 2;
   // object's namespace
@@ -23,5 +23,5 @@ message StartPreResponse {
   string status = 1;
   string message = 2;
   int64 created_at = 3;
-  string encrypted_secret = 4;
+  bytes encrypted_secret = 4;
 }

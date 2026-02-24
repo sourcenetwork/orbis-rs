@@ -36,8 +36,8 @@ pub struct BearerToken<T = ()> {
 /// Claims for PRE (Proxy Re-Encryption) endpoints
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PreClaims {
-    /// Reader's public key
-    pub rdr_pk: String,
+    /// Reader's public key (compressed G1 point bytes)
+    pub rdr_pk: Vec<u8>,
     /// Serect object Id to re-encrypt
     pub object_id: String,
     /// Serect object namespace
@@ -60,10 +60,10 @@ pub struct DkgClaims {
 /// Claims for StoreSecret endpoints
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct StoreSecretClaims {
-    /// The encrypted document (JSON-serialized Secret struct)
-    pub encrypted_document: String,
-    /// The encryption commitment (hex-encoded G1 point)
-    pub enc_cmt: String,
+    /// The encrypted document (serialized Secret struct bytes)
+    pub encrypted_document: Vec<u8>,
+    /// The encryption commitment (compressed G1 point bytes)
+    pub enc_cmt: Vec<u8>,
     /// Ring ID to use for encryption
     pub ring_id: String,
     /// Namespace for storing the document

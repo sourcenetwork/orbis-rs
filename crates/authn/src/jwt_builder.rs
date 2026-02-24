@@ -94,14 +94,14 @@ impl JwtSigner {
     /// The signed JWT string valid for 1 hour
     pub fn create_pre_jwt(
         &self,
-        rdr_pk: &str,
+        rdr_pk: Vec<u8>,
         namespace: &str,
         object_id: &str,
         derivation: Option<Vec<u8>>,
         salt: Option<String>,
     ) -> Result<String> {
         let claims = PreClaims {
-            rdr_pk: rdr_pk.to_string(),
+            rdr_pk,
             object_id: object_id.to_string(),
             namespace: namespace.to_string(),
             derivation,
@@ -132,8 +132,8 @@ impl JwtSigner {
     /// The signed JWT string valid for 1 hour
     pub fn create_store_secret_jwt(
         &self,
-        encrypted_document: &str,
-        enc_cmt: &str,
+        encrypted_document: Vec<u8>,
+        enc_cmt: Vec<u8>,
         ring_id: &str,
         namespace: &str,
         policy_id: &str,
@@ -149,8 +149,8 @@ impl JwtSigner {
         metadata_hash: Option<Vec<u8>>,
     ) -> Result<String> {
         let claims = StoreSecretClaims {
-            encrypted_document: encrypted_document.to_string(),
-            enc_cmt: enc_cmt.to_string(),
+            encrypted_document,
+            enc_cmt,
             ring_id: ring_id.to_string(),
             namespace: namespace.to_string(),
             policy_id: policy_id.to_string(),
@@ -269,7 +269,13 @@ mod tests {
     #[test]
     fn test_create_pre_jwt() {
         let signer = JwtSigner::new();
-        let token = signer.create_pre_jwt("rdr_pk_value", "namespace", "object_id", None, None);
+        let token = signer.create_pre_jwt(
+            b"rdr_pk_value".to_vec(),
+            "namespace",
+            "object_id",
+            None,
+            None,
+        );
         assert!(token.is_ok());
     }
 
@@ -277,8 +283,8 @@ mod tests {
     fn test_create_store_secret_jwt() {
         let signer = JwtSigner::new();
         let token = signer.create_store_secret_jwt(
-            "encrypted_doc",
-            "enc_cmt_hex",
+            b"encrypted_doc".to_vec(),
+            b"enc_cmt_bytes".to_vec(),
             "ring_id_value",
             "namespace",
             "policy_id",

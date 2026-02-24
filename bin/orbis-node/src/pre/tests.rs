@@ -233,13 +233,7 @@ async fn test_dkg_then_pre_end_to_end() {
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(
-            &hex::encode(&bob_pk_bytes),
-            &namespace,
-            &object_id,
-            None,
-            None,
-        )
+        .create_pre_jwt(bob_pk_bytes.clone(), &namespace, &object_id, None, None)
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
@@ -431,13 +425,7 @@ async fn test_pre_with_large_secret() {
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(
-            &hex::encode(&bob_pk_bytes),
-            &namespace,
-            &object_id,
-            None,
-            None,
-        )
+        .create_pre_jwt(bob_pk_bytes.clone(), &namespace, &object_id, None, None)
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
@@ -565,13 +553,7 @@ async fn test_pre_fails_with_wrong_key() {
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(
-            &hex::encode(&bob_pk_bytes),
-            &namespace,
-            &object_id,
-            None,
-            None,
-        )
+        .create_pre_jwt(bob_pk_bytes.clone(), &namespace, &object_id, None, None)
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
@@ -830,7 +812,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
 
     // Create a valid JWT but with wrong rdr_pk claim
-    let wrong_rdr_pk = "0000000000000000000000000000000000000000000000000000000000000000";
+    let wrong_rdr_pk = vec![0u8; 32]; // Zero bytes - doesn't match bob_pk_bytes
 
     let mismatched_token = test_keys
         .create_pre_jwt(
@@ -909,7 +891,7 @@ async fn test_start_pre_fails_missing_auth_header() {
     let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
 
     let request = StartPreRequest {
-        rdr_pk: "def456".to_string(),
+        rdr_pk: b"def456".to_vec(),
         namespace: "".to_string(),
         object_id: "".to_string(),
         derivation: None,
@@ -950,7 +932,7 @@ async fn test_start_pre_fails_malformed_jwt() {
     let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
 
     let request = StartPreRequest {
-        rdr_pk: "def456".to_string(),
+        rdr_pk: b"def456".to_vec(),
         namespace: "".to_string(),
         object_id: "".to_string(),
         derivation: None,
@@ -990,7 +972,7 @@ async fn test_start_pre_fails_wrong_signature() {
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
     let valid_token = key_pair_1
-        .create_pre_jwt("def456", &namespace, &object_id, None, None)
+        .create_pre_jwt(b"def456".to_vec(), &namespace, &object_id, None, None)
         .expect("Failed to create JWT");
 
     // Tamper with the signature by changing a character
@@ -1008,7 +990,7 @@ async fn test_start_pre_fails_wrong_signature() {
     let tampered_token = format!("{}.{}.{}", parts[0], parts[1], tampered_sig);
 
     let request = StartPreRequest {
-        rdr_pk: "def456".to_string(),
+        rdr_pk: b"def456".to_vec(),
         namespace: "".to_string(),
         object_id: "".to_string(),
         derivation: None,
@@ -1118,7 +1100,7 @@ async fn test_pre_fails_with_wrong_derivation() {
     // Create PRE JWT token with CORRECT derivation
     let pre_token = test_keys
         .create_pre_jwt(
-            &hex::encode(&bob_pk_bytes),
+            bob_pk_bytes.clone(),
             &namespace,
             &object_id,
             Some(correct_derivation.clone()),
@@ -1285,13 +1267,7 @@ async fn test_pre_fails_with_bad_proof() {
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(
-            &hex::encode(&bob_pk_bytes),
-            &namespace,
-            &object_id,
-            None,
-            None,
-        )
+        .create_pre_jwt(bob_pk_bytes.clone(), &namespace, &object_id, None, None)
         .expect("Failed to create PRE JWT");
 
     // Attempt re-encryption — should fail because proof verification fails on peer nodes

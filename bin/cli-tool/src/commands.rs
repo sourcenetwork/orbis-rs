@@ -113,10 +113,10 @@ pub struct StoreSecretResult {
 /// for a given plaintext and ring public key encryption.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PreparedSecret {
-    /// Encrypted document as JSON string
-    pub encrypted_document: String,
-    /// Encryption commitment in hex
-    pub enc_cmt_hex: String,
+    /// Encrypted document as serialized bytes
+    pub encrypted_document: Vec<u8>,
+    /// Encryption commitment bytes (compressed G1 point)
+    pub enc_cmt: Vec<u8>,
     /// Shared point for encryption proof
     pub shared_point: Vec<u8>,
     /// Challenge for encryption proof
@@ -168,17 +168,16 @@ pub fn prepare_secret(
     )
     .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
-    let encrypted_document = serde_json::to_string(&encrypted_secret)
+    let encrypted_document = serde_json::to_vec(&encrypted_secret)
         .map_err(|e| anyhow!("Failed to serialize encrypted secret: {}", e))?;
-    let enc_cmt_hex = hex::encode(
-        enc_cmt
-            .to_bytes()
-            .map_err(|e| anyhow!("Failed to serialize enc_cmt: {}", e))?,
-    );
+    let enc_cmt = enc_cmt
+        .to_bytes()
+        .map_err(|e| anyhow!("Failed to serialize enc_cmt: {}", e))?
+        .to_vec();
 
     Ok(PreparedSecret {
         encrypted_document,
-        enc_cmt_hex,
+        enc_cmt,
         shared_point: proof.shared_point,
         challenge: proof.challenge,
         response: proof.response,
@@ -217,7 +216,7 @@ pub async fn store_prepared_secret(
 
     let request = proto::store_secret_service::StoreSecretRequest {
         encrypted_document: prepared.encrypted_document.clone(),
-        enc_cmt: prepared.enc_cmt_hex.clone(),
+        enc_cmt: prepared.enc_cmt.clone(),
         ring_id: ring_id.clone(),
         namespace: namespace.clone(),
         policy_id: policy_id.clone(),
@@ -239,8 +238,8 @@ pub async fn store_prepared_secret(
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
         .create_store_secret_jwt(
-            &prepared.encrypted_document,
-            &prepared.enc_cmt_hex,
+            prepared.encrypted_document.clone(),
+            prepared.enc_cmt.clone(),
             &ring_id,
             &namespace,
             &policy_id,
@@ -382,7 +381,7 @@ pub async fn do_pre(
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
     let request = proto::pre_service::StartPreRequest {
-        rdr_pk: reader_pk.clone(),
+        rdr_pk: reader_pk_bytes.clone(),
         object_id: object_id.clone(),
         namespace: namespace.clone(),
         derivation: derivation.clone(),
@@ -395,7 +394,7 @@ pub async fn do_pre(
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
         .create_pre_jwt(
-            &reader_pk,
+            reader_pk_bytes.clone(),
             &namespace,
             &object_id,
             derivation.clone(),
@@ -422,8 +421,8 @@ pub async fn do_pre(
         println!();
         println!("Step 3: Decrypting with reader secret key...");
 
-        // Parse the JSON response from server
-        let pre_response: PreResponse = serde_json::from_str(&response.encrypted_secret)
+        // Parse the response from server
+        let pre_response: PreResponse = serde_json::from_slice(&response.encrypted_secret)
             .map_err(|e| anyhow!("Failed to parse PRE response: {}", e))?;
 
         // Parse the re-encrypted commitment (xnc_cmt) from hex
