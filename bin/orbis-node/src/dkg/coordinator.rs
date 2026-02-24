@@ -19,8 +19,10 @@ use crate::constants::{
     BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, MAX_COMMITMENT_COEFFICIENTS,
 };
 use crate::dkg::error::{DkgError, Result};
+use crate::dkg::helpers::{
+    serialize_commitment_coefficients, session_not_found, validate_dkg_claims,
+};
 use crate::dkg::messages::DkgMessage;
-use crate::dkg::service::validate_dkg_claims;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase};
 use crate::helpers::helpers::{extract_node_part, is_self_peer_id};
 use crate::metrics;
@@ -239,10 +241,7 @@ where
             .session_exists(&session_id)
             .await
         {
-            return Err(DkgError::SessionNotFound(format!(
-                "DKG session {} not found",
-                session_id
-            )));
+            return Err(session_not_found(session_id));
         }
 
         // Validate sender identity for messages that carry from_node_id
@@ -342,9 +341,7 @@ where
                     .dkg_session_state
                     .with_state(&session_id, |state| state.node.threshold())
                     .await
-                    .ok_or_else(|| {
-                        DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-                    })?;
+                    .ok_or_else(|| session_not_found(session_id))?;
 
                 // Polynomial commitment should have exactly threshold coefficients
                 // (degree t-1 polynomial has t coefficients)
@@ -392,9 +389,7 @@ where
                         Ok::<_, DkgError>(state.node.commitment().coefficients.is_empty())
                     })
                     .await
-                    .ok_or_else(|| {
-                        DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-                    })??;
+                    .ok_or_else(|| session_not_found(session_id))??;
 
                 // Mark message as processed
                 self.app_state
@@ -422,12 +417,7 @@ where
                             })
                         })
                         .await
-                        .ok_or_else(|| {
-                            DkgError::SessionNotFound(format!(
-                                "DKG session {} not found",
-                                session_id
-                            ))
-                        })??;
+                        .ok_or_else(|| session_not_found(session_id))??;
 
                     // Get peer IDs and node_id from session to send our commitment
                     if let Some(peer_ids) = self
@@ -441,26 +431,13 @@ where
                             .app_state
                             .dkg_session_state
                             .with_state(&session_id, |state| {
-                                let mut bytes = Vec::new();
-                                for coeff in &state.node.commitment().coefficients {
-                                    let coeff_bytes =
-                                        CryptoSerialize::to_bytes(coeff).map_err(|e| {
-                                            DkgError::Serialization(format!(
-                                                "Failed to serialize commitment: {}",
-                                                e
-                                            ))
-                                        })?;
-                                    bytes.extend_from_slice(&coeff_bytes);
-                                }
+                                let bytes = serialize_commitment_coefficients(
+                                    &state.node.commitment().coefficients,
+                                )?;
                                 Ok::<_, DkgError>((bytes, state.node.node_id()))
                             })
                             .await
-                            .ok_or_else(|| {
-                                DkgError::SessionNotFound(format!(
-                                    "DKG session {} not found",
-                                    session_id
-                                ))
-                            })??;
+                            .ok_or_else(|| session_not_found(session_id))??;
 
                         let mut sent_count = 0;
                         let mut expected_count = 0;
@@ -564,9 +541,7 @@ where
                     .dkg_session_state
                     .with_state(&session_id, |state| state.node.node_id())
                     .await
-                    .ok_or_else(|| {
-                        DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-                    })?;
+                    .ok_or_else(|| session_not_found(session_id))?;
                 if to_node_id != our_node_id {
                     return Err(DkgError::ShareVerificationFailed(format!(
                         "Share intended for node {}, but we are node {}",
@@ -604,9 +579,7 @@ where
                         })
                     })
                     .await
-                    .ok_or_else(|| {
-                        DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-                    })??;
+                    .ok_or_else(|| session_not_found(session_id))??;
 
                 tracing::debug!(
                     from_node_id = from_node_id,
@@ -781,23 +754,13 @@ where
                 })?;
 
                 // Serialize commitment
-                let mut bytes = Vec::new();
-                for coeff in &state.node.commitment().coefficients {
-                    let coeff_bytes = CryptoSerialize::to_bytes(coeff).map_err(|e| {
-                        DkgError::Serialization(format!(
-                            "Failed to serialize commitment coefficient: {}",
-                            e
-                        ))
-                    })?;
-                    bytes.extend_from_slice(&coeff_bytes);
-                }
+                let bytes =
+                    serialize_commitment_coefficients(&state.node.commitment().coefficients)?;
 
                 Ok::<_, DkgError>((bytes, state.node.node_id(), state.node.threshold()))
             })
             .await
-            .ok_or_else(|| {
-                DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-            })??;
+            .ok_or_else(|| session_not_found(session_id))??;
 
         // Update phase
         self.app_state
@@ -883,9 +846,7 @@ where
                 )
             })
             .await
-            .ok_or_else(|| {
-                DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-            })?;
+            .ok_or_else(|| session_not_found(session_id))?;
 
         // First, make sure we've generated our polynomial
         if !has_polynomial {
@@ -899,9 +860,7 @@ where
             .dkg_session_state
             .with_state(&session_id, |state| state.commitments_received)
             .await
-            .ok_or_else(|| {
-                DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-            })?;
+            .ok_or_else(|| session_not_found(session_id))?;
 
         if received_commitments >= expected_commitments {
             tracing::info!(
@@ -960,9 +919,7 @@ where
                     Ok::<_, DkgError>((shares, state.node.node_id(), state.node.threshold()))
                 })
                 .await
-                .ok_or_else(|| {
-                    DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-                })??;
+                .ok_or_else(|| session_not_found(session_id))??;
 
         // Update phase
         self.app_state
@@ -1135,9 +1092,7 @@ where
             .dkg_session_state
             .with_state(&session_id, |state| state.node.total_nodes() - 1)
             .await
-            .ok_or_else(|| {
-                DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-            })?;
+            .ok_or_else(|| session_not_found(session_id))?;
 
         // Get the actual count from session_state
         let received_shares = self
@@ -1145,9 +1100,7 @@ where
             .dkg_session_state
             .with_state(&session_id, |state| state.shares_received)
             .await
-            .ok_or_else(|| {
-                DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-            })?;
+            .ok_or_else(|| session_not_found(session_id))?;
 
         if received_shares >= expected_shares {
             tracing::info!(
@@ -1164,9 +1117,7 @@ where
                     state.node.compute_aggregate_public_key().is_ok()
                 })
                 .await
-                .ok_or_else(|| {
-                    DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-                })?;
+                .ok_or_else(|| session_not_found(session_id))?;
 
             if !has_all_commitments {
                 tracing::warn!(
@@ -1247,9 +1198,7 @@ where
                 ))
             })
             .await
-            .ok_or_else(|| {
-                DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-            })??;
+            .ok_or_else(|| session_not_found(session_id))??;
 
         // Store the serialized final share in local storage
         self.app_state

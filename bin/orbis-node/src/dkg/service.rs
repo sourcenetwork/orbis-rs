@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
+use crate::dkg::helpers::validate_dkg_claims;
 use crate::dkg::messages::DkgMessage;
 use crate::helpers::helpers::{connect_to_peers, extract_node_part, validate_all_peer_ids};
 use crate::metrics;
@@ -288,45 +289,4 @@ where
 
         Ok(Response::new(response))
     }
-}
-
-/// Validates JWT claims against the DKG request
-pub fn validate_dkg_claims(
-    token: &BearerToken<DkgClaims>,
-    threshold: u32,
-    peer_ids: &[String],
-) -> Result<(), DkgError> {
-    // Validate threshold matches
-    if token.claims.threshold != threshold {
-        return Err(DkgError::Unauthorized(format!(
-            "Token threshold ({}) does not match request threshold ({})",
-            token.claims.threshold, threshold
-        )));
-    }
-
-    // Validate peer_ids match (token has comma-separated, request has Vec)
-    let token_peer_ids: Vec<&str> = token.claims.peer_ids.split(',').collect();
-    let req_peer_ids: Vec<&str> = peer_ids.iter().map(|s| s.as_str()).collect();
-
-    if token_peer_ids.len() != req_peer_ids.len() {
-        return Err(DkgError::Unauthorized(format!(
-            "Token peer_ids count ({}) does not match request peer_ids count ({})",
-            token_peer_ids.len(),
-            req_peer_ids.len()
-        )));
-    }
-
-    // Check all peer_ids match (order-independent)
-    let mut sorted_token: Vec<&str> = token_peer_ids.clone();
-    let mut sorted_req: Vec<&str> = req_peer_ids.clone();
-    sorted_token.sort();
-    sorted_req.sort();
-
-    if sorted_token != sorted_req {
-        return Err(DkgError::Unauthorized(
-            "Token peer_ids do not match request peer_ids".to_string(),
-        ));
-    }
-
-    Ok(())
 }
