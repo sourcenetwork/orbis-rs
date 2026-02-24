@@ -544,11 +544,11 @@ where
             }
         }
 
-        // 3. Collect the stored responses
+        // 3. Collect the stored responses (moves Vec out, no clone; outer fn removes entry on exit)
         let collected_responses = self
             .app_state
             .sign_response_state
-            .get_responses(&request_id)
+            .take_responses(&request_id)
             .await
             .ok_or_else(|| {
                 SignError::Timeout(format!("No responses found for request {}", &request_id))
@@ -784,25 +784,18 @@ where
             }
         }
 
-        // Collect nonce responses and always cleanup, even on error
+        // Collect nonce responses, removing the entry atomically (no clone, cleanup implicit)
         let nonce_responses = self
             .app_state
             .sign_response_state
-            .get_responses(&nonce_request_id)
-            .await;
-
-        // Cleanup nonce response state before any fallible operations
-        self.app_state
-            .sign_response_state
-            .remove_response(&nonce_request_id)
-            .await;
-
-        let nonce_responses = nonce_responses.ok_or_else(|| {
-            SignError::Timeout(format!(
-                "No nonce responses found for request {}",
-                nonce_request_id
-            ))
-        })?;
+            .take_responses(&nonce_request_id)
+            .await
+            .ok_or_else(|| {
+                SignError::Timeout(format!(
+                    "No nonce responses found for request {}",
+                    nonce_request_id
+                ))
+            })?;
 
         for response in nonce_responses {
             if let SignMessage::NonceResponse {

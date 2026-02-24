@@ -580,11 +580,11 @@ where
             }
         }
 
-        // 6. Collect the stored responses
+        // 6. Collect the stored responses (moves Vec out, no clone; outer fn removes entry on exit)
         let collected_responses = self
             .app_state
             .pre_response_state
-            .get_responses(&request_id)
+            .take_responses(&request_id)
             .await
             .ok_or_else(|| {
                 PreError::Timeout(format!("No responses found for request {}", &request_id))

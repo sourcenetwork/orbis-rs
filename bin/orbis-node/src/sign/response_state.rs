@@ -224,12 +224,22 @@ impl SignResponseManager {
         }
     }
 
-    /// Get collected sign responses
+    /// Get collected sign responses without consuming the entry.
+    /// Prefer `take_responses` when the entry is no longer needed after reading.
     pub async fn get_responses(&self, request_id: &str) -> Option<Vec<SignMessage>> {
         let responses = self.states.read().await;
         responses
             .get(request_id)
             .map(|entry| entry.responses.clone())
+    }
+
+    /// Take collected sign responses, removing the entry atomically.
+    ///
+    /// Prefer this over `get_responses` + `remove_response` — it acquires a single
+    /// write lock and moves the `Vec` out without cloning.
+    pub async fn take_responses(&self, request_id: &str) -> Option<Vec<SignMessage>> {
+        let mut responses = self.states.write().await;
+        responses.remove(request_id).map(|entry| entry.responses)
     }
 
     /// Remove sign response entry (cleanup after completion)
