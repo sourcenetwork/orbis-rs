@@ -7,7 +7,7 @@ pub enum CryptoError {
     DKGError(String),
     #[error("ElGamal error: {0}")]
     ElGamalError(String),
-    #[error("Serilization error: {0}")]
+    #[error("Serialization error: {0}")]
     SerializationError(#[from] ark_serialize::SerializationError),
     #[error("Invalid Signature Share")]
     InvalidSignatureShare,
