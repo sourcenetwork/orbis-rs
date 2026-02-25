@@ -633,6 +633,13 @@ pub trait ThresholdDealer {
     /// when capability derivation was used during encryption.
     fn derive_public_key(dkg_pk: &Self::PublicKey, derivation: &[u8]) -> Result<Self::PublicKey>;
 
+    /// Derive a symmetric AES key from an elliptic-curve point via HKDF-SHA256.
+    ///
+    /// Used internally after re-encryption share recovery to derive the AES key
+    /// that decrypts the ciphertext. Exposed on the trait so generic tests can
+    /// verify determinism and point-distinctness without curve-specific imports.
+    fn derive_key_from_point(point: &Self::PublicKey) -> Result<[u8; 32]>;
+
     /// Encode policy metadata fields into a 32-byte commitment for proof binding.
     ///
     /// Both the encrypter and the PRE verification nodes must call this function

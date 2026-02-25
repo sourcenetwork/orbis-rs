@@ -474,6 +474,10 @@ impl ThresholdDealer for ThresholdDealerNode {
         Ok(derived_pk)
     }
 
+    fn derive_key_from_point(point: &Self::PublicKey) -> Result<[u8; 32]> {
+        ThresholdDealerNode::derive_key_from_point(point)
+    }
+
     fn encode_metadata(
         policy_id: &str,
         resource: &str,

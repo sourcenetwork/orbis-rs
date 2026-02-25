@@ -58,3 +58,6 @@ pub mod test_helper;
 
 #[cfg(test)]
 mod dkg_tests;
+
+#[cfg(test)]
+mod pre_tests;
