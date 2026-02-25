@@ -132,6 +132,19 @@ impl Dkg for DKGNode {
     }
 
     fn receive_share(&mut self, share: DistributedShare<Self::ShareValue>) -> Result<()> {
+        // Validate from_id is in the expected participant set (1..=total_nodes, not self)
+        if share.from_id == 0 || share.from_id > self.total_nodes as u32 {
+            return Err(CryptoError::DKGError(format!(
+                "Invalid from_id: {} (must be between 1 and {})",
+                share.from_id, self.total_nodes
+            )));
+        }
+        if share.from_id == self.id {
+            return Err(CryptoError::DKGError(
+                "Invalid from_id: cannot receive share from self".to_string(),
+            ));
+        }
+
         // Verify the share is intended for us
         if share.to_id != self.id {
             return Err(CryptoError::DKGError(
@@ -225,6 +238,13 @@ impl Dkg for DKGNode {
     }
 
     fn compute_secret_share(&self) -> Result<PriShare<Self::ShareValue>> {
+        // Verify local polynomial was generated
+        if self.polynomial_coeffs.is_empty() {
+            return Err(CryptoError::DKGError(
+                "Local polynomial not generated: call generate_polynomial before compute_secret_share".to_string(),
+            ));
+        }
+
         // Verify we have received shares from all OTHER nodes
         // (we don't send a share to ourselves over the network)
         if self.received_shares.len() != self.total_nodes - 1 {
