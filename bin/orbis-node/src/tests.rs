@@ -806,12 +806,13 @@ mod cli_tool_integration {
             endpoint.clone(),
             ring_pk_hex.clone(),
             reader_pk_hex.clone(),
-            reader_sk_hex.clone(),
+            Some(reader_sk_hex.clone()),
             object_id_service.clone(),
             Some(did_pk_string.clone()),
             full_namespace.clone(),
             None,
             None,
+            false,
         )
         .await;
 
@@ -835,12 +836,13 @@ mod cli_tool_integration {
             endpoint.clone(),
             ring_pk_hex.clone(),
             reader_pk_hex.clone(),
-            reader_sk_hex.clone(),
+            Some(reader_sk_hex.clone()),
             object_id_derived.clone(),
             Some(did_pk_string.clone()),
             full_namespace.clone(),
             Some(derivation),
             salt.clone(),
+            false,
         )
         .await;
 

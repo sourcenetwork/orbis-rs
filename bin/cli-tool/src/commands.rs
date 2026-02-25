@@ -273,6 +273,7 @@ pub async fn store_prepared_secret(
     println!("  Object ID: {}", response.object_id);
     println!("  Ring ID: {}", response.ring_id);
     println!("  signature: {}", response.signature);
+    println!("  enc_cmt: {}", hex::encode(&prepared.enc_cmt));
 
     Ok(StoreSecretResult {
         status: response.status,
@@ -349,27 +350,35 @@ pub async fn do_pre(
     endpoint: String,
     ring_pk: String,
     reader_pk: String,
-    reader_sk: String,
+    reader_sk: Option<String>,
     object_id: String,
     reader_did_pk: Option<String>,
     namespace: String,
     derivation: Option<Vec<u8>>,
     salt: Option<String>,
+    xnc_only: bool,
 ) -> Result<Vec<u8>> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
     println!("  Reader PK: {}...", &reader_pk[..reader_pk.len().min(20)]);
 
-    // Parse the reader keys
+    // Parse the reader public key
     let reader_pk_bytes =
         hex::decode(&reader_pk).map_err(|e| anyhow!("Failed to decode reader_pk hex: {}", e))?;
     let _reader_pk_point = G1Affine::from_bytes(&reader_pk_bytes)
         .map_err(|e| anyhow!("Failed to deserialize reader_pk: {}", e))?;
 
-    let reader_sk_bytes =
-        hex::decode(&reader_sk).map_err(|e| anyhow!("Failed to decode reader_sk hex: {}", e))?;
-    let reader_sk_scalar = Fr::from_bytes(&reader_sk_bytes)
-        .map_err(|e| anyhow!("Failed to deserialize reader_sk: {}", e))?;
+    // Parse reader secret key (not needed for --xnc-only)
+    let reader_sk_scalar = if let Some(ref sk_hex) = reader_sk {
+        let reader_sk_bytes =
+            hex::decode(sk_hex).map_err(|e| anyhow!("Failed to decode reader_sk hex: {}", e))?;
+        Some(
+            Fr::from_bytes(&reader_sk_bytes)
+                .map_err(|e| anyhow!("Failed to deserialize reader_sk: {}", e))?,
+        )
+    } else {
+        None
+    };
 
     println!("  Encrypted secret created");
     println!();
@@ -418,9 +427,6 @@ pub async fn do_pre(
 
     // Step 3: If we got a re-encrypted commitment back, decrypt it
     if !response.encrypted_secret.is_empty() {
-        println!();
-        println!("Step 3: Decrypting with reader secret key...");
-
         // Parse the response from server
         let pre_response: PreResponse = serde_json::from_slice(&response.encrypted_secret)
             .map_err(|e| anyhow!("Failed to parse PRE response: {}", e))?;
@@ -430,6 +436,19 @@ pub async fn do_pre(
             .map_err(|e| anyhow!("Failed to decode xnc_cmt hex: {}", e))?;
         let xnc_cmt = G1Affine::from_bytes(&xnc_cmt_bytes)
             .map_err(|e| anyhow!("Failed to deserialize xnc_cmt: {}", e))?;
+
+        // --xnc-only: print xnc_cmt and return without decrypting
+        if xnc_only {
+            let xnc_hex = hex::encode(xnc_cmt.to_bytes().map_err(|e| anyhow!("Failed to serialize xnc_cmt: {}", e))?);
+            println!("Re-encrypted commitment (xnc_cmt): {}", xnc_hex);
+            return Ok(xnc_cmt_bytes);
+        }
+
+        println!();
+        println!("Step 3: Decrypting with reader secret key...");
+
+        let reader_sk_scalar = reader_sk_scalar
+            .ok_or_else(|| anyhow!("--reader-sk is required for decryption"))?;
 
         // Parse the ring public key
         let ring_pk_bytes =
