@@ -9,7 +9,9 @@ use rand_core::{OsRng, RngCore};
 fn test_all_dkg_tests() {
     // Run all generic DKG tests using the convenience function
     run_all_tests(
-        |id, threshold, total_nodes| DKGNode::new(id, threshold, total_nodes),
+        |id, threshold, total_nodes, session_id| {
+            DKGNode::new(id, threshold, total_nodes, session_id)
+        },
         |pk: &Element| *pk == Element::default(),
         |share_value: &Fr| Element::GENERATOR * share_value,
         || {

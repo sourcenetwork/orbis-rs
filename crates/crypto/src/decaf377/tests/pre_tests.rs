@@ -263,8 +263,13 @@ fn test_dkg_encrypt_decrypt_integration() {
     let t = 3;
 
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize| {
-            <crate::decaf377::dkg::DKGNode as crate::r#trait::Dkg>::new(id, threshold, total_nodes)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <crate::decaf377::dkg::DKGNode as crate::r#trait::Dkg>::new(
+                id,
+                threshold,
+                total_nodes,
+                session_id,
+            )
         },
         n,
         t,
@@ -656,8 +661,13 @@ fn test_dkg_encrypt_decrypt_with_derivation_integration() {
     let t = 3;
 
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize| {
-            <crate::decaf377::dkg::DKGNode as crate::r#trait::Dkg>::new(id, threshold, total_nodes)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <crate::decaf377::dkg::DKGNode as crate::r#trait::Dkg>::new(
+                id,
+                threshold,
+                total_nodes,
+                session_id,
+            )
         },
         n,
         t,

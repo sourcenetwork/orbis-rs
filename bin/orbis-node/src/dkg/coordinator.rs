@@ -656,11 +656,8 @@ where
         total_nodes: usize,
     ) -> Result<()> {
         // Create a new DKG node for this session using the generic Dkg trait
-        let mut dkg_node = D::new(node_id, threshold, total_nodes)
+        let dkg_node = D::new(node_id, threshold, total_nodes, session_id)
             .map_err(|e| DkgError::Crypto(format!("Failed to create DKG node: {}", e)))?;
-
-        // Set the session ID so all nodes use the same session ID for verification
-        dkg_node.set_session_id(session_id);
 
         // Create the unified session state (crypto node + protocol tracking)
         if !self

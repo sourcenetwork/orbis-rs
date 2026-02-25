@@ -49,7 +49,7 @@ impl Dkg for DKGNode {
     type PubPoly = PubPoly;
     type PolynomialCommitment = PolynomialCommitment;
 
-    fn new(id: u32, threshold: usize, total_nodes: usize) -> Result<Box<Self>> {
+    fn new(id: u32, threshold: usize, total_nodes: usize, session_id: u64) -> Result<Box<Self>> {
         if id == 0 || id > total_nodes as u32 {
             return Err(CryptoError::DKGError(format!(
                 "Invalid node id: {} (must be between 1 and {})",
@@ -68,12 +68,6 @@ impl Dkg for DKGNode {
                 "Threshold must be at least 1".to_string(),
             ));
         }
-
-        // Generate session ID (in real system, this would be agreed upon by all nodes)
-        let mut rng = OsRng;
-        let mut session_id_bytes = [0u8; 8];
-        rng.fill_bytes(&mut session_id_bytes);
-        let session_id = u64::from_le_bytes(session_id_bytes);
 
         Ok(Box::new(DKGNode {
             id,
@@ -327,10 +321,6 @@ impl Dkg for DKGNode {
 
     fn commitment(&self) -> &Self::PolynomialCommitment {
         &self.commitment
-    }
-
-    fn set_session_id(&mut self, session_id: u64) {
-        self.session_id = session_id;
     }
 }
 

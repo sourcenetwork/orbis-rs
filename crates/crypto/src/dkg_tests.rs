@@ -16,7 +16,7 @@
 //!     #[test]
 //!     fn test_my_implementation() {
 //!         run_all_tests(
-//!             |id, threshold, total_nodes| MyDKGNode::new(id, threshold, total_nodes),
+//!             |id, threshold, total_nodes, session_id| MyDKGNode::new(id, threshold, total_nodes, session_id),
 //!             |pk| pk.is_zero(), // zero check function
 //!             |share| share_to_pubkey(share), // share to pubkey conversion
 //!         );
@@ -51,7 +51,7 @@ where
     Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
     Node::PolynomialCommitment: Clone,
     Node::ShareValue: Clone,
-    F: Fn(u32, usize, usize) -> Result<Box<Node>> + Clone,
+    F: Fn(u32, usize, usize, u64) -> Result<Box<Node>> + Clone,
     Z: Fn(&Node::PublicKey) -> bool + Clone,
     G: Fn(&Node::ShareValue) -> Node::PublicKey + Clone,
     W: Fn() -> Node::ShareValue + Clone,
