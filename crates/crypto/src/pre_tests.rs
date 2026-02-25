@@ -85,14 +85,12 @@ where
     test_swap_enc_cmt_and_proof_fails_decrypt::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_verify_encryption_wrong_derivation_fails_loudly::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_metadata_individual_field_tampering_fails::<T, SV, PK, PP, _>(make_keypair.clone())?;
-    test_dkg_encrypt_decrypt_integration::<T, SV, PK, PP, _, _, _>(
+    test_dkg_encrypt_decrypt_integration::<T, SV, PK, PP, _, _>(
         make_keypair.clone(),
-        make_pub_poly.clone(),
         run_dkg.clone(),
     )?;
-    test_dkg_encrypt_decrypt_with_derivation_integration::<T, SV, PK, PP, _, _, _>(
+    test_dkg_encrypt_decrypt_with_derivation_integration::<T, SV, PK, PP, _, _>(
         make_keypair,
-        make_pub_poly,
         run_dkg,
     )?;
     Ok(())
@@ -402,7 +400,12 @@ where
 
     let dealer = T::new();
     let recovered = dealer.recover(&shares, 3, 5)?;
-    assert!(recovered.is_some());
+    let recovered = recovered.expect("recovery should succeed with 3 shares at t=3");
+    assert_eq!(
+        recovered, point,
+        "interpolation of a constant polynomial must return the constant"
+    );
+
     Ok(())
 }
 
@@ -1262,9 +1265,8 @@ where
 // Full DKG integration
 // ============================================================================
 
-pub fn test_dkg_encrypt_decrypt_integration<T, SV, PK, PP, MK, MP, RD>(
+pub fn test_dkg_encrypt_decrypt_integration<T, SV, PK, PP, MK, RD>(
     make_keypair: MK,
-    _make_pub_poly: MP,
     run_dkg: RD,
 ) -> Result<()>
 where
@@ -1280,7 +1282,6 @@ where
     PK: PartialEq + std::fmt::Debug + Clone,
     PP: PubPolyTrait<PublicKey = PK>,
     MK: Fn() -> (SV, PK),
-    MP: Fn(Vec<PK>) -> PP,
     RD: Fn(usize, usize) -> Result<(PK, Vec<PriShare<SV>>, PP)>,
 {
     let secret = b"This is a secret message that needs to be encrypted and decrypted using threshold re-encryption!";
@@ -1318,9 +1319,8 @@ where
     Ok(())
 }
 
-pub fn test_dkg_encrypt_decrypt_with_derivation_integration<T, SV, PK, PP, MK, MP, RD>(
+pub fn test_dkg_encrypt_decrypt_with_derivation_integration<T, SV, PK, PP, MK, RD>(
     make_keypair: MK,
-    _make_pub_poly: MP,
     run_dkg: RD,
 ) -> Result<()>
 where
@@ -1336,7 +1336,6 @@ where
     PK: PartialEq + std::fmt::Debug + Clone,
     PP: PubPolyTrait<PublicKey = PK>,
     MK: Fn() -> (SV, PK),
-    MP: Fn(Vec<PK>) -> PP,
     RD: Fn(usize, usize) -> Result<(PK, Vec<PriShare<SV>>, PP)>,
 {
     let secret = b"Secret with capability-based derivation at re-encrypt time!";
