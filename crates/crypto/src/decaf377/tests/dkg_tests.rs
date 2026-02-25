@@ -1,7 +1,6 @@
 use crate::decaf377::dkg::DKGNode;
 use crate::dkg_tests::run_all_tests;
 use crate::r#trait::{DistributedShare, Dkg};
-use ark_std::UniformRand;
 use decaf377::{Element, Fr};
 use rand_core::{OsRng, RngCore};
 

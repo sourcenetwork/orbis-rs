@@ -61,3 +61,6 @@ mod dkg_tests;
 
 #[cfg(test)]
 mod pre_tests;
+
+#[cfg(test)]
+mod sign_tests;
