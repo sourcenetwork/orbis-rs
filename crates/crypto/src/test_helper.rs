@@ -47,7 +47,7 @@ where
     /// In a real distributed system, there would be no central coordinator.
     pub fn new<F>(node_factory: F, node_count: usize, threshold: usize) -> Result<Self>
     where
-        F: Fn(u32, usize, usize) -> Result<Box<Node>>,
+        F: Fn(u32, usize, usize, u64) -> Result<Box<Node>>,
     {
         // Validate parameters
         if node_count == 0 {
@@ -67,8 +67,6 @@ where
             )));
         }
 
-        let mut nodes = Vec::new();
-
         // Generate a shared session ID for all nodes (in real system, this would be agreed upon)
         use rand_core::{OsRng, RngCore};
         let mut rng = OsRng;
@@ -76,11 +74,9 @@ where
         rng.fill_bytes(&mut session_id_bytes);
         let session_id = u64::from_le_bytes(session_id_bytes);
 
+        let mut nodes = Vec::new();
         for i in 1..=node_count {
-            let mut node = *node_factory(i as u32, threshold, node_count)?;
-            // Set the same session ID for all nodes (simulation only)
-            // In real system, nodes would agree on session ID through consensus
-            node.set_session_id(session_id);
+            let node = *node_factory(i as u32, threshold, node_count, session_id)?;
             nodes.push(node);
         }
 
@@ -221,7 +217,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone,
-        F: Fn(u32, usize, usize) -> Result<Box<Node>>,
+        F: Fn(u32, usize, usize, u64) -> Result<Box<Node>>,
         Z: Fn(&Node::PublicKey) -> bool,
     {
         let mut coordinator = DKGCoordinator::new(node_factory, node_count, threshold)?;
@@ -266,7 +262,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone,
-        F: Fn(u32, usize, usize) -> Result<Box<Node>>,
+        F: Fn(u32, usize, usize, u64) -> Result<Box<Node>>,
         G: Fn(&Node::ShareValue) -> Node::PublicKey,
     {
         let mut coordinator = DKGCoordinator::new(node_factory, node_count, threshold)?;
@@ -297,7 +293,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone,
-        F: Fn(u32, usize, usize) -> Result<Box<Node>>,
+        F: Fn(u32, usize, usize, u64) -> Result<Box<Node>>,
         Z: Fn(&Node::PublicKey) -> bool,
     {
         test_dkg_basic(node_factory, 3, 2, check_zero)
@@ -313,7 +309,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone,
-        F: Fn(u32, usize, usize) -> Result<Box<Node>>,
+        F: Fn(u32, usize, usize, u64) -> Result<Box<Node>>,
         Z: Fn(&Node::PublicKey) -> bool,
     {
         test_dkg_basic(node_factory, 5, 3, check_zero)
@@ -337,11 +333,11 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone,
-        F: Fn(u32, usize, usize) -> Result<Box<Node>>,
+        F: Fn(u32, usize, usize, u64) -> Result<Box<Node>>,
         CreateWrong: Fn() -> Node::ShareValue,
     {
         // Create a node and generate a polynomial
-        let mut node = *node_factory(1, 2, 3)?;
+        let mut node = *node_factory(1, 2, 3, 0)?;
         node.generate_polynomial()?;
 
         let commitment = node.commitment().clone();
@@ -378,7 +374,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone,
-        F: Fn(u32, usize, usize) -> Result<Box<Node>> + Clone,
+        F: Fn(u32, usize, usize, u64) -> Result<Box<Node>> + Clone,
     {
         // Test threshold > node_count
         let result = DKGCoordinator::new(node_factory.clone(), 3, 4);
@@ -411,7 +407,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone,
-        F: Fn(u32, usize, usize) -> Result<Box<Node>> + Clone,
+        F: Fn(u32, usize, usize, u64) -> Result<Box<Node>> + Clone,
         CreateShare: Fn(u32, u32, u64) -> crate::r#trait::DistributedShare<Node::ShareValue>,
     {
         // Create two nodes with same session ID
@@ -421,12 +417,8 @@ pub mod generic_tests {
         rng.fill_bytes(&mut session_id_bytes);
         let session_id = u64::from_le_bytes(session_id_bytes);
 
-        let mut node1 = *node_factory(1, 2, 3)?;
-        let mut node2 = *node_factory(2, 2, 3)?;
-
-        // Set same session ID for both nodes (for testing)
-        node1.set_session_id(session_id);
-        node2.set_session_id(session_id);
+        let mut node1 = *node_factory(1, 2, 3, session_id)?;
+        let mut node2 = *node_factory(2, 2, 3, session_id)?;
 
         // Generate polynomials
         node1.generate_polynomial()?;
@@ -449,8 +441,7 @@ pub mod generic_tests {
         );
 
         // Create a fresh node2 to test the tampered share
-        let mut node2_fresh = *node_factory(2, 2, 3)?;
-        node2_fresh.set_session_id(session_id);
+        let mut node2_fresh = *node_factory(2, 2, 3, session_id)?;
         node2_fresh.receive_commitment(1, node1.commitment().clone())?;
 
         // Create a tampered share

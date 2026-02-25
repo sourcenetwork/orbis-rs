@@ -21,8 +21,8 @@ fn test_frost_full_flow_3_of_5() {
 
     // Run DKG
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize| {
-            <DKGNode as Dkg>::new(id, threshold, total_nodes)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
         },
         n,
         t,
@@ -107,8 +107,8 @@ fn test_frost_wrong_message_fails_verification() {
     let t = 2;
 
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize| {
-            <DKGNode as Dkg>::new(id, threshold, total_nodes)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
         },
         n,
         t,
@@ -165,8 +165,8 @@ fn test_frost_tampered_share_rejected() {
     let t = 2;
 
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize| {
-            <DKGNode as Dkg>::new(id, threshold, total_nodes)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
         },
         n,
         t,
@@ -228,8 +228,8 @@ fn test_frost_single_key_threshold_1() {
     let t = 1;
 
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize| {
-            <DKGNode as Dkg>::new(id, threshold, total_nodes)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
         },
         n,
         t,
@@ -275,8 +275,8 @@ fn test_frost_different_share_subsets_produce_valid_signatures() {
     let t = 3;
 
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize| {
-            <DKGNode as Dkg>::new(id, threshold, total_nodes)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
         },
         n,
         t,
@@ -335,8 +335,8 @@ fn test_frost_rejects_tampered_commitment_from_coordinator() {
     let t = 2;
 
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize| {
-            <DKGNode as Dkg>::new(id, threshold, total_nodes)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
         },
         n,
         t,

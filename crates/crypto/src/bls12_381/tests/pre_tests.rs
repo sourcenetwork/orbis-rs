@@ -305,8 +305,13 @@ fn test_dkg_encrypt_decrypt_integration() {
     // Step 1: Run DKG to generate threshold keys
     // Workaround: Use a closure that explicitly calls the function to avoid type inference issues
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize| {
-            <crate::bls12_381::dkg::DKGNode as crate::r#trait::Dkg>::new(id, threshold, total_nodes)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <crate::bls12_381::dkg::DKGNode as crate::r#trait::Dkg>::new(
+                id,
+                threshold,
+                total_nodes,
+                session_id,
+            )
         },
         n,
         t,
@@ -764,8 +769,13 @@ fn test_dkg_encrypt_decrypt_with_derivation_integration() {
 
     // Step 1: Run DKG
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize| {
-            <crate::bls12_381::dkg::DKGNode as crate::r#trait::Dkg>::new(id, threshold, total_nodes)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <crate::bls12_381::dkg::DKGNode as crate::r#trait::Dkg>::new(
+                id,
+                threshold,
+                total_nodes,
+                session_id,
+            )
         },
         n,
         t,

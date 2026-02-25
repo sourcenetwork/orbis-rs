@@ -661,7 +661,7 @@ async fn test_session_cleanup_guard_cleans_up_on_drop() {
 
     // Create a mock DKG node and session
     let session_id = 12345u64;
-    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node = *DkgImpl::new(1, 2, 3, session_id).expect("create DKG node");
     manager.create_session(session_id, dkg_node, 3).await;
 
     // Verify session exists
@@ -703,7 +703,7 @@ async fn test_session_cleanup_guard_defuse_prevents_cleanup() {
 
     // Create a mock DKG node and session
     let session_id = 67890u64;
-    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node = *DkgImpl::new(1, 2, 3, session_id).expect("create DKG node");
     manager.create_session(session_id, dkg_node, 3).await;
 
     // Verify session exists
@@ -749,7 +749,7 @@ async fn test_session_expiration_removes_old_sessions() {
 
     // Create a session
     let session_id = 11111u64;
-    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node = *DkgImpl::new(1, 2, 3, session_id).expect("create DKG node");
     manager.create_session(session_id, dkg_node, 3).await;
 
     // Verify session exists
@@ -828,7 +828,7 @@ async fn test_message_dedup_detects_duplicates() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     let session_id = 100u64;
-    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node = *DkgImpl::new(1, 2, 3, session_id).expect("create DKG node");
     manager.create_session(session_id, dkg_node, 3).await;
 
     // First message should not be seen as processed
@@ -861,7 +861,7 @@ async fn test_message_dedup_different_types_not_duplicate() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     let session_id = 101u64;
-    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node = *DkgImpl::new(1, 2, 3, session_id).expect("create DKG node");
     manager.create_session(session_id, dkg_node, 3).await;
 
     // Mark commitment from node 2 as processed
@@ -886,7 +886,7 @@ async fn test_message_dedup_different_nodes_not_duplicate() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     let session_id = 102u64;
-    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node = *DkgImpl::new(1, 2, 3, session_id).expect("create DKG node");
     manager.create_session(session_id, dkg_node, 3).await;
 
     // Mark commitment from node 2 as processed
@@ -912,8 +912,8 @@ async fn test_message_dedup_different_sessions_isolated() {
 
     let session_1 = 103u64;
     let session_2 = 104u64;
-    let dkg_node_1 = *DkgImpl::new(1, 2, 3).expect("create DKG node");
-    let dkg_node_2 = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node_1 = *DkgImpl::new(1, 2, 3, session_1).expect("create DKG node");
+    let dkg_node_2 = *DkgImpl::new(1, 2, 3, session_2).expect("create DKG node");
     manager.create_session(session_1, dkg_node_1, 3).await;
     manager.create_session(session_2, dkg_node_2, 3).await;
 
@@ -940,7 +940,7 @@ async fn test_message_dedup_cleaned_up_with_session() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     let session_id = 105u64;
-    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node = *DkgImpl::new(1, 2, 3, session_id).expect("create DKG node");
     manager.create_session(session_id, dkg_node, 3).await;
 
     manager
@@ -974,7 +974,7 @@ async fn test_peer_node_mappings_consistent() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     let session_id = 200u64;
-    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node = *DkgImpl::new(1, 2, 3, session_id).expect("create DKG node");
     manager.create_session(session_id, dkg_node, 3).await;
 
     let mut mappings = std::collections::HashMap::new();
@@ -1018,7 +1018,7 @@ async fn test_peer_identity_unknown_peer_not_in_mapping() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     let session_id = 201u64;
-    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node = *DkgImpl::new(1, 2, 3, session_id).expect("create DKG node");
     manager.create_session(session_id, dkg_node, 3).await;
 
     let mut mappings = std::collections::HashMap::new();
@@ -1055,7 +1055,7 @@ async fn test_session_limit_enforced() {
 
     // Fill up to the limit
     for i in 0..MAX_DKG_SESSIONS {
-        let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+        let dkg_node = *DkgImpl::new(1, 2, 3, i as u64).expect("create DKG node");
         assert!(
             manager.create_session(i as u64, dkg_node, 3).await,
             "Session {} should be created within limit",
@@ -1066,7 +1066,7 @@ async fn test_session_limit_enforced() {
     assert_eq!(manager.session_count().await, MAX_DKG_SESSIONS);
 
     // One more should be rejected
-    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node = *DkgImpl::new(1, 2, 3, MAX_DKG_SESSIONS as u64).expect("create DKG node");
     assert!(
         !manager
             .create_session(MAX_DKG_SESSIONS as u64, dkg_node, 3)
@@ -1086,8 +1086,8 @@ async fn test_duplicate_session_id_rejected() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     let session_id = 300u64;
-    let dkg_node_1 = *DkgImpl::new(1, 2, 3).expect("create DKG node");
-    let dkg_node_2 = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node_1 = *DkgImpl::new(1, 2, 3, session_id).expect("create DKG node");
+    let dkg_node_2 = *DkgImpl::new(1, 2, 3, session_id).expect("create DKG node");
 
     assert!(manager.create_session(session_id, dkg_node_1, 3).await);
     assert!(
@@ -1104,7 +1104,7 @@ async fn test_commitment_and_share_counters() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     let session_id = 400u64;
-    let dkg_node = *DkgImpl::new(1, 2, 3).expect("create DKG node");
+    let dkg_node = *DkgImpl::new(1, 2, 3, session_id).expect("create DKG node");
     manager.create_session(session_id, dkg_node, 3).await;
 
     // Initially zero

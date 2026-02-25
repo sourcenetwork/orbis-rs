@@ -38,23 +38,24 @@ pub trait DkgBenchSetup {
     type Node: Dkg + Clone;
 
     /// Create a single uninitialised node (polynomial not yet generated).
-    fn create_node(id: u32, threshold: usize, total_nodes: usize) -> Box<Self::Node>;
+    fn create_node(
+        id: u32,
+        threshold: usize,
+        total_nodes: usize,
+        session_id: u64,
+    ) -> Box<Self::Node>;
 
     /// Build a full fixture: run Phase 1, exchange commitments, generate shares.
     fn create_fixture(threshold: usize, total_nodes: usize) -> DkgBenchFixture<Self::Node> {
-        let mut nodes: Vec<Box<Self::Node>> = (1..=total_nodes as u32)
-            .map(|id| Self::create_node(id, threshold, total_nodes))
-            .collect();
-
-        // Assign a shared session ID
         use rand_core::{OsRng, RngCore};
         let mut rng = OsRng;
         let mut session_id_bytes = [0u8; 8];
         rng.fill_bytes(&mut session_id_bytes);
         let session_id = u64::from_le_bytes(session_id_bytes);
-        for node in &mut nodes {
-            node.set_session_id(session_id);
-        }
+
+        let mut nodes: Vec<Box<Self::Node>> = (1..=total_nodes as u32)
+            .map(|id| Self::create_node(id, threshold, total_nodes, session_id))
+            .collect();
 
         // Phase 1: generate polynomials
         for node in &mut nodes {
@@ -240,13 +241,9 @@ fn run_dkg_benchmarks<S: DkgBenchSetup>(c: &mut Criterion, prefix: &str) {
         for &(t, n) in &[(2, 3), (3, 5), (5, 9)] {
             group.bench_function(BenchmarkId::new("t_of_n", format!("{t}_of_{n}")), |b| {
                 b.iter(|| {
-                    let mut nodes: Vec<Box<S::Node>> =
-                        (1..=n as u32).map(|id| S::create_node(id, t, n)).collect();
-
-                    // Shared session ID
-                    for node in &mut nodes {
-                        node.set_session_id(1);
-                    }
+                    let mut nodes: Vec<Box<S::Node>> = (1..=n as u32)
+                        .map(|id| S::create_node(id, t, n, 1))
+                        .collect();
 
                     // Phase 1
                     for node in &mut nodes {

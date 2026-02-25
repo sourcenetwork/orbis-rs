@@ -125,8 +125,8 @@ fn test_threshold_signing_3_of_5() {
 
     // Run DKG
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize| {
-            <DKGNode as Dkg>::new(id, threshold, total_nodes)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
         },
         n,
         t,
@@ -186,8 +186,8 @@ fn test_threshold_signing_different_share_subsets() {
 
     // Run DKG
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize| {
-            <DKGNode as Dkg>::new(id, threshold, total_nodes)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
         },
         n,
         t,
@@ -261,8 +261,8 @@ fn test_verify_share_fails_with_wrong_share() {
 
     // Run DKG
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize| {
-            <DKGNode as Dkg>::new(id, threshold, total_nodes)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
         },
         n,
         t,

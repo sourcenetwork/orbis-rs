@@ -435,7 +435,8 @@ pub trait Dkg: Send + Sync {
     /// * `id` - Unique identifier for this node (1-indexed)
     /// * `threshold` - Minimum number of nodes needed to reconstruct (t)
     /// * `total_nodes` - Total number of participating nodes (n)
-    fn new(id: u32, threshold: usize, total_nodes: usize) -> Result<Box<Self>>
+    /// * `session_id` - Session ID agreed upon by all nodes before starting DKG
+    fn new(id: u32, threshold: usize, total_nodes: usize, session_id: u64) -> Result<Box<Self>>
     where
         Self: Sized;
     /// Phase 1: Generate and broadcast polynomial commitment
@@ -487,12 +488,6 @@ pub trait Dkg: Send + Sync {
 
     /// Get a reference to the polynomial commitment
     fn commitment(&self) -> &Self::PolynomialCommitment;
-
-    /// Set the session ID for this DKG instance
-    ///
-    /// This must be called after creating a new DKG node to ensure all nodes
-    /// use the same session ID for share verification.
-    fn set_session_id(&mut self, session_id: u64);
 }
 
 /// Trait for PRE
