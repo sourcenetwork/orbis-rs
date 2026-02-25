@@ -224,12 +224,22 @@ impl SignResponseManager {
         }
     }
 
-    /// Get collected sign responses
+    /// Get collected sign responses without consuming the entry.
+    /// Prefer `take_responses` when the entry is no longer needed after reading.
     pub async fn get_responses(&self, request_id: &str) -> Option<Vec<SignMessage>> {
         let responses = self.states.read().await;
         responses
             .get(request_id)
             .map(|entry| entry.responses.clone())
+    }
+
+    /// Take collected sign responses, removing the entry atomically.
+    ///
+    /// Prefer this over `get_responses` + `remove_response` — it acquires a single
+    /// write lock and moves the `Vec` out without cloning.
+    pub async fn take_responses(&self, request_id: &str) -> Option<Vec<SignMessage>> {
+        let mut responses = self.states.write().await;
+        responses.remove(request_id).map(|entry| entry.responses)
     }
 
     /// Remove sign response entry (cleanup after completion)
@@ -623,6 +633,30 @@ mod tests {
         assert!(
             mgr.get_responses("exp-resp-1").await.is_none(),
             "expired response entry should be cleaned up by expiration worker"
+        );
+    }
+    #[tokio::test]
+    async fn test_take_responses_consumes_entry() {
+        let mgr = SignResponseManager::new();
+        let expected = vec![PEER_A.to_string()];
+
+        assert!(mgr.init_response("req-take".into(), &expected).await);
+        mgr.store_response(
+            "req-take",
+            dummy_sign_response("req-take", 1),
+            &peer_bytes(PEER_A),
+        )
+        .await;
+
+        // take_responses should return the responses…
+        let taken = mgr.take_responses("req-take").await;
+        assert!(taken.is_some());
+        assert_eq!(taken.unwrap().len(), 1);
+
+        // …and the entry should be gone afterwards
+        assert!(
+            mgr.get_responses("req-take").await.is_none(),
+            "entry must be removed after take_responses"
         );
     }
 }

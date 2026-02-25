@@ -69,14 +69,14 @@ impl JwtSigner {
     ///
     /// # Arguments
     /// * `threshold` - The threshold value for DKG
-    /// * `peer_ids` - List of peer IDs (will be joined with commas)
+    /// * `peer_ids` - List of peer IDs
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour
     pub fn create_dkg_jwt(&self, threshold: u32, peer_ids: &[String]) -> Result<String> {
         let claims = DkgClaims {
             threshold,
-            peer_ids: peer_ids.join(","),
+            peer_ids: peer_ids.to_vec(),
         };
         self.sign(claims, Duration::from_hours(1))
     }

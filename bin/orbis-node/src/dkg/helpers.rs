@@ -33,21 +33,17 @@ pub fn validate_dkg_claims(
         )));
     }
 
-    // Validate peer_ids match (token has comma-separated, request has Vec)
-    let token_peer_ids: Vec<&str> = token.claims.peer_ids.split(',').collect();
-    let req_peer_ids: Vec<&str> = peer_ids.iter().map(|s| s.as_str()).collect();
-
-    if token_peer_ids.len() != req_peer_ids.len() {
+    // Validate peer_ids match (order-independent)
+    if token.claims.peer_ids.len() != peer_ids.len() {
         return Err(DkgError::Unauthorized(format!(
             "Token peer_ids count ({}) does not match request peer_ids count ({})",
-            token_peer_ids.len(),
-            req_peer_ids.len()
+            token.claims.peer_ids.len(),
+            peer_ids.len()
         )));
     }
 
-    // Check all peer_ids match (order-independent)
-    let mut sorted_token: Vec<&str> = token_peer_ids.clone();
-    let mut sorted_req: Vec<&str> = req_peer_ids.clone();
+    let mut sorted_token: Vec<&str> = token.claims.peer_ids.iter().map(|s| s.as_str()).collect();
+    let mut sorted_req: Vec<&str> = peer_ids.iter().map(|s| s.as_str()).collect();
     sorted_token.sort();
     sorted_req.sort();
 

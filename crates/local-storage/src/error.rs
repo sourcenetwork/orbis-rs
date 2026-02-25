@@ -3,15 +3,15 @@ use thiserror::Error;
 /// LocalStorage related errors
 #[derive(Error, Debug)]
 pub enum LocalStorageError {
-    #[error("Posion Mutex error: {0}")]
-    PosionError(String),
+    #[error("Poison Mutex error: {0}")]
+    PoisonError(String),
     #[error("Encryption Error")]
     EncryptionError,
     #[error("Decryption Error")]
     DecryptionError,
     #[error("Item not found")]
     NotFound,
-    #[error("Courrupted Data")]
+    #[error("Corrupted Data")]
     CorruptData,
     #[error("Unique DB Error: {0}")]
     UniqueDBError(String),

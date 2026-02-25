@@ -397,7 +397,7 @@ async fn handle_metrics(
                 .status(StatusCode::OK)
                 .header("Content-Type", encoder.format_type())
                 .body(Full::new(Bytes::from(buffer)))
-                .unwrap();
+                .expect("BUG: static metrics response builder should never fail");
             Ok(response)
         }
         Err(e) => {
@@ -407,7 +407,7 @@ async fn handle_metrics(
                     "Error encoding metrics: {}",
                     e
                 ))))
-                .unwrap();
+                .expect("BUG: static error response builder should never fail");
             Ok(response)
         }
     }

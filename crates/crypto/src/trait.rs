@@ -562,9 +562,11 @@ pub trait ThresholdDealer {
         n: usize,
     ) -> Result<Option<Self::PublicKey>>;
 
-    // TODO: next two functions are not needed in PRE at the node but for encryptor and decryptor
-    // may want to remove them from this trait, however it does need to exist for an implementation to be complete and tested
-    // think on this
+    // These functions are not called by the node, but are required here intentionally.
+    // A complete curve implementation must provide the full client-side API (encrypt, verify, decrypt)
+    // so that clients can use any supported curve. Keeping them in one trait ensures the compiler
+    // enforces completeness — an implementer cannot ship a node-only impl and leave clients with a
+    // half-implemented curve.
 
     /// Encrypt a secret using the aggregate public key of the DKG.
     ///

@@ -1,4 +1,5 @@
 use crate::app_state::AppState;
+use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::helpers::validate_dkg_claims;
@@ -69,8 +70,9 @@ where
         let token_str = extract_bearer_token(&request)
             .map_err(|e| DkgError::Unauthorized(e.to_string()))?
             .to_string();
-        let token: BearerToken<DkgClaims> = resolve_jwt_did(&token_str, current_time)
-            .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+        let token: BearerToken<DkgClaims> =
+            resolve_jwt_did(&token_str, current_time, MAX_TOKEN_LIFETIME_SECS)
+                .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
         // TODO: use token.issuer_id as AuthZ check
         let req = request.into_inner();
 

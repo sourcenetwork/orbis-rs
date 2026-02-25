@@ -29,8 +29,6 @@ impl LocalStorage for MemoryStorage {
         NAME.to_string()
     }
 
-    // TODO: determine how to handle poisoned mutex
-
     fn new(password: Option<String>, _db_path: String) -> Result<Self> {
         let store = Arc::new(RwLock::new(HashMap::new()));
 
@@ -65,7 +63,7 @@ impl LocalStorage for MemoryStorage {
         let store = self
             .store
             .read()
-            .map_err(|e| LocalStorageError::PosionError(e.to_string()))?;
+            .map_err(|e| LocalStorageError::PoisonError(e.to_string()))?;
         Ok(store.get(&key).cloned())
     }
 
@@ -73,7 +71,7 @@ impl LocalStorage for MemoryStorage {
         let mut store = self
             .store
             .write()
-            .map_err(|e| LocalStorageError::PosionError(e.to_string()))?;
+            .map_err(|e| LocalStorageError::PoisonError(e.to_string()))?;
         store.insert(key, value);
         Ok(())
     }
@@ -82,7 +80,7 @@ impl LocalStorage for MemoryStorage {
         let mut store = self
             .store
             .write()
-            .map_err(|e| LocalStorageError::PosionError(e.to_string()))?;
+            .map_err(|e| LocalStorageError::PoisonError(e.to_string()))?;
         store.remove(&key);
         Ok(())
     }
@@ -91,7 +89,7 @@ impl LocalStorage for MemoryStorage {
         let store = self
             .store
             .read()
-            .map_err(|e| LocalStorageError::PosionError(e.to_string()))?;
+            .map_err(|e| LocalStorageError::PoisonError(e.to_string()))?;
         Ok(store.contains_key(&key))
     }
     fn get_encrypted(&self, key: LocalStorageKeys) -> Result<Option<Vec<u8>>> {

@@ -6,6 +6,16 @@
 use std::time::Duration;
 
 // ============================================================================
+// Authentication Constants
+// ============================================================================
+
+/// Maximum allowed lifetime for a JWT bearer token (seconds).
+///
+/// Tokens with `exp - iat` greater than this value are rejected, preventing
+/// long-lived credentials from being issued and then leaked. Set to 24 hours.
+pub const MAX_TOKEN_LIFETIME_SECS: u64 = 24 * 60 * 60;
+
+// ============================================================================
 // Cryptographic Constants
 // ============================================================================
 
@@ -145,8 +155,7 @@ pub const PASSWORD_FILE_NAME: &str = ".orbis_password";
 
 /// Environment variable name for the encryption password
 ///
-/// If set, this environment variable takes precedence over password file
-/// but not over the password file (file has highest priority).
+/// This environment variable does not take precedence over the password file (file has highest priority).
 /// This allows for secure password injection in containerized environments.
 pub const PASSWORD_ENV_VAR: &str = "ORBIS_PASSWORD";
 
