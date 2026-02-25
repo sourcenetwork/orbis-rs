@@ -50,9 +50,10 @@ pub enum SubCommands {
         #[clap(long)]
         reader_pk: String,
 
-        /// Reader's secret key in hex format (for decryption after PRE)
+        /// Reader's secret key in hex format (for decryption after PRE).
+        /// Not required when --xnc-only is set.
         #[clap(long)]
-        reader_sk: String,
+        reader_sk: Option<String>,
 
         /// Id of object
         #[clap(long)]
@@ -72,6 +73,10 @@ pub enum SubCommands {
         /// Optional salt
         #[clap(long)]
         salt: Option<String>,
+
+        /// Print only the re-encrypted commitment (xnc_cmt) without decrypting.
+        #[clap(long)]
+        xnc_only: bool,
     },
     /// Encrypts a secret to the ring public key (from DKG)
     EncryptSecret {
@@ -336,7 +341,11 @@ async fn main() -> Result<()> {
             namespace,
             derivation,
             salt,
+            xnc_only,
         } => {
+            if !xnc_only && reader_sk.is_none() {
+                anyhow::bail!("--reader-sk is required unless --xnc-only is set");
+            }
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
             do_pre(
@@ -349,6 +358,7 @@ async fn main() -> Result<()> {
                 namespace,
                 derivation_bytes,
                 salt,
+                xnc_only,
             )
             .await?;
         }

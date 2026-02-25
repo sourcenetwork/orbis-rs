@@ -53,3 +53,6 @@ orbis_db
 test_dbs
 dbs
 public_key.txt
+
+# Claude Code local task tracking
+tasks/
