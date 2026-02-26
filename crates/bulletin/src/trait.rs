@@ -29,7 +29,7 @@ pub struct DocumentPayload {
     /// Optional tier for acp check
     pub tier: Option<String>,
     /// Optional timestamp for acp check
-    pub timestamp: Option<String>,
+    pub timestamp: Option<u64>,
 }
 /// Payload for ring information ring_id => payload
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]

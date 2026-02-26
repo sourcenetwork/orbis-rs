@@ -186,7 +186,7 @@ where
             &document_payload.resource,
             &document_payload.permission,
             document_payload.tier.as_deref(),
-            document_payload.timestamp.as_deref(),
+            document_payload.timestamp,
             salt.as_deref(),
         );
 

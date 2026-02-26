@@ -431,10 +431,13 @@ impl ThresholdDealer for ThresholdDealerNode {
         resource: &str,
         permission: &str,
         tier: Option<&str>,
-        timestamp: Option<&str>,
+        timestamp: Option<u64>,
         salt: Option<&str>,
     ) -> Vec<u8> {
         let domain = Fq::from_le_bytes_mod_order(POLICY_METADATA_DOMAIN);
+
+        let ts_le = timestamp.map(|t| t.to_le_bytes());
+        let ts_bytes: &[u8] = ts_le.as_ref().map_or(&[], |b| b.as_slice());
 
         // Each field is encoded as: Fq(len) followed by 31-byte chunks (each fits in Fq without reduction)
         let mut inputs: Vec<Fq> = Vec::new();
@@ -443,7 +446,7 @@ impl ThresholdDealer for ThresholdDealerNode {
             resource.as_bytes(),
             permission.as_bytes(),
             tier.unwrap_or("").as_bytes(),
-            timestamp.unwrap_or("").as_bytes(),
+            ts_bytes,
             salt.unwrap_or("").as_bytes(),
         ] {
             inputs.push(Fq::from(field.len() as u64));

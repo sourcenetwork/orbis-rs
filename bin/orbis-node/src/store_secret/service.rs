@@ -117,7 +117,7 @@ where
                 &req.resource,
                 &req.permission,
                 req.tier.as_deref(),
-                req.timestamp.as_deref(),
+                req.timestamp,
                 None,
             )
         };

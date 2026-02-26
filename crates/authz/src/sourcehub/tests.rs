@@ -590,7 +590,7 @@ async fn test_valid_window_out_of_range() {
         "doc-1".to_string(),
         "reader".to_string(),
         None,
-        Some("2".to_string()),
+        Some(2u64),
         Some(ValidWindow { start: 0, end: 1 }),
     );
 
@@ -610,9 +610,11 @@ async fn test_valid_window_in_range() {
     let _container = SourceHubTestContainer::new();
 
     let config = common::blockchain::ChainConfig::local();
-    let signer =
-        common::blockchain::TxSigner::from_hex_key(common::blockchain::TEST_ACCOUNT_HEX_KEY, config.clone())
-            .expect("Failed to create signer");
+    let signer = common::blockchain::TxSigner::from_hex_key(
+        common::blockchain::TEST_ACCOUNT_HEX_KEY,
+        config.clone(),
+    )
+    .expect("Failed to create signer");
     let client = common::blockchain::SourceHubClient::with_signer(config.clone(), signer)
         .await
         .expect("Failed to create client");
@@ -651,7 +653,9 @@ async fn test_valid_window_in_range() {
                 relation: "reader".to_string(),
                 subject: Some(common::blockchain::acp::Subject {
                     kind: Some(common::blockchain::acp::SubjectKind::Actor(
-                        common::blockchain::acp::Actor { id: reader_did.clone() },
+                        common::blockchain::acp::Actor {
+                            id: reader_did.clone(),
+                        },
                     )),
                 }),
             },
@@ -676,7 +680,10 @@ async fn test_valid_window_in_range() {
         "reader".to_string(),
         None,
         Some(now.to_string()),
-        Some(ValidWindow { start: 0, end: u64::MAX }),
+        Some(ValidWindow {
+            start: 0,
+            end: u64::MAX,
+        }),
     );
 
     let result = auth
@@ -684,5 +691,8 @@ async fn test_valid_window_in_range() {
         .await
         .expect("check should not error");
 
-    assert!(result, "In-range window with valid relationship should grant access");
+    assert!(
+        result,
+        "In-range window with valid relationship should grant access"
+    );
 }

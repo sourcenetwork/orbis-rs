@@ -30,7 +30,7 @@ pub struct AccessCheckRequest {
     /// Optional tier for acp check
     pub tier: Option<String>,
     /// Optional timestamp for acp check
-    pub timestamp: Option<String>,
+    pub timestamp: Option<u64>,
     /// Optional timestamp range for validity window
     pub valid_window: Option<ValidWindow>,
 }
@@ -42,7 +42,7 @@ impl AccessCheckRequest {
         object_id: String,
         relationship: String,
         tier: Option<String>,
-        timestamp: Option<String>,
+        timestamp: Option<u64>,
         valid_window: Option<ValidWindow>,
     ) -> Self {
         Self {
@@ -82,11 +82,8 @@ impl Authz for SourceHubAuth {
 
         // Validate that valid_window and timestamp are either both present or both absent
         match (&request.valid_window, &request.timestamp) {
-            (Some(window), Some(ts_str)) => {
-                let ts = ts_str.parse::<u64>().map_err(|e| {
-                    AuthZError::InvalidRequest(format!("Invalid timestamp '{}': {}", ts_str, e))
-                })?;
-                if ts < window.start || ts > window.end {
+            (Some(window), Some(ts)) => {
+                if ts < &window.start || ts > &window.end {
                     return Ok(false);
                 }
             }

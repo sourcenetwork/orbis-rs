@@ -124,7 +124,7 @@ where
             &document_payload.resource,
             &document_payload.permission,
             document_payload.tier.clone().as_deref(),
-            document_payload.timestamp.clone().as_deref(),
+            document_payload.timestamp,
             req.salt.as_deref(),
         );
         let (ring_pk_bytes, ring_pk) = decode_ring_pk(&ring_payload.ring_pk)?;
