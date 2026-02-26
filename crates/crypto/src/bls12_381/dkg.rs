@@ -145,6 +145,14 @@ impl Dkg for DKGNode {
             ));
         }
 
+        // One accepted share per sender per session
+        if self.received_shares.contains_key(&share.from_id) {
+            return Err(CryptoError::DKGError(format!(
+                "Duplicate share from node {}",
+                share.from_id
+            )));
+        }
+
         // Verify the share is intended for us
         if share.to_id != self.id {
             return Err(CryptoError::DKGError(
