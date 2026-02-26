@@ -21,6 +21,7 @@ use crate::pre::helpers::{
 };
 use crate::pre::messages::PreMessage;
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
+use authz::sourcehub::ValidWindow;
 use crypto::r#trait::{
     DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
 };
@@ -98,6 +99,7 @@ where
                 namespace,
                 derivation,
                 salt,
+                valid_window,
             } => {
                 tracing::info!(
                     request_id = %request_id,
@@ -116,6 +118,7 @@ where
                     namespace,
                     derivation,
                     salt,
+                    valid_window,
                 )
                 .await
             }
@@ -149,6 +152,7 @@ where
         namespace: String,
         derivation: Option<Vec<u8>>,
         salt: Option<String>,
+        valid_window: Option<ValidWindow>,
     ) -> Result<Option<PreMessage>> {
         // Get current timestamp (needed for both auth and response)
         let current_time = SystemTime::now()
@@ -191,6 +195,7 @@ where
             &document_payload,
             &object_id,
             &token.issuer_id,
+            valid_window,
         )
         .await?;
 
@@ -394,6 +399,7 @@ where
         namespace: String,
         derivation: Option<Vec<u8>>,
         salt: Option<String>,
+        valid_window: Option<ValidWindow>,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
         let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
@@ -460,6 +466,7 @@ where
                 actual_peer_count,
                 derivation,
                 salt,
+                valid_window,
             )
             .await;
 
@@ -494,6 +501,7 @@ where
         actual_peer_count: usize,
         derivation: Option<Vec<u8>>,
         salt: Option<String>,
+        valid_window: Option<ValidWindow>,
     ) -> Result<Vec<u8>> {
         // 1. Deserialize public polynomial from bulletin data
         let pub_poly_bytes = hex::decode(public_polynomial_hex).map_err(|e| {
@@ -556,6 +564,7 @@ where
                 namespace: namespace.clone(),
                 derivation: derivation.clone(),
                 salt: salt.clone(),
+                valid_window: valid_window.clone(),
             };
 
             let peer_id = peer_id_str.clone();

@@ -9,6 +9,13 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 mod tests;
 
+/// Unix timestamp range (inclusive) for access validity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidWindow {
+    pub start: u64,
+    pub end: u64,
+}
+
 /// Request structure for access checks, serialized to Vec<u8> for the generic trait.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessCheckRequest {
@@ -24,6 +31,8 @@ pub struct AccessCheckRequest {
     pub tier: Option<String>,
     /// Optional timestamp for acp check
     pub timestamp: Option<String>,
+    /// Optional timestamp range for validity window
+    pub valid_window: Option<ValidWindow>,
 }
 
 impl AccessCheckRequest {
@@ -34,6 +43,7 @@ impl AccessCheckRequest {
         relationship: String,
         tier: Option<String>,
         timestamp: Option<String>,
+        valid_window: Option<ValidWindow>,
     ) -> Self {
         Self {
             policy_id,
@@ -42,6 +52,7 @@ impl AccessCheckRequest {
             relationship,
             timestamp,
             tier,
+            valid_window,
         }
     }
 
@@ -68,6 +79,29 @@ impl Authz for SourceHubAuth {
     async fn check(&self, permission: Vec<u8>, subject: &String) -> Result<bool> {
         // Decode the access check request from bytes
         let request = AccessCheckRequest::from_bytes(&permission)?;
+
+        // Validate that valid_window and timestamp are either both present or both absent
+        match (&request.valid_window, &request.timestamp) {
+            (Some(window), Some(ts_str)) => {
+                let ts = ts_str.parse::<u64>().map_err(|e| {
+                    AuthZError::InvalidRequest(format!("Invalid timestamp '{}': {}", ts_str, e))
+                })?;
+                if ts < window.start || ts > window.end {
+                    return Ok(false);
+                }
+            }
+            (Some(_), None) => {
+                return Err(AuthZError::InvalidRequest(
+                    "valid_window provided but timestamp is missing".to_string(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(AuthZError::InvalidRequest(
+                    "timestamp provided but valid_window is missing".to_string(),
+                ));
+            }
+            (None, None) => {}
+        }
 
         // TODO: pass through timestamp and tier when acp is uptimestampd
         // Check if the actor has any of the relations that grant the permission

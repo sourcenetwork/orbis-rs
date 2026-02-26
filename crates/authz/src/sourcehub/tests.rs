@@ -1,6 +1,6 @@
 use super::SourceHubAuth;
 use crate::r#trait::Authz;
-use crate::sourcehub::AccessCheckRequest;
+use crate::sourcehub::{AccessCheckRequest, ValidWindow};
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
     ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
@@ -113,6 +113,7 @@ async fn test_create_and_query_policy() {
         "reader".to_string(),
         None,
         None,
+        None,
     );
     let is_authorized = auth
         .check(access_request.to_bytes().unwrap(), &reader_did.clone())
@@ -154,6 +155,7 @@ async fn test_create_and_query_policy() {
         "document".to_string(),
         "doc-123".to_string(),
         "reader".to_string(),
+        None,
         None,
         None,
     );
@@ -382,6 +384,7 @@ async fn test_complex_policy_permissions() {
         "admin".to_string(),
         None,
         None,
+        None,
     );
     let has_admin = auth
         .check(req.to_bytes().unwrap(), &admin_did.clone())
@@ -396,6 +399,7 @@ async fn test_complex_policy_permissions() {
         "project".to_string(),
         "proj-1".to_string(),
         "admin".to_string(),
+        None,
         None,
         None,
     );
@@ -414,6 +418,7 @@ async fn test_complex_policy_permissions() {
         "admin".to_string(),
         None,
         None,
+        None,
     );
     let has_admin = auth
         .check(req.to_bytes().unwrap(), &viewer_did.clone())
@@ -428,6 +433,7 @@ async fn test_complex_policy_permissions() {
         "project".to_string(),
         "proj-1".to_string(),
         "admin".to_string(),
+        None,
         None,
         None,
     );
@@ -449,6 +455,7 @@ async fn test_complex_policy_permissions() {
         "editor".to_string(),
         None,
         None,
+        None,
     );
     let has_editor = auth
         .check(req.to_bytes().unwrap(), &admin_did.clone())
@@ -465,6 +472,7 @@ async fn test_complex_policy_permissions() {
         "editor".to_string(),
         None,
         None,
+        None,
     );
     let has_editor = auth
         .check(req.to_bytes().unwrap(), &editor_did.clone())
@@ -479,6 +487,7 @@ async fn test_complex_policy_permissions() {
         "project".to_string(),
         "proj-1".to_string(),
         "editor".to_string(),
+        None,
         None,
         None,
     );
@@ -500,6 +509,7 @@ async fn test_complex_policy_permissions() {
         "viewer".to_string(),
         None,
         None,
+        None,
     );
     let has_viewer = auth
         .check(req.to_bytes().unwrap(), &admin_did.clone())
@@ -514,6 +524,7 @@ async fn test_complex_policy_permissions() {
         "project".to_string(),
         "proj-1".to_string(),
         "viewer".to_string(),
+        None,
         None,
         None,
     );
@@ -532,6 +543,7 @@ async fn test_complex_policy_permissions() {
         "viewer".to_string(),
         None,
         None,
+        None,
     );
     let has_viewer = auth
         .check(req.to_bytes().unwrap(), &viewer_did.clone())
@@ -548,6 +560,7 @@ async fn test_complex_policy_permissions() {
         "viewer".to_string(),
         None,
         None,
+        None,
     );
     let has_viewer = auth
         .check(req.to_bytes().unwrap(), &outsider_did.clone())
@@ -557,4 +570,119 @@ async fn test_complex_policy_permissions() {
     assert!(!has_viewer, "Outsider should NOT have viewer relationship");
 
     println!("\n✓ All complex policy permission tests passed!");
+}
+
+/// Tests that a request with a valid_window entirely in the past returns false
+/// without reaching the chain.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_valid_window_out_of_range() {
+    let _container = SourceHubTestContainer::new();
+
+    let auth = SourceHubAuth::new(ChainConfigBuilder::default())
+        .await
+        .unwrap();
+
+    // timestamp "2" is after end "1", so it falls outside the window
+    let request = AccessCheckRequest::new(
+        "any-policy".to_string(),
+        "document".to_string(),
+        "doc-1".to_string(),
+        "reader".to_string(),
+        None,
+        Some("2".to_string()),
+        Some(ValidWindow { start: 0, end: 1 }),
+    );
+
+    let result = auth
+        .check(request.to_bytes().unwrap(), &"did:key:any".to_string())
+        .await
+        .expect("check should not error");
+
+    assert!(!result, "Out-of-range window should deny access");
+}
+
+/// Tests that a request with a valid_window covering the current time passes
+/// through to the chain and returns the chain's authorization result.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_valid_window_in_range() {
+    let _container = SourceHubTestContainer::new();
+
+    let config = common::blockchain::ChainConfig::local();
+    let signer =
+        common::blockchain::TxSigner::from_hex_key(common::blockchain::TEST_ACCOUNT_HEX_KEY, config.clone())
+            .expect("Failed to create signer");
+    let client = common::blockchain::SourceHubClient::with_signer(config.clone(), signer)
+        .await
+        .expect("Failed to create client");
+
+    // Create a policy and register an object with a reader relationship
+    let result = client
+        .acp_create_policy(TEST_POLICY_YAML, 1)
+        .await
+        .expect("Failed to create policy");
+    assert_eq!(result.code, 0);
+
+    let policy_ids = client
+        .acp_list_policy_ids()
+        .await
+        .expect("Failed to list policy IDs");
+    let policy_id = &policy_ids.ids[0];
+
+    let key_pair = did_key::generate::<did_key::Ed25519KeyPair>(None);
+    let reader_did = format!("did:key:{}", did_key::Fingerprint::fingerprint(&key_pair));
+
+    let document = common::blockchain::acp::Object {
+        resource: "document".to_string(),
+        id: "doc-window-test".to_string(),
+    };
+
+    client
+        .acp_register_object(policy_id, document.clone())
+        .await
+        .expect("Failed to register object");
+
+    client
+        .acp_set_relationship(
+            policy_id,
+            common::blockchain::acp::Relationship {
+                object: Some(document),
+                relation: "reader".to_string(),
+                subject: Some(common::blockchain::acp::Subject {
+                    kind: Some(common::blockchain::acp::SubjectKind::Actor(
+                        common::blockchain::acp::Actor { id: reader_did.clone() },
+                    )),
+                }),
+            },
+        )
+        .await
+        .expect("Failed to set relationship");
+
+    let auth = SourceHubAuth::new(ChainConfigBuilder::default())
+        .await
+        .unwrap();
+
+    // Use the current Unix timestamp; window 0..u64::MAX always contains it
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("System clock error")
+        .as_secs();
+
+    let request = AccessCheckRequest::new(
+        policy_id.clone(),
+        "document".to_string(),
+        "doc-window-test".to_string(),
+        "reader".to_string(),
+        None,
+        Some(now.to_string()),
+        Some(ValidWindow { start: 0, end: u64::MAX }),
+    );
+
+    let result = auth
+        .check(request.to_bytes().unwrap(), &reader_did)
+        .await
+        .expect("check should not error");
+
+    assert!(result, "In-range window with valid relationship should grant access");
 }

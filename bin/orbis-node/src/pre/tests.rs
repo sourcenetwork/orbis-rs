@@ -252,6 +252,7 @@ async fn test_dkg_then_pre_end_to_end() {
             namespace,
             None,
             None,
+            None,
         )
         .await
         .expect("PRE should succeed");
@@ -444,6 +445,7 @@ async fn test_pre_with_large_secret() {
             namespace,
             None,
             None,
+            None,
         )
         .await
         .expect("PRE should succeed");
@@ -572,6 +574,7 @@ async fn test_pre_fails_with_wrong_key() {
             namespace,
             None,
             None,
+            None,
         )
         .await
         .expect("PRE should succeed");
@@ -694,6 +697,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
             object_id,
             invalid_token,
             namespace,
+            None,
             None,
             None,
         )
@@ -840,6 +844,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             namespace,
             None,
             None,
+            None,
         )
         .await;
 
@@ -896,6 +901,7 @@ async fn test_start_pre_fails_missing_auth_header() {
         object_id: "".to_string(),
         derivation: None,
         salt: None,
+        valid_window: None,
     };
 
     // Create request WITHOUT authentication header
@@ -937,6 +943,7 @@ async fn test_start_pre_fails_malformed_jwt() {
         object_id: "".to_string(),
         derivation: None,
         salt: None,
+        valid_window: None,
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -995,6 +1002,7 @@ async fn test_start_pre_fails_wrong_signature() {
         object_id: "".to_string(),
         derivation: None,
         salt: None,
+        valid_window: None,
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
@@ -1123,6 +1131,7 @@ async fn test_pre_fails_with_wrong_derivation() {
             pre_token,
             namespace.clone(),
             Some(correct_derivation.clone()),
+            None,
             None,
         )
         .await
@@ -1284,6 +1293,7 @@ async fn test_pre_fails_with_bad_proof() {
             object_id,
             pre_token,
             namespace,
+            None,
             None,
             None,
         )

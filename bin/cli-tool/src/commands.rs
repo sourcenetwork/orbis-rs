@@ -395,6 +395,7 @@ pub async fn do_pre(
         namespace: namespace.clone(),
         derivation: derivation.clone(),
         salt: salt.clone(),
+        valid_window: None,
     };
 
     // JWT work use determinitic key_pair for now

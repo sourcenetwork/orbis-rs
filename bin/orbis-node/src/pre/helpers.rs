@@ -2,7 +2,7 @@ use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::pre::error::{PreError, Result};
 use authn::{BearerToken, PreClaims};
 use authz::r#trait::Authz;
-use authz::sourcehub::AccessCheckRequest;
+use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, DocumentPayload, RingPayload};
 use crypto::r#trait::{EncryptionProof, Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
@@ -51,6 +51,7 @@ pub async fn check_policy_access(
     document_payload: &DocumentPayload,
     object_id: &str,
     issuer_id: &str,
+    valid_window: Option<ValidWindow>,
 ) -> Result<()> {
     let permission = AccessCheckRequest::new(
         document_payload.policy_id.clone(),
@@ -59,6 +60,7 @@ pub async fn check_policy_access(
         document_payload.permission.clone(),
         document_payload.tier.clone(),
         document_payload.timestamp.clone(),
+        valid_window,
     )
     .to_bytes()
     .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
