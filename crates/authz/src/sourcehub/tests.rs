@@ -679,7 +679,7 @@ async fn test_valid_window_in_range() {
         "doc-window-test".to_string(),
         "reader".to_string(),
         None,
-        Some(now.to_string()),
+        Some(now),
         Some(ValidWindow {
             start: 0,
             end: u64::MAX,

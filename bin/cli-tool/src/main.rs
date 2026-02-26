@@ -103,7 +103,7 @@ pub enum SubCommands {
         tier: Option<String>,
         /// Optional timestamp
         #[clap(long)]
-        timestamp: Option<String>,
+        timestamp: Option<u64>,
         /// Optional salt
         #[clap(long)]
         salt: Option<String>,
@@ -213,7 +213,7 @@ pub enum SubCommands {
         tier: Option<String>,
         /// Optional timestamp
         #[clap(long)]
-        timestamp: Option<String>,
+        timestamp: Option<u64>,
         /// Optional salt
         #[clap(long)]
         salt: Option<String>,
@@ -255,7 +255,7 @@ pub enum SubCommands {
         tier: Option<String>,
         /// Optional timestamp
         #[clap(long)]
-        timestamp: Option<String>,
+        timestamp: Option<u64>,
         /// Optional metadata hash
         #[clap(long)]
         metadata_hash: Option<String>,
@@ -300,7 +300,7 @@ pub enum SubCommands {
         tier: Option<String>,
         /// Optional timestamp
         #[clap(long)]
-        timestamp: Option<String>,
+        timestamp: Option<u64>,
         /// Optional salt
         #[clap(long)]
         salt: Option<String>,

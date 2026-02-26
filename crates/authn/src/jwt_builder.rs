@@ -145,7 +145,7 @@ impl JwtSigner {
         derived_pk: Option<Vec<u8>>,
         with_proof: bool,
         tier: Option<String>,
-        timestamp: Option<String>,
+        timestamp: Option<u64>,
         metadata_hash: Option<Vec<u8>>,
     ) -> Result<String> {
         let claims = StoreSecretClaims {

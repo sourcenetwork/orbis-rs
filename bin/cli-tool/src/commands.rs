@@ -141,7 +141,7 @@ pub fn prepare_secret(
     resource: String,
     permission: String,
     tier: Option<String>,
-    timestamp: Option<String>,
+    timestamp: Option<u64>,
     salt: Option<String>,
 ) -> Result<PreparedSecret> {
     // Parse ring public key
@@ -155,7 +155,7 @@ pub fn prepare_secret(
         &resource,
         &permission,
         tier.as_deref(),
-        timestamp.as_deref(),
+        timestamp,
         salt.as_deref(),
     );
 
@@ -201,7 +201,7 @@ pub async fn store_prepared_secret(
     derived_pk: Option<Vec<u8>>,
     with_proof: bool,
     tier: Option<String>,
-    timestamp: Option<String>,
+    timestamp: Option<u64>,
     metadata_hash: Option<Vec<u8>>,
 ) -> Result<StoreSecretResult> {
     println!("Storing secret via StoreSecret service:");
@@ -305,7 +305,7 @@ pub async fn do_store_secret(
     resource: String,
     permission: String,
     tier: Option<String>,
-    timestamp: Option<String>,
+    timestamp: Option<u64>,
     salt: Option<String>,
     reader_did_pk: Option<String>,
     derivation: Option<Vec<u8>>,
@@ -501,7 +501,7 @@ pub async fn do_encrypt_secret(
     resource: String,
     permission: String,
     tier: Option<String>,
-    timestamp: Option<String>,
+    timestamp: Option<u64>,
     salt: Option<String>,
 ) -> Result<()> {
     println!("Encrypting secret to ring public key...");
@@ -520,7 +520,7 @@ pub async fn do_encrypt_secret(
         &resource,
         &permission,
         tier.as_deref(),
-        timestamp.as_deref(),
+        timestamp,
         salt.as_deref(),
     );
 

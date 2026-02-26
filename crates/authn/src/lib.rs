@@ -87,7 +87,7 @@ pub struct StoreSecretClaims {
     /// tier required for policy
     pub tier: Option<String>,
     /// timestamp required for policy
-    pub timestamp: Option<String>,
+    pub timestamp: Option<u64>,
     /// metadata hash if using a salt
     pub metadata_hash: Option<Vec<u8>>,
 }
