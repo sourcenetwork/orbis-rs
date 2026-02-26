@@ -22,8 +22,8 @@ pub struct AccessCheckRequest {
     pub relationship: String,
     /// Optional tier for acp check
     pub tier: Option<String>,
-    /// Optional date for acp check
-    pub date: Option<String>,
+    /// Optional timestamp for acp check
+    pub timestamp: Option<String>,
 }
 
 impl AccessCheckRequest {
@@ -33,14 +33,14 @@ impl AccessCheckRequest {
         object_id: String,
         relationship: String,
         tier: Option<String>,
-        date: Option<String>,
+        timestamp: Option<String>,
     ) -> Self {
         Self {
             policy_id,
             resource,
             object_id,
             relationship,
-            date,
+            timestamp,
             tier,
         }
     }
@@ -69,7 +69,7 @@ impl Authz for SourceHubAuth {
         // Decode the access check request from bytes
         let request = AccessCheckRequest::from_bytes(&permission)?;
 
-        // TODO: pass through date and tier when acp is updated
+        // TODO: pass through timestamp and tier when acp is uptimestampd
         // Check if the actor has any of the relations that grant the permission
         let is_authorized = self
             .chain_client

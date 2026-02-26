@@ -141,7 +141,7 @@ pub fn prepare_secret(
     resource: String,
     permission: String,
     tier: Option<String>,
-    date: Option<String>,
+    timestamp: Option<String>,
     salt: Option<String>,
 ) -> Result<PreparedSecret> {
     // Parse ring public key
@@ -155,7 +155,7 @@ pub fn prepare_secret(
         &resource,
         &permission,
         tier.as_deref(),
-        date.as_deref(),
+        timestamp.as_deref(),
         salt.as_deref(),
     );
 
@@ -201,7 +201,7 @@ pub async fn store_prepared_secret(
     derived_pk: Option<Vec<u8>>,
     with_proof: bool,
     tier: Option<String>,
-    date: Option<String>,
+    timestamp: Option<String>,
     metadata_hash: Option<Vec<u8>>,
 ) -> Result<StoreSecretResult> {
     println!("Storing secret via StoreSecret service:");
@@ -228,7 +228,7 @@ pub async fn store_prepared_secret(
         derived_pk: derived_pk.clone(),
         with_proof,
         tier: tier.clone(),
-        date: date.clone(),
+        timestamp: timestamp.clone(),
         metadata_hash: metadata_hash.clone(),
     };
 
@@ -251,7 +251,7 @@ pub async fn store_prepared_secret(
             derived_pk,
             with_proof,
             tier,
-            date,
+            timestamp,
             metadata_hash,
         )
         .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
@@ -305,7 +305,7 @@ pub async fn do_store_secret(
     resource: String,
     permission: String,
     tier: Option<String>,
-    date: Option<String>,
+    timestamp: Option<String>,
     salt: Option<String>,
     reader_did_pk: Option<String>,
     derivation: Option<Vec<u8>>,
@@ -319,7 +319,7 @@ pub async fn do_store_secret(
         resource.clone(),
         permission.clone(),
         tier.clone(),
-        date.clone(),
+        timestamp.clone(),
         salt.clone(),
     )?;
     // If derivation was provided, compute derived_pk from the proof
@@ -340,7 +340,7 @@ pub async fn do_store_secret(
         derived_pk,
         with_proof,
         tier,
-        date,
+        timestamp,
         Some(prepared.metadata),
     )
     .await
@@ -439,7 +439,11 @@ pub async fn do_pre(
 
         // --xnc-only: print xnc_cmt and return without decrypting
         if xnc_only {
-            let xnc_hex = hex::encode(xnc_cmt.to_bytes().map_err(|e| anyhow!("Failed to serialize xnc_cmt: {}", e))?);
+            let xnc_hex = hex::encode(
+                xnc_cmt
+                    .to_bytes()
+                    .map_err(|e| anyhow!("Failed to serialize xnc_cmt: {}", e))?,
+            );
             println!("Re-encrypted commitment (xnc_cmt): {}", xnc_hex);
             return Ok(xnc_cmt_bytes);
         }
@@ -447,8 +451,8 @@ pub async fn do_pre(
         println!();
         println!("Step 3: Decrypting with reader secret key...");
 
-        let reader_sk_scalar = reader_sk_scalar
-            .ok_or_else(|| anyhow!("--reader-sk is required for decryption"))?;
+        let reader_sk_scalar =
+            reader_sk_scalar.ok_or_else(|| anyhow!("--reader-sk is required for decryption"))?;
 
         // Parse the ring public key
         let ring_pk_bytes =
@@ -496,7 +500,7 @@ pub async fn do_encrypt_secret(
     resource: String,
     permission: String,
     tier: Option<String>,
-    date: Option<String>,
+    timestamp: Option<String>,
     salt: Option<String>,
 ) -> Result<()> {
     println!("Encrypting secret to ring public key...");
@@ -515,7 +519,7 @@ pub async fn do_encrypt_secret(
         &resource,
         &permission,
         tier.as_deref(),
-        date.as_deref(),
+        timestamp.as_deref(),
         salt.as_deref(),
     );
 

@@ -579,7 +579,7 @@ mod cli_tool_integration {
         let namespace = "docker_test_namespace".to_string();
         let full_namespace = format!("bulletin/{}", namespace);
         let tier = Some("tier".to_string());
-        let date = Some("date".to_string());
+        let timestamp = Some("timestamp".to_string());
         let salt = Some("salt".to_string());
         let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
         let proof = vec![0x01];
@@ -621,7 +621,7 @@ mod cli_tool_integration {
                 resource: resource.clone(),
                 permission: permission.clone(),
                 tier: tier.clone(),
-                date: date.clone(),
+                timestamp: timestamp.clone(),
             };
             let serialized: Vec<u8> = payload.try_into().expect("serialize payload");
             cli_tool::create_bulletin_post(namespace.clone(), serialized, proof)
@@ -653,7 +653,7 @@ mod cli_tool_integration {
             resource.clone(),
             permission.clone(),
             tier.clone(),
-            date.clone(),
+            timestamp.clone(),
             salt.clone(),
         )
         .expect("prepare_secret should succeed");
@@ -700,7 +700,7 @@ mod cli_tool_integration {
             prepared_secret_derived.derived_pk,
             false,
             tier.clone(),
-            date.clone(),
+            timestamp.clone(),
             Some(prepared_secret_derived.metadata.clone()),
         )
         .await

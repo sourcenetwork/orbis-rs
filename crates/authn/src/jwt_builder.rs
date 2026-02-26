@@ -125,7 +125,7 @@ impl JwtSigner {
     /// * `response` - s - proof response (s = k + c*r)
     /// * `with_proof` - If a proof should be returned
     /// * `tier` - Optional tier for policy
-    /// * `date` - Optional date for policy
+    /// * `timestamp` - Optional timestamp for policy
     /// * `metadata_hash` - If salt used pass metadata hash
     ///
     /// # Returns
@@ -145,7 +145,7 @@ impl JwtSigner {
         derived_pk: Option<Vec<u8>>,
         with_proof: bool,
         tier: Option<String>,
-        date: Option<String>,
+        timestamp: Option<String>,
         metadata_hash: Option<Vec<u8>>,
     ) -> Result<String> {
         let claims = StoreSecretClaims {
@@ -162,7 +162,7 @@ impl JwtSigner {
             derived_pk,
             with_proof,
             tier,
-            date,
+            timestamp,
             metadata_hash,
         };
         self.sign(claims, Duration::from_hours(1))

@@ -58,7 +58,7 @@ pub async fn check_policy_access(
         object_id.to_string(),
         document_payload.permission.clone(),
         document_payload.tier.clone(),
-        document_payload.date.clone(),
+        document_payload.timestamp.clone(),
     )
     .to_bytes()
     .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;

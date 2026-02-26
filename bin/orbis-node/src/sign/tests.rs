@@ -241,7 +241,7 @@ async fn create_test_document_and_post(
         resource: "test_resource".to_string(),
         permission: "read".to_string(),
         tier: None,
-        date: None,
+        timestamp: None,
     };
 
     // Serialize DocumentPayload to bytes
@@ -733,7 +733,7 @@ async fn test_sign_fails_post_not_on_bulletin() {
         resource: "fake_resource".to_string(),
         permission: "read".to_string(),
         tier: None,
-        date: None,
+        timestamp: None,
     };
 
     let payload_bytes: Vec<u8> = doc_payload.try_into().expect("serialize DocumentPayload");
@@ -841,7 +841,7 @@ async fn test_sign_fails_tampered_payload() {
         resource: "test_resource".to_string(),
         permission: "read".to_string(),
         tier: None,
-        date: None,
+        timestamp: None,
     };
 
     let original_payload: Vec<u8> = original_doc.try_into().expect("serialize");
@@ -876,7 +876,7 @@ async fn test_sign_fails_tampered_payload() {
         resource: "test_resource".to_string(),
         permission: "read".to_string(),
         tier: None,
-        date: None,
+        timestamp: None,
     };
 
     let tampered_payload: Vec<u8> = tampered_doc.try_into().expect("serialize");
@@ -983,7 +983,7 @@ async fn test_sign_fails_invalid_ring_id() {
         resource: "test_resource".to_string(),
         permission: "read".to_string(),
         tier: None,
-        date: None,
+        timestamp: None,
     };
 
     let payload_bytes: Vec<u8> = doc_with_fake_ring.try_into().expect("serialize");

@@ -57,7 +57,7 @@ fn setup_document_in_bulletin(
         resource: "test-resource".to_string(),
         permission: "test-permission".to_string(),
         tier: None,
-        date: None,
+        timestamp: None,
     };
     let document_payload_bytes: Vec<u8> = document_payload
         .try_into()

@@ -117,7 +117,7 @@ where
                 &req.resource,
                 &req.permission,
                 req.tier.as_deref(),
-                req.date.as_deref(),
+                req.timestamp.as_deref(),
                 None,
             )
         };
@@ -158,7 +158,7 @@ where
             resource: req.resource,
             permission: req.permission,
             tier: req.tier,
-            date: req.date,
+            timestamp: req.timestamp,
         };
 
         let payload_bytes: Vec<u8> =
@@ -453,10 +453,10 @@ fn validate_store_secret_claims(
             token.claims.tier, req.tier
         )));
     }
-    if token.claims.date != req.date {
+    if token.claims.timestamp != req.timestamp {
         return Err(StoreSecretError::Unauthorized(format!(
-            "Token date '{:?}' does not match request date '{:?}'",
-            token.claims.date, req.date
+            "Token timestamp '{:?}' does not match request timestamp '{:?}'",
+            token.claims.timestamp, req.timestamp
         )));
     }
     if token.claims.metadata_hash != req.metadata_hash {

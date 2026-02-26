@@ -431,7 +431,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         resource: &str,
         permission: &str,
         tier: Option<&str>,
-        date: Option<&str>,
+        timestamp: Option<&str>,
         salt: Option<&str>,
     ) -> Vec<u8> {
         let domain = Fq::from_le_bytes_mod_order(POLICY_METADATA_DOMAIN);
@@ -443,7 +443,7 @@ impl ThresholdDealer for ThresholdDealerNode {
             resource.as_bytes(),
             permission.as_bytes(),
             tier.unwrap_or("").as_bytes(),
-            date.unwrap_or("").as_bytes(),
+            timestamp.unwrap_or("").as_bytes(),
             salt.unwrap_or("").as_bytes(),
         ] {
             inputs.push(Fq::from(field.len() as u64));

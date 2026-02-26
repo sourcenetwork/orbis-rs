@@ -28,8 +28,8 @@ pub struct DocumentPayload {
     pub permission: String,
     /// Optional tier for acp check
     pub tier: Option<String>,
-    /// Optional date for acp check
-    pub date: Option<String>,
+    /// Optional timestamp for acp check
+    pub timestamp: Option<String>,
 }
 /// Payload for ring information ring_id => payload
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]

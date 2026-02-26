@@ -101,9 +101,9 @@ pub enum SubCommands {
         /// Optional tier
         #[clap(long)]
         tier: Option<String>,
-        /// Optional date
+        /// Optional timestamp
         #[clap(long)]
-        date: Option<String>,
+        timestamp: Option<String>,
         /// Optional salt
         #[clap(long)]
         salt: Option<String>,
@@ -211,9 +211,9 @@ pub enum SubCommands {
         /// Optional tier
         #[clap(long)]
         tier: Option<String>,
-        /// Optional date
+        /// Optional timestamp
         #[clap(long)]
-        date: Option<String>,
+        timestamp: Option<String>,
         /// Optional salt
         #[clap(long)]
         salt: Option<String>,
@@ -253,9 +253,9 @@ pub enum SubCommands {
         /// Optional tier
         #[clap(long)]
         tier: Option<String>,
-        /// Optional date
+        /// Optional timestamp
         #[clap(long)]
-        date: Option<String>,
+        timestamp: Option<String>,
         /// Optional metadata hash
         #[clap(long)]
         metadata_hash: Option<String>,
@@ -298,9 +298,9 @@ pub enum SubCommands {
         /// Optional tier
         #[clap(long)]
         tier: Option<String>,
-        /// Optional date
+        /// Optional timestamp
         #[clap(long)]
-        date: Option<String>,
+        timestamp: Option<String>,
         /// Optional salt
         #[clap(long)]
         salt: Option<String>,
@@ -370,7 +370,7 @@ async fn main() -> Result<()> {
             resource,
             permission,
             tier,
-            date,
+            timestamp,
             salt,
         } => {
             let derivation_bytes =
@@ -383,7 +383,7 @@ async fn main() -> Result<()> {
                 resource,
                 permission,
                 tier,
-                date,
+                timestamp,
                 salt,
             )
             .await?;
@@ -447,7 +447,7 @@ async fn main() -> Result<()> {
             resource,
             permission,
             tier,
-            date,
+            timestamp,
             salt,
         } => {
             let derivation_bytes =
@@ -460,7 +460,7 @@ async fn main() -> Result<()> {
                 resource,
                 permission,
                 tier,
-                date,
+                timestamp,
                 salt,
             )?;
             let json = serde_json::to_string_pretty(&prepared)?;
@@ -480,7 +480,7 @@ async fn main() -> Result<()> {
             derived_pk,
             with_proof,
             tier,
-            date,
+            timestamp,
             metadata_hash,
         } => {
             let derived_pk_bytes =
@@ -501,7 +501,7 @@ async fn main() -> Result<()> {
                 derived_pk_bytes,
                 with_proof,
                 tier,
-                date,
+                timestamp,
                 metadata_hash_bytes,
             )
             .await?;
@@ -516,7 +516,7 @@ async fn main() -> Result<()> {
             resource,
             permission,
             tier,
-            date,
+            timestamp,
             salt,
             reader_did_pk,
             derivation,
@@ -534,7 +534,7 @@ async fn main() -> Result<()> {
                 resource,
                 permission,
                 tier,
-                date,
+                timestamp,
                 salt,
                 reader_did_pk,
                 derivation_bytes,
