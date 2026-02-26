@@ -157,6 +157,14 @@ impl Dkg for DKGNode {
             ));
         }
 
+        // One accepted share per sender per session
+        if self.received_shares.contains_key(&share.from_id) {
+            return Err(CryptoError::DKGError(format!(
+                "Duplicate share from node {}",
+                share.from_id
+            )));
+        }
+
         // Replay protection: Check if nonce was already used
         let nonces = self
             .received_nonces
