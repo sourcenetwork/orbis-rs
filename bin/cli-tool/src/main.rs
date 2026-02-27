@@ -74,6 +74,14 @@ pub enum SubCommands {
         #[clap(long)]
         salt: Option<String>,
 
+        /// Start of the validity window (Unix timestamp, inclusive). Requires --valid-window-end.
+        #[clap(long)]
+        valid_window_start: Option<u64>,
+
+        /// End of the validity window (Unix timestamp, inclusive). Requires --valid-window-start.
+        #[clap(long)]
+        valid_window_end: Option<u64>,
+
         /// Print only the re-encrypted commitment (xnc_cmt) without decrypting.
         #[clap(long)]
         xnc_only: bool,
@@ -101,9 +109,9 @@ pub enum SubCommands {
         /// Optional tier
         #[clap(long)]
         tier: Option<String>,
-        /// Optional date
+        /// Optional timestamp
         #[clap(long)]
-        date: Option<String>,
+        timestamp: Option<u64>,
         /// Optional salt
         #[clap(long)]
         salt: Option<String>,
@@ -211,9 +219,9 @@ pub enum SubCommands {
         /// Optional tier
         #[clap(long)]
         tier: Option<String>,
-        /// Optional date
+        /// Optional timestamp
         #[clap(long)]
-        date: Option<String>,
+        timestamp: Option<u64>,
         /// Optional salt
         #[clap(long)]
         salt: Option<String>,
@@ -253,9 +261,9 @@ pub enum SubCommands {
         /// Optional tier
         #[clap(long)]
         tier: Option<String>,
-        /// Optional date
+        /// Optional timestamp
         #[clap(long)]
-        date: Option<String>,
+        timestamp: Option<u64>,
         /// Optional metadata hash
         #[clap(long)]
         metadata_hash: Option<String>,
@@ -298,9 +306,9 @@ pub enum SubCommands {
         /// Optional tier
         #[clap(long)]
         tier: Option<String>,
-        /// Optional date
+        /// Optional timestamp
         #[clap(long)]
-        date: Option<String>,
+        timestamp: Option<u64>,
         /// Optional salt
         #[clap(long)]
         salt: Option<String>,
@@ -341,10 +349,20 @@ async fn main() -> Result<()> {
             namespace,
             derivation,
             salt,
+            valid_window_start,
+            valid_window_end,
             xnc_only,
         } => {
             if !xnc_only && reader_sk.is_none() {
                 anyhow::bail!("--reader-sk is required unless --xnc-only is set");
+            }
+            match (valid_window_start, valid_window_end) {
+                (Some(_), None) | (None, Some(_)) => {
+                    anyhow::bail!(
+                        "--valid-window-start and --valid-window-end must both be provided"
+                    );
+                }
+                _ => {}
             }
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
@@ -358,6 +376,8 @@ async fn main() -> Result<()> {
                 namespace,
                 derivation_bytes,
                 salt,
+                valid_window_start,
+                valid_window_end,
                 xnc_only,
             )
             .await?;
@@ -370,7 +390,7 @@ async fn main() -> Result<()> {
             resource,
             permission,
             tier,
-            date,
+            timestamp,
             salt,
         } => {
             let derivation_bytes =
@@ -383,7 +403,7 @@ async fn main() -> Result<()> {
                 resource,
                 permission,
                 tier,
-                date,
+                timestamp,
                 salt,
             )
             .await?;
@@ -447,7 +467,7 @@ async fn main() -> Result<()> {
             resource,
             permission,
             tier,
-            date,
+            timestamp,
             salt,
         } => {
             let derivation_bytes =
@@ -460,7 +480,7 @@ async fn main() -> Result<()> {
                 resource,
                 permission,
                 tier,
-                date,
+                timestamp,
                 salt,
             )?;
             let json = serde_json::to_string_pretty(&prepared)?;
@@ -480,7 +500,7 @@ async fn main() -> Result<()> {
             derived_pk,
             with_proof,
             tier,
-            date,
+            timestamp,
             metadata_hash,
         } => {
             let derived_pk_bytes =
@@ -501,7 +521,7 @@ async fn main() -> Result<()> {
                 derived_pk_bytes,
                 with_proof,
                 tier,
-                date,
+                timestamp,
                 metadata_hash_bytes,
             )
             .await?;
@@ -516,7 +536,7 @@ async fn main() -> Result<()> {
             resource,
             permission,
             tier,
-            date,
+            timestamp,
             salt,
             reader_did_pk,
             derivation,
@@ -534,7 +554,7 @@ async fn main() -> Result<()> {
                 resource,
                 permission,
                 tier,
-                date,
+                timestamp,
                 salt,
                 reader_did_pk,
                 derivation_bytes,

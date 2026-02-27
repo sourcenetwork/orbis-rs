@@ -2,7 +2,7 @@ use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::pre::error::{PreError, Result};
 use authn::{BearerToken, PreClaims};
 use authz::r#trait::Authz;
-use authz::sourcehub::AccessCheckRequest;
+use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, DocumentPayload, RingPayload};
 use crypto::r#trait::{EncryptionProof, Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
@@ -51,6 +51,7 @@ pub async fn check_policy_access(
     document_payload: &DocumentPayload,
     object_id: &str,
     issuer_id: &str,
+    valid_window: Option<ValidWindow>,
 ) -> Result<()> {
     let permission = AccessCheckRequest::new(
         document_payload.policy_id.clone(),
@@ -58,15 +59,22 @@ pub async fn check_policy_access(
         object_id.to_string(),
         document_payload.permission.clone(),
         document_payload.tier.clone(),
-        document_payload.date.clone(),
+        document_payload.timestamp,
+        valid_window,
     )
     .to_bytes()
     .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
 
-    authz
+    let is_authorized = authz
         .check(permission, &issuer_id.to_string())
         .await
         .map_err(|e| PreError::AuthZ(format!("Error in Authz request: {}", e)))?;
+
+    if !is_authorized {
+        return Err(PreError::Unauthorized(
+            "Access denied: policy check failed".to_string(),
+        ));
+    }
 
     Ok(())
 }

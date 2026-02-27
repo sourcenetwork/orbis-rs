@@ -16,6 +16,7 @@ use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{GroupAffine as G1Affine, PreImpl as ThresholdDealerNode, ScalarField as Fr};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use proto::dkg_service::dkg_service_client::DkgServiceClient;
 use proto::info_service::info_service_client::InfoServiceClient;
@@ -141,7 +142,7 @@ pub fn prepare_secret(
     resource: String,
     permission: String,
     tier: Option<String>,
-    date: Option<String>,
+    timestamp: Option<u64>,
     salt: Option<String>,
 ) -> Result<PreparedSecret> {
     // Parse ring public key
@@ -155,7 +156,7 @@ pub fn prepare_secret(
         &resource,
         &permission,
         tier.as_deref(),
-        date.as_deref(),
+        timestamp,
         salt.as_deref(),
     );
 
@@ -201,7 +202,7 @@ pub async fn store_prepared_secret(
     derived_pk: Option<Vec<u8>>,
     with_proof: bool,
     tier: Option<String>,
-    date: Option<String>,
+    timestamp: Option<u64>,
     metadata_hash: Option<Vec<u8>>,
 ) -> Result<StoreSecretResult> {
     println!("Storing secret via StoreSecret service:");
@@ -228,13 +229,14 @@ pub async fn store_prepared_secret(
         derived_pk: derived_pk.clone(),
         with_proof,
         tier: tier.clone(),
-        date: date.clone(),
+        timestamp: timestamp.clone(),
         metadata_hash: metadata_hash.clone(),
     };
 
     // Create JWT for authentication with all request fields
     let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
-    let key_pair = generate::<DidEd25519KeyPair>(Some(reader_did_pk.as_bytes()));
+    let seed = did_seed(&reader_did_pk);
+    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed));
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
         .create_store_secret_jwt(
@@ -251,7 +253,7 @@ pub async fn store_prepared_secret(
             derived_pk,
             with_proof,
             tier,
-            date,
+            timestamp,
             metadata_hash,
         )
         .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
@@ -305,7 +307,7 @@ pub async fn do_store_secret(
     resource: String,
     permission: String,
     tier: Option<String>,
-    date: Option<String>,
+    timestamp: Option<u64>,
     salt: Option<String>,
     reader_did_pk: Option<String>,
     derivation: Option<Vec<u8>>,
@@ -319,7 +321,7 @@ pub async fn do_store_secret(
         resource.clone(),
         permission.clone(),
         tier.clone(),
-        date.clone(),
+        timestamp.clone(),
         salt.clone(),
     )?;
     // If derivation was provided, compute derived_pk from the proof
@@ -340,10 +342,19 @@ pub async fn do_store_secret(
         derived_pk,
         with_proof,
         tier,
-        date,
+        timestamp,
         Some(prepared.metadata),
     )
     .await
+}
+
+/// Derive a 32-byte Ed25519 seed from an arbitrary string via SHA-256.
+///
+/// `did_key::generate` only uses the seed deterministically when it is exactly
+/// 32 bytes; for any other length it falls back to a random key. Hashing to 32
+/// bytes ensures consistent, reproducible DIDs regardless of the input length.
+fn did_seed(s: &str) -> [u8; 32] {
+    Sha256::digest(s.as_bytes()).into()
 }
 
 pub async fn do_pre(
@@ -356,6 +367,8 @@ pub async fn do_pre(
     namespace: String,
     derivation: Option<Vec<u8>>,
     salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
     xnc_only: bool,
 ) -> Result<Vec<u8>> {
     println!("Starting PRE session:");
@@ -389,17 +402,24 @@ pub async fn do_pre(
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
+    let valid_window = match (valid_window_start, valid_window_end) {
+        (Some(start), Some(end)) => Some(proto::pre_service::TimestampRange { start, end }),
+        _ => None,
+    };
+
     let request = proto::pre_service::StartPreRequest {
         rdr_pk: reader_pk_bytes.clone(),
         object_id: object_id.clone(),
         namespace: namespace.clone(),
         derivation: derivation.clone(),
         salt: salt.clone(),
+        valid_window,
     };
 
     // JWT work use determinitic key_pair for now
     let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
-    let key_pair = generate::<DidEd25519KeyPair>(Some(reader_did_pk.as_bytes()));
+    let seed = did_seed(&reader_did_pk);
+    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed));
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
         .create_pre_jwt(
@@ -439,7 +459,11 @@ pub async fn do_pre(
 
         // --xnc-only: print xnc_cmt and return without decrypting
         if xnc_only {
-            let xnc_hex = hex::encode(xnc_cmt.to_bytes().map_err(|e| anyhow!("Failed to serialize xnc_cmt: {}", e))?);
+            let xnc_hex = hex::encode(
+                xnc_cmt
+                    .to_bytes()
+                    .map_err(|e| anyhow!("Failed to serialize xnc_cmt: {}", e))?,
+            );
             println!("Re-encrypted commitment (xnc_cmt): {}", xnc_hex);
             return Ok(xnc_cmt_bytes);
         }
@@ -447,8 +471,8 @@ pub async fn do_pre(
         println!();
         println!("Step 3: Decrypting with reader secret key...");
 
-        let reader_sk_scalar = reader_sk_scalar
-            .ok_or_else(|| anyhow!("--reader-sk is required for decryption"))?;
+        let reader_sk_scalar =
+            reader_sk_scalar.ok_or_else(|| anyhow!("--reader-sk is required for decryption"))?;
 
         // Parse the ring public key
         let ring_pk_bytes =
@@ -496,7 +520,7 @@ pub async fn do_encrypt_secret(
     resource: String,
     permission: String,
     tier: Option<String>,
-    date: Option<String>,
+    timestamp: Option<u64>,
     salt: Option<String>,
 ) -> Result<()> {
     println!("Encrypting secret to ring public key...");
@@ -515,7 +539,7 @@ pub async fn do_encrypt_secret(
         &resource,
         &permission,
         tier.as_deref(),
-        date.as_deref(),
+        timestamp,
         salt.as_deref(),
     );
 
@@ -589,21 +613,27 @@ pub async fn add_policy_to_chain() -> Result<String> {
     .await
     .map_err(|e| anyhow!("client builder issue: {}", e))?;
 
-    let _result = client
+    let create_result = client
         .acp_create_policy(TEST_POLICY_YAML, 1)
         .await
         .map_err(|e| anyhow!("Failed to create policy: {}", e))?;
+    println!(
+        "[ACP] create_policy: code={} hash={} log={}",
+        create_result.code, create_result.tx_hash, create_result.log
+    );
 
     // TODO: This is dumb grabs the last policy id that exists, fine for now but fix later by grabbing policy id from event or something
     let policy_ids = client
         .acp_list_policy_ids()
         .await
         .map_err(|e| anyhow!("Failed to list policy IDs: {}", e))?;
-    Ok(policy_ids
+    let policy_id = policy_ids
         .ids
         .last()
         .ok_or_else(|| anyhow!("No policy IDs found"))?
-        .clone())
+        .clone();
+    println!("[ACP] policy_id from list: {}", policy_id);
+    Ok(policy_id)
 }
 pub async fn register_object_to_chain(
     policy_id: String,
@@ -621,10 +651,23 @@ pub async fn register_object_to_chain(
         resource,
         id: object_id,
     };
-    let _result = client
+    let result = client
         .acp_register_object(&policy_id, document)
         .await
         .map_err(|e| anyhow!("Failed to register object: {}", e))?;
+
+    println!(
+        "[ACP] register_object: code={} hash={} log={}",
+        result.code, result.tx_hash, result.log
+    );
+
+    if result.code != 0 {
+        return Err(anyhow!(
+            "register_object tx failed: code={} log={}",
+            result.code,
+            result.log
+        ));
+    }
 
     Ok(())
 }
@@ -648,21 +691,37 @@ pub async fn set_relationship_on_chain(
     };
 
     let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
-    let key_pair = generate::<DidEd25519KeyPair>(Some(reader_did_pk.as_bytes()));
+    let seed = did_seed(&reader_did_pk);
+    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed));
     let did_uri = format!("did:key:{}", key_pair.fingerprint());
 
     let reader_relationship = Relationship {
         object: Some(document),
         relation,
         subject: Some(Subject {
-            kind: Some(SubjectKind::Actor(Actor { id: did_uri })),
+            kind: Some(SubjectKind::Actor(Actor {
+                id: did_uri.clone(),
+            })),
         }),
     };
 
-    let _result = client
+    let result = client
         .acp_set_relationship(&policy_id, reader_relationship)
         .await
         .map_err(|e| anyhow!("Failed to set reader relationship: {}", e))?;
+
+    println!(
+        "[ACP] set_relationship({}): code={} hash={} log={}",
+        did_uri, result.code, result.tx_hash, result.log
+    );
+
+    if result.code != 0 {
+        return Err(anyhow!(
+            "set_relationship tx failed: code={} log={}",
+            result.code,
+            result.log
+        ));
+    }
 
     Ok(())
 }

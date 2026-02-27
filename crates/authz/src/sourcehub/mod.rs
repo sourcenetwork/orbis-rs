@@ -3,11 +3,21 @@ use crate::{
     r#trait::Authz,
 };
 use async_trait::async_trait;
-use common::blockchain::{acp::Policy, ChainConfigBuilder, SourceHubClient};
+use common::blockchain::{
+    acp::{AccessRequest, Actor, Object, Operation, Policy},
+    ChainConfigBuilder, SourceHubClient,
+};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
 mod tests;
+
+/// Unix timestamp range (inclusive) for access validity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidWindow {
+    pub start: u64,
+    pub end: u64,
+}
 
 /// Request structure for access checks, serialized to Vec<u8> for the generic trait.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,12 +28,14 @@ pub struct AccessCheckRequest {
     pub resource: String,
     /// Object ID within the resource
     pub object_id: String,
-    /// Relationship needed to check this document
-    pub relationship: String,
+    /// Permission needed to check this document
+    pub permission: String,
     /// Optional tier for acp check
     pub tier: Option<String>,
-    /// Optional date for acp check
-    pub date: Option<String>,
+    /// Optional timestamp for acp check
+    pub timestamp: Option<u64>,
+    /// Optional timestamp range for validity window
+    pub valid_window: Option<ValidWindow>,
 }
 
 impl AccessCheckRequest {
@@ -31,17 +43,19 @@ impl AccessCheckRequest {
         policy_id: String,
         resource: String,
         object_id: String,
-        relationship: String,
+        permission: String,
         tier: Option<String>,
-        date: Option<String>,
+        timestamp: Option<u64>,
+        valid_window: Option<ValidWindow>,
     ) -> Self {
         Self {
             policy_id,
             resource,
             object_id,
-            relationship,
-            date,
+            permission,
+            timestamp,
             tier,
+            valid_window,
         }
     }
 
@@ -69,17 +83,44 @@ impl Authz for SourceHubAuth {
         // Decode the access check request from bytes
         let request = AccessCheckRequest::from_bytes(&permission)?;
 
-        // TODO: pass through date and tier when acp is updated
-        // Check if the actor has any of the relations that grant the permission
+        // Validate that valid_window and timestamp are either both present or both absent
+        match (&request.valid_window, &request.timestamp) {
+            (Some(window), Some(ts)) => {
+                if ts < &window.start || ts > &window.end {
+                    return Ok(false);
+                }
+            }
+            (Some(_), None) => {
+                return Err(AuthZError::InvalidRequest(
+                    "valid_window provided but timestamp is missing".to_string(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(AuthZError::InvalidRequest(
+                    "timestamp provided but valid_window is missing".to_string(),
+                ));
+            }
+            (None, None) => {}
+        }
+
+        // Verify the permission using the policy expression (e.g. "read = creator + reader").
+        // This mirrors the Go implementation which uses QueryVerifyAccessRequest with a permission name.
+        let access_request = AccessRequest {
+            operations: vec![Operation {
+                object: Some(Object {
+                    resource: request.resource.clone(),
+                    id: request.object_id.clone(),
+                }),
+                permission: request.permission.clone(),
+            }],
+            actor: Some(Actor {
+                id: subject.clone(),
+            }),
+        };
+
         let is_authorized = self
             .chain_client
-            .acp_has_relationship(
-                &request.policy_id,
-                &subject,
-                &request.resource,
-                &request.object_id,
-                &request.relationship,
-            )
+            .acp_verify_access(&request.policy_id, &access_request)
             .await
             .map_err(|e| AuthZError::ChainError(e.to_string()))?;
 

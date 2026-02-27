@@ -19,6 +19,8 @@ use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tonic::Request;
 
+use crate::pre::error::PreError;
+use crate::pre::helpers::check_policy_access;
 use bulletin::dummy::DummyBulletin;
 
 /// Generate policy metadata matching the test DocumentPayload fields.
@@ -57,7 +59,7 @@ fn setup_document_in_bulletin(
         resource: "test-resource".to_string(),
         permission: "test-permission".to_string(),
         tier: None,
-        date: None,
+        timestamp: None,
     };
     let document_payload_bytes: Vec<u8> = document_payload
         .try_into()
@@ -252,6 +254,7 @@ async fn test_dkg_then_pre_end_to_end() {
             namespace,
             None,
             None,
+            None,
         )
         .await
         .expect("PRE should succeed");
@@ -444,6 +447,7 @@ async fn test_pre_with_large_secret() {
             namespace,
             None,
             None,
+            None,
         )
         .await
         .expect("PRE should succeed");
@@ -572,6 +576,7 @@ async fn test_pre_fails_with_wrong_key() {
             namespace,
             None,
             None,
+            None,
         )
         .await
         .expect("PRE should succeed");
@@ -694,6 +699,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
             object_id,
             invalid_token,
             namespace,
+            None,
             None,
             None,
         )
@@ -840,6 +846,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             namespace,
             None,
             None,
+            None,
         )
         .await;
 
@@ -896,6 +903,7 @@ async fn test_start_pre_fails_missing_auth_header() {
         object_id: "".to_string(),
         derivation: None,
         salt: None,
+        valid_window: None,
     };
 
     // Create request WITHOUT authentication header
@@ -937,6 +945,7 @@ async fn test_start_pre_fails_malformed_jwt() {
         object_id: "".to_string(),
         derivation: None,
         salt: None,
+        valid_window: None,
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -995,6 +1004,7 @@ async fn test_start_pre_fails_wrong_signature() {
         object_id: "".to_string(),
         derivation: None,
         salt: None,
+        valid_window: None,
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
@@ -1123,6 +1133,7 @@ async fn test_pre_fails_with_wrong_derivation() {
             pre_token,
             namespace.clone(),
             Some(correct_derivation.clone()),
+            None,
             None,
         )
         .await
@@ -1286,6 +1297,7 @@ async fn test_pre_fails_with_bad_proof() {
             namespace,
             None,
             None,
+            None,
         )
         .await;
 
@@ -1312,4 +1324,40 @@ async fn test_pre_fails_with_bad_proof() {
     for path in &db_paths {
         cleanup_db(path);
     }
+}
+
+/// Regression test: check_policy_access must propagate authz denial as an error.
+///
+/// Before the fix, check_policy_access discarded the boolean returned by authz.check()
+/// and always returned Ok(()), silently passing all policy checks.
+#[tokio::test]
+async fn test_check_policy_access_enforces_authz_denial() {
+    struct DenyAuthZ;
+
+    #[async_trait::async_trait]
+    impl authz::r#trait::Authz for DenyAuthZ {
+        async fn check(&self, _: Vec<u8>, _: &String) -> authz::error::Result<bool> {
+            Ok(false)
+        }
+    }
+
+    let document_payload = DocumentPayload {
+        ring_id: "ring-1".to_string(),
+        document: "{}".to_string(),
+        proof: "".to_string(),
+        policy_id: "policy-1".to_string(),
+        resource: "document".to_string(),
+        permission: "read".to_string(),
+        tier: None,
+        timestamp: None,
+    };
+
+    let result =
+        check_policy_access(&DenyAuthZ, &document_payload, "obj-1", "did:key:test", None).await;
+
+    assert!(result.is_err(), "denied authz should return Err");
+    assert!(
+        matches!(result.unwrap_err(), PreError::Unauthorized(_)),
+        "denial should be PreError::Unauthorized"
+    );
 }

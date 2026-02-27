@@ -3,6 +3,7 @@
 //! This module defines the message types used for PRE (Proxy Re-Encryption)
 //! protocol communication between nodes over the iroh network.
 
+use authz::sourcehub::ValidWindow;
 use serde::{Deserialize, Serialize};
 
 /// PRE protocol message types
@@ -18,6 +19,7 @@ pub enum PreMessage {
         namespace: String,
         derivation: Option<Vec<u8>>,
         salt: Option<String>,
+        valid_window: Option<ValidWindow>,
     },
     /// Response from ring node to coordinator with reencryption share
     ReencryptResponse {

@@ -1236,22 +1236,36 @@ where
     let resource = "resource-1";
     let permission = "read";
     let tier = Some("tier-gold");
-    let date = Some("2025-01-01");
+    let timestamp = Some(1772127215u64);
     let salt = Some("salt-xyz");
 
-    let correct = T::encode_metadata(policy, resource, permission, tier, date, salt);
+    let correct = T::encode_metadata(policy, resource, permission, tier, timestamp, salt);
     let (enc_cmt, _, proof) = T::encrypt_secret(&dkg_pk, b"test secret", None, Some(&correct))?;
 
     let tampered: &[Vec<u8>] = &[
-        T::encode_metadata("TAMPERED", resource, permission, tier, date, salt),
-        T::encode_metadata(policy, "TAMPERED", permission, tier, date, salt),
-        T::encode_metadata(policy, resource, "TAMPERED", tier, date, salt),
-        T::encode_metadata(policy, resource, permission, Some("TAMPERED"), date, salt),
-        T::encode_metadata(policy, resource, permission, tier, Some("TAMPERED"), salt),
-        T::encode_metadata(policy, resource, permission, tier, date, Some("TAMPERED")),
-        T::encode_metadata(policy, resource, permission, None, date, salt),
+        T::encode_metadata("TAMPERED", resource, permission, tier, timestamp, salt),
+        T::encode_metadata(policy, "TAMPERED", permission, tier, timestamp, salt),
+        T::encode_metadata(policy, resource, "TAMPERED", tier, timestamp, salt),
+        T::encode_metadata(
+            policy,
+            resource,
+            permission,
+            Some("TAMPERED"),
+            timestamp,
+            salt,
+        ),
+        T::encode_metadata(policy, resource, permission, tier, Some(0u64), salt),
+        T::encode_metadata(
+            policy,
+            resource,
+            permission,
+            tier,
+            timestamp,
+            Some("TAMPERED"),
+        ),
+        T::encode_metadata(policy, resource, permission, None, timestamp, salt),
         T::encode_metadata(policy, resource, permission, tier, None, salt),
-        T::encode_metadata(policy, resource, permission, tier, date, None),
+        T::encode_metadata(policy, resource, permission, tier, timestamp, None),
     ];
 
     for variant in tampered {

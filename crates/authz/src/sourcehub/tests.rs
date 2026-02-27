@@ -1,6 +1,6 @@
 use super::SourceHubAuth;
 use crate::r#trait::Authz;
-use crate::sourcehub::AccessCheckRequest;
+use crate::sourcehub::{AccessCheckRequest, ValidWindow};
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
     ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
@@ -110,7 +110,8 @@ async fn test_create_and_query_policy() {
         policy_id.clone(),
         document.resource.clone(),
         document.id.clone(),
-        "reader".to_string(),
+        "read".to_string(),
+        None,
         None,
         None,
     );
@@ -153,7 +154,8 @@ async fn test_create_and_query_policy() {
         policy_id.clone(),
         "document".to_string(),
         "doc-123".to_string(),
-        "reader".to_string(),
+        "read".to_string(),
+        None,
         None,
         None,
     );
@@ -368,193 +370,210 @@ async fn test_complex_policy_permissions() {
             .collect::<Vec<_>>()
     );
 
-    // 7. Test actual authorization checks (relationship-based)
-    // Since check() uses acp_has_relationship, we verify each user has their assigned relationship
+    // 7. Test authorization via permission evaluation (policy expr: manage=admin, edit=admin+editor, view=admin+editor+viewer)
+    // check() uses acp_verify_access which evaluates the policy permission expression.
 
-    // --- Test ADMIN relationship ---
-    println!("\n--- Testing ADMIN relationship ---");
+    // --- Test MANAGE permission (only admin) ---
+    println!("\n--- Testing MANAGE permission ---");
 
-    // Admin has admin relationship
-    let req = AccessCheckRequest::new(
-        policy_id.to_string(),
-        "project".to_string(),
-        "proj-1".to_string(),
-        "admin".to_string(),
-        None,
-        None,
+    let check = |perm: &str| {
+        AccessCheckRequest::new(
+            policy_id.to_string(),
+            "project".to_string(),
+            "proj-1".to_string(),
+            perm.to_string(),
+            None,
+            None,
+            None,
+        )
+    };
+
+    let can = |req: AccessCheckRequest, did: String| {
+        let auth = &auth;
+        async move { auth.check(req.to_bytes().unwrap(), &did).await.unwrap() }
+    };
+
+    assert!(
+        can(check("manage"), admin_did.clone()).await,
+        "Admin can manage"
     );
-    let has_admin = auth
-        .check(req.to_bytes().unwrap(), &admin_did.clone())
-        .await
-        .unwrap();
-    println!("Admin has admin relationship: {}", has_admin);
-    assert!(has_admin, "Admin should have admin relationship");
-
-    // Editor does NOT have admin relationship
-    let req = AccessCheckRequest::new(
-        policy_id.to_string(),
-        "project".to_string(),
-        "proj-1".to_string(),
-        "admin".to_string(),
-        None,
-        None,
+    assert!(
+        !can(check("manage"), editor_did.clone()).await,
+        "Editor cannot manage"
     );
-    let has_admin = auth
-        .check(req.to_bytes().unwrap(), &editor_did.clone())
-        .await
-        .unwrap();
-    println!("Editor has admin relationship: {}", has_admin);
-    assert!(!has_admin, "Editor should NOT have admin relationship");
-
-    // Viewer does NOT have admin relationship
-    let req = AccessCheckRequest::new(
-        policy_id.to_string(),
-        "project".to_string(),
-        "proj-1".to_string(),
-        "admin".to_string(),
-        None,
-        None,
+    assert!(
+        !can(check("manage"), viewer_did.clone()).await,
+        "Viewer cannot manage"
     );
-    let has_admin = auth
-        .check(req.to_bytes().unwrap(), &viewer_did.clone())
-        .await
-        .unwrap();
-    println!("Viewer has admin relationship: {}", has_admin);
-    assert!(!has_admin, "Viewer should NOT have admin relationship");
-
-    // Outsider does NOT have admin relationship
-    let req = AccessCheckRequest::new(
-        policy_id.to_string(),
-        "project".to_string(),
-        "proj-1".to_string(),
-        "admin".to_string(),
-        None,
-        None,
+    assert!(
+        !can(check("manage"), outsider_did.clone()).await,
+        "Outsider cannot manage"
     );
-    let has_admin = auth
-        .check(req.to_bytes().unwrap(), &outsider_did.clone())
-        .await
-        .unwrap();
-    println!("Outsider has admin relationship: {}", has_admin);
-    assert!(!has_admin, "Outsider should NOT have admin relationship");
 
-    // --- Test EDITOR relationship ---
-    println!("\n--- Testing EDITOR relationship ---");
+    // --- Test EDIT permission (admin + editor) ---
+    println!("\n--- Testing EDIT permission ---");
 
-    // Admin does NOT have editor relationship
-    let req = AccessCheckRequest::new(
-        policy_id.to_string(),
-        "project".to_string(),
-        "proj-1".to_string(),
-        "editor".to_string(),
-        None,
-        None,
+    assert!(
+        can(check("edit"), admin_did.clone()).await,
+        "Admin can edit"
     );
-    let has_editor = auth
-        .check(req.to_bytes().unwrap(), &admin_did.clone())
-        .await
-        .unwrap();
-    println!("Admin has editor relationship: {}", has_editor);
-    assert!(!has_editor, "Admin should NOT have editor relationship");
-
-    // Editor has editor relationship
-    let req = AccessCheckRequest::new(
-        policy_id.to_string(),
-        "project".to_string(),
-        "proj-1".to_string(),
-        "editor".to_string(),
-        None,
-        None,
+    assert!(
+        can(check("edit"), editor_did.clone()).await,
+        "Editor can edit"
     );
-    let has_editor = auth
-        .check(req.to_bytes().unwrap(), &editor_did.clone())
-        .await
-        .unwrap();
-    println!("Editor has editor relationship: {}", has_editor);
-    assert!(has_editor, "Editor should have editor relationship");
-
-    // Viewer does NOT have editor relationship
-    let req = AccessCheckRequest::new(
-        policy_id.to_string(),
-        "project".to_string(),
-        "proj-1".to_string(),
-        "editor".to_string(),
-        None,
-        None,
+    assert!(
+        !can(check("edit"), viewer_did.clone()).await,
+        "Viewer cannot edit"
     );
-    let has_editor = auth
-        .check(req.to_bytes().unwrap(), &viewer_did.clone())
-        .await
-        .unwrap();
-    println!("Viewer has editor relationship: {}", has_editor);
-    assert!(!has_editor, "Viewer should NOT have editor relationship");
-
-    // --- Test VIEWER relationship ---
-    println!("\n--- Testing VIEWER relationship ---");
-
-    // Admin does NOT have viewer relationship
-    let req = AccessCheckRequest::new(
-        policy_id.to_string(),
-        "project".to_string(),
-        "proj-1".to_string(),
-        "viewer".to_string(),
-        None,
-        None,
+    assert!(
+        !can(check("edit"), outsider_did.clone()).await,
+        "Outsider cannot edit"
     );
-    let has_viewer = auth
-        .check(req.to_bytes().unwrap(), &admin_did.clone())
-        .await
-        .unwrap();
-    println!("Admin has viewer relationship: {}", has_viewer);
-    assert!(!has_viewer, "Admin should NOT have viewer relationship");
 
-    // Editor does NOT have viewer relationship
-    let req = AccessCheckRequest::new(
-        policy_id.to_string(),
-        "project".to_string(),
-        "proj-1".to_string(),
-        "viewer".to_string(),
-        None,
-        None,
-    );
-    let has_viewer = auth
-        .check(req.to_bytes().unwrap(), &editor_did.clone())
-        .await
-        .unwrap();
-    println!("Editor has viewer relationship: {}", has_viewer);
-    assert!(!has_viewer, "Editor should NOT have viewer relationship");
+    // --- Test VIEW permission (admin + editor + viewer) ---
+    println!("\n--- Testing VIEW permission ---");
 
-    // Viewer has viewer relationship
-    let req = AccessCheckRequest::new(
-        policy_id.to_string(),
-        "project".to_string(),
-        "proj-1".to_string(),
-        "viewer".to_string(),
-        None,
-        None,
+    assert!(
+        can(check("view"), admin_did.clone()).await,
+        "Admin can view"
     );
-    let has_viewer = auth
-        .check(req.to_bytes().unwrap(), &viewer_did.clone())
-        .await
-        .unwrap();
-    println!("Viewer has viewer relationship: {}", has_viewer);
-    assert!(has_viewer, "Viewer should have viewer relationship");
-
-    // Outsider does NOT have viewer relationship
-    let req = AccessCheckRequest::new(
-        policy_id.to_string(),
-        "project".to_string(),
-        "proj-1".to_string(),
-        "viewer".to_string(),
-        None,
-        None,
+    assert!(
+        can(check("view"), editor_did.clone()).await,
+        "Editor can view"
     );
-    let has_viewer = auth
-        .check(req.to_bytes().unwrap(), &outsider_did.clone())
-        .await
-        .unwrap();
-    println!("Outsider has viewer relationship: {}", has_viewer);
-    assert!(!has_viewer, "Outsider should NOT have viewer relationship");
+    assert!(
+        can(check("view"), viewer_did.clone()).await,
+        "Viewer can view"
+    );
+    assert!(
+        !can(check("view"), outsider_did.clone()).await,
+        "Outsider cannot view"
+    );
 
     println!("\n✓ All complex policy permission tests passed!");
+}
+
+/// Tests that a request with a valid_window entirely in the past returns false
+/// without reaching the chain.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_valid_window_out_of_range() {
+    let _container = SourceHubTestContainer::new();
+
+    let auth = SourceHubAuth::new(ChainConfigBuilder::default())
+        .await
+        .unwrap();
+
+    // timestamp "2" is after end "1", so it falls outside the window
+    let request = AccessCheckRequest::new(
+        "any-policy".to_string(),
+        "document".to_string(),
+        "doc-1".to_string(),
+        "read".to_string(),
+        None,
+        Some(2u64),
+        Some(ValidWindow { start: 0, end: 1 }),
+    );
+
+    let result = auth
+        .check(request.to_bytes().unwrap(), &"did:key:any".to_string())
+        .await
+        .expect("check should not error");
+
+    assert!(!result, "Out-of-range window should deny access");
+}
+
+/// Tests that a request with a valid_window covering the current time passes
+/// through to the chain and returns the chain's authorization result.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_valid_window_in_range() {
+    let _container = SourceHubTestContainer::new();
+
+    let config = common::blockchain::ChainConfig::local();
+    let signer = common::blockchain::TxSigner::from_hex_key(
+        common::blockchain::TEST_ACCOUNT_HEX_KEY,
+        config.clone(),
+    )
+    .expect("Failed to create signer");
+    let client = common::blockchain::SourceHubClient::with_signer(config.clone(), signer)
+        .await
+        .expect("Failed to create client");
+
+    // Create a policy and register an object with a reader relationship
+    let result = client
+        .acp_create_policy(TEST_POLICY_YAML, 1)
+        .await
+        .expect("Failed to create policy");
+    assert_eq!(result.code, 0);
+
+    let policy_ids = client
+        .acp_list_policy_ids()
+        .await
+        .expect("Failed to list policy IDs");
+    let policy_id = &policy_ids.ids[0];
+
+    let key_pair = did_key::generate::<did_key::Ed25519KeyPair>(None);
+    let reader_did = format!("did:key:{}", did_key::Fingerprint::fingerprint(&key_pair));
+
+    let document = common::blockchain::acp::Object {
+        resource: "document".to_string(),
+        id: "doc-window-test".to_string(),
+    };
+
+    client
+        .acp_register_object(policy_id, document.clone())
+        .await
+        .expect("Failed to register object");
+
+    client
+        .acp_set_relationship(
+            policy_id,
+            common::blockchain::acp::Relationship {
+                object: Some(document),
+                relation: "reader".to_string(),
+                subject: Some(common::blockchain::acp::Subject {
+                    kind: Some(common::blockchain::acp::SubjectKind::Actor(
+                        common::blockchain::acp::Actor {
+                            id: reader_did.clone(),
+                        },
+                    )),
+                }),
+            },
+        )
+        .await
+        .expect("Failed to set relationship");
+
+    let auth = SourceHubAuth::new(ChainConfigBuilder::default())
+        .await
+        .unwrap();
+
+    // Use the current Unix timestamp; window 0..u64::MAX always contains it
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("System clock error")
+        .as_secs();
+
+    let request = AccessCheckRequest::new(
+        policy_id.clone(),
+        "document".to_string(),
+        "doc-window-test".to_string(),
+        "read".to_string(),
+        None,
+        Some(now),
+        Some(ValidWindow {
+            start: 0,
+            end: u64::MAX,
+        }),
+    );
+
+    let result = auth
+        .check(request.to_bytes().unwrap(), &reader_did)
+        .await
+        .expect("check should not error");
+
+    assert!(
+        result,
+        "In-range window with valid relationship should grant access"
+    );
 }

@@ -11,6 +11,7 @@ use crate::pre::helpers::{
     validate_pre_claims, verify_encryption_binding,
 };
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, PreClaims};
+use authz::sourcehub::ValidWindow;
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
 use crypto::PreImpl as ThresholdDealerNode;
 use network::REENCRYPT;
@@ -89,6 +90,11 @@ where
                 .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 
         let req = request.into_inner();
+        let valid_window = req.valid_window.map(|w| ValidWindow {
+            start: w.start,
+            end: w.end,
+        });
+
         let (document_payload, ring_payload) =
             fetch_bulletin_payloads(&*self.state.bulletin, &req.namespace, &req.object_id).await?;
 
@@ -97,6 +103,7 @@ where
             &document_payload,
             &req.object_id,
             &token.issuer_id,
+            valid_window.clone(),
         )
         .await?;
 
@@ -117,7 +124,7 @@ where
             &document_payload.resource,
             &document_payload.permission,
             document_payload.tier.clone().as_deref(),
-            document_payload.date.clone().as_deref(),
+            document_payload.timestamp,
             req.salt.as_deref(),
         );
         let (ring_pk_bytes, ring_pk) = decode_ring_pk(&ring_payload.ring_pk)?;
@@ -218,6 +225,7 @@ where
                 req.namespace,
                 req.derivation,
                 req.salt,
+                valid_window,
             )
             .await?;
 

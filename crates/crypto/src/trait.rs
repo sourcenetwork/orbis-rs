@@ -654,7 +654,7 @@ pub trait ThresholdDealer {
         resource: &str,
         permission: &str,
         tier: Option<&str>,
-        date: Option<&str>,
+        timestamp: Option<u64>,
         salt: Option<&str>,
     ) -> Vec<u8>;
 }

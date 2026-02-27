@@ -91,7 +91,7 @@ fn create_dummy_request() -> StoreSecretRequest {
         derived_pk: None,
         with_proof: false,
         tier: None,
-        date: None,
+        timestamp: None,
         metadata_hash: None,
     }
 }
@@ -345,7 +345,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         derived_pk: None,
         with_proof: false,
         tier: None,
-        date: None,
+        timestamp: None,
         metadata_hash: None,
     };
 
@@ -428,7 +428,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
         derived_pk: None,
         with_proof: false,
         tier: None,
-        date: None,
+        timestamp: None,
         metadata_hash: None,
     };
 
@@ -603,7 +603,7 @@ async fn test_store_secret_idempotent() {
         derived_pk: None,
         with_proof: false,
         tier: None,
-        date: None,
+        timestamp: None,
         metadata_hash: None,
     };
 
@@ -642,7 +642,7 @@ async fn test_store_secret_idempotent() {
         derived_pk: None,
         with_proof: false,
         tier: None,
-        date: None,
+        timestamp: None,
         metadata_hash: None,
     };
 
@@ -794,7 +794,7 @@ async fn test_store_secret_fails_wrong_derived_pk() {
         derived_pk: Some(wrong_derived_pk_bytes), // Wrong derived_pk
         with_proof: false,
         tier: None,
-        date: None,
+        timestamp: None,
         metadata_hash: None,
     };
 
@@ -937,7 +937,7 @@ async fn test_store_secret_fails_with_tampered_proof() {
         derived_pk: None,
         with_proof: false,
         tier: None,
-        date: None,
+        timestamp: None,
         metadata_hash: None,
     };
 

@@ -86,8 +86,8 @@ pub struct StoreSecretClaims {
     pub with_proof: bool,
     /// tier required for policy
     pub tier: Option<String>,
-    /// date required for policy
-    pub date: Option<String>,
+    /// timestamp required for policy
+    pub timestamp: Option<u64>,
     /// metadata hash if using a salt
     pub metadata_hash: Option<Vec<u8>>,
 }
