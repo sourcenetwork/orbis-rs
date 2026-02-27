@@ -1,8 +1,6 @@
 use crate::app_state::AppState;
 use crate::constants::MAX_TOKEN_LIFETIME_SECS;
-use crate::helpers::helpers::{
-    connect_to_peers, derive_node_id_from_peer_id_bytes, validate_all_peer_ids,
-};
+use crate::helpers::helpers::{connect_to_peers, validate_all_peer_ids};
 use crate::metrics;
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
@@ -175,10 +173,8 @@ where
             .into());
         }
 
-        // 3. Generate unique request ID (use peer_id hash instead of node_id since node_id is session-specific)
-        let peer_id_hash =
-            derive_node_id_from_peer_id_bytes(self.state.network.local_peer_id().as_bytes());
-        let request_id = format!("{}-{}", peer_id_hash, created_at);
+        // 3. Generate unique request ID
+        let request_id = rand::random::<u64>().to_string();
 
         // 4. Connect to peer nodes using iroh network
         let connection_summary = connect_to_peers(
