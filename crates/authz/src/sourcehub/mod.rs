@@ -28,8 +28,8 @@ pub struct AccessCheckRequest {
     pub resource: String,
     /// Object ID within the resource
     pub object_id: String,
-    /// Relationship needed to check this document
-    pub relationship: String,
+    /// Permission needed to check this document
+    pub permission: String,
     /// Optional tier for acp check
     pub tier: Option<String>,
     /// Optional timestamp for acp check
@@ -43,7 +43,7 @@ impl AccessCheckRequest {
         policy_id: String,
         resource: String,
         object_id: String,
-        relationship: String,
+        permission: String,
         tier: Option<String>,
         timestamp: Option<u64>,
         valid_window: Option<ValidWindow>,
@@ -52,7 +52,7 @@ impl AccessCheckRequest {
             policy_id,
             resource,
             object_id,
-            relationship,
+            permission,
             timestamp,
             tier,
             valid_window,
@@ -111,7 +111,7 @@ impl Authz for SourceHubAuth {
                     resource: request.resource.clone(),
                     id: request.object_id.clone(),
                 }),
-                permission: request.relationship.clone(),
+                permission: request.permission.clone(),
             }],
             actor: Some(Actor {
                 id: subject.clone(),
