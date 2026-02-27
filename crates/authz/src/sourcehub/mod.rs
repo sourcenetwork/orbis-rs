@@ -3,7 +3,10 @@ use crate::{
     r#trait::Authz,
 };
 use async_trait::async_trait;
-use common::blockchain::{acp::Policy, ChainConfigBuilder, SourceHubClient};
+use common::blockchain::{
+    acp::{AccessRequest, Actor, Object, Operation, Policy},
+    ChainConfigBuilder, SourceHubClient,
+};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
@@ -100,17 +103,24 @@ impl Authz for SourceHubAuth {
             (None, None) => {}
         }
 
-        // TODO: pass through timestamp and tier when acp is uptimestampd
-        // Check if the actor has any of the relations that grant the permission
+        // Verify the permission using the policy expression (e.g. "read = creator + reader").
+        // This mirrors the Go implementation which uses QueryVerifyAccessRequest with a permission name.
+        let access_request = AccessRequest {
+            operations: vec![Operation {
+                object: Some(Object {
+                    resource: request.resource.clone(),
+                    id: request.object_id.clone(),
+                }),
+                permission: request.relationship.clone(),
+            }],
+            actor: Some(Actor {
+                id: subject.clone(),
+            }),
+        };
+
         let is_authorized = self
             .chain_client
-            .acp_has_relationship(
-                &request.policy_id,
-                &subject,
-                &request.resource,
-                &request.object_id,
-                &request.relationship,
-            )
+            .acp_verify_access(&request.policy_id, &access_request)
             .await
             .map_err(|e| AuthZError::ChainError(e.to_string()))?;
 

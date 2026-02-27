@@ -334,6 +334,8 @@ pub struct Permission {
     pub doc: String,
     /// Expression defining which relations grant this permission.
     /// Examples: "owner", "(owner + reader)", "owner->member"
+    /// The REST API may return this field as "expr" (proto field name).
+    #[serde(default, alias = "expr")]
     pub expression: String,
 }
 
@@ -359,12 +361,6 @@ pub struct Pagination {
     pub total: Option<String>,
 }
 
-/// Response from verifying access.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueryVerifyAccessResponse {
-    pub valid: bool,
-}
-
 /// Access decision stored on-chain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessDecision {
@@ -378,6 +374,28 @@ pub struct AccessDecision {
 pub struct OperationResult {
     pub operation: Operation,
     pub is_authorized: bool,
+}
+
+// ============================================================================
+// Verify Access Request Types (prost, for ABCI query)
+// ============================================================================
+
+/// ABCI request for the VerifyAccessRequest query.
+/// Proto: sourcehub.acp.QueryVerifyAccessRequestRequest
+#[derive(Clone, Message)]
+pub struct QueryVerifyAccessRequestRequest {
+    #[prost(string, tag = "1")]
+    pub policy_id: String,
+    #[prost(message, optional, tag = "2")]
+    pub access_request: Option<AccessRequest>,
+}
+
+/// ABCI response for the VerifyAccessRequest query.
+/// Proto: sourcehub.acp.QueryVerifyAccessRequestResponse
+#[derive(Clone, Message)]
+pub struct QueryVerifyAccessRequestResponse {
+    #[prost(bool, tag = "1")]
+    pub valid: bool,
 }
 
 // ============================================================================
@@ -399,11 +417,16 @@ pub struct RelationshipSelector {
     pub subject_selector: Option<SubjectSelector>,
 }
 
+/// Wildcard selector - matches anything.
+/// Proto: sourcenetwork.acp_core.WildcardSelector (empty message)
+#[derive(Clone, Serialize, Deserialize, Message)]
+pub struct WildcardSelector {}
+
 /// Object selector - uses oneof with object at tag 1.
 /// Proto: sourcenetwork.acp_core.ObjectSelector
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct ObjectSelector {
-    #[prost(oneof = "ObjectSelectorKind", tags = "1")]
+    #[prost(oneof = "ObjectSelectorKind", tags = "1, 2")]
     #[serde(flatten)]
     pub selector: Option<ObjectSelectorKind>,
 }
@@ -412,13 +435,15 @@ pub struct ObjectSelector {
 pub enum ObjectSelectorKind {
     #[prost(message, tag = "1")]
     Object(Object),
+    #[prost(message, tag = "2")]
+    Wildcard(WildcardSelector),
 }
 
 /// Relation selector - uses oneof with relation at tag 1.
 /// Proto: sourcenetwork.acp_core.RelationSelector
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct RelationSelector {
-    #[prost(oneof = "RelationSelectorKind", tags = "1")]
+    #[prost(oneof = "RelationSelectorKind", tags = "1, 2")]
     #[serde(flatten)]
     pub selector: Option<RelationSelectorKind>,
 }
@@ -427,13 +452,15 @@ pub struct RelationSelector {
 pub enum RelationSelectorKind {
     #[prost(string, tag = "1")]
     Relation(String),
+    #[prost(message, tag = "2")]
+    Wildcard(WildcardSelector),
 }
 
 /// Subject selector - uses oneof with subject at tag 1.
 /// Proto: sourcenetwork.acp_core.SubjectSelector
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct SubjectSelector {
-    #[prost(oneof = "SubjectSelectorKind", tags = "1")]
+    #[prost(oneof = "SubjectSelectorKind", tags = "1, 2")]
     #[serde(flatten)]
     pub selector: Option<SubjectSelectorKind>,
 }
@@ -442,6 +469,8 @@ pub struct SubjectSelector {
 pub enum SubjectSelectorKind {
     #[prost(message, tag = "1")]
     Subject(Subject),
+    #[prost(message, tag = "2")]
+    Wildcard(WildcardSelector),
 }
 
 /// gRPC request for FilterRelationships query.
@@ -502,19 +531,39 @@ impl SourceHubClient {
         self.rest_get(&url).await
     }
 
-    /// Verify an access request without storing the result.
+    /// Verify an access request via the SourceHub VerifyAccessRequest ABCI query.
+    ///
+    /// Sends the actor + permission directly to the chain; returns `true` if the
+    /// actor holds the required permission on the object, `false` otherwise.
     pub async fn acp_verify_access(
         &self,
         policy_id: &str,
         access_request: &AccessRequest,
     ) -> Result<bool> {
-        let url = format!(
-            "{}/sourcenetwork/sourcehub/acp/verify_access_request/{}",
-            self.config().rest_url,
-            policy_id
-        );
+        let request = QueryVerifyAccessRequestRequest {
+            policy_id: policy_id.to_string(),
+            access_request: Some(access_request.clone()),
+        };
 
-        let response: QueryVerifyAccessResponse = self.rest_post(&url, access_request).await?;
+        let request_bytes = request.encode_to_vec();
+
+        let response_bytes = self
+            .abci_query(
+                "/sourcehub.acp.Query/VerifyAccessRequest",
+                request_bytes,
+                None,
+                false,
+            )
+            .await?;
+
+        let response = QueryVerifyAccessRequestResponse::decode(response_bytes.as_slice())
+            .map_err(|e| {
+                BlockchainError::Serialization(format!(
+                    "Failed to decode VerifyAccessRequest response: {}",
+                    e
+                ))
+            })?;
+
         Ok(response.valid)
     }
 
@@ -548,6 +597,33 @@ impl SourceHubClient {
             })?;
 
         Ok(response)
+    }
+
+    /// List all relationships for a given object, regardless of relation or subject.
+    /// Uses wildcard selectors for relation and subject to avoid nil-pointer panics in SourceHub.
+    /// Useful for diagnostics: if this returns results but `acp_has_relationship` doesn't,
+    /// the issue is with how the subject selector is encoded.
+    pub async fn acp_list_all_relationships_for_object(
+        &self,
+        policy_id: &str,
+        resource: &str,
+        object_id: &str,
+    ) -> Result<QueryFilterRelationshipsResponse> {
+        let selector = RelationshipSelector {
+            object_selector: Some(ObjectSelector {
+                selector: Some(ObjectSelectorKind::Object(Object {
+                    resource: resource.to_string(),
+                    id: object_id.to_string(),
+                })),
+            }),
+            relation_selector: Some(RelationSelector {
+                selector: Some(RelationSelectorKind::Wildcard(WildcardSelector {})),
+            }),
+            subject_selector: Some(SubjectSelector {
+                selector: Some(SubjectSelectorKind::Wildcard(WildcardSelector {})),
+            }),
+        };
+        self.acp_filter_relationships(policy_id, &selector).await
     }
 
     /// Check if an actor has a specific relation to an object.

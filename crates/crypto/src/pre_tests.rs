@@ -1236,7 +1236,7 @@ where
     let resource = "resource-1";
     let permission = "read";
     let tier = Some("tier-gold");
-    let timestamp = Some("1772127215");
+    let timestamp = Some(1772127215u64);
     let salt = Some("salt-xyz");
 
     let correct = T::encode_metadata(policy, resource, permission, tier, timestamp, salt);
@@ -1254,7 +1254,7 @@ where
             timestamp,
             salt,
         ),
-        T::encode_metadata(policy, resource, permission, tier, Some("TAMPERED"), salt),
+        T::encode_metadata(policy, resource, permission, tier, Some(0u64), salt),
         T::encode_metadata(
             policy,
             resource,

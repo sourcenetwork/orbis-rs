@@ -65,10 +65,16 @@ pub async fn check_policy_access(
     .to_bytes()
     .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
 
-    authz
+    let is_authorized = authz
         .check(permission, &issuer_id.to_string())
         .await
         .map_err(|e| PreError::AuthZ(format!("Error in Authz request: {}", e)))?;
+
+    if !is_authorized {
+        return Err(PreError::Unauthorized(
+            "Access denied: policy check failed".to_string(),
+        ));
+    }
 
     Ok(())
 }

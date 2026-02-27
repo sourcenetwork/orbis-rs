@@ -579,7 +579,9 @@ mod cli_tool_integration {
         let namespace = "docker_test_namespace".to_string();
         let full_namespace = format!("bulletin/{}", namespace);
         let tier = Some("tier".to_string());
-        let timestamp = Some("timestamp".to_string());
+        let timestamp = Some(100u64);
+        let valid_window_start = Some(50u64);
+        let valid_window_end = Some(150u64);
         let salt = Some("salt".to_string());
         let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
         let proof = vec![0x01];
@@ -781,6 +783,25 @@ mod cli_tool_integration {
         .await
         .expect("set_relationship_on_chain");
 
+        // register service-stored encrypted object to chain
+        cli_tool::register_object_to_chain(
+            policy_id.clone(),
+            object_id_service.clone(),
+            resource.clone(),
+        )
+        .await
+        .expect("register_object_to_chain");
+
+        cli_tool::set_relationship_on_chain(
+            policy_id.clone(),
+            object_id_service.clone(),
+            resource.clone(),
+            relation.clone(),
+            Some(did_pk_string.clone()),
+        )
+        .await
+        .expect("set_relationship_on_chain");
+
         // register derived encrypted object to chain
         cli_tool::register_object_to_chain(
             policy_id.clone(),
@@ -812,6 +833,8 @@ mod cli_tool_integration {
             full_namespace.clone(),
             None,
             None,
+            None,
+            None,
             false,
         )
         .await;
@@ -840,8 +863,10 @@ mod cli_tool_integration {
             object_id_derived.clone(),
             Some(did_pk_string.clone()),
             full_namespace.clone(),
-            Some(derivation),
+            Some(derivation.clone()),
             salt.clone(),
+            valid_window_start,
+            valid_window_end,
             false,
         )
         .await;
@@ -852,6 +877,57 @@ mod cli_tool_integration {
             decrypted_derived, secret,
             "Decrypted secret should match original plaintext"
         );
+
+        // testing no permission
+        let pre_result_no_permission = cli_tool::do_pre(
+            endpoint.clone(),
+            ring_pk_hex.clone(),
+            reader_pk_hex.clone(),
+            Some(reader_sk_hex.clone()),
+            object_id_derived.clone(),
+            Some("bad_key".to_string().clone()),
+            full_namespace.clone(),
+            Some(derivation.clone()),
+            salt.clone(),
+            valid_window_start,
+            valid_window_end,
+            false,
+        )
+        .await;
+
+        let err = pre_result_no_permission.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Access denied: policy check failed"),
+            "Expected policy check failure, got: {}",
+            err
+        );
+
+        // testing timestamp out of bounds failure
+        let pre_result_derived_failed_timestamp = cli_tool::do_pre(
+            endpoint.clone(),
+            ring_pk_hex.clone(),
+            reader_pk_hex.clone(),
+            Some(reader_sk_hex.clone()),
+            object_id_derived.clone(),
+            Some(did_pk_string.clone()),
+            full_namespace.clone(),
+            Some(derivation),
+            salt.clone(),
+            valid_window_start,
+            valid_window_start,
+            false,
+        )
+        .await;
+
+        let err = pre_result_derived_failed_timestamp.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Access denied: policy check failed"),
+            "Expected timestamp out-of-bounds failure, got: {}",
+            err
+        );
+
         // Test idempotency: store the same prepared secret again
         // This should succeed and return the same object_id (no duplicate post)
         println!("Testing idempotency: storing same secret again...");

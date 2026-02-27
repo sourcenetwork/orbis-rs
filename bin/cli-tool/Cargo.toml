@@ -23,6 +23,7 @@ hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 did-key = { workspace = true }
+sha2 = { workspace = true }
 
 [features]
 default = ["bls12-381"]
