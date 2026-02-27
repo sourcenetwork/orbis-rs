@@ -44,6 +44,7 @@ http-body-util = { workspace = true }
 hyper-util = { workspace = true }                                                                                                                                                                                                                                                                                                                                                                                
 
 [dev-dependencies]
+authz = { path = "../../crates/authz", features = ["test-helpers"] }
 serial_test = "3.2.0"
 ark-bls12-381 = "0.4"
 ark-ec = "0.4"

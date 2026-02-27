@@ -16,7 +16,7 @@ serde_json = { workspace = true }
 [features]
 default = ["sourcehub"]
 sourcehub = []
-dummy = []
+test-helpers = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "process"] }
