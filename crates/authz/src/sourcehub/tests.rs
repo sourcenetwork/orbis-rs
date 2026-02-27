@@ -469,7 +469,7 @@ async fn test_valid_window_out_of_range() {
         "any-policy".to_string(),
         "document".to_string(),
         "doc-1".to_string(),
-        "reader".to_string(),
+        "read".to_string(),
         None,
         Some(2u64),
         Some(ValidWindow { start: 0, end: 1 }),

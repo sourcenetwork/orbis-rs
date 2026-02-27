@@ -59,7 +59,7 @@ pub async fn check_policy_access(
         object_id.to_string(),
         document_payload.permission.clone(),
         document_payload.tier.clone(),
-        document_payload.timestamp.clone(),
+        document_payload.timestamp,
         valid_window,
     )
     .to_bytes()
