@@ -4,7 +4,7 @@ pub mod r#trait;
 #[cfg(feature = "sourcehub")]
 pub mod sourcehub;
 
-// Only available in test builds via the test-helpers feature; never compiled into production binaries.
+// Available only when the `test-helpers` feature is enabled (typically in tests).
 #[cfg(feature = "test-helpers")]
 pub mod dummy;
 
