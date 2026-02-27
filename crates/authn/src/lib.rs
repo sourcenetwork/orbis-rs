@@ -28,6 +28,9 @@ pub struct BearerToken<T = ()> {
     /// Expiration timestamp (Unix epoch seconds)
     #[serde(rename = "exp")]
     pub expiration_time: u64,
+    /// Not-before timestamp (Unix epoch seconds); token is invalid before this time
+    #[serde(rename = "nbf", skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<u64>,
     /// Custom claims specific to the endpoint
     #[serde(flatten)]
     pub claims: T,
@@ -170,6 +173,15 @@ where
         return Err(AuthNError::JwtError(
             "Token issued in the future".to_string(),
         ));
+    }
+
+    // Check not-before claim (nbf): token must not be used before this time
+    if let Some(nbf) = bearer_token.not_before {
+        if current_time < nbf {
+            return Err(AuthNError::JwtError(
+                "Token not yet valid (nbf)".to_string(),
+            ));
+        }
     }
 
     // Check that issued_time is before expiration_time

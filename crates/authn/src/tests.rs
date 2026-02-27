@@ -27,6 +27,37 @@ fn create_test_jwt_with_pre_claims(
         Claims::with_custom_claims(custom, Duration::from_secs(0)).with_issuer(&token.issuer_id);
     jwt_claims.issued_at = Some(UnixTimeStamp::from_secs(token.issued_time));
     jwt_claims.expires_at = Some(UnixTimeStamp::from_secs(token.expiration_time));
+    // Clear the auto-set nbf so tests using synthetic timestamps aren't rejected
+    // by the real wall-clock value jwt-simple inserts by default.
+    jwt_claims.invalid_before = None;
+
+    signing_key.sign(jwt_claims).unwrap()
+}
+
+/// Helper to create a test JWT with PreClaims and an explicit nbf value
+fn create_test_jwt_with_nbf(
+    key_pair: &did_key::PatchedKeyPair,
+    token: &BearerToken<PreClaims>,
+    not_before: Option<u64>,
+) -> String {
+    let mut keypair_bytes = key_pair.private_key_bytes();
+    keypair_bytes.extend(key_pair.public_key_bytes());
+
+    let signing_key = Ed25519KeyPair::from_bytes(&keypair_bytes).unwrap();
+
+    let custom = PreClaims {
+        rdr_pk: token.claims.rdr_pk.clone(),
+        object_id: "".to_string(),
+        namespace: "".to_string(),
+        derivation: None,
+        salt: None,
+    };
+
+    let mut jwt_claims =
+        Claims::with_custom_claims(custom, Duration::from_secs(0)).with_issuer(&token.issuer_id);
+    jwt_claims.issued_at = Some(UnixTimeStamp::from_secs(token.issued_time));
+    jwt_claims.expires_at = Some(UnixTimeStamp::from_secs(token.expiration_time));
+    jwt_claims.invalid_before = not_before.map(UnixTimeStamp::from_secs);
 
     signing_key.sign(jwt_claims).unwrap()
 }
@@ -51,6 +82,7 @@ fn create_test_jwt_no_claims(
     .with_issuer(&token.issuer_id);
     jwt_claims.issued_at = Some(UnixTimeStamp::from_secs(token.issued_time));
     jwt_claims.expires_at = Some(UnixTimeStamp::from_secs(token.expiration_time));
+    jwt_claims.invalid_before = None;
 
     signing_key.sign(jwt_claims).unwrap()
 }
@@ -65,6 +97,7 @@ fn test_resolve_jwt_did_with_pre_claims() {
         issuer_id: did_uri,
         issued_time: 900,
         expiration_time: 2000,
+        not_before: None,
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
@@ -93,6 +126,7 @@ fn test_resolve_jwt_did_with_dkg_claims() {
         issuer_id: did_uri.clone(),
         issued_time: 900,
         expiration_time: 2000,
+        not_before: None,
         claims: DkgClaims {
             peer_ids: vec![],
             threshold: 2,
@@ -118,6 +152,7 @@ fn test_resolve_jwt_did_expired() {
         issuer_id: did_uri,
         issued_time: 900,
         expiration_time: 2000,
+        not_before: None,
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
@@ -145,6 +180,7 @@ fn test_resolve_jwt_did_future_issued_time() {
         issuer_id: did_uri,
         issued_time: 900,
         expiration_time: 2000,
+        not_before: None,
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
@@ -173,6 +209,7 @@ fn test_token_lifetime_at_limit() {
     let token = BearerToken {
         issuer_id: did_uri,
         issued_time,
+        not_before: None,
         expiration_time: issued_time + TEST_MAX_LIFETIME,
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
@@ -205,6 +242,7 @@ fn test_token_lifetime_one_second_over_limit() {
     let token = BearerToken {
         issuer_id: did_uri,
         issued_time,
+        not_before: None,
         expiration_time: issued_time + TEST_MAX_LIFETIME + 1,
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
@@ -239,6 +277,7 @@ fn test_token_lifetime_far_future() {
     let token = BearerToken {
         issuer_id: did_uri,
         issued_time,
+        not_before: None,
         expiration_time: issued_time + (365 * 24 * 60 * 60 * 10), // 10 years
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
@@ -271,6 +310,7 @@ fn test_resolve_jwt_did_invalid_signature() {
         issuer_id: did_uri,
         issued_time: 900,
         expiration_time: 2000,
+        not_before: None,
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
@@ -286,4 +326,52 @@ fn test_resolve_jwt_did_invalid_signature() {
         resolve_jwt_did(&jwt, current_time, TEST_MAX_LIFETIME);
 
     assert!(result.is_err());
+}
+
+#[test]
+fn test_nbf_in_future_rejected() {
+    let key_pair = generate::<DidEd25519KeyPair>(None);
+    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+
+    let current_time = 1000;
+    let token = BearerToken {
+        issuer_id: did_uri,
+        issued_time: 900,
+        expiration_time: 2000,
+        not_before: Some(1500),
+        claims: PreClaims::default(),
+    };
+
+    let jwt = create_test_jwt_with_nbf(&key_pair, &token, Some(1500));
+    let result: Result<BearerToken<PreClaims>> =
+        resolve_jwt_did(&jwt, current_time, TEST_MAX_LIFETIME);
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        matches!(&err, AuthNError::JwtError(msg) if msg.contains("nbf")),
+        "Expected nbf error, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_nbf_in_past_accepted() {
+    let key_pair = generate::<DidEd25519KeyPair>(None);
+    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+
+    let current_time = 1000;
+    let token = BearerToken {
+        issuer_id: did_uri,
+        issued_time: 900,
+        expiration_time: 2000,
+        not_before: Some(950),
+        claims: PreClaims::default(),
+    };
+
+    let jwt = create_test_jwt_with_nbf(&key_pair, &token, Some(950));
+    let result: Result<BearerToken<PreClaims>> =
+        resolve_jwt_did(&jwt, current_time, TEST_MAX_LIFETIME);
+
+    assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
 }
