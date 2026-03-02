@@ -155,8 +155,24 @@ pub const PASSWORD_FILE_NAME: &str = ".orbis_password";
 
 /// Environment variable name for the encryption password
 ///
-/// This environment variable does not take precedence over the password file (file has highest priority).
-/// This allows for secure password injection in containerized environments.
+/// The password file (see [`PASSWORD_FILE_NAME`]) takes precedence; this variable is only
+/// consulted when no file is present.
+///
+/// # Security warning — process listing exposure
+///
+/// Environment variables are visible to any process running as the same user via
+/// `/proc/<pid>/environ` (Linux) and to privileged users via `ps auxe` or
+/// `strings /proc/<pid>/environ`. On some systems they are also logged by init
+/// supervisors (systemd `EnvironmentFile` journals, Docker daemon logs, etc.).
+///
+/// **Prefer the password file** (`~/.orbis_password`, mode 0600) for production
+/// deployments. Only use this variable in short-lived, ephemeral environments
+/// (CI pipelines, one-shot containers) where the process listing exposure window
+/// is acceptable and the host is trusted.
+///
+/// If you must use this variable, inject it via a secrets manager (e.g.
+/// `secretsmanager`, Vault, Kubernetes `secretKeyRef`) rather than embedding it
+/// in a shell script or Dockerfile ENV instruction.
 pub const PASSWORD_ENV_VAR: &str = "ORBIS_PASSWORD";
 
 // ============================================================================
@@ -172,9 +188,29 @@ pub const SECRET_KEY_FILE_NAME: &str = ".orbis_secret_key";
 
 /// Environment variable name for the secret key (hex-encoded)
 ///
-/// If set, this environment variable provides the secret key bytes as
-/// a hex-encoded string. The key will be stored encrypted in the secret
-/// key file for future use.
+/// If set, this variable provides the iroh peer-identity secret key as a 64-character
+/// hex string. The value is persisted encrypted in local storage on first use so that
+/// the variable does not need to be set on subsequent restarts.
+///
+/// # Security warning — process listing exposure
+///
+/// This variable carries **raw key material**. It is visible to any process running
+/// as the same user via `/proc/<pid>/environ` (Linux) and to privileged users via
+/// `ps auxe`. It may also appear in:
+/// - systemd journal entries if `EnvironmentFile=` is used with journald capture
+/// - Docker daemon logs and `docker inspect` output for containers started with `-e`
+/// - Shell history if set inline (`ORBIS_SECRET_KEY=abc orbis-node ...`)
+///
+/// **Preferred alternatives in priority order:**
+/// 1. Let the node generate and persist the key automatically (first-run default).
+/// 2. Use the secret key file (`~/.orbis_secret_key`, mode 0600) — this is encrypted
+///    at rest with the ring-share password and never appears in process listings.
+/// 3. Inject via a secrets manager (Vault, AWS Secrets Manager, Kubernetes
+///    `secretKeyRef`) that writes the value into the environment of the process
+///    without exposing it on the command line or in logs.
+///
+/// After the key has been stored in local storage, unset this variable to reduce
+/// the ongoing exposure window.
 pub const SECRET_KEY_ENV_VAR: &str = "ORBIS_SECRET_KEY";
 
 // ============================================================================

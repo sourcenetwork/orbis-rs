@@ -117,7 +117,9 @@ pub fn get_network_key_secret(
             }
         }
     }
-    // Check environment variable
+    // SECURITY: env vars are readable by same-uid processes via /proc/<pid>/environ
+    // and by privileged users via `ps auxe`. Prefer the key file or local storage.
+    // See SECRET_KEY_ENV_VAR doc comment for safe alternatives.
     if let Ok(secret_node_key) = env::var(SECRET_KEY_ENV_VAR) {
         let secret_node_key = secret_node_key.trim().to_string();
         if !secret_node_key.is_empty() {
@@ -221,7 +223,10 @@ pub fn get_password(custom_file_path: Option<PathBuf>) -> Result<String, Passwor
         }
     }
 
-    // 2. Check environment variable
+    // 2. Check environment variable.
+    // SECURITY: env vars are readable by same-uid processes via /proc/<pid>/environ
+    // and by privileged users via `ps auxe`. Prefer the password file (0600).
+    // See PASSWORD_ENV_VAR doc comment for safe alternatives.
     if let Ok(password) = env::var(PASSWORD_ENV_VAR) {
         let password = password.trim().to_string();
         if !password.is_empty() {
