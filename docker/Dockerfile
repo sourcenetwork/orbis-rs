@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # Build stage
 FROM rust:latest AS builder
 
@@ -24,13 +26,21 @@ ARG ENABLE_INTEGRATION_TEST=false
 # Build argument to select crypto implementation: bls12-381 (default) or decaf377
 ARG CRYPTO_FEATURE=bls12-381
 
-# Build release binary. With integration-test: use CRYPTO_FEATURE and no default features.
-RUN if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then \
+# Build release binary, using BuildKit cache mounts so that incremental rebuilds
+# only recompile changed files rather than the entire workspace from scratch.
+# The cargo registry cache persists downloaded crates across builds.
+# The target cache persists compiled artifacts so only changed crates are recompiled.
+# The binary is copied to /orbis-node-bin before the RUN layer exits because cache
+# mounts are not accessible to COPY --from=builder in the next stage.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then \
         cargo build --release --bin orbis-node --no-default-features \
             --features "redb,integration-test,${CRYPTO_FEATURE}"; \
     else \
         cargo build --release --bin orbis-node; \
-    fi
+    fi && \
+    cp /app/target/release/orbis-node /orbis-node-bin
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -43,7 +53,7 @@ WORKDIR /app
 RUN mkdir -p /data/dbs
 
 # Copy the compiled binary from builder
-COPY --from=builder /app/target/release/orbis-node /usr/local/bin/orbis-node
+COPY --from=builder /orbis-node-bin /usr/local/bin/orbis-node
 
 # Expose default ports (adjust as needed)
 EXPOSE 50051
