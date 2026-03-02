@@ -354,20 +354,12 @@ pub fn create_and_store_node_key(
             hex_key
         }
         Err(e) => {
-            tracing::warn!(error = %e, "Error reading signing key from storage, generating new one");
-            let mut key_bytes = [0u8; 32];
-            getrandom::getrandom(&mut key_bytes)
-                .map_err(|e| format!("Failed to generate random bytes: {}", e))?;
-            let hex_key = hex::encode(key_bytes);
-
-            // Store the key encrypted
-            local_storage
-                .set_encrypted(
-                    LocalStorageKeys::NodeSigningKey,
-                    hex_key.as_bytes().to_vec(),
-                )
-                .map_err(|e| format!("Failed to store signing key: {}", e))?;
-            hex_key
+            return Err(format!(
+                "Failed to read signing key from storage: {}. \
+                 Refusing to generate a new key to avoid overwriting an existing identity. \
+                 Check storage health and retry.",
+                e
+            ));
         }
     };
 

@@ -93,8 +93,10 @@ impl LocalStorage for MemoryStorage {
         Ok(store.contains_key(&key))
     }
     fn get_encrypted(&self, key: LocalStorageKeys) -> Result<Option<Vec<u8>>> {
-        let stored = self.get(key)?.ok_or(LocalStorageError::NotFound)?;
-        decrypt_value(&self.cipher, &stored).map(Some)
+        match self.get(key)? {
+            None => Ok(None),
+            Some(stored) => decrypt_value(&self.cipher, &stored).map(Some),
+        }
     }
 
     fn set_encrypted(&self, key: LocalStorageKeys, value: Vec<u8>) -> Result<()> {
