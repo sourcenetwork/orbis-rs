@@ -151,6 +151,7 @@ impl Default for PreResponseManager {
 mod tests {
     use super::*;
     use crate::pre::messages::PreMessage;
+    use std::sync::Arc;
 
     /// Helper: create a dummy ReencryptResponse with a given node_id
     fn dummy_response(request_id: &str, from_node_id: u32) -> PreMessage {
@@ -321,6 +322,77 @@ mod tests {
             !mgr.init_response("req-1".into(), &expected).await,
             "duplicate request_id should be rejected"
         );
+    }
+
+    // =========================================================================
+    // Concurrent access
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_concurrent_init_same_request_id() {
+        let mgr = Arc::new(PreResponseManager::new());
+        let m1 = mgr.clone();
+        let m2 = mgr.clone();
+        let e1 = vec![PEER_A.to_string()];
+        let e2 = vec![PEER_A.to_string()];
+
+        let (r1, r2) = tokio::join!(
+            async move { m1.init_response("req-race".into(), &e1).await },
+            async move { m2.init_response("req-race".into(), &e2).await },
+        );
+
+        // The write lock serialises both inits; exactly one must win
+        assert_ne!(r1, r2, "exactly one concurrent init should succeed");
+        assert_eq!(mgr.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_take_responses() {
+        let mgr = Arc::new(PreResponseManager::new());
+        mgr.init_response("req-take-race".into(), &[PEER_A.to_string()])
+            .await;
+        mgr.store_response(
+            "req-take-race",
+            dummy_response("req-take-race", 1),
+            &peer_bytes(PEER_A),
+        )
+        .await;
+
+        let m1 = mgr.clone();
+        let m2 = mgr.clone();
+
+        let (r1, r2) = tokio::join!(
+            async move { m1.take_responses("req-take-race").await },
+            async move { m2.take_responses("req-take-race").await },
+        );
+
+        // Exactly one task removes the entry; the other gets None
+        assert_ne!(
+            r1.is_some(),
+            r2.is_some(),
+            "exactly one concurrent take should return data"
+        );
+        let responses = r1.or(r2).unwrap();
+        assert_eq!(responses.len(), 1);
+    }
+
+    // =========================================================================
+    // Resource limits
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_response_limit_enforcement() {
+        let mgr = PreResponseManager::new();
+
+        for i in 0..MAX_PRE_RESPONSES {
+            let ok = mgr.init_response(format!("req-{}", i), &[]).await;
+            assert!(ok, "init should succeed for slot {}", i);
+        }
+
+        // The next one must be rejected
+        let rejected = mgr.init_response("req-over-limit".into(), &[]).await;
+        assert!(!rejected, "init should fail when limit is reached");
+        assert_eq!(mgr.pending_count().await, MAX_PRE_RESPONSES);
     }
 
     #[tokio::test]

@@ -305,6 +305,7 @@ impl Default for SignResponseManager {
 mod tests {
     use super::*;
     use crate::sign::messages::SignMessage;
+    use std::sync::Arc;
 
     /// Helper: create a dummy SignResponse
     fn dummy_sign_response(request_id: &str, from_node_id: u32) -> SignMessage {
@@ -635,6 +636,161 @@ mod tests {
             "expired response entry should be cleaned up by expiration worker"
         );
     }
+    // =========================================================================
+    // Concurrent access
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_concurrent_init_same_request_id() {
+        let mgr = Arc::new(SignResponseManager::new());
+        let m1 = mgr.clone();
+        let m2 = mgr.clone();
+        let e1 = vec![PEER_A.to_string()];
+        let e2 = vec![PEER_A.to_string()];
+
+        let (r1, r2) = tokio::join!(
+            async move { m1.init_response("req-race".into(), &e1).await },
+            async move { m2.init_response("req-race".into(), &e2).await },
+        );
+
+        assert_ne!(r1, r2, "exactly one concurrent init should succeed");
+        assert_eq!(mgr.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_take_responses() {
+        let mgr = Arc::new(SignResponseManager::new());
+        mgr.init_response("req-take-race".into(), &[PEER_A.to_string()])
+            .await;
+        mgr.store_response(
+            "req-take-race",
+            dummy_sign_response("req-take-race", 1),
+            &peer_bytes(PEER_A),
+        )
+        .await;
+
+        let m1 = mgr.clone();
+        let m2 = mgr.clone();
+
+        let (r1, r2) = tokio::join!(
+            async move { m1.take_responses("req-take-race").await },
+            async move { m2.take_responses("req-take-race").await },
+        );
+
+        assert_ne!(
+            r1.is_some(),
+            r2.is_some(),
+            "exactly one concurrent take should return data"
+        );
+        let responses = r1.or(r2).unwrap();
+        assert_eq!(responses.len(), 1);
+    }
+
+    // =========================================================================
+    // Resource limits
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_sign_response_limit_enforcement() {
+        let mgr = SignResponseManager::new();
+
+        for i in 0..MAX_SIGN_RESPONSES {
+            let ok = mgr.init_response(format!("req-{}", i), &[]).await;
+            assert!(ok, "init should succeed for slot {}", i);
+        }
+
+        let rejected = mgr.init_response("req-over-limit".into(), &[]).await;
+        assert!(!rejected, "init should fail when limit is reached");
+        assert_eq!(mgr.pending_count().await, MAX_SIGN_RESPONSES);
+    }
+
+    // =========================================================================
+    // Nonce state: consumption and limits
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_nonce_consumed_prevents_double_take() {
+        let mgr = SignResponseManager::new();
+        assert!(mgr.store_nonce("nonce-1".into(), vec![1, 2, 3]).await);
+
+        let first = mgr.take_nonce("nonce-1").await;
+        assert_eq!(first, Some(vec![1, 2, 3]));
+
+        // Second take must return None — nonce was consumed
+        let second = mgr.take_nonce("nonce-1").await;
+        assert!(
+            second.is_none(),
+            "nonce must be consumed and unavailable after first take"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_take_nonce() {
+        // Models FROST Round 2: two SignRequests race for the same nonce state.
+        // Only one should succeed; the other gets None, preventing nonce reuse.
+        let mgr = Arc::new(SignResponseManager::new());
+        assert!(mgr.store_nonce("nonce-race".into(), vec![9, 8, 7]).await);
+
+        let m1 = mgr.clone();
+        let m2 = mgr.clone();
+
+        let (r1, r2) = tokio::join!(
+            async move { m1.take_nonce("nonce-race").await },
+            async move { m2.take_nonce("nonce-race").await },
+        );
+
+        assert_ne!(
+            r1.is_some(),
+            r2.is_some(),
+            "only one concurrent nonce take should succeed (FROST reuse prevention)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_take_nonce_before_store_returns_none() {
+        // Models FROST Round 2 arriving before Round 1 on the responder.
+        let mgr = SignResponseManager::new();
+        let result = mgr.take_nonce("nonce-not-yet-stored").await;
+        assert!(
+            result.is_none(),
+            "take before store should return None, not panic"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nonce_limit_enforcement() {
+        let mgr = SignResponseManager::new();
+
+        for i in 0..MAX_NONCE_STATES {
+            let ok = mgr.store_nonce(format!("nonce-{}", i), vec![i as u8]).await;
+            assert!(ok, "store should succeed for nonce {}", i);
+        }
+
+        let rejected = mgr.store_nonce("nonce-over-limit".into(), vec![0]).await;
+        assert!(!rejected, "store should fail when nonce limit is reached");
+    }
+
+    #[tokio::test]
+    async fn test_nonce_and_response_limits_are_independent() {
+        // Filling nonces to the limit must not affect the response entry limit,
+        // and vice versa. The two maps are governed by separate counters.
+        let mgr = SignResponseManager::new();
+
+        // Fill nonces to limit
+        for i in 0..MAX_NONCE_STATES {
+            assert!(mgr.store_nonce(format!("n-{}", i), vec![]).await);
+        }
+        // Nonce limit reached — further stores fail
+        assert!(!mgr.store_nonce("n-extra".into(), vec![]).await);
+
+        // Response entries are a completely separate map — should still accept inits
+        assert!(
+            mgr.init_response("resp-while-nonces-full".into(), &[])
+                .await
+        );
+        assert_eq!(mgr.pending_count().await, 1);
+    }
+
     #[tokio::test]
     async fn test_take_responses_consumes_entry() {
         let mgr = SignResponseManager::new();

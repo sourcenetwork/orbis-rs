@@ -508,3 +508,358 @@ impl<D: Dkg + 'static> Default for SessionStateManager<D> {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crypto::DkgImpl;
+    use std::sync::Arc;
+
+    /// Create a minimal DkgImpl node for state-manager tests.
+    /// The state manager stores the node but never calls protocol methods on it,
+    /// so any valid construction is fine here.
+    fn make_node(id: u32) -> DkgImpl {
+        *DkgImpl::new(id, 2, 3, 0).expect("DkgImpl::new failed")
+    }
+
+    // =========================================================================
+    // Session creation
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_create_session_success() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        let ok = mgr.create_session(1, make_node(1), 3).await;
+        assert!(ok, "first create should succeed");
+        assert_eq!(mgr.session_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_create_session_rejects_duplicate_id() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        assert!(mgr.create_session(42, make_node(1), 3).await);
+        let dup = mgr.create_session(42, make_node(2), 3).await;
+        assert!(!dup, "duplicate session_id should be rejected");
+        assert_eq!(mgr.session_count().await, 1, "count must not increment");
+    }
+
+    #[tokio::test]
+    async fn test_create_session_rejects_zero_participants() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        let ok = mgr.create_session(1, make_node(1), 0).await;
+        assert!(!ok, "zero participants should be rejected");
+        assert_eq!(mgr.session_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_session_limit_enforcement() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+
+        for i in 0..MAX_DKG_SESSIONS as u64 {
+            let ok = mgr.create_session(i, make_node(1), 3).await;
+            assert!(ok, "create should succeed for session {}", i);
+        }
+
+        // One beyond the limit must be rejected
+        let rejected = mgr
+            .create_session(MAX_DKG_SESSIONS as u64, make_node(1), 3)
+            .await;
+        assert!(!rejected, "create should fail at session limit");
+        assert_eq!(mgr.session_count().await, MAX_DKG_SESSIONS);
+    }
+
+    // =========================================================================
+    // Session existence and removal
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_session_exists_and_remove() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        assert!(!mgr.session_exists(&7).await);
+
+        mgr.create_session(7, make_node(1), 3).await;
+        assert!(mgr.session_exists(&7).await);
+
+        mgr.remove_session(&7).await;
+        assert!(!mgr.session_exists(&7).await);
+        assert_eq!(mgr.session_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_session_count_tracks_multiple() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(1, make_node(1), 3).await;
+        mgr.create_session(2, make_node(1), 3).await;
+        mgr.create_session(3, make_node(1), 3).await;
+        assert_eq!(mgr.session_count().await, 3);
+
+        mgr.remove_session(&2).await;
+        assert_eq!(mgr.session_count().await, 2);
+    }
+
+    // =========================================================================
+    // with_state / with_state_mut
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_with_state_returns_none_for_missing_session() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        let result = mgr.with_state(&99, |s| s.total_participants).await;
+        assert!(
+            result.is_none(),
+            "should return None for non-existent session"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_with_state_returns_value_for_existing_session() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(5, make_node(1), 7).await;
+        let participants = mgr.with_state(&5, |s| s.total_participants).await;
+        assert_eq!(participants, Some(7));
+    }
+
+    // =========================================================================
+    // Phase tracking
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_phase_update_changes_phase_and_resets_timer() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(1, make_node(1), 3).await;
+
+        mgr.update_phase(&1, DkgPhase::Phase1Commitments).await;
+
+        let phase = mgr.with_state(&1, |s| s.phase).await;
+        assert_eq!(phase, Some(DkgPhase::Phase1Commitments));
+    }
+
+    // =========================================================================
+    // Commitment and share counters
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_increment_commitment_and_share_counters() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        // 3 participants: need 2 from others (total - 1)
+        mgr.create_session(1, make_node(1), 3).await;
+
+        mgr.increment_commitments(&1).await;
+        let all = mgr
+            .with_state(&1, |s| s.all_commitments_received())
+            .await
+            .unwrap();
+        assert!(!all, "one commitment is not enough for 3 participants");
+
+        mgr.increment_commitments(&1).await;
+        let all = mgr
+            .with_state(&1, |s| s.all_commitments_received())
+            .await
+            .unwrap();
+        assert!(
+            all,
+            "two commitments should satisfy 3-participant threshold"
+        );
+
+        mgr.increment_shares(&1).await;
+        mgr.increment_shares(&1).await;
+        let all_shares = mgr
+            .with_state(&1, |s| s.all_shares_received())
+            .await
+            .unwrap();
+        assert!(all_shares);
+    }
+
+    // =========================================================================
+    // Peer IDs
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_set_and_get_peer_ids() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(1, make_node(1), 3).await;
+
+        let peers = vec!["peer-a".to_string(), "peer-b".to_string()];
+        mgr.set_peer_ids(&1, peers.clone()).await;
+
+        let got = mgr.get_peer_ids(&1).await;
+        assert_eq!(got, Some(peers));
+    }
+
+    // =========================================================================
+    // Message deduplication
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_message_dedup() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(1, make_node(1), 3).await;
+
+        // Not yet processed
+        assert!(
+            !mgr.is_message_processed(&1, 2, DkgMessageType::Commitment)
+                .await
+        );
+
+        mgr.mark_message_processed(&1, 2, DkgMessageType::Commitment)
+            .await;
+
+        // Now processed
+        assert!(
+            mgr.is_message_processed(&1, 2, DkgMessageType::Commitment)
+                .await
+        );
+
+        // Different type from same node — not processed
+        assert!(!mgr.is_message_processed(&1, 2, DkgMessageType::Share).await);
+
+        // Same type, different node — not processed
+        assert!(
+            !mgr.is_message_processed(&1, 3, DkgMessageType::Commitment)
+                .await
+        );
+    }
+
+    // =========================================================================
+    // Concurrent access
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_concurrent_create_same_id() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        let m1 = mgr.clone();
+        let m2 = mgr.clone();
+        let node1 = make_node(1);
+        let node2 = make_node(2);
+
+        let (r1, r2) = tokio::join!(
+            async move { m1.create_session(42, node1, 3).await },
+            async move { m2.create_session(42, node2, 3).await },
+        );
+
+        // The RwLock serialises the two writes; exactly one must win
+        assert_ne!(r1, r2, "exactly one concurrent create should succeed");
+        assert_eq!(mgr.session_count().await, 1);
+    }
+
+    // =========================================================================
+    // Cleanup guard (RAII)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_cleanup_guard_removes_session_on_drop() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(10, make_node(1), 3).await;
+        assert!(mgr.session_exists(&10).await);
+
+        {
+            let _guard = mgr.cleanup_guard(10);
+            // guard dropped here without defuse — queues cleanup
+        }
+
+        // Yield to let the cleanup worker receive from the channel and remove the session
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !mgr.session_exists(&10).await,
+            "session should be removed after guard drop"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_guard_defuse_prevents_cleanup() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(11, make_node(1), 3).await;
+
+        let guard = mgr.cleanup_guard(11);
+        guard.defuse(); // signals success — no cleanup should happen
+
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            mgr.session_exists(&11).await,
+            "session should still exist after defused guard"
+        );
+    }
+
+    // =========================================================================
+    // Expiration worker
+    // =========================================================================
+
+    #[tokio::test(start_paused = true)]
+    async fn test_expiration_worker_removes_sessions_past_ttl() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(20, make_node(1), 3).await;
+
+        // Backdate created_at past SESSION_TTL (std::time::Instant, not tokio time)
+        {
+            let mut states = mgr.states.write().await;
+            if let Some(s) = states.get_mut(&20) {
+                s.created_at = Instant::now() - (SESSION_TTL + std::time::Duration::from_secs(10));
+            }
+        }
+
+        // Drive the tokio interval timer past the expiration check interval
+        tokio::time::advance(SESSION_EXPIRATION_CHECK_INTERVAL + std::time::Duration::from_secs(1))
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !mgr.session_exists(&20).await,
+            "session past SESSION_TTL should be removed by the expiration worker"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_expiration_worker_removes_stalled_phase() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(30, make_node(1), 3).await;
+
+        // Move to a non-Initializing phase and backdate phase_started_at past DKG_PHASE_TIMEOUT
+        {
+            let mut states = mgr.states.write().await;
+            if let Some(s) = states.get_mut(&30) {
+                s.phase = DkgPhase::Phase1Commitments;
+                s.phase_started_at =
+                    Instant::now() - (DKG_PHASE_TIMEOUT + std::time::Duration::from_secs(10));
+            }
+        }
+
+        tokio::time::advance(SESSION_EXPIRATION_CHECK_INTERVAL + std::time::Duration::from_secs(1))
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !mgr.session_exists(&30).await,
+            "session stalled past DKG_PHASE_TIMEOUT should be removed"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_expiration_worker_keeps_completed_sessions() {
+        // Phase4Complete sessions are intentionally skipped by the expiration worker
+        // (they wait for explicit remove_session() after the DKG result is stored).
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(40, make_node(1), 3).await;
+
+        {
+            let mut states = mgr.states.write().await;
+            if let Some(s) = states.get_mut(&40) {
+                s.phase = DkgPhase::Phase4Complete;
+                // Backdate past SESSION_TTL — worker should still skip it
+                s.created_at = Instant::now() - (SESSION_TTL + std::time::Duration::from_secs(10));
+            }
+        }
+
+        tokio::time::advance(SESSION_EXPIRATION_CHECK_INTERVAL + std::time::Duration::from_secs(1))
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            mgr.session_exists(&40).await,
+            "Phase4Complete sessions should not be removed by the expiration worker"
+        );
+    }
+}
