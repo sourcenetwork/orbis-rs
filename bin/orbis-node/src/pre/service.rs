@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::constants::MAX_TOKEN_LIFETIME_SECS;
-use crate::helpers::helpers::{connect_to_peers, validate_all_peer_ids};
+use crate::helpers::helpers::validate_all_peer_ids;
 use crate::metrics;
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
@@ -12,7 +12,6 @@ use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, PreClaims};
 use authz::sourcehub::ValidWindow;
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
 use crypto::PreImpl as ThresholdDealerNode;
-use network::REENCRYPT;
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -176,33 +175,9 @@ where
         // 3. Generate unique request ID
         let request_id = rand::random::<u64>().to_string();
 
-        // 4. Connect to peer nodes using iroh network
-        let connection_summary = connect_to_peers(
-            &self.state.network,
-            ring_payload.peer_ids.clone(),
-            REENCRYPT,
-        )
-        .await;
-
-        // Check if we successfully connected to all requested peers
-        if connection_summary.failed > 0 {
-            let error_msg = format!(
-                "Failed to connect to all required peers. Connected to {}/{} peers. Failed connections: {}",
-                connection_summary.successful,
-                connection_summary.total,
-                connection_summary.failed
-            );
-            tracing::error!(error = %error_msg, "Failed to connect to all peers");
-            return Err(PreError::NetworkConnection(error_msg).into());
-        }
-
-        tracing::info!(
-            connected = connection_summary.successful,
-            total = connection_summary.total,
-            "PRE Service: Connected to peers"
-        );
-
-        // 5. Create coordinator and initiate reencryption
+        // 4. Create coordinator and initiate reencryption
+        // Per-peer connectivity is handled inside the coordinator via JoinSet tasks,
+        // allowing threshold-of-n operation when some nodes are unreachable.
         metrics::record_pre_request_started();
         let coordinator = PreCoordinator::<D, T>::new(Arc::new(self.state.clone()));
         let total_nodes = ring_payload.peer_ids.len();
@@ -234,10 +209,7 @@ where
 
         let response = StartPreResponse {
             status: "completed".to_string(),
-            message: format!(
-                "PRE completed successfully with {} peers",
-                connection_summary.successful
-            ),
+            message: "PRE completed successfully".to_string(),
             created_at,
             encrypted_secret,
         };

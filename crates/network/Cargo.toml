@@ -22,6 +22,7 @@ lazy_static = { workspace = true }
 default = ["iroh"]
 iroh = []
 gossip = ["dep:iroh-gossip"]
+fault-injection = []
 
 [dependencies.iroh-gossip]
 version = "0.95"

@@ -13,6 +13,7 @@
 use crate::app_state::AppState;
 use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::constants::PEER_RESPONSE_TIMEOUT;
+use crate::constants::PRE_COLLECTION_TIMEOUT;
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::pre::error::{PreError, Result};
 use crate::pre::helpers::{
@@ -543,7 +544,7 @@ where
         // 4. Send reencryption requests to all peers concurrently and receive responses
         // Note: init_pre_response is called by the outer function to ensure cleanup on all paths
         // node_id is already obtained from DKG session above
-        let mut handles = Vec::new();
+        let mut set = tokio::task::JoinSet::new();
 
         // Keep a copy of secret_bytes for later deserialization
         let secret_bytes_for_later = secret_bytes.clone();
@@ -573,21 +574,30 @@ where
 
             // Spawn a task for each peer to send request and receive response
             // Note: Creating new coordinator is cheap (just holds Arc<AppState>)
-            let handle = tokio::spawn(async move {
+            set.spawn(async move {
                 let coordinator = PreCoordinator::<D, T>::new(app_state);
                 coordinator
                     .send_request_and_receive_response(&peer_id, request, &req_id)
                     .await
             });
-            handles.push(handle);
         }
 
-        // Wait for all responses
-        for handle in handles {
-            if let Err(e) = handle.await {
-                tracing::error!(error = ?e, "Task failed");
+        // Wait for all responses with an overall deadline.
+        // If the timeout fires, JoinSet drops here, aborting any remaining tasks.
+        tokio::time::timeout(PRE_COLLECTION_TIMEOUT, async {
+            while let Some(res) = set.join_next().await {
+                if let Err(e) = res {
+                    tracing::error!(error = ?e, "Peer reencrypt task panicked");
+                }
             }
-        }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                request_id = %request_id,
+                "PRE collection timed out; proceeding with partial responses"
+            );
+        });
 
         // 6. Collect the stored responses (moves Vec out, no clone; outer fn removes entry on exit)
         let collected_responses = self

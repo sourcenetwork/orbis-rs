@@ -21,6 +21,6 @@ jobs:
     - name: Build
       run: cargo build --verbose
     - name: Run tests
-      run: cargo test --features=integration-test --verbose
+      run: cargo test --features=integration-test,fault-injection --verbose
     - name: Run tests decaf377
-      run: cargo test --no-default-features --features=decaf377,redb,integration-test --verbose
+      run: cargo test --no-default-features --features=decaf377,redb,integration-test,fault-injection --verbose

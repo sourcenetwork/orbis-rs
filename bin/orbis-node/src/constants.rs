@@ -239,6 +239,20 @@ pub const MIN_NODE_BALANCE: u64 = 1_000_000u64;
 /// while ensuring the signing flow doesn't hang indefinitely.
 pub const PEER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Overall timeout for collecting re-encryption shares from all peers.
+///
+/// Covers connect + send + recv for all nodes concurrently. Exceeding this
+/// timeout returns InsufficientShares rather than hanging indefinitely when
+/// fewer than threshold nodes are reachable.
+pub const PRE_COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Overall timeout for each signing round (nonce collection or sign collection).
+///
+/// Covers connect + send + recv for all nodes concurrently. Exceeding this
+/// timeout returns InsufficientShares rather than hanging indefinitely when
+/// fewer than threshold nodes are reachable.
+pub const SIGN_COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
+
 // ============================================================================
 // Bulletin Proof Constants
 // ============================================================================

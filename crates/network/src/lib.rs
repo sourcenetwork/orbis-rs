@@ -22,5 +22,10 @@ pub use iroh::{
     IrohNetwork as NetworkImpl, IrohNetworkBuilder, IrohRouterBuilder, IrohRouterWrapper, SecretKey,
 };
 
+#[cfg(feature = "fault-injection")]
+pub mod fault;
+#[cfg(feature = "fault-injection")]
+pub use fault::{FaultNetwork, FaultNetworkController};
+
 #[cfg(test)]
 mod tests;
