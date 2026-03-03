@@ -16,30 +16,32 @@ use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl};
 use std::sync::Arc;
 
-/// Test that the node initializes successfully with valid configuration
-#[tokio::test]
-async fn test_init_node_success() {
-    let db_path = test_db_path("test_init_node_success");
-
-    // Create a real network for testing
+/// Builds a [`NodeConfig`] for testing, returning it together with the DB path for cleanup.
+///
+/// `test_name` is used to derive an isolated DB path via [`test_db_path`].
+/// `addr` is the gRPC bind address (`"127.0.0.1:0"` lets the OS pick a free port).
+/// `password` is forwarded to [`LocalStorageImpl::new`]; pass `None` for unencrypted storage.
+async fn make_test_node_config(
+    test_name: &str,
+    addr: &str,
+    password: Option<String>,
+) -> (NodeConfig, String) {
+    let db_path = test_db_path(test_name);
     let network: Arc<dyn Network> =
         Arc::new(NetworkImpl::new().await.expect("Failed to create network"));
-
     let authz: Arc<dyn Authz> = Arc::new(
         AuthzImpl::new(ChainConfigBuilder::default())
             .await
             .expect("Failed to initialize Authz"),
     );
-
     let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
         DummyBulletin::new()
             .await
             .expect("Failed to initialize bulletin"),
     );
-
     let config = NodeConfig {
         args: Args {
-            addr: "127.0.0.1:0".to_string(), // Use port 0 to let OS assign
+            addr: addr.to_string(),
             log_level: LogLevel::Info,
             authz_grpc: None,
             bulletin_grpc: None,
@@ -50,11 +52,19 @@ async fn test_init_node_success() {
             loki_url: None,
         },
         network,
-        local_storage: LocalStorageImpl::new(None, db_path.clone())
+        local_storage: LocalStorageImpl::new(password, db_path.clone())
             .expect("Failed to create local storage"),
         authz,
         bulletin,
     };
+    (config, db_path)
+}
+
+/// Test that the node initializes successfully with valid configuration
+#[tokio::test]
+async fn test_init_node_success() {
+    let (config, db_path) =
+        make_test_node_config("test_init_node_success", "127.0.0.1:0", None).await;
 
     let result = init_node(config).await;
     assert!(result.is_ok(), "Node initialization should succeed");
@@ -78,41 +88,12 @@ async fn test_init_node_success() {
 /// Test that the node fails with invalid address
 #[tokio::test]
 async fn test_init_node_invalid_address() {
-    let db_path = test_db_path("test_init_node_invalid_address");
-
-    let network: Arc<dyn Network> =
-        Arc::new(NetworkImpl::new().await.expect("Failed to create network"));
-
-    let authz: Arc<dyn Authz> = Arc::new(
-        AuthzImpl::new(ChainConfigBuilder::default())
-            .await
-            .expect("Failed to initialize Authz"),
-    );
-
-    let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-        DummyBulletin::new()
-            .await
-            .expect("Failed to initialize bulletin"),
-    );
-
-    let config = NodeConfig {
-        args: Args {
-            addr: "not-a-valid-address".to_string(),
-            log_level: LogLevel::Info,
-            authz_grpc: None,
-            bulletin_grpc: None,
-            chain_rest: None,
-            chain_rpc: None,
-            denom: None,
-            metrics_addr: None,
-            loki_url: None,
-        },
-        network,
-        local_storage: LocalStorageImpl::new(None, db_path.clone())
-            .expect("Failed to create local storage"),
-        authz,
-        bulletin,
-    };
+    let (config, db_path) = make_test_node_config(
+        "test_init_node_invalid_address",
+        "not-a-valid-address",
+        None,
+    )
+    .await;
 
     let result = init_node(config).await;
     assert!(
@@ -125,48 +106,18 @@ async fn test_init_node_invalid_address() {
 /// Test that AppState is properly configured after initialization
 #[tokio::test]
 async fn test_init_node_app_state_configuration() {
-    let db_path = test_db_path("test_init_node_app_state_configuration");
-
-    let network: Arc<dyn Network> =
-        Arc::new(NetworkImpl::new().await.expect("Failed to create network"));
-
-    let authz: Arc<dyn Authz> = Arc::new(
-        AuthzImpl::new(ChainConfigBuilder::default())
-            .await
-            .expect("Failed to initialize Authz"),
-    );
-
-    let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-        DummyBulletin::new()
-            .await
-            .expect("Failed to initialize bulletin"),
-    );
-
-    let bind_addr = "127.0.0.1:0".to_string();
-    let config = NodeConfig {
-        args: Args {
-            addr: bind_addr.clone(),
-            log_level: LogLevel::Info,
-            authz_grpc: None,
-            bulletin_grpc: None,
-            chain_rest: None,
-            chain_rpc: None,
-            denom: None,
-            metrics_addr: None,
-            loki_url: None,
-        },
-        network,
-        local_storage: LocalStorageImpl::new(None, db_path.clone())
-            .expect("Failed to create local storage"),
-        authz,
-        bulletin,
-    };
+    let (config, db_path) = make_test_node_config(
+        "test_init_node_app_state_configuration",
+        "127.0.0.1:0",
+        None,
+    )
+    .await;
 
     let node = init_node(config).await.expect("Node initialization failed");
 
     // Verify AppState configuration
     assert_eq!(
-        node.app_state.config.bind_address, bind_addr,
+        node.app_state.config.bind_address, "127.0.0.1:0",
         "Bind address should match"
     );
 
@@ -188,80 +139,10 @@ async fn test_init_node_app_state_configuration() {
 /// Test that multiple nodes can be initialized concurrently
 #[tokio::test]
 async fn test_init_multiple_nodes() {
-    let db_path1 = test_db_path("test_init_multiple_nodes_1");
-    let db_path2 = test_db_path("test_init_multiple_nodes_2");
-
-    let network1: Arc<dyn Network> = Arc::new(
-        NetworkImpl::new()
-            .await
-            .expect("Failed to create network 1"),
-    );
-    let network2: Arc<dyn Network> = Arc::new(
-        NetworkImpl::new()
-            .await
-            .expect("Failed to create network 2"),
-    );
-
-    let authz1: Arc<dyn Authz> = Arc::new(
-        AuthzImpl::new(ChainConfigBuilder::default())
-            .await
-            .expect("Failed to initialize Authz"),
-    );
-    let authz2: Arc<dyn Authz> = Arc::new(
-        AuthzImpl::new(ChainConfigBuilder::default())
-            .await
-            .expect("Failed to initialize Authz"),
-    );
-
-    let bulletin1: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-        DummyBulletin::new()
-            .await
-            .expect("Failed to initialize bulletin"),
-    );
-
-    let bulletin2: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-        DummyBulletin::new()
-            .await
-            .expect("Failed to initialize bulletin"),
-    );
-
-    let config1 = NodeConfig {
-        args: Args {
-            addr: "127.0.0.1:0".to_string(),
-            log_level: LogLevel::Info,
-            authz_grpc: None,
-            bulletin_grpc: None,
-            chain_rest: None,
-            chain_rpc: None,
-            denom: None,
-            metrics_addr: None,
-            loki_url: None,
-        },
-        network: network1,
-        local_storage: LocalStorageImpl::new(None, db_path1.clone())
-            .expect("Failed to create local storage"),
-        authz: authz1,
-        bulletin: bulletin1,
-    };
-
-    let config2 = NodeConfig {
-        args: Args {
-            addr: "127.0.0.1:0".to_string(),
-            log_level: LogLevel::Info,
-            authz_grpc: None,
-            bulletin_grpc: None,
-            chain_rest: None,
-            chain_rpc: None,
-            denom: None,
-            metrics_addr: None,
-            loki_url: None,
-        },
-        network: network2,
-        local_storage: LocalStorageImpl::new(None, db_path2.clone())
-            .expect("Failed to create local storage"),
-        authz: authz2,
-        bulletin: bulletin2,
-    };
+    let (config1, db_path1) =
+        make_test_node_config("test_init_multiple_nodes_1", "127.0.0.1:0", None).await;
+    let (config2, db_path2) =
+        make_test_node_config("test_init_multiple_nodes_2", "127.0.0.1:0", None).await;
 
     let node1 = init_node(config1)
         .await
@@ -341,44 +222,12 @@ fn test_pre_impl_name_matches_backend() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_init_node_with_encrypted_storage() {
-    let db_path = test_db_path("test_init_node_with_encrypted_storage");
-
-    let network: Arc<dyn Network> =
-        Arc::new(NetworkImpl::new().await.expect("Failed to create network"));
-
-    // Create storage with a password
-    let password = "test-password-123".to_string();
-    let local_storage = LocalStorageImpl::new(Some(password), db_path.clone())
-        .expect("Failed to create local storage");
-    let authz: Arc<dyn Authz> = Arc::new(
-        AuthzImpl::new(ChainConfigBuilder::default())
-            .await
-            .expect("Failed to initialize Authz"),
-    );
-
-    let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-        DummyBulletin::new()
-            .await
-            .expect("Failed to initialize bulletin"),
-    );
-
-    let config = NodeConfig {
-        args: Args {
-            addr: "127.0.0.1:0".to_string(),
-            log_level: LogLevel::Info,
-            authz_grpc: None,
-            bulletin_grpc: None,
-            chain_rest: None,
-            chain_rpc: None,
-            denom: None,
-            metrics_addr: None,
-            loki_url: None,
-        },
-        network,
-        local_storage,
-        authz,
-        bulletin,
-    };
+    let (config, db_path) = make_test_node_config(
+        "test_init_node_with_encrypted_storage",
+        "127.0.0.1:0",
+        Some("test-password-123".to_string()),
+    )
+    .await;
 
     let result = init_node(config).await;
     assert!(

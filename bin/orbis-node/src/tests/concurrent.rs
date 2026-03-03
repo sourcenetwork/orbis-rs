@@ -108,10 +108,7 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
 /// - An OS-assigned iroh P2P port
 ///
 /// Waits until all three gRPC servers are ready before returning.
-async fn setup_live_three_node_network(
-    db_prefix: &str,
-    base_port: u16,
-) -> LiveThreeNodeNetwork {
+async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveThreeNodeNetwork {
     let chain = SourceHubTestContainer::new();
 
     let mut handles: Vec<LiveNodeHandle> = Vec::new();
@@ -120,15 +117,12 @@ async fn setup_live_three_node_network(
         let db_path = test_db_path(&format!("{}_{}", db_prefix, i));
         cleanup_db(&db_path); // clear any leftover from a previous failed run
 
-        let local_storage =
-            LocalStorageImpl::new(None, db_path.clone()).expect("local storage");
+        let local_storage = LocalStorageImpl::new(None, db_path.clone()).expect("local storage");
 
         // Create signing key (stored in local_storage) and fund it via the faucet
-        let signer = create_and_store_node_key(
-            local_storage.clone(),
-            ChainConfigBuilder::default().build(),
-        )
-        .expect("create node signing key");
+        let signer =
+            create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
+                .expect("create node signing key");
         let public_address = signer.address();
 
         cli_tool::fund(
@@ -157,8 +151,7 @@ async fn setup_live_three_node_network(
         );
 
         // Iroh P2P network (OS-assigned port)
-        let network: Arc<dyn Network> =
-            Arc::new(NetworkImpl::new().await.expect("NetworkImpl"));
+        let network: Arc<dyn Network> = Arc::new(NetworkImpl::new().await.expect("NetworkImpl"));
 
         let local_address = network.local_address().expect("network local_address");
         let p2p_socket = network
@@ -229,12 +222,9 @@ async fn setup_ring(
         .await
         .expect("register ring namespace");
     for addr in node_public_addresses {
-        cli_tool::add_bulletin_collaborator(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            addr.to_string(),
-        )
-        .await
-        .expect("add ring collaborator");
+        cli_tool::add_bulletin_collaborator(BULLETIN_RING_NAMESPACE.to_string(), addr.to_string())
+            .await
+            .expect("add ring collaborator");
     }
 
     let sub = BulletinEventSubscription::connect(SOURCEHUB_RPC_URL)
@@ -373,12 +363,9 @@ async fn test_concurrent_pre_requests() {
     cli_tool::register_bulletin_namespace(user_namespace.clone())
         .await
         .expect("register user namespace");
-    cli_tool::add_bulletin_collaborator(
-        user_namespace.clone(),
-        net.alice.public_address.clone(),
-    )
-    .await
-    .expect("add alice to user namespace");
+    cli_tool::add_bulletin_collaborator(user_namespace.clone(), net.alice.public_address.clone())
+        .await
+        .expect("add alice to user namespace");
 
     // Step 3: Store one encrypted secret on the bulletin
     let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");
@@ -523,12 +510,9 @@ async fn test_concurrent_sign_requests() {
     cli_tool::register_bulletin_namespace(user_namespace.clone())
         .await
         .expect("register user namespace");
-    cli_tool::add_bulletin_collaborator(
-        user_namespace.clone(),
-        net.alice.public_address.clone(),
-    )
-    .await
-    .expect("add alice to user namespace");
+    cli_tool::add_bulletin_collaborator(user_namespace.clone(), net.alice.public_address.clone())
+        .await
+        .expect("add alice to user namespace");
 
     // Step 3: Add a policy (required as payload metadata; authz enforcement is PRE-only)
     let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");

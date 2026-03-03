@@ -13,7 +13,7 @@ use common::SOURCEHUB_RPC_URL;
 use crypto::helpers::generate_keypair;
 use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, PreImpl, SignImpl};
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, Duration, Instant};
 
 /// Docker-based integration test: Run DKG and PRE using Docker Compose
 ///
@@ -312,11 +312,22 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .expect("store_prepared_secret_derived");
     let object_id_derived = object_response_derived.object_id.clone();
 
-    // Wait for block confirmation and check sequence incremented
-    sleep(Duration::from_secs(2)).await;
-    let sequence_after_first = cli_tool::get_account_sequence(&node1_address)
-        .await
-        .expect("get sequence after first store");
+    // Poll until sequence increments (confirms tx was broadcast and included in a block)
+    let sequence_after_first = {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let seq = cli_tool::get_account_sequence(&node1_address)
+                .await
+                .expect("get sequence after first store");
+            if seq > sequence_before_first {
+                break seq;
+            }
+            if Instant::now() >= deadline {
+                panic!("Timeout waiting for account sequence to increment after first store");
+            }
+            sleep(Duration::from_millis(200)).await;
+        }
+    };
     println!("Node1 sequence after first store: {}", sequence_after_first);
     assert!(
         sequence_after_first > sequence_before_first,
@@ -334,8 +345,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             .expect("read service post");
 
     let manual: DocumentPayload = serde_json::from_slice(&manual_bytes).expect("parse manual");
-    let service: DocumentPayload =
-        serde_json::from_slice(&service_bytes).expect("parse service");
+    let service: DocumentPayload = serde_json::from_slice(&service_bytes).expect("parse service");
     let bulletin_post = BulletinPost {
         id: object_id_service.clone(),
         namespace: namespace.clone(),
@@ -474,6 +484,11 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     )
     .await;
 
+    assert!(
+        pre_result_derived.is_ok(),
+        "derived PRE should succeed: {:?}",
+        pre_result_derived.err()
+    );
     let decrypted_derived = pre_result_derived.unwrap();
 
     assert_eq!(
@@ -562,11 +577,23 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .await
     .expect("store_prepared_secret (idempotent call)");
 
-    // Wait and check sequence did NOT change (no tx broadcast for idempotent call)
-    sleep(Duration::from_secs(2)).await;
-    let sequence_after_second = cli_tool::get_account_sequence(&node1_address)
-        .await
-        .expect("get sequence after second store");
+    // Poll briefly; fail immediately if sequence changes (no tx should be broadcast for duplicate)
+    let sequence_after_second = {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let seq = cli_tool::get_account_sequence(&node1_address)
+                .await
+                .expect("get sequence after second store");
+            assert_eq!(
+                seq, sequence_before_second,
+                "Idempotency check: sequence changed unexpectedly (tx was broadcast for duplicate)"
+            );
+            if Instant::now() >= deadline {
+                break seq;
+            }
+            sleep(Duration::from_millis(200)).await;
+        }
+    };
     println!(
         "Node1 sequence after second store: {}",
         sequence_after_second
