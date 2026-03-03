@@ -32,8 +32,8 @@ ARG CRYPTO_FEATURE=bls12-381
 # The target cache persists compiled artifacts so only changed crates are recompiled.
 # The binary is copied to /orbis-node-bin before the RUN layer exits because cache
 # mounts are not accessible to COPY --from=builder in the next stage.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/app/target,sharing=locked \
     if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then \
         cargo build --release --bin orbis-node --no-default-features \
             --features "redb,integration-test,${CRYPTO_FEATURE}"; \
