@@ -15,7 +15,7 @@
 //! commitment round is performed before the signing round.
 
 use crate::app_state::AppState;
-use crate::constants::{BULLETIN_RING_NAMESPACE, PEER_RESPONSE_TIMEOUT};
+use crate::constants::{BULLETIN_RING_NAMESPACE, PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT};
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
@@ -509,7 +509,7 @@ where
         // =====================================================================
 
         // 2. Send sign requests to all peers concurrently and receive responses
-        let mut handles = Vec::new();
+        let mut set = tokio::task::JoinSet::new();
 
         for peer_id_str in peer_ids {
             if is_self_peer_id(&self.app_state.network, peer_id_str) {
@@ -528,21 +528,30 @@ where
             let req_id = request_id.clone();
             let app_state = self.app_state.clone();
 
-            let handle = tokio::spawn(async move {
+            set.spawn(async move {
                 let coordinator = SignCoordinator::<D, S>::new(app_state);
                 coordinator
                     .send_request_and_receive_response(&peer_id, request, &req_id)
                     .await
             });
-            handles.push(handle);
         }
 
-        // Wait for all responses
-        for handle in handles {
-            if let Err(e) = handle.await {
-                tracing::error!(error = ?e, "Task failed");
+        // Wait for all responses with an overall deadline.
+        // If the timeout fires, JoinSet drops here, aborting any remaining tasks.
+        tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
+            while let Some(res) = set.join_next().await {
+                if let Err(e) = res {
+                    tracing::error!(error = ?e, "Task failed");
+                }
             }
-        }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                request_id = %request_id,
+                "Sign collection timed out; proceeding with partial responses"
+            );
+        });
 
         // 3. Collect the stored responses (moves Vec out, no clone; outer fn removes entry on exit)
         let collected_responses = self
@@ -753,7 +762,7 @@ where
         }
 
         // Send nonce requests to all peers concurrently
-        let mut handles = Vec::new();
+        let mut set = tokio::task::JoinSet::new();
         for peer_id_str in peer_ids {
             if is_self_peer_id(&self.app_state.network, peer_id_str) {
                 continue;
@@ -769,20 +778,30 @@ where
             let req_id = nonce_request_id.clone();
             let app_state = self.app_state.clone();
 
-            let handle = tokio::spawn(async move {
+            set.spawn(async move {
                 let coordinator = SignCoordinator::<D, S>::new(app_state);
                 coordinator
                     .send_request_and_receive_response(&peer_id, nonce_req, &req_id)
                     .await
             });
-            handles.push(handle);
         }
 
-        for handle in handles {
-            if let Err(e) = handle.await {
-                tracing::error!(error = ?e, "Nonce collection task failed");
+        // Wait for all nonce responses with an overall deadline.
+        // If the timeout fires, JoinSet drops here, aborting any remaining tasks.
+        tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
+            while let Some(res) = set.join_next().await {
+                if let Err(e) = res {
+                    tracing::error!(error = ?e, "Nonce collection task failed");
+                }
             }
-        }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                request_id = %request_id,
+                "Nonce collection timed out; proceeding with partial responses"
+            );
+        });
 
         // Collect nonce responses, removing the entry atomically (no clone, cleanup implicit)
         let nonce_responses = self
