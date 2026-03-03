@@ -628,10 +628,20 @@ mod tests {
         let mgr = SessionStateManager::<DkgImpl>::new();
         mgr.create_session(1, make_node(1), 3).await;
 
+        // Capture a timestamp just before the update; monotonic time guarantees
+        // phase_started_at set inside update_phase will be >= this value.
+        let before_update = std::time::Instant::now();
         mgr.update_phase(&1, DkgPhase::Phase1Commitments).await;
 
-        let phase = mgr.with_state(&1, |s| s.phase).await;
-        assert_eq!(phase, Some(DkgPhase::Phase1Commitments));
+        let (phase, started_at) = mgr
+            .with_state(&1, |s| (s.phase, s.phase_started_at))
+            .await
+            .expect("session 1 should exist");
+        assert_eq!(phase, DkgPhase::Phase1Commitments);
+        assert!(
+            started_at >= before_update,
+            "phase_started_at should be reset to >= the time update_phase was called"
+        );
     }
 
     // =========================================================================

@@ -322,6 +322,7 @@ async fn test_deterministic_peer_id_from_secret() {
 // ============================================================================
 
 #[test]
+#[serial_test::serial]
 fn test_create_and_store_node_key() {
     use common::blockchain::ChainConfig;
 
