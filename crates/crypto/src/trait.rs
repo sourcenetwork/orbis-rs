@@ -730,8 +730,6 @@ pub trait ThresholdSigner {
     ) -> Result<()>;
 
     /// Recover a full signature from shares.
-    ///
-    /// `derivation` must match the value passed to `sign`.
     fn recover(
         &self,
         shares: &[Self::SigShare],
