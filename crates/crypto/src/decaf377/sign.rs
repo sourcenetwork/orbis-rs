@@ -503,18 +503,13 @@ impl ThresholdSigner for ThresholdDecafSigner {
         Ok(())
     }
 
-    fn encode_metadata(policy_id: &str, permission: &str, timestamp: Option<u64>) -> Vec<u8> {
-        let ts_le = timestamp.map(|t| t.to_le_bytes());
-        let ts_bytes: &[u8] = ts_le.as_ref().map_or(&[], |b| b.as_slice());
-
+    fn encode_metadata(policy_id: &str, permission: &str) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(SIGN_METADATA_DOMAIN);
         hasher.update(&(policy_id.len() as u64).to_le_bytes());
         hasher.update(policy_id.as_bytes());
         hasher.update(&(permission.len() as u64).to_le_bytes());
         hasher.update(permission.as_bytes());
-        hasher.update(&(ts_bytes.len() as u64).to_le_bytes());
-        hasher.update(ts_bytes);
         hasher.finalize().to_vec()
     }
 
