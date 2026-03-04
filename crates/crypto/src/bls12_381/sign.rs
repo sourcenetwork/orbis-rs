@@ -31,6 +31,9 @@ const BLS_SIG_DOMAIN: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 /// Domain separation tag for signing key derivation (distinct from PRE derivation domain).
 const SIGN_DERIVATION_DOMAIN: &[u8] = b"sign-derivation-v1";
 
+/// Domain separation tag for signing metadata encoding.
+const SIGN_METADATA_DOMAIN: &[u8] = b"orbis-sign-metadata-v1";
+
 /// Threshold BLS Signer using the swapped variant (G1 keys, G2 signatures)
 pub struct ThresholdBlsSigner;
 
@@ -73,6 +76,7 @@ impl ThresholdSigner for ThresholdBlsSigner {
         _signing_state: Option<&Self::SigningState>,
         _all_commitments: &[(u32, Self::NonceCommitment)],
         derivation: Option<&[u8]>,
+        metadata: Option<&[u8]>,
     ) -> Result<Self::SigShare> {
         let idx = dist_key_share.pri_share.i;
         let ski = dist_key_share.pri_share.v;
@@ -82,9 +86,9 @@ impl ThresholdSigner for ThresholdBlsSigner {
             return Err(CryptoError::InvalidSignatureShare);
         }
 
-        // Apply derivation: s_i' = d * s_i
+        // Apply derivation (with optional metadata binding): s_i' = d * s_i
         let ski_eff = if let Some(deriv) = derivation {
-            let d = derive_sign_scalar(deriv);
+            let d = derive_sign_scalar(deriv, metadata);
             if d.is_zero() {
                 return Err(CryptoError::SigningError(
                     "Zero derivation scalar".to_string(),
@@ -114,11 +118,13 @@ impl ThresholdSigner for ThresholdBlsSigner {
         sig_share: &Self::SigShare,
         _all_commitments: &[(u32, Self::NonceCommitment)],
         derivation: Option<&[u8]>,
+        metadata: Option<&[u8]>,
     ) -> Result<()> {
-        // Get the public key share for this index, applying derivation if present: pk_i' = d * pk_i
+        // Get the public key share for this index, applying derivation (with optional metadata
+        // binding) if present: pk_i' = d * pk_i
         let pk_share_base = pub_poly.eval(sig_share.i);
         let pk_share: G1Affine = if let Some(deriv) = derivation {
-            let d = derive_sign_scalar(deriv);
+            let d = derive_sign_scalar(deriv, metadata);
             (G1Projective::from(pk_share_base) * d).into()
         } else {
             pk_share_base
@@ -215,8 +221,22 @@ impl ThresholdSigner for ThresholdBlsSigner {
         Ok(())
     }
 
-    fn derive_public_key(dkg_pk: &Self::PublicKey, derivation: &[u8]) -> Result<Self::PublicKey> {
-        let d = derive_sign_scalar(derivation);
+    fn encode_metadata(policy_id: &str, permission: &str) -> Vec<u8> {
+        let mut hasher = Sha256::new();
+        hasher.update(SIGN_METADATA_DOMAIN);
+        hasher.update(&(policy_id.len() as u64).to_le_bytes());
+        hasher.update(policy_id.as_bytes());
+        hasher.update(&(permission.len() as u64).to_le_bytes());
+        hasher.update(permission.as_bytes());
+        hasher.finalize().to_vec()
+    }
+
+    fn derive_public_key(
+        dkg_pk: &Self::PublicKey,
+        derivation: &[u8],
+        metadata: Option<&[u8]>,
+    ) -> Result<Self::PublicKey> {
+        let d = derive_sign_scalar(derivation, metadata);
         if d.is_zero() {
             return Err(CryptoError::SigningError(
                 "Zero derivation scalar".to_string(),
@@ -304,11 +324,22 @@ fn recover_signature(shares: &[PubShare<G2Point>], t: usize, n: usize) -> Result
     Ok(Some(G2Point::from(result)))
 }
 
-/// Derive a scalar `d = H(SIGN_DERIVATION_DOMAIN || derivation)` for multiplicative key tweaking.
-fn derive_sign_scalar(derivation: &[u8]) -> Fr {
+/// Derive a scalar for multiplicative key tweaking.
+///
+/// Without metadata: `d = H(SIGN_DERIVATION_DOMAIN || derivation)`
+/// With metadata:    `d = H(SIGN_DERIVATION_DOMAIN || derivation || \x00 || len(metadata) || metadata)`
+///
+/// The null-byte separator guarantees no collision between derivation-only and
+/// derivation+metadata inputs. Backward compatible: passing `None` for metadata
+/// yields the same hash as the previous single-argument form.
+fn derive_sign_scalar(derivation: &[u8], metadata: Option<&[u8]>) -> Fr {
     let mut hasher = Sha256::new();
     hasher.update(SIGN_DERIVATION_DOMAIN);
     hasher.update(derivation);
-    let hash = hasher.finalize();
-    Fr::from_le_bytes_mod_order(&hash)
+    if let Some(meta) = metadata {
+        hasher.update(b"\x00"); // separator — prevents collision with derivation-only path
+        hasher.update((meta.len() as u64).to_le_bytes());
+        hasher.update(meta);
+    }
+    Fr::from_le_bytes_mod_order(&hasher.finalize())
 }

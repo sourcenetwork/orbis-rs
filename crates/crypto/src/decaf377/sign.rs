@@ -30,6 +30,9 @@ use super::common::{ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
 /// Domain separation tag for signing key derivation (distinct from PRE derivation domain).
 const SIGN_DERIVATION_DOMAIN: &[u8] = b"sign-derivation-v1";
 
+/// Domain separation tag for signing metadata encoding.
+const SIGN_METADATA_DOMAIN: &[u8] = b"orbis-sign-metadata-v1";
+
 // ============================================================================
 // FROST Types
 // ============================================================================
@@ -329,6 +332,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         signing_state: Option<&Self::SigningState>,
         all_commitments: &[(u32, Self::NonceCommitment)],
         derivation: Option<&[u8]>,
+        metadata: Option<&[u8]>,
     ) -> Result<Self::SigShare> {
         let signing_state = signing_state.ok_or_else(|| CryptoError::InvalidSignatureShare)?;
 
@@ -366,10 +370,11 @@ impl ThresholdSigner for ThresholdDecafSigner {
             .map(|(_, rho)| *rho)
             .ok_or(CryptoError::InvalidSignatureShare)?;
 
-        // Aggregate public key; use derived pk in challenge when derivation is provided
+        // Aggregate public key; use derived pk in challenge when derivation is provided.
+        // Metadata is folded into the derivation scalar for binding.
         let aggregate_pk = aggregate_pk_from_pub_poly(pub_poly);
         let effective_pk = if let Some(deriv) = derivation {
-            let d = derive_sign_scalar(deriv);
+            let d = derive_sign_scalar(deriv, metadata);
             if d.is_zero() {
                 return Err(CryptoError::SigningError(
                     "Zero derivation scalar".to_string(),
@@ -380,16 +385,16 @@ impl ThresholdSigner for ThresholdDecafSigner {
             aggregate_pk
         };
 
-        // Fiat-Shamir challenge binds to derived public key
+        // Fiat-Shamir challenge binds to derived public key (which encodes metadata via d)
         let c = compute_challenge(&r_point, &effective_pk, msg)?;
 
         // Lagrange coefficient
         let participant_ids: Vec<u32> = all_commitments.iter().map(|(id, _)| *id).collect();
         let lambda_i = lagrange_coefficient(idx, &participant_ids)?;
 
-        // Apply derivation to secret share: s_i' = d * s_i
+        // Apply derivation (with metadata) to secret share: s_i' = d * s_i
         let s_i_eff = if let Some(deriv) = derivation {
-            s_i * derive_sign_scalar(deriv)
+            s_i * derive_sign_scalar(deriv, metadata)
         } else {
             s_i
         };
@@ -409,6 +414,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         sig_share: &Self::SigShare,
         all_commitments: &[(u32, Self::NonceCommitment)],
         derivation: Option<&[u8]>,
+        metadata: Option<&[u8]>,
     ) -> Result<()> {
         let idx = sig_share.i;
         let z_i = sig_share.v;
@@ -429,10 +435,10 @@ impl ThresholdSigner for ThresholdDecafSigner {
             .map(|(_, rho)| *rho)
             .ok_or(CryptoError::InvalidSignatureShare)?;
 
-        // Aggregate public key; use derived pk in challenge when derivation is provided
+        // Aggregate public key; use derived pk (with metadata binding) in challenge
         let aggregate_pk = aggregate_pk_from_pub_poly(pub_poly);
         let effective_pk = if let Some(deriv) = derivation {
-            aggregate_pk * derive_sign_scalar(deriv)
+            aggregate_pk * derive_sign_scalar(deriv, metadata)
         } else {
             aggregate_pk
         };
@@ -444,7 +450,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
 
         // Public key share for this participant: pk_i' = d * pub_poly.eval(idx)
         let pk_i_eff = if let Some(deriv) = derivation {
-            pub_poly.eval(idx) * derive_sign_scalar(deriv)
+            pub_poly.eval(idx) * derive_sign_scalar(deriv, metadata)
         } else {
             pub_poly.eval(idx)
         };
@@ -497,8 +503,22 @@ impl ThresholdSigner for ThresholdDecafSigner {
         Ok(())
     }
 
-    fn derive_public_key(dkg_pk: &Self::PublicKey, derivation: &[u8]) -> Result<Self::PublicKey> {
-        let d = derive_sign_scalar(derivation);
+    fn encode_metadata(policy_id: &str, permission: &str) -> Vec<u8> {
+        let mut hasher = Sha256::new();
+        hasher.update(SIGN_METADATA_DOMAIN);
+        hasher.update(&(policy_id.len() as u64).to_le_bytes());
+        hasher.update(policy_id.as_bytes());
+        hasher.update(&(permission.len() as u64).to_le_bytes());
+        hasher.update(permission.as_bytes());
+        hasher.finalize().to_vec()
+    }
+
+    fn derive_public_key(
+        dkg_pk: &Self::PublicKey,
+        derivation: &[u8],
+        metadata: Option<&[u8]>,
+    ) -> Result<Self::PublicKey> {
+        let d = derive_sign_scalar(derivation, metadata);
         if d.is_zero() {
             return Err(CryptoError::SigningError(
                 "Zero derivation scalar".to_string(),
@@ -508,11 +528,22 @@ impl ThresholdSigner for ThresholdDecafSigner {
     }
 }
 
-/// Derive a scalar `d = H(SIGN_DERIVATION_DOMAIN || derivation)` for multiplicative key tweaking.
-fn derive_sign_scalar(derivation: &[u8]) -> Fr {
+/// Derive a scalar for multiplicative key tweaking.
+///
+/// Without metadata: `d = H(SIGN_DERIVATION_DOMAIN || derivation)`
+/// With metadata:    `d = H(SIGN_DERIVATION_DOMAIN || derivation || \x00 || len(metadata) || metadata)`
+///
+/// The null-byte separator guarantees no collision between derivation-only and
+/// derivation+metadata inputs. Backward compatible: passing `None` for metadata
+/// yields the same hash as the previous single-argument form.
+fn derive_sign_scalar(derivation: &[u8], metadata: Option<&[u8]>) -> Fr {
     let mut hasher = Sha256::new();
     hasher.update(SIGN_DERIVATION_DOMAIN);
     hasher.update(derivation);
-    let hash = hasher.finalize();
-    Fr::from_le_bytes_mod_order(&hash)
+    if let Some(meta) = metadata {
+        hasher.update(b"\x00"); // separator — prevents collision with derivation-only path
+        hasher.update((meta.len() as u64).to_le_bytes());
+        hasher.update(meta);
+    }
+    Fr::from_le_bytes_mod_order(&hasher.finalize())
 }

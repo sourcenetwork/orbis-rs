@@ -92,21 +92,17 @@ fn test_threshold_signing_different_share_subsets_same_signature() {
             let dks = DistKeyShare {
                 pri_share: share.clone(),
             };
-            signer.sign(&dks, msg, &pub_poly, None, &[], None).unwrap()
+            signer
+                .sign(&dks, msg, &pub_poly, None, &[], None, None)
+                .unwrap()
         })
         .collect();
 
     let subset1: Vec<_> = all_sig_shares.iter().take(3).cloned().collect();
-    let sig1 = signer
-        .recover(&subset1, t, n, msg, &[])
-        .unwrap()
-        .unwrap();
+    let sig1 = signer.recover(&subset1, t, n, msg, &[]).unwrap().unwrap();
 
     let subset2: Vec<_> = all_sig_shares.iter().skip(2).take(3).cloned().collect();
-    let sig2 = signer
-        .recover(&subset2, t, n, msg, &[])
-        .unwrap()
-        .unwrap();
+    let sig2 = signer.recover(&subset2, t, n, msg, &[]).unwrap().unwrap();
 
     assert_eq!(
         sig1, sig2,
