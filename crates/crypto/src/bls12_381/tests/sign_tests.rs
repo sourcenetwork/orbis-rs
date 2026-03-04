@@ -1,7 +1,7 @@
 use crate::bls12_381::common::{G2Point, PubPoly};
 use crate::bls12_381::dkg::DKGNode;
 use crate::bls12_381::sign::{hash_to_g2, ThresholdBlsSigner};
-use crate::r#trait::{Dkg, PubShare, ThresholdSigner};
+use crate::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crate::test_helper::DKGCoordinator;
 use ark_bls12_381::{Fr, G1Affine, G1Projective, G2Projective};
 use ark_ec::Group;
@@ -89,11 +89,12 @@ fn test_threshold_signing_different_share_subsets_same_signature() {
     let all_sig_shares: Vec<_> = secret_shares
         .iter()
         .map(|share| {
-            use crate::r#trait::{DistKeyShare, ThresholdSigner};
             let dks = DistKeyShare {
                 pri_share: share.clone(),
             };
-            signer.sign(&dks, msg, &pub_poly, None, &[]).unwrap()
+            signer
+                .sign(&dks, msg, &pub_poly, None, &[], None, None)
+                .unwrap()
         })
         .collect();
 

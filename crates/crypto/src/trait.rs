@@ -702,7 +702,16 @@ pub trait ThresholdSigner {
         dist_key_share: &Self::DistKeyShare,
     ) -> Result<(Self::NonceCommitment, Self::SigningState)>;
 
-    /// Locally sign a message using a DKG share
+    /// Locally sign a message using a DKG share.
+    ///
+    /// When `derivation` is `Some(bytes)`, each node multiplies its secret share by
+    /// `d = H(SIGN_DERIVATION_DOMAIN || derivation)` before signing, producing a signature
+    /// that verifies under the derived public key `d * agg_pk`.
+    ///
+    /// When `metadata` is also provided, it is folded into the derivation scalar:
+    /// `d = H(SIGN_DERIVATION_DOMAIN || derivation || \x00 || len(metadata) || metadata)`.
+    /// The metadata is thus cryptographically bound to every signature share — the existing
+    /// verification equation (BLS pairing / FROST check) serves as the binding proof.
     fn sign(
         &self,
         dist_key_share: &Self::DistKeyShare,
@@ -710,18 +719,24 @@ pub trait ThresholdSigner {
         pub_poly: &Self::PubPoly,
         signing_state: Option<&Self::SigningState>,
         all_commitments: &[(u32, Self::NonceCommitment)],
+        derivation: Option<&[u8]>,
+        metadata: Option<&[u8]>,
     ) -> Result<Self::SigShare>;
 
-    /// Verify a single signature share against the DKG commitments
+    /// Verify a single signature share against the DKG commitments.
+    ///
+    /// `derivation` and `metadata` must match the values passed to `sign`.
     fn verify_share(
         &self,
         msg: &[u8],
         pub_poly: &Self::PubPoly,
         sig_share: &Self::SigShare,
         all_commitments: &[(u32, Self::NonceCommitment)],
+        derivation: Option<&[u8]>,
+        metadata: Option<&[u8]>,
     ) -> Result<()>;
 
-    /// Recover a full signature from shares
+    /// Recover a full signature from shares.
     fn recover(
         &self,
         shares: &[Self::SigShare],
@@ -733,4 +748,28 @@ pub trait ThresholdSigner {
 
     /// Verify the final signature
     fn verify(&self, pk: &Self::PublicKey, msg: &[u8], sig: &Self::Signature) -> Result<()>;
+
+    /// Encode signing policy fields into a metadata commitment for derivation binding.
+    ///
+    /// Both the signer and any verifier must call this function with the same inputs
+    /// to produce the same bytes for `sign`, `verify_share`, and `derive_public_key`.
+    ///
+    /// Uses SHA-256 with length-prefixed fields and a domain separator so the output
+    /// is collision-free across different `(policy_id, permission)` pairs.
+    fn encode_metadata(policy_id: &str, permission: &str) -> Vec<u8>;
+
+    /// Derive a deterministic public key from the DKG aggregate public key.
+    ///
+    /// Computes `pk' = d * dkg_pk` where:
+    ///   - Without metadata: `d = H(SIGN_DERIVATION_DOMAIN || derivation)`
+    ///   - With metadata:    `d = H(SIGN_DERIVATION_DOMAIN || derivation || \x00 || len(metadata) || metadata)`
+    ///
+    /// Signing with a share multiplied by `d` produces a signature that verifies under `pk'`.
+    ///
+    /// Returns an error if `d` is zero (negligible probability).
+    fn derive_public_key(
+        dkg_pk: &Self::PublicKey,
+        derivation: &[u8],
+        metadata: Option<&[u8]>,
+    ) -> Result<Self::PublicKey>;
 }

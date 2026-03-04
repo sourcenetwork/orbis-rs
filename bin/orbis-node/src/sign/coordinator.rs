@@ -244,6 +244,8 @@ where
                 &pub_poly,
                 signing_state.as_ref(),
                 &all_commitments,
+                None,
+                None,
             )
             .map_err(|e| SignError::Crypto(format!("Signing failed: {}", e)))?;
 
@@ -594,10 +596,18 @@ where
                     &pub_poly,
                     local_signing_state.as_ref(),
                     &all_commitments,
+                    None,
+                    None,
                 ) {
                     Ok(sig_share) => {
-                        match signer.verify_share(&message, &pub_poly, &sig_share, &all_commitments)
-                        {
+                        match signer.verify_share(
+                            &message,
+                            &pub_poly,
+                            &sig_share,
+                            &all_commitments,
+                            None,
+                            None,
+                        ) {
                             Ok(_) => {
                                 tracing::debug!(
                                     from_node_id = sig_share.i,
@@ -645,7 +655,14 @@ where
                     v: sig_share_v,
                 };
 
-                match signer.verify_share(&message, &pub_poly, &sig_share, &all_commitments) {
+                match signer.verify_share(
+                    &message,
+                    &pub_poly,
+                    &sig_share,
+                    &all_commitments,
+                    None,
+                    None,
+                ) {
                     Ok(_) => {
                         tracing::debug!(
                             from_node_id = from_node_id,

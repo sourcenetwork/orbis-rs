@@ -101,6 +101,8 @@ fn test_frost_rejects_tampered_commitment_from_coordinator() {
         &pub_poly,
         Some(&signing_states[0]),
         &tampered_commitments,
+        None,
+        None,
     );
     assert!(result.is_err(), "Should reject tampered own commitment");
     let err_msg = format!("{}", result.unwrap_err());
@@ -119,6 +121,8 @@ fn test_frost_rejects_tampered_commitment_from_coordinator() {
         &pub_poly,
         Some(&signing_states[1]),
         &tampered_commitments,
+        None,
+        None,
     );
     assert!(
         result1.is_ok(),
