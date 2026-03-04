@@ -1,7 +1,7 @@
 use crate::bls12_381::common::{G2Point, PubPoly};
 use crate::bls12_381::dkg::DKGNode;
 use crate::bls12_381::sign::{hash_to_g2, ThresholdBlsSigner};
-use crate::r#trait::{Dkg, PubShare, ThresholdSigner};
+use crate::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crate::test_helper::DKGCoordinator;
 use ark_bls12_381::{Fr, G1Affine, G1Projective, G2Projective};
 use ark_ec::Group;
@@ -89,11 +89,10 @@ fn test_threshold_signing_different_share_subsets_same_signature() {
     let all_sig_shares: Vec<_> = secret_shares
         .iter()
         .map(|share| {
-            use crate::r#trait::{DistKeyShare, ThresholdSigner};
             let dks = DistKeyShare {
                 pri_share: share.clone(),
             };
-            signer.sign(&dks, msg, &pub_poly, None, &[]).unwrap()
+            signer.sign(&dks, msg, &pub_poly, None, &[], None).unwrap()
         })
         .collect();
 
@@ -110,4 +109,143 @@ fn test_threshold_signing_different_share_subsets_same_signature() {
 
     assert!(signer.verify(&aggregate_pk, msg, &sig1).is_ok());
     assert!(signer.verify(&aggregate_pk, msg, &sig2).is_ok());
+}
+
+#[test]
+fn test_bls_derived_key_signing() {
+    let n = 3;
+    let t = 2;
+
+    let mut coordinator = DKGCoordinator::new(
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
+        },
+        n,
+        t,
+    )
+    .unwrap();
+
+    let (aggregate_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
+    let signer = ThresholdBlsSigner::new();
+    let derivation = b"policy:resource:read";
+    let msg = b"BLS derived key test";
+
+    // Derived public key
+    let derived_pk = ThresholdBlsSigner::derive_public_key(&aggregate_pk, derivation).unwrap();
+
+    // Signing should fail under base key, succeed under derived key
+    assert_ne!(
+        aggregate_pk, derived_pk,
+        "derived pk must differ from base pk"
+    );
+
+    // Sign with derivation
+    let participants: Vec<_> = secret_shares.iter().take(t).collect();
+    let mut commitments = Vec::new();
+    let mut signing_states = Vec::new();
+    for share in &participants {
+        let dks = DistKeyShare {
+            pri_share: (*share).clone(),
+        };
+        let (c, s) = signer.generate_nonces(&dks).unwrap();
+        commitments.push((share.i, c));
+        signing_states.push(s);
+    }
+
+    let mut sig_shares = Vec::new();
+    for (idx, share) in participants.iter().enumerate() {
+        let dks = DistKeyShare {
+            pri_share: (*share).clone(),
+        };
+        let sig_share = signer
+            .sign(
+                &dks,
+                msg,
+                &pub_poly,
+                Some(&signing_states[idx]),
+                &commitments,
+                Some(derivation),
+            )
+            .unwrap();
+        signer
+            .verify_share(msg, &pub_poly, &sig_share, &commitments, Some(derivation))
+            .expect("derived share should verify");
+        sig_shares.push(sig_share);
+    }
+
+    let sig = signer
+        .recover(&sig_shares, t, n, msg, &commitments)
+        .unwrap()
+        .unwrap();
+
+    // Verifies under derived key
+    assert!(signer.verify(&derived_pk, msg, &sig).is_ok());
+    // Fails under base key
+    assert!(signer.verify(&aggregate_pk, msg, &sig).is_err());
+}
+
+#[test]
+fn test_bls_derived_key_wrong_derivation_fails() {
+    let n = 3;
+    let t = 2;
+
+    let mut coordinator = DKGCoordinator::new(
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
+        },
+        n,
+        t,
+    )
+    .unwrap();
+
+    let (aggregate_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
+    let signer = ThresholdBlsSigner::new();
+    let derivation = b"policy:resource:read";
+    let wrong_derivation = b"policy:resource:write";
+    let msg = b"BLS wrong derivation test";
+
+    let correct_derived_pk =
+        ThresholdBlsSigner::derive_public_key(&aggregate_pk, derivation).unwrap();
+    let wrong_derived_pk =
+        ThresholdBlsSigner::derive_public_key(&aggregate_pk, wrong_derivation).unwrap();
+
+    let participants: Vec<_> = secret_shares.iter().take(t).collect();
+    let mut commitments = Vec::new();
+    let mut signing_states = Vec::new();
+    for share in &participants {
+        let dks = DistKeyShare {
+            pri_share: (*share).clone(),
+        };
+        let (c, s) = signer.generate_nonces(&dks).unwrap();
+        commitments.push((share.i, c));
+        signing_states.push(s);
+    }
+
+    let mut sig_shares = Vec::new();
+    for (idx, share) in participants.iter().enumerate() {
+        let dks = DistKeyShare {
+            pri_share: (*share).clone(),
+        };
+        let sig_share = signer
+            .sign(
+                &dks,
+                msg,
+                &pub_poly,
+                Some(&signing_states[idx]),
+                &commitments,
+                Some(derivation),
+            )
+            .unwrap();
+        sig_shares.push(sig_share);
+    }
+
+    let sig = signer
+        .recover(&sig_shares, t, n, msg, &commitments)
+        .unwrap()
+        .unwrap();
+
+    // Correct derived key verifies
+    assert!(signer.verify(&correct_derived_pk, msg, &sig).is_ok());
+    // Wrong derived key fails
+    assert!(signer.verify(&wrong_derived_pk, msg, &sig).is_err());
 }

@@ -702,7 +702,11 @@ pub trait ThresholdSigner {
         dist_key_share: &Self::DistKeyShare,
     ) -> Result<(Self::NonceCommitment, Self::SigningState)>;
 
-    /// Locally sign a message using a DKG share
+    /// Locally sign a message using a DKG share.
+    ///
+    /// When `derivation` is `Some(bytes)`, each node multiplies its secret share by
+    /// `d = H(SIGN_DERIVATION_DOMAIN || bytes)` before signing, producing a signature
+    /// that verifies under the derived public key `d * agg_pk`.
     fn sign(
         &self,
         dist_key_share: &Self::DistKeyShare,
@@ -710,18 +714,24 @@ pub trait ThresholdSigner {
         pub_poly: &Self::PubPoly,
         signing_state: Option<&Self::SigningState>,
         all_commitments: &[(u32, Self::NonceCommitment)],
+        derivation: Option<&[u8]>,
     ) -> Result<Self::SigShare>;
 
-    /// Verify a single signature share against the DKG commitments
+    /// Verify a single signature share against the DKG commitments.
+    ///
+    /// `derivation` must match the value passed to `sign`.
     fn verify_share(
         &self,
         msg: &[u8],
         pub_poly: &Self::PubPoly,
         sig_share: &Self::SigShare,
         all_commitments: &[(u32, Self::NonceCommitment)],
+        derivation: Option<&[u8]>,
     ) -> Result<()>;
 
-    /// Recover a full signature from shares
+    /// Recover a full signature from shares.
+    ///
+    /// `derivation` must match the value passed to `sign`.
     fn recover(
         &self,
         shares: &[Self::SigShare],
@@ -733,4 +743,12 @@ pub trait ThresholdSigner {
 
     /// Verify the final signature
     fn verify(&self, pk: &Self::PublicKey, msg: &[u8], sig: &Self::Signature) -> Result<()>;
+
+    /// Derive a deterministic public key from the DKG aggregate public key.
+    ///
+    /// Computes `pk' = d * dkg_pk` where `d = H(SIGN_DERIVATION_DOMAIN || derivation)`.
+    /// Signing with a share multiplied by `d` produces a signature that verifies under `pk'`.
+    ///
+    /// Returns an error if `d` is zero (negligible probability).
+    fn derive_public_key(dkg_pk: &Self::PublicKey, derivation: &[u8]) -> Result<Self::PublicKey>;
 }

@@ -10,21 +10,26 @@
 use crate::bls12_381::common::{G2Point, PubPoly};
 use crate::error::{CryptoError, Result};
 use crate::r#trait::{DistKeyShare, PubPoly as PubPolyTrait, PubShare, ThresholdSigner};
-use ark_bls12_381::{g2::Config as G2Config, Bls12_381, Fr, G1Affine, G2Affine, G2Projective};
+use ark_bls12_381::{
+    g2::Config as G2Config, Bls12_381, Fr, G1Affine, G1Projective, G2Affine, G2Projective,
+};
 use ark_ec::{
     hashing::{curve_maps::wb::WBMap, map_to_curve_hasher::MapToCurveBasedHasher, HashToCurve},
     pairing::Pairing,
     AffineRepr, CurveGroup,
 };
-use ark_ff::{field_hashers::DefaultFieldHasher, Field, One, Zero};
+use ark_ff::{field_hashers::DefaultFieldHasher, Field, One, PrimeField as _, Zero};
 use ark_serialize::CanonicalSerialize;
 use ark_std::collections::HashSet;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 /// Domain separation tag for BLS signatures (IETF standard)
 /// Format: "BLS_SIG_" || curve || "_" || hash || "_" || map || "_" || variant
 const BLS_SIG_DOMAIN: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
+
+/// Domain separation tag for signing key derivation (distinct from PRE derivation domain).
+const SIGN_DERIVATION_DOMAIN: &[u8] = b"sign-derivation-v1";
 
 /// Threshold BLS Signer using the swapped variant (G1 keys, G2 signatures)
 pub struct ThresholdBlsSigner;
@@ -67,6 +72,7 @@ impl ThresholdSigner for ThresholdBlsSigner {
         _pub_poly: &Self::PubPoly,
         _signing_state: Option<&Self::SigningState>,
         _all_commitments: &[(u32, Self::NonceCommitment)],
+        derivation: Option<&[u8]>,
     ) -> Result<Self::SigShare> {
         let idx = dist_key_share.pri_share.i;
         let ski = dist_key_share.pri_share.v;
@@ -76,11 +82,24 @@ impl ThresholdSigner for ThresholdBlsSigner {
             return Err(CryptoError::InvalidSignatureShare);
         }
 
+        // Apply derivation: s_i' = d * s_i
+        let ski_eff = if let Some(deriv) = derivation {
+            let d = derive_sign_scalar(deriv);
+            if d.is_zero() {
+                return Err(CryptoError::SigningError(
+                    "Zero derivation scalar".to_string(),
+                ));
+            }
+            ski * d
+        } else {
+            ski
+        };
+
         // Hash message to G2
         let h_msg = hash_to_g2(msg)?;
 
-        // Compute signature share: sig_i = s_i * H(msg)
-        let sig_share: G2Affine = (G2Projective::from(*h_msg.inner()) * ski).into_affine();
+        // Compute signature share: sig_i = s_i' * H(msg)
+        let sig_share: G2Affine = (G2Projective::from(*h_msg.inner()) * ski_eff).into_affine();
 
         Ok(PubShare {
             i: idx,
@@ -94,9 +113,16 @@ impl ThresholdSigner for ThresholdBlsSigner {
         pub_poly: &Self::PubPoly,
         sig_share: &Self::SigShare,
         _all_commitments: &[(u32, Self::NonceCommitment)],
+        derivation: Option<&[u8]>,
     ) -> Result<()> {
-        // Get the public key share for this index
-        let pk_share = pub_poly.eval(sig_share.i);
+        // Get the public key share for this index, applying derivation if present: pk_i' = d * pk_i
+        let pk_share_base = pub_poly.eval(sig_share.i);
+        let pk_share: G1Affine = if let Some(deriv) = derivation {
+            let d = derive_sign_scalar(deriv);
+            (G1Projective::from(pk_share_base) * d).into()
+        } else {
+            pk_share_base
+        };
 
         // Validate points are not identity
         if pk_share.is_zero() {
@@ -109,7 +135,7 @@ impl ThresholdSigner for ThresholdBlsSigner {
         // Hash message to G2
         let h_msg = hash_to_g2(msg)?;
 
-        // Verify: e(pk_share, H(msg)) == e(G1_gen, sig_share)
+        // Verify: e(pk_share', H(msg)) == e(G1_gen, sig_share)
         let g1_gen = G1Affine::generator();
 
         let lhs = Bls12_381::pairing(pk_share, *h_msg.inner());
@@ -187,6 +213,16 @@ impl ThresholdSigner for ThresholdBlsSigner {
         }
 
         Ok(())
+    }
+
+    fn derive_public_key(dkg_pk: &Self::PublicKey, derivation: &[u8]) -> Result<Self::PublicKey> {
+        let d = derive_sign_scalar(derivation);
+        if d.is_zero() {
+            return Err(CryptoError::SigningError(
+                "Zero derivation scalar".to_string(),
+            ));
+        }
+        Ok((G1Projective::from(*dkg_pk) * d).into())
     }
 }
 
@@ -266,4 +302,13 @@ fn recover_signature(shares: &[PubShare<G2Point>], t: usize, n: usize) -> Result
     }
 
     Ok(Some(G2Point::from(result)))
+}
+
+/// Derive a scalar `d = H(SIGN_DERIVATION_DOMAIN || derivation)` for multiplicative key tweaking.
+fn derive_sign_scalar(derivation: &[u8]) -> Fr {
+    let mut hasher = Sha256::new();
+    hasher.update(SIGN_DERIVATION_DOMAIN);
+    hasher.update(derivation);
+    let hash = hasher.finalize();
+    Fr::from_le_bytes_mod_order(&hash)
 }

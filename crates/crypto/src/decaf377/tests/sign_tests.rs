@@ -101,6 +101,7 @@ fn test_frost_rejects_tampered_commitment_from_coordinator() {
         &pub_poly,
         Some(&signing_states[0]),
         &tampered_commitments,
+        None,
     );
     assert!(result.is_err(), "Should reject tampered own commitment");
     let err_msg = format!("{}", result.unwrap_err());
@@ -119,9 +120,201 @@ fn test_frost_rejects_tampered_commitment_from_coordinator() {
         &pub_poly,
         Some(&signing_states[1]),
         &tampered_commitments,
+        None,
     );
     assert!(
         result1.is_ok(),
         "Signer 1's commitment wasn't tampered — they sign (though R is wrong)"
+    );
+}
+
+#[test]
+fn test_frost_derived_key_signing() {
+    let n = 3;
+    let t = 2;
+
+    let mut coordinator = DKGCoordinator::new(
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
+        },
+        n,
+        t,
+    )
+    .unwrap();
+
+    let (aggregate_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
+    let signer = ThresholdDecafSigner::new();
+    let derivation = b"policy:resource:read";
+    let msg = b"FROST derived key test";
+
+    // Derived public key
+    let derived_pk = ThresholdDecafSigner::derive_public_key(&aggregate_pk, derivation).unwrap();
+    assert_ne!(
+        aggregate_pk, derived_pk,
+        "derived pk must differ from base pk"
+    );
+
+    let participants: Vec<_> = secret_shares.iter().take(t).collect();
+    let mut commitments = Vec::new();
+    let mut signing_states = Vec::new();
+    for share in &participants {
+        let dks = DistKeyShare {
+            pri_share: (*share).clone(),
+        };
+        let (c, s) = signer.generate_nonces(&dks).unwrap();
+        commitments.push((share.i, c));
+        signing_states.push(s);
+    }
+
+    let mut sig_shares = Vec::new();
+    for (idx, share) in participants.iter().enumerate() {
+        let dks = DistKeyShare {
+            pri_share: (*share).clone(),
+        };
+        let sig_share = signer
+            .sign(
+                &dks,
+                msg,
+                &pub_poly,
+                Some(&signing_states[idx]),
+                &commitments,
+                Some(derivation),
+            )
+            .unwrap();
+        signer
+            .verify_share(msg, &pub_poly, &sig_share, &commitments, Some(derivation))
+            .expect("derived share should verify");
+        sig_shares.push(sig_share);
+    }
+
+    let sig = signer
+        .recover(&sig_shares, t, n, msg, &commitments)
+        .unwrap()
+        .unwrap();
+
+    // Verifies under derived key
+    assert!(signer.verify(&derived_pk, msg, &sig).is_ok());
+    // Fails under base key
+    assert!(signer.verify(&aggregate_pk, msg, &sig).is_err());
+}
+
+#[test]
+fn test_frost_derived_key_wrong_derivation_fails() {
+    let n = 3;
+    let t = 2;
+
+    let mut coordinator = DKGCoordinator::new(
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
+        },
+        n,
+        t,
+    )
+    .unwrap();
+
+    let (aggregate_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
+    let signer = ThresholdDecafSigner::new();
+    let derivation = b"policy:resource:read";
+    let wrong_derivation = b"policy:resource:write";
+    let msg = b"FROST wrong derivation test";
+
+    let correct_derived_pk =
+        ThresholdDecafSigner::derive_public_key(&aggregate_pk, derivation).unwrap();
+    let wrong_derived_pk =
+        ThresholdDecafSigner::derive_public_key(&aggregate_pk, wrong_derivation).unwrap();
+
+    let participants: Vec<_> = secret_shares.iter().take(t).collect();
+    let mut commitments = Vec::new();
+    let mut signing_states = Vec::new();
+    for share in &participants {
+        let dks = DistKeyShare {
+            pri_share: (*share).clone(),
+        };
+        let (c, s) = signer.generate_nonces(&dks).unwrap();
+        commitments.push((share.i, c));
+        signing_states.push(s);
+    }
+
+    let mut sig_shares = Vec::new();
+    for (idx, share) in participants.iter().enumerate() {
+        let dks = DistKeyShare {
+            pri_share: (*share).clone(),
+        };
+        let sig_share = signer
+            .sign(
+                &dks,
+                msg,
+                &pub_poly,
+                Some(&signing_states[idx]),
+                &commitments,
+                Some(derivation),
+            )
+            .unwrap();
+        sig_shares.push(sig_share);
+    }
+
+    let sig = signer
+        .recover(&sig_shares, t, n, msg, &commitments)
+        .unwrap()
+        .unwrap();
+
+    // Correct derived key verifies
+    assert!(signer.verify(&correct_derived_pk, msg, &sig).is_ok());
+    // Wrong derived key fails
+    assert!(signer.verify(&wrong_derived_pk, msg, &sig).is_err());
+}
+
+#[test]
+fn test_frost_mixed_derivation_share_rejected() {
+    // A share signed with derivation must not verify without derivation, and vice versa
+    let n = 3;
+    let t = 2;
+
+    let mut coordinator = DKGCoordinator::new(
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
+        },
+        n,
+        t,
+    )
+    .unwrap();
+
+    let (_aggregate_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
+    let signer = ThresholdDecafSigner::new();
+    let derivation = b"policy:resource:read";
+    let msg = b"FROST mixed derivation test";
+
+    let participants: Vec<_> = secret_shares.iter().take(t).collect();
+    let mut commitments = Vec::new();
+    let mut signing_states = Vec::new();
+    for share in &participants {
+        let dks = DistKeyShare {
+            pri_share: (*share).clone(),
+        };
+        let (c, s) = signer.generate_nonces(&dks).unwrap();
+        commitments.push((share.i, c));
+        signing_states.push(s);
+    }
+
+    let dks = DistKeyShare {
+        pri_share: participants[0].clone(),
+    };
+    let derived_share = signer
+        .sign(
+            &dks,
+            msg,
+            &pub_poly,
+            Some(&signing_states[0]),
+            &commitments,
+            Some(derivation),
+        )
+        .unwrap();
+
+    // A share produced with derivation should not verify without derivation
+    assert!(
+        signer
+            .verify_share(msg, &pub_poly, &derived_share, &commitments, None)
+            .is_err(),
+        "derived share must not verify without derivation"
     );
 }

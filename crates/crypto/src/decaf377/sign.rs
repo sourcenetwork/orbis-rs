@@ -27,6 +27,9 @@ use sha2::{Digest, Sha256};
 
 use super::common::{ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
 
+/// Domain separation tag for signing key derivation (distinct from PRE derivation domain).
+const SIGN_DERIVATION_DOMAIN: &[u8] = b"sign-derivation-v1";
+
 // ============================================================================
 // FROST Types
 // ============================================================================
@@ -325,6 +328,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         pub_poly: &Self::PubPoly,
         signing_state: Option<&Self::SigningState>,
         all_commitments: &[(u32, Self::NonceCommitment)],
+        derivation: Option<&[u8]>,
     ) -> Result<Self::SigShare> {
         let signing_state = signing_state.ok_or_else(|| CryptoError::InvalidSignatureShare)?;
 
@@ -362,19 +366,38 @@ impl ThresholdSigner for ThresholdDecafSigner {
             .map(|(_, rho)| *rho)
             .ok_or(CryptoError::InvalidSignatureShare)?;
 
-        // Aggregate public key
+        // Aggregate public key; use derived pk in challenge when derivation is provided
         let aggregate_pk = aggregate_pk_from_pub_poly(pub_poly);
+        let effective_pk = if let Some(deriv) = derivation {
+            let d = derive_sign_scalar(deriv);
+            if d.is_zero() {
+                return Err(CryptoError::SigningError(
+                    "Zero derivation scalar".to_string(),
+                ));
+            }
+            aggregate_pk * d
+        } else {
+            aggregate_pk
+        };
 
-        // Fiat-Shamir challenge
-        let c = compute_challenge(&r_point, &aggregate_pk, msg)?;
+        // Fiat-Shamir challenge binds to derived public key
+        let c = compute_challenge(&r_point, &effective_pk, msg)?;
 
         // Lagrange coefficient
         let participant_ids: Vec<u32> = all_commitments.iter().map(|(id, _)| *id).collect();
         let lambda_i = lagrange_coefficient(idx, &participant_ids)?;
 
-        // Partial signature: z_i = d_i + rho_i * e_i + lambda_i * s_i * c
-        let z_i =
-            signing_state.hiding_nonce + rho_i * signing_state.binding_nonce + lambda_i * s_i * c;
+        // Apply derivation to secret share: s_i' = d * s_i
+        let s_i_eff = if let Some(deriv) = derivation {
+            s_i * derive_sign_scalar(deriv)
+        } else {
+            s_i
+        };
+
+        // Partial signature: z_i = d_i + rho_i * e_i + lambda_i * s_i' * c
+        let z_i = signing_state.hiding_nonce
+            + rho_i * signing_state.binding_nonce
+            + lambda_i * s_i_eff * c;
 
         Ok(PubShare { i: idx, v: z_i })
     }
@@ -385,6 +408,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         pub_poly: &Self::PubPoly,
         sig_share: &Self::SigShare,
         all_commitments: &[(u32, Self::NonceCommitment)],
+        derivation: Option<&[u8]>,
     ) -> Result<()> {
         let idx = sig_share.i;
         let z_i = sig_share.v;
@@ -405,20 +429,29 @@ impl ThresholdSigner for ThresholdDecafSigner {
             .map(|(_, rho)| *rho)
             .ok_or(CryptoError::InvalidSignatureShare)?;
 
-        // Aggregate public key and challenge
+        // Aggregate public key; use derived pk in challenge when derivation is provided
         let aggregate_pk = aggregate_pk_from_pub_poly(pub_poly);
-        let c = compute_challenge(&r_point, &aggregate_pk, msg)?;
+        let effective_pk = if let Some(deriv) = derivation {
+            aggregate_pk * derive_sign_scalar(deriv)
+        } else {
+            aggregate_pk
+        };
+        let c = compute_challenge(&r_point, &effective_pk, msg)?;
 
         // Lagrange coefficient
         let participant_ids: Vec<u32> = all_commitments.iter().map(|(id, _)| *id).collect();
         let lambda_i = lagrange_coefficient(idx, &participant_ids)?;
 
-        // Public key share for this participant: pk_i = pub_poly.eval(idx)
-        let pk_i = pub_poly.eval(idx);
+        // Public key share for this participant: pk_i' = d * pub_poly.eval(idx)
+        let pk_i_eff = if let Some(deriv) = derivation {
+            pub_poly.eval(idx) * derive_sign_scalar(deriv)
+        } else {
+            pub_poly.eval(idx)
+        };
 
-        // Verify: z_i * G == D_i + rho_i * E_i + lambda_i * c * pk_i
+        // Verify: z_i * G == D_i + rho_i * E_i + lambda_i * c * pk_i'
         let lhs = Element::GENERATOR * z_i;
-        let rhs = commitment.hiding + commitment.binding * rho_i + pk_i * (lambda_i * c);
+        let rhs = commitment.hiding + commitment.binding * rho_i + pk_i_eff * (lambda_i * c);
 
         if lhs != rhs {
             return Err(CryptoError::InvalidSignatureShare);
@@ -463,4 +496,23 @@ impl ThresholdSigner for ThresholdDecafSigner {
 
         Ok(())
     }
+
+    fn derive_public_key(dkg_pk: &Self::PublicKey, derivation: &[u8]) -> Result<Self::PublicKey> {
+        let d = derive_sign_scalar(derivation);
+        if d.is_zero() {
+            return Err(CryptoError::SigningError(
+                "Zero derivation scalar".to_string(),
+            ));
+        }
+        Ok(*dkg_pk * d)
+    }
+}
+
+/// Derive a scalar `d = H(SIGN_DERIVATION_DOMAIN || derivation)` for multiplicative key tweaking.
+fn derive_sign_scalar(derivation: &[u8]) -> Fr {
+    let mut hasher = Sha256::new();
+    hasher.update(SIGN_DERIVATION_DOMAIN);
+    hasher.update(derivation);
+    let hash = hasher.finalize();
+    Fr::from_le_bytes_mod_order(&hash)
 }

@@ -107,6 +107,7 @@ where
             pub_poly,
             Some(&signing_states[idx]),
             &commitments,
+            None,
         )?;
         sig_shares.push(sig_share);
     }
@@ -332,7 +333,7 @@ where
     // Every individual share should verify
     for share in &sig_shares {
         signer
-            .verify_share(msg, &pub_poly, share, &commitments)
+            .verify_share(msg, &pub_poly, share, &commitments, None)
             .expect("each sig share should verify");
     }
 
@@ -368,7 +369,7 @@ where
     let (sig_shares, commitments) = run_sign_round(signer, &[&shares[0]], &pub_poly, msg)?;
 
     assert!(signer
-        .verify_share(msg, &pub_poly, &sig_shares[0], &commitments)
+        .verify_share(msg, &pub_poly, &sig_shares[0], &commitments, None)
         .is_ok());
 
     let sig = signer
@@ -488,7 +489,7 @@ where
 
     assert!(
         signer
-            .verify_share(msg, &pub_poly, &sig_shares[0], &commitments)
+            .verify_share(msg, &pub_poly, &sig_shares[0], &commitments, None)
             .is_err(),
         "tampered share should not verify"
     );
