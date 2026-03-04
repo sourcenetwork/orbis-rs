@@ -655,7 +655,14 @@ where
                     v: sig_share_v,
                 };
 
-                match signer.verify_share(&message, &pub_poly, &sig_share, &all_commitments, None, None) {
+                match signer.verify_share(
+                    &message,
+                    &pub_poly,
+                    &sig_share,
+                    &all_commitments,
+                    None,
+                    None,
+                ) {
                     Ok(_) => {
                         tracing::debug!(
                             from_node_id = from_node_id,
