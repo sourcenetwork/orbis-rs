@@ -1180,8 +1180,8 @@ async fn test_dkg_then_sign_policy_end_to_end() {
     let sign_response_bytes = sign_coordinator
         .initiate_signing(
             request_id,
-            ring_pk_bytes,
-            message,
+            ring_pk_bytes.clone(),
+            message.clone(),
             &peer_ids,
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
@@ -1203,8 +1203,47 @@ async fn test_dkg_then_sign_policy_end_to_end() {
         "Signature should be non-empty"
     );
 
+    // =========================================================================
+    // Verify signature against the DERIVED public key (not the root key)
+    // =========================================================================
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize root pk");
+
+    let metadata = SignImpl::encode_metadata(
+        POLICY_TEST_POLICY_ID,
+        POLICY_TEST_PERMISSION,
+        POLICY_TEST_RESOURCE,
+    );
+    let derived_pk = SignImpl::derive_public_key(
+        &aggregate_pk,
+        POLICY_TEST_DERIVATION.as_bytes(),
+        Some(&metadata),
+    )
+    .expect("derive public key");
+
+    let signature_bytes = hex::decode(&sign_response.signature).expect("decode signature hex");
+    let signature = <SignImpl as ThresholdSigner>::Signature::from_bytes(&signature_bytes)
+        .expect("deserialize signature");
+
+    let signer = SignImpl::new();
+
+    // Must verify against the derived key
+    let verify_derived = signer.verify(&derived_pk, &message, &signature);
+    assert!(
+        verify_derived.is_ok(),
+        "Signature must verify against derived public key: {:?}",
+        verify_derived.err()
+    );
+
+    // Must NOT verify against the root (underived) key
+    let verify_root = signer.verify(&aggregate_pk, &message, &signature);
+    assert!(
+        verify_root.is_err(),
+        "Signature must not verify against root public key (wrong derivation)"
+    );
+
     println!(
-        "SUCCESS! Policy signing completed, signature: {}...",
+        "SUCCESS! Policy signing completed and verified against derived key, signature: {}...",
         &sign_response.signature[..16]
     );
     println!("\n=== Policy Sign End-to-End Test Completed Successfully ===");
@@ -1360,7 +1399,11 @@ async fn test_sign_policy_fails_wrong_namespace() {
 
     // JWT claims a different namespace than the request
     let sign_token = test_keys
-        .create_sign_jwt("wrong-namespace", POLICY_TEST_DERIVATION_ID, &b"test message".to_vec())
+        .create_sign_jwt(
+            "wrong-namespace",
+            POLICY_TEST_DERIVATION_ID,
+            &b"test message".to_vec(),
+        )
         .expect("create sign JWT");
 
     let sign_coordinator =
@@ -1461,7 +1504,11 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
 
     // JWT claims a different derivation_id than the request
     let sign_token = test_keys
-        .create_sign_jwt(POLICY_TEST_NAMESPACE, "wrong-derivation-id", &b"test message".to_vec())
+        .create_sign_jwt(
+            POLICY_TEST_NAMESPACE,
+            "wrong-derivation-id",
+            &b"test message".to_vec(),
+        )
         .expect("create sign JWT");
 
     let sign_coordinator =
