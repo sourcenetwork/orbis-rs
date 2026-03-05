@@ -138,6 +138,10 @@ async fn test_dkg_then_sign_end_to_end() {
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("Signing should succeed");
@@ -355,6 +359,10 @@ async fn test_sign_different_messages() {
                 ring_payload.threshold as usize,
                 ring_payload.peer_ids.len(),
                 &ring_payload.public_polynomial,
+                None,
+                None,
+                None,
+                None,
             )
             .await
             .expect("Signing should succeed");
@@ -459,6 +467,10 @@ async fn test_sign_fails_wrong_message() {
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("Signing should succeed");
@@ -568,6 +580,10 @@ async fn test_sign_response_cleanup() {
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("Signing should succeed");
@@ -663,6 +679,10 @@ async fn test_sign_fails_invalid_bulletin_post() {
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -770,6 +790,10 @@ async fn test_sign_fails_post_not_on_bulletin() {
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -912,6 +936,10 @@ async fn test_sign_fails_tampered_payload() {
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -1038,6 +1066,10 @@ async fn test_sign_fails_invalid_ring_id() {
             ring_payload.threshold as usize,
             ring_payload.peer_ids.len(),
             &ring_payload.public_polynomial,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 
