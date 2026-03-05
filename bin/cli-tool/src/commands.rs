@@ -977,7 +977,7 @@ pub async fn post_key_derivation(
         .map_err(|e| anyhow!("Invalid ring_pk hex in bulletin: {}", e))?;
     let ring_pk_point =
         G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
-    let metadata = SignImpl::encode_metadata(&policy_id, &permission, &resource);
+    let metadata = SignImpl::encode_metadata(&policy_id, &resource, &permission);
     let derived_pk =
         SignImpl::derive_public_key(&ring_pk_point, derivation.as_bytes(), Some(&metadata))
             .map_err(|e| anyhow!("Failed to derive public key: {}", e))?;

@@ -1211,8 +1211,8 @@ async fn test_dkg_then_sign_policy_end_to_end() {
 
     let metadata = SignImpl::encode_metadata(
         POLICY_TEST_POLICY_ID,
-        POLICY_TEST_PERMISSION,
         POLICY_TEST_RESOURCE,
+        POLICY_TEST_PERMISSION,
     );
     let derived_pk = SignImpl::derive_public_key(
         &aggregate_pk,

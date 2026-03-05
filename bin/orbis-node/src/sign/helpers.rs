@@ -206,10 +206,9 @@ pub fn validate_sign_claims(
 
     if let Some(message) = message {
         if &token.claims.message != message {
-            return Err(SignError::Unauthorized(format!(
-                "Token derivation_id '{}' does not match request derivation_id '{}'",
-                token.claims.derivation_id, derivation_id
-            )));
+            return Err(SignError::Unauthorized(
+                "Token message does not match request message".to_string(),
+            ));
         }
     }
 

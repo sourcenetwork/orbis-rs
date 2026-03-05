@@ -29,7 +29,8 @@ use crate::sign::messages::{SignContext, SignMessage};
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{
-    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PubShare, ThresholdSigner,
+    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PubPoly as PubPolyTrait, PubShare,
+    ThresholdSigner,
 };
 use crypto::SigShareInner;
 use crypto::SignaturePoint;
@@ -296,8 +297,8 @@ where
                 let derivation = Some(key_derivation.derivation.into_bytes());
                 let metadata = Some(S::encode_metadata(
                     &key_derivation.policy_id,
-                    &key_derivation.permission,
                     &key_derivation.resource,
+                    &key_derivation.permission,
                 ));
 
                 // Deserialize pub_poly from ring payload
@@ -614,34 +615,29 @@ where
             });
         }
 
-        // Resolve derivation and metadata for local signing.
-        // Only needed when this node is in the ring and will sign locally.
-        // Derivation comes from the bulletin (KeyDerivation), not from the client.
-        let (derivation, metadata) = if self_in_list {
-            match &context {
-                SignContext::Bulletin => (None, None),
-                SignContext::Policy {
-                    namespace,
-                    derivation_id,
-                    ..
-                } => {
-                    let (key_derivation, _) = fetch_bulletin_payloads(
-                        &*self.app_state.bulletin,
-                        namespace,
-                        derivation_id,
-                    )
-                    .await?;
-                    let derivation = Some(key_derivation.derivation.into_bytes());
-                    let meta = Some(S::encode_metadata(
-                        &key_derivation.policy_id,
-                        &key_derivation.permission,
-                        &key_derivation.resource,
-                    ));
-                    (derivation, meta)
-                }
+        // Resolve derivation and metadata from bulletin for Policy context.
+        // Always fetched regardless of self_in_list — needed for local signing, share
+        // verification, AND final signature verification. Without this, an external
+        // requester (self_in_list=false) would verify shares against the root key
+        // instead of the derived key.
+        let (derivation, metadata) = match &context {
+            SignContext::Bulletin => (None, None),
+            SignContext::Policy {
+                namespace,
+                derivation_id,
+                ..
+            } => {
+                let (key_derivation, _) =
+                    fetch_bulletin_payloads(&*self.app_state.bulletin, namespace, derivation_id)
+                        .await?;
+                let derivation = Some(key_derivation.derivation.into_bytes());
+                let meta = Some(S::encode_metadata(
+                    &key_derivation.policy_id,
+                    &key_derivation.resource,
+                    &key_derivation.permission,
+                ));
+                (derivation, meta)
             }
-        } else {
-            (None, None)
         };
 
         // =====================================================================
@@ -864,7 +860,26 @@ where
         let signature = signature_opt
             .ok_or_else(|| SignError::RecoveryFailed("Recovery returned None".to_string()))?;
 
-        // 7. Serialize signature to bytes then hex
+        // 7. Verify the final recovered signature before serializing.
+        // This catches aggregation bugs and the FROST liveness case: if a node responded
+        // to Round 1 (its commitment is in all_commitments) but dropped before Round 2,
+        // the Lagrange sum is wrong and the sig is invalid — better to surface a clean
+        // RecoveryFailed here than return a silently bad signature to the caller.
+        let aggregate_pk = pub_poly.eval(0);
+        let verify_pk = if let Some(deriv) = derivation.as_deref() {
+            S::derive_public_key(&aggregate_pk, deriv, metadata.as_deref()).map_err(|e| {
+                SignError::Crypto(format!("Key derivation for verification failed: {}", e))
+            })?
+        } else {
+            aggregate_pk
+        };
+        signer
+            .verify(&verify_pk, &message, &signature)
+            .map_err(|e| {
+                SignError::RecoveryFailed(format!("Final signature verification failed: {}", e))
+            })?;
+
+        // 8. Serialize signature to bytes then hex
         let signature_bytes = CryptoSerialize::to_bytes(&signature).map_err(|e| {
             SignError::Serialization(format!("Failed to serialize signature: {}", e))
         })?;
