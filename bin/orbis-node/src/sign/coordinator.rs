@@ -101,17 +101,16 @@ where
         match message {
             SignMessage::NonceRequest {
                 request_id,
-                from_node_id,
                 ring_pk,
                 context,
+                ..
             } => {
                 tracing::info!(
                     request_id = %request_id,
-                    from_node_id = from_node_id,
                     sender_peer = %hex::encode(sender_peer_id.as_bytes()),
                     "Sign Coordinator: Received NonceRequest"
                 );
-                self.handle_nonce_request(request_id, from_node_id, ring_pk, context)
+                self.handle_nonce_request(request_id, ring_pk, context)
                     .await
             }
             SignMessage::SignRequest {
@@ -161,7 +160,6 @@ where
     async fn handle_nonce_request(
         &self,
         request_id: String,
-        _from_node_id: u32,
         ring_pk_bytes: Vec<u8>,
         context: SignContext,
     ) -> Result<Option<SignMessage>> {
