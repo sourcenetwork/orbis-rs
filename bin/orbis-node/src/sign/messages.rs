@@ -30,6 +30,14 @@ pub enum SignMessage {
         message: Vec<u8>,
         /// Serialized list of (node_id, commitment_bytes) for FROST; empty for BLS
         all_commitments: Vec<u8>,
+        /// Derivation pathway for signature
+        derivation: Option<Vec<u8>>,
+        /// Policy id attached to derivation
+        policy_id: Option<String>,
+        /// Permission level needed for derivation
+        permission: Option<String>,
+        /// resource for policy
+        resource: Option<String>,
     },
     /// Response from ring node to coordinator with signature share
     SignResponse {

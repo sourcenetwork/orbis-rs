@@ -115,14 +115,27 @@ where
                 from_node_id,
                 message,
                 all_commitments,
+                derivation,
+                policy_id,
+                permission,
+                resource,
             } => {
                 tracing::info!(
                     request_id = %request_id,
                     from_node_id = from_node_id,
                     "Sign Coordinator: Received SignRequest"
                 );
-                self.handle_sign_request(request_id, from_node_id, message, all_commitments)
-                    .await
+                self.handle_sign_request(
+                    request_id,
+                    from_node_id,
+                    message,
+                    all_commitments,
+                    derivation,
+                    policy_id,
+                    permission,
+                    resource,
+                )
+                .await
             }
             SignMessage::SignResponse { .. } | SignMessage::NonceResponse { .. } => {
                 tracing::debug!(
@@ -197,6 +210,10 @@ where
         from_node_id: u32,
         message: Vec<u8>,
         all_commitments_bytes: Vec<u8>,
+        derivation: Option<Vec<u8>>,
+        policy_id: Option<String>,
+        permission: Option<String>,
+        resource: Option<String>,
     ) -> Result<Option<SignMessage>> {
         // 1. Verify the message exists on bulletin and get the associated ring_pk and peer list
         let (ring_pk_hex, pub_poly) = self.verify_message_and_get_info(&message).await?;
@@ -237,6 +254,10 @@ where
 
         // 7. Sign the message
         let signer = S::new();
+        let metadata: Option<Vec<u8>> = match (&policy_id, &permission, &resource) {
+            (Some(pid), Some(perm), Some(res)) => Some(S::encode_metadata(pid, perm, res)),
+            _ => None,
+        };
         let sig_share = signer
             .sign(
                 &dist_key_share,
@@ -244,8 +265,8 @@ where
                 &pub_poly,
                 signing_state.as_ref(),
                 &all_commitments,
-                None,
-                None,
+                derivation.as_deref(),
+                metadata.as_deref(),
             )
             .map_err(|e| SignError::Crypto(format!("Signing failed: {}", e)))?;
 
@@ -382,6 +403,10 @@ where
         threshold: usize,
         total_participants: usize,
         public_polynomial_hex: &str,
+        derivation: Option<Vec<u8>>,
+        policy_id: Option<String>,
+        permission: Option<String>,
+        resource: Option<String>,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
         let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
@@ -442,6 +467,10 @@ where
                 node_id,
                 self_in_list,
                 actual_peer_count,
+                derivation,
+                policy_id,
+                permission,
+                resource,
             )
             .await;
 
@@ -470,6 +499,10 @@ where
         node_id: u32,
         self_in_list: bool,
         actual_peer_count: usize,
+        derivation: Option<Vec<u8>>,
+        policy_id: Option<String>,
+        permission: Option<String>,
+        resource: Option<String>,
     ) -> Result<Vec<u8>> {
         // 1. Deserialize public polynomial from bulletin data
         let pub_poly_bytes = hex::decode(public_polynomial_hex).map_err(|e| {
@@ -524,6 +557,10 @@ where
                 from_node_id: node_id,
                 message: message.clone(),
                 all_commitments: all_commitments_bytes.clone(),
+                derivation: derivation.clone(),
+                policy_id: policy_id.clone(),
+                permission: permission.clone(),
+                resource: resource.clone(),
             };
 
             let peer_id = peer_id_str.clone();
@@ -587,6 +624,10 @@ where
         // If we're in the peer list, compute our own share locally
         if self_in_list {
             let ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
+            let metadata: Option<Vec<u8>> = match (&policy_id, &permission, &resource) {
+                (Some(pid), Some(perm), Some(res)) => Some(S::encode_metadata(pid, perm, res)),
+                _ => None,
+            };
             if let Some(dist_key_share) =
                 try_load_dist_key_share(&self.app_state.local_storage, &ring_pk)
             {
@@ -596,8 +637,8 @@ where
                     &pub_poly,
                     local_signing_state.as_ref(),
                     &all_commitments,
-                    None,
-                    None,
+                    derivation.as_deref(),
+                    metadata.as_deref(),
                 ) {
                     Ok(sig_share) => {
                         match signer.verify_share(
@@ -605,8 +646,8 @@ where
                             &pub_poly,
                             &sig_share,
                             &all_commitments,
-                            None,
-                            None,
+                            derivation.as_deref(),
+                            metadata.as_deref(),
                         ) {
                             Ok(_) => {
                                 tracing::debug!(

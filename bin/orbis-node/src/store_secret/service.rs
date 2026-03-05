@@ -262,6 +262,10 @@ where
                     ring_payload.threshold as usize,
                     ring_payload.peer_ids.len(),
                     &ring_payload.public_polynomial,
+                    None,
+                    None,
+                    None,
+                    None,
                 )
                 .await
                 .map_err(|e| StoreSecretError::Signing(format!("Signing failed: {}", e)))?;

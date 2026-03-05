@@ -221,13 +221,15 @@ impl ThresholdSigner for ThresholdBlsSigner {
         Ok(())
     }
 
-    fn encode_metadata(policy_id: &str, permission: &str) -> Vec<u8> {
+    fn encode_metadata(policy_id: &str, permission: &str, resource: &str) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(SIGN_METADATA_DOMAIN);
         hasher.update(&(policy_id.len() as u64).to_le_bytes());
         hasher.update(policy_id.as_bytes());
         hasher.update(&(permission.len() as u64).to_le_bytes());
         hasher.update(permission.as_bytes());
+        hasher.update(&(resource.len() as u64).to_le_bytes());
+        hasher.update(resource.as_bytes());
         hasher.finalize().to_vec()
     }
 

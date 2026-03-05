@@ -755,8 +755,8 @@ pub trait ThresholdSigner {
     /// to produce the same bytes for `sign`, `verify_share`, and `derive_public_key`.
     ///
     /// Uses SHA-256 with length-prefixed fields and a domain separator so the output
-    /// is collision-free across different `(policy_id, permission)` pairs.
-    fn encode_metadata(policy_id: &str, permission: &str) -> Vec<u8>;
+    /// is collision-free across different `(policy_id, permission, resource)` pairs.
+    fn encode_metadata(policy_id: &str, permission: &str, resource: &str) -> Vec<u8>;
 
     /// Derive a deterministic public key from the DKG aggregate public key.
     ///
