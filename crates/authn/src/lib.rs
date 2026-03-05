@@ -51,6 +51,15 @@ pub struct PreClaims {
     pub salt: Option<String>,
 }
 
+/// Claims for Sign (threshold signing) endpoints
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct SignClaims {
+    /// Namespace where the key derivation object is stored
+    pub namespace: String,
+    /// Object ID of the key derivation entry on the bulletin
+    pub derivation_id: String,
+}
+
 /// Claims for DKG endpoints
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct DkgClaims {

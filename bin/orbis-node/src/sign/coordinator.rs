@@ -15,14 +15,18 @@
 //! commitment round is performed before the signing round.
 
 use crate::app_state::AppState;
-use crate::constants::{BULLETIN_RING_NAMESPACE, PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT};
+use crate::constants::{
+    BULLETIN_RING_NAMESPACE, MAX_TOKEN_LIFETIME_SECS, PEER_RESPONSE_TIMEOUT,
+    SIGN_COLLECTION_TIMEOUT,
+};
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
-    decode_ring_pk_bytes, deserialize_commitments, load_dist_key_share, serialize_commitments,
-    try_load_dist_key_share,
+    check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
+    load_dist_key_share, serialize_commitments, try_load_dist_key_share, validate_sign_claims,
 };
-use crate::sign::messages::SignMessage;
+use crate::sign::messages::{SignContext, SignMessage};
+use authn::{resolve_jwt_did, BearerToken, SignClaims};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PubShare, ThresholdSigner,
@@ -36,6 +40,7 @@ use network::SIGN;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Response structure containing the recovered signature
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,10 +120,7 @@ where
                 from_node_id,
                 message,
                 all_commitments,
-                derivation,
-                policy_id,
-                permission,
-                resource,
+                context,
             } => {
                 tracing::info!(
                     request_id = %request_id,
@@ -130,10 +132,7 @@ where
                     from_node_id,
                     message,
                     all_commitments,
-                    derivation,
-                    policy_id,
-                    permission,
-                    resource,
+                    context,
                 )
                 .await
             }
@@ -210,18 +209,80 @@ where
         from_node_id: u32,
         message: Vec<u8>,
         all_commitments_bytes: Vec<u8>,
-        derivation: Option<Vec<u8>>,
-        policy_id: Option<String>,
-        permission: Option<String>,
-        resource: Option<String>,
+        context: SignContext,
     ) -> Result<Option<SignMessage>> {
-        // 1. Verify the message exists on bulletin and get the associated ring_pk and peer list
-        let (ring_pk_hex, pub_poly) = self.verify_message_and_get_info(&message).await?;
-
         // Note: We do NOT validate from_node_id here because the sign request initiator
         // may not be in the ring (external requesters use node_id=0).
 
-        // 2. Deserialize ring public key and load DKG share from local storage
+        // Resolve ring info and auth based on pathway
+        let (ring_pk_hex, pub_poly, derivation, metadata) = match context {
+            SignContext::Bulletin => {
+                // Message is a BulletinPost; on-chain existence is the authorization.
+                // Signs from root key: no derivation, no metadata.
+                let (ring_pk_hex, pub_poly) = self.verify_message_and_get_info(&message).await?;
+                (ring_pk_hex, pub_poly, None, None)
+            }
+            SignContext::Policy {
+                token_string,
+                namespace,
+                derivation_id,
+                valid_window,
+            } => {
+                // Validate JWT
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
+                    .as_secs();
+                let token: BearerToken<SignClaims> =
+                    resolve_jwt_did(&token_string, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(
+                        |e| SignError::Unauthorized(format!("JWT validation failed: {}", e)),
+                    )?;
+
+                // Verify claims bind to this exact request
+                validate_sign_claims(&token, &namespace, &derivation_id)?;
+
+                // Fetch key derivation and ring info from bulletin
+                let (key_derivation, ring_payload) =
+                    fetch_bulletin_payloads(&*self.app_state.bulletin, &namespace, &derivation_id)
+                        .await?;
+
+                // Authorize: check on-chain policy access
+                check_policy_access(
+                    &*self.app_state.authz,
+                    &key_derivation,
+                    &derivation_id,
+                    &token.issuer_id,
+                    valid_window,
+                )
+                .await?;
+
+                // Derivation and metadata come from the bulletin, not the client
+                let derivation = Some(key_derivation.derivation.into_bytes());
+                let metadata = Some(S::encode_metadata(
+                    &key_derivation.policy_id,
+                    &key_derivation.permission,
+                    &key_derivation.resource,
+                ));
+
+                // Deserialize pub_poly from ring payload
+                let pub_poly_bytes = hex::decode(&ring_payload.public_polynomial).map_err(|e| {
+                    SignError::Deserialization(format!(
+                        "Failed to decode public polynomial hex: {}",
+                        e
+                    ))
+                })?;
+                let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
+                    SignError::Deserialization(format!(
+                        "Failed to deserialize public polynomial: {}",
+                        e
+                    ))
+                })?;
+
+                (ring_payload.ring_pk, pub_poly, derivation, metadata)
+            }
+        };
+
+        // Deserialize ring public key and load DKG share from local storage
         let ring_pk_bytes = hex::decode(&ring_pk_hex).map_err(|e| {
             SignError::Deserialization(format!("Failed to decode ring_pk hex: {}", e))
         })?;
@@ -229,7 +290,7 @@ where
         let dist_key_share = load_dist_key_share(&self.app_state.local_storage, &ring_pk)?;
         let node_id = dist_key_share.pri_share.i;
 
-        // 6. Deserialize all_commitments and retrieve signing state if interactive
+        // Deserialize all_commitments and retrieve signing state if interactive
         let all_commitments = deserialize_commitments::<S>(&all_commitments_bytes)?;
 
         let signing_state = if S::INTERACTIVE {
@@ -252,12 +313,8 @@ where
             None
         };
 
-        // 7. Sign the message
+        // Sign the message
         let signer = S::new();
-        let metadata: Option<Vec<u8>> = match (&policy_id, &permission, &resource) {
-            (Some(pid), Some(perm), Some(res)) => Some(S::encode_metadata(pid, perm, res)),
-            _ => None,
-        };
         let sig_share = signer
             .sign(
                 &dist_key_share,
@@ -403,10 +460,7 @@ where
         threshold: usize,
         total_participants: usize,
         public_polynomial_hex: &str,
-        derivation: Option<Vec<u8>>,
-        policy_id: Option<String>,
-        permission: Option<String>,
-        resource: Option<String>,
+        context: SignContext,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
         let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
@@ -467,10 +521,7 @@ where
                 node_id,
                 self_in_list,
                 actual_peer_count,
-                derivation,
-                policy_id,
-                permission,
-                resource,
+                context,
             )
             .await;
 
@@ -499,10 +550,7 @@ where
         node_id: u32,
         self_in_list: bool,
         actual_peer_count: usize,
-        derivation: Option<Vec<u8>>,
-        policy_id: Option<String>,
-        permission: Option<String>,
-        resource: Option<String>,
+        context: SignContext,
     ) -> Result<Vec<u8>> {
         // 1. Deserialize public polynomial from bulletin data
         let pub_poly_bytes = hex::decode(public_polynomial_hex).map_err(|e| {
@@ -525,6 +573,36 @@ where
                 need: threshold,
             });
         }
+
+        // Resolve derivation and metadata for local signing.
+        // Only needed when this node is in the ring and will sign locally.
+        // Derivation comes from the bulletin (KeyDerivation), not from the client.
+        let (derivation, metadata) = if self_in_list {
+            match &context {
+                SignContext::Bulletin => (None, None),
+                SignContext::Policy {
+                    namespace,
+                    derivation_id,
+                    ..
+                } => {
+                    let (key_derivation, _) = fetch_bulletin_payloads(
+                        &*self.app_state.bulletin,
+                        namespace,
+                        derivation_id,
+                    )
+                    .await?;
+                    let derivation = Some(key_derivation.derivation.into_bytes());
+                    let meta = Some(S::encode_metadata(
+                        &key_derivation.policy_id,
+                        &key_derivation.permission,
+                        &key_derivation.resource,
+                    ));
+                    (derivation, meta)
+                }
+            }
+        } else {
+            (None, None)
+        };
 
         // =====================================================================
         // ROUND 1 (FROST only): Collect nonce commitments
@@ -557,10 +635,7 @@ where
                 from_node_id: node_id,
                 message: message.clone(),
                 all_commitments: all_commitments_bytes.clone(),
-                derivation: derivation.clone(),
-                policy_id: policy_id.clone(),
-                permission: permission.clone(),
-                resource: resource.clone(),
+                context: context.clone(),
             };
 
             let peer_id = peer_id_str.clone();
@@ -624,10 +699,6 @@ where
         // If we're in the peer list, compute our own share locally
         if self_in_list {
             let ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
-            let metadata: Option<Vec<u8>> = match (&policy_id, &permission, &resource) {
-                (Some(pid), Some(perm), Some(res)) => Some(S::encode_metadata(pid, perm, res)),
-                _ => None,
-            };
             if let Some(dist_key_share) =
                 try_load_dist_key_share(&self.app_state.local_storage, &ring_pk)
             {
@@ -701,8 +772,8 @@ where
                     &pub_poly,
                     &sig_share,
                     &all_commitments,
-                    None,
-                    None,
+                    derivation.as_deref(),
+                    metadata.as_deref(),
                 ) {
                     Ok(_) => {
                         tracing::debug!(

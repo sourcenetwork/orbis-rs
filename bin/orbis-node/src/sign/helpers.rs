@@ -2,6 +2,7 @@ use crate::constants::{
     BULLETIN_RING_NAMESPACE, MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE,
 };
 use crate::sign::error::{Result, SignError};
+use authn::{BearerToken, SignClaims};
 use authz::r#trait::Authz;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, KeyDerivation, RingPayload};
@@ -176,6 +177,33 @@ pub fn deserialize_commitments<S: ThresholdSigner>(
     }
 
     Ok(commitments)
+}
+
+/// Validates JWT claims against the Sign request parameters.
+///
+/// Ensures the token was issued for exactly this namespace and derivation_id,
+/// preventing token reuse across different signing targets. The derivation path
+/// itself is fetched from the bulletin and is not client-supplied.
+pub fn validate_sign_claims(
+    token: &BearerToken<SignClaims>,
+    namespace: &str,
+    derivation_id: &str,
+) -> Result<()> {
+    if token.claims.namespace != namespace {
+        return Err(SignError::Unauthorized(format!(
+            "Token namespace '{}' does not match request namespace '{}'",
+            token.claims.namespace, namespace
+        )));
+    }
+
+    if token.claims.derivation_id != derivation_id {
+        return Err(SignError::Unauthorized(format!(
+            "Token derivation_id '{}' does not match request derivation_id '{}'",
+            token.claims.derivation_id, derivation_id
+        )));
+    }
+
+    Ok(())
 }
 
 /// Checks whether the token issuer has the required policy access for a document.

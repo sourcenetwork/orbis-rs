@@ -4,6 +4,7 @@ use crate::constants::{
 };
 use crate::metrics;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
+use crate::sign::messages::SignContext;
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
@@ -262,10 +263,7 @@ where
                     ring_payload.threshold as usize,
                     ring_payload.peer_ids.len(),
                     &ring_payload.public_polynomial,
-                    None,
-                    None,
-                    None,
-                    None,
+                    SignContext::Bulletin,
                 )
                 .await
                 .map_err(|e| StoreSecretError::Signing(format!("Signing failed: {}", e)))?;
