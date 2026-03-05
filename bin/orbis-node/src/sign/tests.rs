@@ -3,21 +3,23 @@
 //! This module contains end-to-end tests for the threshold BLS signing protocol.
 //! These tests verify the complete flow: DKG → Sign message → Verify signature.
 
-use crate::constants::BULLETIN_PLACEHOLDER_PROOF;
+use crate::constants::{BULLETIN_PLACEHOLDER_PROOF, MAX_SIGN_MESSAGE_BYTES};
 use crate::helpers::test_helpers::{
-    cleanup_db, create_authenticated_request, get_test_ring_post,
+    cleanup_db, create_authenticated_request, create_test_app_state, get_test_ring_post,
     setup_three_node_network_with_sign, test_db_path, TestKeyPair,
 };
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::error::SignError;
 use crate::sign::helpers::check_policy_access;
 use crate::sign::messages::SignContext;
+use crate::sign::service::SignServiceImpl;
 use crate::DkgServiceImpl;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, KeyDerivation, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, ThresholdSigner};
 use crypto::{DkgImpl, SignImpl};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
+use proto::sign_service::{sign_service_server::SignService, StartSignRequest};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 /// End-to-end test: DKG → Sign message → Verify signature
@@ -1594,4 +1596,42 @@ async fn test_sign_policy_check_policy_access_enforces_authz_denial() {
         matches!(result.unwrap_err(), SignError::Unauthorized(_)),
         "Denial should be SignError::Unauthorized"
     );
+}
+
+/// The service must reject messages that exceed MAX_SIGN_MESSAGE_BYTES before
+/// doing any JWT work. The check must fire before token resolution so that a
+/// malformed or missing token does not mask the real rejection reason.
+#[tokio::test]
+async fn test_sign_service_rejects_oversized_message() {
+    let db_name = "test_sign_service_rejects_oversized_message";
+    let app_state = create_test_app_state(None, true, true, db_name).await;
+    let service = SignServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+
+    let oversized_message = vec![0u8; MAX_SIGN_MESSAGE_BYTES + 1];
+
+    // No auth header — the size check must fire before JWT extraction.
+    let request = tonic::Request::new(StartSignRequest {
+        namespace: "test-ns".to_string(),
+        derivation_id: "test-derivation".to_string(),
+        message: oversized_message,
+        valid_window: None,
+    });
+
+    let result = service.start_sign(request).await;
+
+    assert!(result.is_err(), "Oversized message should be rejected");
+    let status = result.unwrap_err();
+    assert_eq!(
+        status.code(),
+        tonic::Code::InvalidArgument,
+        "Expected InvalidArgument, got: {:?}",
+        status
+    );
+    assert!(
+        status.message().contains("Message too large"),
+        "Error message should describe the size limit: {}",
+        status.message()
+    );
+
+    cleanup_db(&test_db_path(db_name));
 }

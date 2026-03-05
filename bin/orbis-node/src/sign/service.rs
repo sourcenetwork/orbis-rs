@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::constants::MAX_TOKEN_LIFETIME_SECS;
+use crate::constants::{MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS};
 use crate::helpers::helpers::validate_all_peer_ids;
 use crate::metrics;
 use crate::sign::coordinator::SignCoordinator;
@@ -75,6 +75,16 @@ where
                 Status::internal(format!("Failed to get timestamp: {}", e))
             })?
             .as_secs();
+
+        // reject oversized messages before any crypto work ---
+        if request.get_ref().message.len() > MAX_SIGN_MESSAGE_BYTES {
+            return Err(SignError::InvalidInput(format!(
+                "Message too large: {} bytes exceeds maximum {}",
+                request.get_ref().message.len(),
+                MAX_SIGN_MESSAGE_BYTES
+            ))
+            .into());
+        }
 
         // extract and validate JWT (no IO) ---
         let token_string = extract_bearer_token(&request)

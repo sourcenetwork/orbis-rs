@@ -281,3 +281,7 @@ pub const MAX_COMMITMENT_SIZE: usize = 1024;
 
 /// Minimum bytes per commitment item: 4 (node_id) + 4 (length) + 1 (min payload).
 pub const MIN_ITEM_SIZE: usize = 9;
+
+/// Maximum byte length for the message field in a sign request.
+/// Prevents oversized messages from bloating JWTs and network messages sent to all ring members.
+pub const MAX_SIGN_MESSAGE_BYTES: usize = 1024 * 1024; // 1 MiB

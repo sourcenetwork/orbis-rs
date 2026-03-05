@@ -16,8 +16,8 @@
 
 use crate::app_state::AppState;
 use crate::constants::{
-    BULLETIN_RING_NAMESPACE, MAX_TOKEN_LIFETIME_SECS, PEER_RESPONSE_TIMEOUT,
-    SIGN_COLLECTION_TIMEOUT,
+    BULLETIN_RING_NAMESPACE, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
+    PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
 };
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::sign::error::{Result, SignError};
@@ -247,6 +247,14 @@ where
     ) -> Result<Option<SignMessage>> {
         // Note: We do NOT validate from_node_id here because the sign request initiator
         // may not be in the ring (external requesters use node_id=0).
+
+        if message.len() > MAX_SIGN_MESSAGE_BYTES {
+            return Err(SignError::InvalidInput(format!(
+                "Message too large: {} bytes exceeds maximum {}",
+                message.len(),
+                MAX_SIGN_MESSAGE_BYTES
+            )));
+        }
 
         // Resolve ring info and auth based on pathway
         let (ring_pk_hex, pub_poly, derivation, metadata) = match context {
