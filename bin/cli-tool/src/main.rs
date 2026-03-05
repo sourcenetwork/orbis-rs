@@ -4,10 +4,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg,
-    do_encrypt_secret, do_generate_reader_key, do_pre, do_store_secret, fund, get_account_sequence,
-    get_latest_ring, list_bulletin_posts, prepare_secret, query_node_info, read_bulletin_post,
-    register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
-    store_prepared_secret, PreparedSecret,
+    do_encrypt_secret, do_generate_reader_key, do_pre, do_sign, do_store_secret, fund,
+    get_account_sequence, get_latest_ring, list_bulletin_posts, post_key_derivation,
+    prepare_secret, query_node_info, read_bulletin_post, register_bulletin_namespace,
+    register_object_to_chain, set_relationship_on_chain, store_prepared_secret, PreparedSecret,
+    SignResult,
 };
 use common::blockchain::ChainConfig;
 use hex;
@@ -325,6 +326,54 @@ pub enum SubCommands {
         #[clap(long)]
         namespace: Option<String>,
     },
+    /// Post a KeyDerivation to the bulletin (registers a sign key derivation config)
+    PostKeyDerivation {
+        /// Bulletin namespace to post to
+        #[clap(long)]
+        namespace: String,
+        /// Ring ID from DKG (used to fetch the ring public key from the bulletin)
+        #[clap(long)]
+        ring_id: String,
+        /// Derivation path string
+        #[clap(long)]
+        derivation: String,
+        /// Policy ID for authz check
+        #[clap(long)]
+        policy_id: String,
+        /// Resource type on the policy
+        #[clap(long)]
+        resource: String,
+        /// Permission required on the policy
+        #[clap(long)]
+        permission: String,
+        /// Proof bytes (hex encoded)
+        #[clap(long)]
+        proof: String,
+    },
+    /// Start a threshold Sign session (Policy pathway)
+    Sign {
+        /// gRPC endpoint of the node to use
+        #[clap(short, long, default_value = "http://localhost:50051")]
+        endpoint: String,
+        /// Message to sign (hex encoded)
+        #[clap(long)]
+        message: String,
+        /// Bulletin namespace that holds the KeyDerivation
+        #[clap(long)]
+        namespace: String,
+        /// Derivation ID (post ID returned by post-key-derivation)
+        #[clap(long)]
+        derivation_id: String,
+        /// A private key to generate a reader DID for JWT
+        #[clap(long)]
+        reader_did_pk: Option<String>,
+        /// Start of the validity window (Unix timestamp, inclusive). Requires --valid-window-end.
+        #[clap(long)]
+        valid_window_start: Option<u64>,
+        /// End of the validity window (Unix timestamp, inclusive). Requires --valid-window-start.
+        #[clap(long)]
+        valid_window_end: Option<u64>,
+    },
 }
 
 #[tokio::main]
@@ -569,6 +618,60 @@ async fn main() -> Result<()> {
             let (ring_id, ring_pk) = get_latest_ring(namespace).await?;
             println!("RING_ID={}", ring_id);
             println!("RING_PK={}", ring_pk);
+        }
+        SubCommands::PostKeyDerivation {
+            namespace,
+            ring_id,
+            derivation,
+            policy_id,
+            resource,
+            permission,
+            proof,
+        } => {
+            let proof_bytes = hex::decode(&proof)
+                .map_err(|e| anyhow::anyhow!("Failed to decode proof hex: {}", e))?;
+            let (derivation_id, derived_pk_hex) = post_key_derivation(
+                namespace,
+                ring_id,
+                derivation,
+                policy_id,
+                resource,
+                permission,
+                proof_bytes,
+            )
+            .await?;
+            println!("DERIVATION_ID={}", derivation_id);
+            println!("DERIVED_PK={}", derived_pk_hex);
+        }
+        SubCommands::Sign {
+            endpoint,
+            message,
+            namespace,
+            derivation_id,
+            reader_did_pk,
+            valid_window_start,
+            valid_window_end,
+        } => {
+            match (valid_window_start, valid_window_end) {
+                (Some(_), None) | (None, Some(_)) => {
+                    anyhow::bail!(
+                        "--valid-window-start and --valid-window-end must both be provided"
+                    );
+                }
+                _ => {}
+            }
+            let message_bytes = hex::decode(&message)
+                .map_err(|e| anyhow::anyhow!("Failed to decode message hex: {}", e))?;
+            do_sign(
+                endpoint,
+                message_bytes,
+                namespace,
+                derivation_id,
+                reader_did_pk,
+                valid_window_start,
+                valid_window_end,
+            )
+            .await?;
         }
     }
 

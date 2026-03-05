@@ -5,15 +5,17 @@
 
 use anyhow::{anyhow, Result};
 use authn::{create_authenticated_request, JwtSigner};
-use bulletin::r#trait::{Bulletin, RingPayload};
+use bulletin::r#trait::{Bulletin, KeyDerivation, RingPayload};
 use bulletin::sourcehub::SourceHubBulletin;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
     ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
 };
-use crypto::r#trait::{Secret, ThresholdDealer};
+use crypto::r#trait::{Secret, ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, CryptoSerialize};
-use crypto::{GroupAffine as G1Affine, PreImpl as ThresholdDealerNode, ScalarField as Fr};
+use crypto::{
+    GroupAffine as G1Affine, PreImpl as ThresholdDealerNode, ScalarField as Fr, SignImpl,
+};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -21,6 +23,7 @@ use sha2::{Digest, Sha256};
 use proto::dkg_service::dkg_service_client::DkgServiceClient;
 use proto::info_service::info_service_client::InfoServiceClient;
 use proto::pre_service::pre_service_client::PreServiceClient;
+use proto::sign_service::sign_service_client::SignServiceClient;
 use proto::store_secret_service::store_secret_service_client::StoreSecretServiceClient;
 use tonic::Request;
 
@@ -939,6 +942,162 @@ pub async fn get_account_sequence(address: &str) -> Result<u64> {
         .map_err(|e| anyhow!("Failed to get account info: {}", e))?;
 
     Ok(account_info.sequence)
+}
+
+/// Post a `KeyDerivation` to the bulletin under `namespace`.
+///
+/// Returns `(post_id, derived_pk_hex)` where `post_id` is used as the
+/// `derivation_id` in sign requests and `derived_pk_hex` is the public key
+/// derived from the ring PK and the derivation bytes.
+///
+/// The caller must ensure the node's public address has been added as a
+/// collaborator on the namespace before posting.
+pub async fn post_key_derivation(
+    namespace: String,
+    ring_id: String,
+    derivation: String,
+    policy_id: String,
+    resource: String,
+    permission: String,
+    proof: Vec<u8>,
+) -> Result<(String, String)> {
+    // Fetch ring payload from bulletin to get the ring public key
+    let ring_bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
+        .await
+        .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
+    let ring_post = ring_bulletin
+        .read("orbis".to_string(), ring_id.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to read ring post '{}': {}", ring_id, e))?;
+    let ring_payload: RingPayload = serde_json::from_slice(&ring_post.payload)
+        .map_err(|e| anyhow!("Failed to parse RingPayload: {}", e))?;
+
+    // Compute derived public key using the signer's derivation (not PRE's)
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
+        .map_err(|e| anyhow!("Invalid ring_pk hex in bulletin: {}", e))?;
+    let ring_pk_point =
+        G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
+    let metadata = SignImpl::encode_metadata(&policy_id, &permission, &resource);
+    let derived_pk =
+        SignImpl::derive_public_key(&ring_pk_point, derivation.as_bytes(), Some(&metadata))
+            .map_err(|e| anyhow!("Failed to derive public key: {}", e))?;
+    let derived_pk_hex = hex::encode(
+        derived_pk
+            .to_bytes()
+            .map_err(|e| anyhow!("Failed to serialize derived_pk: {}", e))?,
+    );
+
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+
+    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+        .await
+        .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
+
+    let key_derivation = KeyDerivation {
+        ring_id: ring_id.clone(),
+        derivation: derivation.clone(),
+        policy_id: policy_id.clone(),
+        resource: resource.clone(),
+        permission: permission.clone(),
+    };
+
+    let payload: Vec<u8> = serde_json::to_vec(&key_derivation)
+        .map_err(|e| anyhow!("Failed to serialize KeyDerivation: {}", e))?;
+
+    let full_namespace = format!("bulletin/{}", namespace);
+    let post_id = bulletin
+        .get_post_id(&full_namespace, &payload)
+        .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
+
+    bulletin
+        .post(namespace.clone(), payload, proof, None)
+        .await
+        .map_err(|e| anyhow!("Failed to post KeyDerivation: {}", e))?;
+
+    println!(
+        "Posted KeyDerivation to namespace '{}': derivation_id={} derived_pk={}",
+        namespace, post_id, derived_pk_hex
+    );
+    Ok((post_id, derived_pk_hex))
+}
+
+/// Result of a Sign operation
+#[derive(Debug)]
+pub struct SignResult {
+    pub status: String,
+    pub message: String,
+    pub created_at: i64,
+    pub signature: String,
+}
+
+/// Call `SignService.StartSign` with a JWT-authenticated request.
+///
+/// `namespace` and `derivation_id` must match the `KeyDerivation` posted to
+/// the bulletin via `post_key_derivation`. The JWT is bound to both fields so
+/// the node can verify the caller is authorised to sign under that key derivation.
+pub async fn do_sign(
+    endpoint: String,
+    message: Vec<u8>,
+    namespace: String,
+    derivation_id: String,
+    reader_did_pk: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+) -> Result<SignResult> {
+    println!("Starting Sign session:");
+    println!("  Endpoint: {}", endpoint);
+    println!("  Namespace: {}", namespace);
+    println!("  Derivation ID: {}", derivation_id);
+    println!("  Message length: {} bytes", message.len());
+    println!();
+
+    let mut client = SignServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+
+    let valid_window = match (valid_window_start, valid_window_end) {
+        (Some(start), Some(end)) => Some(proto::sign_service::TimestampRange { start, end }),
+        _ => None,
+    };
+
+    let request = proto::sign_service::StartSignRequest {
+        message: message.clone(),
+        namespace: namespace.clone(),
+        derivation_id: derivation_id.clone(),
+        valid_window,
+    };
+
+    let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
+    let seed = did_seed(&reader_did_pk);
+    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed));
+    let jwt_signer = JwtSigner::from_key_pair(key_pair);
+    let token = jwt_signer
+        .create_sign_jwt(&namespace, &derivation_id)
+        .map_err(|e| anyhow!("Failed to create sign JWT: {}", e))?;
+
+    let tonic_request = create_authenticated_request(request, &token)
+        .map_err(|e| anyhow!("Failed to create authenticated request: {}", e))?;
+
+    let response = client
+        .start_sign(tonic_request)
+        .await
+        .map_err(|e| anyhow!("Sign request failed: {}", e))?;
+
+    let response = response.into_inner();
+
+    println!("Sign Result:");
+    println!("{}", "=".repeat(60));
+    println!("  Status: {}", response.status);
+    println!("  Message: {}", response.message);
+    println!("  Signature: {}", response.signature);
+
+    Ok(SignResult {
+        status: response.status,
+        message: response.message,
+        created_at: response.created_at,
+        signature: response.signature,
+    })
 }
 
 pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
