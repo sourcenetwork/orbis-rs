@@ -1,0 +1,184 @@
+use crate::app_state::AppState;
+use crate::constants::MAX_TOKEN_LIFETIME_SECS;
+use crate::helpers::helpers::validate_all_peer_ids;
+use crate::metrics;
+use crate::sign::coordinator::SignCoordinator;
+use crate::sign::error::SignError;
+use crate::sign::helpers::{check_policy_access, fetch_bulletin_payloads, validate_sign_claims};
+use crate::sign::messages::SignContext;
+use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, SignClaims};
+use authz::sourcehub::ValidWindow;
+use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
+use crypto::SigShareInner;
+use crypto::SignaturePoint;
+use proto::sign_service::{sign_service_server::SignService, StartSignRequest, StartSignResponse};
+use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tonic::{Request, Response, Status};
+
+/// Implementation of the SignService (Policy pathway only)
+#[derive(Debug)]
+pub struct SignServiceImpl<D, S>
+where
+    D: Dkg + Clone + 'static,
+    S: ThresholdSigner,
+{
+    pub state: AppState<D>,
+    _phantom: std::marker::PhantomData<S>,
+}
+
+impl<D, S> SignServiceImpl<D, S>
+where
+    D: Dkg + Clone + 'static,
+    S: ThresholdSigner,
+{
+    pub fn new(state: AppState<D>) -> Self {
+        Self {
+            state,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl<D, S> SignService for SignServiceImpl<D, S>
+where
+    D: Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    S: ThresholdSigner<
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = DistKeyShare<crypto::ScalarField>,
+            PubPoly = D::PubPoly,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
+        > + Send
+        + Sync
+        + 'static,
+{
+    #[tracing::instrument(skip_all, fields(request))]
+    async fn start_sign(
+        &self,
+        request: Request<StartSignRequest>,
+    ) -> Result<Response<StartSignResponse>, Status> {
+        let start = Instant::now();
+
+        // get timestamp (needed for JWT validation) ---
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| {
+                let duration = start.elapsed().as_secs_f64();
+                metrics::record_grpc_request("sign", "start_sign", "error", duration);
+                Status::internal(format!("Failed to get timestamp: {}", e))
+            })?
+            .as_secs();
+
+        // extract and validate JWT (no IO) ---
+        let token_string = extract_bearer_token(&request)
+            .map_err(|e| SignError::Unauthorized(e.to_string()))?
+            .to_string();
+
+        let token: BearerToken<SignClaims> =
+            resolve_jwt_did(&token_string, current_time, MAX_TOKEN_LIFETIME_SECS)
+                .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+
+        let req = request.into_inner();
+
+        // validate JWT claims match request fields (no IO) ---
+        validate_sign_claims(&token, &req.namespace, &req.derivation_id)?;
+
+        let valid_window = req.valid_window.map(|w| ValidWindow {
+            start: w.start,
+            end: w.end,
+        });
+
+        // Fetch ring and key derivation from bulletin (IO) ---
+        let (key_derivation, ring_payload) =
+            fetch_bulletin_payloads(&*self.state.bulletin, &req.namespace, &req.derivation_id)
+                .await?;
+
+        // Authorize: check on-chain policy access (IO) ---
+        check_policy_access(
+            &*self.state.authz,
+            &key_derivation,
+            &req.derivation_id,
+            &token.issuer_id,
+            valid_window.clone(),
+        )
+        .await?;
+
+        tracing::info!(
+            namespace = %req.namespace,
+            derivation_id = %req.derivation_id,
+            ring_id = %key_derivation.ring_id,
+            ring_pk = %ring_payload.ring_pk,
+            peer_ids = ?ring_payload.peer_ids,
+            issuer = %token.issuer_id,
+            "Authenticated StartSign request"
+        );
+
+        // Validate peers before attempting any connections (no IO) ---
+        if ring_payload.peer_ids.is_empty() {
+            return Err(SignError::InvalidInput("No peer IDs found for ring".to_string()).into());
+        }
+
+        if let Err((invalid_peer_id, validation_error)) =
+            validate_all_peer_ids(&ring_payload.peer_ids)
+        {
+            return Err(SignError::InvalidInput(format!(
+                "Invalid peer ID '{}': {}",
+                invalid_peer_id, validation_error
+            ))
+            .into());
+        }
+
+        let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).map_err(|e| {
+            SignError::Deserialization(format!("Failed to decode ring_pk hex: {}", e))
+        })?;
+
+        let request_id = rand::random::<u64>().to_string();
+        let created_at = current_time as i64;
+
+        // Initiate threshold signing (network protocol) ---
+        metrics::record_sign_request_started();
+        let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
+        let total_nodes = ring_payload.peer_ids.len();
+
+        let result = coordinator
+            .initiate_signing(
+                request_id,
+                ring_pk_bytes,
+                req.message,
+                &ring_payload.peer_ids,
+                ring_payload.threshold as usize,
+                total_nodes,
+                &ring_payload.public_polynomial,
+                SignContext::Policy {
+                    token_string,
+                    namespace: req.namespace,
+                    derivation_id: req.derivation_id,
+                    valid_window,
+                },
+            )
+            .await?;
+
+        let sign_response: crate::sign::coordinator::SignResponse = serde_json::from_slice(&result)
+            .map_err(|e| {
+                SignError::Deserialization(format!("Failed to parse sign result: {}", e))
+            })?;
+
+        let duration = start.elapsed().as_secs_f64();
+        metrics::record_grpc_request("sign", "start_sign", "ok", duration);
+        metrics::record_sign_request_completed(duration);
+
+        Ok(Response::new(StartSignResponse {
+            status: "completed".to_string(),
+            message: "Sign completed successfully".to_string(),
+            created_at,
+            signature: sign_response.signature,
+        }))
+    }
+}

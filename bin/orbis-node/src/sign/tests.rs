@@ -9,6 +9,8 @@ use crate::helpers::test_helpers::{
     setup_three_node_network_with_sign, test_db_path, TestKeyPair,
 };
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
+use crate::sign::error::SignError;
+use crate::sign::helpers::check_policy_access;
 use crate::sign::messages::SignContext;
 use crate::DkgServiceImpl;
 use bulletin::dummy::DummyBulletin;
@@ -18,8 +20,6 @@ use crypto::{DkgImpl, SignImpl};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
-use crate::sign::error::SignError;
-use crate::sign::helpers::check_policy_access;
 /// End-to-end test: DKG → Sign message → Verify signature
 ///
 /// This test demonstrates the complete threshold BLS signing flow:
@@ -1124,11 +1124,26 @@ async fn test_dkg_then_sign_policy_end_to_end() {
     // Run DKG
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("create DKG JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("create DKG JWT");
     let result = node1_service
-        .start_dkg(create_authenticated_request(StartDkgRequest { threshold: 2, peer_ids: peer_ids.clone() }, &token).unwrap())
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    threshold: 2,
+                    peer_ids: peer_ids.clone(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
         .await;
-    assert!(result.is_ok(), "start_dkg should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "start_dkg should succeed: {:?}",
+        result.err()
+    );
 
     let (ring_payload, ring_id) = wait_for_dkg_completion(
         &network,
@@ -1139,7 +1154,10 @@ async fn test_dkg_then_sign_policy_end_to_end() {
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
     // Post KeyDerivation to bulletin
-    let dummy_bulletin = network.dummy_bulletin.as_ref().expect("requires DummyBulletin");
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("requires DummyBulletin");
     setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
 
     // Create valid sign JWT
@@ -1186,10 +1204,16 @@ async fn test_dkg_then_sign_policy_end_to_end() {
         "Signature should be non-empty"
     );
 
-    println!("SUCCESS! Policy signing completed, signature: {}...", &sign_response.signature[..16]);
+    println!(
+        "SUCCESS! Policy signing completed, signature: {}...",
+        &sign_response.signature[..16]
+    );
     println!("\n=== Policy Sign End-to-End Test Completed Successfully ===");
 
-    network.shutdown_routers().await.expect("Failed to shutdown routers");
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown routers");
     for path in &db_paths {
         cleanup_db(path);
     }
@@ -1211,9 +1235,20 @@ async fn test_sign_policy_fails_invalid_jwt() {
 
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("create DKG JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("create DKG JWT");
     let result = node1_service
-        .start_dkg(create_authenticated_request(StartDkgRequest { threshold: 2, peer_ids: peer_ids.clone() }, &token).unwrap())
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    threshold: 2,
+                    peer_ids: peer_ids.clone(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
         .await;
     assert!(result.is_ok());
 
@@ -1225,7 +1260,10 @@ async fn test_sign_policy_fails_invalid_jwt() {
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
-    let dummy_bulletin = network.dummy_bulletin.as_ref().expect("requires DummyBulletin");
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("requires DummyBulletin");
     setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
 
     let sign_coordinator =
@@ -1233,7 +1271,13 @@ async fn test_sign_policy_fails_invalid_jwt() {
 
     let sign_result = sign_coordinator
         .initiate_signing(
-            format!("req-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()),
+            format!(
+                "req-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            ),
             ring_pk_bytes,
             b"some message".to_vec(),
             &peer_ids,
@@ -1259,7 +1303,10 @@ async fn test_sign_policy_fails_invalid_jwt() {
 
     println!("SUCCESS! Policy signing correctly failed with invalid JWT");
 
-    network.shutdown_routers().await.expect("Failed to shutdown");
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
     for path in &db_paths {
         cleanup_db(path);
     }
@@ -1281,9 +1328,20 @@ async fn test_sign_policy_fails_wrong_namespace() {
 
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("create DKG JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("create DKG JWT");
     let result = node1_service
-        .start_dkg(create_authenticated_request(StartDkgRequest { threshold: 2, peer_ids: peer_ids.clone() }, &token).unwrap())
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    threshold: 2,
+                    peer_ids: peer_ids.clone(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
         .await;
     assert!(result.is_ok());
 
@@ -1295,7 +1353,10 @@ async fn test_sign_policy_fails_wrong_namespace() {
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
-    let dummy_bulletin = network.dummy_bulletin.as_ref().expect("requires DummyBulletin");
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("requires DummyBulletin");
     setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
 
     // JWT claims a different namespace than the request
@@ -1308,7 +1369,13 @@ async fn test_sign_policy_fails_wrong_namespace() {
 
     let sign_result = sign_coordinator
         .initiate_signing(
-            format!("req-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()),
+            format!(
+                "req-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            ),
             ring_pk_bytes,
             b"some message".to_vec(),
             &peer_ids,
@@ -1324,7 +1391,10 @@ async fn test_sign_policy_fails_wrong_namespace() {
         )
         .await;
 
-    assert!(sign_result.is_err(), "Should fail with mismatched namespace");
+    assert!(
+        sign_result.is_err(),
+        "Should fail with mismatched namespace"
+    );
     let err = sign_result.unwrap_err().to_string();
     assert!(
         err.contains("Insufficient") || err.contains("Timeout"),
@@ -1334,7 +1404,10 @@ async fn test_sign_policy_fails_wrong_namespace() {
 
     println!("SUCCESS! Policy signing correctly failed with wrong namespace claim");
 
-    network.shutdown_routers().await.expect("Failed to shutdown");
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
     for path in &db_paths {
         cleanup_db(path);
     }
@@ -1356,9 +1429,20 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
 
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("create DKG JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids)
+        .expect("create DKG JWT");
     let result = node1_service
-        .start_dkg(create_authenticated_request(StartDkgRequest { threshold: 2, peer_ids: peer_ids.clone() }, &token).unwrap())
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    threshold: 2,
+                    peer_ids: peer_ids.clone(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
         .await;
     assert!(result.is_ok());
 
@@ -1370,7 +1454,10 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
-    let dummy_bulletin = network.dummy_bulletin.as_ref().expect("requires DummyBulletin");
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("requires DummyBulletin");
     setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
 
     // JWT claims a different derivation_id than the request
@@ -1383,7 +1470,13 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
 
     let sign_result = sign_coordinator
         .initiate_signing(
-            format!("req-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()),
+            format!(
+                "req-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            ),
             ring_pk_bytes,
             b"some message".to_vec(),
             &peer_ids,
@@ -1399,7 +1492,10 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
         )
         .await;
 
-    assert!(sign_result.is_err(), "Should fail with mismatched derivation_id");
+    assert!(
+        sign_result.is_err(),
+        "Should fail with mismatched derivation_id"
+    );
     let err = sign_result.unwrap_err().to_string();
     assert!(
         err.contains("Insufficient") || err.contains("Timeout"),
@@ -1409,7 +1505,10 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
 
     println!("SUCCESS! Policy signing correctly failed with wrong derivation_id claim");
 
-    network.shutdown_routers().await.expect("Failed to shutdown");
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
     for path in &db_paths {
         cleanup_db(path);
     }
