@@ -1073,7 +1073,7 @@ pub async fn do_sign(
     let key_pair = generate::<DidEd25519KeyPair>(Some(&seed));
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
-        .create_sign_jwt(&namespace, &derivation_id)
+        .create_sign_jwt(&namespace, &derivation_id, &message)
         .map_err(|e| anyhow!("Failed to create sign JWT: {}", e))?;
 
     let tonic_request = create_authenticated_request(request, &token)

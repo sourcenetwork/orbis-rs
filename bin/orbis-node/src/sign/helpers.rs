@@ -188,6 +188,7 @@ pub fn validate_sign_claims(
     token: &BearerToken<SignClaims>,
     namespace: &str,
     derivation_id: &str,
+    message: Option<&Vec<u8>>,
 ) -> Result<()> {
     if token.claims.namespace != namespace {
         return Err(SignError::Unauthorized(format!(
@@ -201,6 +202,15 @@ pub fn validate_sign_claims(
             "Token derivation_id '{}' does not match request derivation_id '{}'",
             token.claims.derivation_id, derivation_id
         )));
+    }
+
+    if let Some(message) = message {
+        if &token.claims.message != message {
+            return Err(SignError::Unauthorized(format!(
+                "Token derivation_id '{}' does not match request derivation_id '{}'",
+                token.claims.derivation_id, derivation_id
+            )));
+        }
     }
 
     Ok(())

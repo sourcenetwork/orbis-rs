@@ -115,13 +115,20 @@ impl JwtSigner {
     /// # Arguments
     /// * `namespace` - Namespace of the key derivation entry on the bulletin
     /// * `derivation_id` - Object ID of the key derivation entry
+    /// * `message` - Bytes to sign
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour
-    pub fn create_sign_jwt(&self, namespace: &str, derivation_id: &str) -> Result<String> {
+    pub fn create_sign_jwt(
+        &self,
+        namespace: &str,
+        derivation_id: &str,
+        message: &Vec<u8>,
+    ) -> Result<String> {
         let claims = SignClaims {
             namespace: namespace.to_string(),
             derivation_id: derivation_id.to_string(),
+            message: message.clone(),
         };
         self.sign(claims, Duration::from_hours(1))
     }

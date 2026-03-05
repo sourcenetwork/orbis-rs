@@ -180,7 +180,7 @@ where
                 resolve_jwt_did(token_string, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(
                     |e| SignError::Unauthorized(format!("JWT validation failed: {}", e)),
                 )?;
-            validate_sign_claims(&token, namespace, derivation_id)?;
+            validate_sign_claims(&token, namespace, derivation_id, None)?;
             let (key_derivation, _) =
                 fetch_bulletin_payloads(&*self.app_state.bulletin, namespace, derivation_id)
                     .await?;
@@ -273,7 +273,7 @@ where
                         |e| SignError::Unauthorized(format!("JWT validation failed: {}", e)),
                     )?;
 
-                validate_sign_claims(&token, &namespace, &derivation_id)?;
+                validate_sign_claims(&token, &namespace, &derivation_id, Some(&message))?;
 
                 // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
                 let (key_derivation, ring_payload) =

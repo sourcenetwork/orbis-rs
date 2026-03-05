@@ -1159,13 +1159,12 @@ async fn test_dkg_then_sign_policy_end_to_end() {
         .as_ref()
         .expect("requires DummyBulletin");
     setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
+    let message = b"Hello, Policy Signing World!".to_vec();
 
     // Create valid sign JWT
     let sign_token = test_keys
-        .create_sign_jwt(POLICY_TEST_NAMESPACE, POLICY_TEST_DERIVATION_ID)
+        .create_sign_jwt(POLICY_TEST_NAMESPACE, POLICY_TEST_DERIVATION_ID, &message)
         .expect("create sign JWT");
-
-    let message = b"Hello, Policy Signing World!".to_vec();
 
     let sign_coordinator =
         SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
@@ -1361,7 +1360,7 @@ async fn test_sign_policy_fails_wrong_namespace() {
 
     // JWT claims a different namespace than the request
     let sign_token = test_keys
-        .create_sign_jwt("wrong-namespace", POLICY_TEST_DERIVATION_ID)
+        .create_sign_jwt("wrong-namespace", POLICY_TEST_DERIVATION_ID, &b"test message".to_vec())
         .expect("create sign JWT");
 
     let sign_coordinator =
@@ -1462,7 +1461,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
 
     // JWT claims a different derivation_id than the request
     let sign_token = test_keys
-        .create_sign_jwt(POLICY_TEST_NAMESPACE, "wrong-derivation-id")
+        .create_sign_jwt(POLICY_TEST_NAMESPACE, "wrong-derivation-id", &b"test message".to_vec())
         .expect("create sign JWT");
 
     let sign_coordinator =

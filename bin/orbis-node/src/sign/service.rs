@@ -88,7 +88,12 @@ where
         let req = request.into_inner();
 
         // validate JWT claims match request fields (no IO) ---
-        validate_sign_claims(&token, &req.namespace, &req.derivation_id)?;
+        validate_sign_claims(
+            &token,
+            &req.namespace,
+            &req.derivation_id,
+            Some(&req.message),
+        )?;
 
         let valid_window = req.valid_window.map(|w| ValidWindow {
             start: w.start,

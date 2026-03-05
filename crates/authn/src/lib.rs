@@ -58,6 +58,8 @@ pub struct SignClaims {
     pub namespace: String,
     /// Object ID of the key derivation entry on the bulletin
     pub derivation_id: String,
+    /// Message to sign
+    pub message: Vec<u8>,
 }
 
 /// Claims for DKG endpoints

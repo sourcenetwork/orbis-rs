@@ -619,7 +619,10 @@ mod tests {
         let mgr = SignResponseManager::new();
 
         // Store a nonce normally
-        assert!(mgr.store_nonce("exp-1".into(), vec![1, 2, 3], "test-key".into()).await);
+        assert!(
+            mgr.store_nonce("exp-1".into(), vec![1, 2, 3], "test-key".into())
+                .await
+        );
 
         // Backdate the entry to make it look expired to the worker
         {
@@ -828,11 +831,15 @@ mod tests {
         let mgr = SignResponseManager::new();
 
         for i in 0..MAX_NONCE_STATES {
-            let ok = mgr.store_nonce(format!("nonce-{}", i), vec![i as u8], "test-key".into()).await;
+            let ok = mgr
+                .store_nonce(format!("nonce-{}", i), vec![i as u8], "test-key".into())
+                .await;
             assert!(ok, "store should succeed for nonce {}", i);
         }
 
-        let rejected = mgr.store_nonce("nonce-over-limit".into(), vec![0], "test-key".into()).await;
+        let rejected = mgr
+            .store_nonce("nonce-over-limit".into(), vec![0], "test-key".into())
+            .await;
         assert!(!rejected, "store should fail when nonce limit is reached");
     }
 
@@ -844,10 +851,16 @@ mod tests {
 
         // Fill nonces to limit
         for i in 0..MAX_NONCE_STATES {
-            assert!(mgr.store_nonce(format!("n-{}", i), vec![], "test-key".into()).await);
+            assert!(
+                mgr.store_nonce(format!("n-{}", i), vec![], "test-key".into())
+                    .await
+            );
         }
         // Nonce limit reached — further stores fail
-        assert!(!mgr.store_nonce("n-extra".into(), vec![], "test-key".into()).await);
+        assert!(
+            !mgr.store_nonce("n-extra".into(), vec![], "test-key".into())
+                .await
+        );
 
         // Response entries are a completely separate map — should still accept inits
         assert!(
