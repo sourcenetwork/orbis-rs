@@ -208,10 +208,17 @@ where
             SignError::Serialization(format!("Failed to serialize signing state: {}", e))
         })?;
 
+        // Bind the nonce to the context that authorized it so Round 2 cannot
+        // swap to a different derivation using this nonce.
+        let context_key = match &context {
+            SignContext::Bulletin => "bulletin".to_string(),
+            SignContext::Policy { derivation_id, .. } => derivation_id.clone(),
+        };
+
         if !self
             .app_state
             .sign_response_state
-            .store_nonce(request_id.clone(), state_bytes)
+            .store_nonce(request_id.clone(), state_bytes, context_key)
             .await
         {
             return Err(SignError::NonceState(
@@ -251,10 +258,10 @@ where
                 (ring_pk_hex, pub_poly, None, None)
             }
             SignContext::Policy {
-                token_string,
-                namespace,
-                derivation_id,
-                valid_window,
+                ref token_string,
+                ref namespace,
+                ref derivation_id,
+                ref valid_window,
             } => {
                 // Always re-validate JWT (pure crypto, no IO)
                 let current_time = SystemTime::now()
@@ -281,7 +288,7 @@ where
                     &key_derivation,
                     &derivation_id,
                     &token.issuer_id,
-                    valid_window,
+                    valid_window.clone(),
                 )
                 .await?;
 
@@ -324,14 +331,18 @@ where
 
         let signing_state = if S::INTERACTIVE {
             let nonce_key = format!("nonce-{}", request_id);
+            let expected_context_key = match &context {
+                SignContext::Bulletin => "bulletin".to_string(),
+                SignContext::Policy { derivation_id, .. } => derivation_id.clone(),
+            };
             let state_bytes = self
                 .app_state
                 .sign_response_state
-                .take_nonce(&nonce_key)
+                .take_nonce(&nonce_key, &expected_context_key)
                 .await
                 .ok_or_else(|| {
                     SignError::NonceState(format!(
-                        "No nonce state found for request_id {}",
+                        "No nonce state found for request_id {} (or context key mismatch)",
                         request_id
                     ))
                 })?;
