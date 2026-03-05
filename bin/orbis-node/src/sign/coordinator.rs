@@ -102,6 +102,7 @@ where
                 request_id,
                 from_node_id,
                 ring_pk,
+                context,
             } => {
                 tracing::info!(
                     request_id = %request_id,
@@ -109,10 +110,7 @@ where
                     sender_peer = %hex::encode(sender_peer_id.as_bytes()),
                     "Sign Coordinator: Received NonceRequest"
                 );
-                // Note: from_node_id is informational only for nonce requests (unused in handler).
-                // Sender validation for sign protocol is done in handle_sign_request where
-                // the ring's peer list is available from the bulletin lookup.
-                self.handle_nonce_request(request_id, from_node_id, ring_pk)
+                self.handle_nonce_request(request_id, from_node_id, ring_pk, context)
                     .await
             }
             SignMessage::SignRequest {
@@ -156,25 +154,56 @@ where
 
     /// Handle a nonce request (responder side, FROST Round 1)
     ///
-    /// Generates nonces and stores the signing state for later use in Round 2.
+    /// Auth is checked here — before generating (and burning) a nonce — so that
+    /// an untrusted relayer cannot waste node resources by sending unauthenticated
+    /// requests. Only if auth passes does the nonce get generated and stored.
     async fn handle_nonce_request(
         &self,
         request_id: String,
         _from_node_id: u32,
         ring_pk_bytes: Vec<u8>,
+        context: SignContext,
     ) -> Result<Option<SignMessage>> {
-        // 1. Deserialize ring public key and load DKG share from local storage
+        // Auth check first — fail fast before burning a nonce.
+        if let SignContext::Policy {
+            ref token_string,
+            ref namespace,
+            ref derivation_id,
+            ref valid_window,
+        } = context
+        {
+            let current_time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
+                .as_secs();
+            let token: BearerToken<SignClaims> =
+                resolve_jwt_did(token_string, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(
+                    |e| SignError::Unauthorized(format!("JWT validation failed: {}", e)),
+                )?;
+            validate_sign_claims(&token, namespace, derivation_id)?;
+            let (key_derivation, _) =
+                fetch_bulletin_payloads(&*self.app_state.bulletin, namespace, derivation_id)
+                    .await?;
+            check_policy_access(
+                &*self.app_state.authz,
+                &key_derivation,
+                derivation_id,
+                &token.issuer_id,
+                valid_window.clone(),
+            )
+            .await?;
+        }
+
+        // Auth passed — load share and generate nonce.
         let ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
         let dist_key_share = load_dist_key_share(&self.app_state.local_storage, &ring_pk)?;
         let node_id = dist_key_share.pri_share.i;
 
-        // 3. Generate nonces
         let signer = S::new();
         let (commitment, signing_state) = signer
             .generate_nonces(&dist_key_share)
             .map_err(|e| SignError::Crypto(format!("Nonce generation failed: {}", e)))?;
 
-        // 4. Serialize and store signing state
         let state_bytes = CryptoSerialize::to_bytes(&signing_state).map_err(|e| {
             SignError::Serialization(format!("Failed to serialize signing state: {}", e))
         })?;
@@ -190,7 +219,6 @@ where
             ));
         }
 
-        // 5. Serialize commitment
         let commitment_bytes = CryptoSerialize::to_bytes(&commitment).map_err(|e| {
             SignError::Serialization(format!("Failed to serialize nonce commitment: {}", e))
         })?;
@@ -228,7 +256,7 @@ where
                 derivation_id,
                 valid_window,
             } => {
-                // Validate JWT
+                // Always re-validate JWT (pure crypto, no IO)
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
@@ -238,15 +266,16 @@ where
                         |e| SignError::Unauthorized(format!("JWT validation failed: {}", e)),
                     )?;
 
-                // Verify claims bind to this exact request
                 validate_sign_claims(&token, &namespace, &derivation_id)?;
 
-                // Fetch key derivation and ring info from bulletin
+                // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
                 let (key_derivation, ring_payload) =
                     fetch_bulletin_payloads(&*self.app_state.bulletin, &namespace, &derivation_id)
                         .await?;
 
-                // Authorize: check on-chain policy access
+                // For interactive (FROST), authz was already checked in handle_nonce_request
+                // (Round 1) before the nonce was generated — can decide to skip the IO here (I choose not to but can if speed is needed).
+                // For non-interactive (BLS), this is the first and only round, so check now.
                 check_policy_access(
                     &*self.app_state.authz,
                     &key_derivation,
@@ -608,8 +637,15 @@ where
         // ROUND 1 (FROST only): Collect nonce commitments
         // =====================================================================
         let (all_commitments, local_signing_state) = if S::INTERACTIVE {
-            self.collect_nonces(&request_id, &ring_pk_bytes, peer_ids, node_id, self_in_list)
-                .await?
+            self.collect_nonces(
+                &request_id,
+                &ring_pk_bytes,
+                peer_ids,
+                node_id,
+                self_in_list,
+                &context,
+            )
+            .await?
         } else {
             (Vec::new(), None)
         };
@@ -844,6 +880,8 @@ where
     /// Collect nonce commitments from all peers (FROST Round 1, initiator side)
     ///
     /// Returns the collected commitments and optionally our own signing state.
+    /// The `context` is forwarded to each peer inside the `NonceRequest` so that
+    /// responders can auth-check before generating their nonce.
     async fn collect_nonces(
         &self,
         request_id: &str,
@@ -851,6 +889,7 @@ where
         peer_ids: &[String],
         node_id: u32,
         self_in_list: bool,
+        context: &SignContext,
     ) -> Result<(Vec<(u32, S::NonceCommitment)>, Option<S::SigningState>)> {
         let nonce_request_id = format!("nonce-{}", request_id);
         let mut all_commitments: Vec<(u32, S::NonceCommitment)> = Vec::new();
@@ -901,6 +940,7 @@ where
                 request_id: nonce_request_id.clone(),
                 from_node_id: node_id,
                 ring_pk: ring_pk_bytes.to_vec(),
+                context: context.clone(),
             };
 
             let peer_id = peer_id_str.clone();

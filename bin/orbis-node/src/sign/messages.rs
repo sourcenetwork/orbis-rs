@@ -40,6 +40,9 @@ pub enum SignMessage {
         from_node_id: u32,
         /// Serialized ring public key (used to look up DKG share)
         ring_pk: Vec<u8>,
+        /// Auth context — responder validates auth here before generating the nonce,
+        /// so nonces are never burned for unauthorized requests.
+        context: SignContext,
     },
     /// Response with nonce commitment (FROST Round 1)
     NonceResponse {
