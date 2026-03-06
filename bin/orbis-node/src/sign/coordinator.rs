@@ -631,7 +631,7 @@ where
         let (derivation, metadata) = match &context {
             SignContext::Bulletin => (None, None),
             SignContext::Policy { key_derivation, .. } => {
-                let derivation = Some(key_derivation.derivation.into_bytes());
+                let derivation = Some(key_derivation.derivation.clone().into_bytes());
                 let meta = Some(S::encode_metadata(
                     &key_derivation.policy_id,
                     &key_derivation.resource,
