@@ -14,6 +14,7 @@ use crate::sign::helpers::check_policy_access;
 use crate::sign::messages::SignContext;
 use crate::sign::service::SignServiceImpl;
 use crate::DkgServiceImpl;
+use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, KeyDerivation, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, ThresholdSigner};
@@ -1084,7 +1085,10 @@ const POLICY_TEST_PERMISSION: &str = "test-permission";
 
 /// Stores a `KeyDerivation` entry in the DummyBulletin so that `fetch_bulletin_payloads`
 /// can find it under `(namespace, derivation_id)`.
-fn setup_key_derivation_in_bulletin(dummy_bulletin: &DummyBulletin, ring_id: &str) {
+fn setup_key_derivation_in_bulletin(
+    dummy_bulletin: &DummyBulletin,
+    ring_id: &str,
+) -> KeyDerivation {
     let key_derivation = KeyDerivation {
         ring_id: ring_id.to_string(),
         derivation: POLICY_TEST_DERIVATION.to_string(),
@@ -1104,6 +1108,7 @@ fn setup_key_derivation_in_bulletin(dummy_bulletin: &DummyBulletin, ring_id: &st
         POLICY_TEST_DERIVATION_ID.to_string(),
         post,
     );
+    key_derivation
 }
 
 /// End-to-end test for the Policy signing pathway:
@@ -1160,7 +1165,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
         .dummy_bulletin
         .as_ref()
         .expect("requires DummyBulletin");
-    setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
+    let key_derivation = setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
     let message = b"Hello, Policy Signing World!".to_vec();
 
     // Create valid sign JWT
@@ -1193,6 +1198,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
+                key_derivation,
             },
         )
         .await
@@ -1304,7 +1310,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
         .dummy_bulletin
         .as_ref()
         .expect("requires DummyBulletin");
-    setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
+    let key_derivation = setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
 
     let sign_coordinator =
         SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
@@ -1329,6 +1335,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
+                key_derivation,
             },
         )
         .await;
@@ -1397,7 +1404,7 @@ async fn test_sign_policy_fails_wrong_namespace() {
         .dummy_bulletin
         .as_ref()
         .expect("requires DummyBulletin");
-    setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
+    let key_derivation = setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
 
     // JWT claims a different namespace than the request
     let sign_token = test_keys
@@ -1431,6 +1438,7 @@ async fn test_sign_policy_fails_wrong_namespace() {
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
+                key_derivation,
             },
         )
         .await;
@@ -1502,7 +1510,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
         .dummy_bulletin
         .as_ref()
         .expect("requires DummyBulletin");
-    setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
+    let key_derivation = setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
 
     // JWT claims a different derivation_id than the request
     let sign_token = test_keys
@@ -1536,6 +1544,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
+                key_derivation,
             },
         )
         .await;
@@ -1595,6 +1604,56 @@ async fn test_sign_policy_check_policy_access_enforces_authz_denial() {
     assert!(
         matches!(result.unwrap_err(), SignError::Unauthorized(_)),
         "Denial should be SignError::Unauthorized"
+    );
+}
+
+/// check_policy_access must deny access when the current time falls outside the valid_window.
+///
+/// The authz mock here validates the window exactly as SourceHubAuth does — it deserializes
+/// the AccessCheckRequest and returns false when `now < window.start || now > window.end`.
+/// Passing `end: 1` (epoch + 1 s) guarantees the window is in the past.
+#[tokio::test]
+async fn test_sign_policy_check_policy_access_expired_valid_window() {
+    struct WindowCheckAuthZ;
+
+    #[async_trait::async_trait]
+    impl authz::r#trait::Authz for WindowCheckAuthZ {
+        async fn check(&self, permission: Vec<u8>, _: &String) -> authz::error::Result<bool> {
+            let req = AccessCheckRequest::from_bytes(&permission)
+                .expect("deserialize AccessCheckRequest");
+            if let (Some(window), Some(ts)) = (&req.valid_window, &req.timestamp) {
+                if ts < &window.start || ts > &window.end {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+    }
+
+    let key_derivation = KeyDerivation {
+        ring_id: "ring-1".to_string(),
+        derivation: "some-derivation".to_string(),
+        policy_id: "policy-1".to_string(),
+        resource: "document".to_string(),
+        permission: "sign".to_string(),
+    };
+
+    // Window ended at unix second 1 — guaranteed to be in the past.
+    let expired_window = Some(ValidWindow { start: 0, end: 1 });
+
+    let result = check_policy_access(
+        &WindowCheckAuthZ,
+        &key_derivation,
+        POLICY_TEST_DERIVATION_ID,
+        "did:key:test",
+        expired_window,
+    )
+    .await;
+
+    assert!(result.is_err(), "Expired valid_window should return Err");
+    assert!(
+        matches!(result.unwrap_err(), SignError::Unauthorized(_)),
+        "Expired window denial should be SignError::Unauthorized"
     );
 }
 

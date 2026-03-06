@@ -259,6 +259,25 @@ pub async fn check_policy_access(
     Ok(())
 }
 
+/// Fetches and deserializes only the `KeyDerivation` from the bulletin.
+///
+/// Use this when the `RingPayload` is not needed, to avoid a second round trip.
+pub async fn fetch_key_derivation(
+    bulletin: &(dyn Bulletin + Send + Sync),
+    namespace: &str,
+    derivation_id: &str,
+) -> Result<KeyDerivation> {
+    let object_info = bulletin
+        .read(namespace.to_string(), derivation_id.to_string())
+        .await
+        .map_err(|e| {
+            SignError::Storage(format!("Failed to read object '{}': {}", derivation_id, e))
+        })?;
+
+    serde_json::from_slice::<KeyDerivation>(&object_info.payload)
+        .map_err(|e| SignError::Deserialization(format!("Failed to parse document payload: {}", e)))
+}
+
 /// Fetches and deserializes the key derivation and ring payloads from the bulletin.
 ///
 /// Reads the key by `namespace`/`object_id`, then follows the embedded

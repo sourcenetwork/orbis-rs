@@ -23,7 +23,8 @@ use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_sel
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
-    load_dist_key_share, serialize_commitments, try_load_dist_key_share, validate_sign_claims,
+    fetch_key_derivation, load_dist_key_share, serialize_commitments, try_load_dist_key_share,
+    validate_sign_claims,
 };
 use crate::sign::messages::{SignContext, SignMessage};
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
@@ -169,6 +170,7 @@ where
             ref namespace,
             ref derivation_id,
             ref valid_window,
+            ..
         } = context
         {
             let current_time = SystemTime::now()
@@ -180,9 +182,8 @@ where
                     |e| SignError::Unauthorized(format!("JWT validation failed: {}", e)),
                 )?;
             validate_sign_claims(&token, namespace, derivation_id, None)?;
-            let (key_derivation, _) =
-                fetch_bulletin_payloads(&*self.app_state.bulletin, namespace, derivation_id)
-                    .await?;
+            let key_derivation =
+                fetch_key_derivation(&*self.app_state.bulletin, namespace, derivation_id).await?;
             check_policy_access(
                 &*self.app_state.authz,
                 &key_derivation,
@@ -269,6 +270,7 @@ where
                 ref namespace,
                 ref derivation_id,
                 ref valid_window,
+                ..
             } => {
                 // Always re-validate JWT (pure crypto, no IO)
                 let current_time = SystemTime::now()
@@ -628,15 +630,8 @@ where
         // instead of the derived key.
         let (derivation, metadata) = match &context {
             SignContext::Bulletin => (None, None),
-            SignContext::Policy {
-                namespace,
-                derivation_id,
-                ..
-            } => {
-                let (key_derivation, _) =
-                    fetch_bulletin_payloads(&*self.app_state.bulletin, namespace, derivation_id)
-                        .await?;
-                let derivation = Some(key_derivation.derivation.into_bytes());
+            SignContext::Policy { key_derivation, .. } => {
+                let derivation = Some(key_derivation.derivation.clone().into_bytes());
                 let meta = Some(S::encode_metadata(
                     &key_derivation.policy_id,
                     &key_derivation.resource,
