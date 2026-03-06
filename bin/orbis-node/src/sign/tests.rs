@@ -14,6 +14,7 @@ use crate::sign::helpers::check_policy_access;
 use crate::sign::messages::SignContext;
 use crate::sign::service::SignServiceImpl;
 use crate::DkgServiceImpl;
+use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, KeyDerivation, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, ThresholdSigner};
@@ -1595,6 +1596,56 @@ async fn test_sign_policy_check_policy_access_enforces_authz_denial() {
     assert!(
         matches!(result.unwrap_err(), SignError::Unauthorized(_)),
         "Denial should be SignError::Unauthorized"
+    );
+}
+
+/// check_policy_access must deny access when the current time falls outside the valid_window.
+///
+/// The authz mock here validates the window exactly as SourceHubAuth does — it deserializes
+/// the AccessCheckRequest and returns false when `now < window.start || now > window.end`.
+/// Passing `end: 1` (epoch + 1 s) guarantees the window is in the past.
+#[tokio::test]
+async fn test_sign_policy_check_policy_access_expired_valid_window() {
+    struct WindowCheckAuthZ;
+
+    #[async_trait::async_trait]
+    impl authz::r#trait::Authz for WindowCheckAuthZ {
+        async fn check(&self, permission: Vec<u8>, _: &String) -> authz::error::Result<bool> {
+            let req = AccessCheckRequest::from_bytes(&permission)
+                .expect("deserialize AccessCheckRequest");
+            if let (Some(window), Some(ts)) = (&req.valid_window, &req.timestamp) {
+                if ts < &window.start || ts > &window.end {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+    }
+
+    let key_derivation = KeyDerivation {
+        ring_id: "ring-1".to_string(),
+        derivation: "some-derivation".to_string(),
+        policy_id: "policy-1".to_string(),
+        resource: "document".to_string(),
+        permission: "sign".to_string(),
+    };
+
+    // Window ended at unix second 1 — guaranteed to be in the past.
+    let expired_window = Some(ValidWindow { start: 0, end: 1 });
+
+    let result = check_policy_access(
+        &WindowCheckAuthZ,
+        &key_derivation,
+        POLICY_TEST_DERIVATION_ID,
+        "did:key:test",
+        expired_window,
+    )
+    .await;
+
+    assert!(result.is_err(), "Expired valid_window should return Err");
+    assert!(
+        matches!(result.unwrap_err(), SignError::Unauthorized(_)),
+        "Expired window denial should be SignError::Unauthorized"
     );
 }
 
