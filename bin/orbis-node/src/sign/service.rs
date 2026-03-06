@@ -176,6 +176,7 @@ where
                     namespace: req.namespace,
                     derivation_id: req.derivation_id,
                     valid_window,
+                    key_derivation,
                 },
             )
             .await?;

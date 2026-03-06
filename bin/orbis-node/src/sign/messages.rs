@@ -4,6 +4,7 @@
 //! protocol communication between nodes over the network.
 
 use authz::sourcehub::ValidWindow;
+use bulletin::r#trait::KeyDerivation;
 use serde::{Deserialize, Serialize};
 
 /// Distinguishes the two signing pathways.
@@ -28,6 +29,10 @@ pub enum SignContext {
         derivation_id: String,
         /// Optional valid window for time-bounded authz checks
         valid_window: Option<ValidWindow>,
+        /// Key derivation payload fetched from the bulletin by the coordinator.
+        /// Carried here to avoid a redundant bulletin for the coordinator
+        /// Peer nodes always re-fetch independently.
+        key_derivation: KeyDerivation,
     },
 }
 

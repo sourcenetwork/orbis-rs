@@ -170,6 +170,7 @@ where
             ref namespace,
             ref derivation_id,
             ref valid_window,
+            ..
         } = context
         {
             let current_time = SystemTime::now()
@@ -269,6 +270,7 @@ where
                 ref namespace,
                 ref derivation_id,
                 ref valid_window,
+                ..
             } => {
                 // Always re-validate JWT (pure crypto, no IO)
                 let current_time = SystemTime::now()
@@ -628,14 +630,7 @@ where
         // instead of the derived key.
         let (derivation, metadata) = match &context {
             SignContext::Bulletin => (None, None),
-            SignContext::Policy {
-                namespace,
-                derivation_id,
-                ..
-            } => {
-                let key_derivation =
-                    fetch_key_derivation(&*self.app_state.bulletin, namespace, derivation_id)
-                        .await?;
+            SignContext::Policy { key_derivation, .. } => {
                 let derivation = Some(key_derivation.derivation.into_bytes());
                 let meta = Some(S::encode_metadata(
                     &key_derivation.policy_id,

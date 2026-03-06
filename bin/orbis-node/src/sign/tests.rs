@@ -1085,7 +1085,10 @@ const POLICY_TEST_PERMISSION: &str = "test-permission";
 
 /// Stores a `KeyDerivation` entry in the DummyBulletin so that `fetch_bulletin_payloads`
 /// can find it under `(namespace, derivation_id)`.
-fn setup_key_derivation_in_bulletin(dummy_bulletin: &DummyBulletin, ring_id: &str) {
+fn setup_key_derivation_in_bulletin(
+    dummy_bulletin: &DummyBulletin,
+    ring_id: &str,
+) -> KeyDerivation {
     let key_derivation = KeyDerivation {
         ring_id: ring_id.to_string(),
         derivation: POLICY_TEST_DERIVATION.to_string(),
@@ -1105,6 +1108,7 @@ fn setup_key_derivation_in_bulletin(dummy_bulletin: &DummyBulletin, ring_id: &st
         POLICY_TEST_DERIVATION_ID.to_string(),
         post,
     );
+    key_derivation
 }
 
 /// End-to-end test for the Policy signing pathway:
@@ -1161,7 +1165,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
         .dummy_bulletin
         .as_ref()
         .expect("requires DummyBulletin");
-    setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
+    let key_derivation = setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
     let message = b"Hello, Policy Signing World!".to_vec();
 
     // Create valid sign JWT
@@ -1194,6 +1198,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
+                key_derivation,
             },
         )
         .await
@@ -1305,7 +1310,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
         .dummy_bulletin
         .as_ref()
         .expect("requires DummyBulletin");
-    setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
+    let key_derivation = setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
 
     let sign_coordinator =
         SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
@@ -1330,6 +1335,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
+                key_derivation,
             },
         )
         .await;
@@ -1398,7 +1404,7 @@ async fn test_sign_policy_fails_wrong_namespace() {
         .dummy_bulletin
         .as_ref()
         .expect("requires DummyBulletin");
-    setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
+    let key_derivation = setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
 
     // JWT claims a different namespace than the request
     let sign_token = test_keys
@@ -1432,6 +1438,7 @@ async fn test_sign_policy_fails_wrong_namespace() {
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
+                key_derivation,
             },
         )
         .await;
@@ -1503,7 +1510,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
         .dummy_bulletin
         .as_ref()
         .expect("requires DummyBulletin");
-    setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
+    let key_derivation = setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
 
     // JWT claims a different derivation_id than the request
     let sign_token = test_keys
@@ -1537,6 +1544,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
+                key_derivation,
             },
         )
         .await;
