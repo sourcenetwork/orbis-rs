@@ -720,7 +720,7 @@ where
     let t = 2;
     let (agg_pk, shares, pub_poly) = run_dkg(n, t)?;
     let derivation: &[u8] = b"test-sign-derivation-v1";
-    let metadata: &[u8] = &T::encode_metadata("policy-id", "read");
+    let metadata: &[u8] = &T::encode_metadata("policy-id", "resource", "read");
     let msg = b"metadata binding test";
 
     // Derived key with metadata must differ from derivation-only key
@@ -791,8 +791,9 @@ where
     let t = 2;
     let (_agg_pk, shares, pub_poly) = run_dkg(n, t)?;
     let derivation: &[u8] = b"test-sign-derivation-v1";
-    let metadata: &[u8] = &T::encode_metadata("policy-id", "read");
-    let wrong_metadata: &[u8] = &T::encode_metadata("policy-id_wrong", "read_wrong");
+    let metadata: &[u8] = &T::encode_metadata("policy-id", "resource", "read");
+    let wrong_metadata: &[u8] =
+        &T::encode_metadata("policy-id_wrong", "resource_wrong", "read_wrong");
     let msg = b"wrong metadata test";
 
     let participants: Vec<_> = shares.iter().take(t).collect();
@@ -861,7 +862,7 @@ where
     let n = 3;
     let t = 2;
     let (agg_pk, shares, pub_poly) = run_dkg(n, t)?;
-    let metadata: &[u8] = &T::encode_metadata("policy-id", "read");
+    let metadata: &[u8] = &T::encode_metadata("policy-id", "resource", "read");
     let msg = b"no derivation test";
 
     let participants: Vec<_> = shares.iter().take(t).collect();

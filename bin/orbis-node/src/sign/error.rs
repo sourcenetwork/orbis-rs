@@ -73,6 +73,14 @@ pub enum SignError {
     /// Generic Sign error
     #[error("Sign error: {0}")]
     Generic(String),
+
+    /// System time error
+    #[error("System time error: {0}")]
+    SystemTime(#[from] std::time::SystemTimeError),
+
+    /// AuthZ error
+    #[error("Authz error: {0}")]
+    AuthZ(String),
 }
 
 /// Result type for Sign operations
@@ -106,6 +114,7 @@ impl From<SignError> for tonic::Status {
                 metrics::record_sign_request_failed();
                 tonic::Status::new(Code::InvalidArgument, error.to_string())
             }
+            SignError::AuthZ(_) => tonic::Status::new(Code::Unauthenticated, error.to_string()),
             _ => {
                 metrics::record_sign_request_failed();
                 tonic::Status::new(Code::Internal, error.to_string())

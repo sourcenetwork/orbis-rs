@@ -15,17 +15,22 @@
 //! commitment round is performed before the signing round.
 
 use crate::app_state::AppState;
-use crate::constants::{BULLETIN_RING_NAMESPACE, PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT};
+use crate::constants::{
+    BULLETIN_RING_NAMESPACE, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
+    PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
+};
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
-    decode_ring_pk_bytes, deserialize_commitments, load_dist_key_share, serialize_commitments,
-    try_load_dist_key_share,
+    check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
+    load_dist_key_share, serialize_commitments, try_load_dist_key_share, validate_sign_claims,
 };
-use crate::sign::messages::SignMessage;
+use crate::sign::messages::{SignContext, SignMessage};
+use authn::{resolve_jwt_did, BearerToken, SignClaims};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{
-    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PubShare, ThresholdSigner,
+    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PubPoly as PubPolyTrait, PubShare,
+    ThresholdSigner,
 };
 use crypto::SigShareInner;
 use crypto::SignaturePoint;
@@ -36,6 +41,7 @@ use network::SIGN;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Response structure containing the recovered signature
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,19 +101,16 @@ where
         match message {
             SignMessage::NonceRequest {
                 request_id,
-                from_node_id,
                 ring_pk,
+                context,
+                ..
             } => {
                 tracing::info!(
                     request_id = %request_id,
-                    from_node_id = from_node_id,
                     sender_peer = %hex::encode(sender_peer_id.as_bytes()),
                     "Sign Coordinator: Received NonceRequest"
                 );
-                // Note: from_node_id is informational only for nonce requests (unused in handler).
-                // Sender validation for sign protocol is done in handle_sign_request where
-                // the ring's peer list is available from the bulletin lookup.
-                self.handle_nonce_request(request_id, from_node_id, ring_pk)
+                self.handle_nonce_request(request_id, ring_pk, context)
                     .await
             }
             SignMessage::SignRequest {
@@ -115,14 +118,21 @@ where
                 from_node_id,
                 message,
                 all_commitments,
+                context,
             } => {
                 tracing::info!(
                     request_id = %request_id,
                     from_node_id = from_node_id,
                     "Sign Coordinator: Received SignRequest"
                 );
-                self.handle_sign_request(request_id, from_node_id, message, all_commitments)
-                    .await
+                self.handle_sign_request(
+                    request_id,
+                    from_node_id,
+                    message,
+                    all_commitments,
+                    context,
+                )
+                .await
             }
             SignMessage::SignResponse { .. } | SignMessage::NonceResponse { .. } => {
                 tracing::debug!(
@@ -144,33 +154,70 @@ where
 
     /// Handle a nonce request (responder side, FROST Round 1)
     ///
-    /// Generates nonces and stores the signing state for later use in Round 2.
+    /// Auth is checked here — before generating (and burning) a nonce — so that
+    /// an untrusted relayer cannot waste node resources by sending unauthenticated
+    /// requests. Only if auth passes does the nonce get generated and stored.
     async fn handle_nonce_request(
         &self,
         request_id: String,
-        _from_node_id: u32,
         ring_pk_bytes: Vec<u8>,
+        context: SignContext,
     ) -> Result<Option<SignMessage>> {
-        // 1. Deserialize ring public key and load DKG share from local storage
+        // Auth check first — fail fast before burning a nonce.
+        if let SignContext::Policy {
+            ref token_string,
+            ref namespace,
+            ref derivation_id,
+            ref valid_window,
+        } = context
+        {
+            let current_time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
+                .as_secs();
+            let token: BearerToken<SignClaims> =
+                resolve_jwt_did(token_string, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(
+                    |e| SignError::Unauthorized(format!("JWT validation failed: {}", e)),
+                )?;
+            validate_sign_claims(&token, namespace, derivation_id, None)?;
+            let (key_derivation, _) =
+                fetch_bulletin_payloads(&*self.app_state.bulletin, namespace, derivation_id)
+                    .await?;
+            check_policy_access(
+                &*self.app_state.authz,
+                &key_derivation,
+                derivation_id,
+                &token.issuer_id,
+                valid_window.clone(),
+            )
+            .await?;
+        }
+
+        // Auth passed — load share and generate nonce.
         let ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
         let dist_key_share = load_dist_key_share(&self.app_state.local_storage, &ring_pk)?;
         let node_id = dist_key_share.pri_share.i;
 
-        // 3. Generate nonces
         let signer = S::new();
         let (commitment, signing_state) = signer
             .generate_nonces(&dist_key_share)
             .map_err(|e| SignError::Crypto(format!("Nonce generation failed: {}", e)))?;
 
-        // 4. Serialize and store signing state
         let state_bytes = CryptoSerialize::to_bytes(&signing_state).map_err(|e| {
             SignError::Serialization(format!("Failed to serialize signing state: {}", e))
         })?;
 
+        // Bind the nonce to the context that authorized it so Round 2 cannot
+        // swap to a different derivation using this nonce.
+        let context_key = match &context {
+            SignContext::Bulletin => "bulletin".to_string(),
+            SignContext::Policy { derivation_id, .. } => derivation_id.clone(),
+        };
+
         if !self
             .app_state
             .sign_response_state
-            .store_nonce(request_id.clone(), state_bytes)
+            .store_nonce(request_id.clone(), state_bytes, context_key)
             .await
         {
             return Err(SignError::NonceState(
@@ -178,7 +225,6 @@ where
             ));
         }
 
-        // 5. Serialize commitment
         let commitment_bytes = CryptoSerialize::to_bytes(&commitment).map_err(|e| {
             SignError::Serialization(format!("Failed to serialize nonce commitment: {}", e))
         })?;
@@ -197,14 +243,89 @@ where
         from_node_id: u32,
         message: Vec<u8>,
         all_commitments_bytes: Vec<u8>,
+        context: SignContext,
     ) -> Result<Option<SignMessage>> {
-        // 1. Verify the message exists on bulletin and get the associated ring_pk and peer list
-        let (ring_pk_hex, pub_poly) = self.verify_message_and_get_info(&message).await?;
-
         // Note: We do NOT validate from_node_id here because the sign request initiator
         // may not be in the ring (external requesters use node_id=0).
 
-        // 2. Deserialize ring public key and load DKG share from local storage
+        if message.len() > MAX_SIGN_MESSAGE_BYTES {
+            return Err(SignError::InvalidInput(format!(
+                "Message too large: {} bytes exceeds maximum {}",
+                message.len(),
+                MAX_SIGN_MESSAGE_BYTES
+            )));
+        }
+
+        // Resolve ring info and auth based on pathway
+        let (ring_pk_hex, pub_poly, derivation, metadata) = match context {
+            SignContext::Bulletin => {
+                // Message is a BulletinPost; on-chain existence is the authorization.
+                // Signs from root key: no derivation, no metadata.
+                let (ring_pk_hex, pub_poly) = self.verify_message_and_get_info(&message).await?;
+                (ring_pk_hex, pub_poly, None, None)
+            }
+            SignContext::Policy {
+                ref token_string,
+                ref namespace,
+                ref derivation_id,
+                ref valid_window,
+            } => {
+                // Always re-validate JWT (pure crypto, no IO)
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
+                    .as_secs();
+                let token: BearerToken<SignClaims> =
+                    resolve_jwt_did(&token_string, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(
+                        |e| SignError::Unauthorized(format!("JWT validation failed: {}", e)),
+                    )?;
+
+                validate_sign_claims(&token, &namespace, &derivation_id, Some(&message))?;
+
+                // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
+                let (key_derivation, ring_payload) =
+                    fetch_bulletin_payloads(&*self.app_state.bulletin, &namespace, &derivation_id)
+                        .await?;
+
+                // For interactive (FROST), authz was already checked in handle_nonce_request
+                // (Round 1) before the nonce was generated — can decide to skip the IO here (I choose not to but can if speed is needed).
+                // For non-interactive (BLS), this is the first and only round, so check now.
+                check_policy_access(
+                    &*self.app_state.authz,
+                    &key_derivation,
+                    &derivation_id,
+                    &token.issuer_id,
+                    valid_window.clone(),
+                )
+                .await?;
+
+                // Derivation and metadata come from the bulletin, not the client
+                let derivation = Some(key_derivation.derivation.into_bytes());
+                let metadata = Some(S::encode_metadata(
+                    &key_derivation.policy_id,
+                    &key_derivation.resource,
+                    &key_derivation.permission,
+                ));
+
+                // Deserialize pub_poly from ring payload
+                let pub_poly_bytes = hex::decode(&ring_payload.public_polynomial).map_err(|e| {
+                    SignError::Deserialization(format!(
+                        "Failed to decode public polynomial hex: {}",
+                        e
+                    ))
+                })?;
+                let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
+                    SignError::Deserialization(format!(
+                        "Failed to deserialize public polynomial: {}",
+                        e
+                    ))
+                })?;
+
+                (ring_payload.ring_pk, pub_poly, derivation, metadata)
+            }
+        };
+
+        // Deserialize ring public key and load DKG share from local storage
         let ring_pk_bytes = hex::decode(&ring_pk_hex).map_err(|e| {
             SignError::Deserialization(format!("Failed to decode ring_pk hex: {}", e))
         })?;
@@ -212,19 +333,23 @@ where
         let dist_key_share = load_dist_key_share(&self.app_state.local_storage, &ring_pk)?;
         let node_id = dist_key_share.pri_share.i;
 
-        // 6. Deserialize all_commitments and retrieve signing state if interactive
+        // Deserialize all_commitments and retrieve signing state if interactive
         let all_commitments = deserialize_commitments::<S>(&all_commitments_bytes)?;
 
         let signing_state = if S::INTERACTIVE {
             let nonce_key = format!("nonce-{}", request_id);
+            let expected_context_key = match &context {
+                SignContext::Bulletin => "bulletin".to_string(),
+                SignContext::Policy { derivation_id, .. } => derivation_id.clone(),
+            };
             let state_bytes = self
                 .app_state
                 .sign_response_state
-                .take_nonce(&nonce_key)
+                .take_nonce(&nonce_key, &expected_context_key)
                 .await
                 .ok_or_else(|| {
                     SignError::NonceState(format!(
-                        "No nonce state found for request_id {}",
+                        "No nonce state found for request_id {} (or context key mismatch)",
                         request_id
                     ))
                 })?;
@@ -235,7 +360,7 @@ where
             None
         };
 
-        // 7. Sign the message
+        // Sign the message
         let signer = S::new();
         let sig_share = signer
             .sign(
@@ -244,8 +369,8 @@ where
                 &pub_poly,
                 signing_state.as_ref(),
                 &all_commitments,
-                None,
-                None,
+                derivation.as_deref(),
+                metadata.as_deref(),
             )
             .map_err(|e| SignError::Crypto(format!("Signing failed: {}", e)))?;
 
@@ -382,6 +507,7 @@ where
         threshold: usize,
         total_participants: usize,
         public_polynomial_hex: &str,
+        context: SignContext,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
         let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
@@ -442,6 +568,7 @@ where
                 node_id,
                 self_in_list,
                 actual_peer_count,
+                context,
             )
             .await;
 
@@ -470,6 +597,7 @@ where
         node_id: u32,
         self_in_list: bool,
         actual_peer_count: usize,
+        context: SignContext,
     ) -> Result<Vec<u8>> {
         // 1. Deserialize public polynomial from bulletin data
         let pub_poly_bytes = hex::decode(public_polynomial_hex).map_err(|e| {
@@ -493,12 +621,44 @@ where
             });
         }
 
+        // Resolve derivation and metadata from bulletin for Policy context.
+        // Always fetched regardless of self_in_list — needed for local signing, share
+        // verification, AND final signature verification. Without this, an external
+        // requester (self_in_list=false) would verify shares against the root key
+        // instead of the derived key.
+        let (derivation, metadata) = match &context {
+            SignContext::Bulletin => (None, None),
+            SignContext::Policy {
+                namespace,
+                derivation_id,
+                ..
+            } => {
+                let (key_derivation, _) =
+                    fetch_bulletin_payloads(&*self.app_state.bulletin, namespace, derivation_id)
+                        .await?;
+                let derivation = Some(key_derivation.derivation.into_bytes());
+                let meta = Some(S::encode_metadata(
+                    &key_derivation.policy_id,
+                    &key_derivation.resource,
+                    &key_derivation.permission,
+                ));
+                (derivation, meta)
+            }
+        };
+
         // =====================================================================
         // ROUND 1 (FROST only): Collect nonce commitments
         // =====================================================================
         let (all_commitments, local_signing_state) = if S::INTERACTIVE {
-            self.collect_nonces(&request_id, &ring_pk_bytes, peer_ids, node_id, self_in_list)
-                .await?
+            self.collect_nonces(
+                &request_id,
+                &ring_pk_bytes,
+                peer_ids,
+                node_id,
+                self_in_list,
+                &context,
+            )
+            .await?
         } else {
             (Vec::new(), None)
         };
@@ -524,6 +684,7 @@ where
                 from_node_id: node_id,
                 message: message.clone(),
                 all_commitments: all_commitments_bytes.clone(),
+                context: context.clone(),
             };
 
             let peer_id = peer_id_str.clone();
@@ -596,8 +757,8 @@ where
                     &pub_poly,
                     local_signing_state.as_ref(),
                     &all_commitments,
-                    None,
-                    None,
+                    derivation.as_deref(),
+                    metadata.as_deref(),
                 ) {
                     Ok(sig_share) => {
                         match signer.verify_share(
@@ -605,8 +766,8 @@ where
                             &pub_poly,
                             &sig_share,
                             &all_commitments,
-                            None,
-                            None,
+                            derivation.as_deref(),
+                            metadata.as_deref(),
                         ) {
                             Ok(_) => {
                                 tracing::debug!(
@@ -660,8 +821,8 @@ where
                     &pub_poly,
                     &sig_share,
                     &all_commitments,
-                    None,
-                    None,
+                    derivation.as_deref(),
+                    metadata.as_deref(),
                 ) {
                     Ok(_) => {
                         tracing::debug!(
@@ -705,7 +866,26 @@ where
         let signature = signature_opt
             .ok_or_else(|| SignError::RecoveryFailed("Recovery returned None".to_string()))?;
 
-        // 7. Serialize signature to bytes then hex
+        // 7. Verify the final recovered signature before serializing.
+        // This catches aggregation bugs and the FROST liveness case: if a node responded
+        // to Round 1 (its commitment is in all_commitments) but dropped before Round 2,
+        // the Lagrange sum is wrong and the sig is invalid — better to surface a clean
+        // RecoveryFailed here than return a silently bad signature to the caller.
+        let aggregate_pk = pub_poly.eval(0);
+        let verify_pk = if let Some(deriv) = derivation.as_deref() {
+            S::derive_public_key(&aggregate_pk, deriv, metadata.as_deref()).map_err(|e| {
+                SignError::Crypto(format!("Key derivation for verification failed: {}", e))
+            })?
+        } else {
+            aggregate_pk
+        };
+        signer
+            .verify(&verify_pk, &message, &signature)
+            .map_err(|e| {
+                SignError::RecoveryFailed(format!("Final signature verification failed: {}", e))
+            })?;
+
+        // 8. Serialize signature to bytes then hex
         let signature_bytes = CryptoSerialize::to_bytes(&signature).map_err(|e| {
             SignError::Serialization(format!("Failed to serialize signature: {}", e))
         })?;
@@ -732,6 +912,8 @@ where
     /// Collect nonce commitments from all peers (FROST Round 1, initiator side)
     ///
     /// Returns the collected commitments and optionally our own signing state.
+    /// The `context` is forwarded to each peer inside the `NonceRequest` so that
+    /// responders can auth-check before generating their nonce.
     async fn collect_nonces(
         &self,
         request_id: &str,
@@ -739,6 +921,7 @@ where
         peer_ids: &[String],
         node_id: u32,
         self_in_list: bool,
+        context: &SignContext,
     ) -> Result<(Vec<(u32, S::NonceCommitment)>, Option<S::SigningState>)> {
         let nonce_request_id = format!("nonce-{}", request_id);
         let mut all_commitments: Vec<(u32, S::NonceCommitment)> = Vec::new();
@@ -789,6 +972,7 @@ where
                 request_id: nonce_request_id.clone(),
                 from_node_id: node_id,
                 ring_pk: ring_pk_bytes.to_vec(),
+                context: context.clone(),
             };
 
             let peer_id = peer_id_str.clone();

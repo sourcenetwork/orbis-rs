@@ -44,6 +44,21 @@ pub struct RingPayload {
     pub public_polynomial: String,
 }
 
+/// Payload for derivation information derivation_id => payload
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+pub struct KeyDerivation {
+    /// Id of the Ring to find other information about the ring
+    pub ring_id: String,
+    /// Derivation to be added with policy infomratio to create derivation
+    pub derivation: String,
+    /// Id of the policy associated with document
+    pub policy_id: String,
+    /// Resource type on said policy
+    pub resource: String,
+    /// Does the DID have this permission on the policy (the policy expected with this document)
+    pub permission: String,
+}
+
 impl TryFrom<BulletinPost> for DocumentPayload {
     type Error = BulletinError;
 
@@ -88,6 +103,22 @@ impl TryFrom<RingPayload> for Vec<u8> {
     type Error = BulletinError;
 
     fn try_from(payload: RingPayload) -> Result<Self> {
+        serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<BulletinPost> for KeyDerivation {
+    type Error = BulletinError;
+
+    fn try_from(post: BulletinPost) -> Result<Self> {
+        serde_json::from_slice(&post.payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<KeyDerivation> for Vec<u8> {
+    type Error = BulletinError;
+
+    fn try_from(payload: KeyDerivation) -> Result<Self> {
         serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))
     }
 }

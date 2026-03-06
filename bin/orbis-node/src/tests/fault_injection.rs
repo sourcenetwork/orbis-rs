@@ -13,6 +13,7 @@
 use crate::dkg::service::DkgServiceImpl;
 use crate::info::InfoServiceImpl;
 use crate::pre::service::PreServiceImpl;
+use crate::sign::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{
     constants::{
@@ -39,6 +40,7 @@ use proto::{
     dkg_service::dkg_service_server::DkgServiceServer,
     info_service::info_service_server::InfoServiceServer,
     pre_service::pre_service_server::PreServiceServer,
+    sign_service::sign_service_server::SignServiceServer,
     store_secret_service::store_secret_service_server::StoreSecretServiceServer,
 };
 use std::sync::Arc;
@@ -95,6 +97,7 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
     let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
     let store_secret_service =
         StoreSecretServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
+    let sign_service = SignServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
 
     tokio::spawn(async move {
         let _ = tonic::transport::Server::builder()
@@ -102,6 +105,7 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
             .add_service(PreServiceServer::new(pre_service))
             .add_service(InfoServiceServer::new(info_service))
             .add_service(StoreSecretServiceServer::new(store_secret_service))
+            .add_service(SignServiceServer::new(sign_service))
             .serve(node.grpc_addr)
             .await;
         let _ = node.router.shutdown().await;

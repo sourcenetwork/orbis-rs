@@ -229,7 +229,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             timestamp: timestamp.clone(),
         };
         let serialized: Vec<u8> = payload.try_into().expect("serialize payload");
-        cli_tool::create_bulletin_post(namespace.clone(), serialized, proof)
+        cli_tool::create_bulletin_post(namespace.clone(), serialized, proof.clone())
             .await
             .expect("create_bulletin_post")
     };
@@ -615,6 +615,111 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         "Idempotency verified: both calls returned object_id {}, sequence unchanged at {}",
         object_id_service, sequence_after_second
     );
+
+    // Test sign
+    println!("Testing Sign (Policy pathway)...");
+
+    let sign_derivation = "sign-test-derivation-path".to_string();
+    let sign_did_pk = "sign_test_did_secret".to_string();
+
+    // Post a KeyDerivation to the bulletin (fetches ring PK automatically via ring_id)
+    let (derivation_id, derived_pk_hex) = cli_tool::post_key_derivation(
+        namespace.clone(),
+        ring_id.clone(),
+        sign_derivation.clone(),
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+        proof.clone(),
+    )
+    .await
+    .expect("post_key_derivation");
+
+    println!(
+        "KeyDerivation posted: derivation_id={} derived_pk={}...",
+        derivation_id,
+        &derived_pk_hex[..40.min(derived_pk_hex.len())]
+    );
+
+    // Register derivation_id as an object on the policy and grant access to the DID
+    cli_tool::register_object_to_chain(policy_id.clone(), derivation_id.clone(), resource.clone())
+        .await
+        .expect("register_object_to_chain for derivation_id");
+
+    cli_tool::set_relationship_on_chain(
+        policy_id.clone(),
+        derivation_id.clone(),
+        resource.clone(),
+        "reader".to_string(),
+        Some(sign_did_pk.clone()),
+    )
+    .await
+    .expect("set_relationship_on_chain for derivation_id");
+
+    // Sign a test message
+    let sign_message = b"hello from sign integration test";
+
+    let sign_result = cli_tool::do_sign(
+        endpoint.clone(),
+        sign_message.to_vec(),
+        full_namespace.clone(),
+        derivation_id.clone(),
+        Some(sign_did_pk.clone()),
+        None,
+        None,
+    )
+    .await
+    .expect("do_sign should succeed");
+
+    println!("Sign completed: signature={}", sign_result.signature);
+
+    // Verify the signature resolves against the derived public key (not the ring PK)
+    let sig_bytes = hex::decode(&sign_result.signature).expect("decode signature hex");
+    let signature = <SignImpl as ThresholdSigner>::Signature::from_bytes(&sig_bytes)
+        .expect("deserialize signature");
+
+    let derived_pk_bytes = hex::decode(&derived_pk_hex).expect("decode derived_pk hex");
+    let derived_pk = GroupAffine::from_bytes(&derived_pk_bytes).expect("deserialize derived_pk");
+
+    let signer = SignImpl::new();
+    signer
+        .verify(&derived_pk, sign_message, &signature)
+        .expect("signature should verify against derived public key");
+
+    println!("Signature verified against derived public key!");
+
+    // Verify it does NOT verify against the bare ring public key
+    let ring_pk_for_verify =
+        GroupAffine::from_bytes(&hex::decode(&ring_pk_hex).expect("decode ring_pk hex"))
+            .expect("deserialize ring_pk");
+    assert!(
+        signer
+            .verify(&ring_pk_for_verify, sign_message, &signature)
+            .is_err(),
+        "signature should NOT verify against underivedring public key"
+    );
+
+    // Test failed policy access: a DID with no relationship should be denied
+    let sign_no_access = cli_tool::do_sign(
+        endpoint.clone(),
+        sign_message.to_vec(),
+        full_namespace.clone(),
+        derivation_id.clone(),
+        Some("unauthorized_did_key".to_string()),
+        None,
+        None,
+    )
+    .await;
+
+    let err = sign_no_access.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("Access denied: policy check failed"),
+        "Expected policy check failure for unauthorized DID, got: {}",
+        err
+    );
+
+    println!("Sign correctly rejected unauthorized DID!");
 
     // Cleanup happens automatically when _network is dropped
 }

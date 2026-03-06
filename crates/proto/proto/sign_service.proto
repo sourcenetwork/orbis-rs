@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package sign_service;
+
+service SignService {
+  rpc StartSign(StartSignRequest) returns (StartSignResponse);
+}
+
+message TimestampRange {
+  uint64 start = 1;
+  uint64 end = 2;
+}
+
+message StartSignRequest {
+  // Raw bytes to sign
+  bytes message = 1;
+  // Namespace of the KeyDerivation entry on the bulletin
+  string namespace = 2;
+  // Object ID of the KeyDerivation entry on the bulletin
+  string derivation_id = 3;
+  // Optional timestamp range for validity window
+  optional TimestampRange valid_window = 4;
+}
+
+message StartSignResponse {
+  string status = 1;
+  string message = 2;
+  int64 created_at = 3;
+  // Hex-encoded recovered threshold signature
+  string signature = 4;
+}

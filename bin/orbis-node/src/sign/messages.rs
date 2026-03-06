@@ -3,7 +3,33 @@
 //! This module defines the message types used for threshold BLS signing
 //! protocol communication between nodes over the network.
 
+use authz::sourcehub::ValidWindow;
 use serde::{Deserialize, Serialize};
+
+/// Distinguishes the two signing pathways.
+///
+/// - `Bulletin`: message is a serialized `BulletinPost`; authorization is its existence on chain.
+///   Signs from the root key (no derivation, no metadata).
+/// - `Policy`: policy-authorized derivation signing with JWT auth, mirrors the PRE flow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SignContext {
+    /// Message bytes are a serialized `BulletinPost` verified against the chain.
+    /// No derivation or metadata — signs from the root key.
+    Bulletin,
+    /// Policy-authorized signing: JWT token is validated and policy access is checked.
+    /// The derivation path is stored on the bulletin in the `KeyDerivation` entry and is
+    /// NOT passed by the client — it is fetched from the chain and used directly.
+    Policy {
+        /// Raw JWT string issued by the caller
+        token_string: String,
+        /// Namespace of the key derivation object on the bulletin
+        namespace: String,
+        /// Object ID of the key derivation entry
+        derivation_id: String,
+        /// Optional valid window for time-bounded authz checks
+        valid_window: Option<ValidWindow>,
+    },
+}
 
 /// Sign protocol message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,6 +40,9 @@ pub enum SignMessage {
         from_node_id: u32,
         /// Serialized ring public key (used to look up DKG share)
         ring_pk: Vec<u8>,
+        /// Auth context — responder validates auth here before generating the nonce,
+        /// so nonces are never burned for unauthorized requests.
+        context: SignContext,
     },
     /// Response with nonce commitment (FROST Round 1)
     NonceResponse {
@@ -30,6 +59,8 @@ pub enum SignMessage {
         message: Vec<u8>,
         /// Serialized list of (node_id, commitment_bytes) for FROST; empty for BLS
         all_commitments: Vec<u8>,
+        /// Signing pathway and auth context
+        context: SignContext,
     },
     /// Response from ring node to coordinator with signature share
     SignResponse {
