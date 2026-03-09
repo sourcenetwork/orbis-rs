@@ -1,19 +1,20 @@
 use crate::app_state::AppState;
-use crate::constants::{MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS};
+use crate::constants::MAX_SIGN_MESSAGE_BYTES;
+use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
 use crate::helpers::helpers::validate_all_peer_ids;
 use crate::metrics;
 use crate::sign::coordinator::SignCoordinator;
 use crate::sign::error::SignError;
 use crate::sign::helpers::{check_policy_access, fetch_bulletin_payloads, validate_sign_claims};
 use crate::sign::messages::SignContext;
-use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, SignClaims};
+use authn::SignClaims;
 use authz::sourcehub::ValidWindow;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crypto::SigShareInner;
 use crypto::SignaturePoint;
 use proto::sign_service::{sign_service_server::SignService, StartSignRequest, StartSignResponse};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 /// Implementation of the SignService (Policy pathway only)
@@ -67,14 +68,11 @@ where
         let start = Instant::now();
 
         // get timestamp (needed for JWT validation) ---
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| {
-                let duration = start.elapsed().as_secs_f64();
-                metrics::record_grpc_request("sign", "start_sign", "error", duration);
-                Status::internal(format!("Failed to get timestamp: {}", e))
-            })?
-            .as_secs();
+        let current_time = current_unix_time().map_err(|e| {
+            let duration = start.elapsed().as_secs_f64();
+            metrics::record_grpc_request("sign", "start_sign", "error", duration);
+            Status::internal(e)
+        })?;
 
         // reject oversized messages before any crypto work ---
         if request.get_ref().message.len() > MAX_SIGN_MESSAGE_BYTES {
@@ -87,13 +85,9 @@ where
         }
 
         // extract and validate JWT (no IO) ---
-        let token_string = extract_bearer_token(&request)
-            .map_err(|e| SignError::Unauthorized(e.to_string()))?
-            .to_string();
-
-        let token: BearerToken<SignClaims> =
-            resolve_jwt_did(&token_string, current_time, MAX_TOKEN_LIFETIME_SECS)
-                .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+        let (token_string, token) =
+            extract_and_validate_jwt::<SignClaims, _>(&request, current_time)
+                .map_err(|e| SignError::Unauthorized(e))?;
 
         let req = request.into_inner();
 
