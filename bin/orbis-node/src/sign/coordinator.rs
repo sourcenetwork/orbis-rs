@@ -28,7 +28,7 @@ use crate::sign::helpers::{
     fetch_key_derivation, load_dist_key_share, serialize_commitments, try_load_dist_key_share,
     validate_sign_claims,
 };
-use crate::sign::messages::{SignContext, SignMessage};
+use crate::sign::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{
@@ -102,40 +102,21 @@ where
         sender_peer_id: &PeerId,
     ) -> Result<Option<SignMessage>> {
         match message {
-            SignMessage::NonceRequest {
-                request_id,
-                ring_pk,
-                context,
-                ..
-            } => {
+            SignMessage::NonceRequest(req) => {
                 tracing::info!(
-                    request_id = %request_id,
+                    request_id = %req.request_id,
                     sender_peer = %hex::encode(sender_peer_id.as_bytes()),
                     "Sign Coordinator: Received NonceRequest"
                 );
-                self.handle_nonce_request(request_id, ring_pk, context)
-                    .await
+                self.handle_nonce_request(req).await
             }
-            SignMessage::SignRequest {
-                request_id,
-                from_node_id,
-                message,
-                all_commitments,
-                context,
-            } => {
+            SignMessage::SignRequest(req) => {
                 tracing::info!(
-                    request_id = %request_id,
-                    from_node_id = from_node_id,
+                    request_id = %req.request_id,
+                    from_node_id = req.from_node_id,
                     "Sign Coordinator: Received SignRequest"
                 );
-                self.handle_sign_request(
-                    request_id,
-                    from_node_id,
-                    message,
-                    all_commitments,
-                    context,
-                )
-                .await
+                self.handle_sign_request(req).await
             }
             SignMessage::SignResponse { .. } | SignMessage::NonceResponse { .. } => {
                 tracing::debug!(
@@ -160,12 +141,13 @@ where
     /// Auth is checked here — before generating (and burning) a nonce — so that
     /// an untrusted relayer cannot waste node resources by sending unauthenticated
     /// requests. Only if auth passes does the nonce get generated and stored.
-    async fn handle_nonce_request(
-        &self,
-        request_id: String,
-        ring_pk_bytes: Vec<u8>,
-        context: SignContext,
-    ) -> Result<Option<SignMessage>> {
+    async fn handle_nonce_request(&self, req: NonceRequest) -> Result<Option<SignMessage>> {
+        let NonceRequest {
+            request_id,
+            ring_pk: ring_pk_bytes,
+            context,
+            ..
+        } = req;
         // Auth check first — fail fast before burning a nonce.
         if let SignContext::Policy {
             ref token_string,
@@ -240,14 +222,14 @@ where
     }
 
     /// Handle a sign request (responder side)
-    async fn handle_sign_request(
-        &self,
-        request_id: String,
-        from_node_id: u32,
-        message: Vec<u8>,
-        all_commitments_bytes: Vec<u8>,
-        context: SignContext,
-    ) -> Result<Option<SignMessage>> {
+    async fn handle_sign_request(&self, req: SignRequest) -> Result<Option<SignMessage>> {
+        let SignRequest {
+            request_id,
+            from_node_id,
+            message,
+            all_commitments: all_commitments_bytes,
+            context,
+        } = req;
         // Note: We do NOT validate from_node_id here because the sign request initiator
         // may not be in the ring (external requesters use node_id=0).
 
@@ -659,13 +641,13 @@ where
                 continue;
             }
 
-            let request = SignMessage::SignRequest {
+            let request = SignMessage::SignRequest(SignRequest {
                 request_id: request_id.clone(),
                 from_node_id: node_id,
                 message: message.clone(),
                 all_commitments: all_commitments_bytes.clone(),
                 context: context.clone(),
-            };
+            });
 
             let peer_id = peer_id_str.clone();
             let req_id = request_id.clone();
@@ -948,12 +930,12 @@ where
                 continue;
             }
 
-            let nonce_req = SignMessage::NonceRequest {
+            let nonce_req = SignMessage::NonceRequest(NonceRequest {
                 request_id: nonce_request_id.clone(),
                 from_node_id: node_id,
                 ring_pk: ring.ring_pk_bytes.clone(),
                 context: context.clone(),
-            };
+            });
 
             let peer_id = peer_id_str.clone();
             let req_id = nonce_request_id.clone();

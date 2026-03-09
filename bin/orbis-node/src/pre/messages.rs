@@ -30,15 +30,19 @@ pub struct PreRequestContext {
     pub valid_window: Option<ValidWindow>,
 }
 
+/// Wire message sent from the coordinator to each ring node requesting a reencryption share.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReencryptRequest {
+    pub request_id: String,
+    pub from_node_id: u32,
+    pub context: PreRequestContext,
+}
+
 /// PRE protocol message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PreMessage {
     /// Request from coordinator to ring node for reencryption
-    ReencryptRequest {
-        request_id: String,
-        from_node_id: u32,
-        context: PreRequestContext,
-    },
+    ReencryptRequest(ReencryptRequest),
     /// Response from ring node to coordinator with reencryption share
     ReencryptResponse {
         request_id: String,
@@ -55,7 +59,7 @@ impl PreMessage {
     /// Get the request ID from any message
     pub fn request_id(&self) -> &str {
         match self {
-            PreMessage::ReencryptRequest { request_id, .. } => request_id,
+            PreMessage::ReencryptRequest(req) => &req.request_id,
             PreMessage::ReencryptResponse { request_id, .. } => request_id,
             PreMessage::Error { request_id, .. } => request_id,
         }

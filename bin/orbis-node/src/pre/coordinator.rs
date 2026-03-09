@@ -21,7 +21,7 @@ use crate::pre::helpers::{
     check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
     validate_pre_claims, verify_encryption_binding,
 };
-use crate::pre::messages::{PreMessage, PreRequestContext};
+use crate::pre::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
 use crypto::r#trait::{
     DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
@@ -91,21 +91,14 @@ where
     /// Routes the message to the appropriate handler based on message type.
     pub async fn handle_message(&self, message: PreMessage) -> Result<Option<PreMessage>> {
         match message {
-            PreMessage::ReencryptRequest {
-                request_id,
-                from_node_id,
-                context,
-            } => {
+            PreMessage::ReencryptRequest(req) => {
                 tracing::info!(
-                    request_id = %request_id,
-                    from_node_id = from_node_id,
+                    request_id = %req.request_id,
+                    from_node_id = req.from_node_id,
                     "PRE Coordinator: Received ReencryptRequest"
                 );
-
-                // Handle the reencryption request
                 // Note: from_node_id is not validated here (initiator may not be in ring).
-                self.handle_reencrypt_request(request_id, from_node_id, context)
-                    .await
+                self.handle_reencrypt_request(req).await
             }
             PreMessage::ReencryptResponse { .. } => {
                 tracing::debug!(
@@ -127,12 +120,12 @@ where
     }
 
     /// Handle a reencryption request (responder side)
-    async fn handle_reencrypt_request(
-        &self,
-        request_id: String,
-        from_node_id: u32,
-        ctx: PreRequestContext,
-    ) -> Result<Option<PreMessage>> {
+    async fn handle_reencrypt_request(&self, req: ReencryptRequest) -> Result<Option<PreMessage>> {
+        let ReencryptRequest {
+            request_id,
+            from_node_id,
+            context: ctx,
+        } = req;
         // Get current timestamp (needed for both auth and response)
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -523,11 +516,11 @@ where
                 continue;
             }
 
-            let request = PreMessage::ReencryptRequest {
+            let request = PreMessage::ReencryptRequest(ReencryptRequest {
                 request_id: request_id.clone(),
                 from_node_id: node_id,
                 context: ctx.clone(),
-            };
+            });
 
             let peer_id = peer_id_str.clone();
             let req_id = request_id.clone();
