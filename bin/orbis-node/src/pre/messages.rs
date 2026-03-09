@@ -6,6 +6,30 @@
 use authz::sourcehub::ValidWindow;
 use serde::{Deserialize, Serialize};
 
+/// All parameters specific to a reencryption request.
+///
+/// Mirrors the role of `SignContext` in the sign protocol — groups the auth,
+/// object identity, and crypto material that travel together through the PRE
+/// coordinator call chain and are forwarded to each ring node in the network
+/// message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreRequestContext {
+    /// Serialized reader public key (G1Affine)
+    pub rdr_pk_bytes: Vec<u8>,
+    /// Object ID of the encrypted document on the bulletin
+    pub object_id: String,
+    /// Raw JWT string issued by the caller
+    pub token_string: String,
+    /// Namespace of the document on the bulletin
+    pub namespace: String,
+    /// Optional key derivation bytes
+    pub derivation: Option<Vec<u8>>,
+    /// Optional salt for policy metadata binding
+    pub salt: Option<String>,
+    /// Optional valid window for time-bounded authz checks
+    pub valid_window: Option<ValidWindow>,
+}
+
 /// PRE protocol message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PreMessage {
@@ -13,13 +37,7 @@ pub enum PreMessage {
     ReencryptRequest {
         request_id: String,
         from_node_id: u32,
-        rdr_pk: Vec<u8>, // Serialized reader public key (G1Affine)
-        object_id: String,
-        token_string: String, // Client's token passed to ring nodes for auth
-        namespace: String,
-        derivation: Option<Vec<u8>>,
-        salt: Option<String>,
-        valid_window: Option<ValidWindow>,
+        context: PreRequestContext,
     },
     /// Response from ring node to coordinator with reencryption share
     ReencryptResponse {

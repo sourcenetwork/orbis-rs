@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::constants::MAX_SIGN_MESSAGE_BYTES;
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
-use crate::helpers::helpers::validate_all_peer_ids;
+use crate::helpers::helpers::{validate_all_peer_ids, RingConfig};
 use crate::metrics;
 use crate::sign::coordinator::SignCoordinator;
 use crate::sign::error::SignError;
@@ -154,17 +154,20 @@ where
         // Initiate threshold signing (network protocol) ---
         metrics::record_sign_request_started();
         let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
-        let total_nodes = ring_payload.peer_ids.len();
+        let total_participants = ring_payload.peer_ids.len();
+        let ring = RingConfig {
+            ring_pk_bytes,
+            peer_ids: ring_payload.peer_ids,
+            threshold: ring_payload.threshold as usize,
+            total_participants,
+            public_polynomial_hex: ring_payload.public_polynomial,
+        };
 
         let result = coordinator
             .initiate_signing(
                 request_id,
-                ring_pk_bytes,
+                ring,
                 req.message,
-                &ring_payload.peer_ids,
-                ring_payload.threshold as usize,
-                total_nodes,
-                &ring_payload.public_polynomial,
                 SignContext::Policy {
                     token_string,
                     namespace: req.namespace,

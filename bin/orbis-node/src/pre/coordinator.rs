@@ -14,15 +14,15 @@ use crate::app_state::AppState;
 use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::constants::PEER_RESPONSE_TIMEOUT;
 use crate::constants::PRE_COLLECTION_TIMEOUT;
+use crate::helpers::helpers::RingConfig;
 use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
 use crate::pre::error::{PreError, Result};
 use crate::pre::helpers::{
     check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
     validate_pre_claims, verify_encryption_binding,
 };
-use crate::pre::messages::PreMessage;
+use crate::pre::messages::{PreMessage, PreRequestContext};
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
-use authz::sourcehub::ValidWindow;
 use crypto::r#trait::{
     DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
 };
@@ -94,13 +94,7 @@ where
             PreMessage::ReencryptRequest {
                 request_id,
                 from_node_id,
-                rdr_pk,
-                object_id,
-                token_string,
-                namespace,
-                derivation,
-                salt,
-                valid_window,
+                context,
             } => {
                 tracing::info!(
                     request_id = %request_id,
@@ -110,18 +104,8 @@ where
 
                 // Handle the reencryption request
                 // Note: from_node_id is not validated here (initiator may not be in ring).
-                self.handle_reencrypt_request(
-                    request_id,
-                    from_node_id,
-                    rdr_pk,
-                    object_id,
-                    token_string,
-                    namespace,
-                    derivation,
-                    salt,
-                    valid_window,
-                )
-                .await
+                self.handle_reencrypt_request(request_id, from_node_id, context)
+                    .await
             }
             PreMessage::ReencryptResponse { .. } => {
                 tracing::debug!(
@@ -147,13 +131,7 @@ where
         &self,
         request_id: String,
         from_node_id: u32,
-        rdr_pk_bytes: Vec<u8>, // Serialized reader public key (G1Affine)
-        object_id: String,
-        token_string: String, // Client's token passed to ring nodes for auth
-        namespace: String,
-        derivation: Option<Vec<u8>>,
-        salt: Option<String>,
-        valid_window: Option<ValidWindow>,
+        ctx: PreRequestContext,
     ) -> Result<Option<PreMessage>> {
         // Get current timestamp (needed for both auth and response)
         let current_time = SystemTime::now()
@@ -162,21 +140,22 @@ where
             .as_secs();
 
         let token: BearerToken<PreClaims> =
-            resolve_jwt_did(&token_string, current_time, MAX_TOKEN_LIFETIME_SECS)
+            resolve_jwt_did(&ctx.token_string, current_time, MAX_TOKEN_LIFETIME_SECS)
                 .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 
         // 2. Authorize: Validate JWT claims match request fields
         validate_pre_claims(
             &token,
-            &rdr_pk_bytes,
-            &object_id,
-            &namespace,
-            &derivation,
-            &salt,
+            &ctx.rdr_pk_bytes,
+            &ctx.object_id,
+            &ctx.namespace,
+            &ctx.derivation,
+            &ctx.salt,
         )?;
 
         let (document_payload, ring_payload) =
-            fetch_bulletin_payloads(&*self.app_state.bulletin, &namespace, &object_id).await?;
+            fetch_bulletin_payloads(&*self.app_state.bulletin, &ctx.namespace, &ctx.object_id)
+                .await?;
 
         // Note: We do NOT validate from_node_id here because the reencrypt request initiator
         // may not be in the ring (external requesters use node_id=0).
@@ -188,15 +167,15 @@ where
             &document_payload.permission,
             document_payload.tier.as_deref(),
             document_payload.timestamp,
-            salt.as_deref(),
+            ctx.salt.as_deref(),
         );
 
         check_policy_access(
             &*self.app_state.authz,
             &document_payload,
-            &object_id,
+            &ctx.object_id,
             &token.issuer_id,
-            valid_window,
+            ctx.valid_window,
         )
         .await?;
 
@@ -204,7 +183,7 @@ where
         let secret = deserialize_secret(&document_payload.document)?;
 
         // 2. Deserialize reader public key
-        let rdr_pk = <D::PublicKey>::from_bytes(&rdr_pk_bytes[..]).map_err(|e| {
+        let rdr_pk = <D::PublicKey>::from_bytes(&ctx.rdr_pk_bytes[..]).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize reader public key: {}", e))
         })?;
 
@@ -243,13 +222,13 @@ where
         // Check permission binding - verify proof before re-encryption
         verify_encryption_binding(
             &ring_pk,
-            derivation.as_deref(),
+            ctx.derivation.as_deref(),
             document_payload.proof,
             &secret.enc_cmt,
             &policy_metadata,
         )?;
         let reply = dealer
-            .reencrypt(&dist_key_share, &secret, &rdr_pk, derivation.as_deref())
+            .reencrypt(&dist_key_share, &secret, &rdr_pk, ctx.derivation.as_deref())
             .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;
 
         // 8. Serialize the reply components using trait methods
@@ -400,28 +379,18 @@ where
     /// Sends reencryption requests to all ring nodes, collects responses,
     /// verifies them, and recovers the reencrypted commitment.
     ///
-    /// Ring information (threshold, public_polynomial, total_nodes) is read from the bulletin
-    /// by the service layer and passed to this function.
+    /// Ring information is read from the bulletin by the service layer and
+    /// provided via `ring`. Request auth and object identity are in `ctx`.
     pub async fn initiate_reencryption(
         &self,
         request_id: String,
-        ring_pk_bytes: Vec<u8>,
+        ring: RingConfig,
         secret_bytes: Vec<u8>,
-        rdr_pk_bytes: Vec<u8>,
-        peer_ids: &[String],
-        threshold: usize,
-        total_participants: usize,
-        public_polynomial_hex: &str,
-        object_id: String,
-        token_string: String,
-        namespace: String,
-        derivation: Option<Vec<u8>>,
-        salt: Option<String>,
-        valid_window: Option<ValidWindow>,
+        ctx: PreRequestContext,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
         let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
-        let node_id_opt = determine_session_node_id(&our_peer_id, peer_ids);
+        let node_id_opt = determine_session_node_id(&our_peer_id, &ring.peer_ids);
 
         // self_in_list derived from node_id - guarantees consistency
         let self_in_list = node_id_opt.is_some();
@@ -431,21 +400,22 @@ where
 
         // Count how many peers we'll actually contact (excluding self)
         let actual_peer_count = if self_in_list {
-            peer_ids.len() - 1
+            ring.peer_ids.len() - 1
         } else {
-            peer_ids.len()
+            ring.peer_ids.len()
         };
 
         tracing::info!(
             request_id = %request_id,
             peer_count = actual_peer_count,
             self_in_list = self_in_list,
-            threshold = threshold,
+            threshold = ring.threshold,
             "PRE Coordinator: Initiating reencryption"
         );
 
         // Build the list of peers we expect responses from (everyone except self)
-        let expected_peers: Vec<String> = peer_ids
+        let expected_peers: Vec<String> = ring
+            .peer_ids
             .iter()
             .filter(|pid| !is_self_peer_id(&self.app_state.network, pid))
             .cloned()
@@ -469,22 +439,12 @@ where
         let result = self
             .initiate_reencryption_inner(
                 request_id,
-                ring_pk_bytes,
+                ring,
                 secret_bytes,
-                rdr_pk_bytes,
-                peer_ids,
-                threshold,
-                total_participants,
-                public_polynomial_hex,
-                object_id,
-                token_string,
-                namespace,
                 node_id,
                 self_in_list,
                 actual_peer_count,
-                derivation,
-                salt,
-                valid_window,
+                ctx,
             )
             .await;
 
@@ -504,25 +464,15 @@ where
     async fn initiate_reencryption_inner(
         &self,
         request_id: String,
-        ring_pk_bytes: Vec<u8>,
+        ring: RingConfig,
         secret_bytes: Vec<u8>,
-        rdr_pk_bytes: Vec<u8>,
-        peer_ids: &[String],
-        threshold: usize,
-        total_participants: usize,
-        public_polynomial_hex: &str,
-        object_id: String,
-        token_string: String,
-        namespace: String,
         node_id: u32,
         self_in_list: bool,
         actual_peer_count: usize,
-        derivation: Option<Vec<u8>>,
-        salt: Option<String>,
-        valid_window: Option<ValidWindow>,
+        ctx: PreRequestContext,
     ) -> Result<Vec<u8>> {
         // 1. Deserialize public polynomial from bulletin data
-        let pub_poly_bytes = hex::decode(public_polynomial_hex).map_err(|e| {
+        let pub_poly_bytes = hex::decode(&ring.public_polynomial_hex).map_err(|e| {
             PreError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
         })?;
         let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
@@ -537,15 +487,15 @@ where
             actual_peer_count
         };
 
-        if potential_shares < threshold {
+        if potential_shares < ring.threshold {
             return Err(PreError::InsufficientShares {
                 got: potential_shares,
-                need: threshold,
+                need: ring.threshold,
             });
         }
 
         // 2. Deserialize reader public key
-        let rdr_pk = <D::PublicKey>::from_bytes(&rdr_pk_bytes[..]).map_err(|e| {
+        let rdr_pk = <D::PublicKey>::from_bytes(&ctx.rdr_pk_bytes[..]).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize reader public key: {}", e))
         })?;
 
@@ -566,7 +516,7 @@ where
         // Keep a copy of secret_bytes for later deserialization
         let secret_bytes_for_later = secret_bytes.clone();
 
-        for peer_id_str in peer_ids {
+        for peer_id_str in &ring.peer_ids {
             // Skip self - don't try to connect to ourselves
             if is_self_peer_id(&self.app_state.network, peer_id_str) {
                 tracing::debug!(peer_id = %peer_id_str, "Skipping self when sending reencrypt request");
@@ -576,13 +526,7 @@ where
             let request = PreMessage::ReencryptRequest {
                 request_id: request_id.clone(),
                 from_node_id: node_id,
-                rdr_pk: rdr_pk_bytes.clone(),
-                object_id: object_id.clone(),
-                token_string: token_string.clone(),
-                namespace: namespace.clone(),
-                derivation: derivation.clone(),
-                salt: salt.clone(),
-                valid_window: valid_window.clone(),
+                context: ctx.clone(),
             };
 
             let peer_id = peer_id_str.clone();
@@ -628,9 +572,9 @@ where
 
         // Check if we have enough responses (accounting for local share if self is participating)
         let min_needed_from_network = if self_in_list {
-            threshold.saturating_sub(1) // We'll contribute our own share locally
+            ring.threshold.saturating_sub(1) // We'll contribute our own share locally
         } else {
-            threshold
+            ring.threshold
         };
 
         if collected_responses.len() < min_needed_from_network {
@@ -649,7 +593,7 @@ where
         // If we're in the peer list (self_in_list), compute our own share locally
         if self_in_list {
             // Try to get our local share and compute reencryption
-            let ring_pk = <D::PublicKey>::from_bytes(&ring_pk_bytes[..]).map_err(|e| {
+            let ring_pk = <D::PublicKey>::from_bytes(&ring.ring_pk_bytes[..]).map_err(|e| {
                 PreError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
             })?;
 
@@ -661,8 +605,12 @@ where
                     let dist_key_share = DistKeyShare { pri_share };
 
                     // Perform local reencryption
-                    match dealer.reencrypt(&dist_key_share, &secret, &rdr_pk, derivation.as_deref())
-                    {
+                    match dealer.reencrypt(
+                        &dist_key_share,
+                        &secret,
+                        &rdr_pk,
+                        ctx.derivation.as_deref(),
+                    ) {
                         Ok(reply) => {
                             tracing::debug!(
                                 from_node_id = reply.share.i,
@@ -720,7 +668,13 @@ where
                 };
 
                 // Verify the reply
-                match dealer.verify(&rdr_pk, &pub_poly, &enc_cmt, &reply, derivation.as_deref()) {
+                match dealer.verify(
+                    &rdr_pk,
+                    &pub_poly,
+                    &enc_cmt,
+                    &reply,
+                    ctx.derivation.as_deref(),
+                ) {
                     Ok(_) => {
                         tracing::debug!(
                             from_node_id = from_node_id,
@@ -740,16 +694,16 @@ where
         }
 
         // 8. Check if we have enough verified shares
-        if verified_shares.len() < threshold {
+        if verified_shares.len() < ring.threshold {
             return Err(PreError::InsufficientShares {
                 got: verified_shares.len(),
-                need: threshold,
+                need: ring.threshold,
             });
         }
 
         // 9. Recover the reencrypted commitment
         let xnc_cmt_opt = dealer
-            .recover(&verified_shares, threshold, total_participants)
+            .recover(&verified_shares, ring.threshold, ring.total_participants)
             .map_err(|e| {
                 PreError::RecoveryFailed(format!("Failed to recover commitment: {}", e))
             })?;

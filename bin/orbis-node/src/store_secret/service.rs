@@ -2,6 +2,7 @@ use crate::app_state::AppState;
 use crate::constants::{
     BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, MAX_TOKEN_LIFETIME_SECS,
 };
+use crate::helpers::helpers::RingConfig;
 use crate::metrics;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::messages::SignContext;
@@ -252,17 +253,21 @@ where
             // Generate random session id
             let session_id: u64 = rand::random();
             let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
+            let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
+                .map_err(|e| StoreSecretError::Validation(format!("Invalid ring_pk hex: {}", e)))?;
+            let total_participants = ring_payload.peer_ids.len();
+            let ring = RingConfig {
+                ring_pk_bytes,
+                peer_ids: ring_payload.peer_ids,
+                threshold: ring_payload.threshold as usize,
+                total_participants,
+                public_polynomial_hex: ring_payload.public_polynomial,
+            };
             let response_bytes = coordinator
                 .initiate_signing(
                     session_id.to_string(),
-                    hex::decode(&ring_payload.ring_pk).map_err(|e| {
-                        StoreSecretError::Validation(format!("Invalid ring_pk hex: {}", e))
-                    })?,
+                    ring,
                     message_to_sign,
-                    &ring_payload.peer_ids,
-                    ring_payload.threshold as usize,
-                    ring_payload.peer_ids.len(),
-                    &ring_payload.public_polynomial,
                     SignContext::Bulletin,
                 )
                 .await

@@ -4,6 +4,7 @@
 //! These tests verify the complete flow: DKG → Sign message → Verify signature.
 
 use crate::constants::{BULLETIN_PLACEHOLDER_PROOF, MAX_SIGN_MESSAGE_BYTES};
+use crate::helpers::helpers::RingConfig;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, get_test_ring_post,
     setup_three_node_network_with_sign, test_db_path, TestKeyPair,
@@ -138,12 +139,14 @@ async fn test_dkg_then_sign_end_to_end() {
     let sign_response_bytes = sign_coordinator
         .initiate_signing(
             request_id.clone(),
-            ring_pk_bytes.clone(),
+            RingConfig {
+                ring_pk_bytes: ring_pk_bytes.clone(),
+                peer_ids: sign_peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             message.clone(),
-            &sign_peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
             SignContext::Bulletin,
         )
         .await
@@ -356,12 +359,14 @@ async fn test_sign_different_messages() {
         let sign_response_bytes = sign_coordinator
             .initiate_signing(
                 request_id,
-                ring_pk_bytes.clone(),
+                RingConfig {
+                    ring_pk_bytes: ring_pk_bytes.clone(),
+                    peer_ids: peer_ids.clone(),
+                    threshold: ring_payload.threshold as usize,
+                    total_participants: ring_payload.peer_ids.len(),
+                    public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                },
                 message.clone(),
-                &peer_ids,
-                ring_payload.threshold as usize,
-                ring_payload.peer_ids.len(),
-                &ring_payload.public_polynomial,
                 SignContext::Bulletin,
             )
             .await
@@ -461,12 +466,14 @@ async fn test_sign_fails_wrong_message() {
     let sign_response_bytes = sign_coordinator
         .initiate_signing(
             request_id,
-            ring_pk_bytes.clone(),
+            RingConfig {
+                ring_pk_bytes: ring_pk_bytes.clone(),
+                peer_ids: peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             original_message.clone(),
-            &peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
             SignContext::Bulletin,
         )
         .await
@@ -571,12 +578,14 @@ async fn test_sign_response_cleanup() {
     let _sign_response_bytes = sign_coordinator
         .initiate_signing(
             request_id.clone(),
-            ring_pk_bytes.clone(),
+            RingConfig {
+                ring_pk_bytes: ring_pk_bytes.clone(),
+                peer_ids: peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             message,
-            &peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
             SignContext::Bulletin,
         )
         .await
@@ -667,12 +676,14 @@ async fn test_sign_fails_invalid_bulletin_post() {
     let sign_result = sign_coordinator
         .initiate_signing(
             request_id,
-            ring_pk_bytes,
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             invalid_message.to_vec(),
-            &peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
             SignContext::Bulletin,
         )
         .await;
@@ -775,12 +786,14 @@ async fn test_sign_fails_post_not_on_bulletin() {
     let sign_result = sign_coordinator
         .initiate_signing(
             request_id,
-            ring_pk_bytes,
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             fake_message,
-            &peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
             SignContext::Bulletin,
         )
         .await;
@@ -918,12 +931,14 @@ async fn test_sign_fails_tampered_payload() {
     let sign_result = sign_coordinator
         .initiate_signing(
             request_id,
-            ring_pk_bytes,
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             tampered_message,
-            &peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
             SignContext::Bulletin,
         )
         .await;
@@ -1045,12 +1060,14 @@ async fn test_sign_fails_invalid_ring_id() {
     let sign_result = sign_coordinator
         .initiate_signing(
             request_id,
-            ring_pk_bytes,
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             message,
-            &peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
             SignContext::Bulletin,
         )
         .await;
@@ -1187,12 +1204,14 @@ async fn test_dkg_then_sign_policy_end_to_end() {
     let sign_response_bytes = sign_coordinator
         .initiate_signing(
             request_id,
-            ring_pk_bytes.clone(),
+            RingConfig {
+                ring_pk_bytes: ring_pk_bytes.clone(),
+                peer_ids: peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             message.clone(),
-            &peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
             SignContext::Policy {
                 token_string: sign_token,
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
@@ -1324,12 +1343,14 @@ async fn test_sign_policy_fails_invalid_jwt() {
                     .unwrap()
                     .as_millis()
             ),
-            ring_pk_bytes,
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             b"some message".to_vec(),
-            &peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
             SignContext::Policy {
                 token_string: "this.is.not.a.valid.jwt".to_string(),
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
@@ -1427,12 +1448,14 @@ async fn test_sign_policy_fails_wrong_namespace() {
                     .unwrap()
                     .as_millis()
             ),
-            ring_pk_bytes,
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             b"some message".to_vec(),
-            &peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
             SignContext::Policy {
                 token_string: sign_token,
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
@@ -1533,12 +1556,14 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                     .unwrap()
                     .as_millis()
             ),
-            ring_pk_bytes,
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             b"some message".to_vec(),
-            &peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
             SignContext::Policy {
                 token_string: sign_token,
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
