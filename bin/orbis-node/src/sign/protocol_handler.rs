@@ -1,62 +1,16 @@
 //! Sign Protocol Handler
 //!
-//! This module implements the protocol handler for threshold BLS signing
-//! communication between nodes over the network.
-//!
-//! The handler acts as the network layer:
-//! - Accepts connections (authentication via iroh)
-//! - Reads/writes messages
-//! - Routes messages to the Sign coordinator
-//!
-//! The actual signing protocol logic is handled by the Sign coordinator.
+//! Implements `MessageCoordinator` for `SignCoordinator`, plugging it into the
+//! generic `GenericProtocolHandler` loop defined in `helpers::protocol_handler`.
 
-use crate::app_state::AppState;
+use crate::helpers::protocol_handler::MessageCoordinator;
 use crate::sign::coordinator::SignCoordinator;
 use crate::sign::messages::SignMessage;
 use async_trait::async_trait;
-use network::error::Result as NetworkResult;
-use network::{Connection, Message, ProtocolHandler};
-use std::sync::Arc;
-
-/// Sign Protocol Handler
-///
-/// Network layer handler that accepts connections and routes messages
-/// to this node's Sign coordinator for processing.
-pub struct SignProtocolHandler<D, S>
-where
-    D: crypto::r#trait::Dkg + Clone + 'static,
-    S: crypto::r#trait::ThresholdSigner,
-{
-    coordinator: Arc<SignCoordinator<D, S>>,
-}
-
-impl<D, S> SignProtocolHandler<D, S>
-where
-    D: crypto::r#trait::Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    S: crypto::r#trait::ThresholdSigner<
-            ShareValue = crypto::ScalarField,
-            PublicKey = crypto::GroupAffine,
-            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
-            PubPoly = D::PubPoly,
-            Signature = crypto::SignaturePoint,
-            SigShare = crypto::r#trait::PubShare<crypto::SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
-{
-    /// Create a new Sign protocol handler with access to app state
-    pub fn new(app_state: Arc<AppState<D>>) -> Self {
-        let coordinator = Arc::new(SignCoordinator::new(app_state));
-        Self { coordinator }
-    }
-}
+use network::PeerId;
 
 #[async_trait]
-impl<D, S> ProtocolHandler for SignProtocolHandler<D, S>
+impl<D, S> MessageCoordinator for SignCoordinator<D, S>
 where
     D: crypto::r#trait::Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
         + Clone
@@ -74,107 +28,44 @@ where
         + Sync
         + 'static,
 {
-    async fn handle(&self, connection: Box<dyn Connection>) -> NetworkResult<()> {
-        let peer_id = connection.peer_id().clone();
-        tracing::info!(peer_id = ?peer_id, "Sign Protocol: Accepted connection from peer");
+    type Msg = SignMessage;
 
-        // Read messages from the connection and route them to the coordinator
-        loop {
-            // Receive a message from the connection
-            let network_message = match connection.recv().await {
-                Ok(msg) => msg,
-                Err(e) => {
-                    // Connection closed or error
-                    tracing::debug!(
-                        peer_id = ?peer_id,
-                        error = %e,
-                        "Sign Protocol: Connection closed or error from peer"
-                    );
-                    break;
-                }
-            };
+    fn protocol_name(&self) -> &'static str {
+        "Sign"
+    }
 
-            // Deserialize the Sign message
-            let sign_message: SignMessage = match serde_json::from_slice(&network_message.data) {
-                Ok(msg) => msg,
-                Err(e) => {
-                    tracing::error!(
-                        peer_id = ?peer_id,
-                        error = %e,
-                        "Sign Protocol: Failed to deserialize message from peer"
-                    );
-                    // Send error response
-                    let error_msg = SignMessage::Error {
-                        request_id: String::from("unknown"),
-                        error: format!("Failed to deserialize message: {}", e),
-                    };
-                    if let Ok(error_data) = serde_json::to_vec(&error_msg) {
-                        let _ = connection
-                            .send(Message::new(error_data, network_message.protocol))
-                            .await;
-                    }
-                    continue;
-                }
-            };
+    fn message_id(msg: &SignMessage) -> String {
+        msg.request_id().to_string()
+    }
 
-            tracing::debug!(
-                message_type = ?std::mem::discriminant(&sign_message),
-                request_id = %sign_message.request_id(),
-                peer_id = ?peer_id,
-                "Sign Protocol: Received message"
-            );
-
-            // Special handling for responses - store them for the initiator
-            if matches!(
-                &sign_message,
-                SignMessage::SignResponse { .. } | SignMessage::NonceResponse { .. }
-            ) {
-                self.coordinator
-                    .store_response(sign_message, &peer_id)
-                    .await;
-                continue;
-            }
-
-            // Capture request_id before moving sign_message into handle_message
-            let req_id = sign_message.request_id().to_string();
-
-            // Route message to coordinator with authenticated peer identity
-            match self
-                .coordinator
-                .handle_message(sign_message, &peer_id)
-                .await
-            {
-                Ok(Some(response)) => {
-                    // Send response back
-                    if let Ok(response_data) = serde_json::to_vec(&response) {
-                        if let Err(e) = connection
-                            .send(Message::new(response_data, network_message.protocol))
-                            .await
-                        {
-                            tracing::error!(error = %e, "Sign Protocol: Failed to send response");
-                        }
-                    }
-                }
-                Ok(None) => {
-                    // No response needed
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Sign Protocol: Error handling message");
-                    // Send error response with the actual request_id
-                    let error_msg = SignMessage::Error {
-                        request_id: req_id,
-                        error: e.to_string(),
-                    };
-                    if let Ok(error_data) = serde_json::to_vec(&error_msg) {
-                        let _ = connection
-                            .send(Message::new(error_data, network_message.protocol))
-                            .await;
-                    }
-                }
-            }
+    fn make_error(&self, id: &str, error: String) -> SignMessage {
+        SignMessage::Error {
+            request_id: id.to_string(),
+            error,
         }
+    }
 
-        tracing::debug!(peer_id = ?peer_id, "Sign Protocol: Connection handler finished for peer");
-        Ok(())
+    /// `SignResponse` and `NonceResponse` messages are stored for the initiating
+    /// coordinator; all other messages are routed to `handle_message`.
+    async fn try_store_response(&self, msg: SignMessage, peer_id: &PeerId) -> Option<SignMessage> {
+        if matches!(
+            &msg,
+            SignMessage::SignResponse { .. } | SignMessage::NonceResponse { .. }
+        ) {
+            self.store_response(msg, peer_id).await;
+            None
+        } else {
+            Some(msg)
+        }
+    }
+
+    async fn route_message(
+        &self,
+        msg: SignMessage,
+        peer_id: &PeerId,
+    ) -> anyhow::Result<Option<SignMessage>> {
+        self.handle_message(msg, peer_id)
+            .await
+            .map_err(anyhow::Error::from)
     }
 }
