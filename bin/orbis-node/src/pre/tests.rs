@@ -19,8 +19,10 @@ use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tonic::Request;
 
+use crate::helpers::helpers::RingConfig;
 use crate::pre::error::PreError;
 use crate::pre::helpers::check_policy_access;
+use crate::pre::messages::PreRequestContext;
 use bulletin::dummy::DummyBulletin;
 
 /// Generate policy metadata matching the test DocumentPayload fields.
@@ -242,19 +244,23 @@ async fn test_dkg_then_pre_end_to_end() {
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
             request_id.clone(),
-            ring_pk_bytes.clone(),
+            RingConfig {
+                ring_pk_bytes: ring_pk_bytes.clone(),
+                peer_ids: pre_peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             secret_bytes.clone(),
-            bob_pk_bytes.clone(),
-            &pre_peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
-            object_id,
-            pre_token,
-            namespace,
-            None,
-            None,
-            None,
+            PreRequestContext {
+                rdr_pk_bytes: bob_pk_bytes.clone(),
+                object_id,
+                token_string: pre_token,
+                namespace,
+                derivation: None,
+                salt: None,
+                valid_window: None,
+            },
         )
         .await
         .expect("PRE should succeed");
@@ -435,19 +441,23 @@ async fn test_pre_with_large_secret() {
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
             "large-pre-request".to_string(),
-            ring_pk_bytes,
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: pre_peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             secret_bytes,
-            bob_pk_bytes,
-            &pre_peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
-            object_id,
-            pre_token,
-            namespace,
-            None,
-            None,
-            None,
+            PreRequestContext {
+                rdr_pk_bytes: bob_pk_bytes,
+                object_id,
+                token_string: pre_token,
+                namespace,
+                derivation: None,
+                salt: None,
+                valid_window: None,
+            },
         )
         .await
         .expect("PRE should succeed");
@@ -564,19 +574,23 @@ async fn test_pre_fails_with_wrong_key() {
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
             "wrong-key-pre-request".to_string(),
-            ring_pk_bytes,
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: pre_peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             secret_bytes,
-            bob_pk_bytes,
-            &pre_peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
-            object_id,
-            pre_token,
-            namespace,
-            None,
-            None,
-            None,
+            PreRequestContext {
+                rdr_pk_bytes: bob_pk_bytes,
+                object_id,
+                token_string: pre_token,
+                namespace,
+                derivation: None,
+                salt: None,
+                valid_window: None,
+            },
         )
         .await
         .expect("PRE should succeed");
@@ -689,19 +703,23 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     let pre_result = pre_coordinator
         .initiate_reencryption(
             "invalid-token-pre-request".to_string(),
-            ring_pk_bytes,
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: pre_peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             secret_bytes,
-            bob_pk_bytes,
-            &pre_peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
-            object_id,
-            invalid_token,
-            namespace,
-            None,
-            None,
-            None,
+            PreRequestContext {
+                rdr_pk_bytes: bob_pk_bytes,
+                object_id,
+                token_string: invalid_token,
+                namespace,
+                derivation: None,
+                salt: None,
+                valid_window: None,
+            },
         )
         .await;
 
@@ -834,19 +852,23 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     let pre_result = pre_coordinator
         .initiate_reencryption(
             "mismatched-claims-pre-request".to_string(),
-            ring_pk_bytes,
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: pre_peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             secret_bytes,
-            bob_pk_bytes, // Actual rdr_pk doesn't match JWT claim
-            &pre_peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
-            object_id,
-            mismatched_token,
-            namespace,
-            None,
-            None,
-            None,
+            PreRequestContext {
+                rdr_pk_bytes: bob_pk_bytes, // Actual rdr_pk doesn't match JWT claim
+                object_id,
+                token_string: mismatched_token,
+                namespace,
+                derivation: None,
+                salt: None,
+                valid_window: None,
+            },
         )
         .await;
 
@@ -1122,19 +1144,23 @@ async fn test_pre_fails_with_wrong_derivation() {
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
             "correct-derivation-pre-request".to_string(),
-            ring_pk_bytes.clone(),
+            RingConfig {
+                ring_pk_bytes: ring_pk_bytes.clone(),
+                peer_ids: pre_peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             secret_bytes.clone(),
-            bob_pk_bytes.clone(),
-            &pre_peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
-            object_id.clone(),
-            pre_token,
-            namespace.clone(),
-            Some(correct_derivation.clone()),
-            None,
-            None,
+            PreRequestContext {
+                rdr_pk_bytes: bob_pk_bytes.clone(),
+                object_id: object_id.clone(),
+                token_string: pre_token,
+                namespace: namespace.clone(),
+                derivation: Some(correct_derivation.clone()),
+                salt: None,
+                valid_window: None,
+            },
         )
         .await
         .expect("PRE with correct derivation should succeed");
@@ -1285,19 +1311,23 @@ async fn test_pre_fails_with_bad_proof() {
     let pre_result = pre_coordinator
         .initiate_reencryption(
             "bad-proof-pre-request".to_string(),
-            ring_pk_bytes,
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: pre_peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+            },
             secret_bytes,
-            bob_pk_bytes,
-            &pre_peer_ids,
-            ring_payload.threshold as usize,
-            ring_payload.peer_ids.len(),
-            &ring_payload.public_polynomial,
-            object_id,
-            pre_token,
-            namespace,
-            None,
-            None,
-            None,
+            PreRequestContext {
+                rdr_pk_bytes: bob_pk_bytes,
+                object_id,
+                token_string: pre_token,
+                namespace,
+                derivation: None,
+                salt: None,
+                valid_window: None,
+            },
         )
         .await;
 

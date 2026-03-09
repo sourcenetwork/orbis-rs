@@ -407,6 +407,25 @@ pub fn determine_session_node_id(our_peer_id: &str, all_peer_ids: &[String]) -> 
         .map(|idx| (idx + 1) as u32)
 }
 
+/// Ring configuration fetched from the bulletin.
+///
+/// Groups the five bulletin-derived fields that always travel together through
+/// both the PRE and Sign coordinator call chains. Constructed in the service
+/// layer from a `RingPayload` after validation, then passed into the coordinator.
+#[derive(Debug, Clone)]
+pub struct RingConfig {
+    /// Decoded ring public key bytes (compressed G1Affine)
+    pub ring_pk_bytes: Vec<u8>,
+    /// Network addresses of all ring participants
+    pub peer_ids: Vec<String>,
+    /// Minimum shares required to reconstruct
+    pub threshold: usize,
+    /// Total number of nodes in the ring
+    pub total_participants: usize,
+    /// Hex-encoded public polynomial (for share verification)
+    pub public_polynomial_hex: String,
+}
+
 /// Convert session_id string to u64 using SHA-256 (cryptographic hash)
 ///
 /// This function allows string session IDs from the proto while DKGNode uses u64.

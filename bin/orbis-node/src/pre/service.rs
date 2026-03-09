@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
-use crate::helpers::helpers::validate_all_peer_ids;
+use crate::helpers::helpers::{validate_all_peer_ids, RingConfig};
 use crate::metrics;
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
@@ -8,6 +8,7 @@ use crate::pre::helpers::{
     check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
     validate_pre_claims, verify_encryption_binding,
 };
+use crate::pre::messages::PreRequestContext;
 use authn::PreClaims;
 use authz::sourcehub::ValidWindow;
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
@@ -143,9 +144,6 @@ where
         // Use original string bytes instead of re-serializing
         let secret_bytes = document_payload.document.as_bytes().to_vec();
 
-        // rdr_pk: compressed G1Affine bytes (received directly as bytes)
-        let rdr_pk = req.rdr_pk.clone();
-
         // 2. Validate we have peers
         if ring_payload.peer_ids.is_empty() {
             return Err(PreError::InvalidInput(
@@ -173,24 +171,25 @@ where
         // allowing threshold-of-n operation when some nodes are unreachable.
         metrics::record_pre_request_started();
         let coordinator = PreCoordinator::<D, T>::new(Arc::new(self.state.clone()));
-        let total_nodes = ring_payload.peer_ids.len();
+        let total_participants = ring_payload.peer_ids.len();
+        let ring = RingConfig {
+            ring_pk_bytes,
+            peer_ids: ring_payload.peer_ids,
+            threshold: ring_payload.threshold as usize,
+            total_participants,
+            public_polynomial_hex: ring_payload.public_polynomial,
+        };
+        let ctx = PreRequestContext {
+            rdr_pk_bytes: req.rdr_pk,
+            object_id: req.object_id,
+            token_string: token_str.to_string(),
+            namespace: req.namespace,
+            derivation: req.derivation,
+            salt: req.salt,
+            valid_window,
+        };
         let result = coordinator
-            .initiate_reencryption(
-                request_id,
-                ring_pk_bytes,
-                secret_bytes,
-                rdr_pk,
-                &ring_payload.peer_ids,
-                ring_payload.threshold as usize,
-                total_nodes,
-                &ring_payload.public_polynomial,
-                req.object_id,
-                token_str.to_string(),
-                req.namespace,
-                req.derivation,
-                req.salt,
-                valid_window,
-            )
+            .initiate_reencryption(request_id, ring, secret_bytes, ctx)
             .await?;
 
         // 6. Parse result as PreResponse and encode as JSON

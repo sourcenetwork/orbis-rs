@@ -36,19 +36,37 @@ pub enum SignContext {
     },
 }
 
+/// Wire message sent from the coordinator to each ring node requesting a nonce commitment
+/// (FROST Round 1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NonceRequest {
+    pub request_id: String,
+    pub from_node_id: u32,
+    /// Serialized ring public key (used to look up DKG share)
+    pub ring_pk: Vec<u8>,
+    /// Auth context — responder validates auth here before generating the nonce,
+    /// so nonces are never burned for unauthorized requests.
+    pub context: SignContext,
+}
+
+/// Wire message sent from the coordinator to each ring node requesting a signature share.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignRequest {
+    pub request_id: String,
+    pub from_node_id: u32,
+    /// Raw message to sign (will be hashed internally using hash-to-curve)
+    pub message: Vec<u8>,
+    /// Serialized list of (node_id, commitment_bytes) for FROST; empty for BLS
+    pub all_commitments: Vec<u8>,
+    /// Signing pathway and auth context
+    pub context: SignContext,
+}
+
 /// Sign protocol message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SignMessage {
     /// Request from coordinator to ring node for nonce commitments (FROST Round 1)
-    NonceRequest {
-        request_id: String,
-        from_node_id: u32,
-        /// Serialized ring public key (used to look up DKG share)
-        ring_pk: Vec<u8>,
-        /// Auth context — responder validates auth here before generating the nonce,
-        /// so nonces are never burned for unauthorized requests.
-        context: SignContext,
-    },
+    NonceRequest(NonceRequest),
     /// Response with nonce commitment (FROST Round 1)
     NonceResponse {
         request_id: String,
@@ -57,16 +75,7 @@ pub enum SignMessage {
         nonce_commitment: Vec<u8>,
     },
     /// Request from coordinator to ring node for signing
-    SignRequest {
-        request_id: String,
-        from_node_id: u32,
-        /// Raw message to sign (will be hashed internally using hash-to-curve)
-        message: Vec<u8>,
-        /// Serialized list of (node_id, commitment_bytes) for FROST; empty for BLS
-        all_commitments: Vec<u8>,
-        /// Signing pathway and auth context
-        context: SignContext,
-    },
+    SignRequest(SignRequest),
     /// Response from ring node to coordinator with signature share
     SignResponse {
         request_id: String,
@@ -82,9 +91,9 @@ impl SignMessage {
     /// Get the request ID from any message
     pub fn request_id(&self) -> &str {
         match self {
-            SignMessage::NonceRequest { request_id, .. } => request_id,
+            SignMessage::NonceRequest(req) => &req.request_id,
             SignMessage::NonceResponse { request_id, .. } => request_id,
-            SignMessage::SignRequest { request_id, .. } => request_id,
+            SignMessage::SignRequest(req) => &req.request_id,
             SignMessage::SignResponse { request_id, .. } => request_id,
             SignMessage::Error { request_id, .. } => request_id,
         }

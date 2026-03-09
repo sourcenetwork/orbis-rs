@@ -19,14 +19,16 @@ use crate::constants::{
     BULLETIN_RING_NAMESPACE, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
     PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
 };
-use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
+use crate::helpers::helpers::{
+    connect_to_peer, determine_session_node_id, is_self_peer_id, RingConfig,
+};
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
     fetch_key_derivation, load_dist_key_share, serialize_commitments, try_load_dist_key_share,
     validate_sign_claims,
 };
-use crate::sign::messages::{SignContext, SignMessage};
+use crate::sign::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{
@@ -100,40 +102,21 @@ where
         sender_peer_id: &PeerId,
     ) -> Result<Option<SignMessage>> {
         match message {
-            SignMessage::NonceRequest {
-                request_id,
-                ring_pk,
-                context,
-                ..
-            } => {
+            SignMessage::NonceRequest(req) => {
                 tracing::info!(
-                    request_id = %request_id,
+                    request_id = %req.request_id,
                     sender_peer = %hex::encode(sender_peer_id.as_bytes()),
                     "Sign Coordinator: Received NonceRequest"
                 );
-                self.handle_nonce_request(request_id, ring_pk, context)
-                    .await
+                self.handle_nonce_request(req).await
             }
-            SignMessage::SignRequest {
-                request_id,
-                from_node_id,
-                message,
-                all_commitments,
-                context,
-            } => {
+            SignMessage::SignRequest(req) => {
                 tracing::info!(
-                    request_id = %request_id,
-                    from_node_id = from_node_id,
+                    request_id = %req.request_id,
+                    from_node_id = req.from_node_id,
                     "Sign Coordinator: Received SignRequest"
                 );
-                self.handle_sign_request(
-                    request_id,
-                    from_node_id,
-                    message,
-                    all_commitments,
-                    context,
-                )
-                .await
+                self.handle_sign_request(req).await
             }
             SignMessage::SignResponse { .. } | SignMessage::NonceResponse { .. } => {
                 tracing::debug!(
@@ -158,12 +141,13 @@ where
     /// Auth is checked here — before generating (and burning) a nonce — so that
     /// an untrusted relayer cannot waste node resources by sending unauthenticated
     /// requests. Only if auth passes does the nonce get generated and stored.
-    async fn handle_nonce_request(
-        &self,
-        request_id: String,
-        ring_pk_bytes: Vec<u8>,
-        context: SignContext,
-    ) -> Result<Option<SignMessage>> {
+    async fn handle_nonce_request(&self, req: NonceRequest) -> Result<Option<SignMessage>> {
+        let NonceRequest {
+            request_id,
+            ring_pk: ring_pk_bytes,
+            context,
+            ..
+        } = req;
         // Auth check first — fail fast before burning a nonce.
         if let SignContext::Policy {
             ref token_string,
@@ -238,14 +222,14 @@ where
     }
 
     /// Handle a sign request (responder side)
-    async fn handle_sign_request(
-        &self,
-        request_id: String,
-        from_node_id: u32,
-        message: Vec<u8>,
-        all_commitments_bytes: Vec<u8>,
-        context: SignContext,
-    ) -> Result<Option<SignMessage>> {
+    async fn handle_sign_request(&self, req: SignRequest) -> Result<Option<SignMessage>> {
+        let SignRequest {
+            request_id,
+            from_node_id,
+            message,
+            all_commitments: all_commitments_bytes,
+            context,
+        } = req;
         // Note: We do NOT validate from_node_id here because the sign request initiator
         // may not be in the ring (external requesters use node_id=0).
 
@@ -500,20 +484,17 @@ where
     /// verifies them, and recovers the full signature.
     ///
     /// For interactive schemes (FROST), performs nonce collection round first.
+    /// Ring configuration from the bulletin is provided via `ring`.
     pub async fn initiate_signing(
         &self,
         request_id: String,
-        ring_pk_bytes: Vec<u8>,
+        ring: RingConfig,
         message: Vec<u8>,
-        peer_ids: &[String],
-        threshold: usize,
-        total_participants: usize,
-        public_polynomial_hex: &str,
         context: SignContext,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
         let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
-        let node_id_opt = determine_session_node_id(&our_peer_id, peer_ids);
+        let node_id_opt = determine_session_node_id(&our_peer_id, &ring.peer_ids);
 
         // self_in_list derived from node_id - guarantees consistency
         let self_in_list = node_id_opt.is_some();
@@ -523,21 +504,22 @@ where
 
         // Count how many peers we'll actually contact (excluding self)
         let actual_peer_count = if self_in_list {
-            peer_ids.len() - 1
+            ring.peer_ids.len() - 1
         } else {
-            peer_ids.len()
+            ring.peer_ids.len()
         };
 
         tracing::info!(
             request_id = %request_id,
             peer_count = actual_peer_count,
             self_in_list = self_in_list,
-            threshold = threshold,
+            threshold = ring.threshold,
             interactive = S::INTERACTIVE,
             "Sign Coordinator: Initiating signing"
         );
         // Build the list of peers we expect responses from (everyone except self)
-        let expected_peers: Vec<String> = peer_ids
+        let expected_peers: Vec<String> = ring
+            .peer_ids
             .iter()
             .filter(|pid| !is_self_peer_id(&self.app_state.network, pid))
             .cloned()
@@ -561,12 +543,8 @@ where
         let result = self
             .initiate_signing_inner(
                 request_id,
-                ring_pk_bytes,
+                ring,
                 message,
-                peer_ids,
-                threshold,
-                total_participants,
-                public_polynomial_hex,
                 node_id,
                 self_in_list,
                 actual_peer_count,
@@ -590,19 +568,15 @@ where
     async fn initiate_signing_inner(
         &self,
         request_id: String,
-        ring_pk_bytes: Vec<u8>,
+        ring: RingConfig,
         message: Vec<u8>,
-        peer_ids: &[String],
-        threshold: usize,
-        total_participants: usize,
-        public_polynomial_hex: &str,
         node_id: u32,
         self_in_list: bool,
         actual_peer_count: usize,
         context: SignContext,
     ) -> Result<Vec<u8>> {
         // 1. Deserialize public polynomial from bulletin data
-        let pub_poly_bytes = hex::decode(public_polynomial_hex).map_err(|e| {
+        let pub_poly_bytes = hex::decode(&ring.public_polynomial_hex).map_err(|e| {
             SignError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
         })?;
         let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
@@ -616,10 +590,10 @@ where
             actual_peer_count
         };
 
-        if potential_shares < threshold {
+        if potential_shares < ring.threshold {
             return Err(SignError::InsufficientShares {
                 got: potential_shares,
-                need: threshold,
+                need: ring.threshold,
             });
         }
 
@@ -645,15 +619,8 @@ where
         // ROUND 1 (FROST only): Collect nonce commitments
         // =====================================================================
         let (all_commitments, local_signing_state) = if S::INTERACTIVE {
-            self.collect_nonces(
-                &request_id,
-                &ring_pk_bytes,
-                peer_ids,
-                node_id,
-                self_in_list,
-                &context,
-            )
-            .await?
+            self.collect_nonces(&request_id, &ring, node_id, self_in_list, &context)
+                .await?
         } else {
             (Vec::new(), None)
         };
@@ -668,19 +635,19 @@ where
         // 2. Send sign requests to all peers concurrently and receive responses
         let mut set = tokio::task::JoinSet::new();
 
-        for peer_id_str in peer_ids {
+        for peer_id_str in &ring.peer_ids {
             if is_self_peer_id(&self.app_state.network, peer_id_str) {
                 tracing::debug!(peer_id = %peer_id_str, "Skipping self when sending sign request");
                 continue;
             }
 
-            let request = SignMessage::SignRequest {
+            let request = SignMessage::SignRequest(SignRequest {
                 request_id: request_id.clone(),
                 from_node_id: node_id,
                 message: message.clone(),
                 all_commitments: all_commitments_bytes.clone(),
                 context: context.clone(),
-            };
+            });
 
             let peer_id = peer_id_str.clone();
             let req_id = request_id.clone();
@@ -722,9 +689,9 @@ where
             })?;
 
         let min_needed_from_network = if self_in_list {
-            threshold.saturating_sub(1)
+            ring.threshold.saturating_sub(1)
         } else {
-            threshold
+            ring.threshold
         };
 
         if collected_responses.len() < min_needed_from_network {
@@ -742,7 +709,7 @@ where
 
         // If we're in the peer list, compute our own share locally
         if self_in_list {
-            let ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
+            let ring_pk = decode_ring_pk_bytes(&ring.ring_pk_bytes)?;
             if let Some(dist_key_share) =
                 try_load_dist_key_share(&self.app_state.local_storage, &ring_pk)
             {
@@ -838,10 +805,10 @@ where
         }
 
         // 5. Check if we have enough verified shares
-        if verified_shares.len() < threshold {
+        if verified_shares.len() < ring.threshold {
             return Err(SignError::InsufficientShares {
                 got: verified_shares.len(),
-                need: threshold,
+                need: ring.threshold,
             });
         }
 
@@ -849,8 +816,8 @@ where
         let signature_opt = signer
             .recover(
                 &verified_shares,
-                threshold,
-                total_participants,
+                ring.threshold,
+                ring.total_participants,
                 &message,
                 &all_commitments,
             )
@@ -912,8 +879,7 @@ where
     async fn collect_nonces(
         &self,
         request_id: &str,
-        ring_pk_bytes: &[u8],
-        peer_ids: &[String],
+        ring: &RingConfig,
         node_id: u32,
         self_in_list: bool,
         context: &SignContext,
@@ -924,7 +890,7 @@ where
 
         // Generate our own nonces if we're in the ring
         if self_in_list {
-            let ring_pk = decode_ring_pk_bytes(ring_pk_bytes)?;
+            let ring_pk = decode_ring_pk_bytes(&ring.ring_pk_bytes)?;
             if let Some(dist_key_share) =
                 try_load_dist_key_share(&self.app_state.local_storage, &ring_pk)
             {
@@ -938,7 +904,8 @@ where
         }
 
         // Build expected peers for nonce round (everyone except self)
-        let nonce_expected_peers: Vec<String> = peer_ids
+        let nonce_expected_peers: Vec<String> = ring
+            .peer_ids
             .iter()
             .filter(|pid| !is_self_peer_id(&self.app_state.network, pid))
             .cloned()
@@ -958,17 +925,17 @@ where
 
         // Send nonce requests to all peers concurrently
         let mut set = tokio::task::JoinSet::new();
-        for peer_id_str in peer_ids {
+        for peer_id_str in &ring.peer_ids {
             if is_self_peer_id(&self.app_state.network, peer_id_str) {
                 continue;
             }
 
-            let nonce_req = SignMessage::NonceRequest {
+            let nonce_req = SignMessage::NonceRequest(NonceRequest {
                 request_id: nonce_request_id.clone(),
                 from_node_id: node_id,
-                ring_pk: ring_pk_bytes.to_vec(),
+                ring_pk: ring.ring_pk_bytes.clone(),
                 context: context.clone(),
-            };
+            });
 
             let peer_id = peer_id_str.clone();
             let req_id = nonce_request_id.clone();
