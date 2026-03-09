@@ -371,9 +371,26 @@ where
             PreError::Deserialization(format!("Failed to deserialize response: {}", e))
         })?;
 
-        // Store the response with the authenticated peer identity
+        // Only store valid reencryption responses; log and drop peer errors
         let authenticated_peer_id = connection.peer_id().clone();
-        self.store_response(response, &authenticated_peer_id).await;
+        match &response {
+            PreMessage::ReencryptResponse { .. } => {
+                self.store_response(response, &authenticated_peer_id).await;
+            }
+            PreMessage::Error { error, .. } => {
+                tracing::warn!(
+                    peer = %peer_id_str,
+                    error = %error,
+                    "PRE Coordinator: peer returned an error, skipping share"
+                );
+            }
+            _ => {
+                tracing::warn!(
+                    peer = %peer_id_str,
+                    "PRE Coordinator: unexpected response type from peer, skipping"
+                );
+            }
+        }
 
         Ok(())
     }

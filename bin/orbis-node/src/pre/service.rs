@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::constants::MAX_TOKEN_LIFETIME_SECS;
+use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
 use crate::helpers::helpers::validate_all_peer_ids;
 use crate::metrics;
 use crate::pre::coordinator::PreCoordinator;
@@ -8,13 +8,13 @@ use crate::pre::helpers::{
     check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
     validate_pre_claims, verify_encryption_binding,
 };
-use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, PreClaims};
+use authn::PreClaims;
 use authz::sourcehub::ValidWindow;
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
 use crypto::PreImpl as ThresholdDealerNode;
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 /// Implementation of the PreService
@@ -69,22 +69,15 @@ where
         let start = Instant::now();
 
         // Get current timestamp (needed for both auth and response)
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| {
-                let duration = start.elapsed().as_secs_f64();
-                metrics::record_grpc_request("pre", "start_pre", "error", duration);
-                Status::internal(format!("Failed to get timestamp: {}", e))
-            })?
-            .as_secs();
+        let current_time = current_unix_time().map_err(|e| {
+            let duration = start.elapsed().as_secs_f64();
+            metrics::record_grpc_request("pre", "start_pre", "error", duration);
+            Status::internal(e)
+        })?;
 
         // 1. Authenticate: Extract and validate JWT
-        let token_str = extract_bearer_token(&request)
-            .map_err(|e| PreError::Unauthorized(e.to_string()))?
-            .to_string();
-        let token: BearerToken<PreClaims> =
-            resolve_jwt_did(&token_str, current_time, MAX_TOKEN_LIFETIME_SECS)
-                .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+        let (token_str, token) = extract_and_validate_jwt::<PreClaims, _>(&request, current_time)
+            .map_err(|e| PreError::Unauthorized(e))?;
 
         let req = request.into_inner();
         let valid_window = req.valid_window.map(|w| ValidWindow {

@@ -1,17 +1,17 @@
 use crate::app_state::AppState;
-use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::helpers::validate_dkg_claims;
 use crate::dkg::messages::DkgMessage;
+use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
 use crate::helpers::helpers::{connect_to_peers, extract_node_part, validate_all_peer_ids};
 use crate::metrics;
-use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, DkgClaims};
+use authn::DkgClaims;
 use network::DKG;
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
 use rand;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 /// Implementation of the DkgService
@@ -53,26 +53,19 @@ where
         let start = Instant::now();
 
         // Get current timestamp (needed for both auth and response)
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| {
-                metrics::record_grpc_request(
-                    "dkg",
-                    "start_dkg",
-                    "error",
-                    start.elapsed().as_secs_f64(),
-                );
-                Status::internal(format!("Failed to get timestamp: {}", e))
-            })?
-            .as_secs();
+        let current_time = current_unix_time().map_err(|e| {
+            metrics::record_grpc_request(
+                "dkg",
+                "start_dkg",
+                "error",
+                start.elapsed().as_secs_f64(),
+            );
+            Status::internal(e)
+        })?;
 
         // 1. Authenticate: Extract and validate JWT
-        let token_str = extract_bearer_token(&request)
-            .map_err(|e| DkgError::Unauthorized(e.to_string()))?
-            .to_string();
-        let token: BearerToken<DkgClaims> =
-            resolve_jwt_did(&token_str, current_time, MAX_TOKEN_LIFETIME_SECS)
-                .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+        let (token_str, token) = extract_and_validate_jwt::<DkgClaims, _>(&request, current_time)
+            .map_err(|e| DkgError::Unauthorized(e))?;
         // TODO: use token.issuer_id as AuthZ check
         let req = request.into_inner();
 

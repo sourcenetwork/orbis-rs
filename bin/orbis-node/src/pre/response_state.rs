@@ -5,22 +5,8 @@
 //! and stored here until the threshold is met.
 
 use crate::constants::MAX_PRE_RESPONSES;
-use crate::helpers::helpers::extract_node_part;
+use crate::helpers::response_manager::ResponseManager;
 use crate::pre::messages::PreMessage;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use tokio::sync::RwLock;
-
-/// PRE response entry for collecting responses from nodes
-pub struct PreResponseEntry {
-    pub responses: Vec<PreMessage>,
-    /// Set of expected responder peer hex node IDs (the node part before '@').
-    /// Built at init time from the ring's peer list (excluding self).
-    /// When a response is accepted, the peer is removed from this set.
-    /// This serves as both an allowlist (reject unknown peers) and dedup
-    /// (a peer already removed cannot respond again).
-    pub expected_peers: HashSet<String>,
-}
 
 /// PRE Response State Manager
 ///
@@ -28,14 +14,13 @@ pub struct PreResponseEntry {
 /// Each PRE request gets a unique request_id and collects responses
 /// until the threshold is met.
 pub struct PreResponseManager {
-    /// request_id -> response entry
-    states: Arc<RwLock<HashMap<String, PreResponseEntry>>>,
+    inner: ResponseManager<PreMessage>,
 }
 
 impl PreResponseManager {
     pub fn new() -> Self {
         Self {
-            states: Arc::new(RwLock::new(HashMap::new())),
+            inner: ResponseManager::new(MAX_PRE_RESPONSES, "PRE"),
         }
     }
 
@@ -47,40 +32,9 @@ impl PreResponseManager {
     ///
     /// Returns false if the limit is exceeded or if the request_id already exists.
     pub async fn init_response(&self, request_id: String, expected_peer_ids: &[String]) -> bool {
-        let mut responses = self.states.write().await;
-
-        // Check if request_id already exists to avoid overwriting existing state
-        if responses.contains_key(&request_id) {
-            tracing::warn!(
-                request_id = %request_id,
-                "PRE response entry already exists for request_id"
-            );
-            return false;
-        }
-
-        // Check limit
-        if responses.len() >= MAX_PRE_RESPONSES {
-            tracing::error!(
-                pending = responses.len(),
-                max = MAX_PRE_RESPONSES,
-                "PRE response limit exceeded"
-            );
-            return false;
-        }
-
-        let expected_peers: HashSet<String> = expected_peer_ids
-            .iter()
-            .map(|pid| extract_node_part(pid))
-            .collect();
-
-        responses.insert(
-            request_id,
-            PreResponseEntry {
-                responses: Vec::new(),
-                expected_peers,
-            },
-        );
-        true
+        self.inner
+            .init_response(request_id, expected_peer_ids)
+            .await
     }
 
     /// Store a PRE response, validating the sender against the expected responder set.
@@ -95,28 +49,15 @@ impl PreResponseManager {
         message: PreMessage,
         sender_peer_bytes: &[u8],
     ) {
-        let sender_hex = hex::encode(sender_peer_bytes);
-        let mut responses = self.states.write().await;
-        if let Some(entry) = responses.get_mut(request_id) {
-            if !entry.expected_peers.remove(&sender_hex) {
-                tracing::warn!(
-                    sender_peer = %sender_hex,
-                    request_id = request_id,
-                    "PRE: Rejecting response from unexpected or duplicate peer"
-                );
-                return;
-            }
-            entry.responses.push(message);
-        }
+        self.inner
+            .store_response(request_id, message, sender_peer_bytes)
+            .await
     }
 
     /// Get collected PRE responses without consuming the entry.
     /// Prefer `take_responses` when the entry is no longer needed after reading.
     pub async fn get_responses(&self, request_id: &str) -> Option<Vec<PreMessage>> {
-        let responses = self.states.read().await;
-        responses
-            .get(request_id)
-            .map(|entry| entry.responses.clone())
+        self.inner.get_responses(request_id).await
     }
 
     /// Take collected PRE responses, removing the entry atomically.
@@ -124,20 +65,17 @@ impl PreResponseManager {
     /// Prefer this over `get_responses` + `remove_response` — it acquires a single
     /// write lock and moves the `Vec` out without cloning.
     pub async fn take_responses(&self, request_id: &str) -> Option<Vec<PreMessage>> {
-        let mut responses = self.states.write().await;
-        responses.remove(request_id).map(|entry| entry.responses)
+        self.inner.take_responses(request_id).await
     }
 
     /// Remove PRE response entry (cleanup after completion)
     pub async fn remove_response(&self, request_id: &str) {
-        let mut responses = self.states.write().await;
-        responses.remove(request_id);
+        self.inner.remove_response(request_id).await
     }
 
     /// Get the number of pending PRE requests
     pub async fn pending_count(&self) -> usize {
-        let responses = self.states.read().await;
-        responses.len()
+        self.inner.pending_count().await
     }
 }
 
