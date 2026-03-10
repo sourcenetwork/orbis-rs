@@ -1,5 +1,5 @@
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
-use ark_ec::{AffineRepr, Group};
+use ark_ec::Group;
 use ark_ff::{Field, One, Zero};
 use ark_std::UniformRand;
 use rand_core::{OsRng, RngCore};
