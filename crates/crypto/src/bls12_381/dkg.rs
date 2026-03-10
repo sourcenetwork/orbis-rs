@@ -146,6 +146,12 @@ impl Dkg for DKGNode {
                         participating_ids.len()
                     )));
                 }
+                if new_threshold == 0 || new_threshold > new_total_nodes {
+                    return Err(CryptoError::DKGError(format!(
+                        "Invalid new threshold {} for new committee of size {}",
+                        new_threshold, new_total_nodes
+                    )));
+                }
                 self.effective_threshold = new_threshold;
                 self.effective_total_nodes = new_total_nodes;
                 lagrange_at_zero(self.id, &participating_ids)? * old_share
@@ -448,13 +454,14 @@ impl Dkg for DKGNode {
                 }
             }
 
-            let mut agg: Vec<G1Affine> = vec![G1Affine::zero(); num_coeffs];
+            // Accumulate in projective coordinates; convert to affine once at the end.
+            let mut agg: Vec<G1Projective> = vec![G1Projective::zero(); num_coeffs];
             for (_, commitment) in &self.received_commitments {
                 for (i, coeff) in commitment.coefficients.iter().enumerate() {
-                    agg[i] = (G1Projective::from(agg[i]) + G1Projective::from(*coeff)).into();
+                    agg[i] += G1Projective::from(*coeff);
                 }
             }
-            agg
+            agg.into_iter().map(Into::into).collect()
         } else {
             if self.commitment.coefficients.is_empty() {
                 return Err(CryptoError::DKGError(
@@ -475,13 +482,19 @@ impl Dkg for DKGNode {
                 }
             }
 
-            let mut agg = self.commitment.coefficients.clone();
+            // Accumulate in projective coordinates; convert to affine once at the end.
+            let mut agg: Vec<G1Projective> = self
+                .commitment
+                .coefficients
+                .iter()
+                .map(|c| G1Projective::from(*c))
+                .collect();
             for (_, commitment) in &self.received_commitments {
                 for (i, coeff) in commitment.coefficients.iter().enumerate() {
-                    agg[i] = (G1Projective::from(agg[i]) + G1Projective::from(*coeff)).into();
+                    agg[i] += G1Projective::from(*coeff);
                 }
             }
-            agg
+            agg.into_iter().map(Into::into).collect()
         };
 
         Ok(PubPoly {
@@ -533,6 +546,12 @@ impl DKGNode {
 fn lagrange_at_zero(id: u32, participating_ids: &[u32]) -> Result<Fr> {
     let mut ids = participating_ids.to_vec();
     ids.sort_unstable();
+    ids.dedup();
+    if ids.len() != participating_ids.len() {
+        return Err(CryptoError::DKGError(
+            "participating_ids contains duplicates".to_string(),
+        ));
+    }
 
     let mut num = Fr::one();
     let mut den = Fr::one();

@@ -144,6 +144,12 @@ impl Dkg for DKGNode {
                         participating_ids.len()
                     )));
                 }
+                if new_threshold == 0 || new_threshold > new_total_nodes {
+                    return Err(CryptoError::DKGError(format!(
+                        "Invalid new threshold {} for new committee of size {}",
+                        new_threshold, new_total_nodes
+                    )));
+                }
                 self.effective_threshold = new_threshold;
                 self.effective_total_nodes = new_total_nodes;
                 lagrange_at_zero(self.id, &participating_ids)? * old_share
@@ -531,6 +537,12 @@ impl DKGNode {
 fn lagrange_at_zero(id: u32, participating_ids: &[u32]) -> Result<Fr> {
     let mut ids = participating_ids.to_vec();
     ids.sort_unstable();
+    ids.dedup();
+    if ids.len() != participating_ids.len() {
+        return Err(CryptoError::DKGError(
+            "participating_ids contains duplicates".to_string(),
+        ));
+    }
 
     let mut num = Fr::one();
     let mut den = Fr::one();
