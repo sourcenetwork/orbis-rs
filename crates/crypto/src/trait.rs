@@ -420,6 +420,53 @@ pub trait PolynomialCommitment:
     /// Verify a share against this commitment using constant-time comparison
     fn verify_share(&self, share_id: u32, share_value: &Self::ShareValue) -> bool;
 }
+/// Role of a participant in the DKG protocol.
+///
+/// Only meaningful for resharing; use `Standard` for Fresh and Refresh modes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DkgRole {
+    /// Symmetric participant in Fresh or Refresh — every node is equivalent.
+    Standard,
+    /// Old committee member only: generates a resharing polynomial and sends shares,
+    /// but does not receive shares or compute a new secret share.
+    Dealer,
+    /// New committee member only: receives shares from old dealers but does not
+    /// generate a polynomial.
+    Receiver,
+    /// Member of both old and new committees: generates a resharing polynomial
+    /// AND receives shares from other old dealers to compute a new share.
+    DealerReceiver,
+}
+
+/// Operational mode passed to `generate_polynomial`.
+#[derive(Clone)]
+pub enum DkgMode<F> {
+    /// Generate a new random distributed secret (standard DKG).
+    Fresh,
+    /// Rotate shares while keeping the same secret.
+    ///
+    /// Each node contributes a polynomial with a zero constant term so the
+    /// aggregate delta is zero at `x = 0`. The output of `compute_secret_share`
+    /// is an additive delta — the node layer adds it to the existing share.
+    Refresh,
+    /// Redistribute the same secret to a (potentially different) committee.
+    ///
+    /// Each old dealer builds a polynomial whose constant term is `λᵢ · sᵢ`
+    /// (Lagrange weight times their current share). The aggregate constant term
+    /// equals the original secret `S`.
+    Reshare {
+        /// This node's current secret share value.
+        old_share: F,
+        /// IDs of the old committee members participating in this reshare.
+        /// Must be at least a threshold-sized subset.
+        participating_ids: Vec<u32>,
+        /// Threshold for the new committee.
+        new_threshold: usize,
+        /// Total nodes in the new committee.
+        new_total_nodes: usize,
+    },
+}
+
 /// Trait for DKG
 pub trait Dkg: Send + Sync {
     type ShareValue: CryptoSerialize + CryptoDeserialize + Clone;
@@ -436,14 +483,25 @@ pub trait Dkg: Send + Sync {
     /// * `threshold` - Minimum number of nodes needed to reconstruct (t)
     /// * `total_nodes` - Total number of participating nodes (n)
     /// * `session_id` - Session ID agreed upon by all nodes before starting DKG
-    fn new(id: u32, threshold: usize, total_nodes: usize, session_id: u64) -> Result<Box<Self>>
+    /// * `role` - Participant role; use `DkgRole::Standard` for Fresh and Refresh
+    fn new(
+        id: u32,
+        threshold: usize,
+        total_nodes: usize,
+        session_id: u64,
+        role: DkgRole,
+    ) -> Result<Box<Self>>
     where
         Self: Sized;
     /// Phase 1: Generate and broadcast polynomial commitment
     ///
-    /// Each node generates a random polynomial of degree (threshold - 1)
-    /// and creates commitments to its coefficients.
-    fn generate_polynomial(&mut self) -> Result<()>;
+    /// The constant term of the generated polynomial depends on `mode`:
+    /// - `Fresh`: uniformly random
+    /// - `Refresh`: zero (share rotation without changing the secret)
+    /// - `Reshare`: `λᵢ · old_share` (Lagrange-weighted contribution)
+    ///
+    /// Returns an error if called on a `Receiver`-role node.
+    fn generate_polynomial(&mut self, mode: DkgMode<Self::ShareValue>) -> Result<()>;
     /// Phase 2: Generate shares for all other nodes
     ///
     /// Returns a vector of shares to be sent to each node

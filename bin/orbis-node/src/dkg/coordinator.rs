@@ -30,7 +30,7 @@ use crate::metrics;
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::DistributedShare;
-use crypto::r#trait::Dkg;
+use crypto::r#trait::{Dkg, DkgMode, DkgRole};
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use crypto::{
@@ -414,7 +414,7 @@ where
                     self.app_state
                         .dkg_session_state
                         .with_state_mut(&session_id, |state| {
-                            state.node.generate_polynomial().map_err(|e| {
+                            state.node.generate_polynomial(DkgMode::Fresh).map_err(|e| {
                                 DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
                             })
                         })
@@ -656,8 +656,14 @@ where
         total_nodes: usize,
     ) -> Result<()> {
         // Create a new DKG node for this session using the generic Dkg trait
-        let dkg_node = D::new(node_id, threshold, total_nodes, session_id)
-            .map_err(|e| DkgError::Crypto(format!("Failed to create DKG node: {}", e)))?;
+        let dkg_node = D::new(
+            node_id,
+            threshold,
+            total_nodes,
+            session_id,
+            DkgRole::Standard,
+        )
+        .map_err(|e| DkgError::Crypto(format!("Failed to create DKG node: {}", e)))?;
 
         // Create the unified session state (crypto node + protocol tracking)
         if !self
@@ -748,9 +754,12 @@ where
             .dkg_session_state
             .with_state_mut(&session_id, |state| {
                 // Generate polynomial and commitment
-                state.node.generate_polynomial().map_err(|e| {
-                    DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
-                })?;
+                state
+                    .node
+                    .generate_polynomial(DkgMode::Fresh)
+                    .map_err(|e| {
+                        DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
+                    })?;
 
                 // Serialize commitment
                 let bytes =
@@ -896,9 +905,12 @@ where
                             node_id = state.node.node_id(),
                             "DKG Coordinator: Generating polynomial before Phase 2"
                         );
-                        state.node.generate_polynomial().map_err(|e| {
-                            DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
-                        })?;
+                        state
+                            .node
+                            .generate_polynomial(DkgMode::Fresh)
+                            .map_err(|e| {
+                                DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
+                            })?;
                     }
 
                     // Generate shares for all nodes

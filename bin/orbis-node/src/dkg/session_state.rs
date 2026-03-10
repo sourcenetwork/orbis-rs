@@ -11,7 +11,7 @@ use crate::constants::{
     DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS, SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
 };
 use crate::metrics;
-use crypto::r#trait::Dkg;
+use crypto::r#trait::{Dkg, DkgRole};
 use network::Connection;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -519,7 +519,7 @@ mod tests {
     /// The state manager stores the node but never calls protocol methods on it,
     /// so any valid construction is fine here.
     fn make_node(id: u32) -> DkgImpl {
-        *DkgImpl::new(id, 2, 3, 0).expect("DkgImpl::new failed")
+        *DkgImpl::new(id, 2, 3, 0, DkgRole::Standard).expect("DkgImpl::new failed")
     }
 
     // =========================================================================

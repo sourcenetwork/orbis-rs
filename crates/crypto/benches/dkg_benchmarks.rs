@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::time::Duration;
 
-use crypto::r#trait::{DistributedShare, Dkg};
+use crypto::r#trait::{DistributedShare, Dkg, DkgMode};
 
 #[cfg(feature = "bls12-381")]
 #[path = "bls12_381/dkg.rs"]
@@ -59,7 +59,7 @@ pub trait DkgBenchSetup {
 
         // Phase 1: generate polynomials
         for node in &mut nodes {
-            node.generate_polynomial().unwrap();
+            node.generate_polynomial(DkgMode::Fresh).unwrap();
         }
 
         // Exchange commitments
@@ -104,7 +104,7 @@ fn run_dkg_benchmarks<S: DkgBenchSetup>(c: &mut Criterion, prefix: &str) {
             group.bench_function(BenchmarkId::new("t_of_n", format!("{t}_of_{n}")), |b| {
                 b.iter(|| {
                     let mut node = S::create_node(1, black_box(t), black_box(n));
-                    node.generate_polynomial().unwrap();
+                    node.generate_polynomial(DkgMode::Fresh).unwrap();
                 })
             });
         }
@@ -247,7 +247,7 @@ fn run_dkg_benchmarks<S: DkgBenchSetup>(c: &mut Criterion, prefix: &str) {
 
                     // Phase 1
                     for node in &mut nodes {
-                        node.generate_polynomial().unwrap();
+                        node.generate_polynomial(DkgMode::Fresh).unwrap();
                     }
 
                     // Exchange commitments

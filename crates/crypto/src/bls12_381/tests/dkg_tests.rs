@@ -8,20 +8,17 @@ use rand_core::{OsRng, RngCore};
 
 #[test]
 fn test_all_dkg_tests() {
-    // Run all generic DKG tests using the convenience function
     run_all_tests(
-        |id, threshold, total_nodes, session_id| {
-            DKGNode::new(id, threshold, total_nodes, session_id)
+        |id, threshold, total_nodes, session_id, role| {
+            DKGNode::new(id, threshold, total_nodes, session_id, role)
         },
         |pk: &G1Affine| *pk == G1Affine::zero(),
         |share_value: &Fr| (G1Projective::generator() * share_value).into(),
         || {
-            // Create a wrong share value (random)
             let mut rng = OsRng;
             Fr::rand(&mut rng)
         },
         |from_id, to_id, session_id| {
-            // Create an invalid share with random value
             let mut rng = OsRng;
             let mut nonce = [0u8; 16];
             rng.fill_bytes(&mut nonce);
