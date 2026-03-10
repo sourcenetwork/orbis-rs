@@ -469,7 +469,7 @@ pub enum DkgMode<F> {
 
 /// Trait for DKG
 pub trait Dkg: Send + Sync {
-    type ShareValue: CryptoSerialize + CryptoDeserialize + Clone;
+    type ShareValue: CryptoSerialize + CryptoDeserialize + Clone + Send + Sync;
     type PublicKey: CryptoSerialize + CryptoDeserialize + Clone;
     type PubPoly: PubPoly<PublicKey = Self::PublicKey>;
     type PolynomialCommitment: PolynomialCommitment<

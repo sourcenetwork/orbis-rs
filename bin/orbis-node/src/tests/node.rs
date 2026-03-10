@@ -50,6 +50,7 @@ async fn make_test_node_config(
             denom: None,
             metrics_addr: None,
             loki_url: None,
+            reshare_interval_secs: 0, // disabled in tests
         },
         network,
         local_storage: LocalStorageImpl::new(password, db_path.clone())

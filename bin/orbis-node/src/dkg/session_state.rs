@@ -10,8 +10,9 @@
 use crate::constants::{
     DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS, SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
 };
+use crate::dkg::error::DkgError;
 use crate::metrics;
-use crypto::r#trait::{Dkg, DkgRole};
+use crypto::r#trait::{Dkg, DkgMode};
 use network::Connection;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -84,6 +85,14 @@ pub struct DkgSessionState<D: Dkg> {
     pub shares_received: usize,
     /// Processed message IDs for deduplication (session_id, from_node_id, message_type)
     pub processed_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
+    /// Set when this is a PSS refresh session; causes generate_polynomial to use DkgMode::Refresh
+    pub is_refresh: bool,
+    /// Local-storage key (`aggregate_pk.to_string()`) of the ring being refreshed.
+    ///
+    /// Present only for PSS refresh sessions. Phase 4 uses this to load the old share,
+    /// add the refresh delta, and store the combined share under the same key so the
+    /// ring public key and local-storage slot are unchanged.
+    pub refresh_ring_key: Option<String>,
 }
 
 impl<D: Dkg> DkgSessionState<D> {
@@ -102,7 +111,24 @@ impl<D: Dkg> DkgSessionState<D> {
             commitments_received: 0,
             shares_received: 0,
             processed_messages: std::collections::HashSet::new(),
+            is_refresh: false,
+            refresh_ring_key: None,
         }
+    }
+
+    /// Generate the polynomial for this session.
+    ///
+    /// Uses `DkgMode::Refresh` for PSS refresh sessions (zero constant term, same secret),
+    /// otherwise uses `DkgMode::Fresh` (standard DKG).
+    pub fn generate_polynomial(&mut self) -> Result<(), DkgError> {
+        let mode = if self.is_refresh {
+            DkgMode::Refresh
+        } else {
+            DkgMode::Fresh
+        };
+        self.node
+            .generate_polynomial(mode)
+            .map_err(|e| DkgError::Crypto(format!("Failed to generate polynomial: {}", e)))
     }
 
     /// Check if all commitments have been received
@@ -367,6 +393,29 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
+    /// Mark a session as a PSS refresh ceremony.
+    ///
+    /// Must be called before `initiate_phase1_commitments` so that
+    /// `generate_polynomial` uses `DkgMode::Refresh` instead of `DkgMode::Fresh`.
+    pub async fn mark_as_refresh(&self, session_id: &u64) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.is_refresh = true;
+        }
+    }
+
+    /// Store the local-storage key of the ring being refreshed.
+    ///
+    /// Must be called before Phase 4 runs.  Phase 4 will load the old share from
+    /// `RingKey(key)`, add the refresh delta, and write the result back to the
+    /// same slot — preserving the ring public key.
+    pub async fn set_refresh_ring_key(&self, session_id: &u64, key: String) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.refresh_ring_key = Some(key);
+        }
+    }
+
     pub async fn get_peer_ids(&self, session_id: &u64) -> Option<Vec<String>> {
         let states = self.states.read().await;
         states.get(session_id).map(|s| s.peer_ids.clone())
@@ -512,6 +561,7 @@ impl<D: Dkg + 'static> Default for SessionStateManager<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crypto::r#trait::DkgRole;
     use crypto::DkgImpl;
     use std::sync::Arc;
 

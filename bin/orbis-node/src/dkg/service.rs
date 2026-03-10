@@ -158,6 +158,7 @@ where
                     node_id,
                     req.threshold as usize,
                     actual_total_participants,
+                    crypto::r#trait::DkgRole::Standard,
                 )
                 .await?;
             // Guard will clean up session if we return early due to error
@@ -234,6 +235,8 @@ where
                 peer_ids: all_peer_ids.clone(), // Include all peer_ids (including our own) so receivers know all participants
                 node_id_assignments: node_id_assignments.clone(), // Assignments made by initiator
                 token_string: token_str.clone(), // Pass JWT to peer nodes for authentication
+                is_refresh: false,
+                refresh_ring_pk_hex: None,
             };
 
             // Send SessionInit to all peers (they will create their sessions and start Phase 1)

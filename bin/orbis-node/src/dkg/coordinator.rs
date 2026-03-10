@@ -29,7 +29,7 @@ use crate::helpers::helpers::{extract_node_part, is_self_peer_id};
 use crate::metrics;
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use bulletin::r#trait::RingPayload;
-use crypto::r#trait::DistributedShare;
+use crypto::r#trait::{DistributedShare, PriShare};
 use crypto::r#trait::{Dkg, DkgMode, DkgRole};
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
@@ -141,27 +141,39 @@ where
             peer_ids,
             node_id_assignments,
             token_string,
+            is_refresh,
+            refresh_ring_pk_hex,
             ..
         } = &message
         {
-            // 1. Authenticate: Validate JWT token
-            let current_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
-                .as_secs();
+            if *is_refresh {
+                // PSS refresh: the iroh connection itself authenticates the sender.
+                // TODO: add refresh-specific auth (e.g. verify sender is a current ring member)
+                tracing::info!(
+                    session_id = session_id,
+                    "DKG Coordinator: Refresh SessionInit received (skipping JWT)"
+                );
+            } else {
+                // 1. Authenticate: Validate JWT token
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
+                    .as_secs();
 
-            let token: BearerToken<DkgClaims> =
-                resolve_jwt_did(token_string, current_time, MAX_TOKEN_LIFETIME_SECS)
-                    .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-            // TODO: use token.issuer_id as AuthZ check
-            // 2. Authorize: Validate JWT claims match SessionInit fields
-            validate_dkg_claims(&token, *threshold, peer_ids)?;
+                let token: BearerToken<DkgClaims> =
+                    resolve_jwt_did(token_string, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(
+                        |e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)),
+                    )?;
+                // TODO: use token.issuer_id as AuthZ check
+                // 2. Authorize: Validate JWT claims match SessionInit fields
+                validate_dkg_claims(&token, *threshold, peer_ids)?;
 
-            tracing::info!(
-                issuer = %token.issuer_id,
-                threshold = threshold,
-                "DKG Coordinator: SessionInit JWT validated successfully"
-            );
+                tracing::info!(
+                    issuer = %token.issuer_id,
+                    threshold = threshold,
+                    "DKG Coordinator: SessionInit JWT validated successfully"
+                );
+            }
 
             // Get our assigned node_id from the initiator's assignments
             let our_peer_id_hex = hex::encode(self.app_state.network.local_peer_id().as_bytes());
@@ -183,6 +195,7 @@ where
 
             tracing::info!(
                 assigned_node_id = assigned_node_id,
+                is_refresh = is_refresh,
                 "DKG Coordinator: Received SessionInit - assigned node_id from initiator"
             );
 
@@ -198,8 +211,22 @@ where
                     *assigned_node_id,
                     *threshold as usize,
                     *total_participants as usize,
+                    DkgRole::Standard,
                 )
                 .await?;
+
+                if *is_refresh {
+                    self.app_state
+                        .dkg_session_state
+                        .mark_as_refresh(&session_id)
+                        .await;
+                    if let Some(ring_key) = refresh_ring_pk_hex {
+                        self.app_state
+                            .dkg_session_state
+                            .set_refresh_ring_key(&session_id, ring_key.clone())
+                            .await;
+                    }
+                }
             }
 
             // Store peer_ids for this session (needed for sending messages)
@@ -410,14 +437,10 @@ where
                 if need_to_generate_polynomial {
                     tracing::info!("DKG Coordinator: First commitment received, generating our polynomial and sending commitment");
 
-                    // Generate polynomial
+                    // Generate polynomial (Fresh or Reshare depending on session params)
                     self.app_state
                         .dkg_session_state
-                        .with_state_mut(&session_id, |state| {
-                            state.node.generate_polynomial(DkgMode::Fresh).map_err(|e| {
-                                DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
-                            })
-                        })
+                        .with_state_mut(&session_id, |state| state.generate_polynomial())
                         .await
                         .ok_or_else(|| session_not_found(session_id))??;
 
@@ -647,23 +670,19 @@ where
 
     /// Create a new DKG session
     ///
-    /// This is typically called when a StartDkg gRPC request is received.
+    /// This is typically called when a StartDkg gRPC request is received,
+    /// or internally by the PSS reshare scheduler.
     pub async fn create_session(
         &self,
         session_id: u64,
         node_id: u32,
         threshold: usize,
         total_nodes: usize,
+        role: DkgRole,
     ) -> Result<()> {
         // Create a new DKG node for this session using the generic Dkg trait
-        let dkg_node = D::new(
-            node_id,
-            threshold,
-            total_nodes,
-            session_id,
-            DkgRole::Standard,
-        )
-        .map_err(|e| DkgError::Crypto(format!("Failed to create DKG node: {}", e)))?;
+        let dkg_node = D::new(node_id, threshold, total_nodes, session_id, role)
+            .map_err(|e| DkgError::Crypto(format!("Failed to create DKG node: {}", e)))?;
 
         // Create the unified session state (crypto node + protocol tracking)
         if !self
@@ -753,13 +772,8 @@ where
             .app_state
             .dkg_session_state
             .with_state_mut(&session_id, |state| {
-                // Generate polynomial and commitment
-                state
-                    .node
-                    .generate_polynomial(DkgMode::Fresh)
-                    .map_err(|e| {
-                        DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
-                    })?;
+                // Generate polynomial (Fresh for standard DKG, Reshare if reshare_params is set)
+                state.generate_polynomial()?;
 
                 // Serialize commitment
                 let bytes =
@@ -1157,6 +1171,16 @@ where
             "DKG Coordinator: Starting Phase 4 completion"
         );
 
+        // Read refresh metadata before acquiring the mutable state lock.
+        let (is_refresh, refresh_ring_key) = self
+            .app_state
+            .dkg_session_state
+            .with_state(&session_id, |state| {
+                (state.is_refresh, state.refresh_ring_key.clone())
+            })
+            .await
+            .ok_or_else(|| session_not_found(session_id))?;
+
         // Compute final secret share, aggregate public key, and gather data for bulletin
         let (node_id, aggregate_pk, final_share_bytes, threshold, pub_poly_bytes) = self
             .app_state
@@ -1211,13 +1235,72 @@ where
             .await
             .ok_or_else(|| session_not_found(session_id))??;
 
-        // Store the serialized final share in local storage
+        // Determine the storage key and bytes for the final share.
+        //
+        // Fresh DKG: store the share under the newly-computed aggregate public key.
+        // PSS Refresh: the delta share (zero constant term) must be ADDED to the
+        //   existing share so the distributed secret is preserved.  Store the
+        //   combined share under the ORIGINAL ring key (unchanged public key).
+        let (storage_key, storage_bytes) = if is_refresh {
+            match refresh_ring_key {
+                Some(ring_key) => {
+                    // Load the old share, add the refresh delta, store the result.
+                    let old_bytes = self
+                        .app_state
+                        .local_storage
+                        .get_encrypted(LocalStorageKeys::RingKey(ring_key.clone()))
+                        .map_err(|e| {
+                            DkgError::Storage(format!("Refresh: failed to read old share: {}", e))
+                        })?
+                        .ok_or_else(|| {
+                            DkgError::Storage(
+                                "Refresh: old share not found in local storage".to_string(),
+                            )
+                        })?;
+
+                    let old_pri = PriShare::<Fr>::from_bytes(&old_bytes).map_err(|e| {
+                        DkgError::Deserialization(format!(
+                            "Refresh: failed to deserialize old share: {}",
+                            e
+                        ))
+                    })?;
+                    let delta_pri =
+                        PriShare::<Fr>::from_bytes(&final_share_bytes).map_err(|e| {
+                            DkgError::Deserialization(format!(
+                                "Refresh: failed to deserialize delta share: {}",
+                                e
+                            ))
+                        })?;
+
+                    let new_pri = PriShare {
+                        i: old_pri.i,
+                        v: old_pri.v + delta_pri.v,
+                    };
+                    let new_bytes = CryptoSerialize::to_bytes(&new_pri).map_err(|e| {
+                        DkgError::Serialization(format!(
+                            "Refresh: failed to serialize combined share: {}",
+                            e
+                        ))
+                    })?;
+
+                    (ring_key, new_bytes)
+                }
+                None => {
+                    // Refresh session without a ring key — fall back to normal storage.
+                    tracing::warn!(
+                        session_id = session_id,
+                        "Refresh session has no ring key; storing delta as-is"
+                    );
+                    (aggregate_pk.to_string(), final_share_bytes.clone())
+                }
+            }
+        } else {
+            (aggregate_pk.to_string(), final_share_bytes.clone())
+        };
+
         self.app_state
             .local_storage
-            .set_encrypted(
-                LocalStorageKeys::RingKey(aggregate_pk.to_string()),
-                final_share_bytes.clone(),
-            )
+            .set_encrypted(LocalStorageKeys::RingKey(storage_key), storage_bytes)
             .map_err(|e| DkgError::Storage(format!("Failed to store final share: {}", e)))?;
 
         tracing::debug!(

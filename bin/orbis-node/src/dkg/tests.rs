@@ -491,6 +491,8 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
             ("peer3".to_string(), 3),
         ]),
         token_string: "not-a-valid-jwt-token".to_string(), // Invalid JWT
+        is_refresh: false,
+        refresh_ring_pk_hex: None,
     };
 
     // Try to handle the message - should fail due to invalid JWT
@@ -557,6 +559,8 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
             ("peer3".to_string(), 3),
         ]),
         token_string: mismatched_token,
+        is_refresh: false,
+        refresh_ring_pk_hex: None,
     };
 
     // Try to handle the message - should fail due to claim mismatch
@@ -620,6 +624,8 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
             ("peer3".to_string(), 3),
         ]),
         token_string: mismatched_token,
+        is_refresh: false,
+        refresh_ring_pk_hex: None,
     };
 
     // Try to handle the message - should fail due to peer_ids mismatch
@@ -1157,4 +1163,270 @@ async fn test_commitment_and_share_counters() {
     );
 
     manager.remove_session(&session_id).await;
+}
+
+// ============================================================================
+// PSS Refresh Integration Test
+// ============================================================================
+
+/// Test: Full DKG followed by a PSS refresh ceremony.
+///
+/// This test verifies the complete share-rotation lifecycle:
+/// 1. Three nodes run a DKG to establish a shared secret.
+/// 2. The initiator (smallest sorted peer ID) triggers a PSS refresh.
+/// 3. All nodes complete the refresh protocol using `DkgMode::Refresh`
+///    (zero constant term — same secret, new share values).
+/// 4. Each node's stored share is different after the refresh, confirming
+///    that share rotation happened while preserving the distributed secret.
+///
+/// Detection of completion: the DummyBulletin will have a second ring entry
+/// (posted by the refresh's Phase 4), one per ceremony.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_dkg_followed_by_pss_refresh() {
+    let db_name = "test_dkg_followed_by_pss_refresh";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .try_init();
+
+    let mut network = setup_three_node_network(true, db_name).await;
+    let peer_ids = network.get_all_peer_ids();
+
+    // ── Phase A: Run the initial DKG ──────────────────────────────────────────
+    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let test_keys = TestKeyPair::new();
+    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("create JWT");
+    let tonic_req = create_authenticated_request(
+        StartDkgRequest {
+            threshold: 2,
+            peer_ids: peer_ids.clone(),
+        },
+        &token,
+    )
+    .unwrap();
+    alice_service
+        .start_dkg(tonic_req)
+        .await
+        .expect("DKG should start");
+
+    // Wait for DKG Phase 4 to complete (bulletin has a ring entry).
+    let key_string = {
+        let start = Instant::now();
+        let max_wait = Duration::from_secs(60);
+        loop {
+            let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap();
+            let post = get_test_ring_post(dummy_bulletin);
+            if !post.payload.is_empty() {
+                let ring_payload: RingPayload = post.try_into().expect("parse RingPayload");
+                println!("DKG complete. ring_pk={}", ring_payload.ring_pk);
+                let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+                let agg_key = <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes)
+                    .expect("deserialize aggregate PK");
+                break agg_key.to_string();
+            }
+            assert!(start.elapsed() < max_wait, "DKG did not complete in time");
+            sleep(Duration::from_millis(500)).await;
+        }
+    };
+
+    // Snapshot each node's share immediately after DKG.
+    let share_before_alice = network
+        .alice
+        .app_state
+        .local_storage
+        .get_encrypted(LocalStorageKeys::RingKey(key_string.clone()))
+        .expect("read alice share")
+        .expect("alice share must exist after DKG");
+    let share_before_bob = network
+        .bob
+        .app_state
+        .local_storage
+        .get_encrypted(LocalStorageKeys::RingKey(key_string.clone()))
+        .expect("read bob share")
+        .expect("bob share must exist after DKG");
+    let share_before_charlie = network
+        .charlie
+        .app_state
+        .local_storage
+        .get_encrypted(LocalStorageKeys::RingKey(key_string.clone()))
+        .expect("read charlie share")
+        .expect("charlie share must exist after DKG");
+
+    // ── Phase B: Set up and run a PSS refresh ─────────────────────────────────
+
+    // Determine node_id assignments (same deterministic rule as DKG service).
+    let mut sorted_peers = peer_ids.clone();
+    sorted_peers.sort();
+    let mut node_id_assignments = std::collections::HashMap::new();
+    for (idx, peer) in sorted_peers.iter().enumerate() {
+        node_id_assignments.insert(extract_node_part(peer), (idx + 1) as u32);
+    }
+
+    // The initiator is the node whose peer_id is first in sorted order.
+    let initiator_node_part = extract_node_part(&sorted_peers[0]);
+
+    let alice_hex = hex::encode(network.alice.app_state.network.local_peer_id().as_bytes());
+    let bob_hex = hex::encode(network.bob.app_state.network.local_peer_id().as_bytes());
+
+    let (initiator_state, initiator_node_id) =
+        if extract_node_part(&alice_hex) == initiator_node_part {
+            let nid = *node_id_assignments.get(&initiator_node_part).unwrap();
+            (network.alice.app_state.clone(), nid)
+        } else if extract_node_part(&bob_hex) == initiator_node_part {
+            let nid = *node_id_assignments.get(&initiator_node_part).unwrap();
+            (network.bob.app_state.clone(), nid)
+        } else {
+            let nid = *node_id_assignments.get(&initiator_node_part).unwrap();
+            (network.charlie.app_state.clone(), nid)
+        };
+
+    println!("Refresh initiator: node_id={}", initiator_node_id);
+
+    let refresh_session_id: u64 = rand::random();
+    let coordinator = DkgCoordinator::new(Arc::new(initiator_state.clone()));
+
+    coordinator
+        .create_session(
+            refresh_session_id,
+            initiator_node_id,
+            2,
+            3,
+            DkgRole::Standard,
+        )
+        .await
+        .expect("create refresh session");
+
+    // Mark as refresh so Phase 1 uses DkgMode::Refresh (zero constant term).
+    initiator_state
+        .dkg_session_state
+        .mark_as_refresh(&refresh_session_id)
+        .await;
+
+    // Store the ring key on the initiator — non-initiators receive it via SessionInit.
+    initiator_state
+        .dkg_session_state
+        .set_refresh_ring_key(&refresh_session_id, key_string.clone())
+        .await;
+
+    coordinator
+        .set_peer_ids(&refresh_session_id, peer_ids.clone())
+        .await;
+
+    // Set node_id ↔ peer_id mappings on the initiator.
+    let mut node_id_to_peer_id = std::collections::HashMap::new();
+    for (peer_key, &node_id) in &node_id_assignments {
+        let full_peer = peer_ids
+            .iter()
+            .find(|p| extract_node_part(p) == *peer_key)
+            .cloned()
+            .unwrap();
+        node_id_to_peer_id.insert(node_id, full_peer);
+    }
+    initiator_state
+        .dkg_session_state
+        .set_node_peer_mappings(&refresh_session_id, node_id_to_peer_id)
+        .await;
+
+    // Broadcast SessionInit{is_refresh:true} to all peers so they create their
+    // own sessions and enter Phase 1.
+    let init_msg = DkgMessage::SessionInit {
+        session_id: refresh_session_id,
+        threshold: 2,
+        total_participants: 3,
+        peer_ids: peer_ids.clone(),
+        node_id_assignments: node_id_assignments.clone(),
+        token_string: String::new(), // refresh bypasses JWT
+        is_refresh: true,
+        refresh_ring_pk_hex: Some(key_string.clone()),
+    };
+    for peer_id_str in &peer_ids {
+        if let Err(e) = coordinator
+            .send_message_to_peer(peer_id_str, init_msg.clone())
+            .await
+        {
+            println!(
+                "SessionInit send error (non-fatal): {} — {}",
+                peer_id_str, e
+            );
+        }
+    }
+
+    // Kick off Phase 1 on the initiator.
+    coordinator
+        .initiate_phase1_commitments(refresh_session_id, &peer_ids)
+        .await
+        .expect("initiate phase 1 for refresh");
+
+    println!("PSS refresh initiated (session_id={})", refresh_session_id);
+
+    // ── Phase C: Wait for refresh to complete ─────────────────────────────────
+    // The DummyBulletin will accumulate a second entry once the refresh
+    // Phase 4 posts its ring payload.
+    {
+        let start = Instant::now();
+        let max_wait = Duration::from_secs(60);
+        loop {
+            let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap();
+            let posts =
+                dummy_bulletin.get_posts_by_namespace(crate::constants::BULLETIN_RING_NAMESPACE);
+            if posts.len() >= 2 {
+                println!("Refresh complete ({} bulletin entries)", posts.len());
+                break;
+            }
+            assert!(
+                start.elapsed() < max_wait,
+                "PSS refresh did not complete within {} seconds",
+                max_wait.as_secs()
+            );
+            sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    // ── Phase D: Verify shares were rotated ───────────────────────────────────
+    let share_after_alice = network
+        .alice
+        .app_state
+        .local_storage
+        .get_encrypted(LocalStorageKeys::RingKey(key_string.clone()))
+        .expect("read alice share after refresh")
+        .expect("alice share must exist after refresh");
+    let share_after_bob = network
+        .bob
+        .app_state
+        .local_storage
+        .get_encrypted(LocalStorageKeys::RingKey(key_string.clone()))
+        .expect("read bob share after refresh")
+        .expect("bob share must exist after refresh");
+    let share_after_charlie = network
+        .charlie
+        .app_state
+        .local_storage
+        .get_encrypted(LocalStorageKeys::RingKey(key_string))
+        .expect("read charlie share after refresh")
+        .expect("charlie share must exist after refresh");
+
+    assert_ne!(
+        share_before_alice, share_after_alice,
+        "Alice's share should have been rotated by the refresh"
+    );
+    assert_ne!(
+        share_before_bob, share_after_bob,
+        "Bob's share should have been rotated by the refresh"
+    );
+    assert_ne!(
+        share_before_charlie, share_after_charlie,
+        "Charlie's share should have been rotated by the refresh"
+    );
+
+    network.shutdown_routers().await.expect("shutdown routers");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
 }

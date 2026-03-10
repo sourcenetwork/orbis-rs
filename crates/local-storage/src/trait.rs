@@ -10,6 +10,8 @@ pub enum LocalStorageKeys {
     NodeSecretKey,
     /// The node's secp256k1 signing key for chain transactions
     NodeSigningKey,
+    /// JSON-encoded Vec<String> of bulletin ring IDs (DKG session IDs) this node has joined
+    RingIndex,
 }
 
 pub trait LocalStorage {
