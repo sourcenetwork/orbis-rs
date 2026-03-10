@@ -1,4 +1,7 @@
+use crate::decaf377::common::PubPoly;
 use crate::decaf377::dkg::DKGNode;
+use crate::decaf377::pre::ThresholdDealerNode;
+use crate::decaf377::sign::ThresholdDecafSigner;
 use crate::dkg_tests::run_all_tests;
 use crate::r#trait::{DistributedShare, Dkg};
 use decaf377::{Element, Fr};
@@ -6,20 +9,17 @@ use rand_core::{OsRng, RngCore};
 
 #[test]
 fn test_all_dkg_tests() {
-    // Run all generic DKG tests using the convenience function
     run_all_tests(
-        |id, threshold, total_nodes, session_id| {
-            DKGNode::new(id, threshold, total_nodes, session_id)
+        |id, threshold, total_nodes, session_id, role| {
+            DKGNode::new(id, threshold, total_nodes, session_id, role)
         },
         |pk: &Element| *pk == Element::default(),
         |share_value: &Fr| Element::GENERATOR * share_value,
         || {
-            // Create a wrong share value (random)
             let mut rng = OsRng;
             Fr::rand(&mut rng)
         },
         |from_id, to_id, session_id| {
-            // Create an invalid share with random value
             let mut rng = OsRng;
             let mut nonce = [0u8; 16];
             rng.fill_bytes(&mut nonce);
@@ -30,6 +30,41 @@ fn test_all_dkg_tests() {
                 nonce,
                 session_id,
             }
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_lifecycle() {
+    crate::lifecycle_tests::run_lifecycle_test::<
+        DKGNode,
+        ThresholdDealerNode,
+        ThresholdDecafSigner,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+    >(
+        |id, threshold, total_nodes, session_id, role| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id, role)
+        },
+        || {
+            let sk = Fr::rand(&mut OsRng);
+            let pk = Element::GENERATOR * sk;
+            (sk, pk)
+        },
+        |a: &Fr, b: &Fr| *a + *b,
+        |a: &PubPoly, b: &PubPoly| PubPoly {
+            commits: a
+                .commits
+                .iter()
+                .zip(b.commits.iter())
+                .map(|(x, y)| x + y)
+                .collect(),
         },
     )
     .unwrap();

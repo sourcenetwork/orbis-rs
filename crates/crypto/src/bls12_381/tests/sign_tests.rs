@@ -26,8 +26,8 @@ fn test_all_sign() {
         // run_dkg: full DKG ceremony
         |n, t| {
             let mut coordinator = DKGCoordinator::new(
-                |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
-                    <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
+                |id: u32, threshold: usize, total_nodes: usize, session_id: u64, role| {
+                    <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id, role)
                 },
                 n,
                 t,
@@ -73,8 +73,8 @@ fn test_threshold_signing_different_share_subsets_same_signature() {
     let t = 3;
 
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize, session_id: u64| {
-            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id)
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u64, role| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id, role)
         },
         n,
         t,

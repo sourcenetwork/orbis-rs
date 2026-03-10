@@ -16,25 +16,22 @@
 //!     #[test]
 //!     fn test_my_implementation() {
 //!         run_all_tests(
-//!             |id, threshold, total_nodes, session_id| MyDKGNode::new(id, threshold, total_nodes, session_id),
-//!             |pk| pk.is_zero(), // zero check function
-//!             |share| share_to_pubkey(share), // share to pubkey conversion
+//!             |id, threshold, total_nodes, session_id, role| MyDKGNode::new(id, threshold, total_nodes, session_id, role),
+//!             |pk| pk.is_zero(),
+//!             |share| share_to_pubkey(share),
 //!         );
 //!     }
 //! }
 //! ```
 use crate::error::Result;
-use crate::r#trait::PubPoly;
+use crate::r#trait::{DkgRole, PubPoly};
 use crate::test_helper::generic_tests;
 
 /// Run all generic DKG tests for a given implementation
 ///
-/// This is a convenience function that runs all the standard DKG tests.
-/// You can also call individual test functions if you prefer.
-///
 /// # Arguments
-/// * `node_factory` - Function that creates a DKG node given (id, threshold, total_nodes)
-/// * `check_zero` - Function to check if a public key is zero
+/// * `node_factory` - Function that creates a DKG node given (id, threshold, total_nodes, session_id, role)
+/// * `check_zero` - Function to check if a public key is zero / the group identity
 /// * `share_to_pubkey` - Function to convert a share value to a public key
 /// * `create_wrong_share` - Function that creates an invalid share value for testing
 /// * `create_invalid_share` - Function that creates an invalid DistributedShare for testing
@@ -51,13 +48,12 @@ where
     Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
     Node::PolynomialCommitment: Clone,
     Node::ShareValue: Clone,
-    F: Fn(u32, usize, usize, u64) -> Result<Box<Node>> + Clone,
+    F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
     Z: Fn(&Node::PublicKey) -> bool + Clone,
     G: Fn(&Node::ShareValue) -> Node::PublicKey + Clone,
     W: Fn() -> Node::ShareValue + Clone,
     I: Fn(u32, u32, u64) -> crate::r#trait::DistributedShare<Node::ShareValue> + Clone,
 {
-    // Run all the generic tests
     generic_tests::test_dkg_2_of_3(node_factory.clone(), Some(check_zero.clone()))?;
     generic_tests::test_dkg_3_of_5(node_factory.clone(), Some(check_zero.clone()))?;
     generic_tests::test_shares_match_pub_poly(node_factory.clone(), 3, 2, share_to_pubkey.clone())?;
@@ -67,9 +63,12 @@ where
     )?;
     generic_tests::test_invalid_threshold(node_factory.clone())?;
     generic_tests::test_share_verification_fails_with_wrong_commitment(
-        node_factory,
+        node_factory.clone(),
         create_invalid_share,
     )?;
+    generic_tests::test_dkg_refresh(node_factory.clone(), check_zero.clone())?;
+    generic_tests::test_dkg_reshare_same_committee(node_factory.clone())?;
+    generic_tests::test_dkg_reshare_different_committee(node_factory)?;
 
     Ok(())
 }
