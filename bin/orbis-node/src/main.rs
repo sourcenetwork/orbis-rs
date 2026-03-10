@@ -9,6 +9,7 @@ pub mod metrics;
 pub mod pre;
 pub mod sign;
 pub mod store_secret;
+pub mod utility;
 
 #[cfg(test)]
 mod tests;
@@ -16,13 +17,18 @@ mod tests;
 use crate::dkg::service::DkgServiceImpl;
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
-    create_and_store_node_key, db_path, derive_secret_key_bytes, get_network_key_secret,
+    db_path, derive_secret_key_bytes, get_network_key_secret,
     get_password, Args,
 };
+#[cfg(feature = "bulletin-sourcehub")]
+use crate::helpers::launch::create_and_store_node_key;
+#[cfg(feature = "bulletin-hubrs")]
+use crate::helpers::launch::{get_or_create_signing_key_hex, resolve_base_dir};
 use crate::info::InfoServiceImpl;
 use crate::pre::service::PreServiceImpl;
 use crate::sign::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
+use crate::utility::UtilityServiceImpl;
 use app_state::AppState;
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
@@ -34,6 +40,7 @@ use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl, Router};
 use std::{net::SocketAddr, sync::Arc};
 // Concrete crypto implementations
+#[cfg(feature = "bulletin-sourcehub")]
 use constants::MIN_NODE_BALANCE;
 use crypto::{DkgImpl, PreImpl, SignImpl};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -43,6 +50,7 @@ use proto::info_service::info_service_server::InfoServiceServer;
 use proto::pre_service::pre_service_server::PreServiceServer;
 use proto::sign_service::sign_service_server::SignServiceServer;
 use proto::store_secret_service::store_secret_service_server::StoreSecretServiceServer;
+use proto::utility_service::utility_service_server::UtilityServiceServer;
 
 /// Configuration for running the node, allowing dependency injection for testing
 pub struct NodeConfig {
@@ -51,6 +59,7 @@ pub struct NodeConfig {
     pub local_storage: LocalStorageImpl,
     pub authz: Arc<dyn Authz>,
     pub bulletin: Arc<dyn Bulletin + Send + Sync>,
+    pub acp_light_client: Option<Arc<acp_light_client::AcpLightClient>>,
 }
 
 /// Result of initializing the node (before starting the server)
@@ -99,6 +108,7 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
         config.local_storage,
         config.authz,
         config.bulletin,
+        config.acp_light_client,
     );
     let app_state_arc = Arc::new(app_state);
 
@@ -148,14 +158,17 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     let store_secret_service =
         StoreSecretServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
     let sign_service = SignServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
+    let utility_service =
+        UtilityServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
 
-    // Start gRPC server
+    // Start gRPC server with DKG, PRE, Info, StoreSecret, Sign, and Utility services
     let grpc_server = tonic::transport::Server::builder()
         .add_service(DkgServiceServer::new(dkg_service))
         .add_service(PreServiceServer::new(pre_service))
         .add_service(InfoServiceServer::new(info_service))
         .add_service(StoreSecretServiceServer::new(store_secret_service))
         .add_service(SignServiceServer::new(sign_service))
+        .add_service(UtilityServiceServer::new(utility_service))
         .serve(node.grpc_addr);
 
     // Run gRPC server (router runs in background automatically)
@@ -230,8 +243,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // Get password for encrypting ring key shares
     let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
-    let local_storage = LocalStorageImpl::new(Some(password), db_path("orbis"))
-        .map_err(|e| format!("Failed to create local storage: {}", e))?;
+    let local_storage =
+        LocalStorageImpl::new(Some(password), db_path("orbis", args.data_dir.as_deref()))
+            .map_err(|e| format!("Failed to create local storage: {}", e))?;
     // Get node secret hex for netwokring
     let node_secret_hex = get_network_key_secret(None, local_storage.clone())
         .map_err(|e| format!("Failed to get node secret: {}", e))?;
@@ -262,36 +276,87 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("Failed to initialize authz: {}", e))?,
     );
 
-    let bulletin_chain_config = ChainConfigBuilder::default()
-        .grpc_url(args.bulletin_grpc.clone())
-        .rpc_url(args.chain_rpc.clone())
-        .rest_url(args.chain_rest.clone())
-        .denom(args.denom.clone());
-    let chain_config = bulletin_chain_config.clone().build();
-    let signer = create_and_store_node_key(local_storage.clone(), chain_config)
-        .map_err(|e| format!("Failed to create or store node key: {}", e))?;
-
-    // For integration tests, this funds the account, this is handled differently live
-    // Only fund if both the feature is enabled AND we're in the integration test network
-    #[cfg(feature = "integration-test")]
-    {
-        // Build chain config with the provided RPC/REST URLs
-        let fund_config = ChainConfigBuilder::default()
+    // Initialize bulletin backend (SourceHub or hub.rs, mutually exclusive)
+    #[cfg(feature = "bulletin-sourcehub")]
+    let bulletin: Arc<BulletinImpl> = {
+        let chain_config_builder = ChainConfigBuilder::default()
+            .grpc_url(args.bulletin_grpc.clone())
             .rpc_url(args.chain_rpc.clone())
             .rest_url(args.chain_rest.clone())
-            .grpc_url(args.bulletin_grpc.clone())
-            .build();
-        cli_tool::fund(signer.address(), fund_config)
-            .await
-            .expect("issue with faucet");
-    }
+            .denom(args.denom.clone());
+        let signer = create_and_store_node_key(local_storage.clone(), chain_config_builder.clone().build(), args.data_dir.as_deref())
+            .map_err(|e| format!("Failed to create or store node key: {}", e))?;
 
-    // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
-    let bulletin: Arc<BulletinImpl> = Arc::new(
-        BulletinImpl::with_signer(bulletin_chain_config, signer, Some(MIN_NODE_BALANCE))
-            .await
-            .map_err(|e| format!("Failed to initialize bulletin: {}", e))?,
-    );
+        // For integration tests, this funds the account, this is handled differently live
+        #[cfg(feature = "integration-test")]
+        {
+            cli_tool::fund(signer.address(), chain_config_builder.clone().build())
+                .await
+                .expect("issue with faucet");
+        }
+
+        Arc::new(
+            BulletinImpl::with_signer(chain_config_builder, signer, Some(MIN_NODE_BALANCE))
+                .await
+                .map_err(|e| format!("Failed to initialize bulletin: {}", e))?,
+        )
+    };
+
+    #[cfg(feature = "bulletin-hubrs")]
+    let bulletin: Arc<BulletinImpl> = {
+        let hub_rpc = args
+            .hub_rpc
+            .clone()
+            .ok_or("--hub-rpc is required when using the hubrs bulletin backend")?;
+        let hex_key = get_or_create_signing_key_hex(local_storage.clone(), args.data_dir.as_deref())
+            .map_err(|e| format!("Failed to create or retrieve signing key: {}", e))?;
+        let config = bulletin::hubrs::HubRsConfig {
+            rpc_url: hub_rpc,
+            chain_id: args.hub_chain_id,
+        };
+
+        // Compute and write EVM address to public_key.txt
+        let evm_signer = bulletin::hubrs::signer::EvmSigner::from_hex(&hex_key, args.hub_chain_id)
+            .map_err(|e| format!("compute EVM address: {}", e))?;
+        let evm_address = format!("{:?}", evm_signer.address());
+        let base_path = resolve_base_dir(args.data_dir.as_deref());
+        std::fs::write(base_path.join("public_key.txt"), &evm_address)
+            .map_err(|e| format!("write EVM address: {}", e))?;
+
+        // Write compressed secp256k1 public key for DID derivation by test harness
+        let signing_key = k256::ecdsa::SigningKey::from_slice(
+            &hex::decode(&hex_key).map_err(|e| format!("hex decode signing key: {}", e))?,
+        )
+        .map_err(|e| format!("parse signing key: {}", e))?;
+        let compressed_pubkey = signing_key.verifying_key().to_encoded_point(true);
+        std::fs::write(
+            base_path.join("signer_pubkey.txt"),
+            hex::encode(compressed_pubkey.as_bytes()),
+        )
+        .map_err(|e| format!("write signer pubkey: {}", e))?;
+
+        tracing::info!(address = %evm_address, "EVM signing address ready");
+
+        Arc::new(
+            BulletinImpl::with_signer(config, &hex_key)
+                .map_err(|e| format!("Failed to initialize hub.rs bulletin: {}", e))?,
+        )
+    };
+
+    // Optionally construct ACP light client if hub.rs URLs are configured
+    let acp_light_client = match (&args.hub_rpc, &args.hub_ws) {
+        (Some(rpc), Some(ws)) => {
+            tracing::info!(hub_rpc = %rpc, hub_ws = %ws, "Initializing ACP light client");
+            let client = acp_light_client::AcpLightClient::new(rpc, ws, 10)
+                .await
+                .map_err(|e| format!("Failed to initialize ACP light client: {}", e))?;
+            Some(Arc::new(client))
+        }
+        _ => {
+            tracing::info!("ACP light client not configured (--hub-rpc and --hub-ws not set)");
+            None
+        }
+    };
 
     let config = NodeConfig {
         args,
@@ -299,6 +364,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         local_storage,
         authz,
         bulletin,
+        acp_light_client,
     };
 
     let node = init_node(config).await?;

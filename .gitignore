@@ -56,3 +56,8 @@ public_key.txt
 
 # Claude Code local task tracking
 tasks/
+
+# Local agent context
+CLAUDE.md
+SESSION-PROMPT.md
+.claude/

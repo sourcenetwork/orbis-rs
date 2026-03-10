@@ -17,7 +17,7 @@ use crypto::{
     GroupAffine as G1Affine, PreImpl as ThresholdDealerNode, ScalarField as Fr, SignImpl,
 };
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use proto::dkg_service::dkg_service_client::DkgServiceClient;
@@ -25,6 +25,7 @@ use proto::info_service::info_service_client::InfoServiceClient;
 use proto::pre_service::pre_service_client::PreServiceClient;
 use proto::sign_service::sign_service_client::SignServiceClient;
 use proto::store_secret_service::store_secret_service_client::StoreSecretServiceClient;
+use proto::utility_service::utility_service_client::UtilityServiceClient;
 use tonic::Request;
 
 /// Response structure from PRE server
@@ -37,7 +38,7 @@ struct PreResponse {
 }
 
 /// Result of a DKG operation
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct DkgResult {
     pub session_id: String,
     pub status: String,
@@ -102,7 +103,7 @@ pub async fn do_dkg(endpoint: String, threshold: u32, peer_ids: Vec<String>) -> 
 }
 
 /// Result of a StoreSecret operation
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct StoreSecretResult {
     pub status: String,
     pub message: String,
@@ -889,7 +890,7 @@ pub async fn get_latest_ring(namespace: Option<String>) -> Result<(String, Strin
 }
 
 /// Result of querying node info
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct NodeInfoResult {
     pub public_address: String,
     pub peer_id: String,
@@ -1023,7 +1024,7 @@ pub async fn post_key_derivation(
 }
 
 /// Result of a Sign operation
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct SignResult {
     pub status: String,
     pub message: String,
@@ -1160,4 +1161,161 @@ pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
         max_retries,
         last_error.map(|e| e.to_string()).unwrap_or_default()
     ))
+}
+
+/// Result of a DerivePublicKey operation
+#[derive(Debug, Serialize)]
+pub struct DerivePublicKeyResult {
+    pub derived_public_key: String,
+    pub algorithm: String,
+}
+
+pub async fn derive_public_key(
+    endpoint: String,
+    ring_id: String,
+    derivation: Vec<u8>,
+) -> Result<DerivePublicKeyResult> {
+    eprintln!("Deriving public key:");
+    eprintln!("  Endpoint: {}", endpoint);
+    eprintln!("  Ring ID: {}", ring_id);
+    eprintln!("  Derivation: {}", hex::encode(&derivation));
+    eprintln!();
+
+    let mut client = UtilityServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+
+    let request = Request::new(proto::utility_service::DerivePublicKeyRequest {
+        ring_id,
+        derivation,
+    });
+
+    let response = client
+        .derive_public_key(request)
+        .await
+        .map_err(|e| anyhow!("DerivePublicKey request failed: {}", e))?;
+
+    let response = response.into_inner();
+    let derived_pk_hex = hex::encode(&response.public_key);
+    let algorithm = proto::utility_service::SignAlgorithm::try_from(response.algorithm)
+        .map(|a| a.as_str_name().to_string())
+        .unwrap_or_else(|_| format!("UNKNOWN({})", response.algorithm));
+
+    eprintln!("DerivePublicKey Result:");
+    eprintln!("{}", "=".repeat(60));
+    eprintln!("  Derived PK: {}", derived_pk_hex);
+    eprintln!("  Algorithm:  {}", algorithm);
+
+    Ok(DerivePublicKeyResult {
+        derived_public_key: derived_pk_hex,
+        algorithm,
+    })
+}
+
+/// ACP authorization fields for UtilitySign requests.
+/// When all fields are empty, ACP is not enforced.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SignAcpFields {
+    pub policy_id: String,
+    pub resource: String,
+    pub object_id: String,
+    pub permission: String,
+}
+
+/// Result of a UtilitySign operation
+#[derive(Debug, Serialize)]
+pub struct UtilitySignResult {
+    pub signature: String,
+    pub algorithm: String,
+    pub public_key: String,
+}
+
+/// Compute the Ed25519 did:key that signing functions will use for a given signer private key.
+/// Useful for registering the signer DID in ACP before making Sign calls.
+pub fn signer_did_for_pk(signer_did_pk: &str) -> String {
+    let seed_bytes = hex::decode(signer_did_pk).expect("signer_did_pk must be valid hex");
+    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed_bytes));
+    format!("did:key:{}", key_pair.fingerprint())
+}
+
+/// Call `UtilityService.Sign` for threshold signing via the utility pathway.
+///
+/// Uses ring_id directly (no bulletin KeyDerivation lookup required).
+pub async fn do_utility_sign(
+    endpoint: String,
+    ring_id: String,
+    message: Vec<u8>,
+    derivation: Option<Vec<u8>>,
+    signer_did_pk: Option<String>,
+    acp: Option<SignAcpFields>,
+) -> Result<UtilitySignResult> {
+    eprintln!("Threshold signing (UtilityService):");
+    eprintln!("  Endpoint: {}", endpoint);
+    eprintln!("  Ring ID: {}", ring_id);
+    eprintln!("  Message len: {}", message.len());
+    eprintln!();
+
+    let mut client = UtilityServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+
+    let acp = acp.unwrap_or_default();
+    let derivation_bytes = derivation.clone().unwrap_or_default();
+    let request = proto::utility_service::SignRequest {
+        ring_id: ring_id.clone(),
+        message: message.clone(),
+        derivation: derivation_bytes,
+        algorithm: 0, // UNSPECIFIED — use ring's native algorithm
+        options: std::collections::HashMap::new(),
+        policy_id: acp.policy_id.clone(),
+        resource: acp.resource.clone(),
+        object_id: acp.object_id.clone(),
+        permission: acp.permission.clone(),
+        decision_id: String::new(),
+    };
+
+    // Create JWT for authentication
+    let signer_did_pk = signer_did_pk.unwrap_or("test_jwt".to_string());
+    let seed_bytes = hex::decode(&signer_did_pk)
+        .unwrap_or_else(|_| signer_did_pk.as_bytes().to_vec());
+    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed_bytes));
+    let jwt_signer = JwtSigner::from_key_pair(key_pair);
+    let token = jwt_signer
+        .create_utility_sign_jwt(
+            &ring_id,
+            message,
+            derivation,
+            &acp.policy_id,
+            &acp.resource,
+            &acp.object_id,
+            &acp.permission,
+        )
+        .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
+
+    let tonic_request = create_authenticated_request(request, &token)
+        .map_err(|e| anyhow!("Failed to create authenticated request: {}", e))?;
+
+    let response = client
+        .sign(tonic_request)
+        .await
+        .map_err(|e| anyhow!("Sign request failed: {}", e))?;
+
+    let response = response.into_inner();
+    let signature_hex = hex::encode(&response.signature);
+    let algorithm = proto::utility_service::SignAlgorithm::try_from(response.algorithm)
+        .map(|a| a.as_str_name().to_string())
+        .unwrap_or_else(|_| format!("UNKNOWN({})", response.algorithm));
+    let public_key_hex = hex::encode(&response.public_key);
+
+    eprintln!("Sign Result:");
+    eprintln!("{}", "=".repeat(60));
+    eprintln!("  Signature:  {}", signature_hex);
+    eprintln!("  Algorithm:  {}", algorithm);
+    eprintln!("  Public Key: {}", public_key_hex);
+
+    Ok(UtilitySignResult {
+        signature: signature_hex,
+        algorithm,
+        public_key: public_key_hex,
+    })
 }

@@ -16,10 +16,34 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 backoff = { version = "0.4", features = ["tokio"] }
 
+# Hub.rs EVM bulletin dependencies (optional, gated behind hubrs feature)
+alloy-primitives = { workspace = true, optional = true }
+alloy-consensus = { workspace = true, optional = true }
+alloy-eips = { workspace = true, optional = true }
+alloy-signer = { workspace = true, optional = true }
+alloy-signer-local = { workspace = true, optional = true }
+alloy-sol-types = { workspace = true, optional = true }
+k256 = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
 [features]
 default = ["sourcehub"]
 sourcehub = []
 dummy = []
+hubrs = [
+    "dep:alloy-primitives",
+    "dep:alloy-consensus",
+    "dep:alloy-eips",
+    "dep:alloy-signer",
+    "dep:alloy-signer-local",
+    "dep:alloy-sol-types",
+    "dep:k256",
+    "dep:base64",
+    "dep:reqwest",
+    "dep:tokio",
+]
 
 [dev-dependencies]
 serial_test = "3.2.0"

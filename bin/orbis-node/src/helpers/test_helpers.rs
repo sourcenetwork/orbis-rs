@@ -108,7 +108,7 @@ pub async fn create_test_app_state_with_bulletin(
     }
 
     // Create AppState with the network (node_id is no longer needed - it's session-specific)
-    AppState::<DkgImpl>::new(bind_address, network, local_storage, authz, bulletin)
+    AppState::<DkgImpl>::new(bind_address, network, local_storage, authz, bulletin, None)
 }
 
 /// Create a test AppState with default values

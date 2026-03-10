@@ -13,7 +13,7 @@ local-storage = { path = "../../crates/local-storage", default-features = false 
 proto = { path = "../../crates/proto" }
 authn = { path = "../../crates/authn" }
 authz = { path = "../../crates/authz" }
-bulletin = { path = "../../crates/bulletin" }
+bulletin = { path = "../../crates/bulletin", default-features = false }
 tonic = "0.14.2"
 iroh = { workspace = true }
 tokio = { workspace = true }
@@ -35,6 +35,8 @@ tracing-loki = "0.2"
 url = "2.5"
 sha2 = { workspace = true }
 common = { path = "../../crates/common" }
+acp-light-client = { workspace = true }
+k256 = { workspace = true, optional = true }
 project-root = { workspace = true }
 cli-tool = { path = "../cli-tool", optional = true, default-features = false }
 prometheus = { workspace = true }
@@ -62,6 +64,7 @@ redb = ["local-storage/redb"]
 memory = ["local-storage/memory"]
 authz-sourcehub = ["authz/sourcehub"]
 bulletin-sourcehub = ["bulletin/sourcehub"]
+bulletin-hubrs = ["bulletin/hubrs", "dep:k256"]
 iroh = ["network/iroh"]
 integration-test = ["cli-tool"]
 fault-injection = ["network/fault-injection"]

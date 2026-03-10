@@ -125,7 +125,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
 
         // Create signing key (stored in local_storage) and fund it via the faucet
         let signer =
-            create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
+            create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build(), None)
                 .expect("create node signing key");
         let public_address = signer.address();
 
@@ -176,13 +176,18 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
                 chain_rest: None,
                 chain_rpc: None,
                 denom: None,
+                data_dir: None,
                 metrics_addr: None,
                 loki_url: None,
+                hub_rpc: None,
+                hub_ws: None,
+                hub_chain_id: 9944,
             },
             network,
             local_storage,
             authz,
             bulletin,
+            acp_light_client: None,
         };
 
         let node = init_node(config).await.expect("init_node");

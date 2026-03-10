@@ -48,14 +48,19 @@ async fn make_test_node_config(
             chain_rest: None,
             chain_rpc: None,
             denom: None,
+            data_dir: None,
             metrics_addr: None,
             loki_url: None,
+            hub_rpc: None,
+            hub_ws: None,
+            hub_chain_id: 9944,
         },
         network,
         local_storage: LocalStorageImpl::new(password, db_path.clone())
             .expect("Failed to create local storage"),
         authz,
         bulletin,
+        acp_light_client: None,
     };
     (config, db_path)
 }
@@ -333,7 +338,7 @@ fn test_create_and_store_node_key() {
     let config = ChainConfig::local();
 
     // First call should create a new key
-    let result = create_and_store_node_key(local_storage.clone(), config.clone());
+    let result = create_and_store_node_key(local_storage.clone(), config.clone(), None);
     assert!(
         result.is_ok(),
         "Should create key successfully: {:?}",
@@ -349,7 +354,7 @@ fn test_create_and_store_node_key() {
     );
 
     // Second call should return the same address (idempotent)
-    let result2 = create_and_store_node_key(local_storage.clone(), config);
+    let result2 = create_and_store_node_key(local_storage.clone(), config, None);
     assert!(result2.is_ok(), "Second call should succeed");
 
     let signer2 = result2.unwrap();

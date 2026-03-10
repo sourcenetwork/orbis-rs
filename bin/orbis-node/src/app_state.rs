@@ -1,6 +1,7 @@
 use crate::dkg::session_state::SessionStateManager;
 use crate::pre::response_state::PreResponseManager;
 use crate::sign::response_state::SignResponseManager;
+use acp_light_client::AcpLightClient;
 use authz::r#trait::Authz;
 use bulletin::r#trait::Bulletin;
 use crypto::r#trait::Dkg;
@@ -31,6 +32,8 @@ where
     pub authz: Arc<dyn Authz + Send + Sync>,
     /// Bulletin implementation
     pub bulletin: Arc<dyn Bulletin + Send + Sync>,
+    /// Optional ACP light client for AccessDecision verification
+    pub acp_light_client: Option<Arc<AcpLightClient>>,
 }
 
 /// Server configuration
@@ -50,6 +53,7 @@ where
         local_storage: LocalStorageImpl,
         authz: Arc<dyn Authz + Send + Sync>,
         bulletin: Arc<dyn Bulletin + Send + Sync>,
+        acp_light_client: Option<Arc<AcpLightClient>>,
     ) -> Self {
         Self {
             config: ServerConfig { bind_address },
@@ -60,6 +64,7 @@ where
             sign_response_state: Arc::new(SignResponseManager::new()),
             authz,
             bulletin,
+            acp_light_client,
         }
     }
 }

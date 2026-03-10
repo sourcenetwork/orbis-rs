@@ -46,12 +46,19 @@ tendermint-rpc = { version = "0.40", features = ["http-client", "websocket-clien
 reqwest = { version = "0.12", features = ["json"] }
 bip32 = { version = "0.5", features = ["mnemonic", "bip39"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
+alloy-primitives = "1.0"
+alloy-consensus = { version = "1.0", features = ["k256"] }
+alloy-eips = "1.0"
+alloy-signer = "1"
+alloy-signer-local = { version = "1", default-features = false }
+alloy-sol-types = "1"
 prost = "0.13"
 tonic = "0.12"
 rand = "0.8"
 base64 = "0.22"
 did-key = "0.2.1"
 project-root = "0.2.2"
+acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", branch = "main" }
 
 # Metrics
 prometheus = { version = "0.13", features = ["process"] }

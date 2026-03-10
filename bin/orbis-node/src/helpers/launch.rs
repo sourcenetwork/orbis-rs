@@ -37,12 +37,25 @@ pub struct Args {
     /// denomination of chain gas tokens
     #[arg(long)]
     pub denom: Option<String>,
+    /// Data directory for all node state (database, keys). Isolates this node's
+    /// storage from other nodes on the same machine.
+    #[arg(short = 'd', long)]
+    pub data_dir: Option<String>,
     /// Address for Prometheus metrics HTTP server (e.g., "0.0.0.0:9090")
     #[arg(short = 'm', long)]
     pub metrics_addr: Option<String>,
     /// Loki server URL for log aggregation (e.g., "http://localhost:3100")
     #[arg(long)]
     pub loki_url: Option<String>,
+    /// Hub.rs HTTP RPC endpoint for ACP light client (e.g., "http://127.0.0.1:9944")
+    #[arg(long)]
+    pub hub_rpc: Option<String>,
+    /// Hub.rs WebSocket endpoint for ACP light client (e.g., "ws://127.0.0.1:9944")
+    #[arg(long)]
+    pub hub_ws: Option<String>,
+    /// Hub.rs EVM chain ID (default: 9944)
+    #[arg(long, default_value = "9944")]
+    pub hub_chain_id: u64,
 }
 
 // ============================================================================
@@ -293,43 +306,105 @@ impl From<LogLevel> for tracing::Level {
     }
 }
 
-pub fn db_path(name: &str) -> String {
-    // Try to get project root (works in dev environment), fall back to /data for Docker
-    let base_path = match project_root::get_project_root() {
+/// Resolve the base directory for node state files.
+///
+/// Priority: explicit `--data-dir` flag > project root > `/data` (Docker) > cwd.
+pub fn resolve_base_dir(data_dir: Option<&str>) -> PathBuf {
+    if let Some(dir) = data_dir {
+        let p = PathBuf::from(dir);
+        std::fs::create_dir_all(&p).ok();
+        return p;
+    }
+    match project_root::get_project_root() {
         Ok(root) => root,
         Err(_) => {
-            // In Docker or other environments without Cargo.toml, use /data or current dir
-            let data_dir = std::path::PathBuf::from("/data");
-            if data_dir.exists() {
-                data_dir
+            let docker_dir = PathBuf::from("/data");
+            if docker_dir.exists() {
+                docker_dir
             } else {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
             }
         }
-    };
-    let db_dir = base_path.join("dbs");
-    // Create the dbs directory if it doesn't exist
+    }
+}
+
+pub fn db_path(name: &str, data_dir: Option<&str>) -> String {
+    // ORBIS_DB_PATH env var overrides all other logic (full file path)
+    if let Ok(path) = env::var("ORBIS_DB_PATH") {
+        if !path.is_empty() {
+            return path;
+        }
+    }
+
+    let base = resolve_base_dir(data_dir);
+    // With explicit --data-dir, put the db directly in it.
+    // With auto-resolved root, use a "dbs" subdirectory to keep things tidy.
+    let db_dir = if data_dir.is_some() { base } else { base.join("dbs") };
     std::fs::create_dir_all(&db_dir).ok();
     format!("{}/{}.redb", db_dir.display(), name)
+}
+
+/// Get or create the node signing key and return the raw hex string.
+/// This extracts the key management logic shared by both Cosmos (SourceHub)
+/// and EVM (hub.rs) backends. The caller wraps it in the appropriate signer.
+pub fn get_or_create_signing_key_hex(
+    local_storage: LocalStorageImpl,
+    data_dir: Option<&str>,
+) -> Result<String, String> {
+    let base_path = resolve_base_dir(data_dir);
+    let public_key_path = base_path.join("public_key.txt");
+
+    let hex_key = match local_storage.get_encrypted(LocalStorageKeys::NodeSigningKey) {
+        Ok(Some(key_bytes)) => {
+            let hex_key = String::from_utf8(key_bytes)
+                .map_err(|e| format!("Failed to parse stored key as UTF-8: {}", e))?;
+            tracing::info!("Existing signing key loaded from storage");
+            hex_key
+        }
+        Ok(None) => {
+            tracing::info!("No signing key found, generating new one");
+            let mut key_bytes = [0u8; 32];
+            getrandom::getrandom(&mut key_bytes)
+                .map_err(|e| format!("Failed to generate random bytes: {}", e))?;
+            let hex_key = hex::encode(key_bytes);
+            local_storage
+                .set_encrypted(
+                    LocalStorageKeys::NodeSigningKey,
+                    hex_key.as_bytes().to_vec(),
+                )
+                .map_err(|e| format!("Failed to store signing key: {}", e))?;
+            hex_key
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Error reading signing key from storage, generating new one");
+            let mut key_bytes = [0u8; 32];
+            getrandom::getrandom(&mut key_bytes)
+                .map_err(|e| format!("Failed to generate random bytes: {}", e))?;
+            let hex_key = hex::encode(key_bytes);
+            local_storage
+                .set_encrypted(
+                    LocalStorageKeys::NodeSigningKey,
+                    hex_key.as_bytes().to_vec(),
+                )
+                .map_err(|e| format!("Failed to store signing key: {}", e))?;
+            hex_key
+        }
+    };
+
+    // Write public key info to file for operator visibility
+    // For EVM this will be overwritten with the EVM address by the caller if needed
+    fs::write(&public_key_path, &hex_key[..16])
+        .map_err(|e| format!("Failed to write public key to file: {}", e))?;
+
+    Ok(hex_key)
 }
 
 pub fn create_and_store_node_key(
     local_storage: LocalStorageImpl,
     config: ChainConfig,
+    data_dir: Option<&str>,
 ) -> Result<TxSigner, String> {
-    // Write public key to file - try project root first, fall back to /data or current dir
-    let base_path = match project_root::get_project_root() {
-        Ok(root) => root,
-        Err(_) => {
-            // In Docker or other environments without Cargo.toml, use /data or current dir
-            let data_dir = std::path::PathBuf::from("/data");
-            if data_dir.exists() {
-                data_dir
-            } else {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            }
-        }
-    };
+    let base_path = resolve_base_dir(data_dir);
     let public_key_path = base_path.join("public_key.txt");
 
     // Check if a signing key exists in DB

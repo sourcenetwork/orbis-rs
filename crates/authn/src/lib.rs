@@ -12,6 +12,9 @@ pub use jwt_builder::{
     add_auth_header, create_authenticated_request, extract_bearer_token, JwtSigner,
 };
 
+/// Re-export jwt_simple Duration for callers that need to create JWTs
+pub use jwt_simple::prelude::Duration as JwtDuration;
+
 #[cfg(test)]
 mod tests;
 
@@ -51,15 +54,42 @@ pub struct PreClaims {
     pub salt: Option<String>,
 }
 
-/// Claims for Sign (threshold signing) endpoints
+/// Claims for Sign (threshold signing) endpoints.
+///
+/// Used by both the SignService (policy pathway: namespace + derivation_id) and the
+/// UtilityService (direct pathway: ring_id + optional ACP fields). Fields not relevant
+/// to a particular pathway default to empty/None.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct SignClaims {
-    /// Namespace where the key derivation object is stored
+    /// Namespace where the key derivation object is stored (SignService pathway)
+    #[serde(default)]
     pub namespace: String,
-    /// Object ID of the key derivation entry on the bulletin
+    /// Object ID of the key derivation entry on the bulletin (SignService pathway)
+    #[serde(default)]
     pub derivation_id: String,
     /// Message to sign
     pub message: Vec<u8>,
+    /// Ring ID to sign with (UtilityService pathway)
+    #[serde(default)]
+    pub ring_id: String,
+    /// Optional derivation path (UtilityService pathway)
+    #[serde(default)]
+    pub derivation: Option<Vec<u8>>,
+    /// ACP policy ID (empty = ACP not enforced)
+    #[serde(default)]
+    pub policy_id: String,
+    /// ACP resource type
+    #[serde(default)]
+    pub resource: String,
+    /// ACP object ID
+    #[serde(default)]
+    pub object_id: String,
+    /// ACP permission/relationship to check
+    #[serde(default)]
+    pub permission: String,
+    /// AccessDecision ID (mutually exclusive with policy_id)
+    #[serde(default)]
+    pub decision_id: String,
 }
 
 /// Claims for DKG endpoints

@@ -17,7 +17,7 @@ async fn test_get_node_info() {
 
     // Create and store a node signing key so get_node_signer can retrieve it
     let config = ChainConfigBuilder::default().build();
-    create_and_store_node_key(app_state.local_storage.clone(), config.clone())
+    create_and_store_node_key(app_state.local_storage.clone(), config.clone(), None)
         .expect("Failed to create and store node key");
 
     // Create the info service

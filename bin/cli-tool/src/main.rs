@@ -1,21 +1,32 @@
 mod commands;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 pub use commands::{
-    add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg,
-    do_encrypt_secret, do_generate_reader_key, do_pre, do_sign, do_store_secret, fund,
-    get_account_sequence, get_latest_ring, list_bulletin_posts, post_key_derivation,
-    prepare_secret, query_node_info, read_bulletin_post, register_bulletin_namespace,
-    register_object_to_chain, set_relationship_on_chain, store_prepared_secret, PreparedSecret,
-    SignResult,
+    add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, derive_public_key,
+    do_dkg, do_encrypt_secret, do_generate_reader_key, do_pre, do_sign, do_store_secret,
+    do_utility_sign, fund, get_account_sequence, get_latest_ring, list_bulletin_posts,
+    post_key_derivation, prepare_secret, query_node_info, read_bulletin_post,
+    register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
+    signer_did_for_pk, store_prepared_secret, DerivePublicKeyResult, PreparedSecret,
+    SignAcpFields, SignResult, UtilitySignResult,
 };
 use common::blockchain::ChainConfig;
 use hex;
 
+#[derive(Debug, Clone, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
 #[derive(Parser, Debug, Clone)]
 #[clap(version, about = "CLI tool for interacting with an orbis network")]
 pub struct Cli {
+    /// Output format (text or json)
+    #[clap(long, value_enum, default_value = "text", global = true)]
+    output: OutputFormat,
+
     #[clap(subcommand)]
     command: SubCommands,
 }
@@ -350,7 +361,7 @@ pub enum SubCommands {
         #[clap(long)]
         proof: String,
     },
-    /// Start a threshold Sign session (Policy pathway)
+    /// Start a threshold Sign session (Policy pathway via SignService)
     Sign {
         /// gRPC endpoint of the node to use
         #[clap(short, long, default_value = "http://localhost:50051")]
@@ -373,6 +384,54 @@ pub enum SubCommands {
         /// End of the validity window (Unix timestamp, inclusive). Requires --valid-window-start.
         #[clap(long)]
         valid_window_end: Option<u64>,
+    },
+    /// Start a threshold Sign session (UtilityService pathway, direct ring_id)
+    UtilitySign {
+        /// gRPC endpoint of the node to use
+        #[clap(short, long, default_value = "http://localhost:50051")]
+        endpoint: String,
+        /// Ring ID to sign with
+        #[clap(long)]
+        ring_id: String,
+        /// Message to sign (hex encoded)
+        #[clap(long)]
+        message: String,
+        /// Optional derivation path (hex encoded)
+        #[clap(long)]
+        derivation: Option<String>,
+        /// Signer DID private key (hex) for JWT authentication
+        #[clap(long)]
+        signer_did_pk: Option<String>,
+        /// ACP policy ID (optional)
+        #[clap(long)]
+        policy_id: Option<String>,
+        /// ACP resource type (optional)
+        #[clap(long)]
+        resource: Option<String>,
+        /// ACP object ID (optional)
+        #[clap(long)]
+        object_id: Option<String>,
+        /// ACP permission (optional)
+        #[clap(long)]
+        permission: Option<String>,
+    },
+    /// Derive a public key from a ring's master key and derivation path
+    DerivePublicKey {
+        /// gRPC endpoint of the node to use
+        #[clap(short, long, default_value = "http://localhost:50051")]
+        endpoint: String,
+        /// Ring ID
+        #[clap(long)]
+        ring_id: String,
+        /// Derivation path (hex encoded)
+        #[clap(long)]
+        derivation: String,
+    },
+    /// Print the DID URI for a given signer private key (hex)
+    SignerDid {
+        /// Signer private key (hex encoded, 32 bytes)
+        #[clap(long)]
+        signer_did_pk: String,
     },
 }
 
@@ -662,7 +721,7 @@ async fn main() -> Result<()> {
             }
             let message_bytes = hex::decode(&message)
                 .map_err(|e| anyhow::anyhow!("Failed to decode message hex: {}", e))?;
-            do_sign(
+            let result = do_sign(
                 endpoint,
                 message_bytes,
                 namespace,
@@ -672,6 +731,67 @@ async fn main() -> Result<()> {
                 valid_window_end,
             )
             .await?;
+            if matches!(cli.output, OutputFormat::Json) {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+        }
+        SubCommands::UtilitySign {
+            endpoint,
+            ring_id,
+            message,
+            derivation,
+            signer_did_pk,
+            policy_id,
+            resource,
+            object_id,
+            permission,
+        } => {
+            let message_bytes = hex::decode(&message)
+                .map_err(|e| anyhow::anyhow!("Failed to decode message hex: {}", e))?;
+            let derivation_bytes =
+                derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
+            let acp = if policy_id.is_some() || resource.is_some() || object_id.is_some() || permission.is_some() {
+                Some(SignAcpFields {
+                    policy_id: policy_id.unwrap_or_default(),
+                    resource: resource.unwrap_or_default(),
+                    object_id: object_id.unwrap_or_default(),
+                    permission: permission.unwrap_or_default(),
+                })
+            } else {
+                None
+            };
+            let result = do_utility_sign(
+                endpoint,
+                ring_id,
+                message_bytes,
+                derivation_bytes,
+                signer_did_pk,
+                acp,
+            )
+            .await?;
+            if matches!(cli.output, OutputFormat::Json) {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+        }
+        SubCommands::DerivePublicKey {
+            endpoint,
+            ring_id,
+            derivation,
+        } => {
+            let derivation_bytes = hex::decode(&derivation)
+                .map_err(|e| anyhow::anyhow!("Failed to decode derivation hex: {}", e))?;
+            let result = derive_public_key(endpoint, ring_id, derivation_bytes).await?;
+            if matches!(cli.output, OutputFormat::Json) {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+        }
+        SubCommands::SignerDid { signer_did_pk } => {
+            let did = signer_did_for_pk(&signer_did_pk);
+            if matches!(cli.output, OutputFormat::Json) {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({"did": did}))?);
+            } else {
+                println!("{}", did);
+            }
         }
     }
 

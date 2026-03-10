@@ -149,33 +149,49 @@ where
             ..
         } = req;
         // Auth check first — fail fast before burning a nonce.
-        if let SignContext::Policy {
-            ref token_string,
-            ref namespace,
-            ref derivation_id,
-            ref valid_window,
-            ..
-        } = context
-        {
-            let current_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
-                .as_secs();
-            let token: BearerToken<SignClaims> =
-                resolve_jwt_did(token_string, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(
-                    |e| SignError::Unauthorized(format!("JWT validation failed: {}", e)),
-                )?;
-            validate_sign_claims(&token, namespace, derivation_id, None)?;
-            let key_derivation =
-                fetch_key_derivation(&*self.app_state.bulletin, namespace, derivation_id).await?;
-            check_policy_access(
-                &*self.app_state.authz,
-                &key_derivation,
-                derivation_id,
-                &token.issuer_id,
-                valid_window.clone(),
-            )
-            .await?;
+        match &context {
+            SignContext::Policy {
+                ref token_string,
+                ref namespace,
+                ref derivation_id,
+                ref valid_window,
+                ..
+            } => {
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
+                    .as_secs();
+                let token: BearerToken<SignClaims> =
+                    resolve_jwt_did(token_string, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(
+                        |e| SignError::Unauthorized(format!("JWT validation failed: {}", e)),
+                    )?;
+                validate_sign_claims(&token, namespace, derivation_id, None)?;
+                let key_derivation =
+                    fetch_key_derivation(&*self.app_state.bulletin, namespace, derivation_id)
+                        .await?;
+                check_policy_access(
+                    &*self.app_state.authz,
+                    &key_derivation,
+                    derivation_id,
+                    &token.issuer_id,
+                    valid_window.clone(),
+                )
+                .await?;
+            }
+            SignContext::Authenticated { ref jwt, .. } | SignContext::AccessDecision { ref jwt, .. } => {
+                // Validate JWT — responder independently verifies the token is valid
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
+                    .as_secs();
+                let _token: BearerToken<()> =
+                    resolve_jwt_did(jwt, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(|e| {
+                        SignError::Unauthorized(format!("JWT validation failed: {}", e))
+                    })?;
+            }
+            SignContext::Bulletin => {
+                // Bulletin context: no pre-auth needed, message existence is checked in Round 2
+            }
         }
 
         // Auth passed — load share and generate nonce.
@@ -197,6 +213,8 @@ where
         let context_key = match &context {
             SignContext::Bulletin => "bulletin".to_string(),
             SignContext::Policy { derivation_id, .. } => derivation_id.clone(),
+            SignContext::Authenticated { ring_id, .. } => format!("auth-{}", ring_id),
+            SignContext::AccessDecision { ring_id, .. } => format!("decision-{}", ring_id),
         };
 
         if !self
@@ -309,6 +327,156 @@ where
 
                 (ring_payload.ring_pk, pub_poly, derivation, metadata)
             }
+            SignContext::Authenticated {
+                ref jwt,
+                ref ring_id,
+                ref policy_id,
+                ref resource,
+                ref object_id,
+                ref permission,
+            } => {
+                // Validate JWT independently
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
+                    .as_secs();
+                let token: BearerToken<()> =
+                    resolve_jwt_did(jwt, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(|e| {
+                        SignError::Unauthorized(format!("JWT validation failed: {}", e))
+                    })?;
+
+                // ACP check if policy_id is set
+                if !policy_id.is_empty() {
+                    use authz::sourcehub::AccessCheckRequest;
+                    let permission_bytes = AccessCheckRequest::new(
+                        policy_id.clone(),
+                        resource.clone(),
+                        object_id.clone(),
+                        permission.clone(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .to_bytes()
+                    .map_err(|e| {
+                        SignError::AuthZ(format!("Error formatting access request: {}", e))
+                    })?;
+                    let authorized = self
+                        .app_state
+                        .authz
+                        .check(permission_bytes, &token.issuer_id)
+                        .await
+                        .map_err(|e| {
+                            SignError::AuthZ(format!("ACP authorization failed: {}", e))
+                        })?;
+                    if !authorized {
+                        return Err(SignError::AuthZ(format!(
+                            "ACP denied: {} not authorized for {}/{}/{}",
+                            token.issuer_id, resource, object_id, permission,
+                        )));
+                    }
+                }
+
+                // Look up ring info from bulletin
+                let ring_info = self
+                    .app_state
+                    .bulletin
+                    .read(BULLETIN_RING_NAMESPACE.to_string(), ring_id.clone())
+                    .await
+                    .map_err(|e| {
+                        SignError::VerificationFailed(format!(
+                            "Failed to read ring '{}': {}",
+                            ring_id, e
+                        ))
+                    })?;
+                let ring_payload =
+                    serde_json::from_slice::<RingPayload>(&ring_info.payload).map_err(|e| {
+                        SignError::Deserialization(format!("Failed to parse ring payload: {}", e))
+                    })?;
+
+                let pub_poly_bytes =
+                    hex::decode(&ring_payload.public_polynomial).map_err(|e| {
+                        SignError::Deserialization(format!(
+                            "Failed to decode public polynomial hex: {}",
+                            e
+                        ))
+                    })?;
+                let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
+                    SignError::Deserialization(format!(
+                        "Failed to deserialize public polynomial: {}",
+                        e
+                    ))
+                })?;
+
+                (ring_payload.ring_pk, pub_poly, None, None)
+            }
+            SignContext::AccessDecision {
+                ref jwt,
+                ref ring_id,
+                ref decision_id,
+            } => {
+                // Validate JWT independently
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
+                    .as_secs();
+                let _token: BearerToken<()> =
+                    resolve_jwt_did(jwt, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(|e| {
+                        SignError::Unauthorized(format!("JWT validation failed: {}", e))
+                    })?;
+
+                // Verify AccessDecision on-chain via light client
+                let light_client = self.app_state.acp_light_client.as_ref().ok_or_else(|| {
+                    SignError::AuthZ(
+                        "decision_id provided but ACP light client not configured".to_string(),
+                    )
+                })?;
+                let result = light_client
+                    .check_access_decision(decision_id)
+                    .await
+                    .map_err(|e| {
+                        SignError::AuthZ(format!("ACP light client error: {}", e))
+                    })?;
+                if !result.allowed {
+                    return Err(SignError::AuthZ(format!(
+                        "AccessDecision '{}' not authorized on-chain",
+                        decision_id,
+                    )));
+                }
+
+                // Look up ring info from bulletin
+                let ring_info = self
+                    .app_state
+                    .bulletin
+                    .read(BULLETIN_RING_NAMESPACE.to_string(), ring_id.clone())
+                    .await
+                    .map_err(|e| {
+                        SignError::VerificationFailed(format!(
+                            "Failed to read ring '{}': {}",
+                            ring_id, e
+                        ))
+                    })?;
+                let ring_payload =
+                    serde_json::from_slice::<RingPayload>(&ring_info.payload).map_err(|e| {
+                        SignError::Deserialization(format!("Failed to parse ring payload: {}", e))
+                    })?;
+
+                let pub_poly_bytes =
+                    hex::decode(&ring_payload.public_polynomial).map_err(|e| {
+                        SignError::Deserialization(format!(
+                            "Failed to decode public polynomial hex: {}",
+                            e
+                        ))
+                    })?;
+                let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
+                    SignError::Deserialization(format!(
+                        "Failed to deserialize public polynomial: {}",
+                        e
+                    ))
+                })?;
+
+                (ring_payload.ring_pk, pub_poly, None, None)
+            }
         };
 
         // Deserialize ring public key and load DKG share from local storage
@@ -327,6 +495,8 @@ where
             let expected_context_key = match &context {
                 SignContext::Bulletin => "bulletin".to_string(),
                 SignContext::Policy { derivation_id, .. } => derivation_id.clone(),
+                SignContext::Authenticated { ring_id, .. } => format!("auth-{}", ring_id),
+                SignContext::AccessDecision { ring_id, .. } => format!("decision-{}", ring_id),
             };
             let state_bytes = self
                 .app_state
@@ -613,6 +783,7 @@ where
                 ));
                 (derivation, meta)
             }
+            SignContext::Authenticated { .. } | SignContext::AccessDecision { .. } => (None, None),
         };
 
         // =====================================================================

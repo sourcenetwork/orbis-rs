@@ -129,6 +129,34 @@ impl JwtSigner {
             namespace: namespace.to_string(),
             derivation_id: derivation_id.to_string(),
             message: message.clone(),
+            ..Default::default()
+        };
+        self.sign(claims, Duration::from_hours(1))
+    }
+
+    /// Create a JWT with Sign claims for the UtilityService pathway.
+    ///
+    /// Uses ring_id + optional derivation + ACP fields instead of namespace/derivation_id.
+    pub fn create_utility_sign_jwt(
+        &self,
+        ring_id: &str,
+        message: Vec<u8>,
+        derivation: Option<Vec<u8>>,
+        policy_id: &str,
+        resource: &str,
+        object_id: &str,
+        permission: &str,
+    ) -> Result<String> {
+        let claims = SignClaims {
+            ring_id: ring_id.to_string(),
+            message,
+            derivation,
+            policy_id: policy_id.to_string(),
+            resource: resource.to_string(),
+            object_id: object_id.to_string(),
+            permission: permission.to_string(),
+            decision_id: String::new(),
+            ..Default::default()
         };
         self.sign(claims, Duration::from_hours(1))
     }

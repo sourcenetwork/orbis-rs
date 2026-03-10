@@ -7,11 +7,13 @@ use authz::sourcehub::ValidWindow;
 use bulletin::r#trait::KeyDerivation;
 use serde::{Deserialize, Serialize};
 
-/// Distinguishes the two signing pathways.
+/// Distinguishes the signing pathways.
 ///
 /// - `Bulletin`: message is a serialized `BulletinPost`; authorization is its existence on chain.
 ///   Signs from the root key (no derivation, no metadata).
 /// - `Policy`: policy-authorized derivation signing with JWT auth, mirrors the PRE flow.
+/// - `Authenticated`: JWT-verified signing with optional ACP policy check (utility service).
+/// - `AccessDecision`: JWT-verified signing with on-chain AccessDecision verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SignContext {
     /// Message bytes are a serialized `BulletinPost` verified against the chain.
@@ -33,6 +35,33 @@ pub enum SignContext {
         /// Carried here to avoid a redundant bulletin for the coordinator
         /// Peer nodes always re-fetch independently.
         key_derivation: KeyDerivation,
+    },
+    /// JWT-verified signing with optional ACP policy check via authz gRPC.
+    /// Each responder independently validates the JWT and checks ACP if policy fields are set.
+    /// Used by the UtilityService for direct threshold signing.
+    Authenticated {
+        /// Raw JWT string so each responder can verify independently
+        jwt: String,
+        /// Ring ID for lookup
+        ring_id: String,
+        /// ACP policy ID (empty = ACP not enforced, with warning)
+        policy_id: String,
+        /// ACP resource type
+        resource: String,
+        /// ACP object ID
+        object_id: String,
+        /// ACP permission/relationship to check
+        permission: String,
+    },
+    /// JWT-verified signing with on-chain AccessDecision verification via ACP light client.
+    /// Each responder independently validates the JWT and checks the decision via AcpLightClient.
+    AccessDecision {
+        /// Raw JWT string so each responder can verify independently
+        jwt: String,
+        /// Ring ID for lookup
+        ring_id: String,
+        /// The on-chain access decision ID to verify
+        decision_id: String,
     },
 }
 
