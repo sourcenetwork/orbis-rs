@@ -132,6 +132,18 @@ impl Dkg for DKGNode {
                 new_threshold,
                 new_total_nodes,
             } => {
+                if !participating_ids.contains(&self.id) {
+                    return Err(CryptoError::DKGError(
+                        "Node not in participating_ids for resharing".to_string(),
+                    ));
+                }
+                if participating_ids.len() < self.threshold {
+                    return Err(CryptoError::DKGError(format!(
+                        "Reshare requires at least {} participants (threshold), got {}",
+                        self.threshold,
+                        participating_ids.len()
+                    )));
+                }
                 self.effective_threshold = new_threshold;
                 self.effective_total_nodes = new_total_nodes;
                 lagrange_at_zero(self.id, &participating_ids)? * old_share
@@ -306,6 +318,13 @@ impl Dkg for DKGNode {
             ));
         }
 
+        if self.received_commitments.contains_key(&from_id) {
+            return Err(CryptoError::DKGError(format!(
+                "Duplicate commitment from node {}",
+                from_id
+            )));
+        }
+
         self.received_commitments.insert(from_id, commitment);
         Ok(())
     }
@@ -415,6 +434,18 @@ impl Dkg for DKGNode {
                 .ok_or_else(|| CryptoError::DKGError("No commitments received".to_string()))?;
             let num_coeffs = first.coefficients.len();
 
+            // All commitments must have the same length (same polynomial degree).
+            for (id, commitment) in &self.received_commitments {
+                if commitment.coefficients.len() != num_coeffs {
+                    return Err(CryptoError::DKGError(format!(
+                        "Commitment from node {} has inconsistent length: expected {}, got {}",
+                        id,
+                        num_coeffs,
+                        commitment.coefficients.len()
+                    )));
+                }
+            }
+
             let mut agg: Vec<Element> = vec![Element::default(); num_coeffs];
             for (_, commitment) in &self.received_commitments {
                 for (i, coeff) in commitment.coefficients.iter().enumerate() {
@@ -428,6 +459,20 @@ impl Dkg for DKGNode {
                     "Local commitment not generated: call generate_polynomial first".to_string(),
                 ));
             }
+            let num_coeffs = self.commitment.coefficients.len();
+
+            // All received commitments must match our own polynomial degree.
+            for (id, commitment) in &self.received_commitments {
+                if commitment.coefficients.len() != num_coeffs {
+                    return Err(CryptoError::DKGError(format!(
+                        "Commitment from node {} has inconsistent length: expected {}, got {}",
+                        id,
+                        num_coeffs,
+                        commitment.coefficients.len()
+                    )));
+                }
+            }
+
             let mut agg = self.commitment.coefficients.clone();
             for (_, commitment) in &self.received_commitments {
                 for (i, coeff) in commitment.coefficients.iter().enumerate() {
@@ -481,12 +526,17 @@ impl DKGNode {
 /// Compute the Lagrange basis coefficient at x=0 for participant `id` within `participating_ids`.
 ///
 /// λᵢ(0) = ∏_{j ∈ T, j ≠ i} (0 - j) / (i - j)
+///
+/// The IDs are sorted before computation to ensure a canonical ordering.
 fn lagrange_at_zero(id: u32, participating_ids: &[u32]) -> Result<Fr> {
+    let mut ids = participating_ids.to_vec();
+    ids.sort_unstable();
+
     let mut num = Fr::one();
     let mut den = Fr::one();
     let i_fr = Fr::from(id as u64);
 
-    for &j_raw in participating_ids {
+    for &j_raw in &ids {
         if j_raw == id {
             continue;
         }
