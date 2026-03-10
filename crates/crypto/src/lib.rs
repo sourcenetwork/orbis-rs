@@ -64,3 +64,6 @@ mod pre_tests;
 
 #[cfg(test)]
 mod sign_tests;
+
+#[cfg(test)]
+mod lifecycle_tests;

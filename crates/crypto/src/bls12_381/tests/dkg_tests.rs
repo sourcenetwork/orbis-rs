@@ -1,4 +1,7 @@
+use crate::bls12_381::common::PubPoly;
 use crate::bls12_381::dkg::DKGNode;
+use crate::bls12_381::pre::ThresholdDealerNode;
+use crate::bls12_381::sign::ThresholdBlsSigner;
 use crate::dkg_tests::run_all_tests;
 use crate::r#trait::{DistributedShare, Dkg};
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
@@ -29,6 +32,41 @@ fn test_all_dkg_tests() {
                 nonce,
                 session_id,
             }
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_lifecycle() {
+    crate::lifecycle_tests::run_lifecycle_test::<
+        DKGNode,
+        ThresholdDealerNode,
+        ThresholdBlsSigner,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+    >(
+        |id, threshold, total_nodes, session_id, role| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id, role)
+        },
+        || {
+            let sk = Fr::rand(&mut OsRng);
+            let pk: G1Affine = (G1Projective::generator() * sk).into();
+            (sk, pk)
+        },
+        |a: &Fr, b: &Fr| *a + *b,
+        |a: &PubPoly, b: &PubPoly| PubPoly {
+            commits: a
+                .commits
+                .iter()
+                .zip(b.commits.iter())
+                .map(|(x, y)| (G1Projective::from(*x) + G1Projective::from(*y)).into())
+                .collect(),
         },
     )
     .unwrap();
