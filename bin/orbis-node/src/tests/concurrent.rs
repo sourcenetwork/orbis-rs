@@ -178,6 +178,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
                 denom: None,
                 metrics_addr: None,
                 loki_url: None,
+                reshare_interval_secs: 0,
             },
             network,
             local_storage,

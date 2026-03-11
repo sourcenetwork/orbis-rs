@@ -185,6 +185,7 @@ async fn setup_fault_three_node_network(
                 denom: None,
                 metrics_addr: None,
                 loki_url: None,
+                reshare_interval_secs: 0,
             },
             network,
             local_storage,
