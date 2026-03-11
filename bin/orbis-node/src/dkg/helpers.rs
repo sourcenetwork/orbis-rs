@@ -71,9 +71,9 @@ pub fn validate_refresh_session_init<S: LocalStorage>(
                 "Ring has no refresh timestamp; cannot accept refresh".to_string(),
             )
         })?;
-    let last_refresh_arr: [u8; 8] = last_refresh_bytes
-        .try_into()
-        .map_err(|_| DkgError::Deserialization("Invalid last refresh timestamp bytes".to_string()))?;
+    let last_refresh_arr: [u8; 8] = last_refresh_bytes.try_into().map_err(|_| {
+        DkgError::Deserialization("Invalid last refresh timestamp bytes".to_string())
+    })?;
     let elapsed = now_secs.saturating_sub(u64::from_le_bytes(last_refresh_arr));
     if elapsed < reshare_interval_secs {
         return Err(DkgError::Unauthorized(format!(
@@ -120,4 +120,157 @@ pub fn validate_dkg_claims(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::helpers::test_helpers::{cleanup_db, test_db_path};
+    use bulletin::r#trait::RingPayload;
+    use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
+
+    fn make_storage(db_name: &str) -> (LocalStorageImpl, String) {
+        let db_path = test_db_path(db_name);
+        let storage = LocalStorageImpl::new(None, db_path.clone()).expect("create storage");
+        (storage, db_path)
+    }
+
+    fn write_ring(storage: &LocalStorageImpl, ring_pk_hex: &str, peer_ids: Vec<String>) {
+        let payload = RingPayload {
+            ring_pk: ring_pk_hex.to_string(),
+            peer_ids,
+            threshold: 1,
+            public_polynomial: "poly".to_string(),
+        };
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        storage
+            .set(
+                LocalStorageKeys::RingPkMapping(ring_pk_hex.to_string()),
+                bytes,
+            )
+            .unwrap();
+    }
+
+    fn write_last_refresh(storage: &LocalStorageImpl, ring_pk_hex: &str, secs: u64) {
+        storage
+            .set(
+                LocalStorageKeys::RingLastRefresh(ring_pk_hex.to_string()),
+                secs.to_le_bytes().to_vec(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn test_unknown_ring() {
+        let (storage, db_path) = make_storage("helpers_unknown_ring");
+        let result = validate_refresh_session_init("some_pk", "sender", &storage, 86400);
+        assert!(
+            matches!(result, Err(DkgError::Unauthorized(_))),
+            "Expected Unauthorized for unknown ring, got: {:?}",
+            result
+        );
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn test_corrupt_ring_payload() {
+        let (storage, db_path) = make_storage("helpers_corrupt_payload");
+        storage
+            .set(
+                LocalStorageKeys::RingPkMapping("pk".to_string()),
+                b"not valid json".to_vec(),
+            )
+            .unwrap();
+        let result = validate_refresh_session_init("pk", "sender", &storage, 86400);
+        assert!(
+            matches!(result, Err(DkgError::Deserialization(_))),
+            "Expected Deserialization error for corrupt payload, got: {:?}",
+            result
+        );
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn test_sender_not_in_ring() {
+        let (storage, db_path) = make_storage("helpers_sender_not_in_ring");
+        let ring_pk = "ring_pk_abc";
+        write_ring(
+            &storage,
+            ring_pk,
+            vec!["aabbccdd".to_string(), "eeff0011".to_string()],
+        );
+        write_last_refresh(&storage, ring_pk, 0);
+        let result = validate_refresh_session_init(ring_pk, "deadbeef00000000", &storage, 86400);
+        assert!(
+            matches!(result, Err(DkgError::Unauthorized(_))),
+            "Expected Unauthorized for sender not in ring, got: {:?}",
+            result
+        );
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn test_no_last_refresh_timestamp() {
+        let (storage, db_path) = make_storage("helpers_no_timestamp");
+        let ring_pk = "ring_pk_def";
+        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()]);
+        // Intentionally do not write RingLastRefresh
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, 86400);
+        assert!(
+            matches!(result, Err(DkgError::Unauthorized(_))),
+            "Expected Unauthorized for missing timestamp, got: {:?}",
+            result
+        );
+        if let Err(DkgError::Unauthorized(msg)) = result {
+            assert!(
+                msg.contains("no refresh timestamp"),
+                "Expected 'no refresh timestamp' message, got: {}",
+                msg
+            );
+        }
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn test_refresh_too_soon() {
+        let (storage, db_path) = make_storage("helpers_too_soon");
+        let ring_pk = "ring_pk_ghi";
+        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()]);
+        // Set last refresh to now — elapsed will be ~0s
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        write_last_refresh(&storage, ring_pk, now);
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, 86400);
+        assert!(
+            matches!(result, Err(DkgError::Unauthorized(_))),
+            "Expected Unauthorized for too soon, got: {:?}",
+            result
+        );
+        if let Err(DkgError::Unauthorized(msg)) = result {
+            assert!(
+                msg.contains("too soon"),
+                "Expected 'too soon' message, got: {}",
+                msg
+            );
+        }
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn test_refresh_succeeds() {
+        let (storage, db_path) = make_storage("helpers_success");
+        let ring_pk = "ring_pk_jkl";
+        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()]);
+        // Timestamp at epoch — elapsed >> interval
+        write_last_refresh(&storage, ring_pk, 0);
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, 86400);
+        assert!(
+            result.is_ok(),
+            "Expected Ok for valid refresh, got: {:?}",
+            result
+        );
+        cleanup_db(&db_path);
+    }
 }

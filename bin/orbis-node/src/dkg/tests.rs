@@ -13,6 +13,7 @@ use crate::DkgServiceImpl;
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use network::PeerId;
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use std::sync::Arc;
 use std::time::Instant;
@@ -1448,4 +1449,162 @@ async fn test_dkg_followed_by_pss_refresh() {
     for path in &db_paths {
         cleanup_db(path);
     }
+}
+
+// =============================================================================
+// Group 3: coordinator rejects invalid PSS refresh SessionInit messages
+//
+// These tests confirm that the coordinator enforces the three validation
+// checks (sender membership, minimum elapsed time, no concurrent refresh)
+// before creating any session state.  They use a single-node app_state with
+// pre-populated local storage — no three-node network is required because the
+// checks happen before any network I/O.
+// =============================================================================
+
+/// Write a serialised RingPayload into `RingPkMapping(ring_pk)`.
+fn g3_write_ring_payload(
+    storage: &impl local_storage::r#trait::LocalStorage,
+    ring_pk: &str,
+    peer_ids: Vec<String>,
+) {
+    let payload = RingPayload {
+        ring_pk: ring_pk.to_string(),
+        peer_ids,
+        threshold: 1,
+        public_polynomial: "poly".to_string(),
+    };
+    let bytes = serde_json::to_vec(&payload).unwrap();
+    storage
+        .set(LocalStorageKeys::RingPkMapping(ring_pk.to_string()), bytes)
+        .unwrap();
+}
+
+/// Write a `RingLastRefresh` unix timestamp into local storage.
+fn g3_write_last_refresh(
+    storage: &impl local_storage::r#trait::LocalStorage,
+    ring_pk: &str,
+    secs: u64,
+) {
+    storage
+        .set(
+            LocalStorageKeys::RingLastRefresh(ring_pk.to_string()),
+            secs.to_le_bytes().to_vec(),
+        )
+        .unwrap();
+}
+
+/// Build a minimal refresh `SessionInit` targeted at `ring_pk`.
+fn g3_refresh_session_init(ring_pk: &str, sender_hex: &str) -> DkgMessage {
+    let mut node_id_assignments = std::collections::HashMap::new();
+    node_id_assignments.insert(sender_hex.to_string(), 1u32);
+    DkgMessage::SessionInit {
+        session_id: 99_999_001,
+        threshold: 1,
+        total_participants: 1,
+        peer_ids: vec![sender_hex.to_string()],
+        node_id_assignments,
+        token_string: String::new(),
+        is_refresh: true,
+        refresh_ring_pk_hex: Some(ring_pk.to_string()),
+    }
+}
+
+#[tokio::test]
+async fn test_refresh_rejected_sender_not_in_ring() {
+    let db_name = "test_refresh_rejected_sender_not_in_ring";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+
+    let ring_pk = "ring_pk_group3a";
+    // Ring contains only "aabbccdd"; the sender will be "deadbeef".
+    g3_write_ring_payload(
+        &app_state.local_storage,
+        ring_pk,
+        vec!["aabbccdd".to_string()],
+    );
+    g3_write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
+
+    let sender_bytes = hex::decode("deadbeef").unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::new(app_state);
+    let msg = g3_refresh_session_init(ring_pk, "deadbeef");
+
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
+        "Expected Unauthorized for sender not in ring, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_refresh_rejected_too_soon() {
+    let db_name = "test_refresh_rejected_too_soon";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+
+    let ring_pk = "ring_pk_group3b";
+    let sender_hex = "aabbccdd";
+    g3_write_ring_payload(
+        &app_state.local_storage,
+        ring_pk,
+        vec![sender_hex.to_string()],
+    );
+
+    // Set last refresh to "now" — 0 seconds have elapsed, below any minimum interval.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    g3_write_last_refresh(&app_state.local_storage, ring_pk, now_secs);
+
+    let sender_bytes = hex::decode(sender_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::new(app_state);
+    let msg = g3_refresh_session_init(ring_pk, sender_hex);
+
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
+        "Expected Unauthorized for refresh too soon, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_refresh_rejected_already_in_progress() {
+    let db_name = "test_refresh_rejected_already_in_progress";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+
+    let ring_pk = "ring_pk_group3c";
+    let sender_hex = "aabbccdd";
+    g3_write_ring_payload(
+        &app_state.local_storage,
+        ring_pk,
+        vec![sender_hex.to_string()],
+    );
+    g3_write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
+
+    // Pre-mark the ring as already refreshing so the coordinator rejects the second attempt.
+    let first_mark = app_state
+        .dkg_session_state
+        .try_mark_ring_refreshing(ring_pk)
+        .await;
+    assert!(first_mark, "initial mark should succeed");
+
+    let sender_bytes = hex::decode(sender_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::new(app_state);
+    let msg = g3_refresh_session_init(ring_pk, sender_hex);
+
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
+        "Expected Unauthorized for refresh already in progress, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
 }

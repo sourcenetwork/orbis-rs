@@ -990,4 +990,112 @@ mod tests {
             "Phase4Complete sessions should not be removed by the expiration worker"
         );
     }
+
+    // =========================================================================
+    // rings_refreshing: try_mark / unmark
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_try_mark_returns_true_first_call() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        assert!(
+            mgr.try_mark_ring_refreshing("ring_abc").await,
+            "first mark should succeed (ring not yet in progress)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_try_mark_returns_false_when_already_in_progress() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        assert!(mgr.try_mark_ring_refreshing("ring_abc").await, "first mark");
+        assert!(
+            !mgr.try_mark_ring_refreshing("ring_abc").await,
+            "second mark for same ring should fail"
+        );
+        // A different ring must not be affected.
+        assert!(
+            mgr.try_mark_ring_refreshing("ring_xyz").await,
+            "different ring should be markable independently"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unmark_allows_remark() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        assert!(mgr.try_mark_ring_refreshing("ring_abc").await);
+        assert!(
+            !mgr.try_mark_ring_refreshing("ring_abc").await,
+            "still in progress"
+        );
+        mgr.unmark_ring_refreshing("ring_abc").await;
+        assert!(
+            mgr.try_mark_ring_refreshing("ring_abc").await,
+            "after unmark the ring should be markable again"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_guard_clears_ring_refreshing_flag() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+
+        // Create a refresh session and mark the ring as in-progress.
+        mgr.create_session(50, make_node(1), 3).await;
+        mgr.mark_as_refresh(&50).await;
+        mgr.set_refresh_ring_key(&50, "ring_cleanup".to_string())
+            .await;
+        assert!(
+            mgr.try_mark_ring_refreshing("ring_cleanup").await,
+            "ring should be markable before any cleanup"
+        );
+        assert!(
+            !mgr.try_mark_ring_refreshing("ring_cleanup").await,
+            "ring should be blocked while in progress"
+        );
+
+        // Drop a cleanup guard without defusing — worker removes session + flag.
+        {
+            let _guard = mgr.cleanup_guard(50);
+        }
+
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            mgr.try_mark_ring_refreshing("ring_cleanup").await,
+            "ring_refreshing flag should be cleared after cleanup guard fires"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_expiration_clears_ring_refreshing_flag() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+
+        // Create a refresh session and mark the ring as in-progress.
+        mgr.create_session(60, make_node(1), 3).await;
+        mgr.mark_as_refresh(&60).await;
+        mgr.set_refresh_ring_key(&60, "ring_expire".to_string())
+            .await;
+        assert!(mgr.try_mark_ring_refreshing("ring_expire").await);
+
+        // Backdate created_at past SESSION_TTL so the expiration worker evicts it.
+        {
+            let mut states = mgr.states.write().await;
+            if let Some(s) = states.get_mut(&60) {
+                s.created_at = Instant::now() - (SESSION_TTL + std::time::Duration::from_secs(10));
+            }
+        }
+
+        tokio::time::advance(SESSION_EXPIRATION_CHECK_INTERVAL + std::time::Duration::from_secs(1))
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !mgr.session_exists(&60).await,
+            "expired session should be removed"
+        );
+        assert!(
+            mgr.try_mark_ring_refreshing("ring_expire").await,
+            "ring_refreshing flag should be cleared after session expiration"
+        );
+    }
 }
