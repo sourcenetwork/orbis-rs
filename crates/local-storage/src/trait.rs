@@ -12,6 +12,8 @@ pub enum LocalStorageKeys {
     NodeSigningKey,
     /// JSON-encoded Vec<String> of bulletin ring IDs (DKG session IDs) this node has joined
     RingIndex,
+    /// Unix timestamp (u64 LE) of when this ring's share was last written (fresh DKG or refresh)
+    RingLastRefresh(String),
 }
 
 pub trait LocalStorage {

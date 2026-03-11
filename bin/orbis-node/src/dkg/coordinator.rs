@@ -17,11 +17,13 @@
 use crate::app_state::AppState;
 use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::constants::{
-    BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, MAX_COMMITMENT_COEFFICIENTS,
+    BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, DEFAULT_RESHARE_INTERVAL_SECS,
+    MAX_COMMITMENT_COEFFICIENTS,
 };
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
     serialize_commitment_coefficients, session_not_found, validate_dkg_claims,
+    validate_refresh_session_init,
 };
 use crate::dkg::messages::DkgMessage;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase};
@@ -147,11 +149,36 @@ where
         } = &message
         {
             if *is_refresh {
-                // PSS refresh: the iroh connection itself authenticates the sender.
-                // TODO: add refresh-specific auth (e.g. verify sender is a current ring member)
+                let ring_pk_hex = refresh_ring_pk_hex.as_ref().ok_or_else(|| {
+                    DkgError::InvalidInput(
+                        "Refresh SessionInit missing refresh_ring_pk_hex".to_string(),
+                    )
+                })?;
+
+                let sender_hex = hex::encode(sender_peer_id.as_bytes());
+                validate_refresh_session_init(
+                    ring_pk_hex,
+                    &sender_hex,
+                    &self.app_state.local_storage,
+                    DEFAULT_RESHARE_INTERVAL_SECS,
+                )?;
+
+                if !self
+                    .app_state
+                    .dkg_session_state
+                    .try_mark_ring_refreshing(ring_pk_hex)
+                    .await
+                {
+                    return Err(DkgError::Unauthorized(format!(
+                        "Refresh already in progress for ring {}",
+                        ring_pk_hex
+                    )));
+                }
+
                 tracing::info!(
                     session_id = session_id,
-                    "DKG Coordinator: Refresh SessionInit received (skipping JWT)"
+                    ring_pk = %ring_pk_hex,
+                    "DKG Coordinator: Refresh SessionInit validated"
                 );
             } else {
                 // 1. Authenticate: Validate JWT token
@@ -1300,13 +1327,74 @@ where
 
         self.app_state
             .local_storage
-            .set_encrypted(LocalStorageKeys::RingKey(storage_key), storage_bytes)
+            .set_encrypted(
+                LocalStorageKeys::RingKey(storage_key.clone()),
+                storage_bytes,
+            )
             .map_err(|e| DkgError::Storage(format!("Failed to store final share: {}", e)))?;
 
         tracing::debug!(
             session_id = session_id,
             "DKG Coordinator: Stored final share in local storage"
         );
+
+        // Write last-refresh timestamp so non-initiators can enforce the minimum interval
+        // on future refresh requests. Written for both fresh DKG (baseline) and refresh.
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.app_state
+            .local_storage
+            .set(
+                LocalStorageKeys::RingLastRefresh(storage_key.clone()),
+                now_secs.to_le_bytes().to_vec(),
+            )
+            .map_err(|e| {
+                DkgError::Storage(format!("Failed to store last refresh timestamp: {}", e))
+            })?;
+
+        // For fresh DKG: cache the RingPayload locally so that future refresh validation
+        // can check membership without a bulletin round-trip (bulletin IDs are content-hash
+        // based and not easily resolved from ring_pk alone).
+        if !is_refresh {
+            let peer_ids = self
+                .app_state
+                .dkg_session_state
+                .get_peer_ids(&session_id)
+                .await
+                .unwrap_or_default();
+            let ring_pk_hex_for_payload = CryptoSerialize::to_bytes(&aggregate_pk)
+                .map(hex::encode)
+                .unwrap_or_default();
+            let ring_payload_local = RingPayload {
+                ring_pk: ring_pk_hex_for_payload,
+                peer_ids,
+                threshold: threshold as u32,
+                public_polynomial: hex::encode(&pub_poly_bytes),
+            };
+            let ring_payload_bytes: Vec<u8> = ring_payload_local.try_into().map_err(|e| {
+                DkgError::Serialization(format!(
+                    "Failed to serialize RingPayload for local cache: {}",
+                    e
+                ))
+            })?;
+            self.app_state
+                .local_storage
+                .set(
+                    LocalStorageKeys::RingPkMapping(storage_key.clone()),
+                    ring_payload_bytes,
+                )
+                .map_err(|e| DkgError::Storage(format!("Failed to store RingPkMapping: {}", e)))?;
+        }
+
+        // For refresh: clear the in-progress flag now that Phase 4 has succeeded.
+        if is_refresh {
+            self.app_state
+                .dkg_session_state
+                .unmark_ring_refreshing(&storage_key)
+                .await;
+        }
 
         // Update phase
         self.app_state

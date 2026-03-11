@@ -1259,6 +1259,25 @@ async fn test_dkg_followed_by_pss_refresh() {
         .expect("read charlie share")
         .expect("charlie share must exist after DKG");
 
+    // Backdate RingLastRefresh so the time-elapsed check passes immediately.
+    // In production this check enforces the minimum refresh interval; in tests
+    // we set the timestamp to epoch (far enough in the past) to skip the wait.
+    let old_ts: u64 = 0;
+    let old_ts_bytes = old_ts.to_le_bytes().to_vec();
+    for state in [
+        &network.alice.app_state,
+        &network.bob.app_state,
+        &network.charlie.app_state,
+    ] {
+        state
+            .local_storage
+            .set(
+                LocalStorageKeys::RingLastRefresh(key_string.clone()),
+                old_ts_bytes.clone(),
+            )
+            .expect("set RingLastRefresh for test");
+    }
+
     // ── Phase B: Set up and run a PSS refresh ─────────────────────────────────
 
     // Determine node_id assignments (same deterministic rule as DKG service).
