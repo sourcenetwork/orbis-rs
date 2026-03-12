@@ -168,6 +168,28 @@ where
 
     tracing::info!(ring_id = %ring_id, "PSS: initiating refresh");
 
+    // Resolve ring_pk before acquiring the in-progress lock so we can use the
+    // same key (`ring_pk.to_string()`) that the cleanup/expiration workers use
+    // to clear the flag via `state.refresh_ring_key`.
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
+        .map_err(|e| DkgError::Deserialization(format!("PSS: bad ring_pk hex: {}", e)))?;
+    let ring_pk = <D::PublicKey as CryptoDeserialize>::from_bytes(&ring_pk_bytes).map_err(|e| {
+        DkgError::Deserialization(format!("PSS: failed to deserialize ring_pk: {}", e))
+    })?;
+    let ring_pk_str = ring_pk.to_string();
+
+    // Prevent duplicate refresh sessions on this node. The flag is cleared by
+    // the cleanup/expiration workers (via `state.refresh_ring_key`) once the
+    // session ends, or manually below if we fail before `set_refresh_ring_key`.
+    if !app_state
+        .dkg_session_state
+        .try_mark_ring_refreshing(&ring_pk_str)
+        .await
+    {
+        tracing::debug!(ring_id = %ring_id, "PSS: refresh already in progress, skipping");
+        return Ok(());
+    }
+
     // Build deterministic node_id assignments (sorted peer list → 1-indexed)
     let mut node_id_assignments: std::collections::HashMap<String, u32> =
         std::collections::HashMap::new();
@@ -184,10 +206,19 @@ where
 
     let coordinator = DkgCoordinator::new(app_state.clone());
 
-    // Create refresh session (Standard role — all nodes are symmetric in Refresh mode)
-    coordinator
+    // Create refresh session (Standard role — all nodes are symmetric in Refresh mode).
+    // On failure we must unmark the ring ourselves — no session exists yet so the
+    // cleanup workers won't do it.
+    if let Err(e) = coordinator
         .create_session(session_id, our_node_id, threshold, total, DkgRole::Standard)
-        .await?;
+        .await
+    {
+        app_state
+            .dkg_session_state
+            .unmark_ring_refreshing(&ring_pk_str)
+            .await;
+        return Err(e);
+    }
 
     // Mark as refresh so generate_polynomial uses DkgMode::Refresh
     app_state
@@ -195,16 +226,12 @@ where
         .mark_as_refresh(&session_id)
         .await;
 
-    // Resolve the local-storage key for the old share so Phase 4 can combine
-    // the refresh delta with the existing share.
-    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
-        .map_err(|e| DkgError::Deserialization(format!("PSS: bad ring_pk hex: {}", e)))?;
-    let ring_pk = <D::PublicKey as CryptoDeserialize>::from_bytes(&ring_pk_bytes).map_err(|e| {
-        DkgError::Deserialization(format!("PSS: failed to deserialize ring_pk: {}", e))
-    })?;
+    // Store the ring key in session state. From this point on the cleanup /
+    // expiration workers will clear `rings_refreshing` automatically when the
+    // session is removed, so no manual unmark is needed on later error paths.
     app_state
         .dkg_session_state
-        .set_refresh_ring_key(&session_id, ring_pk.to_string())
+        .set_refresh_ring_key(&session_id, ring_pk_str.clone())
         .await;
 
     // Store peer_ids and node→peer mappings
@@ -248,9 +275,9 @@ where
         total_participants: total as u32,
         peer_ids: peer_ids.clone(),
         node_id_assignments,
-        token_string: String::new(), // refresh sessions skip JWT; TODO: add refresh-specific auth
+        token_string: String::new(), // refresh sessions skip JWT
         is_refresh: true,
-        refresh_ring_pk_hex: Some(ring_pk.to_string()),
+        refresh_ring_pk_hex: Some(ring_pk_str.clone()),
         pss_interval: ring_payload.pss_interval,
     };
 

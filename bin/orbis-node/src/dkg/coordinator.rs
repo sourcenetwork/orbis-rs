@@ -1312,6 +1312,12 @@ where
         // PSS Refresh: the delta share (zero constant term) must be ADDED to the
         //   existing share so the distributed secret is preserved.  Store the
         //   combined share under the ORIGINAL ring key (unchanged public key).
+        //
+        // Key representation note:
+        //   storage_key  = aggregate_pk.to_string()       — matches the lookup used by sign/pre
+        //   ring_pk_hex  = hex::encode(to_bytes(agg_pk))  — hex for byte-round-trip in RingPayload
+        //   RingPolyState and ring_payload.ring_pk use ring_pk_hex; everything else uses storage_key.
+        //   PSS re-derives storage_key from ring_pk_hex via: hex_decode → from_bytes → to_string().
         let (storage_key, storage_bytes) = if is_refresh {
             match refresh_ring_key {
                 Some(ring_key) => {
@@ -1414,9 +1420,13 @@ where
                 .get_peer_ids(&session_id)
                 .await
                 .unwrap_or_default();
+            // Hex-encode the aggregate public key for byte-round-trip use in RingPayload
+            // and RingPolyState. sign/pre services hex-decode this field to reconstruct
+            // the G1Affine, then call .to_string() — which recovers storage_key exactly.
             let ring_pk_hex_for_payload = CryptoSerialize::to_bytes(&aggregate_pk)
-                .map(hex::encode)
+                .map(|b| hex::encode(&b))
                 .unwrap_or_default();
+
             // Save public polynomial locally (never on the bulletin).
             let ring_poly_state = RingPolyState {
                 public_polynomial: hex::encode(&pub_poly_bytes),
