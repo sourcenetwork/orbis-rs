@@ -71,12 +71,13 @@ pub async fn do_dkg(endpoint: String, threshold: u32, peer_ids: Vec<String>) -> 
     let request = proto::dkg_service::StartDkgRequest {
         threshold,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     // JWT work
     let jwt_signer = JwtSigner::new();
     let token = jwt_signer
-        .create_dkg_jwt(threshold, &peer_ids)
+        .create_dkg_jwt(threshold, &peer_ids, None)
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token)
         .map_err(|e| anyhow!("Failed to create_dkg_jwt: {}", e))?;

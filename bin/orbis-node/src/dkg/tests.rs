@@ -35,12 +35,13 @@ async fn test_start_dkg_empty_participants() {
     let request = StartDkgRequest {
         threshold: 0,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(0, &peer_ids)
+        .create_dkg_jwt(0, &peer_ids, None)
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token).unwrap();
 
@@ -80,12 +81,13 @@ async fn test_three_nodes_connect() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with peer IDs...");
@@ -143,12 +145,13 @@ async fn test_start_dkg_fails_on_connection_failure() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     // Create authenticated request (even with invalid peer_ids, JWT should match request)
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with invalid peer IDs...");
@@ -211,12 +214,13 @@ async fn test_start_dkg_succeeds_on_all_connections() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with valid peer IDs...");
@@ -352,6 +356,7 @@ async fn test_start_dkg_fails_missing_auth_header() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids,
+        pss_interval: None,
     };
 
     // Create request WITHOUT authentication header
@@ -390,6 +395,7 @@ async fn test_start_dkg_fails_malformed_jwt() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids,
+        pss_interval: None,
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -423,7 +429,7 @@ async fn test_start_dkg_fails_wrong_signature() {
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
     let valid_token = key_pair_1
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     // Tamper with the signature by changing a character
@@ -443,6 +449,7 @@ async fn test_start_dkg_fails_wrong_signature() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids,
+        pss_interval: None,
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
@@ -494,6 +501,7 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
         token_string: "not-a-valid-jwt-token".to_string(), // Invalid JWT
         is_refresh: false,
         refresh_ring_pk_hex: None,
+        pss_interval: None,
     };
 
     // Try to handle the message - should fail due to invalid JWT
@@ -545,7 +553,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
 
     // Create JWT with threshold=3, but SessionInit will have threshold=2
     let mismatched_token = test_keys
-        .create_dkg_jwt(3, &peer_ids) // Wrong threshold!
+        .create_dkg_jwt(3, &peer_ids, None) // Wrong threshold!
         .expect("Failed to create JWT");
 
     // Create a SessionInit message with threshold=2 (doesn't match JWT's threshold=3)
@@ -562,6 +570,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
         token_string: mismatched_token,
         is_refresh: false,
         refresh_ring_pk_hex: None,
+        pss_interval: None,
     };
 
     // Try to handle the message - should fail due to claim mismatch
@@ -604,7 +613,7 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
     ];
 
     let mismatched_token = test_keys
-        .create_dkg_jwt(2, &jwt_peer_ids)
+        .create_dkg_jwt(2, &jwt_peer_ids, None)
         .expect("Failed to create JWT");
 
     // SessionInit has different peer_ids than the JWT
@@ -627,6 +636,7 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
         token_string: mismatched_token,
         is_refresh: false,
         refresh_ring_pk_hex: None,
+        pss_interval: None,
     };
 
     // Try to handle the message - should fail due to peer_ids mismatch
@@ -1203,11 +1213,14 @@ async fn test_dkg_followed_by_pss_refresh() {
     // ── Phase A: Run the initial DKG ──────────────────────────────────────────
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids).expect("create JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids, None)
+        .expect("create JWT");
     let tonic_req = create_authenticated_request(
         StartDkgRequest {
             threshold: 2,
             peer_ids: peer_ids.clone(),
+            pss_interval: None,
         },
         &token,
     )
@@ -1365,6 +1378,7 @@ async fn test_dkg_followed_by_pss_refresh() {
         token_string: String::new(), // refresh bypasses JWT
         is_refresh: true,
         refresh_ring_pk_hex: Some(key_string.clone()),
+        pss_interval: None,
     };
     for peer_id_str in &peer_ids {
         if let Err(e) = coordinator
@@ -1466,12 +1480,14 @@ fn g3_write_ring_payload(
     storage: &impl local_storage::r#trait::LocalStorage,
     ring_pk: &str,
     peer_ids: Vec<String>,
+    pss_interval: Option<u64>,
 ) {
     let payload = RingPayload {
         ring_pk: ring_pk.to_string(),
         peer_ids,
         threshold: 1,
         public_polynomial: "poly".to_string(),
+        pss_interval,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     storage
@@ -1506,6 +1522,7 @@ fn g3_refresh_session_init(ring_pk: &str, sender_hex: &str) -> DkgMessage {
         token_string: String::new(),
         is_refresh: true,
         refresh_ring_pk_hex: Some(ring_pk.to_string()),
+        pss_interval: None,
     }
 }
 
@@ -1521,6 +1538,7 @@ async fn test_refresh_rejected_sender_not_in_ring() {
         &app_state.local_storage,
         ring_pk,
         vec!["aabbccdd".to_string()],
+        None, // membership check fires before time check
     );
     g3_write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
 
@@ -1550,6 +1568,7 @@ async fn test_refresh_rejected_too_soon() {
         &app_state.local_storage,
         ring_pk,
         vec![sender_hex.to_string()],
+        Some(86400), // 24h interval required
     );
 
     // Set last refresh to "now" — 0 seconds have elapsed, below any minimum interval.
@@ -1585,6 +1604,7 @@ async fn test_refresh_rejected_already_in_progress() {
         &app_state.local_storage,
         ring_pk,
         vec![sender_hex.to_string()],
+        None, // time check irrelevant; rejected by in-progress flag
     );
     g3_write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
 

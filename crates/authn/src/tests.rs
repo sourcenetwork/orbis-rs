@@ -76,6 +76,7 @@ fn create_test_jwt_no_claims(
         DkgClaims {
             peer_ids: vec![],
             threshold: 2,
+            pss_interval: None,
         },
         Duration::from_secs(0),
     )
@@ -130,6 +131,7 @@ fn test_resolve_jwt_did_with_dkg_claims() {
         claims: DkgClaims {
             peer_ids: vec![],
             threshold: 2,
+            pss_interval: None,
         },
     };
 

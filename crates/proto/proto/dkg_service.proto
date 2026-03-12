@@ -9,6 +9,7 @@ service DkgService {
 message StartDkgRequest {
   uint32 threshold = 2;
   repeated string peer_ids = 3;  // Iroh peer IDs that this node needs to connect to
+  optional uint64 pss_interval = 4;  // Seconds between automatic PSS refresh ceremonies (0 / absent = disabled)
 }
 
 message StartDkgResponse {

@@ -17,6 +17,8 @@ pub enum CryptoError {
     SigningError(String),
     #[error("Parsing Error: {0}")]
     ParseError(String),
+    #[error("Commitment missing for node {0}")]
+    CommitmentMissing(u32),
 }
 
 /// Result type for network operations

@@ -55,6 +55,16 @@ pub const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 /// Set to 1 minute for reasonable responsiveness without excessive overhead.
 pub const SESSION_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Maximum number of retries when a share arrives before the sender's commitment.
+///
+/// Each attempt waits COMMIT_WAIT_MS before retrying. This handles the race where
+/// Phase 2 shares and Phase 1 commitments travel on separate network connections
+/// and can arrive out of order.
+pub const MAX_COMMIT_WAIT_RETRIES: usize = 5;
+
+/// Milliseconds to wait between commitment-wait retries.
+pub const COMMIT_WAIT_MS: u64 = 50;
+
 /// Timeout for a single DKG phase before the session is considered stalled
 ///
 /// If a DKG session remains in the same phase for longer than this duration,

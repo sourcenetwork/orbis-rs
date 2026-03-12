@@ -70,13 +70,20 @@ impl JwtSigner {
     /// # Arguments
     /// * `threshold` - The threshold value for DKG
     /// * `peer_ids` - List of peer IDs
+    /// * `pss_interval` - Optional seconds between automatic PSS refresh ceremonies
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour
-    pub fn create_dkg_jwt(&self, threshold: u32, peer_ids: &[String]) -> Result<String> {
+    pub fn create_dkg_jwt(
+        &self,
+        threshold: u32,
+        peer_ids: &[String],
+        pss_interval: Option<u64>,
+    ) -> Result<String> {
         let claims = DkgClaims {
             threshold,
             peer_ids: peer_ids.to_vec(),
+            pss_interval,
         };
         self.sign(claims, Duration::from_hours(1))
     }
@@ -281,7 +288,7 @@ mod tests {
     fn test_create_dkg_jwt() {
         let signer = JwtSigner::new();
         let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
-        let token = signer.create_dkg_jwt(2, &peer_ids);
+        let token = signer.create_dkg_jwt(2, &peer_ids, None);
         assert!(token.is_ok());
 
         // Token should have 3 parts (header.payload.signature)

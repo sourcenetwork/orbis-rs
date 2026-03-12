@@ -45,6 +45,10 @@ pub enum DkgMessage {
         /// and combine it with the refresh delta in Phase 4.
         #[serde(default)]
         refresh_ring_pk_hex: Option<String>,
+        /// Seconds between automatic PSS refresh ceremonies for this ring.
+        /// `None` means automatic refresh is disabled.
+        #[serde(default)]
+        pss_interval: Option<u64>,
     },
     /// Acknowledgment message
     Ack {

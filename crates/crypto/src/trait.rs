@@ -546,6 +546,16 @@ pub trait Dkg: Send + Sync {
 
     /// Get a reference to the polynomial commitment
     fn commitment(&self) -> &Self::PolynomialCommitment;
+
+    /// Add two serialized public polynomials coefficient-wise and return the result.
+    ///
+    /// Used in PSS refresh Phase 4 to compute the updated public polynomial:
+    ///   new_pub_poly = old_pub_poly + refresh_delta_poly
+    ///
+    /// Both slices must be produced by `PubPoly::to_bytes` and have equal length.
+    fn combine_pub_poly_bytes(a: &[u8], b: &[u8]) -> Result<Vec<u8>>
+    where
+        Self: Sized;
 }
 
 /// Trait for PRE

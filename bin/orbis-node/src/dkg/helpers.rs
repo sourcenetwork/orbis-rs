@@ -28,7 +28,8 @@ pub fn serialize_commitment_coefficients(coefficients: &[G1Affine]) -> Result<Ve
 /// Checks (in order):
 /// 1. The ring is known (`RingPkMapping` present in local storage).
 /// 2. The sender's peer ID is a current member of that ring.
-/// 3. Enough time has elapsed since the last refresh (`reshare_interval_secs`).
+/// 3. Enough time has elapsed since the last refresh (`ring_payload.pss_interval`).
+///    If `pss_interval` is `None` the time check is skipped (any time is acceptable).
 ///
 /// The caller is responsible for the atomic in-progress flag
 /// (`try_mark_ring_refreshing`) after this returns `Ok`.
@@ -36,7 +37,6 @@ pub fn validate_refresh_session_init<S: LocalStorage>(
     ring_pk_hex: &str,
     sender_hex: &str,
     local_storage: &S,
-    reshare_interval_secs: u64,
 ) -> Result<()> {
     // 1. Load the cached RingPayload (written during fresh DKG Phase 4).
     let ring_payload_bytes = local_storage
@@ -59,27 +59,32 @@ pub fn validate_refresh_session_init<S: LocalStorage>(
     }
 
     // 3. Verify enough time has elapsed since the last refresh/DKG.
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
-        .as_secs();
-    let last_refresh_bytes = local_storage
-        .get(LocalStorageKeys::RingLastRefresh(ring_pk_hex.to_string()))
-        .map_err(|e| DkgError::Storage(format!("Failed to read last refresh time: {}", e)))?
-        .ok_or_else(|| {
-            DkgError::Unauthorized(
-                "Ring has no refresh timestamp; cannot accept refresh".to_string(),
-            )
-        })?;
-    let last_refresh_arr: [u8; 8] = last_refresh_bytes.try_into().map_err(|_| {
-        DkgError::Deserialization("Invalid last refresh timestamp bytes".to_string())
-    })?;
-    let elapsed = now_secs.saturating_sub(u64::from_le_bytes(last_refresh_arr));
-    if elapsed < reshare_interval_secs {
-        return Err(DkgError::Unauthorized(format!(
-            "Refresh too soon: {}s elapsed, minimum is {}s",
-            elapsed, reshare_interval_secs
-        )));
+    //    Only enforced when the ring has a `pss_interval` set.
+    if let Some(pss_interval_secs) = ring_payload.pss_interval {
+        if pss_interval_secs > 0 {
+            let now_secs = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
+                .as_secs();
+            let last_refresh_bytes = local_storage
+                .get(LocalStorageKeys::RingLastRefresh(ring_pk_hex.to_string()))
+                .map_err(|e| DkgError::Storage(format!("Failed to read last refresh time: {}", e)))?
+                .ok_or_else(|| {
+                    DkgError::Unauthorized(
+                        "Ring has no refresh timestamp; cannot accept refresh".to_string(),
+                    )
+                })?;
+            let last_refresh_arr: [u8; 8] = last_refresh_bytes.try_into().map_err(|_| {
+                DkgError::Deserialization("Invalid last refresh timestamp bytes".to_string())
+            })?;
+            let elapsed = now_secs.saturating_sub(u64::from_le_bytes(last_refresh_arr));
+            if elapsed < pss_interval_secs {
+                return Err(DkgError::Unauthorized(format!(
+                    "Refresh too soon: {}s elapsed, minimum is {}s",
+                    elapsed, pss_interval_secs
+                )));
+            }
+        }
     }
 
     Ok(())
@@ -90,6 +95,7 @@ pub fn validate_dkg_claims(
     token: &BearerToken<DkgClaims>,
     threshold: u32,
     peer_ids: &[String],
+    pss_interval: Option<u64>,
 ) -> Result<()> {
     // Validate threshold matches
     if token.claims.threshold != threshold {
@@ -119,6 +125,15 @@ pub fn validate_dkg_claims(
         ));
     }
 
+    // Validate pss_interval matches. Normalize both sides: 0 and None both mean "disabled".
+    let normalize = |v: Option<u64>| v.filter(|&x| x > 0);
+    if normalize(token.claims.pss_interval) != normalize(pss_interval) {
+        return Err(DkgError::Unauthorized(format!(
+            "Token pss_interval ({:?}) does not match request pss_interval ({:?})",
+            token.claims.pss_interval, pss_interval
+        )));
+    }
+
     Ok(())
 }
 
@@ -135,12 +150,18 @@ mod tests {
         (storage, db_path)
     }
 
-    fn write_ring(storage: &LocalStorageImpl, ring_pk_hex: &str, peer_ids: Vec<String>) {
+    fn write_ring(
+        storage: &LocalStorageImpl,
+        ring_pk_hex: &str,
+        peer_ids: Vec<String>,
+        pss_interval: Option<u64>,
+    ) {
         let payload = RingPayload {
             ring_pk: ring_pk_hex.to_string(),
             peer_ids,
             threshold: 1,
             public_polynomial: "poly".to_string(),
+            pss_interval,
         };
         let bytes = serde_json::to_vec(&payload).unwrap();
         storage
@@ -163,7 +184,7 @@ mod tests {
     #[test]
     fn test_unknown_ring() {
         let (storage, db_path) = make_storage("helpers_unknown_ring");
-        let result = validate_refresh_session_init("some_pk", "sender", &storage, 86400);
+        let result = validate_refresh_session_init("some_pk", "sender", &storage);
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
             "Expected Unauthorized for unknown ring, got: {:?}",
@@ -181,7 +202,7 @@ mod tests {
                 b"not valid json".to_vec(),
             )
             .unwrap();
-        let result = validate_refresh_session_init("pk", "sender", &storage, 86400);
+        let result = validate_refresh_session_init("pk", "sender", &storage);
         assert!(
             matches!(result, Err(DkgError::Deserialization(_))),
             "Expected Deserialization error for corrupt payload, got: {:?}",
@@ -198,9 +219,9 @@ mod tests {
             &storage,
             ring_pk,
             vec!["aabbccdd".to_string(), "eeff0011".to_string()],
+            None, // membership check fires before any time check
         );
-        write_last_refresh(&storage, ring_pk, 0);
-        let result = validate_refresh_session_init(ring_pk, "deadbeef00000000", &storage, 86400);
+        let result = validate_refresh_session_init(ring_pk, "deadbeef00000000", &storage);
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
             "Expected Unauthorized for sender not in ring, got: {:?}",
@@ -211,11 +232,12 @@ mod tests {
 
     #[test]
     fn test_no_last_refresh_timestamp() {
+        // When pss_interval is set, a missing RingLastRefresh must be rejected.
         let (storage, db_path) = make_storage("helpers_no_timestamp");
         let ring_pk = "ring_pk_def";
-        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()]);
+        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()], Some(86400));
         // Intentionally do not write RingLastRefresh
-        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, 86400);
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage);
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
             "Expected Unauthorized for missing timestamp, got: {:?}",
@@ -235,14 +257,14 @@ mod tests {
     fn test_refresh_too_soon() {
         let (storage, db_path) = make_storage("helpers_too_soon");
         let ring_pk = "ring_pk_ghi";
-        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()]);
+        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()], Some(86400));
         // Set last refresh to now — elapsed will be ~0s
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
         write_last_refresh(&storage, ring_pk, now);
-        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, 86400);
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage);
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
             "Expected Unauthorized for too soon, got: {:?}",
@@ -262,13 +284,29 @@ mod tests {
     fn test_refresh_succeeds() {
         let (storage, db_path) = make_storage("helpers_success");
         let ring_pk = "ring_pk_jkl";
-        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()]);
+        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()], Some(86400));
         // Timestamp at epoch — elapsed >> interval
         write_last_refresh(&storage, ring_pk, 0);
-        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, 86400);
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage);
         assert!(
             result.is_ok(),
             "Expected Ok for valid refresh, got: {:?}",
+            result
+        );
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn test_no_pss_interval_skips_time_check() {
+        // When pss_interval is None, time check is skipped — refresh always allowed.
+        let (storage, db_path) = make_storage("helpers_no_interval");
+        let ring_pk = "ring_pk_mno";
+        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()], None);
+        // No RingLastRefresh written — would fail if the time check ran.
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage);
+        assert!(
+            result.is_ok(),
+            "Expected Ok when pss_interval is None (no time check), got: {:?}",
             result
         );
         cleanup_db(&db_path);

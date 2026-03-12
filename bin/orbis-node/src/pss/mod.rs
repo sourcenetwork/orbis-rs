@@ -1,20 +1,22 @@
 //! PSS (Proactive Secret Sharing) — automatic refresh scheduler
 //!
-//! Periodically initiates a refresh ceremony for every ring this node belongs to,
-//! rotating secret shares while preserving the distributed secret. The interval is
-//! configurable at node startup and defaults to 24 hours.
+//! Periodically checks every known ring and initiates a refresh ceremony when the
+//! ring's own `pss_interval` (stored in `RingPkMapping`) has elapsed since the last
+//! refresh.  The check cadence (`check_interval`) is set at node startup; each ring
+//! controls its own refresh frequency via the `pss_interval` field in `RingPayload`.
 //!
 //! ## Protocol
 //! On each tick the node with the lexicographically smallest peer ID in the ring acts
 //! as the initiator. It sends a `SessionInit { is_refresh: true }` to all ring members
 //! and runs the standard DKG commitment/share protocol using `DkgMode::Refresh`
 //! (zero constant term — same secret, new shares).
+//!
+//! Rings with `pss_interval = None` are skipped (automatic refresh disabled).
 
 #[cfg(test)]
 mod tests;
 
 use crate::app_state::AppState;
-use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::DkgMessage;
@@ -25,13 +27,16 @@ use crypto::{CryptoDeserialize, GroupAffine, PolynomialCommitmentImpl, ScalarFie
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::DKG;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Spawn a background task that periodically triggers PSS refresh ceremonies.
+/// Spawn a background task that periodically checks rings for due PSS refreshes.
 ///
-/// A tick is skipped silently when no rings are known yet (e.g., on first boot
-/// before any DKG has completed). Setting `interval` to zero disables the scheduler.
-pub fn spawn_reshare_scheduler<D>(app_state: Arc<AppState<D>>, interval: Duration)
+/// `check_interval` controls how often the scheduler wakes up to inspect all known
+/// rings.  Each ring's own `pss_interval` (stored in `RingPkMapping`) determines
+/// whether a refresh is actually triggered on that tick.
+///
+/// Setting `check_interval` to zero disables the scheduler entirely.
+pub fn spawn_reshare_scheduler<D>(app_state: Arc<AppState<D>>, check_interval: Duration)
 where
     D: Dkg<
             ShareValue = Fr,
@@ -42,17 +47,17 @@ where
         + Sync
         + 'static,
 {
-    if interval.is_zero() {
-        tracing::info!("PSS refresh scheduler disabled (interval = 0)");
+    if check_interval.is_zero() {
+        tracing::info!("PSS refresh scheduler disabled (check_interval = 0)");
         return;
     }
 
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
+        let mut ticker = tokio::time::interval(check_interval);
         ticker.tick().await; // skip the initial immediate tick at t=0
         loop {
             ticker.tick().await;
-            tracing::info!("PSS refresh scheduler: tick");
+            tracing::debug!("PSS refresh scheduler: tick");
             if let Err(e) = refresh_all_rings(&app_state).await {
                 tracing::error!(error = %e, "PSS refresh scheduler: error");
             }
@@ -60,7 +65,7 @@ where
     });
 }
 
-/// Iterate over every known ring and attempt a refresh.
+/// Iterate over every known ring and trigger a refresh when its `pss_interval` is due.
 async fn refresh_all_rings<D>(app_state: &Arc<AppState<D>>) -> Result<(), DkgError>
 where
     D: Dkg<
@@ -88,7 +93,8 @@ where
     Ok(())
 }
 
-/// Run one refresh ceremony for `ring_id`, but only if this node is the initiator.
+/// Run one refresh ceremony for `ring_id` if this node is the initiator and the
+/// ring's `pss_interval` has elapsed since the last refresh.
 async fn refresh_ring<D>(app_state: &Arc<AppState<D>>, ring_id: &str) -> Result<(), DkgError>
 where
     D: Dkg<
@@ -100,15 +106,51 @@ where
         + Sync
         + 'static,
 {
-    // Fetch ring info from the bulletin
-    let ring_post = app_state
-        .bulletin
-        .read(BULLETIN_RING_NAMESPACE.to_string(), ring_id.to_string())
-        .await
-        .map_err(|e| DkgError::Storage(format!("PSS: failed to read ring {}: {}", ring_id, e)))?;
+    // Load ring info from local storage (written during Phase 4 of the last DKG/refresh).
+    let ring_payload_bytes = app_state
+        .local_storage
+        .get(LocalStorageKeys::RingPkMapping(ring_id.to_string()))
+        .map_err(|e| DkgError::Storage(format!("PSS: failed to read ring {}: {}", ring_id, e)))?
+        .ok_or_else(|| {
+            DkgError::Storage(format!("PSS: ring {} not found in local storage", ring_id))
+        })?;
 
-    let ring_payload: RingPayload = serde_json::from_slice(&ring_post.payload)
+    let ring_payload: RingPayload = serde_json::from_slice(&ring_payload_bytes)
         .map_err(|e| DkgError::Deserialization(format!("PSS: bad ring payload: {}", e)))?;
+
+    // Skip rings that have no automatic refresh interval configured.
+    let pss_interval_secs = match ring_payload.pss_interval {
+        Some(v) if v > 0 => v,
+        _ => {
+            tracing::debug!(ring_id = %ring_id, "PSS: no pss_interval set, skipping");
+            return Ok(());
+        }
+    };
+
+    // Check whether enough time has elapsed since the last refresh.
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let last_refresh_secs: u64 = app_state
+        .local_storage
+        .get(LocalStorageKeys::RingLastRefresh(ring_id.to_string()))
+        .ok()
+        .flatten()
+        .and_then(|b| b.try_into().ok())
+        .map(u64::from_le_bytes)
+        .unwrap_or(0);
+
+    let elapsed = now_secs.saturating_sub(last_refresh_secs);
+    if elapsed < pss_interval_secs {
+        tracing::debug!(
+            ring_id = %ring_id,
+            elapsed_secs = elapsed,
+            pss_interval_secs = pss_interval_secs,
+            "PSS: refresh not yet due"
+        );
+        return Ok(());
+    }
 
     let peer_ids = &ring_payload.peer_ids;
     let threshold = ring_payload.threshold as usize;
@@ -209,6 +251,7 @@ where
         token_string: String::new(), // refresh sessions skip JWT; TODO: add refresh-specific auth
         is_refresh: true,
         refresh_ring_pk_hex: Some(ring_pk.to_string()),
+        pss_interval: ring_payload.pss_interval,
     };
 
     for peer_id_str in peer_ids {

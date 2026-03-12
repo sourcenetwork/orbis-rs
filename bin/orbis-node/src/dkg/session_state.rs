@@ -87,6 +87,9 @@ pub struct DkgSessionState<D: Dkg> {
     pub processed_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
     /// Set when this is a PSS refresh session; causes generate_polynomial to use DkgMode::Refresh
     pub is_refresh: bool,
+    /// Seconds between automatic PSS refresh ceremonies for this ring.
+    /// Stored here during the session so Phase 4 can write it into `RingPayload`.
+    pub pss_interval: Option<u64>,
     /// Local-storage key (`aggregate_pk.to_string()`) of the ring being refreshed.
     ///
     /// Present only for PSS refresh sessions. Phase 4 uses this to load the old share,
@@ -112,6 +115,7 @@ impl<D: Dkg> DkgSessionState<D> {
             shares_received: 0,
             processed_messages: std::collections::HashSet::new(),
             is_refresh: false,
+            pss_interval: None,
             refresh_ring_key: None,
         }
     }
@@ -481,6 +485,14 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.refresh_ring_key = Some(key);
+        }
+    }
+
+    /// Store the PSS refresh interval for this session so Phase 4 can persist it.
+    pub async fn set_pss_interval(&self, session_id: &u64, interval: Option<u64>) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.pss_interval = interval;
         }
     }
 

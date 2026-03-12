@@ -69,8 +69,8 @@ where
         // TODO: use token.issuer_id as AuthZ check
         let req = request.into_inner();
 
-        // 2. Authorize: Validate JWT claims match request fields
-        validate_dkg_claims(&token, req.threshold, &req.peer_ids)?;
+        // 2. Authorize: Validate JWT claims match request fields (compare raw, pre-normalization)
+        validate_dkg_claims(&token, req.threshold, &req.peer_ids, req.pss_interval)?;
 
         tracing::info!(
             threshold = req.threshold,
@@ -172,6 +172,16 @@ where
             .set_peer_ids(&session_id, req.peer_ids.clone())
             .await;
 
+        // Normalize pss_interval: treat 0 as disabled (same as None).
+        let pss_interval = req.pss_interval.filter(|&v| v > 0);
+
+        // Store pss_interval so Phase 4 includes it in the RingPayload written locally.
+        // (Non-initiators receive it via SessionInit; the initiator does not.)
+        self.state
+            .dkg_session_state
+            .set_pss_interval(&session_id, pss_interval)
+            .await;
+
         // Store node_id to peer_id mappings for efficient routing
         // We'll do this after sending SessionInit, but for now the coordinator will handle it
         // when it processes the message (for consistency)
@@ -237,6 +247,7 @@ where
                 token_string: token_str.clone(), // Pass JWT to peer nodes for authentication
                 is_refresh: false,
                 refresh_ring_pk_hex: None,
+                pss_interval,
             };
 
             // Send SessionInit to all peers (they will create their sessions and start Phase 1)

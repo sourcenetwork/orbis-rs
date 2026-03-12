@@ -17,8 +17,8 @@
 use crate::app_state::AppState;
 use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::constants::{
-    BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, DEFAULT_RESHARE_INTERVAL_SECS,
-    MAX_COMMITMENT_COEFFICIENTS,
+    BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, COMMIT_WAIT_MS,
+    MAX_COMMITMENT_COEFFICIENTS, MAX_COMMIT_WAIT_RETRIES,
 };
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
@@ -145,6 +145,7 @@ where
             token_string,
             is_refresh,
             refresh_ring_pk_hex,
+            pss_interval,
             ..
         } = &message
         {
@@ -160,7 +161,6 @@ where
                     ring_pk_hex,
                     &sender_hex,
                     &self.app_state.local_storage,
-                    DEFAULT_RESHARE_INTERVAL_SECS,
                 )?;
 
                 if !self
@@ -193,7 +193,7 @@ where
                     )?;
                 // TODO: use token.issuer_id as AuthZ check
                 // 2. Authorize: Validate JWT claims match SessionInit fields
-                validate_dkg_claims(&token, *threshold, peer_ids)?;
+                validate_dkg_claims(&token, *threshold, peer_ids, *pss_interval)?;
 
                 tracing::info!(
                     issuer = %token.issuer_id,
@@ -254,6 +254,10 @@ where
                             .await;
                     }
                 }
+                self.app_state
+                    .dkg_session_state
+                    .set_pss_interval(&session_id, *pss_interval)
+                    .await;
             }
 
             // Store peer_ids for this session (needed for sending messages)
@@ -600,38 +604,73 @@ where
                         to_node_id, our_node_id
                     )));
                 }
-
-                // Deserialize share value
-                let share_val =
-                    <D::ShareValue>::from_bytes(share_value.as_slice()).map_err(|e| {
-                        DkgError::Deserialization(format!(
-                            "Failed to deserialize share value: {}",
-                            e
-                        ))
-                    })?;
-
-                // Create DistributedShare
-                let share = DistributedShare {
-                    from_id: from_node_id,
-                    to_id: to_node_id,
-                    value: share_val,
-                    nonce,
-                    session_id,
-                };
-
-                // Receive and verify the share (mutates session in-place, no cloning!)
-                self.app_state
-                    .dkg_session_state
-                    .with_state_mut(&session_id, |state| {
-                        state.node.receive_share(share).map_err(|e| {
-                            DkgError::ShareVerificationFailed(format!(
-                                "Failed to receive share: {}",
+                // TODO: Bad fix, have phases use same QUIC connection (next PR)
+                // Receive and verify the share, retrying briefly if the sender's
+                // Phase 1 commitment hasn't arrived yet (each message uses a fresh
+                // network connection, so ordering between the commitment and the
+                // share is not guaranteed).
+                let mut last_err: Option<DkgError> = None;
+                let mut succeeded = false;
+                for attempt in 0..=MAX_COMMIT_WAIT_RETRIES {
+                    // Re-deserialize share value each attempt (cheap; avoids Clone bound)
+                    let share_val =
+                        <D::ShareValue>::from_bytes(share_value.as_slice()).map_err(|e| {
+                            DkgError::Deserialization(format!(
+                                "Failed to deserialize share value: {}",
                                 e
                             ))
+                        })?;
+                    let share = DistributedShare {
+                        from_id: from_node_id,
+                        to_id: to_node_id,
+                        value: share_val,
+                        nonce,
+                        session_id,
+                    };
+                    let result = self
+                        .app_state
+                        .dkg_session_state
+                        .with_state_mut(&session_id, |state| {
+                            state.node.receive_share(share).map_err(|e| match e {
+                                crypto::error::CryptoError::CommitmentMissing(node_id) => {
+                                    DkgError::CommitmentNotYetReceived(node_id)
+                                }
+                                _ => DkgError::ShareVerificationFailed(format!(
+                                    "Failed to receive share: {}",
+                                    e
+                                )),
+                            })
                         })
-                    })
-                    .await
-                    .ok_or_else(|| session_not_found(session_id))??;
+                        .await
+                        .ok_or_else(|| session_not_found(session_id))?;
+                    match result {
+                        Ok(_) => {
+                            succeeded = true;
+                            break;
+                        }
+                        Err(DkgError::CommitmentNotYetReceived(_))
+                            if attempt < MAX_COMMIT_WAIT_RETRIES =>
+                        {
+                            tracing::debug!(
+                                from_node_id = from_node_id,
+                                attempt = attempt + 1,
+                                "Share arrived before commitment; retrying after {}ms",
+                                COMMIT_WAIT_MS
+                            );
+                            tokio::time::sleep(std::time::Duration::from_millis(COMMIT_WAIT_MS))
+                                .await;
+                            last_err = Some(result.unwrap_err());
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                if !succeeded {
+                    return Err(last_err.unwrap_or_else(|| {
+                        DkgError::ShareVerificationFailed(
+                            "Share verification failed after retries".to_string(),
+                        )
+                    }));
+                }
 
                 tracing::debug!(
                     from_node_id = from_node_id,
@@ -1198,12 +1237,16 @@ where
             "DKG Coordinator: Starting Phase 4 completion"
         );
 
-        // Read refresh metadata before acquiring the mutable state lock.
-        let (is_refresh, refresh_ring_key) = self
+        // Read session metadata before acquiring the mutable state lock.
+        let (is_refresh, refresh_ring_key, pss_interval) = self
             .app_state
             .dkg_session_state
             .with_state(&session_id, |state| {
-                (state.is_refresh, state.refresh_ring_key.clone())
+                (
+                    state.is_refresh,
+                    state.refresh_ring_key.clone(),
+                    state.pss_interval,
+                )
             })
             .await
             .ok_or_else(|| session_not_found(session_id))?;
@@ -1356,7 +1399,13 @@ where
 
         // For fresh DKG: cache the RingPayload locally so that future refresh validation
         // can check membership without a bulletin round-trip (bulletin IDs are content-hash
-        // based and not easily resolved from ring_pk alone).
+        // based and not easily resolved from ring_pk alone).  Also append to RingIndex so
+        // the PSS scheduler can discover this ring.
+        //
+        // For PSS Refresh: load the existing cached RingPayload, combine the old public
+        // polynomial with the refresh delta to get the updated polynomial, write it back
+        // to local storage, and (node 1 only) post the updated payload to the bulletin so
+        // that PRE/sign operations keep working with the new shares.
         if !is_refresh {
             let peer_ids = self
                 .app_state
@@ -1368,10 +1417,11 @@ where
                 .map(hex::encode)
                 .unwrap_or_default();
             let ring_payload_local = RingPayload {
-                ring_pk: ring_pk_hex_for_payload,
+                ring_pk: ring_pk_hex_for_payload.clone(),
                 peer_ids,
                 threshold: threshold as u32,
                 public_polynomial: hex::encode(&pub_poly_bytes),
+                pss_interval,
             };
             let ring_payload_bytes: Vec<u8> = ring_payload_local.try_into().map_err(|e| {
                 DkgError::Serialization(format!(
@@ -1386,6 +1436,134 @@ where
                     ring_payload_bytes,
                 )
                 .map_err(|e| DkgError::Storage(format!("Failed to store RingPkMapping: {}", e)))?;
+
+            // Update the ring index so the PSS scheduler can discover this ring.
+            let mut ring_index: Vec<String> = self
+                .app_state
+                .local_storage
+                .get(LocalStorageKeys::RingIndex)
+                .ok()
+                .flatten()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_default();
+            if !ring_index.contains(&storage_key) {
+                ring_index.push(storage_key.clone());
+                let index_bytes = serde_json::to_vec(&ring_index).map_err(|e| {
+                    DkgError::Serialization(format!("Failed to serialize RingIndex: {}", e))
+                })?;
+                self.app_state
+                    .local_storage
+                    .set(LocalStorageKeys::RingIndex, index_bytes)
+                    .map_err(|e| DkgError::Storage(format!("Failed to store RingIndex: {}", e)))?;
+            }
+        } else {
+            // PSS Refresh: compute new_pub_poly = old_pub_poly + delta_pub_poly and
+            // update the locally cached RingPayload.  Node 1 also posts the updated
+            // payload to the bulletin to signal that the refresh is complete.
+            let old_ring_payload_bytes = self
+                .app_state
+                .local_storage
+                .get(LocalStorageKeys::RingPkMapping(storage_key.clone()))
+                .map_err(|e| {
+                    DkgError::Storage(format!("Refresh: failed to read old RingPkMapping: {}", e))
+                })?
+                .ok_or_else(|| {
+                    DkgError::Storage(format!(
+                        "Refresh: old RingPkMapping not found for key {}",
+                        storage_key
+                    ))
+                })?;
+
+            let old_ring_payload: RingPayload = serde_json::from_slice(&old_ring_payload_bytes)
+                .map_err(|e| {
+                    DkgError::Deserialization(format!(
+                        "Refresh: failed to deserialize old RingPayload: {}",
+                        e
+                    ))
+                })?;
+
+            let old_poly_bytes = hex::decode(&old_ring_payload.public_polynomial).map_err(|e| {
+                DkgError::Deserialization(format!(
+                    "Refresh: failed to decode old public polynomial hex: {}",
+                    e
+                ))
+            })?;
+
+            let new_poly_bytes = D::combine_pub_poly_bytes(&old_poly_bytes, &pub_poly_bytes)
+                .map_err(|e| {
+                    DkgError::Crypto(format!(
+                        "Refresh: failed to combine public polynomials: {}",
+                        e
+                    ))
+                })?;
+
+            let updated_payload = RingPayload {
+                ring_pk: old_ring_payload.ring_pk.clone(),
+                peer_ids: old_ring_payload.peer_ids.clone(),
+                threshold: old_ring_payload.threshold,
+                public_polynomial: hex::encode(&new_poly_bytes),
+                pss_interval: old_ring_payload.pss_interval,
+            };
+
+            let updated_payload_bytes: Vec<u8> =
+                updated_payload.clone().try_into().map_err(|e| {
+                    DkgError::Serialization(format!(
+                        "Refresh: failed to serialize updated RingPayload: {}",
+                        e
+                    ))
+                })?;
+
+            self.app_state
+                .local_storage
+                .set(
+                    LocalStorageKeys::RingPkMapping(storage_key.clone()),
+                    updated_payload_bytes,
+                )
+                .map_err(|e| {
+                    DkgError::Storage(format!(
+                        "Refresh: failed to store updated RingPkMapping: {}",
+                        e
+                    ))
+                })?;
+
+            tracing::debug!(
+                session_id = session_id,
+                ring_pk = %updated_payload.ring_pk,
+                "Refresh: updated local RingPkMapping with combined public polynomial"
+            );
+
+            // Node 1 posts the updated RingPayload to the bulletin so clients and
+            // other nodes can discover the new public polynomial for PRE/sign.
+            if node_id == 1 {
+                let bulletin_bytes: Vec<u8> = updated_payload.clone().try_into().map_err(|e| {
+                    DkgError::Serialization(format!(
+                        "Refresh: failed to serialize RingPayload for bulletin: {}",
+                        e
+                    ))
+                })?;
+
+                self.app_state
+                    .bulletin
+                    .post(
+                        BULLETIN_RING_NAMESPACE.to_string(),
+                        bulletin_bytes,
+                        BULLETIN_PLACEHOLDER_PROOF.to_vec(),
+                        Some(session_id.to_string()),
+                    )
+                    .await
+                    .map_err(|e| {
+                        DkgError::Bulletin(format!(
+                            "Refresh: failed to post updated RingPayload to bulletin: {}",
+                            e
+                        ))
+                    })?;
+
+                tracing::info!(
+                    ring_pk = %updated_payload.ring_pk,
+                    namespace = BULLETIN_RING_NAMESPACE,
+                    "Refresh: posted updated RingPayload to bulletin"
+                );
+            }
         }
 
         // For refresh: clear the in-progress flag now that Phase 4 has succeeded.
@@ -1415,7 +1593,7 @@ where
         );
 
         // Node 1 is responsible for posting the RingPayload to the bulletin
-        if node_id == 1 {
+        if node_id == 1 && !is_refresh {
             // Get peer_ids from session state
             let peer_ids = self
                 .app_state
@@ -1429,6 +1607,7 @@ where
                 peer_ids,
                 threshold: threshold as u32,
                 public_polynomial: hex::encode(&pub_poly_bytes),
+                pss_interval,
             };
 
             // Serialize payload

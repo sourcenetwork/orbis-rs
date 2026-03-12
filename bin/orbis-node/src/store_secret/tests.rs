@@ -55,6 +55,7 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         peer_ids: vec!["peer1".to_string()],
         threshold: 1,
         public_polynomial: "00".to_string(),
+        pss_interval: None,
     };
 
     // Serialize and set in bulletin
@@ -519,6 +520,7 @@ async fn test_store_secret_idempotent() {
         peer_ids: vec!["peer1".to_string()],
         threshold: 1,
         public_polynomial: "00".to_string(),
+        pss_interval: None,
     };
 
     // Compute the ring_id (deterministic hash of the ring payload)
@@ -701,6 +703,7 @@ async fn test_store_secret_fails_wrong_derived_pk() {
         peer_ids: vec!["peer1".to_string()],
         threshold: 1,
         public_polynomial: "00".to_string(),
+        pss_interval: None,
     };
 
     // Compute the ring_id (deterministic hash of the ring payload)
@@ -848,6 +851,7 @@ async fn test_store_secret_fails_with_tampered_proof() {
         peer_ids: vec!["peer1".to_string()],
         threshold: 1,
         public_polynomial: "00".to_string(),
+        pss_interval: None,
     };
 
     // Compute the ring_id (deterministic hash of the ring payload)

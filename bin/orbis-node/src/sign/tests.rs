@@ -66,12 +66,13 @@ async fn test_dkg_then_sign_end_to_end() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     println!("Node1 sending StartDkgRequest...");
@@ -313,11 +314,12 @@ async fn test_sign_different_messages() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -422,11 +424,12 @@ async fn test_sign_fails_wrong_message() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -536,11 +539,12 @@ async fn test_sign_response_cleanup() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -639,11 +643,12 @@ async fn test_sign_fails_invalid_bulletin_post() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -726,11 +731,12 @@ async fn test_sign_fails_post_not_on_bulletin() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -836,11 +842,12 @@ async fn test_sign_fails_tampered_payload() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -981,11 +988,12 @@ async fn test_sign_fails_invalid_ring_id() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -1149,7 +1157,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
@@ -1157,6 +1165,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
                 StartDkgRequest {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
+                    pss_interval: None,
                 },
                 &token,
             )
@@ -1301,7 +1310,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
@@ -1309,6 +1318,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
                 StartDkgRequest {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
+                    pss_interval: None,
                 },
                 &token,
             )
@@ -1397,7 +1407,7 @@ async fn test_sign_policy_fails_wrong_namespace() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
@@ -1405,6 +1415,7 @@ async fn test_sign_policy_fails_wrong_namespace() {
                 StartDkgRequest {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
+                    pss_interval: None,
                 },
                 &token,
             )
@@ -1505,7 +1516,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
@@ -1513,6 +1524,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                 StartDkgRequest {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
+                    pss_interval: None,
                 },
                 &token,
             )
