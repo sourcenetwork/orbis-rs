@@ -129,7 +129,9 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         threshold,
         peer_ids.len()
     );
-    let dkg_result = cli_tool::do_dkg(endpoint.clone(), threshold, peer_ids.clone()).await;
+    // pss_interval = 1s so the PSS scheduler (5s check interval in docker-compose) fires a
+    // refresh shortly after DKG completes.
+    let dkg_result = cli_tool::do_dkg(endpoint.clone(), threshold, peer_ids.clone(), Some(1)).await;
     assert!(
         dkg_result.is_ok(),
         "DKG should succeed: {:?}",
@@ -720,6 +722,169 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     );
 
     println!("Sign correctly rejected unauthorized DID!");
+
+    // ====================================================================
+    // Step 4: PSS Refresh — poll all nodes until refreshed_at > 0 and
+    // polynomial has changed from the initial DKG value.
+    //
+    // The DKG was started with pss_interval=1s. The nodes run with
+    // --reshare-interval-secs=5 (docker-compose), so the first scheduler
+    // tick fires within 5s of DKG completion. The public polynomial is
+    // stored locally on each node (not on the bulletin), so the ring_id is
+    // unchanged. We poll GetRingState on all three nodes to confirm the
+    // refresh actually completed before testing Sign and PRE.
+    // ====================================================================
+    println!("Waiting for PSS refresh to complete (polling all 3 nodes)...");
+
+    // Capture the initial polynomial from node 1 right after DKG so we can
+    // confirm it changes after a refresh.
+    let (initial_poly, _) = cli_tool::query_ring_state(endpoint.clone(), ring_pk_hex.clone())
+        .await
+        .expect("query_ring_state after DKG");
+
+    let node_endpoints = [
+        IntegrationTestNetwork::NODE1_GRPC.to_string(),
+        IntegrationTestNetwork::NODE2_GRPC.to_string(),
+        IntegrationTestNetwork::NODE3_GRPC.to_string(),
+    ];
+    let poll_deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let mut all_refreshed = true;
+        for ep in &node_endpoints {
+            match cli_tool::query_ring_state(ep.clone(), ring_pk_hex.clone()).await {
+                Ok((poly, refreshed_at)) if refreshed_at > 0 && poly != initial_poly => {}
+                _ => {
+                    all_refreshed = false;
+                    break;
+                }
+            }
+        }
+        if all_refreshed {
+            break;
+        }
+        assert!(
+            Instant::now() < poll_deadline,
+            "PSS refresh did not complete on all nodes within 60s"
+        );
+        sleep(Duration::from_secs(2)).await;
+    }
+    println!(
+        "PSS refresh complete. ring_id={} is unchanged (polynomial is local-only).",
+        &ring_id[..16.min(ring_id.len())]
+    );
+
+    // ====================================================================
+    // Step 4a: Post-refresh Sign — reuse existing derivation_id (ring_id
+    // and derived PK are unchanged after PSS; the on-chain post already
+    // exists and ACP relationships are already set).
+    // ====================================================================
+    println!("Testing Sign after PSS refresh...");
+
+    let sign_result_post_refresh = cli_tool::do_sign(
+        endpoint.clone(),
+        sign_message.to_vec(),
+        full_namespace.clone(),
+        derivation_id.clone(),
+        Some(sign_did_pk.clone()),
+        None,
+        None,
+    )
+    .await
+    .expect("do_sign after PSS refresh");
+
+    let sig_bytes_pr = hex::decode(&sign_result_post_refresh.signature).expect("decode sig hex");
+    let signature_pr = <SignImpl as ThresholdSigner>::Signature::from_bytes(&sig_bytes_pr)
+        .expect("deserialize signature");
+    let derived_pk_bytes_pr = hex::decode(&derived_pk_hex).expect("decode derived_pk hex");
+    let derived_pk_pr =
+        GroupAffine::from_bytes(&derived_pk_bytes_pr).expect("deserialize derived_pk");
+    signer
+        .verify(&derived_pk_pr, sign_message, &signature_pr)
+        .expect("post-refresh signature should verify against derived public key");
+
+    println!("Post-refresh Sign verified!");
+
+    // ====================================================================
+    // Step 4b: Post-refresh PRE — encrypt a fresh secret using the original
+    // ring_id (unchanged after PSS). Store it as a new object and run PRE
+    // to verify decryption still works against the refreshed shares.
+    // ====================================================================
+    println!("Testing PRE after PSS refresh...");
+
+    let post_refresh_secret = b"Hello after PSS refresh!";
+    let prepared_post_refresh = cli_tool::prepare_secret(
+        post_refresh_secret,
+        &ring_pk_hex,
+        None,
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+        None,
+        None,
+        None,
+    )
+    .expect("prepare_secret post-refresh");
+
+    let object_response_post_refresh = cli_tool::store_prepared_secret(
+        endpoint.clone(),
+        &prepared_post_refresh,
+        ring_id.clone(),
+        namespace.clone(),
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+        Some(did_pk_string.clone()),
+        None,
+        true,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("store_prepared_secret post-refresh");
+
+    let object_id_post_refresh = object_response_post_refresh.object_id.clone();
+
+    cli_tool::register_object_to_chain(
+        policy_id.clone(),
+        object_id_post_refresh.clone(),
+        resource.clone(),
+    )
+    .await
+    .expect("register post-refresh object");
+
+    cli_tool::set_relationship_on_chain(
+        policy_id.clone(),
+        object_id_post_refresh.clone(),
+        resource.clone(),
+        "reader".to_string(),
+        Some(did_pk_string.clone()),
+    )
+    .await
+    .expect("set_relationship for post-refresh object");
+
+    let pre_result_post_refresh = cli_tool::do_pre(
+        endpoint.clone(),
+        ring_pk_hex.clone(),
+        reader_pk_hex.clone(),
+        Some(reader_sk_hex.clone()),
+        object_id_post_refresh.clone(),
+        Some(did_pk_string.clone()),
+        full_namespace.clone(),
+        None,
+        None,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("do_pre after PSS refresh");
+
+    assert_eq!(
+        pre_result_post_refresh, post_refresh_secret,
+        "Post-refresh PRE should decrypt to original plaintext"
+    );
+    println!("Post-refresh PRE verified: decrypted data matches original secret!");
 
     // Cleanup happens automatically when _network is dropped
 }

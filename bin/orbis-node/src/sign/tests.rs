@@ -9,6 +9,7 @@ use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, get_test_ring_post,
     setup_three_node_network_with_sign, test_db_path, TestKeyPair,
 };
+use crate::ring_state::RingPolyState;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::error::SignError;
 use crate::sign::helpers::check_policy_access;
@@ -145,7 +146,12 @@ async fn test_dkg_then_sign_end_to_end() {
                 peer_ids: sign_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             message.clone(),
             SignContext::Bulletin,
@@ -366,7 +372,12 @@ async fn test_sign_different_messages() {
                     peer_ids: peer_ids.clone(),
                     threshold: ring_payload.threshold as usize,
                     total_participants: ring_payload.peer_ids.len(),
-                    public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                    public_polynomial_hex: RingPolyState::load(
+                        &network.alice.app_state.local_storage,
+                        &ring_payload.ring_pk,
+                    )
+                    .expect("load RingPolyState")
+                    .public_polynomial,
                 },
                 message.clone(),
                 SignContext::Bulletin,
@@ -474,7 +485,12 @@ async fn test_sign_fails_wrong_message() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             original_message.clone(),
             SignContext::Bulletin,
@@ -587,7 +603,12 @@ async fn test_sign_response_cleanup() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             message,
             SignContext::Bulletin,
@@ -686,7 +707,12 @@ async fn test_sign_fails_invalid_bulletin_post() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             invalid_message.to_vec(),
             SignContext::Bulletin,
@@ -797,7 +823,12 @@ async fn test_sign_fails_post_not_on_bulletin() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             fake_message,
             SignContext::Bulletin,
@@ -943,7 +974,12 @@ async fn test_sign_fails_tampered_payload() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             tampered_message,
             SignContext::Bulletin,
@@ -1073,7 +1109,12 @@ async fn test_sign_fails_invalid_ring_id() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             message,
             SignContext::Bulletin,
@@ -1218,7 +1259,12 @@ async fn test_dkg_then_sign_policy_end_to_end() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             message.clone(),
             SignContext::Policy {
@@ -1358,7 +1404,12 @@ async fn test_sign_policy_fails_invalid_jwt() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             b"some message".to_vec(),
             SignContext::Policy {
@@ -1464,7 +1515,12 @@ async fn test_sign_policy_fails_wrong_namespace() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             b"some message".to_vec(),
             SignContext::Policy {
@@ -1573,7 +1629,12 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             b"some message".to_vec(),
             SignContext::Policy {

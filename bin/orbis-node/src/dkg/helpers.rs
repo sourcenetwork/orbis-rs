@@ -160,7 +160,6 @@ mod tests {
             ring_pk: ring_pk_hex.to_string(),
             peer_ids,
             threshold: 1,
-            public_polynomial: "poly".to_string(),
             pss_interval,
         };
         let bytes = serde_json::to_vec(&payload).unwrap();

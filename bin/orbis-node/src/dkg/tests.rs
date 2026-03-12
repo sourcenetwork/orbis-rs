@@ -9,6 +9,7 @@ use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
     get_test_ring_post, setup_three_node_network, test_db_path, TestKeyPair,
 };
+use crate::ring_state::RingPolyState;
 use crate::DkgServiceImpl;
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole};
@@ -1231,7 +1232,7 @@ async fn test_dkg_followed_by_pss_refresh() {
         .expect("DKG should start");
 
     // Wait for DKG Phase 4 to complete (bulletin has a ring entry).
-    let key_string = {
+    let (key_string, ring_pk_hex) = {
         let start = Instant::now();
         let max_wait = Duration::from_secs(60);
         loop {
@@ -1243,7 +1244,7 @@ async fn test_dkg_followed_by_pss_refresh() {
                 let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
                 let agg_key = <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes)
                     .expect("deserialize aggregate PK");
-                break agg_key.to_string();
+                break (agg_key.to_string(), ring_payload.ring_pk);
             }
             assert!(start.elapsed() < max_wait, "DKG did not complete in time");
             sleep(Duration::from_millis(500)).await;
@@ -1401,17 +1402,25 @@ async fn test_dkg_followed_by_pss_refresh() {
     println!("PSS refresh initiated (session_id={})", refresh_session_id);
 
     // ── Phase C: Wait for refresh to complete ─────────────────────────────────
-    // The DummyBulletin will accumulate a second entry once the refresh
-    // Phase 4 posts its ring payload.
+    // Poll RingPolyState on all three nodes until each has refreshed_at > 0,
+    // which is set atomically with the updated private share in Phase 4.
     {
         let start = Instant::now();
         let max_wait = Duration::from_secs(60);
         loop {
-            let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap();
-            let posts =
-                dummy_bulletin.get_posts_by_namespace(crate::constants::BULLETIN_RING_NAMESPACE);
-            if posts.len() >= 2 {
-                println!("Refresh complete ({} bulletin entries)", posts.len());
+            let all_done = [
+                &network.alice.app_state.local_storage,
+                &network.bob.app_state.local_storage,
+                &network.charlie.app_state.local_storage,
+            ]
+            .iter()
+            .all(|storage| {
+                RingPolyState::load(storage, &ring_pk_hex)
+                    .map(|s| s.refreshed_at > 0)
+                    .unwrap_or(false)
+            });
+            if all_done {
+                println!("Refresh complete (all 3 nodes updated RingPolyState)");
                 break;
             }
             assert!(
@@ -1486,7 +1495,6 @@ fn g3_write_ring_payload(
         ring_pk: ring_pk.to_string(),
         peer_ids,
         threshold: 1,
-        public_polynomial: "poly".to_string(),
         pss_interval,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();

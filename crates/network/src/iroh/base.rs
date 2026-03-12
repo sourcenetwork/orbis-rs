@@ -7,6 +7,7 @@ use bytes::Bytes;
 use iroh::endpoint::Connection as IrohConnection;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use std::collections::HashMap;
+use std::net::SocketAddrV4;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -71,6 +72,8 @@ impl IrohNetwork {
 pub struct IrohNetworkBuilder {
     config: IrohNetworkConfig,
     secret_key: Option<SecretKey>,
+    bind_addr_v4: Option<SocketAddrV4>,
+    no_relay: bool,
 }
 
 impl IrohNetworkBuilder {
@@ -90,12 +93,36 @@ impl IrohNetworkBuilder {
         self
     }
 
+    /// Bind the UDP socket to a specific IPv4 address instead of 0.0.0.0.
+    /// Use `"127.0.0.1:0".parse().unwrap()` for loopback-only (test) nodes so
+    /// that iroh advertises the loopback address and same-machine peers can
+    /// connect without a relay.
+    pub fn bind_addr_v4(mut self, addr: SocketAddrV4) -> Self {
+        self.bind_addr_v4 = Some(addr);
+        self
+    }
+
+    /// Disable the relay (DERP) server. Useful for in-process tests where all
+    /// nodes are on the same machine and a relay would only add latency.
+    pub fn no_relay(mut self) -> Self {
+        self.no_relay = true;
+        self
+    }
+
     /// Build the IrohNetwork instance
     pub async fn build(self) -> Result<IrohNetwork> {
         let mut builder = Endpoint::builder();
 
         if let Some(key) = self.secret_key {
             builder = builder.secret_key(key);
+        }
+
+        if let Some(addr) = self.bind_addr_v4 {
+            builder = builder.bind_addr_v4(addr);
+        }
+
+        if self.no_relay {
+            builder = builder.relay_mode(iroh::RelayMode::Disabled);
         }
 
         let endpoint = builder

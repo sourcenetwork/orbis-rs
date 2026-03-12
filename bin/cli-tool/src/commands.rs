@@ -44,7 +44,12 @@ pub struct DkgResult {
     pub message: String,
 }
 
-pub async fn do_dkg(endpoint: String, threshold: u32, peer_ids: Vec<String>) -> Result<DkgResult> {
+pub async fn do_dkg(
+    endpoint: String,
+    threshold: u32,
+    peer_ids: Vec<String>,
+    pss_interval: Option<u64>,
+) -> Result<DkgResult> {
     // Total nodes = peers + the node we're connecting to
     let total_nodes = peer_ids.len() as u32;
 
@@ -71,13 +76,13 @@ pub async fn do_dkg(endpoint: String, threshold: u32, peer_ids: Vec<String>) -> 
     let request = proto::dkg_service::StartDkgRequest {
         threshold,
         peer_ids: peer_ids.clone(),
-        pss_interval: None,
+        pss_interval,
     };
 
     // JWT work
     let jwt_signer = JwtSigner::new();
     let token = jwt_signer
-        .create_dkg_jwt(threshold, &peer_ids, None)
+        .create_dkg_jwt(threshold, &peer_ids, pss_interval)
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token)
         .map_err(|e| anyhow!("Failed to create_dkg_jwt: {}", e))?;
@@ -928,6 +933,22 @@ pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
         peer_id: node_info.peer_id,
         p2p_address: node_info.p2p_address,
     })
+}
+
+/// Query the local RingPolyState from a node (public polynomial + refreshed_at timestamp).
+/// Returns an error if the ring_pk_hex is not found on that node.
+pub async fn query_ring_state(endpoint: String, ring_pk_hex: String) -> Result<(String, u64)> {
+    let mut client = InfoServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+
+    let response = client
+        .get_ring_state(proto::info_service::GetRingStateRequest { ring_pk_hex })
+        .await
+        .map_err(|e| anyhow!("get_ring_state failed: {}", e))?;
+
+    let inner = response.into_inner();
+    Ok((inner.public_polynomial, inner.refreshed_at))
 }
 
 /// Get the current sequence number for an account address.

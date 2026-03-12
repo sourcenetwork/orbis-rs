@@ -29,6 +29,7 @@ use crate::dkg::messages::DkgMessage;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase};
 use crate::helpers::helpers::{extract_node_part, is_self_peer_id};
 use crate::metrics;
+use crate::ring_state::RingPolyState;
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{DistributedShare, PriShare};
@@ -1416,11 +1417,19 @@ where
             let ring_pk_hex_for_payload = CryptoSerialize::to_bytes(&aggregate_pk)
                 .map(hex::encode)
                 .unwrap_or_default();
+            // Save public polynomial locally (never on the bulletin).
+            let ring_poly_state = RingPolyState {
+                public_polynomial: hex::encode(&pub_poly_bytes),
+                refreshed_at: 0,
+            };
+            ring_poly_state
+                .save(&self.app_state.local_storage, &ring_pk_hex_for_payload)
+                .map_err(|e| DkgError::Storage(format!("Failed to store RingPolyState: {}", e)))?;
+
             let ring_payload_local = RingPayload {
                 ring_pk: ring_pk_hex_for_payload.clone(),
                 peer_ids,
                 threshold: threshold as u32,
-                public_polynomial: hex::encode(&pub_poly_bytes),
                 pss_interval,
             };
             let ring_payload_bytes: Vec<u8> = ring_payload_local.try_into().map_err(|e| {
@@ -1482,12 +1491,20 @@ where
                     ))
                 })?;
 
-            let old_poly_bytes = hex::decode(&old_ring_payload.public_polynomial).map_err(|e| {
-                DkgError::Deserialization(format!(
-                    "Refresh: failed to decode old public polynomial hex: {}",
-                    e
-                ))
-            })?;
+            // Load old public polynomial from local-only RingPolyState.
+            let old_ring_poly_state =
+                RingPolyState::load(&self.app_state.local_storage, &old_ring_payload.ring_pk)
+                    .map_err(|e| {
+                        DkgError::Storage(format!("Refresh: failed to load RingPolyState: {}", e))
+                    })?;
+
+            let old_poly_bytes =
+                hex::decode(&old_ring_poly_state.public_polynomial).map_err(|e| {
+                    DkgError::Deserialization(format!(
+                        "Refresh: failed to decode old public polynomial hex: {}",
+                        e
+                    ))
+                })?;
 
             let new_poly_bytes = D::combine_pub_poly_bytes(&old_poly_bytes, &pub_poly_bytes)
                 .map_err(|e| {
@@ -1497,73 +1514,30 @@ where
                     ))
                 })?;
 
-            let updated_payload = RingPayload {
-                ring_pk: old_ring_payload.ring_pk.clone(),
-                peer_ids: old_ring_payload.peer_ids.clone(),
-                threshold: old_ring_payload.threshold,
+            // Write updated RingPolyState (polynomial + refresh timestamp) locally.
+            let updated_ring_poly_state = RingPolyState {
                 public_polynomial: hex::encode(&new_poly_bytes),
-                pss_interval: old_ring_payload.pss_interval,
+                refreshed_at: now_secs,
             };
-
-            let updated_payload_bytes: Vec<u8> =
-                updated_payload.clone().try_into().map_err(|e| {
-                    DkgError::Serialization(format!(
-                        "Refresh: failed to serialize updated RingPayload: {}",
-                        e
-                    ))
-                })?;
-
-            self.app_state
-                .local_storage
-                .set(
-                    LocalStorageKeys::RingPkMapping(storage_key.clone()),
-                    updated_payload_bytes,
-                )
+            updated_ring_poly_state
+                .save(&self.app_state.local_storage, &old_ring_payload.ring_pk)
                 .map_err(|e| {
                     DkgError::Storage(format!(
-                        "Refresh: failed to store updated RingPkMapping: {}",
+                        "Refresh: failed to store updated RingPolyState: {}",
                         e
                     ))
                 })?;
 
-            tracing::debug!(
+            // RingPkMapping keeps the same payload — ring_pk, peers, threshold, pss_interval
+            // are all unchanged by a refresh. RingPolyState (above) is the only local entry
+            // that changes. No bulletin post is needed: the ring public key and membership
+            // haven't changed, and the polynomial is local-only.
+            tracing::info!(
                 session_id = session_id,
-                ring_pk = %updated_payload.ring_pk,
-                "Refresh: updated local RingPkMapping with combined public polynomial"
+                ring_pk = %old_ring_payload.ring_pk,
+                node_id = node_id,
+                "Refresh: Phase 4 complete — RingPolyState updated locally"
             );
-
-            // Node 1 posts the updated RingPayload to the bulletin so clients and
-            // other nodes can discover the new public polynomial for PRE/sign.
-            if node_id == 1 {
-                let bulletin_bytes: Vec<u8> = updated_payload.clone().try_into().map_err(|e| {
-                    DkgError::Serialization(format!(
-                        "Refresh: failed to serialize RingPayload for bulletin: {}",
-                        e
-                    ))
-                })?;
-
-                self.app_state
-                    .bulletin
-                    .post(
-                        BULLETIN_RING_NAMESPACE.to_string(),
-                        bulletin_bytes,
-                        BULLETIN_PLACEHOLDER_PROOF.to_vec(),
-                        Some(session_id.to_string()),
-                    )
-                    .await
-                    .map_err(|e| {
-                        DkgError::Bulletin(format!(
-                            "Refresh: failed to post updated RingPayload to bulletin: {}",
-                            e
-                        ))
-                    })?;
-
-                tracing::info!(
-                    ring_pk = %updated_payload.ring_pk,
-                    namespace = BULLETIN_RING_NAMESPACE,
-                    "Refresh: posted updated RingPayload to bulletin"
-                );
-            }
         }
 
         // For refresh: clear the in-progress flag now that Phase 4 has succeeded.
@@ -1601,12 +1575,11 @@ where
                 .get_peer_ids(&session_id)
                 .await
                 .ok_or(DkgError::Generic("Failed to get peer ids".to_string()))?;
-            // Create RingPayload
+            // Create RingPayload (public_polynomial excluded — stored locally only)
             let ring_payload = RingPayload {
                 ring_pk: hex::encode(&ring_pk_bytes),
                 peer_ids,
                 threshold: threshold as u32,
-                public_polynomial: hex::encode(&pub_poly_bytes),
                 pss_interval,
             };
 

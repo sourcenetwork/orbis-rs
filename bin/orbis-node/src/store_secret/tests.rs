@@ -54,7 +54,6 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         ring_pk: test_ring_pk_hex(),
         peer_ids: vec!["peer1".to_string()],
         threshold: 1,
-        public_polynomial: "00".to_string(),
         pss_interval: None,
     };
 
@@ -519,7 +518,6 @@ async fn test_store_secret_idempotent() {
         ring_pk: ring_pk_hex.clone(),
         peer_ids: vec!["peer1".to_string()],
         threshold: 1,
-        public_polynomial: "00".to_string(),
         pss_interval: None,
     };
 
@@ -702,7 +700,6 @@ async fn test_store_secret_fails_wrong_derived_pk() {
         ring_pk: ring_pk_hex.clone(),
         peer_ids: vec!["peer1".to_string()],
         threshold: 1,
-        public_polynomial: "00".to_string(),
         pss_interval: None,
     };
 
@@ -850,7 +847,6 @@ async fn test_store_secret_fails_with_tampered_proof() {
         ring_pk: ring_pk_hex.clone(),
         peer_ids: vec!["peer1".to_string()],
         threshold: 1,
-        public_polynomial: "00".to_string(),
         pss_interval: None,
     };
 

@@ -8,6 +8,7 @@ pub mod info;
 pub mod metrics;
 pub mod pre;
 pub mod pss;
+pub mod ring_state;
 pub mod sign;
 pub mod store_secret;
 

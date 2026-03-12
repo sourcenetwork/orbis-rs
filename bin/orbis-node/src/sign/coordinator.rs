@@ -22,6 +22,7 @@ use crate::constants::{
 use crate::helpers::helpers::{
     connect_to_peer, determine_session_node_id, is_self_peer_id, RingConfig,
 };
+use crate::ring_state::RingPolyState;
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
@@ -293,8 +294,16 @@ where
                     &key_derivation.permission,
                 ));
 
-                // Deserialize pub_poly from ring payload
-                let pub_poly_bytes = hex::decode(&ring_payload.public_polynomial).map_err(|e| {
+                // Load pub_poly from local RingPolyState (never on the bulletin).
+                let poly_state =
+                    RingPolyState::load(&self.app_state.local_storage, &ring_payload.ring_pk)
+                        .map_err(|e| {
+                            SignError::Storage(format!(
+                                "Failed to load ring polynomial state: {}",
+                                e
+                            ))
+                        })?;
+                let pub_poly_bytes = hex::decode(&poly_state.public_polynomial).map_err(|e| {
                     SignError::Deserialization(format!(
                         "Failed to decode public polynomial hex: {}",
                         e
@@ -1077,8 +1086,12 @@ where
                 SignError::Deserialization(format!("Failed to parse RingPayload: {}", e))
             })?;
 
-        // 6. Deserialize pub_poly
-        let pub_poly_bytes = hex::decode(&ring_payload.public_polynomial).map_err(|e| {
+        // 6. Load pub_poly from local RingPolyState (never on the bulletin).
+        let poly_state = RingPolyState::load(&self.app_state.local_storage, &ring_payload.ring_pk)
+            .map_err(|e| {
+                SignError::Storage(format!("Failed to load ring polynomial state: {}", e))
+            })?;
+        let pub_poly_bytes = hex::decode(&poly_state.public_polynomial).map_err(|e| {
             SignError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
         })?;
         let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {

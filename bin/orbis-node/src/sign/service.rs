@@ -3,6 +3,7 @@ use crate::constants::MAX_SIGN_MESSAGE_BYTES;
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
 use crate::helpers::helpers::{validate_all_peer_ids, RingConfig};
 use crate::metrics;
+use crate::ring_state::RingPolyState;
 use crate::sign::coordinator::SignCoordinator;
 use crate::sign::error::SignError;
 use crate::sign::helpers::{check_policy_access, fetch_bulletin_payloads, validate_sign_claims};
@@ -155,12 +156,16 @@ where
         metrics::record_sign_request_started();
         let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
         let total_participants = ring_payload.peer_ids.len();
+        let poly_state = RingPolyState::load(&self.state.local_storage, &ring_payload.ring_pk)
+            .map_err(|e| {
+                Status::internal(format!("Failed to load ring polynomial state: {}", e))
+            })?;
         let ring = RingConfig {
             ring_pk_bytes,
             peer_ids: ring_payload.peer_ids,
             threshold: ring_payload.threshold as usize,
             total_participants,
-            public_polynomial_hex: ring_payload.public_polynomial,
+            public_polynomial_hex: poly_state.public_polynomial,
         };
 
         let result = coordinator

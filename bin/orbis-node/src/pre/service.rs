@@ -9,6 +9,7 @@ use crate::pre::helpers::{
     validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::messages::PreRequestContext;
+use crate::ring_state::RingPolyState;
 use authn::PreClaims;
 use authz::sourcehub::ValidWindow;
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
@@ -172,12 +173,16 @@ where
         metrics::record_pre_request_started();
         let coordinator = PreCoordinator::<D, T>::new(Arc::new(self.state.clone()));
         let total_participants = ring_payload.peer_ids.len();
+        let poly_state = RingPolyState::load(&self.state.local_storage, &ring_payload.ring_pk)
+            .map_err(|e| {
+                Status::internal(format!("Failed to load ring polynomial state: {}", e))
+            })?;
         let ring = RingConfig {
             ring_pk_bytes,
             peer_ids: ring_payload.peer_ids,
             threshold: ring_payload.threshold as usize,
             total_participants,
-            public_polynomial_hex: ring_payload.public_polynomial,
+            public_polynomial_hex: poly_state.public_polynomial,
         };
         let ctx = PreRequestContext {
             rdr_pk_bytes: req.rdr_pk,

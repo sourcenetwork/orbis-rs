@@ -170,7 +170,6 @@ async fn test_refresh_ring_not_initiator_skips_silently() {
         ring_pk: "fake_pk".to_string(),
         peer_ids: vec![fake_peer_1.clone(), fake_peer_2.clone()],
         threshold: 1,
-        public_polynomial: "fake_poly".to_string(),
         pss_interval: Some(86400), // 24h — elapsed >> 0 since RingLastRefresh = epoch
     };
 
