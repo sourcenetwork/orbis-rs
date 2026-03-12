@@ -236,7 +236,7 @@ async fn setup_ring(
         .await
         .expect("ring event subscription");
 
-    let dkg_result = cli_tool::do_dkg(endpoint.to_string(), threshold, peer_ids)
+    let dkg_result = cli_tool::do_dkg(endpoint.to_string(), threshold, peer_ids, None)
         .await
         .expect("DKG initiation");
 
@@ -301,8 +301,8 @@ async fn test_two_simultaneous_dkg_sessions() {
 
     // Launch both DKG sessions concurrently from the same endpoint
     let (r1, r2) = tokio::join!(
-        cli_tool::do_dkg(endpoint.clone(), threshold, peer_ids.clone()),
-        cli_tool::do_dkg(endpoint.clone(), threshold, peer_ids.clone()),
+        cli_tool::do_dkg(endpoint.clone(), threshold, peer_ids.clone(), None),
+        cli_tool::do_dkg(endpoint.clone(), threshold, peer_ids.clone(), None),
     );
 
     let session1 = r1.expect("DKG 1 initiation failed").session_id;
