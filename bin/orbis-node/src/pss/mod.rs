@@ -21,6 +21,7 @@ use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::DkgMessage;
 use crate::helpers::helpers::{connect_to_peers, extract_node_part, validate_all_peer_ids};
+use crate::ring_state::RingShareBundle;
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{Dkg, DkgRole};
 use crypto::{CryptoDeserialize, GroupAffine, PolynomialCommitmentImpl, ScalarField as Fr};
@@ -132,14 +133,12 @@ where
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let last_refresh_secs: u64 = app_state
-        .local_storage
-        .get(LocalStorageKeys::RingLastRefresh(ring_id.to_string()))
-        .ok()
-        .flatten()
-        .and_then(|b| b.try_into().ok())
-        .map(u64::from_le_bytes)
-        .unwrap_or(0);
+    // `ring_id` is aggregate_pk.to_string() — same key the bundle is stored under.
+    // Fall back to epoch (0) if no bundle exists yet (ring not yet initialized on this node).
+    let last_refresh_secs: u64 =
+        RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_id)
+            .map(|b| b.refreshed_at)
+            .unwrap_or(0);
 
     let elapsed = now_secs.saturating_sub(last_refresh_secs);
     if elapsed < pss_interval_secs {

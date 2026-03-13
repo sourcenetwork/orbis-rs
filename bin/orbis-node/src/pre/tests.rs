@@ -251,7 +251,7 @@ async fn test_dkg_then_pre_end_to_end() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -454,7 +454,7 @@ async fn test_pre_with_large_secret() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -593,7 +593,7 @@ async fn test_pre_fails_with_wrong_key() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -728,7 +728,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -883,7 +883,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -1181,7 +1181,7 @@ async fn test_pre_fails_with_wrong_derivation() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -1354,7 +1354,7 @@ async fn test_pre_fails_with_bad_proof() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )

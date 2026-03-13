@@ -257,13 +257,13 @@ where
             let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
                 .map_err(|e| StoreSecretError::Validation(format!("Invalid ring_pk hex: {}", e)))?;
             let total_participants = ring_payload.peer_ids.len();
-            let poly_state = RingPolyState::load(&self.state.local_storage, &ring_payload.ring_pk)
-                .map_err(|e| {
-                    StoreSecretError::Storage(format!(
-                        "Failed to load ring polynomial state: {}",
-                        e
-                    ))
-                })?;
+            let poly_state = RingPolyState::load_from_ring_pk_hex(
+                &self.state.local_storage,
+                &ring_payload.ring_pk,
+            )
+            .map_err(|e| {
+                StoreSecretError::Storage(format!("Failed to load ring polynomial state: {}", e))
+            })?;
             let ring = RingConfig {
                 ring_pk_bytes,
                 peer_ids: ring_payload.peer_ids,

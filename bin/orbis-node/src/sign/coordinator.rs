@@ -295,14 +295,13 @@ where
                 ));
 
                 // Load pub_poly from local RingPolyState (never on the bulletin).
-                let poly_state =
-                    RingPolyState::load(&self.app_state.local_storage, &ring_payload.ring_pk)
-                        .map_err(|e| {
-                            SignError::Storage(format!(
-                                "Failed to load ring polynomial state: {}",
-                                e
-                            ))
-                        })?;
+                let poly_state = RingPolyState::load_from_ring_pk_hex(
+                    &self.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .map_err(|e| {
+                    SignError::Storage(format!("Failed to load ring polynomial state: {}", e))
+                })?;
                 let pub_poly_bytes = hex::decode(&poly_state.public_polynomial).map_err(|e| {
                     SignError::Deserialization(format!(
                         "Failed to decode public polynomial hex: {}",
@@ -1087,10 +1086,11 @@ where
             })?;
 
         // 6. Load pub_poly from local RingPolyState (never on the bulletin).
-        let poly_state = RingPolyState::load(&self.app_state.local_storage, &ring_payload.ring_pk)
-            .map_err(|e| {
-                SignError::Storage(format!("Failed to load ring polynomial state: {}", e))
-            })?;
+        let poly_state = RingPolyState::load_from_ring_pk_hex(
+            &self.app_state.local_storage,
+            &ring_payload.ring_pk,
+        )
+        .map_err(|e| SignError::Storage(format!("Failed to load ring polynomial state: {}", e)))?;
         let pub_poly_bytes = hex::decode(&poly_state.public_polynomial).map_err(|e| {
             SignError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
         })?;

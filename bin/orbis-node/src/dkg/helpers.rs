@@ -1,5 +1,6 @@
 use crate::dkg::error::{DkgError, Result};
 use crate::helpers::helpers::extract_node_part;
+use crate::ring_state::RingShareBundle;
 use authn::{BearerToken, DkgClaims};
 use bulletin::r#trait::RingPayload;
 use crypto::{CryptoSerialize, GroupAffine as G1Affine};
@@ -66,18 +67,16 @@ pub fn validate_refresh_session_init<S: LocalStorage>(
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
                 .as_secs();
-            let last_refresh_bytes = local_storage
-                .get(LocalStorageKeys::RingLastRefresh(ring_pk_hex.to_string()))
-                .map_err(|e| DkgError::Storage(format!("Failed to read last refresh time: {}", e)))?
-                .ok_or_else(|| {
+            // `ring_pk_hex` is aggregate_pk.to_string() — same key the bundle is stored under.
+            // A missing bundle means the ring hasn't completed DKG yet.
+            let last_refresh_secs = RingShareBundle::load_by_ring_key(local_storage, ring_pk_hex)
+                .map(|b| b.refreshed_at)
+                .map_err(|_| {
                     DkgError::Unauthorized(
                         "Ring has no refresh timestamp; cannot accept refresh".to_string(),
                     )
                 })?;
-            let last_refresh_arr: [u8; 8] = last_refresh_bytes.try_into().map_err(|_| {
-                DkgError::Deserialization("Invalid last refresh timestamp bytes".to_string())
-            })?;
-            let elapsed = now_secs.saturating_sub(u64::from_le_bytes(last_refresh_arr));
+            let elapsed = now_secs.saturating_sub(last_refresh_secs);
             if elapsed < pss_interval_secs {
                 return Err(DkgError::Unauthorized(format!(
                     "Refresh too soon: {}s elapsed, minimum is {}s",
@@ -141,6 +140,7 @@ pub fn validate_dkg_claims(
 mod tests {
     use super::*;
     use crate::helpers::test_helpers::{cleanup_db, test_db_path};
+    use crate::ring_state::RingShareBundle;
     use bulletin::r#trait::RingPayload;
     use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 
@@ -172,12 +172,13 @@ mod tests {
     }
 
     fn write_last_refresh(storage: &LocalStorageImpl, ring_pk_hex: &str, secs: u64) {
-        storage
-            .set(
-                LocalStorageKeys::RingLastRefresh(ring_pk_hex.to_string()),
-                secs.to_le_bytes().to_vec(),
-            )
-            .unwrap();
+        // `ring_pk_hex` is aggregate_pk.to_string() — same key the bundle is stored under.
+        let bundle = RingShareBundle {
+            share_bytes: vec![],
+            public_polynomial: String::new(),
+            refreshed_at: secs,
+        };
+        bundle.save_by_ring_key(storage, ring_pk_hex).unwrap();
     }
 
     #[test]
@@ -231,11 +232,11 @@ mod tests {
 
     #[test]
     fn test_no_last_refresh_timestamp() {
-        // When pss_interval is set, a missing RingLastRefresh must be rejected.
+        // When pss_interval is set, a missing bundle (no DKG yet) must be rejected.
         let (storage, db_path) = make_storage("helpers_no_timestamp");
         let ring_pk = "ring_pk_def";
         write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()], Some(86400));
-        // Intentionally do not write RingLastRefresh
+        // Intentionally do not write a RingShareBundle
         let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage);
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
@@ -301,7 +302,7 @@ mod tests {
         let (storage, db_path) = make_storage("helpers_no_interval");
         let ring_pk = "ring_pk_mno";
         write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()], None);
-        // No RingLastRefresh written — would fail if the time check ran.
+        // No RingShareBundle written — would fail if the time check ran.
         let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage);
         assert!(
             result.is_ok(),

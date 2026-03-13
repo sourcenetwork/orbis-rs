@@ -1274,23 +1274,21 @@ async fn test_dkg_followed_by_pss_refresh() {
         .expect("read charlie share")
         .expect("charlie share must exist after DKG");
 
-    // Backdate RingLastRefresh so the time-elapsed check passes immediately.
-    // In production this check enforces the minimum refresh interval; in tests
-    // we set the timestamp to epoch (far enough in the past) to skip the wait.
-    let old_ts: u64 = 0;
-    let old_ts_bytes = old_ts.to_le_bytes().to_vec();
+    // Backdate refreshed_at in each node's RingShareBundle so the time-elapsed
+    // check passes immediately.  We load the real bundle (written by DKG Phase 4),
+    // reset refreshed_at to epoch, and write it back.
     for state in [
         &network.alice.app_state,
         &network.bob.app_state,
         &network.charlie.app_state,
     ] {
-        state
-            .local_storage
-            .set(
-                LocalStorageKeys::RingLastRefresh(key_string.clone()),
-                old_ts_bytes.clone(),
-            )
-            .expect("set RingLastRefresh for test");
+        let mut bundle =
+            crate::ring_state::RingShareBundle::load_by_ring_key(&state.local_storage, &key_string)
+                .expect("load RingShareBundle for backdate");
+        bundle.refreshed_at = 0;
+        bundle
+            .save_by_ring_key(&state.local_storage, &key_string)
+            .expect("save backdated RingShareBundle");
     }
 
     // ── Phase B: Set up and run a PSS refresh ─────────────────────────────────
@@ -1415,7 +1413,7 @@ async fn test_dkg_followed_by_pss_refresh() {
             ]
             .iter()
             .all(|storage| {
-                RingPolyState::load(storage, &ring_pk_hex)
+                RingPolyState::load_from_ring_pk_hex(*storage, &ring_pk_hex)
                     .map(|s| s.refreshed_at > 0)
                     .unwrap_or(false)
             });
@@ -1503,18 +1501,18 @@ fn g3_write_ring_payload(
         .unwrap();
 }
 
-/// Write a `RingLastRefresh` unix timestamp into local storage.
+/// Write a minimal `RingShareBundle` with the given `refreshed_at` timestamp.
 fn g3_write_last_refresh(
     storage: &impl local_storage::r#trait::LocalStorage,
     ring_pk: &str,
     secs: u64,
 ) {
-    storage
-        .set(
-            LocalStorageKeys::RingLastRefresh(ring_pk.to_string()),
-            secs.to_le_bytes().to_vec(),
-        )
-        .unwrap();
+    let bundle = crate::ring_state::RingShareBundle {
+        share_bytes: vec![],
+        public_polynomial: String::new(),
+        refreshed_at: secs,
+    };
+    bundle.save_by_ring_key(storage, ring_pk).unwrap();
 }
 
 /// Build a minimal refresh `SessionInit` targeted at `ring_pk`.

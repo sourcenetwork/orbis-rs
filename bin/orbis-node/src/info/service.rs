@@ -68,7 +68,7 @@ where
         request: Request<GetRingStateRequest>,
     ) -> Result<Response<GetRingStateResponse>, Status> {
         let ring_pk_hex = request.into_inner().ring_pk_hex;
-        let state = RingPolyState::load(&self.state.local_storage, &ring_pk_hex)
+        let state = RingPolyState::load_from_ring_pk_hex(&self.state.local_storage, &ring_pk_hex)
             .map_err(|e| Status::not_found(e))?;
         Ok(Response::new(GetRingStateResponse {
             public_polynomial: state.public_polynomial,

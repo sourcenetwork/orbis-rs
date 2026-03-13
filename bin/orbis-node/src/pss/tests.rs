@@ -1,6 +1,7 @@
 use crate::dkg::error::DkgError;
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bulletin, test_db_path};
+use crate::ring_state::RingShareBundle;
 use bulletin::{
     dummy::DummyBulletin,
     r#trait::{Bulletin, RingPayload},
@@ -17,8 +18,8 @@ use crypto::DkgImpl;
 
 /// Build an AppState with `ring_payload` stored in local storage under `ring_id`.
 ///
-/// Also seeds `RingIndex` and `RingLastRefresh` so the PSS scheduler can find
-/// and time-check the ring.  Returns `(app_state, db_path)`.
+/// Also seeds `RingIndex` and a `RingShareBundle` (with `refreshed_at = 0`) so
+/// the PSS scheduler can find and time-check the ring.  Returns `(app_state, db_path)`.
 async fn make_state_with_ring(
     db_name: &str,
     ring_id: &str,
@@ -45,14 +46,16 @@ async fn make_state_with_ring(
         )
         .expect("write RingPkMapping");
 
-    // Seed RingLastRefresh to epoch so elapsed >> any interval.
-    app_state
-        .local_storage
-        .set(
-            LocalStorageKeys::RingLastRefresh(ring_id.to_string()),
-            0u64.to_le_bytes().to_vec(),
-        )
-        .expect("write RingLastRefresh");
+    // Seed a RingShareBundle with refreshed_at = epoch so elapsed >> any interval.
+    // `ring_id` is aggregate_pk.to_string() — same key the bundle is stored under.
+    let bundle = RingShareBundle {
+        share_bytes: vec![],
+        public_polynomial: String::new(),
+        refreshed_at: 0,
+    };
+    bundle
+        .save_by_ring_key(&app_state.local_storage, ring_id)
+        .expect("write RingShareBundle for PSS test");
 
     (app_state, db_path)
 }
@@ -170,7 +173,7 @@ async fn test_refresh_ring_not_initiator_skips_silently() {
         ring_pk: "fake_pk".to_string(),
         peer_ids: vec![fake_peer_1.clone(), fake_peer_2.clone()],
         threshold: 1,
-        pss_interval: Some(86400), // 24h — elapsed >> 0 since RingLastRefresh = epoch
+        pss_interval: Some(86400), // 24h — elapsed >> 0 since bundle.refreshed_at = epoch
     };
 
     let (app_state, db_path) = make_state_with_ring(db_name, ring_id, &ring_payload).await;

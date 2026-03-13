@@ -1,38 +1,111 @@
+use crypto::r#trait::{CryptoDeserialize, PriShare};
+use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
-use local_storage::LocalStorageImpl;
 
-/// Node-local state for a ring's public polynomial and this node's position.
-/// Stored under `LocalStorageKeys::RingPolyState(ring_pk_hex)` and updated
-/// atomically with the private share after every fresh DKG and PSS refresh.
-/// Never posted to the bulletin.
+/// Combined share + polynomial bundle stored as a single encrypted write under
+/// `RingKey(ring_pk.to_string())`.  Writing both fields together in one
+/// `set_encrypted` call makes them atomic: a crash can leave the entry absent
+/// (ring not yet committed) but never partially updated.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct RingPolyState {
+pub struct RingShareBundle {
+    /// Serialized `PriShare<Fr>` (output of `CryptoSerialize::to_bytes`).
+    pub share_bytes: Vec<u8>,
     /// Hex-encoded current public polynomial (updated after each PSS refresh).
     pub public_polynomial: String,
     /// Unix timestamp (seconds) of the most recent PSS refresh, or 0 for the
-    /// initial DKG. Updated atomically with `public_polynomial`.
+    /// initial DKG.
+    #[serde(default)]
+    pub refreshed_at: u64,
+}
+
+impl RingShareBundle {
+    /// Load the bundle from encrypted storage keyed by `ring_pk.to_string()`.
+    pub fn load(storage: &impl LocalStorage, ring_pk: &G1Affine) -> Result<Self, String> {
+        let bytes = storage
+            .get_encrypted(LocalStorageKeys::RingKey(ring_pk.to_string()))
+            .map_err(|e| format!("Failed to read RingShareBundle: {}", e))?
+            .ok_or_else(|| format!("RingShareBundle not found for ring_pk {}", ring_pk))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| format!("Failed to deserialize RingShareBundle: {}", e))
+    }
+
+    /// Save the bundle as a single encrypted write keyed by `ring_pk.to_string()`.
+    pub fn save(&self, storage: &impl LocalStorage, ring_pk: &G1Affine) -> Result<(), String> {
+        let bytes = serde_json::to_vec(self)
+            .map_err(|e| format!("Failed to serialize RingShareBundle: {}", e))?;
+        storage
+            .set_encrypted(LocalStorageKeys::RingKey(ring_pk.to_string()), bytes)
+            .map_err(|e| format!("Failed to store RingShareBundle: {}", e))
+    }
+
+    /// Load the bundle using the aggregate public key's display string (skips G1Affine deserialization).
+    /// Used by callers that already hold the display string (e.g. PSS scheduler, refresh validator).
+    pub fn load_by_ring_key(storage: &impl LocalStorage, ring_key: &str) -> Result<Self, String> {
+        let bytes = storage
+            .get_encrypted(LocalStorageKeys::RingKey(ring_key.to_string()))
+            .map_err(|e| format!("Failed to read RingShareBundle: {}", e))?
+            .ok_or_else(|| format!("RingShareBundle not found for ring_key {}", ring_key))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| format!("Failed to deserialize RingShareBundle: {}", e))
+    }
+
+    /// Save the bundle using the aggregate public key's display string.
+    pub fn save_by_ring_key(
+        &self,
+        storage: &impl LocalStorage,
+        ring_key: &str,
+    ) -> Result<(), String> {
+        let bytes = serde_json::to_vec(self)
+            .map_err(|e| format!("Failed to serialize RingShareBundle: {}", e))?;
+        storage
+            .set_encrypted(LocalStorageKeys::RingKey(ring_key.to_string()), bytes)
+            .map_err(|e| format!("Failed to store RingShareBundle: {}", e))
+    }
+
+    /// Deserialize the private share out of the bundle.
+    pub fn pri_share(&self) -> Result<PriShare<Fr>, String> {
+        PriShare::<Fr>::from_bytes(&self.share_bytes)
+            .map_err(|e| format!("Failed to deserialize PriShare: {}", e))
+    }
+
+    /// Project out only the polynomial fields.
+    pub fn to_poly_state(&self) -> RingPolyState {
+        RingPolyState {
+            public_polynomial: self.public_polynomial.clone(),
+            refreshed_at: self.refreshed_at,
+        }
+    }
+}
+
+/// View of the public polynomial fields, projected from a `RingShareBundle`.
+/// Callers that only need the polynomial (e.g. PRE/sign service entry points)
+/// can use this lighter type.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RingPolyState {
+    /// Hex-encoded current public polynomial.
+    pub public_polynomial: String,
+    /// Unix timestamp (seconds) of the most recent PSS refresh, or 0 for the
+    /// initial DKG.
     #[serde(default)]
     pub refreshed_at: u64,
 }
 
 impl RingPolyState {
-    pub fn load(storage: &LocalStorageImpl, ring_pk_hex: &str) -> Result<Self, String> {
-        let bytes = storage
-            .get(LocalStorageKeys::RingPolyState(ring_pk_hex.to_string()))
-            .map_err(|e| format!("Failed to read RingPolyState for {}: {}", ring_pk_hex, e))?
-            .ok_or_else(|| format!("RingPolyState not found for ring_pk {}", ring_pk_hex))?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| format!("Failed to deserialize RingPolyState: {}", e))
+    /// Load the polynomial state by reading the `RingShareBundle` for `ring_pk`.
+    pub fn load(storage: &impl LocalStorage, ring_pk: &G1Affine) -> Result<Self, String> {
+        RingShareBundle::load(storage, ring_pk).map(|b| b.to_poly_state())
     }
 
-    pub fn save(&self, storage: &LocalStorageImpl, ring_pk_hex: &str) -> Result<(), String> {
-        let bytes = serde_json::to_vec(self)
-            .map_err(|e| format!("Failed to serialize RingPolyState: {}", e))?;
-        storage
-            .set(
-                LocalStorageKeys::RingPolyState(ring_pk_hex.to_string()),
-                bytes,
-            )
-            .map_err(|e| format!("Failed to store RingPolyState for {}: {}", ring_pk_hex, e))
+    /// Convenience wrapper for callers that have a hex-encoded ring public key
+    /// (`hex::encode(to_bytes(aggregate_pk))`).  Deserializes the
+    /// key internally and delegates to `load`.
+    pub fn load_from_ring_pk_hex(
+        storage: &impl LocalStorage,
+        ring_pk_hex: &str,
+    ) -> Result<Self, String> {
+        let bytes = hex::decode(ring_pk_hex).map_err(|e| format!("Invalid ring_pk_hex: {}", e))?;
+        let ring_pk = G1Affine::from_bytes(&bytes)
+            .map_err(|e| format!("Failed to deserialize ring_pk: {}", e))?;
+        Self::load(storage, &ring_pk)
     }
 }

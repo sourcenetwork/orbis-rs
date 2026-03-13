@@ -146,7 +146,7 @@ async fn test_dkg_then_sign_end_to_end() {
                 peer_ids: sign_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -372,7 +372,7 @@ async fn test_sign_different_messages() {
                     peer_ids: peer_ids.clone(),
                     threshold: ring_payload.threshold as usize,
                     total_participants: ring_payload.peer_ids.len(),
-                    public_polynomial_hex: RingPolyState::load(
+                    public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                         &network.alice.app_state.local_storage,
                         &ring_payload.ring_pk,
                     )
@@ -485,7 +485,7 @@ async fn test_sign_fails_wrong_message() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -603,7 +603,7 @@ async fn test_sign_response_cleanup() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -707,7 +707,7 @@ async fn test_sign_fails_invalid_bulletin_post() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -823,7 +823,7 @@ async fn test_sign_fails_post_not_on_bulletin() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -974,7 +974,7 @@ async fn test_sign_fails_tampered_payload() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -1109,7 +1109,7 @@ async fn test_sign_fails_invalid_ring_id() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -1259,7 +1259,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -1404,7 +1404,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -1515,7 +1515,7 @@ async fn test_sign_policy_fails_wrong_namespace() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )
@@ -1629,7 +1629,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                 peer_ids: peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load(
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
                 )

@@ -12,11 +12,6 @@ pub enum LocalStorageKeys {
     NodeSigningKey,
     /// JSON-encoded Vec<String> of bulletin ring IDs (DKG session IDs) this node has joined
     RingIndex,
-    /// Unix timestamp (u64 LE) of when this ring's share was last written (fresh DKG or refresh)
-    RingLastRefresh(String),
-    /// Node-local public polynomial and node_id for a ring (keyed by ring_pk hex).
-    /// Never posted to the bulletin — updated atomically with the private share.
-    RingPolyState(String),
 }
 
 pub trait LocalStorage {

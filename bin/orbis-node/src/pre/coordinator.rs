@@ -22,13 +22,13 @@ use crate::pre::helpers::{
     validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::messages::{PreMessage, PreRequestContext, ReencryptRequest};
+use crate::ring_state::RingShareBundle;
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
 use crypto::r#trait::{
     DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply, Secret, ThresholdDealer,
 };
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
-use local_storage::r#trait::LocalStorage;
 use network::Message as NetworkMessage;
 use network::PeerId;
 use network::REENCRYPT;
@@ -183,26 +183,13 @@ where
         // 3. Deserialize ring public key to get the storage key
         let (_, ring_pk) = decode_ring_pk(&ring_payload.ring_pk)?;
 
-        // 4. Retrieve final share from local storage
-        let final_share_bytes = self
-            .app_state
-            .local_storage
-            .get_encrypted(local_storage::r#trait::LocalStorageKeys::RingKey(
-                ring_pk.to_string(),
-            ))
-            .map_err(|e| {
-                PreError::Storage(format!(
-                    "Failed to retrieve final share from storage: {}",
-                    e
-                ))
-            })?
-            .ok_or_else(|| {
-                PreError::Storage("Final share not found in storage for ring_pk".to_string())
-            })?;
+        // 4. Load share bundle from local storage (single encrypted entry = atomic share+poly)
+        let bundle = RingShareBundle::load(&self.app_state.local_storage, &ring_pk)
+            .map_err(|e| PreError::Storage(format!("Failed to load share bundle: {}", e)))?;
 
-        // 5. Deserialize final share using trait method
-        let pri_share: PriShare<D::ShareValue> =
-            PriShare::from_bytes(&final_share_bytes).map_err(|e| {
+        // 5. Deserialize final share from bundle
+        let pri_share: PriShare<D::ShareValue> = PriShare::from_bytes(&bundle.share_bytes)
+            .map_err(|e| {
                 PreError::Deserialization(format!("Failed to deserialize final share: {}", e))
             })?;
         let node_id = pri_share.i;
@@ -590,11 +577,9 @@ where
                 PreError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
             })?;
 
-            if let Ok(Some(final_share_bytes)) = self.app_state.local_storage.get_encrypted(
-                local_storage::r#trait::LocalStorageKeys::RingKey(ring_pk.to_string()),
-            ) {
-                // We have a local share, compute our reencryption
-                if let Ok(pri_share) = PriShare::<D::ShareValue>::from_bytes(&final_share_bytes) {
+            if let Ok(bundle) = RingShareBundle::load(&self.app_state.local_storage, &ring_pk) {
+                // We have a local share bundle, compute our reencryption
+                if let Ok(pri_share) = PriShare::<D::ShareValue>::from_bytes(&bundle.share_bytes) {
                     let dist_key_share = DistKeyShare { pri_share };
 
                     // Perform local reencryption

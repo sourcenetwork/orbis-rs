@@ -29,7 +29,7 @@ use crate::dkg::messages::DkgMessage;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase};
 use crate::helpers::helpers::{extract_node_part, is_self_peer_id};
 use crate::metrics;
-use crate::ring_state::RingPolyState;
+use crate::ring_state::RingShareBundle;
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{DistributedShare, PriShare};
@@ -1306,36 +1306,84 @@ where
             .await
             .ok_or_else(|| session_not_found(session_id))??;
 
-        // Determine the storage key and bytes for the final share.
-        //
-        // Fresh DKG: store the share under the newly-computed aggregate public key.
-        // PSS Refresh: the delta share (zero constant term) must be ADDED to the
-        //   existing share so the distributed secret is preserved.  Store the
-        //   combined share under the ORIGINAL ring key (unchanged public key).
-        //
-        // Key representation note:
-        //   storage_key  = aggregate_pk.to_string()       — matches the lookup used by sign/pre
-        //   ring_pk_hex  = hex::encode(to_bytes(agg_pk))  — hex for byte-round-trip in RingPayload
-        //   RingPolyState and ring_payload.ring_pk use ring_pk_hex; everything else uses storage_key.
-        //   PSS re-derives storage_key from ring_pk_hex via: hex_decode → from_bytes → to_string().
-        let (storage_key, storage_bytes) = if is_refresh {
+        // Compute storage_key = aggregate_pk.to_string() — the canonical local-storage key used by
+        // sign/pre for share lookup.  For PSS refresh this is the ORIGINAL ring's key (unchanged).
+        let storage_key = if is_refresh {
+            match &refresh_ring_key {
+                Some(k) => k.clone(),
+                None => aggregate_pk.to_string(),
+            }
+        } else {
+            aggregate_pk.to_string()
+        };
+
+        // Write share + polynomial as a single encrypted bundle.
+        // Atomicity: both fields land in one set_encrypted call, so a crash leaves the
+        // entry either fully written or absent — never partially updated.
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        if is_refresh {
             match refresh_ring_key {
                 Some(ring_key) => {
-                    // Load the old share, add the refresh delta, store the result.
-                    let old_bytes = self
+                    // Load old bundle to get old share + old polynomial.
+                    // We need the original ring_pk as G1Affine to call bundle.load/save.
+                    // Recover it from the old RingPkMapping (ring_payload.ring_pk = hex::encode(to_bytes(aggregate_pk))).
+                    let old_ring_payload_bytes = self
                         .app_state
                         .local_storage
-                        .get_encrypted(LocalStorageKeys::RingKey(ring_key.clone()))
+                        .get(LocalStorageKeys::RingPkMapping(ring_key.clone()))
                         .map_err(|e| {
-                            DkgError::Storage(format!("Refresh: failed to read old share: {}", e))
+                            DkgError::Storage(format!(
+                                "Refresh: failed to read old RingPkMapping: {}",
+                                e
+                            ))
                         })?
                         .ok_or_else(|| {
-                            DkgError::Storage(
-                                "Refresh: old share not found in local storage".to_string(),
-                            )
+                            DkgError::Storage(format!(
+                                "Refresh: old RingPkMapping not found for key {}",
+                                ring_key
+                            ))
+                        })?;
+                    let old_ring_payload: RingPayload =
+                        serde_json::from_slice(&old_ring_payload_bytes).map_err(|e| {
+                            DkgError::Deserialization(format!(
+                                "Refresh: failed to deserialize old RingPayload: {}",
+                                e
+                            ))
                         })?;
 
-                    let old_pri = PriShare::<Fr>::from_bytes(&old_bytes).map_err(|e| {
+                    // Recover original G1Affine from the hex-encoded bytes in the cached payload.
+                    let original_pk_bytes =
+                        hex::decode(&old_ring_payload.ring_pk).map_err(|e| {
+                            DkgError::Deserialization(format!(
+                                "Refresh: failed to hex-decode original ring_pk: {}",
+                                e
+                            ))
+                        })?;
+                    let original_ring_pk =
+                        <D::PublicKey as CryptoDeserialize>::from_bytes(&original_pk_bytes)
+                            .map_err(|e| {
+                                DkgError::Deserialization(format!(
+                                    "Refresh: failed to deserialize original ring_pk: {}",
+                                    e
+                                ))
+                            })?;
+
+                    // Load old bundle (share + polynomial).
+                    let old_bundle =
+                        RingShareBundle::load(&self.app_state.local_storage, &original_ring_pk)
+                            .map_err(|e| {
+                                DkgError::Storage(format!(
+                                    "Refresh: failed to load old share bundle: {}",
+                                    e
+                                ))
+                            })?;
+
+                    // Combine old share + delta share.
+                    let old_pri = old_bundle.pri_share().map_err(|e| {
                         DkgError::Deserialization(format!(
                             "Refresh: failed to deserialize old share: {}",
                             e
@@ -1348,71 +1396,92 @@ where
                                 e
                             ))
                         })?;
-
                     let new_pri = PriShare {
                         i: old_pri.i,
                         v: old_pri.v + delta_pri.v,
                     };
-                    let new_bytes = CryptoSerialize::to_bytes(&new_pri).map_err(|e| {
+                    let new_share_bytes = CryptoSerialize::to_bytes(&new_pri).map_err(|e| {
                         DkgError::Serialization(format!(
                             "Refresh: failed to serialize combined share: {}",
                             e
                         ))
                     })?;
 
-                    (ring_key, new_bytes)
+                    // Combine old polynomial + delta polynomial.
+                    let old_poly_bytes =
+                        hex::decode(&old_bundle.public_polynomial).map_err(|e| {
+                            DkgError::Deserialization(format!(
+                                "Refresh: failed to decode old polynomial hex: {}",
+                                e
+                            ))
+                        })?;
+                    let new_poly_bytes = D::combine_pub_poly_bytes(
+                        &old_poly_bytes,
+                        &pub_poly_bytes,
+                    )
+                    .map_err(|e| {
+                        DkgError::Crypto(format!("Refresh: failed to combine polynomials: {}", e))
+                    })?;
+
+                    // Single atomic write: new share + new polynomial together.
+                    let new_bundle = RingShareBundle {
+                        share_bytes: new_share_bytes,
+                        public_polynomial: hex::encode(&new_poly_bytes),
+                        refreshed_at: now_secs,
+                    };
+                    new_bundle
+                        .save(&self.app_state.local_storage, &original_ring_pk)
+                        .map_err(|e| {
+                            DkgError::Storage(format!("Refresh: failed to store new bundle: {}", e))
+                        })?;
+
+                    tracing::info!(
+                        session_id = session_id,
+                        ring_pk = %old_ring_payload.ring_pk,
+                        node_id = node_id,
+                        "Refresh: Phase 4 complete — RingShareBundle updated atomically"
+                    );
                 }
                 None => {
-                    // Refresh session without a ring key — fall back to normal storage.
                     tracing::warn!(
                         session_id = session_id,
-                        "Refresh session has no ring key; storing delta as-is"
+                        "Refresh session has no ring key; storing delta bundle under new key"
                     );
-                    (aggregate_pk.to_string(), final_share_bytes.clone())
+                    let bundle = RingShareBundle {
+                        share_bytes: final_share_bytes.clone(),
+                        public_polynomial: hex::encode(&pub_poly_bytes),
+                        refreshed_at: now_secs,
+                    };
+                    bundle
+                        .save(&self.app_state.local_storage, &aggregate_pk)
+                        .map_err(|e| DkgError::Storage(format!("Failed to store bundle: {}", e)))?;
                 }
             }
         } else {
-            (aggregate_pk.to_string(), final_share_bytes.clone())
-        };
-
-        self.app_state
-            .local_storage
-            .set_encrypted(
-                LocalStorageKeys::RingKey(storage_key.clone()),
-                storage_bytes,
-            )
-            .map_err(|e| DkgError::Storage(format!("Failed to store final share: {}", e)))?;
+            // Fresh DKG: single atomic write of share + polynomial.
+            let bundle = RingShareBundle {
+                share_bytes: final_share_bytes.clone(),
+                public_polynomial: hex::encode(&pub_poly_bytes),
+                refreshed_at: 0,
+            };
+            bundle
+                .save(&self.app_state.local_storage, &aggregate_pk)
+                .map_err(|e| DkgError::Storage(format!("Failed to store share bundle: {}", e)))?;
+        }
 
         tracing::debug!(
             session_id = session_id,
-            "DKG Coordinator: Stored final share in local storage"
+            "DKG Coordinator: Stored RingShareBundle (share + polynomial) atomically"
         );
-
-        // Write last-refresh timestamp so non-initiators can enforce the minimum interval
-        // on future refresh requests. Written for both fresh DKG (baseline) and refresh.
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        self.app_state
-            .local_storage
-            .set(
-                LocalStorageKeys::RingLastRefresh(storage_key.clone()),
-                now_secs.to_le_bytes().to_vec(),
-            )
-            .map_err(|e| {
-                DkgError::Storage(format!("Failed to store last refresh timestamp: {}", e))
-            })?;
 
         // For fresh DKG: cache the RingPayload locally so that future refresh validation
         // can check membership without a bulletin round-trip (bulletin IDs are content-hash
         // based and not easily resolved from ring_pk alone).  Also append to RingIndex so
         // the PSS scheduler can discover this ring.
         //
-        // For PSS Refresh: load the existing cached RingPayload, combine the old public
-        // polynomial with the refresh delta to get the updated polynomial, write it back
-        // to local storage, and (node 1 only) post the updated payload to the bulletin so
-        // that PRE/sign operations keep working with the new shares.
+        // For PSS Refresh: RingPkMapping is unchanged (same ring_pk, peers, threshold,
+        // pss_interval). The polynomial was already updated inside the RingShareBundle write
+        // above. No additional writes needed.
         if !is_refresh {
             let peer_ids = self
                 .app_state
@@ -1420,21 +1489,12 @@ where
                 .get_peer_ids(&session_id)
                 .await
                 .unwrap_or_default();
-            // Hex-encode the aggregate public key for byte-round-trip use in RingPayload
-            // and RingPolyState. sign/pre services hex-decode this field to reconstruct
-            // the G1Affine, then call .to_string() — which recovers storage_key exactly.
+            // Hex-encode the aggregate public key for byte-round-trip use in RingPayload.
+            // sign/pre services hex-decode this field to reconstruct the G1Affine,
+            // then call .to_string() — which recovers storage_key exactly.
             let ring_pk_hex_for_payload = CryptoSerialize::to_bytes(&aggregate_pk)
                 .map(|b| hex::encode(&b))
                 .unwrap_or_default();
-
-            // Save public polynomial locally (never on the bulletin).
-            let ring_poly_state = RingPolyState {
-                public_polynomial: hex::encode(&pub_poly_bytes),
-                refreshed_at: 0,
-            };
-            ring_poly_state
-                .save(&self.app_state.local_storage, &ring_pk_hex_for_payload)
-                .map_err(|e| DkgError::Storage(format!("Failed to store RingPolyState: {}", e)))?;
 
             let ring_payload_local = RingPayload {
                 ring_pk: ring_pk_hex_for_payload.clone(),
@@ -1475,79 +1535,6 @@ where
                     .set(LocalStorageKeys::RingIndex, index_bytes)
                     .map_err(|e| DkgError::Storage(format!("Failed to store RingIndex: {}", e)))?;
             }
-        } else {
-            // PSS Refresh: compute new_pub_poly = old_pub_poly + delta_pub_poly and
-            // update the locally cached RingPayload.  Node 1 also posts the updated
-            // payload to the bulletin to signal that the refresh is complete.
-            let old_ring_payload_bytes = self
-                .app_state
-                .local_storage
-                .get(LocalStorageKeys::RingPkMapping(storage_key.clone()))
-                .map_err(|e| {
-                    DkgError::Storage(format!("Refresh: failed to read old RingPkMapping: {}", e))
-                })?
-                .ok_or_else(|| {
-                    DkgError::Storage(format!(
-                        "Refresh: old RingPkMapping not found for key {}",
-                        storage_key
-                    ))
-                })?;
-
-            let old_ring_payload: RingPayload = serde_json::from_slice(&old_ring_payload_bytes)
-                .map_err(|e| {
-                    DkgError::Deserialization(format!(
-                        "Refresh: failed to deserialize old RingPayload: {}",
-                        e
-                    ))
-                })?;
-
-            // Load old public polynomial from local-only RingPolyState.
-            let old_ring_poly_state =
-                RingPolyState::load(&self.app_state.local_storage, &old_ring_payload.ring_pk)
-                    .map_err(|e| {
-                        DkgError::Storage(format!("Refresh: failed to load RingPolyState: {}", e))
-                    })?;
-
-            let old_poly_bytes =
-                hex::decode(&old_ring_poly_state.public_polynomial).map_err(|e| {
-                    DkgError::Deserialization(format!(
-                        "Refresh: failed to decode old public polynomial hex: {}",
-                        e
-                    ))
-                })?;
-
-            let new_poly_bytes = D::combine_pub_poly_bytes(&old_poly_bytes, &pub_poly_bytes)
-                .map_err(|e| {
-                    DkgError::Crypto(format!(
-                        "Refresh: failed to combine public polynomials: {}",
-                        e
-                    ))
-                })?;
-
-            // Write updated RingPolyState (polynomial + refresh timestamp) locally.
-            let updated_ring_poly_state = RingPolyState {
-                public_polynomial: hex::encode(&new_poly_bytes),
-                refreshed_at: now_secs,
-            };
-            updated_ring_poly_state
-                .save(&self.app_state.local_storage, &old_ring_payload.ring_pk)
-                .map_err(|e| {
-                    DkgError::Storage(format!(
-                        "Refresh: failed to store updated RingPolyState: {}",
-                        e
-                    ))
-                })?;
-
-            // RingPkMapping keeps the same payload — ring_pk, peers, threshold, pss_interval
-            // are all unchanged by a refresh. RingPolyState (above) is the only local entry
-            // that changes. No bulletin post is needed: the ring public key and membership
-            // haven't changed, and the polynomial is local-only.
-            tracing::info!(
-                session_id = session_id,
-                ring_pk = %old_ring_payload.ring_pk,
-                node_id = node_id,
-                "Refresh: Phase 4 complete — RingPolyState updated locally"
-            );
         }
 
         // For refresh: clear the in-progress flag now that Phase 4 has succeeded.

@@ -173,10 +173,9 @@ where
         metrics::record_pre_request_started();
         let coordinator = PreCoordinator::<D, T>::new(Arc::new(self.state.clone()));
         let total_participants = ring_payload.peer_ids.len();
-        let poly_state = RingPolyState::load(&self.state.local_storage, &ring_payload.ring_pk)
-            .map_err(|e| {
-                Status::internal(format!("Failed to load ring polynomial state: {}", e))
-            })?;
+        let poly_state = RingPolyState::load(&self.state.local_storage, &ring_pk).map_err(|e| {
+            Status::internal(format!("Failed to load ring polynomial state: {}", e))
+        })?;
         let ring = RingConfig {
             ring_pk_bytes,
             peer_ids: ring_payload.peer_ids,
