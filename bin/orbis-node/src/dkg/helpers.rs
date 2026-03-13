@@ -255,26 +255,20 @@ pub fn persist_ring_bundle<S: LocalStorage>(
                 );
             }
             None => {
-                tracing::warn!(
-                    session_id = session_id,
-                    "Refresh session has no ring key; storing delta bundle under new key"
-                );
-                let bundle = RingShareBundle {
-                    share_bytes: final_share_bytes.to_vec(),
-                    public_polynomial: hex::encode(pub_poly_bytes),
-                    refreshed_at: now_secs,
-                };
-                bundle
-                    .save(storage, aggregate_pk)
-                    .map_err(|e| DkgError::Storage(format!("Failed to store bundle: {}", e)))?;
+                return Err(DkgError::Generic(format!(
+                    "Refresh session {} has no ring key — this is a bug",
+                    session_id
+                )));
             }
         }
     } else {
         // Fresh DKG: single atomic write of share + polynomial.
+        // Use now_secs so the PSS scheduler waits a full pss_interval before the first refresh,
+        // rather than treating the ring as immediately overdue.
         let bundle = RingShareBundle {
             share_bytes: final_share_bytes.to_vec(),
             public_polynomial: hex::encode(pub_poly_bytes),
-            refreshed_at: 0,
+            refreshed_at: now_secs,
         };
         bundle
             .save(storage, aggregate_pk)
