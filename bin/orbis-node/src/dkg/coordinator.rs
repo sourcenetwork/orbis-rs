@@ -1360,7 +1360,12 @@ where
             // then call .to_string() — which recovers storage_key exactly.
             let ring_pk_hex_for_payload = CryptoSerialize::to_bytes(&aggregate_pk)
                 .map(|b| hex::encode(&b))
-                .unwrap_or_default();
+                .map_err(|e| {
+                    DkgError::Serialization(format!(
+                        "Failed to serialize aggregate_pk for RingPayload: {}",
+                        e
+                    ))
+                })?;
 
             let ring_payload_local = RingPayload {
                 ring_pk: ring_pk_hex_for_payload.clone(),
@@ -1383,23 +1388,30 @@ where
                 .map_err(|e| DkgError::Storage(format!("Failed to store RingPkMapping: {}", e)))?;
 
             // Update the ring index so the PSS scheduler can discover this ring.
-            let mut ring_index: Vec<String> = self
-                .app_state
-                .local_storage
-                .get(LocalStorageKeys::RingIndex)
-                .ok()
-                .flatten()
-                .and_then(|b| serde_json::from_slice(&b).ok())
-                .unwrap_or_default();
-            if !ring_index.contains(&storage_key) {
-                ring_index.push(storage_key.clone());
-                let index_bytes = serde_json::to_vec(&ring_index).map_err(|e| {
-                    DkgError::Serialization(format!("Failed to serialize RingIndex: {}", e))
-                })?;
-                self.app_state
+            // Hold the lock for the entire read-modify-write so concurrent Phase 4
+            // completions don't overwrite each other's appended entry.
+            {
+                let _guard = self.app_state.ring_index_lock.lock().await;
+                let mut ring_index: Vec<String> = self
+                    .app_state
                     .local_storage
-                    .set(LocalStorageKeys::RingIndex, index_bytes)
-                    .map_err(|e| DkgError::Storage(format!("Failed to store RingIndex: {}", e)))?;
+                    .get(LocalStorageKeys::RingIndex)
+                    .ok()
+                    .flatten()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or_default();
+                if !ring_index.contains(&storage_key) {
+                    ring_index.push(storage_key.clone());
+                    let index_bytes = serde_json::to_vec(&ring_index).map_err(|e| {
+                        DkgError::Serialization(format!("Failed to serialize RingIndex: {}", e))
+                    })?;
+                    self.app_state
+                        .local_storage
+                        .set(LocalStorageKeys::RingIndex, index_bytes)
+                        .map_err(|e| {
+                            DkgError::Storage(format!("Failed to store RingIndex: {}", e))
+                        })?;
+                }
             }
         }
 

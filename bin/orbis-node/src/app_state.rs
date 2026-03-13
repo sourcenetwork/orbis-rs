@@ -7,6 +7,7 @@ use crypto::r#trait::Dkg;
 use local_storage::LocalStorageImpl;
 use network::Network;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Shared application state accessible by all gRPC endpoints
 #[derive(Clone)]
@@ -31,6 +32,10 @@ where
     pub authz: Arc<dyn Authz + Send + Sync>,
     /// Bulletin implementation
     pub bulletin: Arc<dyn Bulletin + Send + Sync>,
+    /// Serializes concurrent RingIndex read-modify-write operations in Phase 4.
+    /// Without this, two simultaneous DKG completions can each read the same
+    /// index and one will overwrite the other's appended entry.
+    pub ring_index_lock: Arc<Mutex<()>>,
 }
 
 /// Server configuration
@@ -60,6 +65,7 @@ where
             sign_response_state: Arc::new(SignResponseManager::new()),
             authz,
             bulletin,
+            ring_index_lock: Arc::new(Mutex::new(())),
         }
     }
 }

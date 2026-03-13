@@ -281,6 +281,9 @@ where
     };
 
     for peer_id_str in peer_ids {
+        if extract_node_part(peer_id_str) == our_node_part {
+            continue; // coordinator handles our own session internally
+        }
         if let Err(e) = coordinator
             .send_message_to_peer(peer_id_str, init_msg.clone())
             .await
