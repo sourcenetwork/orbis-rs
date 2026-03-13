@@ -43,7 +43,7 @@ pub struct Args {
     /// Loki server URL for log aggregation (e.g., "http://localhost:3100")
     #[arg(long)]
     pub loki_url: Option<String>,
-    /// Interval between automatic PSS reshare ceremonies in seconds.
+    /// Interval between when node will check if PSS ceremony is needed.
     /// Set to 0 to disable automatic resharing. Defaults to 86400 (24 hours).
     #[arg(long, default_value_t = crate::constants::DEFAULT_RESHARE_INTERVAL_SECS)]
     pub reshare_interval_secs: u64,

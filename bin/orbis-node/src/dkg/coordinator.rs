@@ -22,18 +22,16 @@ use crate::constants::{
 };
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
-    serialize_commitment_coefficients, session_not_found, validate_dkg_claims,
+    persist_ring_bundle, serialize_commitment_coefficients, session_not_found, validate_dkg_claims,
     validate_refresh_session_init,
 };
 use crate::dkg::messages::DkgMessage;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase};
 use crate::helpers::helpers::{extract_node_part, is_self_peer_id};
 use crate::metrics;
-use crate::ring_state::RingShareBundle;
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use bulletin::r#trait::RingPayload;
-use crypto::r#trait::{DistributedShare, PriShare};
-use crypto::r#trait::{Dkg, DkgMode, DkgRole};
+use crypto::r#trait::{DistributedShare, Dkg, DkgMode, DkgRole};
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use crypto::{
@@ -1325,149 +1323,17 @@ where
             .unwrap_or_default()
             .as_secs();
 
-        if is_refresh {
-            match refresh_ring_key {
-                Some(ring_key) => {
-                    // Load old bundle to get old share + old polynomial.
-                    // We need the original ring_pk as G1Affine to call bundle.load/save.
-                    // Recover it from the old RingPkMapping (ring_payload.ring_pk = hex::encode(to_bytes(aggregate_pk))).
-                    let old_ring_payload_bytes = self
-                        .app_state
-                        .local_storage
-                        .get(LocalStorageKeys::RingPkMapping(ring_key.clone()))
-                        .map_err(|e| {
-                            DkgError::Storage(format!(
-                                "Refresh: failed to read old RingPkMapping: {}",
-                                e
-                            ))
-                        })?
-                        .ok_or_else(|| {
-                            DkgError::Storage(format!(
-                                "Refresh: old RingPkMapping not found for key {}",
-                                ring_key
-                            ))
-                        })?;
-                    let old_ring_payload: RingPayload =
-                        serde_json::from_slice(&old_ring_payload_bytes).map_err(|e| {
-                            DkgError::Deserialization(format!(
-                                "Refresh: failed to deserialize old RingPayload: {}",
-                                e
-                            ))
-                        })?;
-
-                    // Recover original G1Affine from the hex-encoded bytes in the cached payload.
-                    let original_pk_bytes =
-                        hex::decode(&old_ring_payload.ring_pk).map_err(|e| {
-                            DkgError::Deserialization(format!(
-                                "Refresh: failed to hex-decode original ring_pk: {}",
-                                e
-                            ))
-                        })?;
-                    let original_ring_pk =
-                        <D::PublicKey as CryptoDeserialize>::from_bytes(&original_pk_bytes)
-                            .map_err(|e| {
-                                DkgError::Deserialization(format!(
-                                    "Refresh: failed to deserialize original ring_pk: {}",
-                                    e
-                                ))
-                            })?;
-
-                    // Load old bundle (share + polynomial).
-                    let old_bundle =
-                        RingShareBundle::load(&self.app_state.local_storage, &original_ring_pk)
-                            .map_err(|e| {
-                                DkgError::Storage(format!(
-                                    "Refresh: failed to load old share bundle: {}",
-                                    e
-                                ))
-                            })?;
-
-                    // Combine old share + delta share.
-                    let old_pri = old_bundle.pri_share().map_err(|e| {
-                        DkgError::Deserialization(format!(
-                            "Refresh: failed to deserialize old share: {}",
-                            e
-                        ))
-                    })?;
-                    let delta_pri =
-                        PriShare::<Fr>::from_bytes(&final_share_bytes).map_err(|e| {
-                            DkgError::Deserialization(format!(
-                                "Refresh: failed to deserialize delta share: {}",
-                                e
-                            ))
-                        })?;
-                    let new_pri = PriShare {
-                        i: old_pri.i,
-                        v: old_pri.v + delta_pri.v,
-                    };
-                    let new_share_bytes = CryptoSerialize::to_bytes(&new_pri).map_err(|e| {
-                        DkgError::Serialization(format!(
-                            "Refresh: failed to serialize combined share: {}",
-                            e
-                        ))
-                    })?;
-
-                    // Combine old polynomial + delta polynomial.
-                    let old_poly_bytes =
-                        hex::decode(&old_bundle.public_polynomial).map_err(|e| {
-                            DkgError::Deserialization(format!(
-                                "Refresh: failed to decode old polynomial hex: {}",
-                                e
-                            ))
-                        })?;
-                    let new_poly_bytes = D::combine_pub_poly_bytes(
-                        &old_poly_bytes,
-                        &pub_poly_bytes,
-                    )
-                    .map_err(|e| {
-                        DkgError::Crypto(format!("Refresh: failed to combine polynomials: {}", e))
-                    })?;
-
-                    // Single atomic write: new share + new polynomial together.
-                    let new_bundle = RingShareBundle {
-                        share_bytes: new_share_bytes,
-                        public_polynomial: hex::encode(&new_poly_bytes),
-                        refreshed_at: now_secs,
-                    };
-                    new_bundle
-                        .save(&self.app_state.local_storage, &original_ring_pk)
-                        .map_err(|e| {
-                            DkgError::Storage(format!("Refresh: failed to store new bundle: {}", e))
-                        })?;
-
-                    tracing::info!(
-                        session_id = session_id,
-                        ring_pk = %old_ring_payload.ring_pk,
-                        node_id = node_id,
-                        "Refresh: Phase 4 complete — RingShareBundle updated atomically"
-                    );
-                }
-                None => {
-                    tracing::warn!(
-                        session_id = session_id,
-                        "Refresh session has no ring key; storing delta bundle under new key"
-                    );
-                    let bundle = RingShareBundle {
-                        share_bytes: final_share_bytes.clone(),
-                        public_polynomial: hex::encode(&pub_poly_bytes),
-                        refreshed_at: now_secs,
-                    };
-                    bundle
-                        .save(&self.app_state.local_storage, &aggregate_pk)
-                        .map_err(|e| DkgError::Storage(format!("Failed to store bundle: {}", e)))?;
-                }
-            }
-        } else {
-            // Fresh DKG: single atomic write of share + polynomial.
-            let bundle = RingShareBundle {
-                share_bytes: final_share_bytes.clone(),
-                public_polynomial: hex::encode(&pub_poly_bytes),
-                refreshed_at: 0,
-            };
-            bundle
-                .save(&self.app_state.local_storage, &aggregate_pk)
-                .map_err(|e| DkgError::Storage(format!("Failed to store share bundle: {}", e)))?;
-        }
+        persist_ring_bundle(
+            &self.app_state.local_storage,
+            is_refresh,
+            refresh_ring_key,
+            &final_share_bytes,
+            &pub_poly_bytes,
+            &aggregate_pk,
+            now_secs,
+            session_id,
+            |old, delta| D::combine_pub_poly_bytes(old, delta).map_err(|e| e.to_string()),
+        )?;
 
         tracing::debug!(
             session_id = session_id,
