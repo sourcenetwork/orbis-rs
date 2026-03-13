@@ -12,7 +12,8 @@ use crate::helpers::test_helpers::{
 use crate::ring_state::RingPolyState;
 use crate::DkgServiceImpl;
 use bulletin::r#trait::RingPayload;
-use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole};
+use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole, PubPoly as PubPolyTrait};
+use crypto::CryptoSerialize;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::PeerId;
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
@@ -1449,7 +1450,7 @@ async fn test_dkg_followed_by_pss_refresh() {
         .charlie
         .app_state
         .local_storage
-        .get_encrypted(LocalStorageKeys::RingKey(key_string))
+        .get_encrypted(LocalStorageKeys::RingKey(key_string.clone()))
         .expect("read charlie share after refresh")
         .expect("charlie share must exist after refresh");
 
@@ -1466,10 +1467,210 @@ async fn test_dkg_followed_by_pss_refresh() {
         "Charlie's share should have been rotated by the refresh"
     );
 
+    // ── Phase E: Verify the underlying secret was preserved ───────────────────
+    // PSS refresh uses DkgMode::Refresh (zero constant term on each delta poly),
+    // so the combined polynomial's constant term P(0) must equal the original
+    // aggregate public key. We deserialize each node's stored public polynomial,
+    // evaluate at 0, and compare with ring_pk_hex captured from the bulletin
+    // immediately after the initial DKG.
+    {
+        let original_pk_bytes = hex::decode(&ring_pk_hex).expect("decode original ring_pk_hex");
+
+        for (label, storage) in [
+            ("alice", &network.alice.app_state.local_storage),
+            ("bob", &network.bob.app_state.local_storage),
+            ("charlie", &network.charlie.app_state.local_storage),
+        ] {
+            let bundle = crate::ring_state::RingShareBundle::load_by_ring_key(storage, &key_string)
+                .unwrap_or_else(|e| panic!("{label}: load post-refresh bundle: {e}"));
+            let poly_bytes = hex::decode(&bundle.public_polynomial)
+                .unwrap_or_else(|e| panic!("{label}: decode public_polynomial hex: {e}"));
+            let pub_poly = <DkgImpl as Dkg>::PubPoly::from_bytes(&poly_bytes)
+                .unwrap_or_else(|e| panic!("{label}: deserialize PubPoly: {e}"));
+
+            let recovered_pk_bytes = CryptoSerialize::to_bytes(&pub_poly.eval(0))
+                .unwrap_or_else(|e| panic!("{label}: serialize P(0): {e}"));
+
+            assert_eq!(
+                recovered_pk_bytes, original_pk_bytes,
+                "{label}: P(0) of post-refresh polynomial must equal the original aggregate public key"
+            );
+        }
+    }
+
     network.shutdown_routers().await.expect("shutdown routers");
     for path in &db_paths {
         cleanup_db(path);
     }
+}
+
+/// Verify that receiving a Share before the sender's Phase 1 commitment has
+/// arrived results in `CommitmentNotYetReceived` after exhausting all retries.
+///
+/// The coordinator retries `MAX_COMMIT_WAIT_RETRIES` times with a short sleep
+/// between each attempt.  When the commitment never arrives the error propagates.
+#[tokio::test]
+async fn test_share_before_commitment_retries_then_fails() {
+    let db_name = "test_share_before_commitment_retries";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let coordinator = DkgCoordinator::new(app_state.clone());
+
+    let session_id: u64 = 77_777;
+    // Create a 2-node session where we are node 1.
+    coordinator
+        .create_session(session_id, 1, 2, 2, DkgRole::Standard)
+        .await
+        .expect("create session");
+
+    // Register peer IDs and node→peer mappings so the coordinator can authenticate
+    // the incoming Share message.  Node 1 = us, node 2 = "deadbeef" (the sender).
+    let sender_hex = "deadbeef";
+    let all_peer_ids = vec!["aabbccdd".to_string(), sender_hex.to_string()];
+    coordinator.set_peer_ids(&session_id, all_peer_ids).await;
+    let mut node_peer_map = std::collections::HashMap::new();
+    node_peer_map.insert(1u32, "aabbccdd".to_string());
+    node_peer_map.insert(2u32, sender_hex.to_string());
+    app_state
+        .dkg_session_state
+        .set_node_peer_mappings(&session_id, node_peer_map)
+        .await;
+
+    // Generate our polynomial.  Passing no peers means no network I/O:
+    // expected_peers == peers_sent == 0, so initiate_phase1_commitments succeeds.
+    coordinator
+        .initiate_phase1_commitments(session_id, &[])
+        .await
+        .expect("phase 1 with no peers");
+
+    // Send a Share from node 2 to us (node 1) before node 2 has sent its commitment.
+    // The coordinator will retry MAX_COMMIT_WAIT_RETRIES times and then propagate
+    // the CommitmentNotYetReceived error.
+    let share_msg = DkgMessage::Share {
+        session_id,
+        from_node_id: 2,
+        to_node_id: 1,
+        share_value: vec![0u8; 32], // Fr::zero() in canonical little-endian form
+        nonce: [0u8; 16],
+    };
+    let sender_bytes = hex::decode(sender_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+
+    let result = coordinator.handle_message(share_msg, &sender_peer_id).await;
+    assert!(
+        matches!(
+            result,
+            Err(crate::dkg::error::DkgError::CommitmentNotYetReceived(_))
+        ),
+        "Expected CommitmentNotYetReceived after exhausting retries, got: {:?}",
+        result
+    );
+
+    cleanup_db(&db_path);
+}
+
+/// `rings_refreshing` only guards the PSS refresh path; a concurrent fresh DKG
+/// on the same ring is not blocked.  This test verifies that:
+///
+/// 1. Marking a ring as refreshing does NOT prevent a fresh DKG session from
+///    being created (different code paths, no shared mutex).
+/// 2. Both sessions coexist in state simultaneously.
+/// 3. At the storage layer the two paths race with last-writer-wins semantics:
+///    a refresh bundle written after a fresh-DKG bundle silently overwrites it.
+#[tokio::test]
+async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
+    let db_name = "test_concurrent_fresh_dkg_and_refresh";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+
+    // ── Step 1: Simulate a ring that is already undergoing a PSS refresh. ──────
+    let ring_key = "deadbeef1234ring";
+    let refresh_session_id: u64 = 100;
+
+    // Mark the ring as refreshing — this is what PSS mod.rs does before
+    // creating a refresh session.
+    let marked = app_state
+        .dkg_session_state
+        .try_mark_ring_refreshing(ring_key)
+        .await;
+    assert!(marked, "should be able to mark a fresh ring as refreshing");
+
+    // Create the refresh session.
+    let coordinator = DkgCoordinator::new(app_state.clone());
+    coordinator
+        .create_session(refresh_session_id, 1, 2, 3, DkgRole::Standard)
+        .await
+        .expect("refresh session creation should succeed");
+    app_state
+        .dkg_session_state
+        .mark_as_refresh(&refresh_session_id)
+        .await;
+    app_state
+        .dkg_session_state
+        .set_refresh_ring_key(&refresh_session_id, ring_key.to_string())
+        .await;
+
+    // ── Step 2: A fresh DKG on the same ring is NOT blocked. ─────────────────
+    // rings_refreshing has no effect on create_session for a new DKG.
+    let fresh_dkg_session_id: u64 = 200;
+    coordinator
+        .create_session(fresh_dkg_session_id, 1, 2, 3, DkgRole::Standard)
+        .await
+        .expect("fresh DKG session creation must not be blocked by rings_refreshing");
+
+    // ── Step 3: Both sessions coexist in state. ───────────────────────────────
+    assert!(
+        app_state
+            .dkg_session_state
+            .session_exists(&refresh_session_id)
+            .await,
+        "refresh session should still exist in state"
+    );
+    assert!(
+        app_state
+            .dkg_session_state
+            .session_exists(&fresh_dkg_session_id)
+            .await,
+        "fresh DKG session should exist in state alongside the refresh session"
+    );
+
+    // ── Step 4: Storage last-writer-wins race. ────────────────────────────────
+    // Simulate Phase 4 of the fresh DKG writing its bundle first.
+    let fresh_dkg_bundle = crate::ring_state::RingShareBundle {
+        share_bytes: vec![0xAA; 32],
+        public_polynomial: "fresh_poly".to_string(),
+        refreshed_at: 1_000,
+    };
+    fresh_dkg_bundle
+        .save_by_ring_key(&app_state.local_storage, ring_key)
+        .expect("fresh DKG bundle write should succeed");
+
+    // Simulate Phase 4 of the refresh writing its bundle second (wins).
+    let refresh_bundle = crate::ring_state::RingShareBundle {
+        share_bytes: vec![0xBB; 32],
+        public_polynomial: "refresh_poly".to_string(),
+        refreshed_at: 2_000,
+    };
+    refresh_bundle
+        .save_by_ring_key(&app_state.local_storage, ring_key)
+        .expect("refresh bundle write should succeed");
+
+    // The refresh silently overwrote the fresh DKG result — no error, but the
+    // fresh DKG's polynomial is gone.  This demonstrates the unguarded race.
+    let stored =
+        crate::ring_state::RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_key)
+            .expect("bundle should be readable");
+    assert_eq!(
+        stored.public_polynomial, "refresh_poly",
+        "refresh bundle (written last) should have overwritten the fresh DKG bundle"
+    );
+    assert_eq!(
+        stored.share_bytes,
+        vec![0xBB; 32],
+        "refresh share bytes should be present (last writer wins)"
+    );
+
+    cleanup_db(&db_path);
 }
 
 // =============================================================================
