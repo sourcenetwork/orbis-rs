@@ -1,16 +1,15 @@
 use crate::constants::{
     BULLETIN_RING_NAMESPACE, MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE,
 };
+use crate::ring_state::RingShareBundle;
 use crate::sign::error::{Result, SignError};
 use authn::{BearerToken, SignClaims};
 use authz::r#trait::Authz;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, KeyDerivation, RingPayload};
-use crypto::r#trait::{
-    CryptoDeserialize, CryptoSerialize, DistKeyShare, PriShare, ThresholdSigner,
-};
+use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, DistKeyShare, ThresholdSigner};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
-use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use local_storage::r#trait::LocalStorage;
 
 /// Deserializes a ring public key from raw bytes.
 pub fn decode_ring_pk_bytes(ring_pk_bytes: &[u8]) -> Result<G1Affine> {
@@ -26,22 +25,11 @@ pub fn load_dist_key_share(
     local_storage: &impl LocalStorage,
     ring_pk: &G1Affine,
 ) -> Result<DistKeyShare<Fr>> {
-    let final_share_bytes = local_storage
-        .get_encrypted(LocalStorageKeys::RingKey(ring_pk.to_string()))
-        .map_err(|e| {
-            SignError::Storage(format!(
-                "Failed to retrieve final share from storage: {}",
-                e
-            ))
-        })?
-        .ok_or_else(|| {
-            SignError::Storage("Final share not found in storage for ring_pk".to_string())
-        })?;
-
-    let pri_share: PriShare<Fr> = PriShare::from_bytes(&final_share_bytes).map_err(|e| {
+    let bundle = RingShareBundle::load(local_storage, ring_pk)
+        .map_err(|e| SignError::Storage(format!("Failed to load share bundle: {}", e)))?;
+    let pri_share = bundle.pri_share().map_err(|e| {
         SignError::Deserialization(format!("Failed to deserialize final share: {}", e))
     })?;
-
     Ok(DistKeyShare { pri_share })
 }
 
@@ -53,12 +41,8 @@ pub fn try_load_dist_key_share(
     local_storage: &impl LocalStorage,
     ring_pk: &G1Affine,
 ) -> Option<DistKeyShare<Fr>> {
-    let final_share_bytes = local_storage
-        .get_encrypted(LocalStorageKeys::RingKey(ring_pk.to_string()))
-        .ok()
-        .flatten()?;
-
-    let pri_share = PriShare::<Fr>::from_bytes(&final_share_bytes).ok()?;
+    let bundle = RingShareBundle::load(local_storage, ring_pk).ok()?;
+    let pri_share = bundle.pri_share().ok()?;
     Some(DistKeyShare { pri_share })
 }
 

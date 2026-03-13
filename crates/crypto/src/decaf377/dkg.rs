@@ -7,8 +7,8 @@ use super::common::{PolynomialCommitment, PubPoly};
 use crate::{
     error::{CryptoError, Result},
     r#trait::{
-        DistributedShare, Dkg, DkgMode, DkgRole, PolynomialCommitment as PolynomialCommitmentTrait,
-        PriShare,
+        CryptoDeserialize, CryptoSerialize, DistributedShare, Dkg, DkgMode, DkgRole,
+        PolynomialCommitment as PolynomialCommitmentTrait, PriShare,
     },
 };
 
@@ -278,12 +278,7 @@ impl Dkg for DKGNode {
         let commitment = self
             .received_commitments
             .get(&share.from_id)
-            .ok_or_else(|| {
-                CryptoError::DKGError(format!(
-                    "No commitment received from node {}",
-                    share.from_id
-                ))
-            })?;
+            .ok_or(CryptoError::CommitmentMissing(share.from_id))?;
 
         // Verify the share against the commitment (constant-time)
         if !commitment.verify_share(share.to_id, &share.value) {
@@ -507,6 +502,30 @@ impl Dkg for DKGNode {
 
     fn commitment(&self) -> &Self::PolynomialCommitment {
         &self.commitment
+    }
+
+    fn combine_pub_poly_bytes(a: &[u8], b: &[u8]) -> Result<Vec<u8>>
+    where
+        Self: Sized,
+    {
+        let poly_a = PubPoly::from_bytes(a)?;
+        let poly_b = PubPoly::from_bytes(b)?;
+        if poly_a.commits.len() != poly_b.commits.len() {
+            return Err(CryptoError::DKGError(format!(
+                "combine_pub_poly_bytes: length mismatch ({} vs {})",
+                poly_a.commits.len(),
+                poly_b.commits.len()
+            )));
+        }
+        let combined = PubPoly {
+            commits: poly_a
+                .commits
+                .iter()
+                .zip(poly_b.commits.iter())
+                .map(|(p, q)| *p + *q)
+                .collect(),
+        };
+        combined.to_bytes()
     }
 }
 

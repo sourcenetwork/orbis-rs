@@ -40,8 +40,10 @@ pub struct RingPayload {
     pub peer_ids: Vec<String>,
     /// Threshold of ring
     pub threshold: u32,
-    /// Public polynomial of ring
-    pub public_polynomial: String,
+    /// Seconds between automatic PSS refresh ceremonies.
+    /// `None` (or absent in JSON) means automatic refresh is disabled for this ring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pss_interval: Option<u64>,
 }
 
 /// Payload for derivation information derivation_id => payload

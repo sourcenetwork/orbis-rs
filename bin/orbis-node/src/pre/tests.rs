@@ -23,6 +23,7 @@ use crate::helpers::helpers::RingConfig;
 use crate::pre::error::PreError;
 use crate::pre::helpers::check_policy_access;
 use crate::pre::messages::PreRequestContext;
+use crate::ring_state::RingPolyState;
 use bulletin::dummy::DummyBulletin;
 
 /// Generate policy metadata matching the test DocumentPayload fields.
@@ -127,12 +128,13 @@ async fn test_dkg_then_pre_end_to_end() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     println!("Node1 sending StartDkgRequest...");
@@ -249,7 +251,12 @@ async fn test_dkg_then_pre_end_to_end() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             secret_bytes.clone(),
             PreRequestContext {
@@ -380,12 +387,13 @@ async fn test_pre_with_large_secret() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -446,7 +454,12 @@ async fn test_pre_with_large_secret() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             secret_bytes,
             PreRequestContext {
@@ -512,12 +525,13 @@ async fn test_pre_fails_with_wrong_key() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -579,7 +593,12 @@ async fn test_pre_fails_with_wrong_key() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             secret_bytes,
             PreRequestContext {
@@ -646,12 +665,13 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -708,7 +728,12 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             secret_bytes,
             PreRequestContext {
@@ -786,11 +811,12 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -857,7 +883,12 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             secret_bytes,
             PreRequestContext {
@@ -1073,11 +1104,12 @@ async fn test_pre_fails_with_wrong_derivation() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -1149,7 +1181,12 @@ async fn test_pre_fails_with_wrong_derivation() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             secret_bytes.clone(),
             PreRequestContext {
@@ -1249,11 +1286,12 @@ async fn test_pre_fails_with_bad_proof() {
     let request = StartDkgRequest {
         threshold: 2,
         peer_ids: peer_ids.clone(),
+        pss_interval: None,
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids)
+        .create_dkg_jwt(2, &peer_ids, None)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -1316,7 +1354,12 @@ async fn test_pre_fails_with_bad_proof() {
                 peer_ids: pre_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: ring_payload.public_polynomial.clone(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
             },
             secret_bytes,
             PreRequestContext {

@@ -4,6 +4,7 @@ package info_service;
 
 service InfoService {
   rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
+  rpc GetRingState(GetRingStateRequest) returns (GetRingStateResponse);
 }
 
 message GetNodeInfoRequest {}
@@ -13,4 +14,15 @@ message GetNodeInfoResponse {
   string peer_id = 2;
   // P2P connection string in format "peer_id@host:port" for node-to-node communication
   string p2p_address = 3;
+}
+
+message GetRingStateRequest {
+  string ring_pk_hex = 1;
+}
+
+message GetRingStateResponse {
+  // Hex-encoded current public polynomial (updated after each PSS refresh).
+  string public_polynomial = 1;
+  // Unix timestamp (seconds) of the most recent PSS refresh, or 0 for initial DKG.
+  uint64 refreshed_at = 2;
 }

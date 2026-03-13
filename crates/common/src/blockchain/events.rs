@@ -31,7 +31,7 @@ pub struct BulletinPostEvent {
 /// # Example
 /// ```ignore
 /// let subscription = BulletinEventSubscription::connect("http://localhost:26657").await?;
-/// let dkg_result = cli_tool::do_dkg(endpoint, threshold, peer_ids).await?;
+/// let dkg_result = cli_tool::do_dkg(endpoint, threshold, peer_ids, None).await?;
 /// let event = subscription.wait_for_artifact(&dkg_result.session_id, Duration::from_secs(60)).await?;
 /// ```
 pub struct BulletinEventSubscription {

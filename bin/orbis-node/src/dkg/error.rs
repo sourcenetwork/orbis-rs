@@ -60,6 +60,10 @@ pub enum DkgError {
     #[error("Share verification failed: {0}")]
     ShareVerificationFailed(String),
 
+    /// Share arrived before the sender's Phase 1 commitment
+    #[error("Commitment not yet received from node {0}")]
+    CommitmentNotYetReceived(u32),
+
     /// Generic DKG error
     #[error("DKG error: {0}")]
     Generic(String),

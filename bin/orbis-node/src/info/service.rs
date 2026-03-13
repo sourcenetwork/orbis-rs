@@ -1,9 +1,11 @@
 use crate::app_state::AppState;
 use crate::helpers::launch::get_node_signer;
 use crate::info::error::InfoError;
+use crate::ring_state::RingPolyState;
 use common::blockchain::ChainConfigBuilder;
 use proto::info_service::{
-    info_service_server::InfoService, GetNodeInfoRequest, GetNodeInfoResponse,
+    info_service_server::InfoService, GetNodeInfoRequest, GetNodeInfoResponse, GetRingStateRequest,
+    GetRingStateResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -58,6 +60,19 @@ where
             public_address,
             peer_id,
             p2p_address,
+        }))
+    }
+
+    async fn get_ring_state(
+        &self,
+        request: Request<GetRingStateRequest>,
+    ) -> Result<Response<GetRingStateResponse>, Status> {
+        let ring_pk_hex = request.into_inner().ring_pk_hex;
+        let state = RingPolyState::load_from_ring_pk_hex(&self.state.local_storage, &ring_pk_hex)
+            .map_err(|e| Status::not_found(e))?;
+        Ok(Response::new(GetRingStateResponse {
+            public_polynomial: state.public_polynomial,
+            refreshed_at: state.refreshed_at,
         }))
     }
 }

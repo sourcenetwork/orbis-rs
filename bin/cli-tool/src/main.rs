@@ -6,9 +6,9 @@ pub use commands::{
     add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg,
     do_encrypt_secret, do_generate_reader_key, do_pre, do_sign, do_store_secret, fund,
     get_account_sequence, get_latest_ring, list_bulletin_posts, post_key_derivation,
-    prepare_secret, query_node_info, read_bulletin_post, register_bulletin_namespace,
-    register_object_to_chain, set_relationship_on_chain, store_prepared_secret, PreparedSecret,
-    SignResult,
+    prepare_secret, query_node_info, query_ring_state, read_bulletin_post,
+    register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
+    store_prepared_secret, PreparedSecret, SignResult,
 };
 use common::blockchain::ChainConfig;
 use hex;
@@ -320,6 +320,15 @@ pub enum SubCommands {
         #[clap(short, long, default_value = "http://localhost:50051")]
         endpoint: String,
     },
+    /// Query the local ring state (public polynomial + last refresh timestamp) from a node
+    RingState {
+        /// gRPC endpoint of the node
+        #[clap(short, long, default_value = "http://localhost:50051")]
+        endpoint: String,
+        /// Ring public key hex (from DKG)
+        #[clap(long)]
+        ring_pk_hex: String,
+    },
     /// Get latest ring from bulletin (after DKG). Prints RING_ID and RING_PK for sourcing in scripts.
     GetLatestRing {
         /// Bulletin namespace for ring payloads [default: orbis]
@@ -386,7 +395,7 @@ async fn main() -> Result<()> {
             threshold,
             peer_ids,
         } => {
-            do_dkg(endpoint, threshold, peer_ids).await?;
+            do_dkg(endpoint, threshold, peer_ids, None).await?;
         }
         SubCommands::Pre {
             endpoint,
@@ -613,6 +622,14 @@ async fn main() -> Result<()> {
         }
         SubCommands::Info { endpoint } => {
             query_node_info(endpoint).await?;
+        }
+        SubCommands::RingState {
+            endpoint,
+            ring_pk_hex,
+        } => {
+            let (poly, refreshed_at) = query_ring_state(endpoint, ring_pk_hex).await?;
+            println!("PUBLIC_POLYNOMIAL={}", poly);
+            println!("REFRESHED_AT={}", refreshed_at);
         }
         SubCommands::GetLatestRing { namespace } => {
             let (ring_id, ring_pk) = get_latest_ring(namespace).await?;

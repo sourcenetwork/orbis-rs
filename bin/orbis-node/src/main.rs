@@ -7,6 +7,8 @@ pub mod helpers;
 pub mod info;
 pub mod metrics;
 pub mod pre;
+pub mod pss;
+pub mod ring_state;
 pub mod sign;
 pub mod store_secret;
 
@@ -60,6 +62,8 @@ pub struct InitializedNode {
     pub grpc_addr: SocketAddr,
     pub local_address: String,
     pub metrics_addr: Option<SocketAddr>,
+    /// Interval between PSS reshare ceremonies. Zero means disabled.
+    pub reshare_interval: std::time::Duration,
 }
 
 /// Initialize the node without starting the gRPC server
@@ -119,6 +123,7 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
         grpc_addr,
         local_address,
         metrics_addr,
+        reshare_interval: std::time::Duration::from_secs(config.args.reshare_interval_secs),
     })
 }
 
@@ -127,6 +132,9 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     // Initialize metrics eagerly so registration panics surface here, not in a spawned task
     metrics::init();
     network::metrics::init();
+
+    // Start PSS reshare scheduler (no-op if interval is zero)
+    pss::spawn_reshare_scheduler(node.app_state.clone(), node.reshare_interval);
 
     tracing::info!("Server is ready to accept connections");
     tracing::info!(grpc_addr = %node.grpc_addr, "Starting gRPC server");

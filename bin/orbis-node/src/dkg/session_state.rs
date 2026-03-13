@@ -10,10 +10,11 @@
 use crate::constants::{
     DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS, SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
 };
+use crate::dkg::error::DkgError;
 use crate::metrics;
-use crypto::r#trait::{Dkg, DkgRole};
+use crypto::r#trait::{Dkg, DkgMode};
 use network::Connection;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -84,6 +85,17 @@ pub struct DkgSessionState<D: Dkg> {
     pub shares_received: usize,
     /// Processed message IDs for deduplication (session_id, from_node_id, message_type)
     pub processed_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
+    /// Set when this is a PSS refresh session; causes generate_polynomial to use DkgMode::Refresh
+    pub is_refresh: bool,
+    /// Seconds between automatic PSS refresh ceremonies for this ring.
+    /// Stored here during the session so Phase 4 can write it into `RingPayload`.
+    pub pss_interval: Option<u64>,
+    /// Local-storage key (`aggregate_pk.to_string()`) of the ring being refreshed.
+    ///
+    /// Present only for PSS refresh sessions. Phase 4 uses this to load the old share,
+    /// add the refresh delta, and store the combined share under the same key so the
+    /// ring public key and local-storage slot are unchanged.
+    pub refresh_ring_key: Option<String>,
 }
 
 impl<D: Dkg> DkgSessionState<D> {
@@ -102,7 +114,25 @@ impl<D: Dkg> DkgSessionState<D> {
             commitments_received: 0,
             shares_received: 0,
             processed_messages: std::collections::HashSet::new(),
+            is_refresh: false,
+            pss_interval: None,
+            refresh_ring_key: None,
         }
+    }
+
+    /// Generate the polynomial for this session.
+    ///
+    /// Uses `DkgMode::Refresh` for PSS refresh sessions (zero constant term, same secret),
+    /// otherwise uses `DkgMode::Fresh` (standard DKG).
+    pub fn generate_polynomial(&mut self) -> Result<(), DkgError> {
+        let mode = if self.is_refresh {
+            DkgMode::Refresh
+        } else {
+            DkgMode::Fresh
+        };
+        self.node
+            .generate_polynomial(mode)
+            .map_err(|e| DkgError::Crypto(format!("Failed to generate polynomial: {}", e)))
     }
 
     /// Check if all commitments have been received
@@ -178,6 +208,10 @@ pub struct SessionStateManager<D: Dkg> {
     pub(crate) states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
     /// Channel for queueing session cleanup requests
     cleanup_tx: mpsc::UnboundedSender<u64>,
+    /// Ring public key strings that currently have an in-progress refresh session.
+    /// Cleared on Phase 4 success (via unmark_ring_refreshing) or on session
+    /// cleanup/expiration so that a new refresh can be initiated after failure.
+    rings_refreshing: Arc<RwLock<HashSet<String>>>,
 }
 
 impl<D: Dkg + 'static> SessionStateManager<D> {
@@ -185,30 +219,49 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub fn new() -> Self {
         let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel();
         let states = Arc::new(RwLock::new(HashMap::new()));
+        let rings_refreshing = Arc::new(RwLock::new(HashSet::new()));
 
         // Spawn background cleanup task (handles guard-triggered cleanup)
         let states_clone = states.clone();
+        let refreshing_clone = rings_refreshing.clone();
         tokio::spawn(async move {
-            Self::cleanup_worker(states_clone, cleanup_rx).await;
+            Self::cleanup_worker(states_clone, cleanup_rx, refreshing_clone).await;
         });
 
         // Spawn background expiration task (handles abandoned sessions)
         let states_clone = states.clone();
+        let refreshing_clone = rings_refreshing.clone();
         tokio::spawn(async move {
-            Self::expiration_worker(states_clone).await;
+            Self::expiration_worker(states_clone, refreshing_clone).await;
         });
 
-        Self { states, cleanup_tx }
+        Self {
+            states,
+            cleanup_tx,
+            rings_refreshing,
+        }
     }
 
     /// Background task that processes cleanup requests from guards
     async fn cleanup_worker(
         states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
         mut rx: mpsc::UnboundedReceiver<u64>,
+        rings_refreshing: Arc<RwLock<HashSet<String>>>,
     ) {
         while let Some(session_id) = rx.recv().await {
             let mut states = states.write().await;
             if let Some(state) = states.remove(&session_id) {
+                // If this was a refresh session, unblock the ring so future refreshes can proceed.
+                if state.is_refresh {
+                    if let Some(ring_key) = &state.refresh_ring_key {
+                        rings_refreshing.write().await.remove(ring_key);
+                        tracing::debug!(
+                            session_id = session_id,
+                            ring_key = %ring_key,
+                            "SessionStateManager: Cleared in-progress refresh flag on cleanup"
+                        );
+                    }
+                }
                 tracing::debug!(
                     session_id = session_id,
                     connections = state.connections.len(),
@@ -223,7 +276,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ///
     /// Sessions older than SESSION_TTL that haven't completed are considered
     /// abandoned and are removed to prevent memory leaks.
-    async fn expiration_worker(states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>) {
+    async fn expiration_worker(
+        states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
+        rings_refreshing: Arc<RwLock<HashSet<String>>>,
+    ) {
         let mut interval = tokio::time::interval(SESSION_EXPIRATION_CHECK_INTERVAL);
 
         loop {
@@ -232,6 +288,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             let now = Instant::now();
             let mut states = states.write().await;
             let initial_count = states.len();
+
+            // Collect refresh ring keys for sessions that are about to be removed so we
+            // can clear their in-progress flags after the retain loop.
+            let mut refresh_keys_to_clear: Vec<String> = Vec::new();
 
             states.retain(|session_id, state| {
                 // Skip completed sessions — they'll be removed by remove_session()
@@ -248,6 +308,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         phase = ?state.phase,
                         "SessionStateManager: Removing expired DKG session"
                     );
+                    if state.is_refresh {
+                        if let Some(k) = &state.refresh_ring_key {
+                            refresh_keys_to_clear.push(k.clone());
+                        }
+                    }
                     return false;
                 }
 
@@ -261,11 +326,28 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         phase_age_secs = phase_age.as_secs(),
                         "SessionStateManager: Removing DKG session stalled in phase"
                     );
+                    if state.is_refresh {
+                        if let Some(k) = &state.refresh_ring_key {
+                            refresh_keys_to_clear.push(k.clone());
+                        }
+                    }
                     return false;
                 }
 
                 true // keep
             });
+
+            // Clear in-progress refresh flags for expired sessions
+            if !refresh_keys_to_clear.is_empty() {
+                let mut refreshing = rings_refreshing.write().await;
+                for key in &refresh_keys_to_clear {
+                    refreshing.remove(key);
+                    tracing::debug!(
+                        ring_key = %key,
+                        "SessionStateManager: Cleared in-progress refresh flag on expiration"
+                    );
+                }
+            }
 
             let removed = initial_count - states.len();
             if removed > 0 {
@@ -276,6 +358,22 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 );
             }
         }
+    }
+
+    /// Atomically check whether a ring refresh is in progress and mark it if not.
+    ///
+    /// Returns `true` if the ring was successfully marked (no refresh was in progress).
+    /// Returns `false` if a refresh is already in progress for this ring.
+    pub async fn try_mark_ring_refreshing(&self, ring_pk_hex: &str) -> bool {
+        self.rings_refreshing
+            .write()
+            .await
+            .insert(ring_pk_hex.to_string())
+    }
+
+    /// Clear the in-progress refresh flag for a ring (called on Phase 4 success).
+    pub async fn unmark_ring_refreshing(&self, ring_pk_hex: &str) {
+        self.rings_refreshing.write().await.remove(ring_pk_hex);
     }
 
     /// Create a cleanup guard for a session.
@@ -364,6 +462,37 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.peer_ids = peer_ids;
+        }
+    }
+
+    /// Mark a session as a PSS refresh ceremony.
+    ///
+    /// Must be called before `initiate_phase1_commitments` so that
+    /// `generate_polynomial` uses `DkgMode::Refresh` instead of `DkgMode::Fresh`.
+    pub async fn mark_as_refresh(&self, session_id: &u64) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.is_refresh = true;
+        }
+    }
+
+    /// Store the local-storage key of the ring being refreshed.
+    ///
+    /// Must be called before Phase 4 runs.  Phase 4 will load the old share from
+    /// `RingKey(key)`, add the refresh delta, and write the result back to the
+    /// same slot — preserving the ring public key.
+    pub async fn set_refresh_ring_key(&self, session_id: &u64, key: String) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.refresh_ring_key = Some(key);
+        }
+    }
+
+    /// Store the PSS refresh interval for this session so Phase 4 can persist it.
+    pub async fn set_pss_interval(&self, session_id: &u64, interval: Option<u64>) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.pss_interval = interval;
         }
     }
 
@@ -512,6 +641,7 @@ impl<D: Dkg + 'static> Default for SessionStateManager<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crypto::r#trait::DkgRole;
     use crypto::DkgImpl;
     use std::sync::Arc;
 
@@ -870,6 +1000,114 @@ mod tests {
         assert!(
             mgr.session_exists(&40).await,
             "Phase4Complete sessions should not be removed by the expiration worker"
+        );
+    }
+
+    // =========================================================================
+    // rings_refreshing: try_mark / unmark
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_try_mark_returns_true_first_call() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        assert!(
+            mgr.try_mark_ring_refreshing("ring_abc").await,
+            "first mark should succeed (ring not yet in progress)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_try_mark_returns_false_when_already_in_progress() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        assert!(mgr.try_mark_ring_refreshing("ring_abc").await, "first mark");
+        assert!(
+            !mgr.try_mark_ring_refreshing("ring_abc").await,
+            "second mark for same ring should fail"
+        );
+        // A different ring must not be affected.
+        assert!(
+            mgr.try_mark_ring_refreshing("ring_xyz").await,
+            "different ring should be markable independently"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unmark_allows_remark() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        assert!(mgr.try_mark_ring_refreshing("ring_abc").await);
+        assert!(
+            !mgr.try_mark_ring_refreshing("ring_abc").await,
+            "still in progress"
+        );
+        mgr.unmark_ring_refreshing("ring_abc").await;
+        assert!(
+            mgr.try_mark_ring_refreshing("ring_abc").await,
+            "after unmark the ring should be markable again"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_guard_clears_ring_refreshing_flag() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+
+        // Create a refresh session and mark the ring as in-progress.
+        mgr.create_session(50, make_node(1), 3).await;
+        mgr.mark_as_refresh(&50).await;
+        mgr.set_refresh_ring_key(&50, "ring_cleanup".to_string())
+            .await;
+        assert!(
+            mgr.try_mark_ring_refreshing("ring_cleanup").await,
+            "ring should be markable before any cleanup"
+        );
+        assert!(
+            !mgr.try_mark_ring_refreshing("ring_cleanup").await,
+            "ring should be blocked while in progress"
+        );
+
+        // Drop a cleanup guard without defusing — worker removes session + flag.
+        {
+            let _guard = mgr.cleanup_guard(50);
+        }
+
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            mgr.try_mark_ring_refreshing("ring_cleanup").await,
+            "ring_refreshing flag should be cleared after cleanup guard fires"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_expiration_clears_ring_refreshing_flag() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+
+        // Create a refresh session and mark the ring as in-progress.
+        mgr.create_session(60, make_node(1), 3).await;
+        mgr.mark_as_refresh(&60).await;
+        mgr.set_refresh_ring_key(&60, "ring_expire".to_string())
+            .await;
+        assert!(mgr.try_mark_ring_refreshing("ring_expire").await);
+
+        // Backdate created_at past SESSION_TTL so the expiration worker evicts it.
+        {
+            let mut states = mgr.states.write().await;
+            if let Some(s) = states.get_mut(&60) {
+                s.created_at = Instant::now() - (SESSION_TTL + std::time::Duration::from_secs(10));
+            }
+        }
+
+        tokio::time::advance(SESSION_EXPIRATION_CHECK_INTERVAL + std::time::Duration::from_secs(1))
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !mgr.session_exists(&60).await,
+            "expired session should be removed"
+        );
+        assert!(
+            mgr.try_mark_ring_refreshing("ring_expire").await,
+            "ring_refreshing flag should be cleared after session expiration"
         );
     }
 }

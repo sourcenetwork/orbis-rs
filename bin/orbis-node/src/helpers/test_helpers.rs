@@ -85,9 +85,13 @@ pub async fn create_test_app_state_with_bulletin(
 ) -> AppState<DkgImpl> {
     let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
 
-    // Initialize network for testing
+    // Initialize network for testing — bind to loopback so iroh advertises
+    // 127.0.0.1 and same-machine peers can connect without a relay.
     let network: Arc<dyn network::Network> = Arc::new(
-        NetworkImpl::new()
+        NetworkImpl::builder()
+            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .no_relay()
+            .build()
             .await
             .expect("Failed to initialize network for testing"),
     );

@@ -69,6 +69,10 @@ pub struct DkgClaims {
     pub threshold: u32,
     /// Peer Ids of nodes in ring
     pub peer_ids: Vec<String>,
+    /// Seconds between automatic PSS refresh ceremonies.
+    /// `None` (or absent) means automatic refresh is disabled for this ring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pss_interval: Option<u64>,
 }
 
 /// Claims for StoreSecret endpoints

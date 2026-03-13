@@ -37,6 +37,18 @@ pub enum DkgMessage {
         peer_ids: Vec<String>, // Peer IDs for all participants (so non-initiators know who to send to)
         node_id_assignments: std::collections::HashMap<String, u32>, // peer_id -> node_id mapping assigned by initiator
         token_string: String, // JWT token for authentication - validated by receiving nodes
+        /// True when this is a PSS refresh session rather than a fresh DKG
+        #[serde(default)]
+        is_refresh: bool,
+        /// For refresh sessions: the local-storage key of the ring being refreshed
+        /// (`aggregate_pk.to_string()`).  Recipients use this to load the old share
+        /// and combine it with the refresh delta in Phase 4.
+        #[serde(default)]
+        refresh_ring_pk_hex: Option<String>,
+        /// Seconds between automatic PSS refresh ceremonies for this ring.
+        /// `None` means automatic refresh is disabled.
+        #[serde(default)]
+        pss_interval: Option<u64>,
     },
     /// Acknowledgment message
     Ack {
