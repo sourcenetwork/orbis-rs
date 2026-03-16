@@ -17,8 +17,7 @@
 use crate::app_state::AppState;
 use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::constants::{
-    BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, COMMIT_WAIT_MS,
-    MAX_COMMITMENT_COEFFICIENTS, MAX_COMMIT_WAIT_RETRIES,
+    BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, MAX_COMMITMENT_COEFFICIENTS,
 };
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
@@ -509,7 +508,10 @@ where
                                 commitment: commitment_bytes.clone(),
                             };
 
-                            match self.send_message_to_peer(peer_id_str, commitment_msg).await {
+                            match self
+                                .send_message_to_peer(peer_id_str, commitment_msg, Some(session_id))
+                                .await
+                            {
                                 Ok(_) => sent_count += 1,
                                 Err(e) => {
                                     tracing::error!(
@@ -603,73 +605,36 @@ where
                         to_node_id, our_node_id
                     )));
                 }
-                // TODO: Bad fix, have phases use same QUIC connection (next PR)
-                // Receive and verify the share, retrying briefly if the sender's
-                // Phase 1 commitment hasn't arrived yet (each message uses a fresh
-                // network connection, so ordering between the commitment and the
-                // share is not guaranteed).
-                let mut last_err: Option<DkgError> = None;
-                let mut succeeded = false;
-                for attempt in 0..=MAX_COMMIT_WAIT_RETRIES {
-                    // Re-deserialize share value each attempt (cheap; avoids Clone bound)
-                    let share_val =
-                        <D::ShareValue>::from_bytes(share_value.as_slice()).map_err(|e| {
-                            DkgError::Deserialization(format!(
-                                "Failed to deserialize share value: {}",
+                // Commitment and share are delivered over the same persistent QUIC
+                // stream (one stream per connection, opened lazily on first send).
+                // QUIC guarantees in-order delivery within a stream, so the
+                // commitment always arrives before the share — no retry needed.
+                let share_val =
+                    <D::ShareValue>::from_bytes(share_value.as_slice()).map_err(|e| {
+                        DkgError::Deserialization(format!(
+                            "Failed to deserialize share value: {}",
+                            e
+                        ))
+                    })?;
+                let share = DistributedShare {
+                    from_id: from_node_id,
+                    to_id: to_node_id,
+                    value: share_val,
+                    nonce,
+                    session_id,
+                };
+                self.app_state
+                    .dkg_session_state
+                    .with_state_mut(&session_id, |state| {
+                        state.node.receive_share(share).map_err(|e| {
+                            DkgError::ShareVerificationFailed(format!(
+                                "Failed to receive share: {}",
                                 e
                             ))
-                        })?;
-                    let share = DistributedShare {
-                        from_id: from_node_id,
-                        to_id: to_node_id,
-                        value: share_val,
-                        nonce,
-                        session_id,
-                    };
-                    let result = self
-                        .app_state
-                        .dkg_session_state
-                        .with_state_mut(&session_id, |state| {
-                            state.node.receive_share(share).map_err(|e| match e {
-                                crypto::error::CryptoError::CommitmentMissing(node_id) => {
-                                    DkgError::CommitmentNotYetReceived(node_id)
-                                }
-                                _ => DkgError::ShareVerificationFailed(format!(
-                                    "Failed to receive share: {}",
-                                    e
-                                )),
-                            })
                         })
-                        .await
-                        .ok_or_else(|| session_not_found(session_id))?;
-                    match result {
-                        Ok(_) => {
-                            succeeded = true;
-                            break;
-                        }
-                        Err(DkgError::CommitmentNotYetReceived(_))
-                            if attempt < MAX_COMMIT_WAIT_RETRIES =>
-                        {
-                            tracing::debug!(
-                                from_node_id = from_node_id,
-                                attempt = attempt + 1,
-                                "Share arrived before commitment; retrying after {}ms",
-                                COMMIT_WAIT_MS
-                            );
-                            tokio::time::sleep(std::time::Duration::from_millis(COMMIT_WAIT_MS))
-                                .await;
-                            last_err = Some(result.unwrap_err());
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-                if !succeeded {
-                    return Err(last_err.unwrap_or_else(|| {
-                        DkgError::ShareVerificationFailed(
-                            "Share verification failed after retries".to_string(),
-                        )
-                    }));
-                }
+                    })
+                    .await
+                    .ok_or_else(|| session_not_found(session_id))??;
 
                 tracing::debug!(
                     from_node_id = from_node_id,
@@ -776,13 +741,23 @@ where
             .await;
     }
 
-    /// Send a DKG message to a peer
+    /// Send a DKG message to a peer.
     ///
-    /// Connects to the peer if needed, sends the message, then closes the connection.
-    pub async fn send_message_to_peer(&self, peer_id_str: &str, message: DkgMessage) -> Result<()> {
+    /// When `session_id` is `Some`, the connection is cached for the lifetime of
+    /// the session so that commitment and share messages for the same peer travel
+    /// over the **same** QUIC connection and persistent stream — guaranteeing
+    /// ordered delivery and eliminating the Phase 1 → Phase 2 race condition.
+    ///
+    /// When `session_id` is `None` (e.g. for `SessionInit` messages sent before
+    /// a session exists on the receiver), a fresh one-shot connection is used.
+    pub async fn send_message_to_peer(
+        &self,
+        peer_id_str: &str,
+        message: DkgMessage,
+        session_id: Option<u64>,
+    ) -> Result<()> {
         use crate::helpers::helpers::connect_to_peer;
 
-        // Record message type for metrics
         let message_type = match &message {
             DkgMessage::SessionInit { .. } => "session_init",
             DkgMessage::Commitment { .. } => "commitment",
@@ -792,34 +767,105 @@ where
             DkgMessage::Error { .. } => "error",
         };
 
-        // Connect to peer
-        let connection = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
-            .await
-            .map_err(|e| {
-                DkgError::NetworkConnection(format!(
-                    "Failed to connect to peer {}: {}",
-                    peer_id_str, e
-                ))
-            })?;
-
-        // Serialize message
         let message_data = serde_json::to_vec(&message)
             .map_err(|e| DkgError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
-        // Send message
-        connection
-            .send(NetworkMessage::new(message_data, DKG))
+        let conn: std::sync::Arc<Box<dyn network::Connection>> = if let Some(sid) = session_id {
+            // Try the session cache first.
+            if let Some(cached) = self
+                .app_state
+                .dkg_session_state
+                .get_connection(&sid, peer_id_str)
+                .await
+            {
+                cached
+            } else {
+                // First send to this peer for this session — open and cache the connection.
+                let new_conn =
+                    connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
+                        .await
+                        .map_err(|e| {
+                            DkgError::NetworkConnection(format!(
+                                "Failed to connect to peer {}: {}",
+                                peer_id_str, e
+                            ))
+                        })?;
+                self.app_state
+                    .dkg_session_state
+                    .add_connection(&sid, peer_id_str.to_string(), new_conn)
+                    .await;
+                self.app_state
+                    .dkg_session_state
+                    .get_connection(&sid, peer_id_str)
+                    .await
+                    .expect("connection was just inserted")
+            }
+        } else {
+            // One-shot connection (SessionInit or pre-session messages).
+            let new_conn = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
+                .await
+                .map_err(|e| {
+                    DkgError::NetworkConnection(format!(
+                        "Failed to connect to peer {}: {}",
+                        peer_id_str, e
+                    ))
+                })?;
+            std::sync::Arc::new(new_conn)
+        };
+
+        // Attempt send; on connection error with a cached connection, evict the
+        // stale entry and retry once with a fresh connection.
+        if let Err(send_err) = conn
+            .send(NetworkMessage::new(message_data.clone(), DKG))
             .await
-            .map_err(|e| {
-                DkgError::NetworkCommunication(format!(
+        {
+            if let Some(sid) = session_id {
+                tracing::warn!(
+                    peer = %peer_id_str,
+                    error = %send_err,
+                    "send failed on cached connection — evicting and reconnecting"
+                );
+                self.app_state
+                    .dkg_session_state
+                    .remove_connection(&sid, peer_id_str)
+                    .await;
+                let fresh_conn =
+                    connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
+                        .await
+                        .map_err(|e| {
+                            DkgError::NetworkConnection(format!(
+                                "Failed to reconnect to peer {}: {}",
+                                peer_id_str, e
+                            ))
+                        })?;
+                self.app_state
+                    .dkg_session_state
+                    .add_connection(&sid, peer_id_str.to_string(), fresh_conn)
+                    .await;
+                let fresh_arc = self
+                    .app_state
+                    .dkg_session_state
+                    .get_connection(&sid, peer_id_str)
+                    .await
+                    .expect("connection was just inserted");
+                fresh_arc
+                    .send(NetworkMessage::new(message_data, DKG))
+                    .await
+                    .map_err(|e| {
+                        DkgError::NetworkCommunication(format!(
+                            "Failed to send to peer {} after reconnect: {}",
+                            peer_id_str, e
+                        ))
+                    })?;
+            } else {
+                return Err(DkgError::NetworkCommunication(format!(
                     "Failed to send message to peer {}: {}",
-                    peer_id_str, e
-                ))
-            })?;
+                    peer_id_str, send_err
+                )));
+            }
+        }
 
-        // Record metrics
         metrics::record_dkg_message_sent(message_type);
-
         Ok(())
     }
 
@@ -871,7 +917,10 @@ where
                 commitment: commitment_bytes.clone(),
             };
 
-            if let Err(e) = self.send_message_to_peer(peer_id_str, commitment_msg).await {
+            if let Err(e) = self
+                .send_message_to_peer(peer_id_str, commitment_msg, Some(session_id))
+                .await
+            {
                 tracing::error!(peer_id = %peer_id_str, error = %e, "Failed to send commitment to peer");
                 // Continue with other peers even if one fails
             } else {
@@ -1071,7 +1120,10 @@ where
                     share_value: share_value_bytes.clone(),
                     nonce: share.nonce,
                 };
-                match self.send_message_to_peer(&target_peer_id, share_msg).await {
+                match self
+                    .send_message_to_peer(&target_peer_id, share_msg, Some(session_id))
+                    .await
+                {
                     Ok(_) => {
                         shares_sent += 1;
                         tracing::debug!(
@@ -1107,7 +1159,7 @@ where
                         nonce: share.nonce,
                     };
                     match self
-                        .send_message_to_peer(peer_id_str, broadcast_share_msg)
+                        .send_message_to_peer(peer_id_str, broadcast_share_msg, Some(session_id))
                         .await
                     {
                         Ok(_) => {

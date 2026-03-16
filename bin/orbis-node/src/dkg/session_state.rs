@@ -70,7 +70,7 @@ pub struct DkgSessionState<D: Dkg> {
     pub phase_started_at: Instant,
     /// Connection pool: peer_id_string -> connection
     /// Connections are reused for the duration of the session
-    pub connections: HashMap<String, Arc<RwLock<Box<dyn Connection>>>>,
+    pub connections: HashMap<String, Arc<Box<dyn Connection>>>,
     /// Mapping of node IDs to peer IDs for efficient routing
     pub node_id_to_peer_id: HashMap<u32, String>,
     /// Mapping of peer IDs to node IDs
@@ -510,24 +510,30 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
-            state
-                .connections
-                .insert(peer_id_str, Arc::new(RwLock::new(connection)));
+            state.connections.insert(peer_id_str, Arc::new(connection));
         }
     }
 
-    /// Get a connection from the pool (returns Arc to avoid removing from pool)
+    /// Get a cached connection for a session+peer pair.
     pub async fn get_connection(
         &self,
         session_id: &u64,
         peer_id_str: &str,
-    ) -> Option<Arc<RwLock<Box<dyn Connection>>>> {
+    ) -> Option<Arc<Box<dyn Connection>>> {
         let states = self.states.read().await;
         states
             .get(session_id)?
             .connections
             .get(peer_id_str)
             .cloned()
+    }
+
+    /// Remove a cached connection for a session+peer pair (evict stale entry).
+    pub async fn remove_connection(&self, session_id: &u64, peer_id_str: &str) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.connections.remove(peer_id_str);
+        }
     }
 
     /// Set node_id to peer_id mappings for efficient routing
@@ -619,14 +625,50 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// This should be called after DKG Phase 4 completes to free memory
     /// and close connections. The session data is no longer needed since
     /// the private share is stored in local storage and ring info is on the bulletin.
+    ///
+    /// Connections are closed with a brief delay (500 ms) so that peers which are
+    /// still reading buffered stream data can finish before the QUIC connection
+    /// sends RESET_STREAM.  Without this delay, a fast node completing Phase 4
+    /// can drop its outgoing connection before a slower peer has read the final
+    /// share message, preventing that peer from ever completing Phase 4.
     pub async fn remove_session(&self, session_id: &u64) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.remove(session_id) {
-            // Connections will be dropped when state goes out of scope
+        let (connections, ring_key_to_clear) = {
+            let mut states = self.states.write().await;
+            if let Some(mut state) = states.remove(session_id) {
+                tracing::debug!(
+                    session_id = session_id,
+                    connections = state.connections.len(),
+                    "SessionStateManager: Removed session"
+                );
+                let ring_key = if state.is_refresh {
+                    state.refresh_ring_key.clone()
+                } else {
+                    None
+                };
+                // Drain connections so we can defer their drop outside the lock.
+                let conns: Vec<_> = state.connections.drain().map(|(_, c)| c).collect();
+                (conns, ring_key)
+            } else {
+                return;
+            }
+        };
+
+        // Defer connection drops to allow peers time to read any remaining
+        // buffered data from the QUIC streams before RESET_STREAM is sent.
+        if !connections.is_empty() {
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                drop(connections);
+            });
+        }
+
+        // Clear the in-progress refresh flag so future PSS attempts can proceed.
+        if let Some(key) = ring_key_to_clear {
+            self.rings_refreshing.write().await.remove(&key);
             tracing::debug!(
                 session_id = session_id,
-                connections = state.connections.len(),
-                "SessionStateManager: Removed session and closed connections"
+                ring_key = %key,
+                "SessionStateManager: Cleared in-progress refresh flag on remove_session"
             );
         }
     }

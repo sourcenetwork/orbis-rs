@@ -92,6 +92,10 @@ impl ProtocolHandler for RequestResponseHandler {
         let response = Message::new(self.response_data.clone(), connection.peer_id().as_bytes());
         connection.send(response).await?;
 
+        // Drain until the remote closes — keeps the connection alive long enough
+        // for the client to read the response before we drop the stream.
+        let _ = connection.recv().await;
+
         Ok(())
     }
 }

@@ -4,13 +4,13 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use iroh::endpoint::Connection as IrohConnection;
+use iroh::endpoint::{Connection as IrohConnection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use std::collections::HashMap;
 use std::net::SocketAddrV4;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::error::{NetworkError, Result};
 use crate::iroh::router::IrohRouterBuilder;
@@ -248,24 +248,28 @@ impl Network for IrohNetwork {
 
 /// Wrapper around iroh Connection to implement our Connection trait
 ///
-/// Uses QUIC's bidirectional stream multiplexing with acknowledgments.
-/// Each message uses a new bi-directional stream where:
-/// - Sender writes data and waits for ack (keeps connection alive)
-/// - Receiver reads data and sends ack
+/// Uses a single persistent QUIC stream for all sends and a single persistent
+/// stream for all receives on this connection. Messages are framed with a
+/// 4-byte big-endian length prefix so multiple messages can share one stream.
+///
+/// QUIC guarantees ordered, reliable delivery within a single stream, so all
+/// messages sent through `send()` arrive at the peer in the same order — no
+/// cross-stream race conditions possible.
 pub struct IrohConnectionWrapper {
     conn: IrohConnection,
     peer_id: PeerId,
     protocol: Arc<[u8]>,
     max_message_size: usize,
+    /// Outbound stream — lazy-opened on first `send()`, reused for all subsequent sends.
+    send_stream: Mutex<Option<SendStream>>,
+    /// Inbound stream — lazy-accepted on first `recv()`, reused for all subsequent receives.
+    recv_stream: Mutex<Option<RecvStream>>,
 }
 
 impl IrohConnectionWrapper {
     pub fn new(conn: IrohConnection, max_message_size: usize) -> Self {
-        // remote_id() returns a PublicKey
         let node_id = conn.remote_id();
         let peer_id = PeerId::from_bytes(node_id.as_bytes());
-
-        // Get protocol from ALPN - cache it since it won't change
         let protocol = Arc::from(conn.alpn());
 
         Self {
@@ -273,6 +277,25 @@ impl IrohConnectionWrapper {
             peer_id,
             protocol,
             max_message_size,
+            send_stream: Mutex::new(None),
+            recv_stream: Mutex::new(None),
+        }
+    }
+}
+
+impl Drop for IrohConnectionWrapper {
+    fn drop(&mut self) {
+        // Finish the send stream so the remote peer receives STREAM_FIN rather
+        // than RESET_STREAM.  Dropping a quinn SendStream without calling
+        // finish() sends RESET_STREAM, which causes the peer's read_exact() to
+        // return an error and discard any data already in its receive buffer —
+        // even data that was fully transmitted before the connection dropped.
+        // Calling finish() here enqueues a proper FIN, allowing the peer to
+        // read all buffered bytes before the connection closes.
+        if let Ok(mut guard) = self.send_stream.try_lock() {
+            if let Some(stream) = guard.as_mut() {
+                let _ = stream.finish();
+            }
         }
     }
 }
@@ -283,27 +306,28 @@ impl Connection for IrohConnectionWrapper {
         let start = Instant::now();
         let message_size = message.data.len();
 
-        // Open a new bidirectional stream for this message
-        let (mut send, mut recv) = self.conn.open_bi().await.map_err(|e| {
-            metrics::record_send_error(&self.protocol);
-            NetworkError::Connection(format!("Failed to open stream: {}", e))
-        })?;
+        let len = message.data.len() as u32;
+        let len_bytes = len.to_be_bytes();
 
-        // Write message data
-        send.write_all(&message.data).await.map_err(|e| {
+        let mut guard = self.send_stream.lock().await;
+        if guard.is_none() {
+            // Lazy-open one bi-directional stream; we only need the send half.
+            let (send, _recv) = self.conn.open_bi().await.map_err(|e| {
+                metrics::record_send_error(&self.protocol);
+                NetworkError::Connection(format!("Failed to open stream: {}", e))
+            })?;
+            *guard = Some(send);
+        }
+        let stream = guard.as_mut().unwrap();
+
+        stream.write_all(&len_bytes).await.map_err(|e| {
             metrics::record_send_error(&self.protocol);
             NetworkError::Io(e.into())
         })?;
-
-        // Finish the send side to signal completion
-        send.finish().map_err(|e| {
+        stream.write_all(&message.data).await.map_err(|e| {
             metrics::record_send_error(&self.protocol);
-            NetworkError::Connection(format!("Failed to finish stream: {}", e))
+            NetworkError::Io(e.into())
         })?;
-
-        // Wait for acknowledgment (keeps connection alive until receiver processes message)
-        // This prevents connection closure before the receiver can read the data
-        let _ = recv.read_to_end(64).await; // Small buffer for ack
 
         let duration = start.elapsed().as_secs_f64();
         metrics::record_message_sent(&self.protocol, message_size, duration);
@@ -314,31 +338,45 @@ impl Connection for IrohConnectionWrapper {
     async fn recv(&self) -> Result<Message> {
         let start = Instant::now();
 
-        // Accept an incoming bidirectional stream
-        let (mut send, mut recv) = self.conn.accept_bi().await.map_err(|e| {
-            metrics::record_recv_error(&self.protocol);
-            NetworkError::Connection(format!("Failed to accept stream: {}", e))
-        })?;
+        let mut guard = self.recv_stream.lock().await;
+        if guard.is_none() {
+            // Lazy-accept one bi-directional stream; we only need the receive half.
+            let (_send, recv) = self.conn.accept_bi().await.map_err(|e| {
+                metrics::record_recv_error(&self.protocol);
+                NetworkError::Connection(format!("Failed to accept stream: {}", e))
+            })?;
+            *guard = Some(recv);
+        }
+        let stream = guard.as_mut().unwrap();
 
-        // Read all data from the stream (up to max_message_size)
-        let buffer = recv.read_to_end(self.max_message_size).await.map_err(|e| {
+        // Read the 4-byte length prefix.
+        let mut len_bytes = [0u8; 4];
+        stream.read_exact(&mut len_bytes).await.map_err(|e| {
             metrics::record_recv_error(&self.protocol);
-            NetworkError::Connection(format!("Failed to read data: {}", e))
+            NetworkError::Connection(format!("Failed to read message length: {}", e))
         })?;
+        let len = u32::from_be_bytes(len_bytes) as usize;
 
-        // Send acknowledgment to signal successful receipt
-        let _ = send.write_all(&[1u8]).await; // Simple 1-byte ack
-        let _ = send.finish();
+        if len > self.max_message_size {
+            metrics::record_recv_error(&self.protocol);
+            return Err(NetworkError::Connection(format!(
+                "Message too large: {} bytes (max {})",
+                len, self.max_message_size
+            )));
+        }
+
+        let mut buffer = vec![0u8; len];
+        stream.read_exact(&mut buffer).await.map_err(|e| {
+            metrics::record_recv_error(&self.protocol);
+            NetworkError::Connection(format!("Failed to read message data: {}", e))
+        })?;
 
         let message_size = buffer.len();
         let duration = start.elapsed().as_secs_f64();
         metrics::record_message_received(&self.protocol, message_size, duration);
 
-        // Convert to Bytes for zero-copy efficiency
-        let data = Bytes::from(buffer);
-
         Ok(Message {
-            data,
+            data: Bytes::from(buffer),
             protocol: Arc::clone(&self.protocol),
         })
     }

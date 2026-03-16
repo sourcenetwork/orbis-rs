@@ -20,13 +20,12 @@ use crate::app_state::AppState;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::DkgMessage;
-use crate::helpers::helpers::{connect_to_peers, extract_node_part, validate_all_peer_ids};
+use crate::helpers::helpers::{extract_node_part, validate_all_peer_ids};
 use crate::ring_state::RingShareBundle;
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{Dkg, DkgRole};
 use crypto::{CryptoDeserialize, GroupAffine, PolynomialCommitmentImpl, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
-use network::DKG;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -225,13 +224,27 @@ where
         .mark_as_refresh(&session_id)
         .await;
 
-    // Store the ring key in session state. From this point on the cleanup /
-    // expiration workers will clear `rings_refreshing` automatically when the
-    // session is removed, so no manual unmark is needed on later error paths.
+    // Store the ring key in session state so Phase 4 / expiration workers can
+    // clear `rings_refreshing`. But if we fail after this point we must clean
+    // up explicitly — the expiration worker exempts Initializing sessions from
+    // DKG_PHASE_TIMEOUT (only evicting them after SESSION_TTL = 30 min), which
+    // would block PSS retries for the entire integration-test window.
     app_state
         .dkg_session_state
         .set_refresh_ring_key(&session_id, ring_pk_str.clone())
         .await;
+
+    // Helper: clean up both the session and the rings_refreshing flag so the
+    // PSS scheduler can retry on its next tick.
+    let cleanup = |err: DkgError| {
+        let state = Arc::clone(&app_state.dkg_session_state);
+        let key = ring_pk_str.clone();
+        tokio::spawn(async move {
+            state.unmark_ring_refreshing(&key).await;
+            state.remove_session(&session_id).await;
+        });
+        err
+    };
 
     // Store peer_ids and node→peer mappings
     coordinator
@@ -252,20 +265,20 @@ where
         .set_node_peer_mappings(&session_id, node_id_to_peer_id)
         .await;
 
-    // Validate and connect to all peers
+    // Validate peer ID formats before sending messages
     if let Err((bad_peer, err)) = validate_all_peer_ids(peer_ids) {
-        return Err(DkgError::InvalidInput(format!(
+        return Err(cleanup(DkgError::InvalidInput(format!(
             "PSS: invalid peer ID '{}': {}",
             bad_peer, err
-        )));
+        ))));
     }
-    let conn = connect_to_peers(&app_state.network, peer_ids.clone(), DKG).await;
-    if conn.successful < conn.total {
-        return Err(DkgError::NetworkConnection(format!(
-            "PSS: connected to {}/{} peers",
-            conn.successful, conn.total
-        )));
-    }
+
+    // let conn = connect_to_peers(&app_state.network, peer_ids.clone(), DKG).await;
+    // if conn.successful < conn.total {
+    //     return Err(DkgError::NetworkConnection(format!(
+    //         "PSS: connected to {}/{} peers",
+    //         conn.successful, conn.total
+    // )));
 
     // Send RefreshSessionInit to all peers
     let init_msg = DkgMessage::SessionInit {
@@ -285,7 +298,7 @@ where
             continue; // coordinator handles our own session internally
         }
         if let Err(e) = coordinator
-            .send_message_to_peer(peer_id_str, init_msg.clone())
+            .send_message_to_peer(peer_id_str, init_msg.clone(), Some(session_id))
             .await
         {
             tracing::error!(peer = %peer_id_str, error = %e, "PSS: failed to send SessionInit");
@@ -295,7 +308,8 @@ where
     // Kick off Phase 1 (uses DkgMode::Refresh via session state)
     coordinator
         .initiate_phase1_commitments(session_id, peer_ids)
-        .await?;
+        .await
+        .map_err(|e| cleanup(e))?;
 
     tracing::info!(
         session_id = session_id,

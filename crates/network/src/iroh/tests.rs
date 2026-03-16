@@ -194,6 +194,8 @@ async fn iroh_router_builder_max_message_size() {
                 Ok(msg) => {
                     assert_eq!(msg.data.len(), self.expected_size);
                     connection.send(msg).await?;
+                    // Drain until remote closes — keeps stream alive for client read.
+                    let _ = connection.recv().await;
                 }
                 Err(_) => {}
             }
