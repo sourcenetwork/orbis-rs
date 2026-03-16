@@ -855,7 +855,7 @@ where
         &self,
         peer_id_str: &str,
         message: DkgMessage,
-        session_id: Option<u64>,
+        _session_id: Option<u64>,
     ) -> Result<()> {
         use crate::helpers::helpers::connect_to_peer;
 
@@ -871,38 +871,17 @@ where
         let message_data = serde_json::to_vec(&message)
             .map_err(|e| DkgError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
-        let conn: std::sync::Arc<Box<dyn network::Connection>> = if let Some(sid) = session_id {
-            // Try the session cache first.
-            if let Some(cached) = self
-                .app_state
-                .dkg_session_state
-                .get_connection(&sid, peer_id_str)
-                .await
-            {
-                cached
-            } else {
-                // First send to this peer for this session — open and cache the connection.
-                let new_conn =
-                    connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
-                        .await
-                        .map_err(|e| {
-                            DkgError::NetworkConnection(format!(
-                                "Failed to connect to peer {}: {}",
-                                peer_id_str, e
-                            ))
-                        })?;
-                self.app_state
-                    .dkg_session_state
-                    .add_connection(&sid, peer_id_str.to_string(), new_conn)
-                    .await;
-                self.app_state
-                    .dkg_session_state
-                    .get_connection(&sid, peer_id_str)
-                    .await
-                    .expect("connection was just inserted")
-            }
+        // Per-peer persistent connection pool — reused across all sessions.
+        // Connections are never closed by application code; they remain alive
+        // until an I/O error forces reconnection or the node shuts down.
+        let conn = if let Some(cached) = self
+            .app_state
+            .dkg_session_state
+            .get_connection(peer_id_str)
+            .await
+        {
+            cached
         } else {
-            // One-shot connection (SessionInit or pre-session messages).
             let new_conn = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
                 .await
                 .map_err(|e| {
@@ -911,59 +890,58 @@ where
                         peer_id_str, e
                     ))
                 })?;
-            std::sync::Arc::new(new_conn)
+            self.app_state
+                .dkg_session_state
+                .add_connection(peer_id_str.to_string(), new_conn)
+                .await;
+            self.app_state
+                .dkg_session_state
+                .get_connection(peer_id_str)
+                .await
+                .expect("connection was just inserted")
         };
 
-        // Attempt send; on connection error with a cached connection, evict the
-        // stale entry and retry once with a fresh connection.
+        // Attempt send; on I/O error evict the stale entry and retry once with a fresh connection.
         if let Err(send_err) = conn
             .send(NetworkMessage::new(message_data.clone(), DKG))
             .await
         {
-            if let Some(sid) = session_id {
-                tracing::warn!(
-                    peer = %peer_id_str,
-                    error = %send_err,
-                    "send failed on cached connection — evicting and reconnecting"
-                );
-                self.app_state
-                    .dkg_session_state
-                    .remove_connection(&sid, peer_id_str)
-                    .await;
-                let fresh_conn =
-                    connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
-                        .await
-                        .map_err(|e| {
-                            DkgError::NetworkConnection(format!(
-                                "Failed to reconnect to peer {}: {}",
-                                peer_id_str, e
-                            ))
-                        })?;
-                self.app_state
-                    .dkg_session_state
-                    .add_connection(&sid, peer_id_str.to_string(), fresh_conn)
-                    .await;
-                let fresh_arc = self
-                    .app_state
-                    .dkg_session_state
-                    .get_connection(&sid, peer_id_str)
-                    .await
-                    .expect("connection was just inserted");
-                fresh_arc
-                    .send(NetworkMessage::new(message_data, DKG))
-                    .await
-                    .map_err(|e| {
-                        DkgError::NetworkCommunication(format!(
-                            "Failed to send to peer {} after reconnect: {}",
-                            peer_id_str, e
-                        ))
-                    })?;
-            } else {
-                return Err(DkgError::NetworkCommunication(format!(
-                    "Failed to send message to peer {}: {}",
-                    peer_id_str, send_err
-                )));
-            }
+            tracing::warn!(
+                peer = %peer_id_str,
+                error = %send_err,
+                "send failed on cached connection — evicting and reconnecting"
+            );
+            self.app_state
+                .dkg_session_state
+                .remove_connection(peer_id_str)
+                .await;
+            let fresh_conn = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
+                .await
+                .map_err(|e| {
+                    DkgError::NetworkConnection(format!(
+                        "Failed to reconnect to peer {}: {}",
+                        peer_id_str, e
+                    ))
+                })?;
+            self.app_state
+                .dkg_session_state
+                .add_connection(peer_id_str.to_string(), fresh_conn)
+                .await;
+            let fresh_arc = self
+                .app_state
+                .dkg_session_state
+                .get_connection(peer_id_str)
+                .await
+                .expect("connection was just inserted");
+            fresh_arc
+                .send(NetworkMessage::new(message_data, DKG))
+                .await
+                .map_err(|e| {
+                    DkgError::NetworkCommunication(format!(
+                        "Failed to send to peer {} after reconnect: {}",
+                        peer_id_str, e
+                    ))
+                })?;
         }
 
         metrics::record_dkg_message_sent(message_type);

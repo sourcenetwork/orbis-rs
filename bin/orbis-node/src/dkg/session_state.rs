@@ -68,9 +68,6 @@ pub struct DkgSessionState<D: Dkg> {
     pub phase: DkgPhase,
     /// When the current phase started (reset on every phase transition)
     pub phase_started_at: Instant,
-    /// Connection pool: peer_id_string -> connection
-    /// Connections are reused for the duration of the session
-    pub connections: HashMap<String, Arc<Box<dyn Connection>>>,
     /// Mapping of node IDs to peer IDs for efficient routing
     pub node_id_to_peer_id: HashMap<u32, String>,
     /// Mapping of peer IDs to node IDs
@@ -110,7 +107,6 @@ impl<D: Dkg> DkgSessionState<D> {
             created_at: Instant::now(),
             phase: DkgPhase::Initializing,
             phase_started_at: Instant::now(),
-            connections: HashMap::new(),
             node_id_to_peer_id: HashMap::new(),
             peer_id_to_node_id: HashMap::new(),
             peer_ids: Vec::new(),
@@ -224,6 +220,14 @@ pub struct SessionStateManager<D: Dkg> {
     /// Cleared on Phase 4 success (via unmark_ring_refreshing) or on session
     /// cleanup/expiration so that a new refresh can be initiated after failure.
     rings_refreshing: Arc<RwLock<HashSet<String>>>,
+    /// Persistent per-peer connection pool, shared across all sessions.
+    ///
+    /// Connections are opened on first contact and reused across all DKG sessions
+    /// with that peer. They are never closed by application code — the connection
+    /// lives until an I/O error forces reconnection or the node shuts down.
+    /// This eliminates the race condition where dropping a per-session connection
+    /// could send a QUIC CONNECTION_CLOSE before the remote has read its last message.
+    peer_connections: Arc<RwLock<HashMap<String, Arc<Box<dyn Connection>>>>>,
 }
 
 impl<D: Dkg + 'static> SessionStateManager<D> {
@@ -232,6 +236,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel();
         let states = Arc::new(RwLock::new(HashMap::new()));
         let rings_refreshing = Arc::new(RwLock::new(HashSet::new()));
+        let peer_connections = Arc::new(RwLock::new(HashMap::new()));
 
         // Spawn background cleanup task (handles guard-triggered cleanup)
         let states_clone = states.clone();
@@ -251,6 +256,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             states,
             cleanup_tx,
             rings_refreshing,
+            peer_connections,
         }
     }
 
@@ -276,7 +282,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 }
                 tracing::debug!(
                     session_id = session_id,
-                    connections = state.connections.len(),
                     "SessionStateManager: Cleaned up abandoned session"
                 );
             }
@@ -332,20 +337,12 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 }
             }
 
-            // Remove sessions and gracefully close their connections
+            // Remove sessions (connections are per-peer and never closed here)
             let mut refresh_keys_to_clear: Vec<String> = Vec::new();
             for session_id in to_remove_ids {
                 if let Some(state) = states.remove(&session_id) {
                     if let Some(k) = state.refresh_ring_key {
                         refresh_keys_to_clear.push(k);
-                    }
-                    let connections = state.connections;
-                    if !connections.is_empty() {
-                        tokio::spawn(async move {
-                            for (_peer_id, conn) in connections.iter() {
-                                let _ = conn.close_graceful().await;
-                            }
-                        });
                     }
                 }
             }
@@ -514,39 +511,25 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states.get(session_id).map(|s| s.peer_ids.clone())
     }
 
-    /// Add a connection to the pool for a session
-    pub async fn add_connection(
-        &self,
-        session_id: &u64,
-        peer_id_str: String,
-        connection: Box<dyn Connection>,
-    ) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.connections.insert(peer_id_str, Arc::new(connection));
-        }
+    /// Add a persistent connection to the per-peer pool.
+    ///
+    /// Connections are reused across all DKG sessions with this peer and are
+    /// never explicitly closed by application code.
+    pub async fn add_connection(&self, peer_id_str: String, connection: Box<dyn Connection>) {
+        self.peer_connections
+            .write()
+            .await
+            .insert(peer_id_str, Arc::new(connection));
     }
 
-    /// Get a cached connection for a session+peer pair.
-    pub async fn get_connection(
-        &self,
-        session_id: &u64,
-        peer_id_str: &str,
-    ) -> Option<Arc<Box<dyn Connection>>> {
-        let states = self.states.read().await;
-        states
-            .get(session_id)?
-            .connections
-            .get(peer_id_str)
-            .cloned()
+    /// Get a cached connection for a peer (shared across all sessions).
+    pub async fn get_connection(&self, peer_id_str: &str) -> Option<Arc<Box<dyn Connection>>> {
+        self.peer_connections.read().await.get(peer_id_str).cloned()
     }
 
-    /// Remove a cached connection for a session+peer pair (evict stale entry).
-    pub async fn remove_connection(&self, session_id: &u64, peer_id_str: &str) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.connections.remove(peer_id_str);
-        }
+    /// Remove a cached connection for a peer (evict on I/O error to force reconnect).
+    pub async fn remove_connection(&self, peer_id_str: &str) {
+        self.peer_connections.write().await.remove(peer_id_str);
     }
 
     /// Set node_id to peer_id mappings for efficient routing
@@ -648,49 +631,32 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         false
     }
 
-    /// Remove a session and clean up all associated resources.
+    /// Remove a session and free its memory.
     ///
-    /// This should be called after DKG Phase 4 completes to free memory and
-    /// close connections. The session data is no longer needed since the
-    /// private share is stored in local storage and ring info is on the bulletin.
+    /// Called after DKG Phase 4 completes. The session data is no longer needed
+    /// since the private share is stored in local storage and ring info is on
+    /// the bulletin.
     ///
-    /// Outbound connections are finalized via `close_graceful()`, which sends
-    /// a stream FIN but does NOT send a QUIC CONNECTION_CLOSE. This lets peers
-    /// drain any buffered bytes (e.g. a final Share-Ack) before they see EOF.
-    /// The underlying QUIC connection closes naturally via idle timeout.
+    /// Per-peer connections are NOT closed here — they live in `peer_connections`
+    /// and remain open for future sessions. This avoids the QUIC CONNECTION_CLOSE
+    /// race where the remote peer might still be reading the last buffered message.
     pub async fn remove_session(&self, session_id: &u64) {
-        let (ring_key_to_clear, connections) = {
+        let ring_key_to_clear = {
             let mut states = self.states.write().await;
-            if let Some(mut state) = states.remove(session_id) {
+            if let Some(state) = states.remove(session_id) {
                 tracing::debug!(
                     session_id = session_id,
-                    connections = state.connections.len(),
                     "SessionStateManager: Removed session"
                 );
-                let ring_key = if state.is_refresh {
-                    state.refresh_ring_key.clone()
+                if state.is_refresh {
+                    state.refresh_ring_key
                 } else {
                     None
-                };
-                // Extract connections so we can defer their drop outside the write lock.
-                let connections = std::mem::take(&mut state.connections);
-                (ring_key, connections)
-                // `state` (minus connections) is dropped here while the write lock is held.
+                }
             } else {
                 return;
             }
         };
-
-        // Finish all outbound streams so peers receive a clean EOF after
-        // draining any buffered bytes.  Done in a background task to avoid
-        // blocking the caller; connections drop at end of the task.
-        if !connections.is_empty() {
-            tokio::spawn(async move {
-                for (_peer_id, conn) in connections.iter() {
-                    let _ = conn.close_graceful().await;
-                }
-            });
-        }
 
         // Clear the in-progress refresh flag so future PSS attempts can proceed.
         if let Some(key) = ring_key_to_clear {

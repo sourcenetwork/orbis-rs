@@ -396,15 +396,6 @@ impl Connection for IrohConnectionWrapper {
             }
         }
 
-        // 2. Wait for the remote to close its end of the connection.
-        //    After reading all buffered bytes + EOF, the remote's handler loop
-        //    exits and drops its IrohConnectionWrapper, which sends
-        //    CONNECTION_CLOSE.  We receive that event via conn.closed().
-        //    This guarantees the remote has read everything before we drop
-        //    the connection (and implicitly send our own CONNECTION_CLOSE).
-        //    A 5-second timeout guards against crashed or slow peers.
-        let _ = tokio::time::timeout(Duration::from_secs(5), self.conn.closed()).await;
-
         metrics::record_connection_closed(&self.protocol);
         Ok(())
     }
