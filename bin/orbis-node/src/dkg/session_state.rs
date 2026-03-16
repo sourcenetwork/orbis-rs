@@ -83,6 +83,10 @@ pub struct DkgSessionState<D: Dkg> {
     pub commitments_received: usize,
     /// Number of shares received
     pub shares_received: usize,
+    /// Number of share-acknowledgements received (one per peer that confirmed receipt of our share)
+    pub acks_received: usize,
+    /// Set of node IDs that have already sent a Share-Ack (prevents double-counting)
+    pub ack_senders: HashSet<u32>,
     /// Processed message IDs for deduplication (session_id, from_node_id, message_type)
     pub processed_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
     /// Set when this is a PSS refresh session; causes generate_polynomial to use DkgMode::Refresh
@@ -113,6 +117,8 @@ impl<D: Dkg> DkgSessionState<D> {
             total_participants,
             commitments_received: 0,
             shares_received: 0,
+            acks_received: 0,
+            ack_senders: HashSet::new(),
             processed_messages: std::collections::HashSet::new(),
             is_refresh: false,
             pss_interval: None,
@@ -145,6 +151,12 @@ impl<D: Dkg> DkgSessionState<D> {
     pub fn all_shares_received(&self) -> bool {
         // We need shares from all other nodes (total - 1, excluding self)
         self.shares_received >= (self.total_participants - 1)
+    }
+
+    /// Check if all share-acknowledgements have been received
+    pub fn all_acks_received(&self) -> bool {
+        // We need acks from all other nodes (total - 1, excluding self)
+        self.acks_received >= (self.total_participants - 1)
     }
 }
 
@@ -289,16 +301,12 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             let mut states = states.write().await;
             let initial_count = states.len();
 
-            // Collect refresh ring keys for sessions that are about to be removed so we
-            // can clear their in-progress flags after the retain loop.
-            let mut refresh_keys_to_clear: Vec<String> = Vec::new();
-
-            states.retain(|session_id, state| {
-                // Skip completed sessions — they'll be removed by remove_session()
+            // Collect session IDs to remove (expired or stalled)
+            let mut to_remove_ids: Vec<u64> = Vec::new();
+            for (session_id, state) in states.iter() {
                 if state.phase == DkgPhase::Phase4Complete {
-                    return true;
+                    continue;
                 }
-
                 let age = now.duration_since(state.created_at);
                 if age > SESSION_TTL {
                     metrics::record_dkg_session_abandoned();
@@ -308,15 +316,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         phase = ?state.phase,
                         "SessionStateManager: Removing expired DKG session"
                     );
-                    if state.is_refresh {
-                        if let Some(k) = &state.refresh_ring_key {
-                            refresh_keys_to_clear.push(k.clone());
-                        }
-                    }
-                    return false;
+                    to_remove_ids.push(*session_id);
+                    continue;
                 }
-
-                // Phase-level timeout: if a non-initial phase has stalled, remove it
                 let phase_age = now.duration_since(state.phase_started_at);
                 if phase_age > DKG_PHASE_TIMEOUT && state.phase != DkgPhase::Initializing {
                     metrics::record_dkg_session_abandoned();
@@ -326,16 +328,27 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         phase_age_secs = phase_age.as_secs(),
                         "SessionStateManager: Removing DKG session stalled in phase"
                     );
-                    if state.is_refresh {
-                        if let Some(k) = &state.refresh_ring_key {
-                            refresh_keys_to_clear.push(k.clone());
-                        }
-                    }
-                    return false;
+                    to_remove_ids.push(*session_id);
                 }
+            }
 
-                true // keep
-            });
+            // Remove sessions and gracefully close their connections
+            let mut refresh_keys_to_clear: Vec<String> = Vec::new();
+            for session_id in to_remove_ids {
+                if let Some(state) = states.remove(&session_id) {
+                    if let Some(k) = state.refresh_ring_key {
+                        refresh_keys_to_clear.push(k);
+                    }
+                    let connections = state.connections;
+                    if !connections.is_empty() {
+                        tokio::spawn(async move {
+                            for (_peer_id, conn) in connections.iter() {
+                                let _ = conn.close_graceful().await;
+                            }
+                        });
+                    }
+                }
+            }
 
             // Clear in-progress refresh flags for expired sessions
             if !refresh_keys_to_clear.is_empty() {
@@ -620,19 +633,33 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
-    /// Remove a session and clean up all associated resources
+    /// Record a Share-Ack from `from_node_id`.
     ///
-    /// This should be called after DKG Phase 4 completes to free memory
-    /// and close connections. The session data is no longer needed since
-    /// the private share is stored in local storage and ring info is on the bulletin.
+    /// Returns `true` if this was a new ack (counter incremented),
+    /// `false` if this peer already sent an ack (duplicate, ignored).
+    pub async fn increment_acks(&self, session_id: &u64, from_node_id: u32) -> bool {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            if state.ack_senders.insert(from_node_id) {
+                state.acks_received += 1;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Remove a session and clean up all associated resources.
     ///
-    /// Connections are closed with a brief delay (500 ms) so that peers which are
-    /// still reading buffered stream data can finish before the QUIC connection
-    /// sends RESET_STREAM.  Without this delay, a fast node completing Phase 4
-    /// can drop its outgoing connection before a slower peer has read the final
-    /// share message, preventing that peer from ever completing Phase 4.
+    /// This should be called after DKG Phase 4 completes to free memory and
+    /// close connections. The session data is no longer needed since the
+    /// private share is stored in local storage and ring info is on the bulletin.
+    ///
+    /// Outbound connections are finalized via `close_graceful()`, which sends
+    /// a stream FIN but does NOT send a QUIC CONNECTION_CLOSE. This lets peers
+    /// drain any buffered bytes (e.g. a final Share-Ack) before they see EOF.
+    /// The underlying QUIC connection closes naturally via idle timeout.
     pub async fn remove_session(&self, session_id: &u64) {
-        let (connections, ring_key_to_clear) = {
+        let (ring_key_to_clear, connections) = {
             let mut states = self.states.write().await;
             if let Some(mut state) = states.remove(session_id) {
                 tracing::debug!(
@@ -645,20 +672,23 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 } else {
                     None
                 };
-                // Drain connections so we can defer their drop outside the lock.
-                let conns: Vec<_> = state.connections.drain().map(|(_, c)| c).collect();
-                (conns, ring_key)
+                // Extract connections so we can defer their drop outside the write lock.
+                let connections = std::mem::take(&mut state.connections);
+                (ring_key, connections)
+                // `state` (minus connections) is dropped here while the write lock is held.
             } else {
                 return;
             }
         };
 
-        // Defer connection drops to allow peers time to read any remaining
-        // buffered data from the QUIC streams before RESET_STREAM is sent.
+        // Finish all outbound streams so peers receive a clean EOF after
+        // draining any buffered bytes.  Done in a background task to avoid
+        // blocking the caller; connections drop at end of the task.
         if !connections.is_empty() {
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                drop(connections);
+                for (_peer_id, conn) in connections.iter() {
+                    let _ = conn.close_graceful().await;
+                }
             });
         }
 

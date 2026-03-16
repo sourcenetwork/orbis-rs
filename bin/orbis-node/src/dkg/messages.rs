@@ -53,6 +53,8 @@ pub enum DkgMessage {
     /// Acknowledgment message
     Ack {
         session_id: u64,
+        /// Node ID of the sender (used for per-peer deduplication by the receiver)
+        from_node_id: u32,
         message_type: String,
     },
     /// Error message

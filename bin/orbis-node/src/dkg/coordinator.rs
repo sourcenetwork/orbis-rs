@@ -155,29 +155,54 @@ where
                 })?;
 
                 let sender_hex = hex::encode(sender_peer_id.as_bytes());
+
+                tracing::info!(
+                    session_id = session_id,
+                    ring_pk_hex = %ring_pk_hex,
+                    sender_peer_hex = %sender_hex,
+                    "DKG Coordinator: Refresh SessionInit received - pre-validation"
+                );
+
                 validate_refresh_session_init(
                     ring_pk_hex,
                     &sender_hex,
                     &self.app_state.local_storage,
                 )?;
 
-                if !self
+                let marked = self
                     .app_state
                     .dkg_session_state
                     .try_mark_ring_refreshing(ring_pk_hex)
-                    .await
-                {
-                    return Err(DkgError::Unauthorized(format!(
-                        "Refresh already in progress for ring {}",
-                        ring_pk_hex
-                    )));
-                }
+                    .await;
 
-                tracing::info!(
-                    session_id = session_id,
-                    ring_pk = %ring_pk_hex,
-                    "DKG Coordinator: Refresh SessionInit validated"
-                );
+                if !marked {
+                    // Ring already marked — either a duplicate SessionInit (same session) or a
+                    // different refresh attempt. Be idempotent only for the same session.
+                    let exists = self
+                        .app_state
+                        .dkg_session_state
+                        .session_exists(&session_id)
+                        .await;
+                    if !exists {
+                        // Different refresh in progress for this ring — reject
+                        return Err(DkgError::Unauthorized(
+                            "Refresh already in progress for this ring".to_string(),
+                        ));
+                    }
+                    tracing::info!(
+                        session_id = session_id,
+                        ring_pk_hex = %ring_pk_hex,
+                        sender_peer_hex = %sender_hex,
+                        "DKG Coordinator: Refresh SessionInit - ring already refreshing, same session (idempotent)"
+                    );
+                } else {
+                    tracing::info!(
+                        session_id = session_id,
+                        ring_pk = %ring_pk_hex,
+                        sender_peer_hex = %sender_hex,
+                        "DKG Coordinator: Refresh SessionInit validated and ring marked refreshing"
+                    );
+                }
             } else {
                 // 1. Authenticate: Validate JWT token
                 let current_time = SystemTime::now()
@@ -224,21 +249,34 @@ where
                 "DKG Coordinator: Received SessionInit - assigned node_id from initiator"
             );
 
-            // If session doesn't exist, create it with assigned node_id
+            // If session doesn't exist, create it with assigned node_id.
+            // Idempotent: if a concurrent handler created it (e.g. duplicate SessionInit),
+            // treat "session already exists" as success.
             if !self
                 .app_state
                 .dkg_session_state
                 .session_exists(&session_id)
                 .await
             {
-                self.create_session(
-                    session_id,
-                    *assigned_node_id,
-                    *threshold as usize,
-                    *total_participants as usize,
-                    DkgRole::Standard,
-                )
-                .await?;
+                match self
+                    .create_session(
+                        session_id,
+                        *assigned_node_id,
+                        *threshold as usize,
+                        *total_participants as usize,
+                        DkgRole::Standard,
+                    )
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(DkgError::ProtocolError(ref msg)) if msg.contains("already exists") => {
+                        tracing::debug!(
+                            session_id = session_id,
+                            "DKG Coordinator: Session already created by concurrent handler"
+                        );
+                    }
+                    Err(e) => return Err(e),
+                }
 
                 if *is_refresh {
                     self.app_state
@@ -288,6 +326,7 @@ where
 
             return Ok(Some(DkgMessage::Ack {
                 session_id,
+                from_node_id: *assigned_node_id,
                 message_type: "SessionInit".to_string(),
             }));
         }
@@ -299,6 +338,13 @@ where
             .session_exists(&session_id)
             .await
         {
+            let sender_hex = hex::encode(sender_peer_id.as_bytes());
+            tracing::warn!(
+                session_id = session_id,
+                sender_peer_hex = %sender_hex,
+                message_type = ?message_type,
+                "DKG Coordinator: Rejecting message - session not found on receiver"
+            );
             return Err(session_not_found(session_id));
         }
 
@@ -655,6 +701,43 @@ where
                     .increment_shares(&session_id)
                     .await;
 
+                // Send a Share-Ack back to the sender via our own outgoing
+                // connection so the sender knows it is safe to close its
+                // session (Phase 4 gate). The sender will use the network
+                // layer's `close_graceful()` to ensure this Ack is flushed
+                // before tearing down its transport.
+                let sender_peer_str = self
+                    .app_state
+                    .dkg_session_state
+                    .get_peer_id_for_node(&session_id, from_node_id)
+                    .await;
+                match sender_peer_str {
+                    Some(ref peer_str) => {
+                        let ack = DkgMessage::Ack {
+                            session_id,
+                            from_node_id: our_node_id,
+                            message_type: "Share".to_string(),
+                        };
+                        if let Err(e) = self
+                            .send_message_to_peer(peer_str, ack, Some(session_id))
+                            .await
+                        {
+                            tracing::error!(
+                                to_peer = %peer_str,
+                                error = %e,
+                                "DKG Coordinator: Failed to send Share-Ack"
+                            );
+                        }
+                    }
+                    None => {
+                        tracing::warn!(
+                            from_node_id = from_node_id,
+                            session_id = session_id,
+                            "DKG Coordinator: Could not find peer_id for Share sender; skipping Ack"
+                        );
+                    }
+                }
+
                 // Check if Phase 2 is complete and trigger Phase 4
                 self.check_and_trigger_phase4(session_id).await?;
 
@@ -675,9 +758,27 @@ where
                 );
                 None // For now, no response needed
             }
-            DkgMessage::Ack { .. } => {
-                // Acknowledgment received
-                tracing::debug!(session_id = session_id, "DKG Coordinator: Received ACK");
+            DkgMessage::Ack {
+                from_node_id,
+                message_type,
+                ..
+            } => {
+                tracing::debug!(
+                    session_id = session_id,
+                    from_node_id = from_node_id,
+                    message_type = %message_type,
+                    "DKG Coordinator: Received ACK"
+                );
+                if message_type == "Share" {
+                    // A peer confirmed it received our share.  Increment the counter
+                    // (the HashSet inside prevents double-counting) and check whether
+                    // Phase 4 can now be triggered.
+                    self.app_state
+                        .dkg_session_state
+                        .increment_acks(&session_id, from_node_id)
+                        .await;
+                    self.check_and_trigger_phase4(session_id).await?;
+                }
                 None
             }
             DkgMessage::Error { error, .. } => {
@@ -1224,31 +1325,37 @@ where
         Ok(())
     }
 
-    /// Check if Phase 2 is complete and trigger Phase 4 if so
+    /// Check if Phase 2 is complete (all shares received, all Share-Acks received)
+    /// and trigger Phase 4 if so.
     ///
-    /// This should be called after receiving a share message.
+    /// This is called both after receiving a share and after receiving a Share-Ack.
     pub async fn check_and_trigger_phase4(&self, session_id: u64) -> Result<()> {
-        // Get expected shares count
-        let expected_shares = self
+        // Read all relevant counters in a single lock to avoid TOCTOU races.
+        let (expected, received_shares, received_acks, phase) = self
             .app_state
             .dkg_session_state
-            .with_state(&session_id, |state| state.node.total_nodes() - 1)
+            .with_state(&session_id, |state| {
+                (
+                    state.node.total_nodes() - 1,
+                    state.shares_received,
+                    state.acks_received,
+                    state.phase,
+                )
+            })
             .await
             .ok_or_else(|| session_not_found(session_id))?;
 
-        // Get the actual count from session_state
-        let received_shares = self
-            .app_state
-            .dkg_session_state
-            .with_state(&session_id, |state| state.shares_received)
-            .await
-            .ok_or_else(|| session_not_found(session_id))?;
+        // Guard: don't start Phase 4 again if already completed.
+        if phase == DkgPhase::Phase4Complete {
+            return Ok(());
+        }
 
-        if received_shares >= expected_shares {
+        if received_shares >= expected && received_acks >= expected {
             tracing::info!(
-                received = received_shares,
-                expected = expected_shares,
-                "Phase 2 complete: Proceeding to Phase 4"
+                received_shares = received_shares,
+                received_acks = received_acks,
+                expected = expected,
+                "Phase 2 complete (all shares + acks): Proceeding to Phase 4"
             );
 
             // Verify we have all commitments before proceeding

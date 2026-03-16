@@ -9,7 +9,7 @@ use iroh::{Endpoint, EndpointAddr, SecretKey};
 use std::collections::HashMap;
 use std::net::SocketAddrV4;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::error::{NetworkError, Result};
@@ -384,6 +384,28 @@ impl Connection for IrohConnectionWrapper {
     async fn close(&self) -> Result<()> {
         metrics::record_connection_closed(&self.protocol);
         self.conn.close(0u32.into(), b"Goodbye");
+        Ok(())
+    }
+
+    async fn close_graceful(&self) -> Result<()> {
+        // 1. Enqueue a stream FIN so the remote knows there is no more data.
+        {
+            let mut guard = self.send_stream.lock().await;
+            if let Some(stream) = guard.as_mut() {
+                let _ = stream.finish();
+            }
+        }
+
+        // 2. Wait for the remote to close its end of the connection.
+        //    After reading all buffered bytes + EOF, the remote's handler loop
+        //    exits and drops its IrohConnectionWrapper, which sends
+        //    CONNECTION_CLOSE.  We receive that event via conn.closed().
+        //    This guarantees the remote has read everything before we drop
+        //    the connection (and implicitly send our own CONNECTION_CLOSE).
+        //    A 5-second timeout guards against crashed or slow peers.
+        let _ = tokio::time::timeout(Duration::from_secs(5), self.conn.closed()).await;
+
+        metrics::record_connection_closed(&self.protocol);
         Ok(())
     }
 

@@ -356,8 +356,10 @@ async fn iroh_connection_close_graceful() {
         .await
         .expect("Handler should become ready");
 
-    // Close the connection
-    conn.close().await.expect("Should close gracefully");
+    // Close the connection gracefully using the new API.
+    conn.close_graceful()
+        .await
+        .expect("Should close gracefully");
 
     // Wait for the handler to be notified of the close
     tokio::time::timeout(std::time::Duration::from_secs(25), closed.notified())
