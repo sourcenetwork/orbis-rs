@@ -5,9 +5,50 @@ use authz::r#trait::Authz;
 use bulletin::r#trait::Bulletin;
 use crypto::r#trait::Dkg;
 use local_storage::LocalStorageImpl;
-use network::Network;
+use network::{Connection, Network};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
+
+/// Global per-peer, per-protocol connection pool.
+///
+/// Each entry is keyed by `(peer_id_str, protocol_bytes)` and holds one
+/// long-lived QUIC connection. Connections are opened on first use and reused
+/// for all subsequent messages to that peer on that protocol, avoiding
+/// repeated QUIC handshakes. Entries are evicted only on I/O errors.
+pub struct PeerConnectionPool {
+    connections: RwLock<HashMap<(String, Vec<u8>), Arc<Box<dyn Connection>>>>,
+}
+
+impl PeerConnectionPool {
+    pub fn new() -> Self {
+        Self {
+            connections: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub async fn get(&self, peer_id: &str, protocol: &[u8]) -> Option<Arc<Box<dyn Connection>>> {
+        self.connections
+            .read()
+            .await
+            .get(&(peer_id.to_string(), protocol.to_vec()))
+            .cloned()
+    }
+
+    pub async fn insert(&self, peer_id: String, protocol: &[u8], conn: Box<dyn Connection>) {
+        self.connections
+            .write()
+            .await
+            .insert((peer_id, protocol.to_vec()), Arc::new(conn));
+    }
+
+    pub async fn remove(&self, peer_id: &str, protocol: &[u8]) {
+        self.connections
+            .write()
+            .await
+            .remove(&(peer_id.to_string(), protocol.to_vec()));
+    }
+}
 
 /// Shared application state accessible by all gRPC endpoints
 #[derive(Clone)]
@@ -36,6 +77,8 @@ where
     /// Without this, two simultaneous DKG completions can each read the same
     /// index and one will overwrite the other's appended entry.
     pub ring_index_lock: Arc<Mutex<()>>,
+    /// Global per-peer, per-protocol connection pool shared across DKG, PRE, and Sign.
+    pub peer_connection_pool: Arc<PeerConnectionPool>,
 }
 
 /// Server configuration
@@ -66,6 +109,7 @@ where
             authz,
             bulletin,
             ring_index_lock: Arc::new(Mutex::new(())),
+            peer_connection_pool: Arc::new(PeerConnectionPool::new()),
         }
     }
 }

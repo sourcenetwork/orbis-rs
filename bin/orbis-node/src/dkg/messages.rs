@@ -50,13 +50,6 @@ pub enum DkgMessage {
         #[serde(default)]
         pss_interval: Option<u64>,
     },
-    /// Acknowledgment message
-    Ack {
-        session_id: u64,
-        /// Node ID of the sender (used for per-peer deduplication by the receiver)
-        from_node_id: u32,
-        message_type: String,
-    },
     /// Error message
     Error { session_id: u64, error: String },
 }
@@ -69,7 +62,6 @@ impl DkgMessage {
             DkgMessage::Share { session_id, .. } => *session_id,
             DkgMessage::Complaint { session_id, .. } => *session_id,
             DkgMessage::SessionInit { session_id, .. } => *session_id,
-            DkgMessage::Ack { session_id, .. } => *session_id,
             DkgMessage::Error { session_id, .. } => *session_id,
         }
     }

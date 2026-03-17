@@ -13,7 +13,6 @@ use crate::constants::{
 use crate::dkg::error::DkgError;
 use crate::metrics;
 use crypto::r#trait::{Dkg, DkgMode};
-use network::Connection;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -45,7 +44,6 @@ pub enum DkgMessageType {
     Share,
     Complaint,
     SessionInit,
-    Ack,
     Error,
 }
 
@@ -80,10 +78,6 @@ pub struct DkgSessionState<D: Dkg> {
     pub commitments_received: usize,
     /// Number of shares received
     pub shares_received: usize,
-    /// Number of share-acknowledgements received (one per peer that confirmed receipt of our share)
-    pub acks_received: usize,
-    /// Set of node IDs that have already sent a Share-Ack (prevents double-counting)
-    pub ack_senders: HashSet<u32>,
     /// Processed message IDs for deduplication (session_id, from_node_id, message_type)
     pub processed_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
     /// Set when this is a PSS refresh session; causes generate_polynomial to use DkgMode::Refresh
@@ -113,8 +107,6 @@ impl<D: Dkg> DkgSessionState<D> {
             total_participants,
             commitments_received: 0,
             shares_received: 0,
-            acks_received: 0,
-            ack_senders: HashSet::new(),
             processed_messages: std::collections::HashSet::new(),
             is_refresh: false,
             pss_interval: None,
@@ -147,12 +139,6 @@ impl<D: Dkg> DkgSessionState<D> {
     pub fn all_shares_received(&self) -> bool {
         // We need shares from all other nodes (total - 1, excluding self)
         self.shares_received >= (self.total_participants - 1)
-    }
-
-    /// Check if all share-acknowledgements have been received
-    pub fn all_acks_received(&self) -> bool {
-        // We need acks from all other nodes (total - 1, excluding self)
-        self.acks_received >= (self.total_participants - 1)
     }
 }
 
@@ -220,14 +206,6 @@ pub struct SessionStateManager<D: Dkg> {
     /// Cleared on Phase 4 success (via unmark_ring_refreshing) or on session
     /// cleanup/expiration so that a new refresh can be initiated after failure.
     rings_refreshing: Arc<RwLock<HashSet<String>>>,
-    /// Persistent per-peer connection pool, shared across all sessions.
-    ///
-    /// Connections are opened on first contact and reused across all DKG sessions
-    /// with that peer. They are never closed by application code — the connection
-    /// lives until an I/O error forces reconnection or the node shuts down.
-    /// This eliminates the race condition where dropping a per-session connection
-    /// could send a QUIC CONNECTION_CLOSE before the remote has read its last message.
-    peer_connections: Arc<RwLock<HashMap<String, Arc<Box<dyn Connection>>>>>,
 }
 
 impl<D: Dkg + 'static> SessionStateManager<D> {
@@ -236,7 +214,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel();
         let states = Arc::new(RwLock::new(HashMap::new()));
         let rings_refreshing = Arc::new(RwLock::new(HashSet::new()));
-        let peer_connections = Arc::new(RwLock::new(HashMap::new()));
 
         // Spawn background cleanup task (handles guard-triggered cleanup)
         let states_clone = states.clone();
@@ -256,7 +233,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             states,
             cleanup_tx,
             rings_refreshing,
-            peer_connections,
         }
     }
 
@@ -511,27 +487,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states.get(session_id).map(|s| s.peer_ids.clone())
     }
 
-    /// Add a persistent connection to the per-peer pool.
-    ///
-    /// Connections are reused across all DKG sessions with this peer and are
-    /// never explicitly closed by application code.
-    pub async fn add_connection(&self, peer_id_str: String, connection: Box<dyn Connection>) {
-        self.peer_connections
-            .write()
-            .await
-            .insert(peer_id_str, Arc::new(connection));
-    }
-
-    /// Get a cached connection for a peer (shared across all sessions).
-    pub async fn get_connection(&self, peer_id_str: &str) -> Option<Arc<Box<dyn Connection>>> {
-        self.peer_connections.read().await.get(peer_id_str).cloned()
-    }
-
-    /// Remove a cached connection for a peer (evict on I/O error to force reconnect).
-    pub async fn remove_connection(&self, peer_id_str: &str) {
-        self.peer_connections.write().await.remove(peer_id_str);
-    }
-
     /// Set node_id to peer_id mappings for efficient routing
     pub async fn set_node_peer_mappings(
         &self,
@@ -614,21 +569,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         if let Some(state) = states.get_mut(session_id) {
             state.shares_received += 1;
         }
-    }
-
-    /// Record a Share-Ack from `from_node_id`.
-    ///
-    /// Returns `true` if this was a new ack (counter incremented),
-    /// `false` if this peer already sent an ack (duplicate, ignored).
-    pub async fn increment_acks(&self, session_id: &u64, from_node_id: u32) -> bool {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            if state.ack_senders.insert(from_node_id) {
-                state.acks_received += 1;
-                return true;
-            }
-        }
-        false
     }
 
     /// Remove a session and free its memory.

@@ -9,7 +9,7 @@ use iroh::{Endpoint, EndpointAddr, SecretKey};
 use std::collections::HashMap;
 use std::net::SocketAddrV4;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::error::{NetworkError, Result};
@@ -388,13 +388,18 @@ impl Connection for IrohConnectionWrapper {
     }
 
     async fn close_graceful(&self) -> Result<()> {
-        // 1. Enqueue a stream FIN so the remote knows there is no more data.
+        // 1. Finish the send stream so the remote reads a clean EOF
+        //    before we close the connection.
         {
             let mut guard = self.send_stream.lock().await;
             if let Some(stream) = guard.as_mut() {
                 let _ = stream.finish();
             }
         }
+
+        // 2. Close the QUIC connection so the remote is notified even when
+        //    no stream was ever opened (e.g. connect-then-immediately-close).
+        self.conn.close(0u32.into(), b"");
 
         metrics::record_connection_closed(&self.protocol);
         Ok(())

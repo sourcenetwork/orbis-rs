@@ -101,7 +101,6 @@ where
                 (DkgMessageType::Complaint, Some(*from_node_id))
             }
             DkgMessage::SessionInit { .. } => (DkgMessageType::SessionInit, None),
-            DkgMessage::Ack { .. } => (DkgMessageType::Ack, None),
             DkgMessage::Error { .. } => (DkgMessageType::Error, None),
         };
 
@@ -111,12 +110,11 @@ where
             DkgMessageType::Commitment => "commitment",
             DkgMessageType::Share => "share",
             DkgMessageType::Complaint => "complaint",
-            DkgMessageType::Ack => "ack",
             DkgMessageType::Error => "error",
         };
         metrics::record_dkg_message_received(message_type_str);
 
-        // Check for duplicate messages (except SessionInit, Ack, Error)
+        // Check for duplicate messages (except SessionInit and Error)
         if let Some(from_node_id) = from_node_id_opt {
             if self
                 .app_state
@@ -324,11 +322,7 @@ where
                 "DKG Coordinator: Session init"
             );
 
-            return Ok(Some(DkgMessage::Ack {
-                session_id,
-                from_node_id: *assigned_node_id,
-                message_type: "SessionInit".to_string(),
-            }));
+            return Ok(None);
         }
 
         // For all other messages, ensure the session exists
@@ -701,43 +695,6 @@ where
                     .increment_shares(&session_id)
                     .await;
 
-                // Send a Share-Ack back to the sender via our own outgoing
-                // connection so the sender knows it is safe to close its
-                // session (Phase 4 gate). The sender will use the network
-                // layer's `close_graceful()` to ensure this Ack is flushed
-                // before tearing down its transport.
-                let sender_peer_str = self
-                    .app_state
-                    .dkg_session_state
-                    .get_peer_id_for_node(&session_id, from_node_id)
-                    .await;
-                match sender_peer_str {
-                    Some(ref peer_str) => {
-                        let ack = DkgMessage::Ack {
-                            session_id,
-                            from_node_id: our_node_id,
-                            message_type: "Share".to_string(),
-                        };
-                        if let Err(e) = self
-                            .send_message_to_peer(peer_str, ack, Some(session_id))
-                            .await
-                        {
-                            tracing::error!(
-                                to_peer = %peer_str,
-                                error = %e,
-                                "DKG Coordinator: Failed to send Share-Ack"
-                            );
-                        }
-                    }
-                    None => {
-                        tracing::warn!(
-                            from_node_id = from_node_id,
-                            session_id = session_id,
-                            "DKG Coordinator: Could not find peer_id for Share sender; skipping Ack"
-                        );
-                    }
-                }
-
                 // Check if Phase 2 is complete and trigger Phase 4
                 self.check_and_trigger_phase4(session_id).await?;
 
@@ -757,29 +714,6 @@ where
                     "DKG Coordinator: Received complaint"
                 );
                 None // For now, no response needed
-            }
-            DkgMessage::Ack {
-                from_node_id,
-                message_type,
-                ..
-            } => {
-                tracing::debug!(
-                    session_id = session_id,
-                    from_node_id = from_node_id,
-                    message_type = %message_type,
-                    "DKG Coordinator: Received ACK"
-                );
-                if message_type == "Share" {
-                    // A peer confirmed it received our share.  Increment the counter
-                    // (the HashSet inside prevents double-counting) and check whether
-                    // Phase 4 can now be triggered.
-                    self.app_state
-                        .dkg_session_state
-                        .increment_acks(&session_id, from_node_id)
-                        .await;
-                    self.check_and_trigger_phase4(session_id).await?;
-                }
-                None
             }
             DkgMessage::Error { error, .. } => {
                 // Error received
@@ -864,22 +798,15 @@ where
             DkgMessage::Commitment { .. } => "commitment",
             DkgMessage::Share { .. } => "share",
             DkgMessage::Complaint { .. } => "complaint",
-            DkgMessage::Ack { .. } => "ack",
             DkgMessage::Error { .. } => "error",
         };
 
         let message_data = serde_json::to_vec(&message)
             .map_err(|e| DkgError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
-        // Per-peer persistent connection pool — reused across all sessions.
-        // Connections are never closed by application code; they remain alive
-        // until an I/O error forces reconnection or the node shuts down.
-        let conn = if let Some(cached) = self
-            .app_state
-            .dkg_session_state
-            .get_connection(peer_id_str)
-            .await
-        {
+        // Global per-peer connection pool — reused across all sessions and protocols.
+        let pool = &self.app_state.peer_connection_pool;
+        let conn = if let Some(cached) = pool.get(peer_id_str, DKG).await {
             cached
         } else {
             let new_conn = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
@@ -890,13 +817,8 @@ where
                         peer_id_str, e
                     ))
                 })?;
-            self.app_state
-                .dkg_session_state
-                .add_connection(peer_id_str.to_string(), new_conn)
-                .await;
-            self.app_state
-                .dkg_session_state
-                .get_connection(peer_id_str)
+            pool.insert(peer_id_str.to_string(), DKG, new_conn).await;
+            pool.get(peer_id_str, DKG)
                 .await
                 .expect("connection was just inserted")
         };
@@ -911,10 +833,7 @@ where
                 error = %send_err,
                 "send failed on cached connection — evicting and reconnecting"
             );
-            self.app_state
-                .dkg_session_state
-                .remove_connection(peer_id_str)
-                .await;
+            pool.remove(peer_id_str, DKG).await;
             let fresh_conn = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
                 .await
                 .map_err(|e| {
@@ -923,14 +842,9 @@ where
                         peer_id_str, e
                     ))
                 })?;
-            self.app_state
-                .dkg_session_state
-                .add_connection(peer_id_str.to_string(), fresh_conn)
-                .await;
-            let fresh_arc = self
-                .app_state
-                .dkg_session_state
-                .get_connection(peer_id_str)
+            pool.insert(peer_id_str.to_string(), DKG, fresh_conn).await;
+            let fresh_arc = pool
+                .get(peer_id_str, DKG)
                 .await
                 .expect("connection was just inserted");
             fresh_arc
@@ -1303,20 +1217,16 @@ where
         Ok(())
     }
 
-    /// Check if Phase 2 is complete (all shares received, all Share-Acks received)
-    /// and trigger Phase 4 if so.
-    ///
-    /// This is called both after receiving a share and after receiving a Share-Ack.
+    /// Check if Phase 2 is complete (all shares received) and trigger Phase 4 if so.
     pub async fn check_and_trigger_phase4(&self, session_id: u64) -> Result<()> {
         // Read all relevant counters in a single lock to avoid TOCTOU races.
-        let (expected, received_shares, received_acks, phase) = self
+        let (expected, received_shares, phase) = self
             .app_state
             .dkg_session_state
             .with_state(&session_id, |state| {
                 (
                     state.node.total_nodes() - 1,
                     state.shares_received,
-                    state.acks_received,
                     state.phase,
                 )
             })
@@ -1328,12 +1238,11 @@ where
             return Ok(());
         }
 
-        if received_shares >= expected && received_acks >= expected {
+        if received_shares >= expected {
             tracing::info!(
                 received_shares = received_shares,
-                received_acks = received_acks,
                 expected = expected,
-                "Phase 2 complete (all shares + acks): Proceeding to Phase 4"
+                "Phase 2 complete (all shares received): Proceeding to Phase 4"
             );
 
             // Verify we have all commitments before proceeding
