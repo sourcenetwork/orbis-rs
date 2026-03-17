@@ -16,7 +16,8 @@ use crate::error::{NetworkError, Result};
 use crate::iroh::router::IrohRouterBuilder;
 use crate::metrics;
 use crate::r#trait::{
-    Connection, Message, Network, PeerId, ProtocolHandler, RouterBuilder as RouterBuilderTrait,
+    Connection, Message, Network, PeerConnection, PeerId, ProtocolHandler,
+    RouterBuilder as RouterBuilderTrait,
 };
 
 /// Configuration for IrohNetwork
@@ -144,7 +145,7 @@ impl IrohNetworkBuilder {
 
 #[async_trait]
 impl Network for IrohNetwork {
-    async fn connect(&self, peer_id: &PeerId, protocol: &[u8]) -> Result<Box<dyn Connection>> {
+    async fn connect(&self, peer_id: &PeerId, protocol: &[u8]) -> Result<Box<dyn PeerConnection>> {
         use iroh::PublicKey;
         use std::net::SocketAddr;
         use std::str::FromStr;
@@ -215,7 +216,7 @@ impl Network for IrohNetwork {
         let duration = start.elapsed().as_secs_f64();
         metrics::record_connection_success(protocol, duration);
 
-        Ok(Box::new(IrohConnectionWrapper::new(
+        Ok(Box::new(IrohPeerConnection::new(
             conn,
             self.config.max_message_size,
         )))
@@ -246,62 +247,103 @@ impl Network for IrohNetwork {
     }
 }
 
-/// Wrapper around iroh Connection to implement our Connection trait
+/// Persistent QUIC connection to a remote peer.
 ///
-/// Uses a single persistent QUIC stream for all sends and a single persistent
-/// stream for all receives on this connection. Messages are framed with a
-/// 4-byte big-endian length prefix so multiple messages can share one stream.
-///
-/// QUIC guarantees ordered, reliable delivery within a single stream, so all
-/// messages sent through `send()` arrive at the peer in the same order — no
-/// cross-stream race conditions possible.
-pub struct IrohConnectionWrapper {
+/// Implements [`PeerConnection`] — the pool holds one of these per
+/// `(peer_id, protocol)`. Callers open lightweight streams via
+/// [`open_stream`] rather than sending directly on the connection.
+pub struct IrohPeerConnection {
     conn: IrohConnection,
     peer_id: PeerId,
     protocol: Arc<[u8]>,
     max_message_size: usize,
-    /// Outbound stream — lazy-opened on first `send()`, reused for all subsequent sends.
-    send_stream: Mutex<Option<SendStream>>,
-    /// Inbound stream — lazy-accepted on first `recv()`, reused for all subsequent receives.
-    recv_stream: Mutex<Option<RecvStream>>,
 }
 
-impl IrohConnectionWrapper {
+impl IrohPeerConnection {
     pub fn new(conn: IrohConnection, max_message_size: usize) -> Self {
         let node_id = conn.remote_id();
         let peer_id = PeerId::from_bytes(node_id.as_bytes());
         let protocol = Arc::from(conn.alpn());
-
         Self {
             conn,
             peer_id,
             protocol,
             max_message_size,
-            send_stream: Mutex::new(None),
-            recv_stream: Mutex::new(None),
-        }
-    }
-}
-
-impl Drop for IrohConnectionWrapper {
-    fn drop(&mut self) {
-        // Finish the send stream so the remote peer receives STREAM_FIN rather
-        // than RESET_STREAM.  Dropping a quinn SendStream without calling
-        // finish() sends RESET_STREAM, which causes the peer's read_exact() to
-        // return an error and discard any data already in its receive buffer —
-        // even data that was fully transmitted before the connection dropped.
-        // Calling finish() here enqueues a proper FIN, allowing the peer to
-        // read all buffered bytes before the connection closes.
-        if let Ok(mut guard) = self.send_stream.try_lock() {
-            if let Some(stream) = guard.as_mut() {
-                let _ = stream.finish();
-            }
         }
     }
 }
 
 #[async_trait]
-impl Connection for IrohConnectionWrapper {
+impl PeerConnection for IrohPeerConnection {
+    async fn open_stream(&self) -> Result<Box<dyn Connection>> {
+        let (send, recv) = self.conn.open_bi().await.map_err(|e| {
+            metrics::record_send_error(&self.protocol);
+            NetworkError::Connection(format!("Failed to open stream: {}", e))
+        })?;
+        Ok(Box::new(IrohStreamWrapper::new(
+            send,
+            recv,
+            self.peer_id.clone(),
+            Arc::clone(&self.protocol),
+            self.max_message_size,
+        )))
+    }
+
+    fn peer_id(&self) -> &PeerId {
+        &self.peer_id
+    }
+
+    async fn close(&self) -> Result<()> {
+        metrics::record_connection_closed(&self.protocol);
+        self.conn.close(0u32.into(), b"Goodbye");
+        Ok(())
+    }
+}
+
+/// A single bi-directional QUIC stream.
+///
+/// Implements [`Connection`] — obtained from [`IrohPeerConnection::open_stream`]
+/// or handed to a [`ProtocolHandler`] by the router for each incoming stream.
+/// Messages are framed with a 4-byte big-endian length prefix.
+/// The send half is finished (FIN) on drop.
+pub struct IrohStreamWrapper {
+    send_stream: Mutex<SendStream>,
+    recv_stream: Mutex<RecvStream>,
+    peer_id: PeerId,
+    protocol: Arc<[u8]>,
+    max_message_size: usize,
+}
+
+impl IrohStreamWrapper {
+    pub fn new(
+        send: SendStream,
+        recv: RecvStream,
+        peer_id: PeerId,
+        protocol: Arc<[u8]>,
+        max_message_size: usize,
+    ) -> Self {
+        Self {
+            send_stream: Mutex::new(send),
+            recv_stream: Mutex::new(recv),
+            peer_id,
+            protocol,
+            max_message_size,
+        }
+    }
+}
+
+impl Drop for IrohStreamWrapper {
+    fn drop(&mut self) {
+        // Finish the send stream so the remote peer receives STREAM_FIN rather
+        // than RESET_STREAM, allowing it to read all buffered bytes before closing.
+        if let Ok(mut guard) = self.send_stream.try_lock() {
+            let _ = guard.finish();
+        }
+    }
+}
+
+#[async_trait]
+impl Connection for IrohStreamWrapper {
     async fn send(&self, message: Message) -> Result<()> {
         let start = Instant::now();
         let message_size = message.data.len();
@@ -309,17 +351,7 @@ impl Connection for IrohConnectionWrapper {
         let len = message.data.len() as u32;
         let len_bytes = len.to_be_bytes();
 
-        let mut guard = self.send_stream.lock().await;
-        if guard.is_none() {
-            // Lazy-open one bi-directional stream; we only need the send half.
-            let (send, _recv) = self.conn.open_bi().await.map_err(|e| {
-                metrics::record_send_error(&self.protocol);
-                NetworkError::Connection(format!("Failed to open stream: {}", e))
-            })?;
-            *guard = Some(send);
-        }
-        let stream = guard.as_mut().unwrap();
-
+        let mut stream = self.send_stream.lock().await;
         stream.write_all(&len_bytes).await.map_err(|e| {
             metrics::record_send_error(&self.protocol);
             NetworkError::Io(e.into())
@@ -331,25 +363,14 @@ impl Connection for IrohConnectionWrapper {
 
         let duration = start.elapsed().as_secs_f64();
         metrics::record_message_sent(&self.protocol, message_size, duration);
-
         Ok(())
     }
 
     async fn recv(&self) -> Result<Message> {
         let start = Instant::now();
 
-        let mut guard = self.recv_stream.lock().await;
-        if guard.is_none() {
-            // Lazy-accept one bi-directional stream; we only need the receive half.
-            let (_send, recv) = self.conn.accept_bi().await.map_err(|e| {
-                metrics::record_recv_error(&self.protocol);
-                NetworkError::Connection(format!("Failed to accept stream: {}", e))
-            })?;
-            *guard = Some(recv);
-        }
-        let stream = guard.as_mut().unwrap();
+        let mut stream = self.recv_stream.lock().await;
 
-        // Read the 4-byte length prefix.
         let mut len_bytes = [0u8; 4];
         stream.read_exact(&mut len_bytes).await.map_err(|e| {
             metrics::record_recv_error(&self.protocol);
@@ -379,12 +400,6 @@ impl Connection for IrohConnectionWrapper {
             data: Bytes::from(buffer),
             protocol: Arc::clone(&self.protocol),
         })
-    }
-
-    async fn close(&self) -> Result<()> {
-        metrics::record_connection_closed(&self.protocol);
-        self.conn.close(0u32.into(), b"Goodbye");
-        Ok(())
     }
 
     fn peer_id(&self) -> &PeerId {

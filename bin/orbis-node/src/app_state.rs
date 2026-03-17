@@ -1,12 +1,12 @@
 use crate::dkg::session_state::SessionStateManager;
-use crate::helpers::helpers::connect_to_peer;
 use crate::pre::response_state::PreResponseManager;
 use crate::sign::response_state::SignResponseManager;
 use authz::r#trait::Authz;
 use bulletin::r#trait::Bulletin;
 use crypto::r#trait::Dkg;
 use local_storage::LocalStorageImpl;
-use network::{Connection, Network};
+use network::Network;
+use network::{PeerConnection, PeerId};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -14,11 +14,13 @@ use tokio::sync::{Mutex, RwLock};
 /// Global per-peer, per-protocol connection pool.
 ///
 /// Each entry is keyed by `(peer_id_str, protocol_bytes)` and holds one
-/// long-lived QUIC connection. Connections are opened on first use and reused
-/// for all subsequent messages to that peer on that protocol, avoiding
-/// repeated QUIC handshakes. Entries are evicted only on I/O errors.
+/// persistent QUIC connection. Callers open lightweight QUIC streams via
+/// [`PeerConnection::open_stream`] for individual requests or DKG sessions,
+/// so concurrent sessions to the same peer run on independent streams with no
+/// head-of-line blocking. The connection itself is never evicted — only
+/// replaced on connection-level errors.
 pub struct PeerConnectionPool {
-    connections: RwLock<HashMap<(String, Vec<u8>), Arc<Box<dyn Connection>>>>,
+    connections: RwLock<HashMap<(String, Vec<u8>), Arc<Box<dyn PeerConnection>>>>,
 }
 
 impl PeerConnectionPool {
@@ -28,19 +30,16 @@ impl PeerConnectionPool {
         }
     }
 
-    pub async fn get(&self, peer_id: &str, protocol: &[u8]) -> Option<Arc<Box<dyn Connection>>> {
+    pub async fn get(
+        &self,
+        peer_id: &str,
+        protocol: &[u8],
+    ) -> Option<Arc<Box<dyn PeerConnection>>> {
         self.connections
             .read()
             .await
             .get(&(peer_id.to_string(), protocol.to_vec()))
             .cloned()
-    }
-
-    pub async fn insert(&self, peer_id: String, protocol: &[u8], conn: Box<dyn Connection>) {
-        self.connections
-            .write()
-            .await
-            .insert((peer_id, protocol.to_vec()), Arc::new(conn));
     }
 
     pub async fn remove(&self, peer_id: &str, protocol: &[u8]) {
@@ -50,21 +49,31 @@ impl PeerConnectionPool {
             .remove(&(peer_id.to_string(), protocol.to_vec()));
     }
 
-    /// Get a cached connection for `peer_id_str` on `protocol`, or open and cache a new one.
+    /// Get a cached connection for `(peer_id, protocol)`, or open and cache a new one.
+    ///
+    /// The optimistic read avoids taking the write lock on the hot path. If two
+    /// tasks race through the read-miss simultaneously, both will open a connection,
+    /// but only one will be stored — the loser's connection is dropped harmlessly
+    /// and the winner's is returned to both callers.
     pub async fn get_or_connect(
         &self,
         network: &Arc<dyn Network>,
         peer_id_str: &str,
         protocol: &'static [u8],
-    ) -> Result<Arc<Box<dyn Connection>>, network::error::NetworkError> {
+    ) -> Result<Arc<Box<dyn PeerConnection>>, network::error::NetworkError> {
         if let Some(cached) = self.get(peer_id_str, protocol).await {
             return Ok(cached);
         }
-        let new_conn = Arc::new(connect_to_peer(network, peer_id_str.to_string(), protocol).await?);
-        self.connections.write().await.insert(
-            (peer_id_str.to_string(), protocol.to_vec()),
-            new_conn.clone(),
-        );
+        let peer_id_obj = PeerId::new(peer_id_str.as_bytes().to_vec());
+        let new_conn = Arc::new(network.connect(&peer_id_obj, protocol).await?);
+        let key = (peer_id_str.to_string(), protocol.to_vec());
+        let mut map = self.connections.write().await;
+        // Re-check under the write lock: another task may have inserted while we
+        // were connecting. Prefer the existing entry to avoid displacing it.
+        if let Some(existing) = map.get(&key) {
+            return Ok(existing.clone());
+        }
+        map.insert(key, new_conn.clone());
         Ok(new_conn)
     }
 }

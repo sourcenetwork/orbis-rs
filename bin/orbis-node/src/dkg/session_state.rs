@@ -13,6 +13,7 @@ use crate::constants::{
 use crate::dkg::error::DkgError;
 use crate::metrics;
 use crypto::r#trait::{Dkg, DkgMode};
+use network::Connection;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -91,6 +92,12 @@ pub struct DkgSessionState<D: Dkg> {
     /// add the refresh delta, and store the combined share under the same key so the
     /// ring public key and local-storage slot are unchanged.
     pub refresh_ring_key: Option<String>,
+    /// Per-peer QUIC streams for this session.
+    ///
+    /// All DKG messages to the same peer within a session travel on the same stream,
+    /// preserving QUIC's within-stream ordering guarantee (SessionInit → Commitment → Share).
+    /// Streams are dropped automatically when the session is removed.
+    pub peer_streams: HashMap<String, Arc<Box<dyn Connection>>>,
 }
 
 impl<D: Dkg> DkgSessionState<D> {
@@ -111,6 +118,7 @@ impl<D: Dkg> DkgSessionState<D> {
             is_refresh: false,
             pss_interval: None,
             refresh_ring_key: None,
+            peer_streams: HashMap::new(),
         }
     }
 
@@ -568,6 +576,29 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.shares_received += 1;
+        }
+    }
+
+    /// Get the cached outbound stream to a peer for this session, if one exists.
+    pub async fn get_peer_stream(
+        &self,
+        session_id: &u64,
+        peer_id: &str,
+    ) -> Option<Arc<Box<dyn Connection>>> {
+        let states = self.states.read().await;
+        states.get(session_id)?.peer_streams.get(peer_id).cloned()
+    }
+
+    /// Cache an outbound stream to a peer for this session.
+    pub async fn store_peer_stream(
+        &self,
+        session_id: &u64,
+        peer_id: String,
+        stream: Arc<Box<dyn Connection>>,
+    ) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.peer_streams.insert(peer_id, stream);
         }
     }
 

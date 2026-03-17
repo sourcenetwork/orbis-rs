@@ -247,9 +247,10 @@ async fn iroh_router_builder_max_message_size() {
         bytes::Bytes::from(large_data.clone()),
         b"test/large".as_slice(),
     );
-    conn.send(msg).await.expect("Should send large message");
+    let stream = conn.open_stream().await.expect("Should open stream");
+    stream.send(msg).await.expect("Should send large message");
 
-    let response = tokio::time::timeout(std::time::Duration::from_secs(10), conn.recv())
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), stream.recv())
         .await
         .expect("Should not timeout")
         .expect("Should receive response");

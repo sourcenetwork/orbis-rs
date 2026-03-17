@@ -38,6 +38,7 @@ use crypto::{
     SCALAR_SIZE as FR_COMPRESSED_SIZE,
 };
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use network::Connection as NetworkConnection;
 use network::Message as NetworkMessage;
 use network::PeerId;
 use network::DKG;
@@ -562,10 +563,7 @@ where
                                 "DKG Coordinator: Could not send commitment to all peers - failing DKG to preserve expected redundancy"
                             );
                             // Clean up session to prevent memory leak from abandoned sessions
-                            self.app_state
-                                .dkg_session_state
-                                .remove_session(&session_id)
-                                .await;
+                            self.remove_session(session_id).await;
                             tracing::debug!(
                                 session_id = session_id,
                                 "Cleaned up session after commitment send failure"
@@ -751,6 +749,14 @@ where
         Ok(())
     }
 
+    /// Remove a DKG session from state.
+    async fn remove_session(&self, session_id: u64) {
+        self.app_state
+            .dkg_session_state
+            .remove_session(&session_id)
+            .await;
+    }
+
     /// Store peer IDs for a session (needed for sending messages in later phases)
     pub async fn set_peer_ids(&self, session_id: &u64, peer_ids: Vec<String>) {
         self.app_state
@@ -761,21 +767,22 @@ where
 
     /// Send a DKG message to a peer.
     ///
-    /// When `session_id` is `Some`, the connection is cached for the lifetime of
-    /// the session so that commitment and share messages for the same peer travel
-    /// over the **same** QUIC connection and persistent stream — guaranteeing
-    /// ordered delivery and eliminating the Phase 1 → Phase 2 race condition.
+    /// When `session_id` is `Some`, the stream is cached in the session state so
+    /// that all messages within a session to the same peer travel on the same QUIC
+    /// stream. This preserves QUIC's within-stream ordering guarantee
+    /// (SessionInit → Commitment → Share arrive in order at the receiver).
     ///
-    /// When `session_id` is `None` (e.g. for `SessionInit` messages sent before
-    /// a session exists on the receiver), a fresh one-shot connection is used.
+    /// When `session_id` is `None` (fire-and-forget messages), a fresh stream is
+    /// opened each time and dropped after the send.
+    ///
+    /// On connection-open failure the cached connection is evicted and a new one
+    /// is established before retrying.
     pub async fn send_message_to_peer(
         &self,
         peer_id_str: &str,
         message: DkgMessage,
-        _session_id: Option<u64>,
+        session_id: Option<u64>,
     ) -> Result<()> {
-        use crate::helpers::helpers::connect_to_peer;
-
         let message_type = match &message {
             DkgMessage::SessionInit { .. } => "session_init",
             DkgMessage::Commitment { .. } => "commitment",
@@ -787,62 +794,82 @@ where
         let message_data = serde_json::to_vec(&message)
             .map_err(|e| DkgError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
-        // Global per-peer connection pool — reused across all sessions and protocols.
-        let pool = &self.app_state.peer_connection_pool;
-        let conn = if let Some(cached) = pool.get(peer_id_str, DKG).await {
-            cached
+        let session_state = &self.app_state.dkg_session_state;
+
+        // Get or open the stream to use for this send.
+        //
+        // When session_id is Some, streams are cached in session state so all
+        // messages within a session to the same peer travel on the same QUIC stream,
+        // preserving within-stream ordering (SessionInit → Commitment → Share).
+        //
+        // When session_id is None, a fresh stream is opened and dropped after the send.
+        let stream: Arc<Box<dyn NetworkConnection>> = if let Some(sid) = session_id {
+            if let Some(cached) = session_state.get_peer_stream(&sid, peer_id_str).await {
+                cached
+            } else {
+                let new_stream = Arc::new(self.open_stream_to_peer(peer_id_str).await?);
+                session_state
+                    .store_peer_stream(&sid, peer_id_str.to_string(), Arc::clone(&new_stream))
+                    .await;
+                new_stream
+            }
         } else {
-            let new_conn = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
-                .await
-                .map_err(|e| {
-                    DkgError::NetworkConnection(format!(
-                        "Failed to connect to peer {}: {}",
-                        peer_id_str, e
-                    ))
-                })?;
-            pool.insert(peer_id_str.to_string(), DKG, new_conn).await;
-            pool.get(peer_id_str, DKG)
-                .await
-                .expect("connection was just inserted")
+            Arc::new(self.open_stream_to_peer(peer_id_str).await?)
         };
 
-        // Attempt send; on I/O error evict the stale entry and retry once with a fresh connection.
-        if let Err(send_err) = conn
-            .send(NetworkMessage::new(message_data.clone(), DKG))
+        stream
+            .send(NetworkMessage::new(message_data, DKG))
             .await
-        {
-            tracing::warn!(
-                peer = %peer_id_str,
-                error = %send_err,
-                "send failed on cached connection — evicting and reconnecting"
-            );
-            pool.remove(peer_id_str, DKG).await;
-            let fresh_conn = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
-                .await
-                .map_err(|e| {
-                    DkgError::NetworkConnection(format!(
-                        "Failed to reconnect to peer {}: {}",
-                        peer_id_str, e
-                    ))
-                })?;
-            pool.insert(peer_id_str.to_string(), DKG, fresh_conn).await;
-            let fresh_arc = pool
-                .get(peer_id_str, DKG)
-                .await
-                .expect("connection was just inserted");
-            fresh_arc
-                .send(NetworkMessage::new(message_data, DKG))
-                .await
-                .map_err(|e| {
-                    DkgError::NetworkCommunication(format!(
-                        "Failed to send to peer {} after reconnect: {}",
-                        peer_id_str, e
-                    ))
-                })?;
-        }
+            .map_err(|e| {
+                DkgError::NetworkCommunication(format!(
+                    "Failed to send to peer {}: {}",
+                    peer_id_str, e
+                ))
+            })?;
 
         metrics::record_dkg_message_sent(message_type);
         Ok(())
+    }
+
+    /// Open a QUIC stream to a peer, evicting and reconnecting the cached connection on failure.
+    async fn open_stream_to_peer(&self, peer_id_str: &str) -> Result<Box<dyn network::Connection>> {
+        let pool = &self.app_state.peer_connection_pool;
+        let peer_conn = pool
+            .get_or_connect(&self.app_state.network, peer_id_str, DKG)
+            .await
+            .map_err(|e| {
+                DkgError::NetworkConnection(format!(
+                    "Failed to connect to peer {}: {}",
+                    peer_id_str, e
+                ))
+            })?;
+
+        match peer_conn.open_stream().await {
+            Ok(s) => Ok(s),
+            Err(open_err) => {
+                tracing::warn!(
+                    peer = %peer_id_str,
+                    error = %open_err,
+                    "open_stream failed — evicting connection and reconnecting"
+                );
+                pool.remove(peer_id_str, DKG).await;
+                let fresh_conn = pool
+                    .get_or_connect(&self.app_state.network, peer_id_str, DKG)
+                    .await
+                    .map_err(|e| {
+                        DkgError::NetworkConnection(format!(
+                            "Failed to reconnect to peer {}: {}",
+                            peer_id_str, e
+                        ))
+                    })?;
+                fresh_conn.open_stream().await.map_err(|e| {
+                    DkgError::NetworkConnection(format!(
+                        "Failed to open stream to peer {} after reconnect: {}",
+                        peer_id_str, e
+                    ))
+                })
+            }
+        }
     }
 
     /// Phase 1: Generate polynomial and broadcast commitment to all peers
@@ -920,10 +947,7 @@ where
                 "DKG Coordinator: Could not broadcast commitment to all peers - failing DKG to preserve expected redundancy"
             );
             // Clean up session to prevent memory leak from abandoned sessions
-            self.app_state
-                .dkg_session_state
-                .remove_session(&session_id)
-                .await;
+            self.remove_session(session_id).await;
             tracing::debug!(
                 session_id = session_id,
                 "Cleaned up session after Phase 1 broadcast failure"
@@ -1045,10 +1069,7 @@ where
         if peer_ids.is_empty() {
             tracing::error!("DKG Coordinator: No peer_ids available to send shares to");
             // Clean up session to prevent memory leak from abandoned sessions
-            self.app_state
-                .dkg_session_state
-                .remove_session(&session_id)
-                .await;
+            self.remove_session(session_id).await;
             tracing::debug!(
                 session_id = session_id,
                 "Cleaned up session - no peer_ids available"
@@ -1182,10 +1203,7 @@ where
                 "DKG Coordinator: Could not send shares to all peers - failing DKG to preserve expected redundancy"
             );
             // Clean up session to prevent memory leak from abandoned sessions
-            self.app_state
-                .dkg_session_state
-                .remove_session(&session_id)
-                .await;
+            self.remove_session(session_id).await;
             tracing::debug!(
                 session_id = session_id,
                 "Cleaned up session after Phase 2 share send failure"
@@ -1512,10 +1530,7 @@ where
 
         // Clean up session data - no longer needed since private share is in local storage
         // and ring info is on the bulletin
-        self.app_state
-            .dkg_session_state
-            .remove_session(&session_id)
-            .await;
+        self.remove_session(session_id).await;
 
         // Record session completion metric
         metrics::record_dkg_session_completed();

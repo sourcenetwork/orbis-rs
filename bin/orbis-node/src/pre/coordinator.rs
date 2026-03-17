@@ -29,7 +29,6 @@ use crypto::r#trait::{
 };
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
-use network::Connection;
 use network::Message as NetworkMessage;
 use network::PeerId;
 use network::REENCRYPT;
@@ -87,11 +86,11 @@ where
         }
     }
 
-    /// Get a cached REENCRYPT connection for `peer_id_str`, or open and cache a new one.
-    async fn get_or_connect(
+    /// Get the cached REENCRYPT connection to `peer_id_str`, opening one if needed.
+    async fn get_peer_connection(
         &self,
         peer_id_str: &str,
-    ) -> Result<std::sync::Arc<Box<dyn Connection>>> {
+    ) -> Result<Arc<Box<dyn network::PeerConnection>>> {
         self.app_state
             .peer_connection_pool
             .get_or_connect(&self.app_state.network, peer_id_str, REENCRYPT)
@@ -258,26 +257,6 @@ where
         Ok(Some(response))
     }
 
-    /// Send a PRE message to a peer
-    pub async fn send_message_to_peer(&self, peer_id_str: &str, message: PreMessage) -> Result<()> {
-        let connection = self.get_or_connect(peer_id_str).await?;
-
-        let message_data = serde_json::to_vec(&message)
-            .map_err(|e| PreError::Serialization(format!("Failed to serialize message: {}", e)))?;
-
-        connection
-            .send(NetworkMessage::new(message_data, REENCRYPT))
-            .await
-            .map_err(|e| {
-                PreError::NetworkCommunication(format!(
-                    "Failed to send message to peer {}: {}",
-                    peer_id_str, e
-                ))
-            })?;
-
-        Ok(())
-    }
-
     /// Send a PRE request to a peer and wait for the response
     ///
     /// This method sends a request and waits for the response on the same connection,
@@ -288,12 +267,18 @@ where
         message: PreMessage,
         _request_id: &str,
     ) -> Result<()> {
-        let connection = self.get_or_connect(peer_id_str).await?;
+        let peer_conn = self.get_peer_connection(peer_id_str).await?;
+        let stream = peer_conn.open_stream().await.map_err(|e| {
+            PreError::NetworkConnection(format!(
+                "Failed to open stream to peer {}: {}",
+                peer_id_str, e
+            ))
+        })?;
 
         let message_data = serde_json::to_vec(&message)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
-        connection
+        stream
             .send(NetworkMessage::new(message_data, REENCRYPT))
             .await
             .map_err(|e| {
@@ -303,8 +288,8 @@ where
                 ))
             })?;
 
-        // Wait for response on the same connection with timeout
-        let response_msg = tokio::time::timeout(PEER_RESPONSE_TIMEOUT, connection.recv())
+        // Wait for response on the same stream with timeout
+        let response_msg = tokio::time::timeout(PEER_RESPONSE_TIMEOUT, stream.recv())
             .await
             .map_err(|_| {
                 PreError::Timeout(format!(
@@ -325,7 +310,7 @@ where
         })?;
 
         // Only store valid reencryption responses; log and drop peer errors
-        let authenticated_peer_id = connection.peer_id().clone();
+        let authenticated_peer_id = stream.peer_id().clone();
         match &response {
             PreMessage::ReencryptResponse { .. } => {
                 self.store_response(response, &authenticated_peer_id).await;
@@ -422,7 +407,8 @@ where
             )
             .await;
 
-        // Always cleanup, regardless of success or failure
+        // Always cleanup response state regardless of success or failure.
+        // Pool connections are permanent — no per-request eviction needed.
         self.app_state
             .pre_response_state
             .remove_response(&request_id_for_cleanup)

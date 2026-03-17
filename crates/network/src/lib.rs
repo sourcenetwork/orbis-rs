@@ -14,7 +14,9 @@ pub mod iroh;
 
 pub use error::{NetworkError, Result};
 pub use protocol::{DKG, REENCRYPT, SIGN};
-pub use r#trait::{Connection, Message, Network, PeerId, ProtocolHandler, Router, RouterBuilder};
+pub use r#trait::{
+    Connection, Message, Network, PeerConnection, PeerId, ProtocolHandler, Router, RouterBuilder,
+};
 
 // Export the selected implementation
 #[cfg(feature = "iroh")]

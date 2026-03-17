@@ -49,24 +49,43 @@ impl Message {
     }
 }
 
-/// A connection to a peer
+/// A single QUIC stream to a peer.
+///
+/// Obtained by calling [`PeerConnection::open_stream`] on a cached connection.
+/// Each stream is an independent, ordered byte channel with no head-of-line
+/// blocking relative to other streams on the same QUIC connection.
+/// The stream is closed (FIN sent) when this value is dropped.
 #[async_trait]
 pub trait Connection: Send + Sync {
-    /// Send a message over this connection
-    ///
-    /// Takes `&self` to allow concurrent sends from multiple tasks
+    /// Send a message over this stream
     async fn send(&self, message: Message) -> Result<()>;
 
-    /// Receive a message from this connection
-    ///
-    /// Takes `&self` to allow concurrent receives from multiple tasks
+    /// Receive a message from this stream
     async fn recv(&self) -> Result<Message>;
-
-    /// Close the connection
-    async fn close(&self) -> Result<()>;
 
     /// Get the peer ID of the remote peer
     fn peer_id(&self) -> &PeerId;
+}
+
+/// A persistent QUIC connection to a peer.
+///
+/// One connection is kept per `(peer_id, protocol)` in the pool. Individual
+/// requests and sessions open lightweight QUIC streams on top of it via
+/// [`open_stream`], which avoids a new handshake per request and eliminates
+/// head-of-line blocking between concurrent sessions.
+#[async_trait]
+pub trait PeerConnection: Send + Sync {
+    /// Open a new independent QUIC stream on this connection.
+    ///
+    /// The returned [`Connection`] is tied to this single bi-directional stream
+    /// and is dropped (sending FIN) when the caller is done.
+    async fn open_stream(&self) -> Result<Box<dyn Connection>>;
+
+    /// Get the peer ID of the remote peer
+    fn peer_id(&self) -> &PeerId;
+
+    /// Close the underlying QUIC connection
+    async fn close(&self) -> Result<()>;
 }
 
 /// Protocol handler for incoming connections
@@ -102,8 +121,11 @@ pub trait Router: Send + Sync {
 /// Network trait for establishing connections and listening
 #[async_trait]
 pub trait Network: Send + Sync {
-    /// Connect to a peer at the given address
-    async fn connect(&self, peer_id: &PeerId, protocol: &[u8]) -> Result<Box<dyn Connection>>;
+    /// Connect to a peer at the given address, returning a persistent QUIC connection.
+    ///
+    /// The caller should cache the returned [`PeerConnection`] and open individual
+    /// streams via [`PeerConnection::open_stream`] for each request or session.
+    async fn connect(&self, peer_id: &PeerId, protocol: &[u8]) -> Result<Box<dyn PeerConnection>>;
 
     /// Start listening for incoming connections
     async fn listen(&mut self, protocol: &[u8], handler: Box<dyn ProtocolHandler>) -> Result<()>;
