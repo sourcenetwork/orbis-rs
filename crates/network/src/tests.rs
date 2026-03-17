@@ -449,7 +449,10 @@ pub async fn test_concurrent_connections<N: Network>(net1: &N, net2: &N, net3: &
     let stream2 = conn2.open_stream().await.expect("Should open stream 2");
 
     let trigger = Message::new(Bytes::from_static(b"ping"), TEST_PROTOCOL);
-    stream1.send(trigger.clone()).await.expect("Should send trigger 1");
+    stream1
+        .send(trigger.clone())
+        .await
+        .expect("Should send trigger 1");
     stream2.send(trigger).await.expect("Should send trigger 2");
 
     // Wait for both handlers to be invoked
