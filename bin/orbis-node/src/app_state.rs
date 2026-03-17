@@ -1,4 +1,5 @@
 use crate::dkg::session_state::SessionStateManager;
+use crate::helpers::helpers::connect_to_peer;
 use crate::pre::response_state::PreResponseManager;
 use crate::sign::response_state::SignResponseManager;
 use authz::r#trait::Authz;
@@ -47,6 +48,24 @@ impl PeerConnectionPool {
             .write()
             .await
             .remove(&(peer_id.to_string(), protocol.to_vec()));
+    }
+
+    /// Get a cached connection for `peer_id_str` on `protocol`, or open and cache a new one.
+    pub async fn get_or_connect(
+        &self,
+        network: &Arc<dyn Network>,
+        peer_id_str: &str,
+        protocol: &'static [u8],
+    ) -> Result<Arc<Box<dyn Connection>>, network::error::NetworkError> {
+        if let Some(cached) = self.get(peer_id_str, protocol).await {
+            return Ok(cached);
+        }
+        let new_conn = Arc::new(connect_to_peer(network, peer_id_str.to_string(), protocol).await?);
+        self.connections.write().await.insert(
+            (peer_id_str.to_string(), protocol.to_vec()),
+            new_conn.clone(),
+        );
+        Ok(new_conn)
     }
 }
 

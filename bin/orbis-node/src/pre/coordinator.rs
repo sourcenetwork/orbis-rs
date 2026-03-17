@@ -15,7 +15,7 @@ use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::constants::PEER_RESPONSE_TIMEOUT;
 use crate::constants::PRE_COLLECTION_TIMEOUT;
 use crate::helpers::helpers::RingConfig;
-use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
+use crate::helpers::helpers::{determine_session_node_id, is_self_peer_id};
 use crate::pre::error::{PreError, Result};
 use crate::pre::helpers::{
     check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
@@ -92,24 +92,16 @@ where
         &self,
         peer_id_str: &str,
     ) -> Result<std::sync::Arc<Box<dyn Connection>>> {
-        let pool = &self.app_state.peer_connection_pool;
-        if let Some(cached) = pool.get(peer_id_str, REENCRYPT).await {
-            return Ok(cached);
-        }
-        let new_conn = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), REENCRYPT)
+        self.app_state
+            .peer_connection_pool
+            .get_or_connect(&self.app_state.network, peer_id_str, REENCRYPT)
             .await
             .map_err(|e| {
                 PreError::NetworkConnection(format!(
                     "Failed to connect to peer {}: {}",
                     peer_id_str, e
                 ))
-            })?;
-        pool.insert(peer_id_str.to_string(), REENCRYPT, new_conn)
-            .await;
-        Ok(pool
-            .get(peer_id_str, REENCRYPT)
-            .await
-            .expect("connection was just inserted"))
+            })
     }
 
     /// Handle an incoming PRE message

@@ -19,9 +19,7 @@ use crate::constants::{
     BULLETIN_RING_NAMESPACE, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
     PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
 };
-use crate::helpers::helpers::{
-    connect_to_peer, determine_session_node_id, is_self_peer_id, RingConfig,
-};
+use crate::helpers::helpers::{determine_session_node_id, is_self_peer_id, RingConfig};
 use crate::ring_state::RingPolyState;
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
@@ -100,23 +98,16 @@ where
         &self,
         peer_id_str: &str,
     ) -> Result<std::sync::Arc<Box<dyn Connection>>> {
-        let pool = &self.app_state.peer_connection_pool;
-        if let Some(cached) = pool.get(peer_id_str, SIGN).await {
-            return Ok(cached);
-        }
-        let new_conn = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), SIGN)
+        self.app_state
+            .peer_connection_pool
+            .get_or_connect(&self.app_state.network, peer_id_str, SIGN)
             .await
             .map_err(|e| {
                 SignError::NetworkConnection(format!(
                     "Failed to connect to peer {}: {}",
                     peer_id_str, e
                 ))
-            })?;
-        pool.insert(peer_id_str.to_string(), SIGN, new_conn).await;
-        Ok(pool
-            .get(peer_id_str, SIGN)
-            .await
-            .expect("connection was just inserted"))
+            })
     }
 
     /// Handle an incoming Sign message
