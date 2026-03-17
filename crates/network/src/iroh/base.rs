@@ -387,24 +387,6 @@ impl Connection for IrohConnectionWrapper {
         Ok(())
     }
 
-    async fn close_graceful(&self) -> Result<()> {
-        // 1. Finish the send stream so the remote reads a clean EOF
-        //    before we close the connection.
-        {
-            let mut guard = self.send_stream.lock().await;
-            if let Some(stream) = guard.as_mut() {
-                let _ = stream.finish();
-            }
-        }
-
-        // 2. Close the QUIC connection so the remote is notified even when
-        //    no stream was ever opened (e.g. connect-then-immediately-close).
-        self.conn.close(0u32.into(), b"");
-
-        metrics::record_connection_closed(&self.protocol);
-        Ok(())
-    }
-
     fn peer_id(&self) -> &PeerId {
         &self.peer_id
     }

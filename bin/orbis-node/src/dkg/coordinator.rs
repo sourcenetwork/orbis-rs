@@ -167,40 +167,23 @@ where
                     &self.app_state.local_storage,
                 )?;
 
-                let marked = self
+                if !self
                     .app_state
                     .dkg_session_state
                     .try_mark_ring_refreshing(ring_pk_hex)
-                    .await;
-
-                if !marked {
-                    // Ring already marked — either a duplicate SessionInit (same session) or a
-                    // different refresh attempt. Be idempotent only for the same session.
-                    let exists = self
-                        .app_state
-                        .dkg_session_state
-                        .session_exists(&session_id)
-                        .await;
-                    if !exists {
-                        // Different refresh in progress for this ring — reject
-                        return Err(DkgError::Unauthorized(
-                            "Refresh already in progress for this ring".to_string(),
-                        ));
-                    }
-                    tracing::info!(
-                        session_id = session_id,
-                        ring_pk_hex = %ring_pk_hex,
-                        sender_peer_hex = %sender_hex,
-                        "DKG Coordinator: Refresh SessionInit - ring already refreshing, same session (idempotent)"
-                    );
-                } else {
-                    tracing::info!(
-                        session_id = session_id,
-                        ring_pk = %ring_pk_hex,
-                        sender_peer_hex = %sender_hex,
-                        "DKG Coordinator: Refresh SessionInit validated and ring marked refreshing"
-                    );
+                    .await
+                {
+                    return Err(DkgError::Unauthorized(
+                        "Refresh already in progress for this ring".to_string(),
+                    ));
                 }
+
+                tracing::info!(
+                    session_id = session_id,
+                    ring_pk = %ring_pk_hex,
+                    sender_peer_hex = %sender_hex,
+                    "DKG Coordinator: Refresh SessionInit validated and ring marked refreshing"
+                );
             } else {
                 // 1. Authenticate: Validate JWT token
                 let current_time = SystemTime::now()

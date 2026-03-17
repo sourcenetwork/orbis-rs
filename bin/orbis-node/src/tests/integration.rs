@@ -742,12 +742,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // ====================================================================
     println!("Waiting for PSS refresh to complete (polling all 3 nodes)...");
 
-    // // Capture the initial polynomial from node 1 right after DKG so we can
-    // // confirm it changes after a refresh.
-    // let (initial_poly, _) = cli_tool::query_ring_state(endpoint.clone(), ring_pk_hex.clone())
-    //     .await
-    //     .expect("query_ring_state after DKG");
-
     let node_endpoints = [
         IntegrationTestNetwork::NODE1_GRPC.to_string(),
         IntegrationTestNetwork::NODE2_GRPC.to_string(),

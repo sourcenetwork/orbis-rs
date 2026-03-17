@@ -65,14 +65,6 @@ pub trait Connection: Send + Sync {
     /// Close the connection
     async fn close(&self) -> Result<()>;
 
-    /// Close the connection gracefully after flushing any pending outbound data.
-    ///
-    /// Implementations should ensure that all previously-sent bytes are made
-    /// available to the remote peer before initiating connection shutdown.
-    /// This is useful for protocols (such as DKG) that rely on delivery of
-    /// final messages (e.g. acknowledgements) before teardown.
-    async fn close_graceful(&self) -> Result<()>;
-
     /// Get the peer ID of the remote peer
     fn peer_id(&self) -> &PeerId;
 }

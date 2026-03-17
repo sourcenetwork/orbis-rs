@@ -160,16 +160,6 @@ where
     let mut sorted_peers = peer_ids.clone();
     sorted_peers.sort();
 
-    // Debug: log how this node sees the ring and initiator election inputs.
-    tracing::info!(
-        ring_id = %ring_id,
-        ring_pk_hex = %ring_payload.ring_pk,
-        our_peer_id_hex = %our_peer_id_hex,
-        our_node_part = %our_node_part,
-        sorted_peers = ?sorted_peers,
-        "PSS: refresh debug - ring metadata before initiator check"
-    );
-
     if extract_node_part(&sorted_peers[0]) != our_node_part {
         tracing::debug!(ring_id = %ring_id, "PSS: not the initiator, skipping");
         return Ok(());
@@ -184,15 +174,6 @@ where
         DkgError::Deserialization(format!("PSS: failed to deserialize ring_pk: {}", e))
     })?;
     let ring_pk_str = ring_pk.to_string();
-
-    tracing::info!(
-        ring_id = %ring_id,
-        ring_pk_hex = %ring_payload.ring_pk,
-        ring_pk_str = %ring_pk_str,
-        initiator_peer_id_hex = %our_peer_id_hex,
-        initiator_node_part = %our_node_part,
-        "PSS: initiating refresh"
-    );
 
     // Prevent duplicate refresh sessions on this node. The flag is cleared by
     // the cleanup/expiration workers (via `state.refresh_ring_key`) once the
@@ -301,13 +282,6 @@ where
             bad_peer, err
         ))));
     }
-
-    // let conn = connect_to_peers(&app_state.network, peer_ids.clone(), DKG).await;
-    // if conn.successful < conn.total {
-    //     return Err(DkgError::NetworkConnection(format!(
-    //         "PSS: connected to {}/{} peers",
-    //         conn.successful, conn.total
-    // )));
 
     // Send RefreshSessionInit to all peers
     let init_msg = DkgMessage::SessionInit {
