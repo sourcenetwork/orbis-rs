@@ -44,6 +44,10 @@ pub enum DkgError {
     #[error("DKG protocol error: {0}")]
     ProtocolError(String),
 
+    /// Attempted to create a session that already exists
+    #[error("DKG session already exists")]
+    SessionAlreadyExists,
+
     /// Invalid input
     #[error("Invalid input: {0}")]
     InvalidInput(String),

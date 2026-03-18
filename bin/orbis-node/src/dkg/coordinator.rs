@@ -17,8 +17,7 @@
 use crate::app_state::AppState;
 use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::constants::{
-    BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, COMMIT_WAIT_MS,
-    MAX_COMMITMENT_COEFFICIENTS, MAX_COMMIT_WAIT_RETRIES,
+    BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, MAX_COMMITMENT_COEFFICIENTS,
 };
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
@@ -39,6 +38,7 @@ use crypto::{
     SCALAR_SIZE as FR_COMPRESSED_SIZE,
 };
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use network::Connection as NetworkConnection;
 use network::Message as NetworkMessage;
 use network::PeerId;
 use network::DKG;
@@ -102,7 +102,6 @@ where
                 (DkgMessageType::Complaint, Some(*from_node_id))
             }
             DkgMessage::SessionInit { .. } => (DkgMessageType::SessionInit, None),
-            DkgMessage::Ack { .. } => (DkgMessageType::Ack, None),
             DkgMessage::Error { .. } => (DkgMessageType::Error, None),
         };
 
@@ -112,12 +111,11 @@ where
             DkgMessageType::Commitment => "commitment",
             DkgMessageType::Share => "share",
             DkgMessageType::Complaint => "complaint",
-            DkgMessageType::Ack => "ack",
             DkgMessageType::Error => "error",
         };
         metrics::record_dkg_message_received(message_type_str);
 
-        // Check for duplicate messages (except SessionInit, Ack, Error)
+        // Check for duplicate messages (except SessionInit and Error)
         if let Some(from_node_id) = from_node_id_opt {
             if self
                 .app_state
@@ -156,6 +154,14 @@ where
                 })?;
 
                 let sender_hex = hex::encode(sender_peer_id.as_bytes());
+
+                tracing::info!(
+                    session_id = session_id,
+                    ring_pk_hex = %ring_pk_hex,
+                    sender_peer_hex = %sender_hex,
+                    "DKG Coordinator: Refresh SessionInit received - pre-validation"
+                );
+
                 validate_refresh_session_init(
                     ring_pk_hex,
                     &sender_hex,
@@ -168,16 +174,16 @@ where
                     .try_mark_ring_refreshing(ring_pk_hex)
                     .await
                 {
-                    return Err(DkgError::Unauthorized(format!(
-                        "Refresh already in progress for ring {}",
-                        ring_pk_hex
-                    )));
+                    return Err(DkgError::Unauthorized(
+                        "Refresh already in progress for this ring".to_string(),
+                    ));
                 }
 
                 tracing::info!(
                     session_id = session_id,
                     ring_pk = %ring_pk_hex,
-                    "DKG Coordinator: Refresh SessionInit validated"
+                    sender_peer_hex = %sender_hex,
+                    "DKG Coordinator: Refresh SessionInit validated and ring marked refreshing"
                 );
             } else {
                 // 1. Authenticate: Validate JWT token
@@ -225,21 +231,34 @@ where
                 "DKG Coordinator: Received SessionInit - assigned node_id from initiator"
             );
 
-            // If session doesn't exist, create it with assigned node_id
+            // If session doesn't exist, create it with assigned node_id.
+            // Idempotent: if a concurrent handler created it (e.g. duplicate SessionInit),
+            // treat "session already exists" as success.
             if !self
                 .app_state
                 .dkg_session_state
                 .session_exists(&session_id)
                 .await
             {
-                self.create_session(
-                    session_id,
-                    *assigned_node_id,
-                    *threshold as usize,
-                    *total_participants as usize,
-                    DkgRole::Standard,
-                )
-                .await?;
+                match self
+                    .create_session(
+                        session_id,
+                        *assigned_node_id,
+                        *threshold as usize,
+                        *total_participants as usize,
+                        DkgRole::Standard,
+                    )
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(DkgError::SessionAlreadyExists) => {
+                        tracing::debug!(
+                            session_id = session_id,
+                            "DKG Coordinator: Session already created by concurrent handler"
+                        );
+                    }
+                    Err(e) => return Err(e),
+                }
 
                 if *is_refresh {
                     self.app_state
@@ -287,10 +306,7 @@ where
                 "DKG Coordinator: Session init"
             );
 
-            return Ok(Some(DkgMessage::Ack {
-                session_id,
-                message_type: "SessionInit".to_string(),
-            }));
+            return Ok(None);
         }
 
         // For all other messages, ensure the session exists
@@ -300,6 +316,13 @@ where
             .session_exists(&session_id)
             .await
         {
+            let sender_hex = hex::encode(sender_peer_id.as_bytes());
+            tracing::warn!(
+                session_id = session_id,
+                sender_peer_hex = %sender_hex,
+                message_type = ?message_type,
+                "DKG Coordinator: Rejecting message - session not found on receiver"
+            );
             return Err(session_not_found(session_id));
         }
 
@@ -509,7 +532,10 @@ where
                                 commitment: commitment_bytes.clone(),
                             };
 
-                            match self.send_message_to_peer(peer_id_str, commitment_msg).await {
+                            match self
+                                .send_message_to_peer(peer_id_str, commitment_msg, Some(session_id))
+                                .await
+                            {
                                 Ok(_) => sent_count += 1,
                                 Err(e) => {
                                     tracing::error!(
@@ -537,10 +563,7 @@ where
                                 "DKG Coordinator: Could not send commitment to all peers - failing DKG to preserve expected redundancy"
                             );
                             // Clean up session to prevent memory leak from abandoned sessions
-                            self.app_state
-                                .dkg_session_state
-                                .remove_session(&session_id)
-                                .await;
+                            self.remove_session(session_id).await;
                             tracing::debug!(
                                 session_id = session_id,
                                 "Cleaned up session after commitment send failure"
@@ -603,73 +626,36 @@ where
                         to_node_id, our_node_id
                     )));
                 }
-                // TODO: Bad fix, have phases use same QUIC connection (next PR)
-                // Receive and verify the share, retrying briefly if the sender's
-                // Phase 1 commitment hasn't arrived yet (each message uses a fresh
-                // network connection, so ordering between the commitment and the
-                // share is not guaranteed).
-                let mut last_err: Option<DkgError> = None;
-                let mut succeeded = false;
-                for attempt in 0..=MAX_COMMIT_WAIT_RETRIES {
-                    // Re-deserialize share value each attempt (cheap; avoids Clone bound)
-                    let share_val =
-                        <D::ShareValue>::from_bytes(share_value.as_slice()).map_err(|e| {
-                            DkgError::Deserialization(format!(
-                                "Failed to deserialize share value: {}",
+                // Commitment and share are delivered over the same persistent QUIC
+                // stream (one stream per connection, opened lazily on first send).
+                // QUIC guarantees in-order delivery within a stream, so the
+                // commitment always arrives before the share — no retry needed.
+                let share_val =
+                    <D::ShareValue>::from_bytes(share_value.as_slice()).map_err(|e| {
+                        DkgError::Deserialization(format!(
+                            "Failed to deserialize share value: {}",
+                            e
+                        ))
+                    })?;
+                let share = DistributedShare {
+                    from_id: from_node_id,
+                    to_id: to_node_id,
+                    value: share_val,
+                    nonce,
+                    session_id,
+                };
+                self.app_state
+                    .dkg_session_state
+                    .with_state_mut(&session_id, |state| {
+                        state.node.receive_share(share).map_err(|e| {
+                            DkgError::ShareVerificationFailed(format!(
+                                "Failed to receive share: {}",
                                 e
                             ))
-                        })?;
-                    let share = DistributedShare {
-                        from_id: from_node_id,
-                        to_id: to_node_id,
-                        value: share_val,
-                        nonce,
-                        session_id,
-                    };
-                    let result = self
-                        .app_state
-                        .dkg_session_state
-                        .with_state_mut(&session_id, |state| {
-                            state.node.receive_share(share).map_err(|e| match e {
-                                crypto::error::CryptoError::CommitmentMissing(node_id) => {
-                                    DkgError::CommitmentNotYetReceived(node_id)
-                                }
-                                _ => DkgError::ShareVerificationFailed(format!(
-                                    "Failed to receive share: {}",
-                                    e
-                                )),
-                            })
                         })
-                        .await
-                        .ok_or_else(|| session_not_found(session_id))?;
-                    match result {
-                        Ok(_) => {
-                            succeeded = true;
-                            break;
-                        }
-                        Err(DkgError::CommitmentNotYetReceived(_))
-                            if attempt < MAX_COMMIT_WAIT_RETRIES =>
-                        {
-                            tracing::debug!(
-                                from_node_id = from_node_id,
-                                attempt = attempt + 1,
-                                "Share arrived before commitment; retrying after {}ms",
-                                COMMIT_WAIT_MS
-                            );
-                            tokio::time::sleep(std::time::Duration::from_millis(COMMIT_WAIT_MS))
-                                .await;
-                            last_err = Some(result.unwrap_err());
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-                if !succeeded {
-                    return Err(last_err.unwrap_or_else(|| {
-                        DkgError::ShareVerificationFailed(
-                            "Share verification failed after retries".to_string(),
-                        )
-                    }));
-                }
+                    })
+                    .await
+                    .ok_or_else(|| session_not_found(session_id))??;
 
                 tracing::debug!(
                     from_node_id = from_node_id,
@@ -709,11 +695,6 @@ where
                     "DKG Coordinator: Received complaint"
                 );
                 None // For now, no response needed
-            }
-            DkgMessage::Ack { .. } => {
-                // Acknowledgment received
-                tracing::debug!(session_id = session_id, "DKG Coordinator: Received ACK");
-                None
             }
             DkgMessage::Error { error, .. } => {
                 // Error received
@@ -756,16 +737,21 @@ where
             .create_session(session_id, *dkg_node, total_nodes)
             .await
         {
-            return Err(DkgError::ProtocolError(format!(
-                "DKG session {} already exists",
-                session_id
-            )));
+            return Err(DkgError::SessionAlreadyExists);
         }
 
         // Record metrics
         metrics::record_dkg_session_started();
 
         Ok(())
+    }
+
+    /// Remove a DKG session from state.
+    async fn remove_session(&self, session_id: u64) {
+        self.app_state
+            .dkg_session_state
+            .remove_session(&session_id)
+            .await;
     }
 
     /// Store peer IDs for a session (needed for sending messages in later phases)
@@ -776,51 +762,84 @@ where
             .await;
     }
 
-    /// Send a DKG message to a peer
+    /// Send a DKG message to a peer.
     ///
-    /// Connects to the peer if needed, sends the message, then closes the connection.
-    pub async fn send_message_to_peer(&self, peer_id_str: &str, message: DkgMessage) -> Result<()> {
-        use crate::helpers::helpers::connect_to_peer;
-
-        // Record message type for metrics
+    /// When `session_id` is `Some`, the stream is cached in the session state so
+    /// that all messages within a session to the same peer travel on the same QUIC
+    /// stream. This preserves QUIC's within-stream ordering guarantee
+    /// (SessionInit → Commitment → Share arrive in order at the receiver).
+    ///
+    /// When `session_id` is `None` (fire-and-forget messages), a fresh stream is
+    /// opened each time and dropped after the send.
+    ///
+    /// On connection-open failure the cached connection is evicted and a new one
+    /// is established before retrying.
+    pub async fn send_message_to_peer(
+        &self,
+        peer_id_str: &str,
+        message: DkgMessage,
+        session_id: Option<u64>,
+    ) -> Result<()> {
         let message_type = match &message {
             DkgMessage::SessionInit { .. } => "session_init",
             DkgMessage::Commitment { .. } => "commitment",
             DkgMessage::Share { .. } => "share",
             DkgMessage::Complaint { .. } => "complaint",
-            DkgMessage::Ack { .. } => "ack",
             DkgMessage::Error { .. } => "error",
         };
 
-        // Connect to peer
-        let connection = connect_to_peer(&self.app_state.network, peer_id_str.to_string(), DKG)
-            .await
-            .map_err(|e| {
-                DkgError::NetworkConnection(format!(
-                    "Failed to connect to peer {}: {}",
-                    peer_id_str, e
-                ))
-            })?;
-
-        // Serialize message
         let message_data = serde_json::to_vec(&message)
             .map_err(|e| DkgError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
-        // Send message
-        connection
+        let session_state = &self.app_state.dkg_session_state;
+
+        // Get or open the stream to use for this send.
+        //
+        // When session_id is Some, streams are cached in session state so all
+        // messages within a session to the same peer travel on the same QUIC stream,
+        // preserving within-stream ordering (SessionInit → Commitment → Share).
+        //
+        // When session_id is None, a fresh stream is opened and dropped after the send.
+        let stream: Arc<dyn NetworkConnection> = if let Some(sid) = session_id {
+            if let Some(cached) = session_state.get_peer_stream(&sid, peer_id_str).await {
+                cached
+            } else {
+                let new_stream = Arc::from(self.open_stream_to_peer(peer_id_str).await?);
+                session_state
+                    .store_peer_stream(&sid, peer_id_str.to_string(), Arc::clone(&new_stream))
+                    .await;
+                new_stream
+            }
+        } else {
+            Arc::from(self.open_stream_to_peer(peer_id_str).await?)
+        };
+
+        stream
             .send(NetworkMessage::new(message_data, DKG))
             .await
             .map_err(|e| {
                 DkgError::NetworkCommunication(format!(
-                    "Failed to send message to peer {}: {}",
+                    "Failed to send to peer {}: {}",
                     peer_id_str, e
                 ))
             })?;
 
-        // Record metrics
         metrics::record_dkg_message_sent(message_type);
-
         Ok(())
+    }
+
+    /// Open a QUIC stream to a peer, evicting and reconnecting the cached connection on failure.
+    async fn open_stream_to_peer(&self, peer_id_str: &str) -> Result<Box<dyn network::Connection>> {
+        self.app_state
+            .peer_connection_pool
+            .open_stream(&self.app_state.network, peer_id_str, DKG)
+            .await
+            .map_err(|e| {
+                DkgError::NetworkConnection(format!(
+                    "Failed to open stream to peer {}: {}",
+                    peer_id_str, e
+                ))
+            })
     }
 
     /// Phase 1: Generate polynomial and broadcast commitment to all peers
@@ -871,7 +890,10 @@ where
                 commitment: commitment_bytes.clone(),
             };
 
-            if let Err(e) = self.send_message_to_peer(peer_id_str, commitment_msg).await {
+            if let Err(e) = self
+                .send_message_to_peer(peer_id_str, commitment_msg, Some(session_id))
+                .await
+            {
                 tracing::error!(peer_id = %peer_id_str, error = %e, "Failed to send commitment to peer");
                 // Continue with other peers even if one fails
             } else {
@@ -895,10 +917,7 @@ where
                 "DKG Coordinator: Could not broadcast commitment to all peers - failing DKG to preserve expected redundancy"
             );
             // Clean up session to prevent memory leak from abandoned sessions
-            self.app_state
-                .dkg_session_state
-                .remove_session(&session_id)
-                .await;
+            self.remove_session(session_id).await;
             tracing::debug!(
                 session_id = session_id,
                 "Cleaned up session after Phase 1 broadcast failure"
@@ -1020,10 +1039,7 @@ where
         if peer_ids.is_empty() {
             tracing::error!("DKG Coordinator: No peer_ids available to send shares to");
             // Clean up session to prevent memory leak from abandoned sessions
-            self.app_state
-                .dkg_session_state
-                .remove_session(&session_id)
-                .await;
+            self.remove_session(session_id).await;
             tracing::debug!(
                 session_id = session_id,
                 "Cleaned up session - no peer_ids available"
@@ -1071,7 +1087,10 @@ where
                     share_value: share_value_bytes.clone(),
                     nonce: share.nonce,
                 };
-                match self.send_message_to_peer(&target_peer_id, share_msg).await {
+                match self
+                    .send_message_to_peer(&target_peer_id, share_msg, Some(session_id))
+                    .await
+                {
                     Ok(_) => {
                         shares_sent += 1;
                         tracing::debug!(
@@ -1107,7 +1126,7 @@ where
                         nonce: share.nonce,
                     };
                     match self
-                        .send_message_to_peer(peer_id_str, broadcast_share_msg)
+                        .send_message_to_peer(peer_id_str, broadcast_share_msg, Some(session_id))
                         .await
                     {
                         Ok(_) => {
@@ -1154,10 +1173,7 @@ where
                 "DKG Coordinator: Could not send shares to all peers - failing DKG to preserve expected redundancy"
             );
             // Clean up session to prevent memory leak from abandoned sessions
-            self.app_state
-                .dkg_session_state
-                .remove_session(&session_id)
-                .await;
+            self.remove_session(session_id).await;
             tracing::debug!(
                 session_id = session_id,
                 "Cleaned up session after Phase 2 share send failure"
@@ -1172,31 +1188,32 @@ where
         Ok(())
     }
 
-    /// Check if Phase 2 is complete and trigger Phase 4 if so
-    ///
-    /// This should be called after receiving a share message.
+    /// Check if Phase 2 is complete (all shares received) and trigger Phase 4 if so.
     pub async fn check_and_trigger_phase4(&self, session_id: u64) -> Result<()> {
-        // Get expected shares count
-        let expected_shares = self
+        // Read all relevant counters in a single lock to avoid TOCTOU races.
+        let (expected, received_shares, phase) = self
             .app_state
             .dkg_session_state
-            .with_state(&session_id, |state| state.node.total_nodes() - 1)
+            .with_state(&session_id, |state| {
+                (
+                    state.node.total_nodes() - 1,
+                    state.shares_received,
+                    state.phase,
+                )
+            })
             .await
             .ok_or_else(|| session_not_found(session_id))?;
 
-        // Get the actual count from session_state
-        let received_shares = self
-            .app_state
-            .dkg_session_state
-            .with_state(&session_id, |state| state.shares_received)
-            .await
-            .ok_or_else(|| session_not_found(session_id))?;
+        // Guard: don't start Phase 4 again if already completed.
+        if phase == DkgPhase::Phase4Complete {
+            return Ok(());
+        }
 
-        if received_shares >= expected_shares {
+        if received_shares >= expected {
             tracing::info!(
-                received = received_shares,
-                expected = expected_shares,
-                "Phase 2 complete: Proceeding to Phase 4"
+                received_shares = received_shares,
+                expected = expected,
+                "Phase 2 complete (all shares received): Proceeding to Phase 4"
             );
 
             // Verify we have all commitments before proceeding
@@ -1483,10 +1500,7 @@ where
 
         // Clean up session data - no longer needed since private share is in local storage
         // and ring info is on the bulletin
-        self.app_state
-            .dkg_session_state
-            .remove_session(&session_id)
-            .await;
+        self.remove_session(session_id).await;
 
         // Record session completion metric
         metrics::record_dkg_session_completed();

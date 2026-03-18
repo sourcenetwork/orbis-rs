@@ -15,7 +15,7 @@ use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::constants::PEER_RESPONSE_TIMEOUT;
 use crate::constants::PRE_COLLECTION_TIMEOUT;
 use crate::helpers::helpers::RingConfig;
-use crate::helpers::helpers::{connect_to_peer, determine_session_node_id, is_self_peer_id};
+use crate::helpers::helpers::{determine_session_node_id, is_self_peer_id};
 use crate::pre::error::{PreError, Result};
 use crate::pre::helpers::{
     check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
@@ -240,39 +240,6 @@ where
         Ok(Some(response))
     }
 
-    /// Send a PRE message to a peer
-    pub async fn send_message_to_peer(&self, peer_id_str: &str, message: PreMessage) -> Result<()> {
-        use crate::helpers::helpers::connect_to_peer;
-
-        // Connect to peer
-        let connection =
-            connect_to_peer(&self.app_state.network, peer_id_str.to_string(), REENCRYPT)
-                .await
-                .map_err(|e| {
-                    PreError::NetworkConnection(format!(
-                        "Failed to connect to peer {}: {}",
-                        peer_id_str, e
-                    ))
-                })?;
-
-        // Serialize message
-        let message_data = serde_json::to_vec(&message)
-            .map_err(|e| PreError::Serialization(format!("Failed to serialize message: {}", e)))?;
-
-        // Send message
-        connection
-            .send(NetworkMessage::new(message_data, REENCRYPT))
-            .await
-            .map_err(|e| {
-                PreError::NetworkCommunication(format!(
-                    "Failed to send message to peer {}: {}",
-                    peer_id_str, e
-                ))
-            })?;
-
-        Ok(())
-    }
-
     /// Send a PRE request to a peer and wait for the response
     ///
     /// This method sends a request and waits for the response on the same connection,
@@ -283,23 +250,22 @@ where
         message: PreMessage,
         _request_id: &str,
     ) -> Result<()> {
-        // Connect to peer
-        let connection =
-            connect_to_peer(&self.app_state.network, peer_id_str.to_string(), REENCRYPT)
-                .await
-                .map_err(|e| {
-                    PreError::NetworkConnection(format!(
-                        "Failed to connect to peer {}: {}",
-                        peer_id_str, e
-                    ))
-                })?;
+        let stream = self
+            .app_state
+            .peer_connection_pool
+            .open_stream(&self.app_state.network, peer_id_str, REENCRYPT)
+            .await
+            .map_err(|e| {
+                PreError::NetworkConnection(format!(
+                    "Failed to open stream to peer {}: {}",
+                    peer_id_str, e
+                ))
+            })?;
 
-        // Serialize message
         let message_data = serde_json::to_vec(&message)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
-        // Send message
-        connection
+        stream
             .send(NetworkMessage::new(message_data, REENCRYPT))
             .await
             .map_err(|e| {
@@ -309,8 +275,8 @@ where
                 ))
             })?;
 
-        // Wait for response on the same connection with timeout
-        let response_msg = tokio::time::timeout(PEER_RESPONSE_TIMEOUT, connection.recv())
+        // Wait for response on the same stream with timeout
+        let response_msg = tokio::time::timeout(PEER_RESPONSE_TIMEOUT, stream.recv())
             .await
             .map_err(|_| {
                 PreError::Timeout(format!(
@@ -331,7 +297,7 @@ where
         })?;
 
         // Only store valid reencryption responses; log and drop peer errors
-        let authenticated_peer_id = connection.peer_id().clone();
+        let authenticated_peer_id = stream.peer_id().clone();
         match &response {
             PreMessage::ReencryptResponse { .. } => {
                 self.store_response(response, &authenticated_peer_id).await;
@@ -428,7 +394,8 @@ where
             )
             .await;
 
-        // Always cleanup, regardless of success or failure
+        // Always cleanup response state regardless of success or failure.
+        // Pool connections are permanent — no per-request eviction needed.
         self.app_state
             .pre_response_state
             .remove_response(&request_id_for_cleanup)

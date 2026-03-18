@@ -45,7 +45,6 @@ pub enum DkgMessageType {
     Share,
     Complaint,
     SessionInit,
-    Ack,
     Error,
 }
 
@@ -68,9 +67,6 @@ pub struct DkgSessionState<D: Dkg> {
     pub phase: DkgPhase,
     /// When the current phase started (reset on every phase transition)
     pub phase_started_at: Instant,
-    /// Connection pool: peer_id_string -> connection
-    /// Connections are reused for the duration of the session
-    pub connections: HashMap<String, Arc<RwLock<Box<dyn Connection>>>>,
     /// Mapping of node IDs to peer IDs for efficient routing
     pub node_id_to_peer_id: HashMap<u32, String>,
     /// Mapping of peer IDs to node IDs
@@ -96,6 +92,12 @@ pub struct DkgSessionState<D: Dkg> {
     /// add the refresh delta, and store the combined share under the same key so the
     /// ring public key and local-storage slot are unchanged.
     pub refresh_ring_key: Option<String>,
+    /// Per-peer QUIC streams for this session.
+    ///
+    /// All DKG messages to the same peer within a session travel on the same stream,
+    /// preserving QUIC's within-stream ordering guarantee (SessionInit → Commitment → Share).
+    /// Streams are dropped automatically when the session is removed.
+    pub peer_streams: HashMap<String, Arc<dyn Connection>>,
 }
 
 impl<D: Dkg> DkgSessionState<D> {
@@ -106,7 +108,6 @@ impl<D: Dkg> DkgSessionState<D> {
             created_at: Instant::now(),
             phase: DkgPhase::Initializing,
             phase_started_at: Instant::now(),
-            connections: HashMap::new(),
             node_id_to_peer_id: HashMap::new(),
             peer_id_to_node_id: HashMap::new(),
             peer_ids: Vec::new(),
@@ -117,6 +118,7 @@ impl<D: Dkg> DkgSessionState<D> {
             is_refresh: false,
             pss_interval: None,
             refresh_ring_key: None,
+            peer_streams: HashMap::new(),
         }
     }
 
@@ -264,7 +266,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 }
                 tracing::debug!(
                     session_id = session_id,
-                    connections = state.connections.len(),
                     "SessionStateManager: Cleaned up abandoned session"
                 );
             }
@@ -289,16 +290,12 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             let mut states = states.write().await;
             let initial_count = states.len();
 
-            // Collect refresh ring keys for sessions that are about to be removed so we
-            // can clear their in-progress flags after the retain loop.
-            let mut refresh_keys_to_clear: Vec<String> = Vec::new();
-
-            states.retain(|session_id, state| {
-                // Skip completed sessions — they'll be removed by remove_session()
+            // Collect session IDs to remove (expired or stalled)
+            let mut to_remove_ids: Vec<u64> = Vec::new();
+            for (session_id, state) in states.iter() {
                 if state.phase == DkgPhase::Phase4Complete {
-                    return true;
+                    continue;
                 }
-
                 let age = now.duration_since(state.created_at);
                 if age > SESSION_TTL {
                     metrics::record_dkg_session_abandoned();
@@ -308,15 +305,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         phase = ?state.phase,
                         "SessionStateManager: Removing expired DKG session"
                     );
-                    if state.is_refresh {
-                        if let Some(k) = &state.refresh_ring_key {
-                            refresh_keys_to_clear.push(k.clone());
-                        }
-                    }
-                    return false;
+                    to_remove_ids.push(*session_id);
+                    continue;
                 }
-
-                // Phase-level timeout: if a non-initial phase has stalled, remove it
                 let phase_age = now.duration_since(state.phase_started_at);
                 if phase_age > DKG_PHASE_TIMEOUT && state.phase != DkgPhase::Initializing {
                     metrics::record_dkg_session_abandoned();
@@ -326,16 +317,19 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         phase_age_secs = phase_age.as_secs(),
                         "SessionStateManager: Removing DKG session stalled in phase"
                     );
-                    if state.is_refresh {
-                        if let Some(k) = &state.refresh_ring_key {
-                            refresh_keys_to_clear.push(k.clone());
-                        }
-                    }
-                    return false;
+                    to_remove_ids.push(*session_id);
                 }
+            }
 
-                true // keep
-            });
+            // Remove sessions (connections are per-peer and never closed here)
+            let mut refresh_keys_to_clear: Vec<String> = Vec::new();
+            for session_id in to_remove_ids {
+                if let Some(state) = states.remove(&session_id) {
+                    if let Some(k) = state.refresh_ring_key {
+                        refresh_keys_to_clear.push(k);
+                    }
+                }
+            }
 
             // Clear in-progress refresh flags for expired sessions
             if !refresh_keys_to_clear.is_empty() {
@@ -501,35 +495,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states.get(session_id).map(|s| s.peer_ids.clone())
     }
 
-    /// Add a connection to the pool for a session
-    pub async fn add_connection(
-        &self,
-        session_id: &u64,
-        peer_id_str: String,
-        connection: Box<dyn Connection>,
-    ) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state
-                .connections
-                .insert(peer_id_str, Arc::new(RwLock::new(connection)));
-        }
-    }
-
-    /// Get a connection from the pool (returns Arc to avoid removing from pool)
-    pub async fn get_connection(
-        &self,
-        session_id: &u64,
-        peer_id_str: &str,
-    ) -> Option<Arc<RwLock<Box<dyn Connection>>>> {
-        let states = self.states.read().await;
-        states
-            .get(session_id)?
-            .connections
-            .get(peer_id_str)
-            .cloned()
-    }
-
     /// Set node_id to peer_id mappings for efficient routing
     pub async fn set_node_peer_mappings(
         &self,
@@ -614,19 +579,63 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
-    /// Remove a session and clean up all associated resources
-    ///
-    /// This should be called after DKG Phase 4 completes to free memory
-    /// and close connections. The session data is no longer needed since
-    /// the private share is stored in local storage and ring info is on the bulletin.
-    pub async fn remove_session(&self, session_id: &u64) {
+    /// Get the cached outbound stream to a peer for this session, if one exists.
+    pub async fn get_peer_stream(
+        &self,
+        session_id: &u64,
+        peer_id: &str,
+    ) -> Option<Arc<dyn Connection>> {
+        let states = self.states.read().await;
+        states.get(session_id)?.peer_streams.get(peer_id).cloned()
+    }
+
+    /// Cache an outbound stream to a peer for this session.
+    pub async fn store_peer_stream(
+        &self,
+        session_id: &u64,
+        peer_id: String,
+        stream: Arc<dyn Connection>,
+    ) {
         let mut states = self.states.write().await;
-        if let Some(state) = states.remove(session_id) {
-            // Connections will be dropped when state goes out of scope
+        if let Some(state) = states.get_mut(session_id) {
+            state.peer_streams.insert(peer_id, stream);
+        }
+    }
+
+    /// Remove a session and free its memory.
+    ///
+    /// Called after DKG Phase 4 completes. The session data is no longer needed
+    /// since the private share is stored in local storage and ring info is on
+    /// the bulletin.
+    ///
+    /// Per-peer connections are NOT closed here — they live in `peer_connections`
+    /// and remain open for future sessions. This avoids the QUIC CONNECTION_CLOSE
+    /// race where the remote peer might still be reading the last buffered message.
+    pub async fn remove_session(&self, session_id: &u64) {
+        let ring_key_to_clear = {
+            let mut states = self.states.write().await;
+            if let Some(state) = states.remove(session_id) {
+                tracing::debug!(
+                    session_id = session_id,
+                    "SessionStateManager: Removed session"
+                );
+                if state.is_refresh {
+                    state.refresh_ring_key
+                } else {
+                    None
+                }
+            } else {
+                return;
+            }
+        };
+
+        // Clear the in-progress refresh flag so future PSS attempts can proceed.
+        if let Some(key) = ring_key_to_clear {
+            self.rings_refreshing.write().await.remove(&key);
             tracing::debug!(
                 session_id = session_id,
-                connections = state.connections.len(),
-                "SessionStateManager: Removed session and closed connections"
+                ring_key = %key,
+                "SessionStateManager: Cleared in-progress refresh flag on remove_session"
             );
         }
     }

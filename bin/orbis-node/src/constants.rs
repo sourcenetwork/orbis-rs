@@ -55,16 +55,6 @@ pub const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 /// Set to 1 minute for reasonable responsiveness without excessive overhead.
 pub const SESSION_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Maximum number of retries when a share arrives before the sender's commitment.
-///
-/// Each attempt waits COMMIT_WAIT_MS before retrying. This handles the race where
-/// Phase 2 shares and Phase 1 commitments travel on separate network connections
-/// and can arrive out of order.
-pub const MAX_COMMIT_WAIT_RETRIES: usize = 5;
-
-/// Milliseconds to wait between commitment-wait retries.
-pub const COMMIT_WAIT_MS: u64 = 50;
-
 /// Timeout for a single DKG phase before the session is considered stalled
 ///
 /// If a DKG session remains in the same phase for longer than this duration,
@@ -125,6 +115,18 @@ pub const SIGN_RESPONSE_TTL: Duration = Duration::from_secs(120);
 pub const SIGN_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 // ============================================================================
+// Network Constants
+// ============================================================================
+
+/// Maximum idle time before a pooled QUIC connection is closed (milliseconds).
+///
+/// Without this, a dead connection (e.g. network partition, peer crash without
+/// a clean CLOSE) keeps the pool slot occupied and causes `open_stream()` to
+/// hang until Quinn exhausts its retransmission backoff. On timeout the
+/// connection closes, `open_stream()` fails, and the pool reconnects.
+pub const NETWORK_IDLE_TIMEOUT_MS: u32 = 30_000;
+
+// ============================================================================
 // Peer ID Validation Constants
 // ============================================================================
 
@@ -135,14 +137,6 @@ pub const SIGN_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// ample space for peer IDs (which are typically hex-encoded Ed25519 public
 /// keys plus optional socket addresses) while preventing abuse.
 pub const MAX_PEER_ID_LENGTH: usize = 256;
-
-/// Minimum length for a valid node ID (hex-encoded Ed25519 public key)
-///
-/// Ed25519 public keys are 32 bytes, which when hex-encoded become 64
-/// characters. This constant is used for validation to ensure node IDs have
-/// the correct format. Note: This is the same as EXPECTED_HEX_NODE_ID_LENGTH
-/// but kept for clarity in validation logic.
-pub const MIN_NODE_ID_LENGTH: usize = 64;
 
 /// Expected length for hex-encoded Ed25519 public key (node ID)
 ///

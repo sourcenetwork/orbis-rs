@@ -9,8 +9,8 @@ use iroh::Endpoint;
 use std::sync::Arc;
 
 use crate::error::Result;
-use crate::iroh::base::IrohConnectionWrapper;
-use crate::r#trait::ProtocolHandler;
+use crate::iroh::base::IrohStreamWrapper;
+use crate::r#trait::{PeerId, ProtocolHandler};
 use crate::r#trait::{Router as RouterTrait, RouterBuilder as RouterBuilderTrait};
 
 /// Router for composing multiple protocols over a single iroh endpoint
@@ -106,19 +106,32 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
         let handler = Arc::clone(&self.handler);
         let max_message_size = self.max_message_size;
         async move {
-            // Convert iroh connection to our Connection trait
-            let conn = IrohConnectionWrapper::new(connection, max_message_size);
+            let peer_id = PeerId::from_bytes(connection.remote_id().as_bytes());
+            let protocol: Arc<[u8]> = Arc::from(connection.alpn());
 
-            // Call our handler
-            handler.handle(Box::new(conn)).await.map_err(|e| {
-                // Convert NetworkError to AcceptError
-                // NetworkError implements std::error::Error via thiserror
-                // Use the Display implementation to create a string error
-                iroh::protocol::AcceptError::from_err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
-            })?;
+            // Loop: accept one QUIC stream per request/session, spawn a handler task per stream.
+            // This lets concurrent sessions to the same peer run on independent streams
+            // with no head-of-line blocking between them.
+            loop {
+                match connection.accept_bi().await {
+                    Ok((send, recv)) => {
+                        let stream = IrohStreamWrapper::new(
+                            send,
+                            recv,
+                            peer_id.clone(),
+                            Arc::clone(&protocol),
+                            max_message_size,
+                        );
+                        let h = Arc::clone(&handler);
+                        tokio::spawn(async move {
+                            let _ = h.handle(Box::new(stream)).await;
+                        });
+                    }
+                    Err(_) => {
+                        break;
+                    }
+                }
+            }
 
             Ok(())
         }

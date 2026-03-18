@@ -163,6 +163,12 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let ring_id = post_event.post_id;
     let _dkg_ring_payload = ring_payload.clone();
 
+    // Capture the initial polynomial from node 1 right after DKG so we can
+    // confirm it changes after a refresh.
+    let (initial_poly, _) = cli_tool::query_ring_state(endpoint.clone(), ring_pk_hex.clone())
+        .await
+        .expect("query_ring_state after DKG");
+
     println!(
         "DKG completed! Ring PK: {}..., Ring ID: {}",
         &ring_pk_hex[..40.min(ring_pk_hex.len())],
@@ -735,12 +741,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // refresh actually completed before testing Sign and PRE.
     // ====================================================================
     println!("Waiting for PSS refresh to complete (polling all 3 nodes)...");
-
-    // Capture the initial polynomial from node 1 right after DKG so we can
-    // confirm it changes after a refresh.
-    let (initial_poly, _) = cli_tool::query_ring_state(endpoint.clone(), ring_pk_hex.clone())
-        .await
-        .expect("query_ring_state after DKG");
 
     let node_endpoints = [
         IntegrationTestNetwork::NODE1_GRPC.to_string(),

@@ -315,7 +315,7 @@ pub async fn connect_to_peer(
     network: &Arc<dyn Network>,
     peer_id: String,
     protocol: &[u8],
-) -> Result<Box<dyn network::Connection>, network::error::NetworkError> {
+) -> Result<Box<dyn network::PeerConnection>, network::error::NetworkError> {
     let peer_id_obj = PeerId::new(peer_id.as_bytes().to_vec());
     network.connect(&peer_id_obj, protocol).await
 }

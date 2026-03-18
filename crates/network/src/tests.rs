@@ -92,6 +92,10 @@ impl ProtocolHandler for RequestResponseHandler {
         let response = Message::new(self.response_data.clone(), connection.peer_id().as_bytes());
         connection.send(response).await?;
 
+        // Drain until the remote closes — keeps the connection alive long enough
+        // for the client to read the response before we drop the stream.
+        let _ = connection.recv().await;
+
         Ok(())
     }
 }
@@ -183,10 +187,11 @@ pub async fn test_single_message_roundtrip<N: Network>(net1: &N, net2: &N) {
     // Send message
     let test_data = b"Hello, Network!";
     let msg = Message::new(Bytes::from_static(test_data), TEST_PROTOCOL);
-    conn.send(msg).await.expect("Should send message");
+    let stream = conn.open_stream().await.expect("Should open stream");
+    stream.send(msg).await.expect("Should send message");
 
     // Receive echo
-    let response = timeout(TEST_TIMEOUT, conn.recv())
+    let response = timeout(TEST_TIMEOUT, stream.recv())
         .await
         .expect("Should not timeout")
         .expect("Should receive response");
@@ -223,13 +228,14 @@ pub async fn test_multiple_messages<N: Network>(net1: &N, net2: &N) {
         .await
         .expect("Should connect");
 
-    // Send multiple messages
+    // Send multiple messages — reuse one stream (EchoHandler loops per stream)
+    let stream = conn.open_stream().await.expect("Should open stream");
     for i in 0..5 {
         let test_data = format!("Message {}", i);
         let msg = Message::new(Bytes::from(test_data.clone()), TEST_PROTOCOL);
-        conn.send(msg).await.expect("Should send message");
+        stream.send(msg).await.expect("Should send message");
 
-        let response = timeout(TEST_TIMEOUT, conn.recv())
+        let response = timeout(TEST_TIMEOUT, stream.recv())
             .await
             .expect("Should not timeout")
             .expect("Should receive response");
@@ -271,9 +277,10 @@ pub async fn test_large_message<N: Network>(net1: &N, net2: &N) {
     // Send a large message (100KB)
     let large_data: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
     let msg = Message::new(Bytes::from(large_data.clone()), TEST_PROTOCOL);
-    conn.send(msg).await.expect("Should send large message");
+    let stream = conn.open_stream().await.expect("Should open stream");
+    stream.send(msg).await.expect("Should send large message");
 
-    let response = timeout(TEST_TIMEOUT, conn.recv())
+    let response = timeout(TEST_TIMEOUT, stream.recv())
         .await
         .expect("Should not timeout")
         .expect("Should receive response");
@@ -318,12 +325,13 @@ pub async fn test_router_multiple_protocols<N: Network>(net1: &N, net2: &N) {
         .await
         .expect("Should connect to protocol A");
 
-    conn_a
+    let stream_a = conn_a.open_stream().await.expect("Should open stream A");
+    stream_a
         .send(Message::new(Bytes::from("Request A"), PROTOCOL_A))
         .await
         .expect("Should send");
 
-    let response = timeout(TEST_TIMEOUT, conn_a.recv())
+    let response = timeout(TEST_TIMEOUT, stream_a.recv())
         .await
         .expect("Should not timeout")
         .expect("Should receive");
@@ -337,12 +345,13 @@ pub async fn test_router_multiple_protocols<N: Network>(net1: &N, net2: &N) {
         .await
         .expect("Should connect to protocol B");
 
-    conn_b
+    let stream_b = conn_b.open_stream().await.expect("Should open stream B");
+    stream_b
         .send(Message::new(Bytes::from("Request B"), PROTOCOL_B))
         .await
         .expect("Should send");
 
-    let response = timeout(TEST_TIMEOUT, conn_b.recv())
+    let response = timeout(TEST_TIMEOUT, stream_b.recv())
         .await
         .expect("Should not timeout")
         .expect("Should receive");
@@ -432,6 +441,20 @@ pub async fn test_concurrent_connections<N: Network>(net1: &N, net2: &N, net3: &
         .expect("Connection 2 should not timeout")
         .expect("Connection 2 should succeed");
 
+    // Open streams and send a byte to materialize them on the server side.
+    // In QUIC, a stream only appears on the remote via accept_bi() when the
+    // first STREAM frame arrives — no data sent means no frame, so the server
+    // never sees the stream.
+    let stream1 = conn1.open_stream().await.expect("Should open stream 1");
+    let stream2 = conn2.open_stream().await.expect("Should open stream 2");
+
+    let trigger = Message::new(Bytes::from_static(b"ping"), TEST_PROTOCOL);
+    stream1
+        .send(trigger.clone())
+        .await
+        .expect("Should send trigger 1");
+    stream2.send(trigger).await.expect("Should send trigger 2");
+
     // Wait for both handlers to be invoked
     timeout(CONCURRENT_CONNECTION_TIMEOUT, rx.recv())
         .await
@@ -443,9 +466,11 @@ pub async fn test_concurrent_connections<N: Network>(net1: &N, net2: &N, net3: &
     assert_eq!(
         count.load(Ordering::SeqCst),
         2,
-        "Should have handled 2 connections"
+        "Should have handled 2 streams"
     );
 
+    drop(stream1);
+    drop(stream2);
     conn1.close().await.expect("Should close conn1");
     conn2.close().await.expect("Should close conn2");
     Box::new(router)

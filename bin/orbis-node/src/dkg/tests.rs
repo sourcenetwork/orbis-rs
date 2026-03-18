@@ -1382,7 +1382,7 @@ async fn test_dkg_followed_by_pss_refresh() {
     };
     for peer_id_str in &peer_ids {
         if let Err(e) = coordinator
-            .send_message_to_peer(peer_id_str, init_msg.clone())
+            .send_message_to_peer(peer_id_str, init_msg.clone(), Some(refresh_session_id))
             .await
         {
             println!(
@@ -1505,26 +1505,22 @@ async fn test_dkg_followed_by_pss_refresh() {
 }
 
 /// Verify that receiving a Share before the sender's Phase 1 commitment has
-/// arrived results in `CommitmentNotYetReceived` after exhausting all retries.
-///
-/// The coordinator retries `MAX_COMMIT_WAIT_RETRIES` times with a short sleep
-/// between each attempt.  When the commitment never arrives the error propagates.
+/// arrived returns `ShareVerificationFailed` — the persistent-stream design
+/// guarantees that in production this ordering cannot occur, but the error path
+/// is still correct and explicit.
 #[tokio::test]
-async fn test_share_before_commitment_retries_then_fails() {
-    let db_name = "test_share_before_commitment_retries";
+async fn test_share_before_commitment_fails() {
+    let db_name = "test_share_before_commitment";
     let db_path = test_db_path(db_name);
     let app_state = Arc::new(create_test_app_state_default(db_name).await);
     let coordinator = DkgCoordinator::new(app_state.clone());
 
     let session_id: u64 = 77_777;
-    // Create a 2-node session where we are node 1.
     coordinator
         .create_session(session_id, 1, 2, 2, DkgRole::Standard)
         .await
         .expect("create session");
 
-    // Register peer IDs and node→peer mappings so the coordinator can authenticate
-    // the incoming Share message.  Node 1 = us, node 2 = "deadbeef" (the sender).
     let sender_hex = "deadbeef";
     let all_peer_ids = vec!["aabbccdd".to_string(), sender_hex.to_string()];
     coordinator.set_peer_ids(&session_id, all_peer_ids).await;
@@ -1536,21 +1532,17 @@ async fn test_share_before_commitment_retries_then_fails() {
         .set_node_peer_mappings(&session_id, node_peer_map)
         .await;
 
-    // Generate our polynomial.  Passing no peers means no network I/O:
-    // expected_peers == peers_sent == 0, so initiate_phase1_commitments succeeds.
     coordinator
         .initiate_phase1_commitments(session_id, &[])
         .await
         .expect("phase 1 with no peers");
 
-    // Send a Share from node 2 to us (node 1) before node 2 has sent its commitment.
-    // The coordinator will retry MAX_COMMIT_WAIT_RETRIES times and then propagate
-    // the CommitmentNotYetReceived error.
+    // Deliver a share without the sender's commitment — should fail immediately.
     let share_msg = DkgMessage::Share {
         session_id,
         from_node_id: 2,
         to_node_id: 1,
-        share_value: vec![0u8; 32], // Fr::zero() in canonical little-endian form
+        share_value: vec![0u8; 32],
         nonce: [0u8; 16],
     };
     let sender_bytes = hex::decode(sender_hex).unwrap();
@@ -1560,9 +1552,9 @@ async fn test_share_before_commitment_retries_then_fails() {
     assert!(
         matches!(
             result,
-            Err(crate::dkg::error::DkgError::CommitmentNotYetReceived(_))
+            Err(crate::dkg::error::DkgError::ShareVerificationFailed(_))
         ),
-        "Expected CommitmentNotYetReceived after exhausting retries, got: {:?}",
+        "Expected ShareVerificationFailed when commitment is absent, got: {:?}",
         result
     );
 

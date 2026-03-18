@@ -250,10 +250,16 @@ where
                 pss_interval,
             };
 
-            // Send SessionInit to all peers (they will create their sessions and start Phase 1)
+            // Send SessionInit to all peers (they will create their sessions and start Phase 1).
+            // Use the session-cached connection when we are participating so SessionInit,
+            // Commitment, and Share all travel on the same persistent QUIC stream —
+            // preventing CONNECTION_CLOSE from racing with data delivery on one-shot
+            // connections.  When we are a non-participating coordinator (no session
+            // created) fall back to a fresh one-shot connection.
+            let init_session_id = our_assigned_node_id.map(|_| session_id);
             for peer_id_str in &req.peer_ids {
                 if let Err(e) = coordinator
-                    .send_message_to_peer(peer_id_str, session_init_msg.clone())
+                    .send_message_to_peer(peer_id_str, session_init_msg.clone(), init_session_id)
                     .await
                 {
                     tracing::error!(peer_id = %peer_id_str, error = %e, "Failed to send SessionInit to peer");

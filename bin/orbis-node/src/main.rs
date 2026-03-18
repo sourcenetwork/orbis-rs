@@ -254,6 +254,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let network: Arc<dyn Network> = Arc::new(
         network::NetworkImpl::builder()
             .secret_key(secret_key)
+            .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
             .build()
             .await
             .map_err(|e| format!("Failed to initialize network: {}", e))?,

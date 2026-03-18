@@ -8,7 +8,7 @@
 //! Only compiled when the `fault-injection` feature is enabled.
 
 use crate::error::{NetworkError, Result};
-use crate::r#trait::{Connection, Network, PeerId, ProtocolHandler, RouterBuilder};
+use crate::r#trait::{Network, PeerConnection, PeerId, ProtocolHandler, RouterBuilder};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -83,7 +83,7 @@ impl Network for FaultNetwork {
     ///
     /// Peer IDs in this codebase are the ASCII bytes of `"hex64@ip:port"` or
     /// just `"hex64"`. We extract the 64-char hex prefix and check the blocked set.
-    async fn connect(&self, peer_id: &PeerId, protocol: &[u8]) -> Result<Box<dyn Connection>> {
+    async fn connect(&self, peer_id: &PeerId, protocol: &[u8]) -> Result<Box<dyn PeerConnection>> {
         if let Ok(peer_str) = std::str::from_utf8(peer_id.as_bytes()) {
             let hex_id = peer_str.split('@').next().unwrap_or(peer_str);
             if self.state.blocked_peers.read().await.contains(hex_id) {

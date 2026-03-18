@@ -9,7 +9,6 @@ use crate::tests as trait_tests;
 use crate::{PeerId, Result, SecretKey};
 use async_trait::async_trait;
 use std::sync::Arc;
-use tokio::sync::Notify;
 // ============================================================================
 // Run Generic Trait Tests Against IrohNetwork
 // ============================================================================
@@ -194,6 +193,8 @@ async fn iroh_router_builder_max_message_size() {
                 Ok(msg) => {
                     assert_eq!(msg.data.len(), self.expected_size);
                     connection.send(msg).await?;
+                    // Drain until remote closes — keeps stream alive for client read.
+                    let _ = connection.recv().await;
                 }
                 Err(_) => {}
             }
@@ -246,9 +247,10 @@ async fn iroh_router_builder_max_message_size() {
         bytes::Bytes::from(large_data.clone()),
         b"test/large".as_slice(),
     );
-    conn.send(msg).await.expect("Should send large message");
+    let stream = conn.open_stream().await.expect("Should open stream");
+    stream.send(msg).await.expect("Should send large message");
 
-    let response = tokio::time::timeout(std::time::Duration::from_secs(10), conn.recv())
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), stream.recv())
         .await
         .expect("Should not timeout")
         .expect("Should receive response");
@@ -277,95 +279,6 @@ async fn iroh_multiple_networks_unique_ids() {
     assert_ne!(id1, id2, "Networks should have unique peer IDs");
     assert_ne!(id2, id3, "Networks should have unique peer IDs");
     assert_ne!(id1, id3, "Networks should have unique peer IDs");
-}
-
-#[tokio::test]
-#[serial_test::serial]
-async fn iroh_connection_close_graceful() {
-    struct CloseNotifyHandler {
-        closed: Arc<Notify>,
-        ready: Arc<Notify>,
-    }
-
-    #[async_trait]
-    impl ProtocolHandler for CloseNotifyHandler {
-        async fn handle(&self, connection: Box<dyn Connection>) -> Result<()> {
-            // Signal that handler is ready and waiting
-            self.ready.notify_one();
-
-            // Wait for connection to be closed by the other side
-            loop {
-                match connection.recv().await {
-                    Ok(_) => continue,
-                    Err(_) => {
-                        self.closed.notify_one();
-                        break;
-                    }
-                }
-            }
-            Ok(())
-        }
-    }
-
-    let net1 = IrohNetwork::new().await.expect("Should create network 1");
-    let net2 = IrohNetwork::new().await.expect("Should create network 2");
-
-    let closed = Arc::new(Notify::new());
-    let ready = Arc::new(Notify::new());
-    let handler = CloseNotifyHandler {
-        closed: Arc::clone(&closed),
-        ready: Arc::clone(&ready),
-    };
-
-    let router_builder = net2
-        .create_router_builder()
-        .expect("Should create router builder");
-    let router = router_builder
-        .accept(b"test/close".to_vec(), Arc::new(handler))
-        .spawn()
-        .expect("Should spawn router");
-
-    let node_id_str = net2.local_address().expect("Should get local address");
-    let bound_addrs = net2.bound_addresses();
-    let peer_addr = if let Some(addr) = bound_addrs.first() {
-        PeerId::from_bytes(format!("{}@{}", node_id_str, addr).as_bytes())
-    } else {
-        PeerId::from_bytes(node_id_str.as_bytes())
-    };
-
-    // Retry connection with backoff until router is ready
-    let mut conn = None;
-    for attempt in 1..=20 {
-        match net1.connect(&peer_addr, b"test/close").await {
-            Ok(c) => {
-                conn = Some(c);
-                break;
-            }
-            Err(_) if attempt < 20 => {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            Err(e) => panic!("Failed to connect after 20 attempts: {}", e),
-        }
-    }
-    let conn = conn.expect("Should have connected");
-
-    // Wait for the handler to be ready before closing
-    tokio::time::timeout(std::time::Duration::from_secs(5), ready.notified())
-        .await
-        .expect("Handler should become ready");
-
-    // Close the connection
-    conn.close().await.expect("Should close gracefully");
-
-    // Wait for the handler to be notified of the close
-    tokio::time::timeout(std::time::Duration::from_secs(25), closed.notified())
-        .await
-        .expect("Handler should be notified of connection close");
-
-    Box::new(router)
-        .shutdown()
-        .await
-        .expect("Router should shutdown");
 }
 
 #[tokio::test]
