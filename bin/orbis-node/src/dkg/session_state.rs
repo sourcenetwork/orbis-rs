@@ -97,7 +97,7 @@ pub struct DkgSessionState<D: Dkg> {
     /// All DKG messages to the same peer within a session travel on the same stream,
     /// preserving QUIC's within-stream ordering guarantee (SessionInit → Commitment → Share).
     /// Streams are dropped automatically when the session is removed.
-    pub peer_streams: HashMap<String, Arc<Box<dyn Connection>>>,
+    pub peer_streams: HashMap<String, Arc<dyn Connection>>,
 }
 
 impl<D: Dkg> DkgSessionState<D> {
@@ -584,7 +584,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         &self,
         session_id: &u64,
         peer_id: &str,
-    ) -> Option<Arc<Box<dyn Connection>>> {
+    ) -> Option<Arc<dyn Connection>> {
         let states = self.states.read().await;
         states.get(session_id)?.peer_streams.get(peer_id).cloned()
     }
@@ -594,7 +594,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         &self,
         session_id: &u64,
         peer_id: String,
-        stream: Arc<Box<dyn Connection>>,
+        stream: Arc<dyn Connection>,
     ) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {

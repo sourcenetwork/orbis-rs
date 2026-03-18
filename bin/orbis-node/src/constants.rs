@@ -115,6 +115,18 @@ pub const SIGN_RESPONSE_TTL: Duration = Duration::from_secs(120);
 pub const SIGN_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 // ============================================================================
+// Network Constants
+// ============================================================================
+
+/// Maximum idle time before a pooled QUIC connection is closed (milliseconds).
+///
+/// Without this, a dead connection (e.g. network partition, peer crash without
+/// a clean CLOSE) keeps the pool slot occupied and causes `open_stream()` to
+/// hang until Quinn exhausts its retransmission backoff. On timeout the
+/// connection closes, `open_stream()` fails, and the pool reconnects.
+pub const NETWORK_IDLE_TIMEOUT_MS: u32 = 30_000;
+
+// ============================================================================
 // Peer ID Validation Constants
 // ============================================================================
 

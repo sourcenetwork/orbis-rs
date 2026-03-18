@@ -16,10 +16,12 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy workspace files
-COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
-COPY bin ./bin
+# Copy all workspace source in one layer so that any change — whether in
+# crates/ or bin/ — invalidates this layer atomically. Splitting into
+# separate COPY layers risks pairing a cached (stale) crates layer with a
+# fresh bin layer, which confuses cargo's incremental compilation. See
+# .dockerignore for what is excluded (target/, .git/, etc.).
+COPY . .
 
 # Build argument to conditionally enable integration-test feature
 ARG ENABLE_INTEGRATION_TEST=false

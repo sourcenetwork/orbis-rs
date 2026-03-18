@@ -86,23 +86,6 @@ where
         }
     }
 
-    /// Get the cached REENCRYPT connection to `peer_id_str`, opening one if needed.
-    async fn get_peer_connection(
-        &self,
-        peer_id_str: &str,
-    ) -> Result<Arc<Box<dyn network::PeerConnection>>> {
-        self.app_state
-            .peer_connection_pool
-            .get_or_connect(&self.app_state.network, peer_id_str, REENCRYPT)
-            .await
-            .map_err(|e| {
-                PreError::NetworkConnection(format!(
-                    "Failed to connect to peer {}: {}",
-                    peer_id_str, e
-                ))
-            })
-    }
-
     /// Handle an incoming PRE message
     ///
     /// Routes the message to the appropriate handler based on message type.
@@ -267,13 +250,17 @@ where
         message: PreMessage,
         _request_id: &str,
     ) -> Result<()> {
-        let peer_conn = self.get_peer_connection(peer_id_str).await?;
-        let stream = peer_conn.open_stream().await.map_err(|e| {
-            PreError::NetworkConnection(format!(
-                "Failed to open stream to peer {}: {}",
-                peer_id_str, e
-            ))
-        })?;
+        let stream = self
+            .app_state
+            .peer_connection_pool
+            .open_stream(&self.app_state.network, peer_id_str, REENCRYPT)
+            .await
+            .map_err(|e| {
+                PreError::NetworkConnection(format!(
+                    "Failed to open stream to peer {}: {}",
+                    peer_id_str, e
+                ))
+            })?;
 
         let message_data = serde_json::to_vec(&message)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize message: {}", e)))?;

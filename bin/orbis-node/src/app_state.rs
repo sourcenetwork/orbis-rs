@@ -5,7 +5,7 @@ use authz::r#trait::Authz;
 use bulletin::r#trait::Bulletin;
 use crypto::r#trait::Dkg;
 use local_storage::LocalStorageImpl;
-use network::Network;
+use network::{Connection, Network};
 use network::{PeerConnection, PeerId};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ use tokio::sync::{Mutex, RwLock};
 /// head-of-line blocking. The connection itself is never evicted — only
 /// replaced on connection-level errors.
 pub struct PeerConnectionPool {
-    connections: RwLock<HashMap<(String, Vec<u8>), Arc<Box<dyn PeerConnection>>>>,
+    connections: RwLock<HashMap<(String, Vec<u8>), Arc<dyn PeerConnection>>>,
 }
 
 impl PeerConnectionPool {
@@ -30,11 +30,7 @@ impl PeerConnectionPool {
         }
     }
 
-    pub async fn get(
-        &self,
-        peer_id: &str,
-        protocol: &[u8],
-    ) -> Option<Arc<Box<dyn PeerConnection>>> {
+    pub async fn get(&self, peer_id: &str, protocol: &[u8]) -> Option<Arc<dyn PeerConnection>> {
         self.connections
             .read()
             .await
@@ -59,13 +55,14 @@ impl PeerConnectionPool {
         &self,
         network: &Arc<dyn Network>,
         peer_id_str: &str,
-        protocol: &'static [u8],
-    ) -> Result<Arc<Box<dyn PeerConnection>>, network::error::NetworkError> {
+        protocol: &[u8],
+    ) -> Result<Arc<dyn PeerConnection>, network::error::NetworkError> {
         if let Some(cached) = self.get(peer_id_str, protocol).await {
             return Ok(cached);
         }
         let peer_id_obj = PeerId::new(peer_id_str.as_bytes().to_vec());
-        let new_conn = Arc::new(network.connect(&peer_id_obj, protocol).await?);
+        let new_conn: Arc<dyn PeerConnection> =
+            Arc::from(network.connect(&peer_id_obj, protocol).await?);
         let key = (peer_id_str.to_string(), protocol.to_vec());
         let mut map = self.connections.write().await;
         // Re-check under the write lock: another task may have inserted while we
@@ -75,6 +72,25 @@ impl PeerConnectionPool {
         }
         map.insert(key, new_conn.clone());
         Ok(new_conn)
+    }
+
+    /// Open a QUIC stream to a peer, evicting and reconnecting if the cached
+    /// connection is dead (e.g. closed by idle timeout or remote restart).
+    pub async fn open_stream(
+        &self,
+        network: &Arc<dyn Network>,
+        peer_id_str: &str,
+        protocol: &[u8],
+    ) -> Result<Box<dyn Connection>, network::error::NetworkError> {
+        let conn = self.get_or_connect(network, peer_id_str, protocol).await?;
+        match conn.open_stream().await {
+            Ok(stream) => Ok(stream),
+            Err(_) => {
+                self.remove(peer_id_str, protocol).await;
+                let fresh = self.get_or_connect(network, peer_id_str, protocol).await?;
+                fresh.open_stream().await
+            }
+        }
     }
 }
 

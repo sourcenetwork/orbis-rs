@@ -251,7 +251,7 @@ where
                     .await
                 {
                     Ok(()) => {}
-                    Err(DkgError::ProtocolError(ref msg)) if msg.contains("already exists") => {
+                    Err(DkgError::SessionAlreadyExists) => {
                         tracing::debug!(
                             session_id = session_id,
                             "DKG Coordinator: Session already created by concurrent handler"
@@ -737,10 +737,7 @@ where
             .create_session(session_id, *dkg_node, total_nodes)
             .await
         {
-            return Err(DkgError::ProtocolError(format!(
-                "DKG session {} already exists",
-                session_id
-            )));
+            return Err(DkgError::SessionAlreadyExists);
         }
 
         // Record metrics
@@ -803,18 +800,18 @@ where
         // preserving within-stream ordering (SessionInit → Commitment → Share).
         //
         // When session_id is None, a fresh stream is opened and dropped after the send.
-        let stream: Arc<Box<dyn NetworkConnection>> = if let Some(sid) = session_id {
+        let stream: Arc<dyn NetworkConnection> = if let Some(sid) = session_id {
             if let Some(cached) = session_state.get_peer_stream(&sid, peer_id_str).await {
                 cached
             } else {
-                let new_stream = Arc::new(self.open_stream_to_peer(peer_id_str).await?);
+                let new_stream = Arc::from(self.open_stream_to_peer(peer_id_str).await?);
                 session_state
                     .store_peer_stream(&sid, peer_id_str.to_string(), Arc::clone(&new_stream))
                     .await;
                 new_stream
             }
         } else {
-            Arc::new(self.open_stream_to_peer(peer_id_str).await?)
+            Arc::from(self.open_stream_to_peer(peer_id_str).await?)
         };
 
         stream
@@ -833,43 +830,16 @@ where
 
     /// Open a QUIC stream to a peer, evicting and reconnecting the cached connection on failure.
     async fn open_stream_to_peer(&self, peer_id_str: &str) -> Result<Box<dyn network::Connection>> {
-        let pool = &self.app_state.peer_connection_pool;
-        let peer_conn = pool
-            .get_or_connect(&self.app_state.network, peer_id_str, DKG)
+        self.app_state
+            .peer_connection_pool
+            .open_stream(&self.app_state.network, peer_id_str, DKG)
             .await
             .map_err(|e| {
                 DkgError::NetworkConnection(format!(
-                    "Failed to connect to peer {}: {}",
+                    "Failed to open stream to peer {}: {}",
                     peer_id_str, e
                 ))
-            })?;
-
-        match peer_conn.open_stream().await {
-            Ok(s) => Ok(s),
-            Err(open_err) => {
-                tracing::warn!(
-                    peer = %peer_id_str,
-                    error = %open_err,
-                    "open_stream failed — evicting connection and reconnecting"
-                );
-                pool.remove(peer_id_str, DKG).await;
-                let fresh_conn = pool
-                    .get_or_connect(&self.app_state.network, peer_id_str, DKG)
-                    .await
-                    .map_err(|e| {
-                        DkgError::NetworkConnection(format!(
-                            "Failed to reconnect to peer {}: {}",
-                            peer_id_str, e
-                        ))
-                    })?;
-                fresh_conn.open_stream().await.map_err(|e| {
-                    DkgError::NetworkConnection(format!(
-                        "Failed to open stream to peer {} after reconnect: {}",
-                        peer_id_str, e
-                    ))
-                })
-            }
-        }
+            })
     }
 
     /// Phase 1: Generate polynomial and broadcast commitment to all peers

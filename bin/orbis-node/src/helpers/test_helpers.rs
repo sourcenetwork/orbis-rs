@@ -91,6 +91,7 @@ pub async fn create_test_app_state_with_bulletin(
         NetworkImpl::builder()
             .bind_addr_v4("127.0.0.1:0".parse().unwrap())
             .no_relay()
+            .idle_timeout_ms(crate::constants::NETWORK_IDLE_TIMEOUT_MS)
             .build()
             .await
             .expect("Failed to initialize network for testing"),

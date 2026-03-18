@@ -244,18 +244,6 @@ where
         .set_refresh_ring_key(&session_id, ring_pk_str.clone())
         .await;
 
-    // Helper: clean up both the session and the rings_refreshing flag so the
-    // PSS scheduler can retry on its next tick.
-    let cleanup = |err: DkgError| {
-        let state = Arc::clone(&app_state.dkg_session_state);
-        let key = ring_pk_str.clone();
-        tokio::spawn(async move {
-            state.unmark_ring_refreshing(&key).await;
-            state.remove_session(&session_id).await;
-        });
-        err
-    };
-
     // Store peer_ids and node→peer mappings
     coordinator
         .set_peer_ids(&session_id, peer_ids.clone())
@@ -277,10 +265,14 @@ where
 
     // Validate peer ID formats before sending messages
     if let Err((bad_peer, err)) = validate_all_peer_ids(peer_ids) {
-        return Err(cleanup(DkgError::InvalidInput(format!(
+        app_state
+            .dkg_session_state
+            .remove_session(&session_id)
+            .await;
+        return Err(DkgError::InvalidInput(format!(
             "PSS: invalid peer ID '{}': {}",
             bad_peer, err
-        ))));
+        )));
     }
 
     // Send RefreshSessionInit to all peers
@@ -309,10 +301,16 @@ where
     }
 
     // Kick off Phase 1 (uses DkgMode::Refresh via session state)
-    coordinator
+    if let Err(e) = coordinator
         .initiate_phase1_commitments(session_id, peer_ids)
         .await
-        .map_err(|e| cleanup(e))?;
+    {
+        app_state
+            .dkg_session_state
+            .remove_session(&session_id)
+            .await;
+        return Err(e);
+    }
 
     tracing::info!(
         session_id = session_id,

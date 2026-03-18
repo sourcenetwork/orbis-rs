@@ -4,7 +4,9 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use iroh::endpoint::{Connection as IrohConnection, RecvStream, SendStream};
+use iroh::endpoint::{
+    Connection as IrohConnection, RecvStream, SendStream, TransportConfig, VarInt,
+};
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use std::collections::HashMap;
 use std::net::SocketAddrV4;
@@ -75,6 +77,7 @@ pub struct IrohNetworkBuilder {
     secret_key: Option<SecretKey>,
     bind_addr_v4: Option<SocketAddrV4>,
     no_relay: bool,
+    idle_timeout_ms: Option<u32>,
 }
 
 impl IrohNetworkBuilder {
@@ -110,6 +113,17 @@ impl IrohNetworkBuilder {
         self
     }
 
+    /// Set the maximum idle timeout for QUIC connections (milliseconds).
+    ///
+    /// A connection that has been idle for this long is closed, causing the
+    /// next `open_stream()` call to fail and the pool to reconnect. This
+    /// bounds how long a dead connection (network partition, peer crash) can
+    /// block callers.
+    pub fn idle_timeout_ms(mut self, ms: u32) -> Self {
+        self.idle_timeout_ms = Some(ms);
+        self
+    }
+
     /// Build the IrohNetwork instance
     pub async fn build(self) -> Result<IrohNetwork> {
         let mut builder = Endpoint::builder();
@@ -124,6 +138,12 @@ impl IrohNetworkBuilder {
 
         if self.no_relay {
             builder = builder.relay_mode(iroh::RelayMode::Disabled);
+        }
+
+        if let Some(ms) = self.idle_timeout_ms {
+            let mut transport = TransportConfig::default();
+            transport.max_idle_timeout(Some(VarInt::from_u32(ms).into()));
+            builder = builder.transport_config(transport);
         }
 
         let endpoint = builder
