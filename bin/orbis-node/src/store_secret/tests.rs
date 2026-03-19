@@ -526,9 +526,8 @@ async fn test_store_secret_idempotent() {
         .clone()
         .try_into()
         .expect("serialize RingPayload");
-    let full_ring_namespace = format!("bulletin/{}", BULLETIN_RING_NAMESPACE);
     let ring_id = bulletin
-        .get_post_id(&full_ring_namespace, &ring_payload_bytes)
+        .get_post_id(BULLETIN_RING_NAMESPACE, &ring_payload_bytes)
         .expect("compute ring_id");
 
     // Set ring in bulletin
@@ -708,9 +707,8 @@ async fn test_store_secret_fails_wrong_derived_pk() {
         .clone()
         .try_into()
         .expect("serialize RingPayload");
-    let full_ring_namespace = format!("bulletin/{}", BULLETIN_RING_NAMESPACE);
     let ring_id = bulletin
-        .get_post_id(&full_ring_namespace, &ring_payload_bytes)
+        .get_post_id(BULLETIN_RING_NAMESPACE, &ring_payload_bytes)
         .expect("compute ring_id");
 
     // Set ring in bulletin
@@ -855,9 +853,8 @@ async fn test_store_secret_fails_with_tampered_proof() {
         .clone()
         .try_into()
         .expect("serialize RingPayload");
-    let full_ring_namespace = format!("bulletin/{}", BULLETIN_RING_NAMESPACE);
     let ring_id = bulletin
-        .get_post_id(&full_ring_namespace, &ring_payload_bytes)
+        .get_post_id(BULLETIN_RING_NAMESPACE, &ring_payload_bytes)
         .expect("compute ring_id");
 
     // Set ring in bulletin

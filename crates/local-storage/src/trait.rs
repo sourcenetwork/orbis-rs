@@ -3,15 +3,21 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, Hash, PartialEq)]
 pub enum LocalStorageKeys {
+    /// Encrypted `RingShareBundle` for one ring, keyed by `aggregate_pk.to_string()`.
+    /// Contains the node's threshold secret share, the current public polynomial,
+    /// and the unix timestamp of the last PSS refresh. Written once at DKG Phase 4
+    /// and updated atomically on every PSS refresh. Never holds ring configuration
+    /// (peer_ids, threshold, pss_interval) — that lives on the bulletin.
     RingKey(String),
-    /// Maps ring public key (serialized G1Affine bytes as hex) to DKG session ID
-    RingPkMapping(String),
+    /// JSON-encoded `Vec<RingIndexEntry>` of rings this node has joined.
+    /// Each entry contains the local storage key (`ring_pk_str`) and the bulletin
+    /// `post_id` needed to fetch the canonical `RingPayload`. This is the single
+    /// index that ties local cryptographic material to the on-chain ring record.
+    RingIndex,
     /// The node's iroh secret key for deterministic peer identity
     NodeSecretKey,
     /// The node's secp256k1 signing key for chain transactions
     NodeSigningKey,
-    /// JSON-encoded Vec<String> of bulletin ring IDs (DKG session IDs) this node has joined
-    RingIndex,
 }
 
 pub trait LocalStorage {

@@ -28,6 +28,7 @@ use crate::dkg::messages::DkgMessage;
 use crate::dkg::session_state::{DkgMessageType, DkgPhase};
 use crate::helpers::helpers::{extract_node_part, is_self_peer_id};
 use crate::metrics;
+use crate::ring_state::RingIndexEntry;
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{DistributedShare, Dkg, DkgMode, DkgRole};
@@ -166,7 +167,9 @@ where
                     ring_pk_hex,
                     &sender_hex,
                     &self.app_state.local_storage,
-                )?;
+                    &self.app_state.bulletin,
+                )
+                .await?;
 
                 if !self
                     .app_state
@@ -1357,12 +1360,14 @@ where
             "DKG Coordinator: Stored RingShareBundle (share + polynomial) atomically"
         );
 
-        // For fresh DKG: cache the RingPayload locally so that future refresh validation
-        // can check membership without a bulletin round-trip (bulletin IDs are content-hash
-        // based and not easily resolved from ring_pk alone).  Also append to RingIndex so
-        // the PSS scheduler can discover this ring.
+        // For fresh DKG: cache the RingPayload locally (for incoming refresh validation)
+        // and append the bulletin post_id to RingIndex so the PSS scheduler can discover
+        // this ring and fetch its config directly from the bulletin.
         //
-        // For PSS Refresh: RingPkMapping is unchanged (same ring_pk, peers, threshold,
+        // All nodes derive the same bulletin post_id deterministically from the payload
+        // bytes — no chain event subscription needed.
+        //
+        // For PSS Refresh: the bulletin entry is unchanged (same ring_pk, peers, threshold,
         // pss_interval). The polynomial was already updated inside the RingShareBundle write
         // above. No additional writes needed.
         if !is_refresh {
@@ -1396,20 +1401,25 @@ where
                     e
                 ))
             })?;
-            self.app_state
-                .local_storage
-                .set(
-                    LocalStorageKeys::RingPkMapping(storage_key.clone()),
-                    ring_payload_bytes,
-                )
-                .map_err(|e| DkgError::Storage(format!("Failed to store RingPkMapping: {}", e)))?;
 
-            // Update the ring index so the PSS scheduler can discover this ring.
+            // Compute the bulletin post_id deterministically. All nodes construct the
+            // identical RingPayload so they all arrive at the same post_id.
+            // get_post_id adds the "bulletin/" prefix internally.
+            let bulletin_post_id = self
+                .app_state
+                .bulletin
+                .get_post_id(BULLETIN_RING_NAMESPACE, &ring_payload_bytes)
+                .map_err(|e| {
+                    DkgError::Serialization(format!("Failed to compute bulletin post_id: {}", e))
+                })?;
+
+            // Append a RingIndexEntry to RingIndex so the PSS scheduler can enumerate
+            // rings and the refresh validator can look up bulletin entries by ring_pk_str.
             // Hold the lock for the entire read-modify-write so concurrent Phase 4
             // completions don't overwrite each other's appended entry.
             {
                 let _guard = self.app_state.ring_index_lock.lock().await;
-                let mut ring_index: Vec<String> = self
+                let mut ring_index: Vec<RingIndexEntry> = self
                     .app_state
                     .local_storage
                     .get(LocalStorageKeys::RingIndex)
@@ -1417,8 +1427,11 @@ where
                     .flatten()
                     .and_then(|b| serde_json::from_slice(&b).ok())
                     .unwrap_or_default();
-                if !ring_index.contains(&storage_key) {
-                    ring_index.push(storage_key.clone());
+                if !ring_index.iter().any(|e| e.ring_pk_str == storage_key) {
+                    ring_index.push(RingIndexEntry {
+                        ring_pk_str: storage_key.clone(),
+                        bulletin_post_id,
+                    });
                     let index_bytes = serde_json::to_vec(&ring_index).map_err(|e| {
                         DkgError::Serialization(format!("Failed to serialize RingIndex: {}", e))
                     })?;

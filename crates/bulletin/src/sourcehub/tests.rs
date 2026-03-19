@@ -39,12 +39,11 @@ async fn test_bulletin_document() {
         .await
         .unwrap();
 
-    let full_namespace = format!("bulletin/{}", namespace);
     let post_id = bulletin
-        .get_post_id(&full_namespace, &serialized_payload)
+        .get_post_id(namespace, &serialized_payload)
         .unwrap();
 
-    let created_post = bulletin.read(full_namespace, post_id).await.unwrap();
+    let created_post = bulletin.read(namespace.to_string(), post_id).await.unwrap();
     println!("Created post ID: {}", created_post.id);
 
     assert_eq!(
@@ -87,12 +86,11 @@ async fn test_bulletin_ring() {
         .await
         .unwrap();
 
-    let full_namespace = format!("bulletin/{}", namespace);
     let post_id = bulletin
-        .get_post_id(&full_namespace, &serialized_payload)
+        .get_post_id(namespace, &serialized_payload)
         .unwrap();
 
-    let created_post = bulletin.read(full_namespace, post_id).await.unwrap();
+    let created_post = bulletin.read(namespace.to_string(), post_id).await.unwrap();
     println!("Created post ID: {}", created_post.id);
 
     assert_eq!(

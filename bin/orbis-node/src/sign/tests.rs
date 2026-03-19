@@ -268,9 +268,8 @@ async fn create_test_document_and_post(
         .expect("serialize DocumentPayload");
 
     // Compute the post ID
-    let full_namespace = format!("bulletin/{}", namespace);
     let post_id = bulletin
-        .get_post_id(&full_namespace, &payload_bytes)
+        .get_post_id(namespace, &payload_bytes)
         .expect("compute post_id");
 
     // Post to bulletin
@@ -908,12 +907,11 @@ async fn test_sign_fails_tampered_payload() {
     };
 
     let original_payload: Vec<u8> = original_doc.try_into().expect("serialize");
-    let full_namespace = format!("bulletin/{}", namespace);
     let post_id = network
         .alice
         .app_state
         .bulletin
-        .get_post_id(&full_namespace, &original_payload)
+        .get_post_id(namespace, &original_payload)
         .expect("get post_id");
 
     // Post the original document
@@ -1059,12 +1057,11 @@ async fn test_sign_fails_invalid_ring_id() {
     };
 
     let payload_bytes: Vec<u8> = doc_with_fake_ring.try_into().expect("serialize");
-    let full_namespace = format!("bulletin/{}", namespace);
     let post_id = network
         .alice
         .app_state
         .bulletin
-        .get_post_id(&full_namespace, &payload_bytes)
+        .get_post_id(namespace, &payload_bytes)
         .expect("get post_id");
 
     // Post this document (it will be on bulletin, but ring_id is invalid)

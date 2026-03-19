@@ -1,11 +1,13 @@
+use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::dkg::error::{DkgError, Result};
 use crate::helpers::helpers::extract_node_part;
-use crate::ring_state::RingShareBundle;
+use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::{BearerToken, DkgClaims};
-use bulletin::r#trait::RingPayload;
-use crypto::r#trait::PriShare;
-use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr};
+use bulletin::r#trait::{Bulletin, RingPayload};
+use crypto::r#trait::{CryptoDeserialize, PriShare};
+use crypto::{CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Returns a `SessionNotFound` error for the given session_id.
@@ -28,25 +30,40 @@ pub fn serialize_commitment_coefficients(coefficients: &[G1Affine]) -> Result<Ve
 /// Validates an incoming PSS refresh `SessionInit` message.
 ///
 /// Checks (in order):
-/// 1. The ring is known (`RingPkMapping` present in local storage).
-/// 2. The sender's peer ID is a current member of that ring.
+/// 1. The ring is known (an entry with `ring_pk_str == ring_pk_hex` exists in `RingIndex`).
+/// 2. The sender's peer ID is a current member of that ring (from the bulletin RingPayload).
 /// 3. Enough time has elapsed since the last refresh (`ring_payload.pss_interval`).
 ///    If `pss_interval` is `None` the time check is skipped (any time is acceptable).
 ///
 /// The caller is responsible for the atomic in-progress flag
 /// (`try_mark_ring_refreshing`) after this returns `Ok`.
-pub fn validate_refresh_session_init<S: LocalStorage>(
+pub async fn validate_refresh_session_init<S: LocalStorage>(
     ring_pk_hex: &str,
     sender_hex: &str,
     local_storage: &S,
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<()> {
-    // 1. Load the cached RingPayload (written during fresh DKG Phase 4).
-    let ring_payload_bytes = local_storage
-        .get(LocalStorageKeys::RingPkMapping(ring_pk_hex.to_string()))
-        .map_err(|e| DkgError::Storage(format!("Failed to read RingPkMapping: {}", e)))?
+    // 1. Look up the bulletin post_id for this ring from the local RingIndex.
+    let ring_index: Vec<RingIndexEntry> = local_storage
+        .get(LocalStorageKeys::RingIndex)
+        .map_err(|e| DkgError::Storage(format!("Failed to read RingIndex: {}", e)))?
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let entry = ring_index
+        .iter()
+        .find(|e| e.ring_pk_str == ring_pk_hex)
         .ok_or_else(|| DkgError::Unauthorized(format!("Unknown ring: {}", ring_pk_hex)))?;
-    let ring_payload: RingPayload = serde_json::from_slice(&ring_payload_bytes)
-        .map_err(|e| DkgError::Deserialization(format!("Bad cached ring payload: {}", e)))?;
+    let post_id = &entry.bulletin_post_id;
+
+    // Fetch the canonical RingPayload from the bulletin — it is the source of truth.
+    let bulletin_post = bulletin
+        .read(BULLETIN_RING_NAMESPACE.to_string(), post_id.to_string())
+        .await
+        .map_err(|e| {
+            DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
+        })?;
+    let ring_payload: RingPayload = serde_json::from_slice(&bulletin_post.payload)
+        .map_err(|e| DkgError::Deserialization(format!("Bad ring payload from bulletin: {}", e)))?;
 
     // 2. Verify the sender is a current ring member.
     let sender_in_ring = ring_payload
@@ -157,48 +174,11 @@ pub fn persist_ring_bundle<S: LocalStorage>(
     if is_refresh {
         match refresh_ring_key {
             Some(ring_key) => {
-                // Load the old RingPayload to recover the original G1Affine ring key.
-                let old_ring_payload_bytes = storage
-                    .get(LocalStorageKeys::RingPkMapping(ring_key.clone()))
-                    .map_err(|e| {
-                        DkgError::Storage(format!(
-                            "Refresh: failed to read old RingPkMapping: {}",
-                            e
-                        ))
-                    })?
-                    .ok_or_else(|| {
-                        DkgError::Storage(format!(
-                            "Refresh: old RingPkMapping not found for key {}",
-                            ring_key
-                        ))
-                    })?;
-                let old_ring_payload: RingPayload = serde_json::from_slice(&old_ring_payload_bytes)
-                    .map_err(|e| {
-                        DkgError::Deserialization(format!(
-                            "Refresh: failed to deserialize old RingPayload: {}",
-                            e
-                        ))
-                    })?;
-
-                let original_pk_bytes = hex::decode(&old_ring_payload.ring_pk).map_err(|e| {
-                    DkgError::Deserialization(format!(
-                        "Refresh: failed to hex-decode original ring_pk: {}",
-                        e
-                    ))
-                })?;
-                let original_ring_pk = <G1Affine as CryptoDeserialize>::from_bytes(
-                    &original_pk_bytes,
-                )
-                .map_err(|e| {
-                    DkgError::Deserialization(format!(
-                        "Refresh: failed to deserialize original ring_pk: {}",
-                        e
-                    ))
-                })?;
-
-                // Load old bundle, fold in the delta share and delta polynomial.
+                // Load old bundle keyed directly by ring_key (= aggregate_pk.to_string()).
+                // No RingPkMapping round-trip needed — the bundle variants that take a
+                // plain string key avoid the G1Affine deserialization entirely.
                 let old_bundle =
-                    RingShareBundle::load(storage, &original_ring_pk).map_err(|e| {
+                    RingShareBundle::load_by_ring_key(storage, &ring_key).map_err(|e| {
                         DkgError::Storage(format!(
                             "Refresh: failed to load old share bundle: {}",
                             e
@@ -244,13 +224,15 @@ pub fn persist_ring_bundle<S: LocalStorage>(
                     public_polynomial: hex::encode(&new_poly_bytes),
                     refreshed_at: now_secs,
                 };
-                new_bundle.save(storage, &original_ring_pk).map_err(|e| {
-                    DkgError::Storage(format!("Refresh: failed to store new bundle: {}", e))
-                })?;
+                new_bundle
+                    .save_by_ring_key(storage, &ring_key)
+                    .map_err(|e| {
+                        DkgError::Storage(format!("Refresh: failed to store new bundle: {}", e))
+                    })?;
 
                 tracing::info!(
                     session_id = session_id,
-                    ring_pk = %old_ring_payload.ring_pk,
+                    ring_key = %ring_key,
                     "Refresh: Phase 4 complete — RingShareBundle updated atomically"
                 );
             }
@@ -280,10 +262,13 @@ pub fn persist_ring_bundle<S: LocalStorage>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::BULLETIN_RING_NAMESPACE;
     use crate::helpers::test_helpers::{cleanup_db, test_db_path};
-    use crate::ring_state::RingShareBundle;
-    use bulletin::r#trait::RingPayload;
+    use crate::ring_state::{RingIndexEntry, RingShareBundle};
+    use bulletin::dummy::DummyBulletin;
+    use bulletin::r#trait::{Bulletin, RingPayload};
     use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
+    use std::sync::Arc;
 
     fn make_storage(db_name: &str) -> (LocalStorageImpl, String) {
         let db_path = test_db_path(db_name);
@@ -291,41 +276,69 @@ mod tests {
         (storage, db_path)
     }
 
-    fn write_ring(
+    /// Post a RingPayload to the bulletin and write a RingIndexEntry into local storage.
+    async fn write_ring(
         storage: &LocalStorageImpl,
-        ring_pk_hex: &str,
+        bulletin: &Arc<dyn Bulletin + Send + Sync>,
+        ring_pk: &str,
         peer_ids: Vec<String>,
         pss_interval: Option<u64>,
     ) {
         let payload = RingPayload {
-            ring_pk: ring_pk_hex.to_string(),
+            ring_pk: ring_pk.to_string(),
             peer_ids,
             threshold: 1,
             pss_interval,
         };
         let bytes = serde_json::to_vec(&payload).unwrap();
-        storage
-            .set(
-                LocalStorageKeys::RingPkMapping(ring_pk_hex.to_string()),
-                bytes,
+        bulletin
+            .post(
+                BULLETIN_RING_NAMESPACE.to_string(),
+                bytes.clone(),
+                vec![],
+                None,
             )
+            .await
             .unwrap();
+        let post_id = bulletin
+            .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
+            .unwrap();
+        let mut ring_index: Vec<RingIndexEntry> = storage
+            .get(LocalStorageKeys::RingIndex)
+            .ok()
+            .flatten()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        if !ring_index.iter().any(|e| e.ring_pk_str == ring_pk) {
+            ring_index.push(RingIndexEntry {
+                ring_pk_str: ring_pk.to_string(),
+                bulletin_post_id: post_id,
+            });
+            storage
+                .set(
+                    LocalStorageKeys::RingIndex,
+                    serde_json::to_vec(&ring_index).unwrap(),
+                )
+                .unwrap();
+        }
     }
 
-    fn write_last_refresh(storage: &LocalStorageImpl, ring_pk_hex: &str, secs: u64) {
-        // `ring_pk_hex` is aggregate_pk.to_string() — same key the bundle is stored under.
+    fn write_last_refresh(storage: &LocalStorageImpl, ring_pk: &str, secs: u64) {
         let bundle = RingShareBundle {
             share_bytes: vec![],
             public_polynomial: String::new(),
             refreshed_at: secs,
         };
-        bundle.save_by_ring_key(storage, ring_pk_hex).unwrap();
+        bundle.save_by_ring_key(storage, ring_pk).unwrap();
     }
 
-    #[test]
-    fn test_unknown_ring() {
+    #[tokio::test]
+    async fn test_unknown_ring() {
         let (storage, db_path) = make_storage("helpers_unknown_ring");
-        let result = validate_refresh_session_init("some_pk", "sender", &storage);
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        // No RingIndex written — ring is unknown.
+        let result = validate_refresh_session_init("some_pk", "sender", &storage, &bulletin).await;
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
             "Expected Unauthorized for unknown ring, got: {:?}",
@@ -334,16 +347,36 @@ mod tests {
         cleanup_db(&db_path);
     }
 
-    #[test]
-    fn test_corrupt_ring_payload() {
+    #[tokio::test]
+    async fn test_corrupt_ring_payload() {
         let (storage, db_path) = make_storage("helpers_corrupt_payload");
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        // Post garbage bytes to the bulletin and point RingIndex at them.
+        let garbage = b"not valid json".to_vec();
+        bulletin
+            .post(
+                BULLETIN_RING_NAMESPACE.to_string(),
+                garbage.clone(),
+                vec![],
+                None,
+            )
+            .await
+            .unwrap();
+        let post_id = bulletin
+            .get_post_id(BULLETIN_RING_NAMESPACE, &garbage)
+            .unwrap();
         storage
             .set(
-                LocalStorageKeys::RingPkMapping("pk".to_string()),
-                b"not valid json".to_vec(),
+                LocalStorageKeys::RingIndex,
+                serde_json::to_vec(&vec![RingIndexEntry {
+                    ring_pk_str: "pk".to_string(),
+                    bulletin_post_id: post_id,
+                }])
+                .unwrap(),
             )
             .unwrap();
-        let result = validate_refresh_session_init("pk", "sender", &storage);
+        let result = validate_refresh_session_init("pk", "sender", &storage, &bulletin).await;
         assert!(
             matches!(result, Err(DkgError::Deserialization(_))),
             "Expected Deserialization error for corrupt payload, got: {:?}",
@@ -352,17 +385,22 @@ mod tests {
         cleanup_db(&db_path);
     }
 
-    #[test]
-    fn test_sender_not_in_ring() {
+    #[tokio::test]
+    async fn test_sender_not_in_ring() {
         let (storage, db_path) = make_storage("helpers_sender_not_in_ring");
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let ring_pk = "ring_pk_abc";
         write_ring(
             &storage,
+            &bulletin,
             ring_pk,
             vec!["aabbccdd".to_string(), "eeff0011".to_string()],
-            None, // membership check fires before any time check
-        );
-        let result = validate_refresh_session_init(ring_pk, "deadbeef00000000", &storage);
+            None,
+        )
+        .await;
+        let result =
+            validate_refresh_session_init(ring_pk, "deadbeef00000000", &storage, &bulletin).await;
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
             "Expected Unauthorized for sender not in ring, got: {:?}",
@@ -371,14 +409,23 @@ mod tests {
         cleanup_db(&db_path);
     }
 
-    #[test]
-    fn test_no_last_refresh_timestamp() {
+    #[tokio::test]
+    async fn test_no_last_refresh_timestamp() {
         // When pss_interval is set, a missing bundle (no DKG yet) must be rejected.
         let (storage, db_path) = make_storage("helpers_no_timestamp");
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let ring_pk = "ring_pk_def";
-        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()], Some(86400));
-        // Intentionally do not write a RingShareBundle
-        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage);
+        write_ring(
+            &storage,
+            &bulletin,
+            ring_pk,
+            vec!["aabbccdd".to_string()],
+            Some(86400),
+        )
+        .await;
+        // Intentionally do not write a RingShareBundle.
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, &bulletin).await;
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
             "Expected Unauthorized for missing timestamp, got: {:?}",
@@ -394,18 +441,26 @@ mod tests {
         cleanup_db(&db_path);
     }
 
-    #[test]
-    fn test_refresh_too_soon() {
+    #[tokio::test]
+    async fn test_refresh_too_soon() {
         let (storage, db_path) = make_storage("helpers_too_soon");
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let ring_pk = "ring_pk_ghi";
-        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()], Some(86400));
-        // Set last refresh to now — elapsed will be ~0s
+        write_ring(
+            &storage,
+            &bulletin,
+            ring_pk,
+            vec!["aabbccdd".to_string()],
+            Some(86400),
+        )
+        .await;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
         write_last_refresh(&storage, ring_pk, now);
-        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage);
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, &bulletin).await;
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
             "Expected Unauthorized for too soon, got: {:?}",
@@ -421,14 +476,23 @@ mod tests {
         cleanup_db(&db_path);
     }
 
-    #[test]
-    fn test_refresh_succeeds() {
+    #[tokio::test]
+    async fn test_refresh_succeeds() {
         let (storage, db_path) = make_storage("helpers_success");
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let ring_pk = "ring_pk_jkl";
-        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()], Some(86400));
-        // Timestamp at epoch — elapsed >> interval
+        write_ring(
+            &storage,
+            &bulletin,
+            ring_pk,
+            vec!["aabbccdd".to_string()],
+            Some(86400),
+        )
+        .await;
+        // Timestamp at epoch — elapsed >> interval.
         write_last_refresh(&storage, ring_pk, 0);
-        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage);
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, &bulletin).await;
         assert!(
             result.is_ok(),
             "Expected Ok for valid refresh, got: {:?}",
@@ -437,14 +501,23 @@ mod tests {
         cleanup_db(&db_path);
     }
 
-    #[test]
-    fn test_no_pss_interval_skips_time_check() {
+    #[tokio::test]
+    async fn test_no_pss_interval_skips_time_check() {
         // When pss_interval is None, time check is skipped — refresh always allowed.
         let (storage, db_path) = make_storage("helpers_no_interval");
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let ring_pk = "ring_pk_mno";
-        write_ring(&storage, ring_pk, vec!["aabbccdd".to_string()], None);
+        write_ring(
+            &storage,
+            &bulletin,
+            ring_pk,
+            vec!["aabbccdd".to_string()],
+            None,
+        )
+        .await;
         // No RingShareBundle written — would fail if the time check ran.
-        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage);
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, &bulletin).await;
         assert!(
             result.is_ok(),
             "Expected Ok when pss_interval is None (no time check), got: {:?}",

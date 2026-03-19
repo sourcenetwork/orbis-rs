@@ -69,9 +69,8 @@ fn setup_document_in_bulletin(
         .expect("serialize DocumentPayload");
 
     // Compute the object_id using the same method as the bulletin
-    let full_namespace = format!("bulletin/{}", namespace);
     let object_id = dummy_bulletin
-        .get_post_id(&full_namespace, &document_payload_bytes)
+        .get_post_id(namespace, &document_payload_bytes)
         .expect("compute object_id");
 
     // Store the document in the bulletin

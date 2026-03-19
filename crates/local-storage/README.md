@@ -41,11 +41,17 @@ pub trait LocalStorage {
 
 ```rust
 pub enum LocalStorageKeys {
-    /// Node's ring key share (encrypted at rest)
+    /// Node's ring key share + polynomial (encrypted at rest)
     RingKey(String),
 
-    /// Maps ring public key to DKG session ID
-    RingPkMapping(String),
+    /// Index of rings this node has joined: Vec<RingIndexEntry> (ring_pk_str + bulletin_post_id)
+    RingIndex,
+
+    /// The node's iroh secret key for deterministic peer identity
+    NodeSecretKey,
+
+    /// The node's secp256k1 signing key for chain transactions
+    NodeSigningKey,
 }
 ```
 
@@ -61,8 +67,8 @@ use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 let storage = LocalStorageImpl::new(None, "".to_string());
 
 // Store and retrieve data
-storage.set(LocalStorageKeys::RingPkMapping("abc123".into()), vec![1, 2, 3])?;
-let data = storage.get(LocalStorageKeys::RingPkMapping("abc123".into()))?;
+storage.set(LocalStorageKeys::RingKey("abc123".into()), vec![1, 2, 3])?;
+let data = storage.get(LocalStorageKeys::RingKey("abc123".into()))?;
 ```
 
 ### Encrypted Storage

@@ -2,6 +2,19 @@ use crypto::r#trait::{CryptoDeserialize, PriShare};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 
+/// One entry in the node's ring index.
+///
+/// Stored as a JSON `Vec<RingIndexEntry>` under `LocalStorageKeys::RingIndex`.
+/// Gives the PSS scheduler and refresh validator everything they need to locate
+/// a ring in local storage and on the bulletin without any extra round-trips.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RingIndexEntry {
+    /// `aggregate_pk.to_string()` — the key used for `RingKey` / `RingShareBundle`.
+    pub ring_pk_str: String,
+    /// Content-hash post_id of this ring's `RingPayload` on the bulletin.
+    pub bulletin_post_id: String,
+}
+
 /// Combined share + polynomial bundle stored as a single encrypted write under
 /// `RingKey(ring_pk.to_string())`.  Writing both fields together in one
 /// `set_encrypted` call makes them atomic: a crash can leave the entry absent
