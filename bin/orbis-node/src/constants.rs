@@ -267,9 +267,9 @@ pub const SIGN_COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
 // PSS (Proactive Secret Sharing) Constants
 // ============================================================================
 
-/// Default interval between automatic PSS reshare ceremonies (24 hours).
+/// Default interval between automatic PSS reshare ceremonies (1 hour).
 /// Set reshare_interval_secs to 0 on node startup to disable.
-pub const DEFAULT_RESHARE_INTERVAL_SECS: u64 = 24 * 60 * 60;
+pub const DEFAULT_RESHARE_INTERVAL_SECS: u64 = 60 * 60;
 
 // ============================================================================
 // Bulletin Proof Constants
