@@ -608,9 +608,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// since the private share is stored in local storage and ring info is on
     /// the bulletin.
     ///
-    /// Per-peer connections are NOT closed here — they live in `peer_connections`
-    /// and remain open for future sessions. This avoids the QUIC CONNECTION_CLOSE
-    /// race where the remote peer might still be reading the last buffered message.
+    /// Per-session streams in `peer_streams` are dropped here (FIN sent on drop).
+    /// Per-peer QUIC connections in `peer_connections` are NOT closed — they remain
+    /// open in the pool for future sessions.
     pub async fn remove_session(&self, session_id: &u64) {
         let ring_key_to_clear = {
             let mut states = self.states.write().await;
