@@ -2,8 +2,7 @@
 //!
 //! Periodically checks every known ring and initiates a refresh ceremony when the
 //! ring's own `pss_interval` (from the bulletin `RingPayload`) has elapsed since the
-//! last refresh.  The canonical `RingPayload` is always fetched from the bulletin using
-//! the `RingIndex` entry written at Phase 4 — local storage is not the source of truth.  The check cadence (`check_interval`) is set at node startup; each ring
+//! last refresh.  The canonical `RingPayload` is always fetched from the bulletin and node
 //! controls its own refresh frequency via the `pss_interval` field in `RingPayload`.
 //!
 //! ## Protocol

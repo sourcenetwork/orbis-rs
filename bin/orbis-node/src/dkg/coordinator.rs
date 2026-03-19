@@ -17,7 +17,8 @@
 use crate::app_state::AppState;
 use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::constants::{
-    BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, MAX_COMMITMENT_COEFFICIENTS,
+    BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, DKG_PHASE_TIMEOUT,
+    DKG_SESSION_WAIT_POLL_INTERVAL, MAX_COMMITMENT_COEFFICIENTS,
 };
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
@@ -312,21 +313,37 @@ where
             return Ok(None);
         }
 
-        // For all other messages, ensure the session exists
+        // For all other messages, ensure the session exists.
+        // During PSS refresh the receiving node's SessionInit handler makes a bulletin
+        // network call, so peer commitments can arrive before the
+        // session is created.  Wait up to 500 ms for the session to appear before
+        // rejecting so this ordering race does not stall the ceremony.
         if !self
             .app_state
             .dkg_session_state
             .session_exists(&session_id)
             .await
         {
-            let sender_hex = hex::encode(sender_peer_id.as_bytes());
-            tracing::warn!(
-                session_id = session_id,
-                sender_peer_hex = %sender_hex,
-                message_type = ?message_type,
-                "DKG Coordinator: Rejecting message - session not found on receiver"
-            );
-            return Err(session_not_found(session_id));
+            let session_state = self.app_state.dkg_session_state.clone();
+            let found = tokio::time::timeout(DKG_PHASE_TIMEOUT, async move {
+                loop {
+                    tokio::time::sleep(DKG_SESSION_WAIT_POLL_INTERVAL).await;
+                    if session_state.session_exists(&session_id).await {
+                        return;
+                    }
+                }
+            })
+            .await;
+            if found.is_err() {
+                let sender_hex = hex::encode(sender_peer_id.as_bytes());
+                tracing::warn!(
+                    session_id = session_id,
+                    sender_peer_hex = %sender_hex,
+                    message_type = ?message_type,
+                    "DKG Coordinator: Rejecting message - session not found on receiver"
+                );
+                return Err(session_not_found(session_id));
+            }
         }
 
         // Validate sender identity for messages that carry from_node_id

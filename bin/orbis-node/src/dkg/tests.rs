@@ -1,4 +1,3 @@
-use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::constants::MAX_DKG_SESSIONS;
 use crate::dkg::{
     coordinator::DkgCoordinator,
@@ -8,11 +7,12 @@ use crate::dkg::{
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
-    get_test_ring_post, setup_three_node_network, test_db_path, TestKeyPair,
+    get_test_ring_post, setup_three_node_network, test_db_path, write_ring_to_bulletin,
+    TestKeyPair,
 };
-use crate::ring_state::{RingIndexEntry, RingPolyState};
+use crate::ring_state::RingPolyState;
 use crate::DkgServiceImpl;
-use bulletin::r#trait::{Bulletin, RingPayload};
+use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole, PubPoly as PubPolyTrait};
 use crypto::CryptoSerialize;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -1676,53 +1676,6 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
 // checks happen before any network I/O.
 // =============================================================================
 
-/// Post a RingPayload to the bulletin and write a `RingIndexEntry` into local storage.
-async fn g3_write_ring_payload(
-    storage: &impl local_storage::r#trait::LocalStorage,
-    bulletin: &Arc<dyn Bulletin + Send + Sync>,
-    ring_pk: &str,
-    peer_ids: Vec<String>,
-    pss_interval: Option<u64>,
-) {
-    let payload = RingPayload {
-        ring_pk: ring_pk.to_string(),
-        peer_ids,
-        threshold: 1,
-        pss_interval,
-    };
-    let bytes = serde_json::to_vec(&payload).unwrap();
-    bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            bytes.clone(),
-            vec![],
-            None,
-        )
-        .await
-        .unwrap();
-    let post_id = bulletin
-        .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
-        .unwrap();
-    let mut ring_index: Vec<RingIndexEntry> = storage
-        .get(LocalStorageKeys::RingIndex)
-        .ok()
-        .flatten()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
-    if !ring_index.iter().any(|e| e.ring_pk_str == ring_pk) {
-        ring_index.push(RingIndexEntry {
-            ring_pk_str: ring_pk.to_string(),
-            bulletin_post_id: post_id,
-        });
-        storage
-            .set(
-                LocalStorageKeys::RingIndex,
-                serde_json::to_vec(&ring_index).unwrap(),
-            )
-            .unwrap();
-    }
-}
-
 /// Write a minimal `RingShareBundle` with the given `refreshed_at` timestamp.
 fn g3_write_last_refresh(
     storage: &impl local_storage::r#trait::LocalStorage,
@@ -1762,7 +1715,7 @@ async fn test_refresh_rejected_sender_not_in_ring() {
 
     let ring_pk = "ring_pk_group3a";
     // Ring contains only "aabbccdd"; the sender will be "deadbeef".
-    g3_write_ring_payload(
+    write_ring_to_bulletin(
         &app_state.local_storage,
         &app_state.bulletin,
         ring_pk,
@@ -1794,7 +1747,7 @@ async fn test_refresh_rejected_too_soon() {
 
     let ring_pk = "ring_pk_group3b";
     let sender_hex = "aabbccdd";
-    g3_write_ring_payload(
+    write_ring_to_bulletin(
         &app_state.local_storage,
         &app_state.bulletin,
         ring_pk,
@@ -1832,7 +1785,7 @@ async fn test_refresh_rejected_already_in_progress() {
 
     let ring_pk = "ring_pk_group3c";
     let sender_hex = "aabbccdd";
-    g3_write_ring_payload(
+    write_ring_to_bulletin(
         &app_state.local_storage,
         &app_state.bulletin,
         ring_pk,

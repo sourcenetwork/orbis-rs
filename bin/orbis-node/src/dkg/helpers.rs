@@ -263,10 +263,10 @@ pub fn persist_ring_bundle<S: LocalStorage>(
 mod tests {
     use super::*;
     use crate::constants::BULLETIN_RING_NAMESPACE;
-    use crate::helpers::test_helpers::{cleanup_db, test_db_path};
+    use crate::helpers::test_helpers::{cleanup_db, test_db_path, write_ring_to_bulletin};
     use crate::ring_state::{RingIndexEntry, RingShareBundle};
     use bulletin::dummy::DummyBulletin;
-    use bulletin::r#trait::{Bulletin, RingPayload};
+    use bulletin::r#trait::Bulletin;
     use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
     use std::sync::Arc;
 
@@ -274,53 +274,6 @@ mod tests {
         let db_path = test_db_path(db_name);
         let storage = LocalStorageImpl::new(None, db_path.clone()).expect("create storage");
         (storage, db_path)
-    }
-
-    /// Post a RingPayload to the bulletin and write a RingIndexEntry into local storage.
-    async fn write_ring(
-        storage: &LocalStorageImpl,
-        bulletin: &Arc<dyn Bulletin + Send + Sync>,
-        ring_pk: &str,
-        peer_ids: Vec<String>,
-        pss_interval: Option<u64>,
-    ) {
-        let payload = RingPayload {
-            ring_pk: ring_pk.to_string(),
-            peer_ids,
-            threshold: 1,
-            pss_interval,
-        };
-        let bytes = serde_json::to_vec(&payload).unwrap();
-        bulletin
-            .post(
-                BULLETIN_RING_NAMESPACE.to_string(),
-                bytes.clone(),
-                vec![],
-                None,
-            )
-            .await
-            .unwrap();
-        let post_id = bulletin
-            .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
-            .unwrap();
-        let mut ring_index: Vec<RingIndexEntry> = storage
-            .get(LocalStorageKeys::RingIndex)
-            .ok()
-            .flatten()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        if !ring_index.iter().any(|e| e.ring_pk_str == ring_pk) {
-            ring_index.push(RingIndexEntry {
-                ring_pk_str: ring_pk.to_string(),
-                bulletin_post_id: post_id,
-            });
-            storage
-                .set(
-                    LocalStorageKeys::RingIndex,
-                    serde_json::to_vec(&ring_index).unwrap(),
-                )
-                .unwrap();
-        }
     }
 
     fn write_last_refresh(storage: &LocalStorageImpl, ring_pk: &str, secs: u64) {
@@ -391,7 +344,7 @@ mod tests {
         let bulletin: Arc<dyn Bulletin + Send + Sync> =
             Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let ring_pk = "ring_pk_abc";
-        write_ring(
+        write_ring_to_bulletin(
             &storage,
             &bulletin,
             ring_pk,
@@ -416,7 +369,7 @@ mod tests {
         let bulletin: Arc<dyn Bulletin + Send + Sync> =
             Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let ring_pk = "ring_pk_def";
-        write_ring(
+        write_ring_to_bulletin(
             &storage,
             &bulletin,
             ring_pk,
@@ -447,7 +400,7 @@ mod tests {
         let bulletin: Arc<dyn Bulletin + Send + Sync> =
             Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let ring_pk = "ring_pk_ghi";
-        write_ring(
+        write_ring_to_bulletin(
             &storage,
             &bulletin,
             ring_pk,
@@ -482,7 +435,7 @@ mod tests {
         let bulletin: Arc<dyn Bulletin + Send + Sync> =
             Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let ring_pk = "ring_pk_jkl";
-        write_ring(
+        write_ring_to_bulletin(
             &storage,
             &bulletin,
             ring_pk,
@@ -508,7 +461,7 @@ mod tests {
         let bulletin: Arc<dyn Bulletin + Send + Sync> =
             Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let ring_pk = "ring_pk_mno";
-        write_ring(
+        write_ring_to_bulletin(
             &storage,
             &bulletin,
             ring_pk,
