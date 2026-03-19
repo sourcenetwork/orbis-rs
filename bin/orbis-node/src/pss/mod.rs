@@ -54,6 +54,7 @@ where
 
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(check_interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         ticker.tick().await; // skip the initial immediate tick at t=0
         loop {
             ticker.tick().await;
@@ -263,7 +264,7 @@ where
         .set_node_peer_mappings(&session_id, node_id_to_peer_id)
         .await;
 
-    // Validate peer ID formats before sending messages
+    // Validate peer ID formats before sending any messages.
     if let Err((bad_peer, err)) = validate_all_peer_ids(peer_ids) {
         app_state
             .dkg_session_state
@@ -275,7 +276,9 @@ where
         )));
     }
 
-    // Send RefreshSessionInit to all peers
+    // Send RefreshSessionInit to all peers.
+    // If any peer fails to receive it they will never send a commitment, stalling
+    // the ceremony until DKG_PHASE_TIMEOUT.  Abort early instead.
     let init_msg = DkgMessage::SessionInit {
         session_id,
         threshold: threshold as u32,
@@ -296,7 +299,15 @@ where
             .send_message_to_peer(peer_id_str, init_msg.clone(), Some(session_id))
             .await
         {
-            tracing::error!(peer = %peer_id_str, error = %e, "PSS: failed to send SessionInit");
+            tracing::error!(peer = %peer_id_str, error = %e, "PSS: failed to send SessionInit, aborting refresh");
+            app_state
+                .dkg_session_state
+                .remove_session(&session_id)
+                .await;
+            return Err(DkgError::NetworkConnection(format!(
+                "PSS: failed to send SessionInit to {}: {}",
+                peer_id_str, e
+            )));
         }
     }
 

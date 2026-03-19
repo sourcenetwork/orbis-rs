@@ -4,7 +4,7 @@ use crate::dkg::error::DkgError;
 use crate::dkg::helpers::validate_dkg_claims;
 use crate::dkg::messages::DkgMessage;
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
-use crate::helpers::helpers::{connect_to_peers, extract_node_part, validate_all_peer_ids};
+use crate::helpers::helpers::{extract_node_part, is_self_peer_id, validate_all_peer_ids};
 use crate::metrics;
 use authn::DkgClaims;
 use network::DKG;
@@ -199,22 +199,24 @@ where
                 .into());
             }
 
-            let connection_summary =
-                connect_to_peers(&self.state.network, req.peer_ids.clone(), DKG).await;
-
-            // Check if we successfully connected to all requested peers
-            // Note: connection_summary.total excludes self (which is skipped by connect_to_peers)
-            if connection_summary.successful < connection_summary.total {
-                let error_msg = format!(
-                    "Failed to connect to all required peers. Connected to {}/{} peers. Failed connections: {}",
-                    connection_summary.successful,
-                    connection_summary.total,
-                    connection_summary.failed
-                );
-                tracing::error!(error = %error_msg, "Failed to connect to all peers");
-
-                // cleanup_guard will automatically clean up the session when dropped
-                return Err(DkgError::NetworkConnection(error_msg).into());
+            // Pre-warm the connection pool for all peers before starting the ceremony.
+            // Using get_or_connect (rather than a raw network.connect()) means the
+            // connections are cached in the pool so the subsequent open_stream calls
+            // in send_message_to_peer reuse them instead of opening duplicates.
+            for peer_id_str in &req.peer_ids {
+                if is_self_peer_id(&self.state.network, peer_id_str) {
+                    continue;
+                }
+                if let Err(e) = self
+                    .state
+                    .peer_connection_pool
+                    .get_or_connect(&self.state.network, peer_id_str, DKG)
+                    .await
+                {
+                    let error_msg = format!("Failed to connect to peer {}: {}", peer_id_str, e);
+                    tracing::error!(error = %error_msg, "Failed to connect to all peers");
+                    return Err(DkgError::NetworkConnection(error_msg).into());
+                }
             }
 
             // Send SessionInit message to all peers
