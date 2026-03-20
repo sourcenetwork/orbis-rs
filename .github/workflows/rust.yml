@@ -12,7 +12,8 @@ env:
 jobs:
   build:
 
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}/\
+      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
 
     steps:
     - uses: actions/checkout@v4
