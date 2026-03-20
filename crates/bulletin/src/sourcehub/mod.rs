@@ -55,9 +55,11 @@ impl Bulletin for SourceHubBulletin {
         Ok(())
     }
     async fn read(&self, namespace: String, id: String) -> Result<BulletinPost> {
+        // SourceHub stores posts under "bulletin/{namespace}" on-chain.
+        let full_namespace = format!("bulletin/{}", namespace);
         let post = self
             .chain_client
-            .bulletin_read_post(&namespace, &id)
+            .bulletin_read_post(&full_namespace, &id)
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?
             .ok_or_else(|| BulletinError::NotFound {
@@ -176,13 +178,13 @@ impl SourceHubBulletin {
         Ok(client)
     }
 
+    /// Compute the deterministic post ID matching SourceHub's on-chain behavior.
+    /// The chain stores posts under "bulletin/{namespace}", so we hash
+    /// "bulletin/{namespace}" || payload regardless of what namespace string the caller passes.
     pub fn compute_post_id(namespace: &str, payload: &[u8]) -> String {
         let mut hasher = Sha256::new();
-
-        hasher.update(namespace.as_bytes());
+        hasher.update(format!("bulletin/{}", namespace).as_bytes());
         hasher.update(payload);
-
-        let hash = hasher.finalize();
-        hex::encode(hash)
+        hex::encode(hasher.finalize())
     }
 }

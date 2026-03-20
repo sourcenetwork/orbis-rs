@@ -1,7 +1,8 @@
+use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::dkg::error::DkgError;
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bulletin, test_db_path};
-use crate::ring_state::RingShareBundle;
+use crate::ring_state::RingIndexEntry;
 use bulletin::{
     dummy::DummyBulletin,
     r#trait::{Bulletin, RingPayload},
@@ -16,15 +17,14 @@ use crypto::DkgImpl;
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Build an AppState with `ring_payload` stored in local storage under `ring_id`.
+/// Build an AppState with `ring_payload` posted to the bulletin.
 ///
-/// Also seeds `RingIndex` and a `RingShareBundle` (with `refreshed_at = 0`) so
-/// the PSS scheduler can find and time-check the ring.  Returns `(app_state, db_path)`.
+/// Seeds `RingIndex` with a `RingIndexEntry` so the PSS scheduler can find the ring.
+/// Returns `(app_state, ring_index_entry, db_path)`.
 async fn make_state_with_ring(
     db_name: &str,
-    ring_id: &str,
     ring_payload: &RingPayload,
-) -> (crate::app_state::AppState<DkgImpl>, String) {
+) -> (crate::app_state::AppState<DkgImpl>, RingIndexEntry, String) {
     let bulletin: Arc<dyn Bulletin + Send + Sync> =
         Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
     let db_path = test_db_path(db_name);
@@ -36,28 +36,35 @@ async fn make_state_with_ring(
     )
     .await;
 
-    // Write RingPayload to local storage.
+    // Post RingPayload to the bulletin and derive the post_id.
     let payload_bytes = serde_json::to_vec(ring_payload).expect("serialize RingPayload");
     app_state
-        .local_storage
-        .set(
-            LocalStorageKeys::RingPkMapping(ring_id.to_string()),
-            payload_bytes,
+        .bulletin
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            payload_bytes.clone(),
+            vec![],
+            None,
         )
-        .expect("write RingPkMapping");
+        .await
+        .expect("post RingPayload to bulletin");
+    let post_id = app_state
+        .bulletin
+        .get_post_id(BULLETIN_RING_NAMESPACE, &payload_bytes)
+        .expect("compute post_id");
 
-    // Seed a RingShareBundle with refreshed_at = epoch so elapsed >> any interval.
-    // `ring_id` is aggregate_pk.to_string() — same key the bundle is stored under.
-    let bundle = RingShareBundle {
-        share_bytes: vec![],
-        public_polynomial: String::new(),
-        refreshed_at: 0,
+    // Seed RingIndex with the entry.
+    let entry = RingIndexEntry {
+        ring_pk_str: ring_payload.ring_pk.clone(),
+        bulletin_post_id: post_id,
     };
-    bundle
-        .save_by_ring_key(&app_state.local_storage, ring_id)
-        .expect("write RingShareBundle for PSS test");
+    let index_bytes = serde_json::to_vec(&vec![&entry]).expect("serialize RingIndex");
+    app_state
+        .local_storage
+        .set(LocalStorageKeys::RingIndex, index_bytes)
+        .expect("write RingIndex");
 
-    (app_state, db_path)
+    (app_state, entry, db_path)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -140,7 +147,10 @@ async fn test_refresh_all_rings_bulletin_miss_does_not_propagate() {
     .await;
 
     // Seed ring index with a nonexistent ring
-    let ring_index = vec!["nonexistent_ring_id".to_string()];
+    let ring_index = vec![RingIndexEntry {
+        ring_pk_str: "nonexistent_ring".to_string(),
+        bulletin_post_id: "nonexistent_ring_id".to_string(),
+    }];
     let index_bytes = serde_json::to_vec(&ring_index).expect("serialize ring index");
     app_state
         .local_storage
@@ -157,26 +167,26 @@ async fn test_refresh_all_rings_bulletin_miss_does_not_propagate() {
     cleanup_db(&db_path);
 }
 
-/// When local storage has a ring but our node is not the lexicographically
-/// smallest peer, `refresh_ring` should skip gracefully (Ok(())).
+/// When the ring's peer list doesn't include this node as smallest, `refresh_ring`
+/// should skip gracefully (Ok(())).
 #[tokio::test]
 async fn test_refresh_ring_not_initiator_skips_silently() {
     let db_name = "pss_not_initiator";
-    let ring_id = "test_ring_not_initiator";
 
     // Two fake peer IDs that sort before any real random peer ID.
     // They are 64-char hex strings (all zeroes / ones) — valid format.
     let fake_peer_1 = "0".repeat(64);
     let fake_peer_2 = "1".repeat(64);
 
+    // ring_pk is not validated on the non-initiator path (we return before deserialization).
     let ring_payload = RingPayload {
         ring_pk: "fake_pk".to_string(),
         peer_ids: vec![fake_peer_1.clone(), fake_peer_2.clone()],
         threshold: 1,
-        pss_interval: Some(86400), // 24h — elapsed >> 0 since bundle.refreshed_at = epoch
+        pss_interval: Some(86400),
     };
 
-    let (app_state, db_path) = make_state_with_ring(db_name, ring_id, &ring_payload).await;
+    let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
 
     // Our real peer ID (random) is almost certainly larger than all-zeroes
     let our_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
@@ -192,7 +202,7 @@ async fn test_refresh_ring_not_initiator_skips_silently() {
     );
 
     let state_arc = Arc::new(app_state);
-    let result = super::refresh_ring(&state_arc, ring_id).await;
+    let result = super::refresh_ring(&state_arc, &entry).await;
 
     assert!(
         result.is_ok(),
@@ -208,12 +218,12 @@ async fn test_refresh_ring_not_initiator_skips_silently() {
     cleanup_db(&db_path);
 }
 
-/// When local storage has corrupt bytes under `RingPkMapping`,
+/// When the bulletin has corrupt bytes for a ring's payload,
 /// `refresh_ring` should return a deserialization error.
 #[tokio::test]
 async fn test_refresh_ring_bad_bulletin_payload() {
     let db_name = "pss_bad_payload";
-    let ring_id = "test_ring_bad_payload";
+    let ring_pk_str = "test_ring_bad_payload";
     let db_path = test_db_path(db_name);
 
     let bulletin: Arc<dyn Bulletin + Send + Sync> =
@@ -226,16 +236,36 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     )
     .await;
 
-    // Write garbage bytes to RingPkMapping so deserialization fails.
+    // Post garbage bytes to the bulletin so deserialization of RingPayload fails.
+    let garbage = b"not valid json".to_vec();
+    app_state
+        .bulletin
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            garbage.clone(),
+            vec![],
+            None,
+        )
+        .await
+        .expect("post garbage");
+    let post_id = app_state
+        .bulletin
+        .get_post_id(BULLETIN_RING_NAMESPACE, &garbage)
+        .expect("compute post_id");
+
+    let entry = RingIndexEntry {
+        ring_pk_str: ring_pk_str.to_string(),
+        bulletin_post_id: post_id,
+    };
     app_state
         .local_storage
         .set(
-            LocalStorageKeys::RingPkMapping(ring_id.to_string()),
-            b"not valid json".to_vec(),
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&vec![&entry]).expect("serialize"),
         )
-        .expect("write bad RingPkMapping");
+        .expect("write RingIndex");
 
-    let result = super::refresh_ring(&Arc::new(app_state), ring_id).await;
+    let result = super::refresh_ring(&Arc::new(app_state), &entry).await;
     assert!(
         matches!(result, Err(DkgError::Deserialization(_))),
         "Expected Deserialization error, got: {:?}",
@@ -262,7 +292,11 @@ async fn test_refresh_ring_missing_from_bulletin() {
     )
     .await;
 
-    let result = super::refresh_ring(&Arc::new(app_state), "ghost_ring").await;
+    let entry = RingIndexEntry {
+        ring_pk_str: "ghost_ring".to_string(),
+        bulletin_post_id: "ghost_ring".to_string(),
+    };
+    let result = super::refresh_ring(&Arc::new(app_state), &entry).await;
     assert!(
         matches!(result, Err(DkgError::Storage(_))),
         "Expected Storage error for missing ring, got: {:?}",

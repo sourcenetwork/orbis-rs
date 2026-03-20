@@ -7,18 +7,22 @@ use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::helpers::create_routers::{
     create_router_with_all_handlers, create_router_with_dkg_handler, create_router_with_handlers,
 };
+use crate::ring_state::RingIndexEntry;
 use authz::dummy::DummyAuthZ;
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::{
     dummy::DummyBulletin,
-    r#trait::{Bulletin, BulletinPost},
+    r#trait::{Bulletin, BulletinPost, RingPayload},
     BulletinImpl,
 };
 use cli_tool;
 use common::blockchain::ChainConfigBuilder;
 use hex;
-use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
+use local_storage::{
+    r#trait::{LocalStorage, LocalStorageKeys},
+    LocalStorageImpl,
+};
 use network::{NetworkImpl, Router};
 use std::{fs, sync::Arc};
 
@@ -771,6 +775,55 @@ pub async fn setup_three_node_network_with_sign(
             router: charlie_router,
         },
         dummy_bulletin: dummy_bulletin_arc,
+    }
+}
+
+/// Post a `RingPayload` to the bulletin and write a `RingIndexEntry` into local storage.
+///
+/// Shared by all test modules that need to set up a ring for PSS / refresh validation tests.
+pub async fn write_ring_to_bulletin(
+    storage: &impl LocalStorage,
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    ring_pk: &str,
+    peer_ids: Vec<String>,
+    pss_interval: Option<u64>,
+) {
+    let payload = RingPayload {
+        ring_pk: ring_pk.to_string(),
+        peer_ids,
+        threshold: 1,
+        pss_interval,
+    };
+    let bytes = serde_json::to_vec(&payload).unwrap();
+    bulletin
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            bytes.clone(),
+            vec![],
+            None,
+        )
+        .await
+        .unwrap();
+    let post_id = bulletin
+        .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
+        .unwrap();
+    let mut ring_index: Vec<RingIndexEntry> = storage
+        .get(LocalStorageKeys::RingIndex)
+        .ok()
+        .flatten()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    if !ring_index.iter().any(|e| e.ring_pk_str == ring_pk) {
+        ring_index.push(RingIndexEntry {
+            ring_pk_str: ring_pk.to_string(),
+            bulletin_post_id: post_id,
+        });
+        storage
+            .set(
+                LocalStorageKeys::RingIndex,
+                serde_json::to_vec(&ring_index).unwrap(),
+            )
+            .unwrap();
     }
 }
 

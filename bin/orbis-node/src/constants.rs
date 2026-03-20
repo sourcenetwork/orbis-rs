@@ -64,6 +64,12 @@ pub const SESSION_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 /// even when all peers need to respond.
 pub const DKG_PHASE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How often to re-check session existence when an early message arrives before
+/// the session has been created (e.g. a peer's commitment races with our own
+/// SessionInit bulletin validation).  Kept small so the ceremony proceeds as
+/// soon as the session appears.
+pub const DKG_SESSION_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 // ============================================================================
 // PRE (Proxy Re-Encryption) Constants
 // ============================================================================
@@ -261,9 +267,9 @@ pub const SIGN_COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
 // PSS (Proactive Secret Sharing) Constants
 // ============================================================================
 
-/// Default interval between automatic PSS reshare ceremonies (24 hours).
+/// Default interval between automatic PSS reshare ceremonies (1 hour).
 /// Set reshare_interval_secs to 0 on node startup to disable.
-pub const DEFAULT_RESHARE_INTERVAL_SECS: u64 = 24 * 60 * 60;
+pub const DEFAULT_RESHARE_INTERVAL_SECS: u64 = 60 * 60;
 
 // ============================================================================
 // Bulletin Proof Constants

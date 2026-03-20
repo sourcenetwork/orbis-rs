@@ -6,24 +6,21 @@ use std::path::Path;
 pub fn test_set_get_contains_delete<DB: LocalStorage>(db: DB) {
     let store_value = b"test_store";
     let key = "test_key".to_string();
-    let set_result = db.set(
-        LocalStorageKeys::RingPkMapping(key.clone()),
-        store_value.to_vec(),
-    );
+    let set_result = db.set(LocalStorageKeys::RingKey(key.clone()), store_value.to_vec());
     assert!(set_result.is_ok());
 
-    let get_result = db.get(LocalStorageKeys::RingPkMapping(key.clone()));
+    let get_result = db.get(LocalStorageKeys::RingKey(key.clone()));
     assert!(get_result.is_ok());
     assert_eq!(get_result.unwrap().unwrap(), store_value);
 
-    let contains_result = db.contains(LocalStorageKeys::RingPkMapping(key.clone()));
+    let contains_result = db.contains(LocalStorageKeys::RingKey(key.clone()));
     assert!(contains_result.is_ok());
     assert_eq!(contains_result.unwrap(), true);
 
-    let delete_result = db.delete(LocalStorageKeys::RingPkMapping(key.clone()));
+    let delete_result = db.delete(LocalStorageKeys::RingKey(key.clone()));
     assert!(delete_result.is_ok());
 
-    let contains_result_2 = db.contains(LocalStorageKeys::RingPkMapping(key));
+    let contains_result_2 = db.contains(LocalStorageKeys::RingKey(key));
     assert!(contains_result_2.is_ok());
     assert_eq!(contains_result_2.unwrap(), false);
 }
@@ -32,18 +29,16 @@ pub fn test_encrypted_functions<DB: LocalStorage>(db: DB) {
     let store_value = b"test_store";
     let key = "test_key".to_string();
 
-    let set_encrypted = db.set_encrypted(
-        LocalStorageKeys::RingPkMapping(key.clone()),
-        store_value.to_vec(),
-    );
+    let set_encrypted =
+        db.set_encrypted(LocalStorageKeys::RingKey(key.clone()), store_value.to_vec());
     assert!(set_encrypted.is_ok());
 
     // get should return an encrypted data not the same as original value
-    let get_result = db.get(LocalStorageKeys::RingPkMapping(key.clone()));
+    let get_result = db.get(LocalStorageKeys::RingKey(key.clone()));
     assert!(get_result.is_ok());
     assert_ne!(get_result.unwrap().unwrap(), store_value);
 
-    let get_encrypted_result = db.get_encrypted(LocalStorageKeys::RingPkMapping(key.clone()));
+    let get_encrypted_result = db.get_encrypted(LocalStorageKeys::RingKey(key.clone()));
     assert!(get_encrypted_result.is_ok());
     assert_eq!(get_encrypted_result.unwrap().unwrap(), store_value);
 }

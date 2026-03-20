@@ -364,7 +364,6 @@ async fn test_concurrent_pre_requests() {
 
     // Step 2: User namespace + node as collaborator
     let user_namespace = "pre_ns".to_string();
-    let full_namespace = format!("bulletin/{}", user_namespace);
     cli_tool::register_bulletin_namespace(user_namespace.clone())
         .await
         .expect("register user namespace");
@@ -441,7 +440,7 @@ async fn test_concurrent_pre_requests() {
             Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
-            full_namespace.clone(),
+            user_namespace.clone(),
             None,
             None,
             None,
@@ -455,7 +454,7 @@ async fn test_concurrent_pre_requests() {
             Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
-            full_namespace.clone(),
+            user_namespace.clone(),
             None,
             None,
             None,
@@ -469,7 +468,7 @@ async fn test_concurrent_pre_requests() {
             Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
-            full_namespace.clone(),
+            user_namespace.clone(),
             None,
             None,
             None,

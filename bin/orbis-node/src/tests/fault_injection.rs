@@ -289,7 +289,7 @@ async fn test_pre_one_node_down_succeeds() {
 
     // Step 2: User namespace + alice as collaborator
     let user_namespace = "fault_pre_ns1".to_string();
-    let full_namespace = format!("bulletin/{}", user_namespace);
+
     cli_tool::register_bulletin_namespace(user_namespace.clone())
         .await
         .expect("register user namespace");
@@ -367,7 +367,7 @@ async fn test_pre_one_node_down_succeeds() {
         Some(reader_sk_hex.clone()),
         object_id.clone(),
         Some(did.clone()),
-        full_namespace.clone(),
+        user_namespace.clone(),
         None,
         None,
         None,
@@ -413,7 +413,7 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
 
     // Step 2: User namespace + alice as collaborator
     let user_namespace = "fault_pre_ns2".to_string();
-    let full_namespace = format!("bulletin/{}", user_namespace);
+
     cli_tool::register_bulletin_namespace(user_namespace.clone())
         .await
         .expect("register user namespace");
@@ -495,7 +495,7 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
             Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
-            full_namespace.clone(),
+            user_namespace.clone(),
             None,
             None,
             None,

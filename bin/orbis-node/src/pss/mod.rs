@@ -1,8 +1,8 @@
 //! PSS (Proactive Secret Sharing) — automatic refresh scheduler
 //!
 //! Periodically checks every known ring and initiates a refresh ceremony when the
-//! ring's own `pss_interval` (stored in `RingPkMapping`) has elapsed since the last
-//! refresh.  The check cadence (`check_interval`) is set at node startup; each ring
+//! ring's own `pss_interval` (from the bulletin `RingPayload`) has elapsed since the
+//! last refresh.  The canonical `RingPayload` is always fetched from the bulletin and node
 //! controls its own refresh frequency via the `pss_interval` field in `RingPayload`.
 //!
 //! ## Protocol
@@ -17,14 +17,15 @@
 mod tests;
 
 use crate::app_state::AppState;
+use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::DkgMessage;
 use crate::helpers::helpers::{extract_node_part, validate_all_peer_ids};
-use crate::ring_state::RingShareBundle;
+use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{Dkg, DkgRole};
-use crypto::{CryptoDeserialize, GroupAffine, PolynomialCommitmentImpl, ScalarField as Fr};
+use crypto::{GroupAffine, PolynomialCommitmentImpl, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -32,7 +33,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Spawn a background task that periodically checks rings for due PSS refreshes.
 ///
 /// `check_interval` controls how often the scheduler wakes up to inspect all known
-/// rings.  Each ring's own `pss_interval` (stored in `RingPkMapping`) determines
+/// rings.  Each ring's own `pss_interval` (from the bulletin `RingPayload`) determines
 /// whether a refresh is actually triggered on that tick.
 ///
 /// Setting `check_interval` to zero disables the scheduler entirely.
@@ -78,25 +79,30 @@ where
         + Sync
         + 'static,
 {
-    let ring_ids: Vec<String> = match app_state.local_storage.get(LocalStorageKeys::RingIndex) {
-        Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
-        _ => {
-            tracing::debug!("PSS: ring index empty, nothing to refresh");
-            return Ok(());
-        }
-    };
+    // RingIndex stores one entry per ring this node has joined.
+    let ring_index: Vec<RingIndexEntry> =
+        match app_state.local_storage.get(LocalStorageKeys::RingIndex) {
+            Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
+            _ => {
+                tracing::debug!("PSS: ring index empty, nothing to refresh");
+                return Ok(());
+            }
+        };
 
-    for ring_id in &ring_ids {
-        if let Err(e) = refresh_ring(app_state, ring_id).await {
-            tracing::error!(ring_id = %ring_id, error = %e, "PSS: refresh failed for ring");
+    for entry in &ring_index {
+        if let Err(e) = refresh_ring(app_state, entry).await {
+            tracing::error!(ring_pk_str = %entry.ring_pk_str, error = %e, "PSS: refresh failed for ring");
         }
     }
     Ok(())
 }
 
-/// Run one refresh ceremony for `ring_id` if this node is the initiator and the
-/// ring's `pss_interval` has elapsed since the last refresh.
-async fn refresh_ring<D>(app_state: &Arc<AppState<D>>, ring_id: &str) -> Result<(), DkgError>
+/// Run one refresh ceremony for the ring described by `entry`
+/// if this node is the initiator and the ring's `pss_interval` has elapsed.
+async fn refresh_ring<D>(
+    app_state: &Arc<AppState<D>>,
+    entry: &RingIndexEntry,
+) -> Result<(), DkgError>
 where
     D: Dkg<
             ShareValue = Fr,
@@ -107,54 +113,38 @@ where
         + Sync
         + 'static,
 {
-    // Load ring info from local storage (written during Phase 4 of the last DKG/refresh).
-    let ring_payload_bytes = app_state
-        .local_storage
-        .get(LocalStorageKeys::RingPkMapping(ring_id.to_string()))
-        .map_err(|e| DkgError::Storage(format!("PSS: failed to read ring {}: {}", ring_id, e)))?
-        .ok_or_else(|| {
-            DkgError::Storage(format!("PSS: ring {} not found in local storage", ring_id))
+    let post_id = &entry.bulletin_post_id;
+    let ring_pk_str = &entry.ring_pk_str;
+
+    // Fetch the canonical RingPayload from the bulletin — it is the source of truth
+    // for peer_ids, threshold, and pss_interval.
+    let bulletin_post = app_state
+        .bulletin
+        .read(BULLETIN_RING_NAMESPACE.to_string(), post_id.to_string())
+        .await
+        .map_err(|e| {
+            DkgError::Storage(format!(
+                "PSS: failed to read RingPayload from bulletin (post_id={}): {}",
+                post_id, e
+            ))
         })?;
 
-    let ring_payload: RingPayload = serde_json::from_slice(&ring_payload_bytes)
+    let ring_payload: RingPayload = serde_json::from_slice(&bulletin_post.payload)
         .map_err(|e| DkgError::Deserialization(format!("PSS: bad ring payload: {}", e)))?;
 
     // Skip rings that have no automatic refresh interval configured.
     let pss_interval_secs = match ring_payload.pss_interval {
         Some(v) if v > 0 => v,
         _ => {
-            tracing::debug!(ring_id = %ring_id, "PSS: no pss_interval set, skipping");
+            tracing::debug!(ring_pk_str = %ring_pk_str, "PSS: no pss_interval set, skipping");
             return Ok(());
         }
     };
 
-    // Check whether enough time has elapsed since the last refresh.
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    // `ring_id` is aggregate_pk.to_string() — same key the bundle is stored under.
-    // Fall back to epoch (0) if no bundle exists yet (ring not yet initialized on this node).
-    let last_refresh_secs: u64 =
-        RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_id)
-            .map(|b| b.refreshed_at)
-            .unwrap_or(0);
-
-    let elapsed = now_secs.saturating_sub(last_refresh_secs);
-    if elapsed < pss_interval_secs {
-        tracing::debug!(
-            ring_id = %ring_id,
-            elapsed_secs = elapsed,
-            pss_interval_secs = pss_interval_secs,
-            "PSS: refresh not yet due"
-        );
-        return Ok(());
-    }
-
     let peer_ids = &ring_payload.peer_ids;
     let threshold = ring_payload.threshold as usize;
 
-    // Only the peer with the smallest node-part acts as initiator
+    // Initiator check: only the peer with the lexicographically smallest node-part acts.
     let our_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let our_node_part = extract_node_part(&our_peer_id_hex);
 
@@ -162,19 +152,30 @@ where
     sorted_peers.sort();
 
     if extract_node_part(&sorted_peers[0]) != our_node_part {
-        tracing::debug!(ring_id = %ring_id, "PSS: not the initiator, skipping");
+        tracing::debug!(ring_pk_str = %ring_pk_str, "PSS: not the initiator, skipping");
         return Ok(());
     }
 
-    // Resolve ring_pk before acquiring the in-progress lock so we can use the
-    // same key (`ring_pk.to_string()`) that the cleanup/expiration workers use
-    // to clear the flag via `state.refresh_ring_key`.
-    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
-        .map_err(|e| DkgError::Deserialization(format!("PSS: bad ring_pk hex: {}", e)))?;
-    let ring_pk = <D::PublicKey as CryptoDeserialize>::from_bytes(&ring_pk_bytes).map_err(|e| {
-        DkgError::Deserialization(format!("PSS: failed to deserialize ring_pk: {}", e))
-    })?;
-    let ring_pk_str = ring_pk.to_string();
+    // Check whether enough time has elapsed since the last refresh.
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let last_refresh_secs: u64 =
+        RingShareBundle::load_by_ring_key(&app_state.local_storage, &ring_pk_str)
+            .map(|b| b.refreshed_at)
+            .unwrap_or(0);
+
+    let elapsed = now_secs.saturating_sub(last_refresh_secs);
+    if elapsed < pss_interval_secs {
+        tracing::debug!(
+            post_id = %post_id,
+            elapsed_secs = elapsed,
+            pss_interval_secs = pss_interval_secs,
+            "PSS: refresh not yet due"
+        );
+        return Ok(());
+    }
 
     // Prevent duplicate refresh sessions on this node. The flag is cleared by
     // the cleanup/expiration workers (via `state.refresh_ring_key`) once the
@@ -185,7 +186,7 @@ where
         .await
     {
         tracing::debug!(
-            ring_id = %ring_id,
+            post_id = %post_id,
             ring_pk_str = %ring_pk_str,
             "PSS: refresh already in progress, skipping"
         );
@@ -216,7 +217,7 @@ where
         .await
     {
         tracing::error!(
-            ring_id = %ring_id,
+            post_id = %post_id,
             ring_pk_str = %ring_pk_str,
             session_id = session_id,
             error = %e,
@@ -325,7 +326,7 @@ where
 
     tracing::info!(
         session_id = session_id,
-        ring_id = %ring_id,
+        post_id = %post_id,
         "PSS: refresh session initiated"
     );
 

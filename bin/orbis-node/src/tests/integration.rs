@@ -188,7 +188,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let permission = "read".to_string();
     let did_pk_string = "test_did_secret".to_string();
     let namespace = "docker_test_namespace".to_string();
-    let full_namespace = format!("bulletin/{}", namespace);
     let tier = Some("tier".to_string());
     let timestamp = Some(100u64);
     let valid_window_start = Some(50u64);
@@ -343,14 +342,12 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     );
 
     // Read both from bulletin and compare metadata
-    let manual_bytes =
-        cli_tool::read_bulletin_post(full_namespace.clone(), object_id_manual.clone())
-            .await
-            .expect("read manual post");
-    let service_bytes =
-        cli_tool::read_bulletin_post(full_namespace.clone(), object_id_service.clone())
-            .await
-            .expect("read service post");
+    let manual_bytes = cli_tool::read_bulletin_post(namespace.clone(), object_id_manual.clone())
+        .await
+        .expect("read manual post");
+    let service_bytes = cli_tool::read_bulletin_post(namespace.clone(), object_id_service.clone())
+        .await
+        .expect("read service post");
 
     let manual: DocumentPayload = serde_json::from_slice(&manual_bytes).expect("parse manual");
     let service: DocumentPayload = serde_json::from_slice(&service_bytes).expect("parse service");
@@ -451,7 +448,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         Some(reader_sk_hex.clone()),
         object_id_service.clone(),
         Some(did_pk_string.clone()),
-        full_namespace.clone(),
+        namespace.clone(),
         None,
         None,
         None,
@@ -483,7 +480,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         Some(reader_sk_hex.clone()),
         object_id_derived.clone(),
         Some(did_pk_string.clone()),
-        full_namespace.clone(),
+        namespace.clone(),
         Some(derivation.clone()),
         salt.clone(),
         valid_window_start,
@@ -512,7 +509,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         Some(reader_sk_hex.clone()),
         object_id_derived.clone(),
         Some("bad_key".to_string().clone()),
-        full_namespace.clone(),
+        namespace.clone(),
         Some(derivation.clone()),
         salt.clone(),
         valid_window_start,
@@ -537,7 +534,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         Some(reader_sk_hex.clone()),
         object_id_derived.clone(),
         Some(did_pk_string.clone()),
-        full_namespace.clone(),
+        namespace.clone(),
         Some(derivation),
         salt.clone(),
         valid_window_start,
@@ -670,7 +667,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let sign_result = cli_tool::do_sign(
         endpoint.clone(),
         sign_message.to_vec(),
-        full_namespace.clone(),
+        namespace.clone(),
         derivation_id.clone(),
         Some(sign_did_pk.clone()),
         None,
@@ -711,7 +708,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let sign_no_access = cli_tool::do_sign(
         endpoint.clone(),
         sign_message.to_vec(),
-        full_namespace.clone(),
+        namespace.clone(),
         derivation_id.clone(),
         Some("unauthorized_did_key".to_string()),
         None,
@@ -783,7 +780,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let sign_result_post_refresh = cli_tool::do_sign(
         endpoint.clone(),
         sign_message.to_vec(),
-        full_namespace.clone(),
+        namespace.clone(),
         derivation_id.clone(),
         Some(sign_did_pk.clone()),
         None,
@@ -870,7 +867,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         Some(reader_sk_hex.clone()),
         object_id_post_refresh.clone(),
         Some(did_pk_string.clone()),
-        full_namespace.clone(),
+        namespace.clone(),
         None,
         None,
         None,

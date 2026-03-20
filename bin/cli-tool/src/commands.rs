@@ -829,9 +829,8 @@ pub async fn create_bulletin_post(
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
-    let full_namespace = format!("bulletin/{}", namespace);
     let post_id = bulletin
-        .get_post_id(&full_namespace, &payload)
+        .get_post_id(&namespace, &payload)
         .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
 
     bulletin
@@ -1027,9 +1026,8 @@ pub async fn post_key_derivation(
     let payload: Vec<u8> = serde_json::to_vec(&key_derivation)
         .map_err(|e| anyhow!("Failed to serialize KeyDerivation: {}", e))?;
 
-    let full_namespace = format!("bulletin/{}", namespace);
     let post_id = bulletin
-        .get_post_id(&full_namespace, &payload)
+        .get_post_id(&namespace, &payload)
         .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
 
     bulletin

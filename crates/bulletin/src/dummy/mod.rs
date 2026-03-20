@@ -26,9 +26,8 @@ impl Bulletin for DummyBulletin {
         proof: Vec<u8>,
         _artifact: Option<String>,
     ) -> Result<()> {
-        // Generate deterministic ID from full namespace + payload (same as SourceHubBulletin)
-        let full_namespace = format!("bulletin/{}", namespace);
-        let id = Self::compute_post_id(&full_namespace, &payload);
+        // Generate deterministic ID from namespace + payload, matching SourceHubBulletin.
+        let id = Self::compute_post_id(&namespace, &payload);
 
         let post = BulletinPost {
             id: id.clone(),
@@ -71,11 +70,12 @@ impl DummyBulletin {
         posts.insert((namespace, id), post);
     }
 
-    /// Compute deterministic post ID from namespace and payload
-    /// This matches the SourceHubBulletin implementation
+    /// Compute deterministic post ID from namespace and payload.
+    /// Mirrors SourceHub's on-chain behavior: the chain stores posts under
+    /// "bulletin/{namespace}", so the hash is SHA256("bulletin/{namespace}" || payload).
     fn compute_post_id(namespace: &str, payload: &[u8]) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(namespace.as_bytes());
+        hasher.update(format!("bulletin/{}", namespace).as_bytes());
         hasher.update(payload);
         hex::encode(hasher.finalize())
     }

@@ -7,7 +7,8 @@ use crate::dkg::{
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
-    get_test_ring_post, setup_three_node_network, test_db_path, TestKeyPair,
+    get_test_ring_post, setup_three_node_network, test_db_path, write_ring_to_bulletin,
+    TestKeyPair,
 };
 use crate::ring_state::RingPolyState;
 use crate::DkgServiceImpl;
@@ -1675,25 +1676,6 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
 // checks happen before any network I/O.
 // =============================================================================
 
-/// Write a serialised RingPayload into `RingPkMapping(ring_pk)`.
-fn g3_write_ring_payload(
-    storage: &impl local_storage::r#trait::LocalStorage,
-    ring_pk: &str,
-    peer_ids: Vec<String>,
-    pss_interval: Option<u64>,
-) {
-    let payload = RingPayload {
-        ring_pk: ring_pk.to_string(),
-        peer_ids,
-        threshold: 1,
-        pss_interval,
-    };
-    let bytes = serde_json::to_vec(&payload).unwrap();
-    storage
-        .set(LocalStorageKeys::RingPkMapping(ring_pk.to_string()), bytes)
-        .unwrap();
-}
-
 /// Write a minimal `RingShareBundle` with the given `refreshed_at` timestamp.
 fn g3_write_last_refresh(
     storage: &impl local_storage::r#trait::LocalStorage,
@@ -1733,12 +1715,14 @@ async fn test_refresh_rejected_sender_not_in_ring() {
 
     let ring_pk = "ring_pk_group3a";
     // Ring contains only "aabbccdd"; the sender will be "deadbeef".
-    g3_write_ring_payload(
+    write_ring_to_bulletin(
         &app_state.local_storage,
+        &app_state.bulletin,
         ring_pk,
         vec!["aabbccdd".to_string()],
         None, // membership check fires before time check
-    );
+    )
+    .await;
     g3_write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
 
     let sender_bytes = hex::decode("deadbeef").unwrap();
@@ -1763,12 +1747,14 @@ async fn test_refresh_rejected_too_soon() {
 
     let ring_pk = "ring_pk_group3b";
     let sender_hex = "aabbccdd";
-    g3_write_ring_payload(
+    write_ring_to_bulletin(
         &app_state.local_storage,
+        &app_state.bulletin,
         ring_pk,
         vec![sender_hex.to_string()],
         Some(86400), // 24h interval required
-    );
+    )
+    .await;
 
     // Set last refresh to "now" — 0 seconds have elapsed, below any minimum interval.
     let now_secs = std::time::SystemTime::now()
@@ -1799,12 +1785,14 @@ async fn test_refresh_rejected_already_in_progress() {
 
     let ring_pk = "ring_pk_group3c";
     let sender_hex = "aabbccdd";
-    g3_write_ring_payload(
+    write_ring_to_bulletin(
         &app_state.local_storage,
+        &app_state.bulletin,
         ring_pk,
         vec![sender_hex.to_string()],
         None, // time check irrelevant; rejected by in-progress flag
-    );
+    )
+    .await;
     g3_write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
 
     // Pre-mark the ring as already refreshing so the coordinator rejects the second attempt.

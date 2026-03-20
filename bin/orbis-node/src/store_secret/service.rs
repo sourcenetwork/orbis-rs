@@ -174,13 +174,12 @@ where
                     ))
                 })?;
 
-        // 5. Compute object_id before posting (deterministic hash)
-        // Note: get_post_id expects the full namespace format "bulletin/{namespace}"
-        let full_namespace = format!("bulletin/{}", req.namespace);
+        // 5. Compute object_id before posting (deterministic hash).
+        // get_post_id adds the "bulletin/" prefix internally.
         let object_id = self
             .state
             .bulletin
-            .get_post_id(&full_namespace, &payload_bytes)
+            .get_post_id(&req.namespace, &payload_bytes)
             .map_err(|e| StoreSecretError::Storage(format!("Failed to compute post ID: {}", e)))?;
 
         // 6. Post to bulletin (only if it doesn't already exist)
