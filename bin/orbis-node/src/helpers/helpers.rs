@@ -2,7 +2,12 @@
 //!
 //! This module provides utility functions used across the codebase.
 use crate::constants::{EXPECTED_HEX_NODE_ID_LENGTH, MAX_PEER_ID_LENGTH};
+use crate::dkg::session_state::SessionStateManager;
 use crate::error::PeerIdValidationError;
+use crate::ring_state::RingShareBundle;
+use crypto::r#trait::{CryptoDeserialize, Dkg};
+use crypto::GroupAffine as G1Affine;
+use local_storage::r#trait::LocalStorage;
 use network::{Network, PeerId};
 use sha2::{Digest, Sha256};
 use std::collections::hash_map::DefaultHasher;
@@ -304,4 +309,72 @@ pub fn session_id_string_to_u64(
 ) -> Result<u64, std::array::TryFromSliceError> {
     let hash = Sha256::digest(session_id_str.as_bytes());
     Ok(u64::from_le_bytes(hash[..8].try_into()?))
+}
+
+/// Returns `true` when a PSS reshare is currently in progress for the ring
+/// identified by `ring_pk_bytes`.
+///
+/// Uses the `rings_refreshing` flag from `SessionStateManager`, which is
+/// exclusively set/cleared by the PSS scheduler (not initial DKG), so there
+/// are no false positives immediately after DKG completion.
+pub async fn is_ring_reshare_in_progress<D: Dkg + 'static>(
+    ring_pk_bytes: &[u8],
+    session_state: &SessionStateManager<D>,
+) -> bool {
+    match G1Affine::from_bytes(ring_pk_bytes) {
+        Ok(ring_pk) => session_state.is_ring_refreshing(&ring_pk.to_string()).await,
+        Err(_) => false,
+    }
+}
+
+/// Load the public polynomial and (when `self_in_list`) the local `RingShareBundle`
+/// from a single atomic storage read.
+///
+/// When `self_in_list` is true, loads the `RingShareBundle` for the ring. On success,
+/// derives the public polynomial from the bundle, guaranteeing that the poly and share
+/// are from the same PSS generation. On bundle load failure, falls back to
+/// `ring.public_polynomial_hex`.
+///
+/// When `self_in_list` is false, always deserializes from `ring.public_polynomial_hex`.
+///
+/// Returns `(pub_poly, Option<RingShareBundle>)`. The caller extracts whatever it needs
+/// from the bundle (PRE keeps the full bundle; Sign extracts a `DistKeyShare`).
+pub fn load_ring_pub_poly_and_bundle<D>(
+    storage: &impl LocalStorage,
+    ring: &RingConfig,
+    self_in_list: bool,
+) -> Result<(D::PubPoly, Option<RingShareBundle>), String>
+where
+    D: Dkg<PublicKey = G1Affine>,
+{
+    if self_in_list {
+        match G1Affine::from_bytes(&ring.ring_pk_bytes) {
+            Ok(ring_pk) => match RingShareBundle::load(storage, &ring_pk) {
+                Ok(bundle) => {
+                    let poly = decode_pub_poly_hex::<D>(&bundle.public_polynomial)
+                        .map_err(|e| format!("bundle polynomial: {}", e))?;
+                    Ok((poly, Some(bundle)))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "local bundle missing, falling back to ring config polynomial"
+                    );
+                    let poly = decode_pub_poly_hex::<D>(&ring.public_polynomial_hex)?;
+                    Ok((poly, None))
+                }
+            },
+            Err(e) => Err(format!("Failed to deserialize ring public key: {}", e)),
+        }
+    } else {
+        let poly = decode_pub_poly_hex::<D>(&ring.public_polynomial_hex)?;
+        Ok((poly, None))
+    }
+}
+
+fn decode_pub_poly_hex<D: Dkg>(hex_str: &str) -> Result<D::PubPoly, String> {
+    let bytes =
+        hex::decode(hex_str).map_err(|e| format!("Failed to decode polynomial hex: {}", e))?;
+    <D::PubPoly>::from_bytes(&bytes)
+        .map_err(|e| format!("Failed to deserialize public polynomial: {}", e))
 }

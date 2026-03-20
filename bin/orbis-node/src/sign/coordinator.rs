@@ -19,8 +19,11 @@ use crate::constants::{
     BULLETIN_RING_NAMESPACE, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
     PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
 };
-use crate::helpers::helpers::{determine_session_node_id, is_self_peer_id, RingConfig};
-use crate::ring_state::{RingPolyState, RingShareBundle};
+use crate::helpers::helpers::{
+    determine_session_node_id, is_ring_reshare_in_progress, is_self_peer_id,
+    load_ring_pub_poly_and_bundle, RingConfig,
+};
+use crate::ring_state::RingPolyState;
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
@@ -560,59 +563,16 @@ where
         //
         //    Loading from the same bundle snapshot eliminates both races: pub_poly,
         //    nonce generation, and signing all use the same PSS generation.
-        let (pub_poly, local_dist_key_share) = if self_in_list {
-            let ring_pk = decode_ring_pk_bytes(&ring.ring_pk_bytes)?;
-            match RingShareBundle::load(&self.app_state.local_storage, &ring_pk) {
-                Ok(bundle) => {
-                    let poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
-                        SignError::Deserialization(format!(
-                            "Failed to decode polynomial hex from bundle: {}",
-                            e
-                        ))
-                    })?;
-                    let poly = <D::PubPoly>::from_bytes(&poly_bytes).map_err(|e| {
-                        SignError::Deserialization(format!(
-                            "Failed to deserialize polynomial from bundle: {}",
-                            e
-                        ))
-                    })?;
-                    let dist_key_share = bundle
-                        .pri_share()
-                        .map(|ps| DistKeyShare { pri_share: ps })
-                        .ok();
-                    (poly, dist_key_share)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "Sign Coordinator: local bundle missing, falling back to ring config polynomial"
-                    );
-                    let poly_bytes = hex::decode(&ring.public_polynomial_hex).map_err(|e| {
-                        SignError::Deserialization(format!(
-                            "Failed to decode public polynomial hex: {}",
-                            e
-                        ))
-                    })?;
-                    let poly = <D::PubPoly>::from_bytes(&poly_bytes).map_err(|e| {
-                        SignError::Deserialization(format!(
-                            "Failed to deserialize public polynomial: {}",
-                            e
-                        ))
-                    })?;
-                    (poly, None)
-                }
-            }
-        } else {
-            let poly_bytes = hex::decode(&ring.public_polynomial_hex).map_err(|e| {
-                SignError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
-            })?;
-            let poly = <D::PubPoly>::from_bytes(&poly_bytes).map_err(|e| {
-                SignError::Deserialization(format!(
-                    "Failed to deserialize public polynomial: {}",
-                    e
-                ))
-            })?;
-            (poly, None)
+        let (pub_poly, local_dist_key_share) = {
+            let (poly, bundle) = load_ring_pub_poly_and_bundle::<D>(
+                &self.app_state.local_storage,
+                &ring,
+                self_in_list,
+            )
+            .map_err(|e| SignError::Deserialization(e))?;
+            let dks =
+                bundle.and_then(|b| b.pri_share().map(|ps| DistKeyShare { pri_share: ps }).ok());
+            (poly, dks)
         };
 
         // Validate we have enough potential shares to meet threshold
@@ -844,24 +804,9 @@ where
 
         // 5. Check if we have enough verified shares
         if verified_shares.len() < ring.threshold {
-            // Before returning a generic InsufficientShares, check whether a PSS
-            // reshare is the likely cause.  We use the rings_refreshing flag: it is
-            // set by the PSS scheduler before Phase 4 and cleared after Phase 4
-            // commits the new bundle.  Initial DKG does NOT set this flag, so there
-            // are no false positives immediately after DKG completion.
-            //
-            // Note: we intentionally do NOT use refreshed_at here.  Both initial DKG
-            // and PSS write refreshed_at = now_secs, so it cannot distinguish the two.
-            let currently_refreshing =
-                if let Ok(ring_pk) = decode_ring_pk_bytes(&ring.ring_pk_bytes) {
-                    self.app_state
-                        .dkg_session_state
-                        .is_ring_refreshing(&ring_pk.to_string())
-                        .await
-                } else {
-                    false
-                };
-            if currently_refreshing {
+            if is_ring_reshare_in_progress(&ring.ring_pk_bytes, &self.app_state.dkg_session_state)
+                .await
+            {
                 tracing::info!(
                     request_id = %request_id,
                     "Sign Coordinator: insufficient shares due to ongoing reshare"

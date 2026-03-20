@@ -14,8 +14,10 @@ use crate::app_state::AppState;
 use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::constants::PEER_RESPONSE_TIMEOUT;
 use crate::constants::PRE_COLLECTION_TIMEOUT;
-use crate::helpers::helpers::RingConfig;
-use crate::helpers::helpers::{determine_session_node_id, is_self_peer_id};
+use crate::helpers::helpers::{
+    determine_session_node_id, is_ring_reshare_in_progress, is_self_peer_id,
+    load_ring_pub_poly_and_bundle, RingConfig,
+};
 use crate::pre::error::{PreError, Result};
 use crate::pre::helpers::{
     check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
@@ -432,55 +434,9 @@ where
         //
         //    Loading both fields from the same snapshot guarantees they are always from
         //    the same PSS generation, so Lagrange interpolation is correct.
-        let (pub_poly, local_share_bundle) = if self_in_list {
-            let ring_pk = <D::PublicKey>::from_bytes(&ring.ring_pk_bytes[..]).map_err(|e| {
-                PreError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
-            })?;
-            match RingShareBundle::load(&self.app_state.local_storage, &ring_pk) {
-                Ok(bundle) => {
-                    let poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
-                        PreError::Deserialization(format!(
-                            "Failed to decode polynomial hex from bundle: {}",
-                            e
-                        ))
-                    })?;
-                    let poly = <D::PubPoly>::from_bytes(&poly_bytes).map_err(|e| {
-                        PreError::Deserialization(format!(
-                            "Failed to deserialize polynomial from bundle: {}",
-                            e
-                        ))
-                    })?;
-                    (poly, Some(bundle))
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "PRE Coordinator: local bundle missing, falling back to ring config polynomial"
-                    );
-                    let poly_bytes = hex::decode(&ring.public_polynomial_hex).map_err(|e| {
-                        PreError::Deserialization(format!(
-                            "Failed to decode public polynomial hex: {}",
-                            e
-                        ))
-                    })?;
-                    let poly = <D::PubPoly>::from_bytes(&poly_bytes).map_err(|e| {
-                        PreError::Deserialization(format!(
-                            "Failed to deserialize public polynomial: {}",
-                            e
-                        ))
-                    })?;
-                    (poly, None)
-                }
-            }
-        } else {
-            let poly_bytes = hex::decode(&ring.public_polynomial_hex).map_err(|e| {
-                PreError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
-            })?;
-            let poly = <D::PubPoly>::from_bytes(&poly_bytes).map_err(|e| {
-                PreError::Deserialization(format!("Failed to deserialize public polynomial: {}", e))
-            })?;
-            (poly, None)
-        };
+        let (pub_poly, local_share_bundle) =
+            load_ring_pub_poly_and_bundle::<D>(&self.app_state.local_storage, &ring, self_in_list)
+                .map_err(|e| PreError::Deserialization(e))?;
 
         // Validate we have enough potential shares to meet threshold
         // If we're in the list, we can contribute our own share locally
@@ -692,24 +648,9 @@ where
 
         // 8. Check if we have enough verified shares
         if verified_shares.len() < ring.threshold {
-            // Before returning a generic InsufficientShares, check whether a PSS
-            // reshare is the likely cause.  We use the rings_refreshing flag: it is
-            // set by the PSS scheduler before Phase 4 and cleared after Phase 4
-            // commits the new bundle.  Initial DKG does NOT set this flag, so there
-            // are no false positives immediately after DKG completion.
-            //
-            // Note: we intentionally do NOT use refreshed_at here.  Both initial DKG
-            // and PSS write refreshed_at = now_secs, so it cannot distinguish the two.
-            let currently_refreshing =
-                if let Ok(ring_pk) = <D::PublicKey>::from_bytes(&ring.ring_pk_bytes[..]) {
-                    self.app_state
-                        .dkg_session_state
-                        .is_ring_refreshing(&ring_pk.to_string())
-                        .await
-                } else {
-                    false
-                };
-            if currently_refreshing {
+            if is_ring_reshare_in_progress(&ring.ring_pk_bytes, &self.app_state.dkg_session_state)
+                .await
+            {
                 tracing::info!(
                     request_id = %request_id,
                     "PRE Coordinator: insufficient shares due to ongoing reshare"
