@@ -14,8 +14,10 @@ use crate::app_state::AppState;
 use crate::constants::MAX_TOKEN_LIFETIME_SECS;
 use crate::constants::PEER_RESPONSE_TIMEOUT;
 use crate::constants::PRE_COLLECTION_TIMEOUT;
-use crate::helpers::helpers::RingConfig;
-use crate::helpers::helpers::{determine_session_node_id, is_self_peer_id};
+use crate::helpers::helpers::{
+    determine_session_node_id, is_ring_reshare_in_progress, is_self_peer_id,
+    load_ring_pub_poly_and_bundle, RingConfig,
+};
 use crate::pre::error::{PreError, Result};
 use crate::pre::helpers::{
     check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
@@ -418,13 +420,23 @@ where
         actual_peer_count: usize,
         ctx: PreRequestContext,
     ) -> Result<Vec<u8>> {
-        // 1. Deserialize public polynomial from bulletin data
-        let pub_poly_bytes = hex::decode(&ring.public_polynomial_hex).map_err(|e| {
-            PreError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
-        })?;
-        let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
-            PreError::Deserialization(format!("Failed to deserialize public polynomial: {}", e))
-        })?;
+        // 1. Load the public polynomial and (when self_in_list) the local share bundle
+        //    from a SINGLE atomic read of RingShareBundle.
+        //
+        //    Without this, there is a TOCTOU race: the service layer reads the polynomial
+        //    in one bundle read, then `self_in_list` reads the share in a second bundle
+        //    read.  If PSS Phase 4 fires between those two reads it updates the bundle
+        //    atomically (new share + new polynomial together), so the two reads can see
+        //    different generations.  A self-share from generation N+1 combined via
+        //    Lagrange with peer shares from generation N produces a wrong xnc_cmt,
+        //    which passes AES-GCM tag verification with a wrong key → "authentication
+        //    failed".
+        //
+        //    Loading both fields from the same snapshot guarantees they are always from
+        //    the same PSS generation, so Lagrange interpolation is correct.
+        let (pub_poly, local_share_bundle) =
+            load_ring_pub_poly_and_bundle::<D>(&self.app_state.local_storage, &ring, self_in_list)
+                .map_err(|e| PreError::Deserialization(e))?;
 
         // Validate we have enough potential shares to meet threshold
         // If we're in the list, we can contribute our own share locally
@@ -537,15 +549,11 @@ where
         let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
         let mut seen_node_ids: HashSet<u32> = HashSet::new();
 
-        // If we're in the peer list (self_in_list), compute our own share locally
+        // If we're in the peer list (self_in_list), compute our own share locally.
+        // Use the bundle loaded above (same snapshot as pub_poly) so the share and
+        // polynomial are guaranteed to be from the same PSS generation.
         if self_in_list {
-            // Try to get our local share and compute reencryption
-            let ring_pk = <D::PublicKey>::from_bytes(&ring.ring_pk_bytes[..]).map_err(|e| {
-                PreError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
-            })?;
-
-            if let Ok(bundle) = RingShareBundle::load(&self.app_state.local_storage, &ring_pk) {
-                // We have a local share bundle, compute our reencryption
+            if let Some(bundle) = local_share_bundle {
                 if let Ok(pri_share) = PriShare::<D::ShareValue>::from_bytes(&bundle.share_bytes) {
                     let dist_key_share = DistKeyShare { pri_share };
 
@@ -640,6 +648,15 @@ where
 
         // 8. Check if we have enough verified shares
         if verified_shares.len() < ring.threshold {
+            if is_ring_reshare_in_progress(&ring.ring_pk_bytes, &self.app_state.dkg_session_state)
+                .await
+            {
+                tracing::info!(
+                    request_id = %request_id,
+                    "PRE Coordinator: insufficient shares due to ongoing reshare"
+                );
+                return Err(PreError::ReshareInProgress);
+            }
             return Err(PreError::InsufficientShares {
                 got: verified_shares.len(),
                 need: ring.threshold,

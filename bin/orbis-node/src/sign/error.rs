@@ -70,6 +70,11 @@ pub enum SignError {
     #[error("Protocol error: {0}")]
     ProtocolError(String),
 
+    /// Ring reshare is in progress or just completed; shares from different
+    /// generations were mixed.  The client should retry shortly.
+    #[error("Ring reshare in progress, try again shortly")]
+    ReshareInProgress,
+
     /// Generic Sign error
     #[error("Sign error: {0}")]
     Generic(String),
@@ -101,6 +106,10 @@ impl From<SignError> for tonic::Status {
             SignError::InsufficientShares { .. } => {
                 metrics::record_sign_request_failed();
                 tonic::Status::new(Code::FailedPrecondition, error.to_string())
+            }
+            SignError::ReshareInProgress => {
+                metrics::record_sign_request_failed();
+                tonic::Status::new(Code::Unavailable, error.to_string())
             }
             SignError::Timeout(_) => {
                 metrics::record_sign_request_failed();
