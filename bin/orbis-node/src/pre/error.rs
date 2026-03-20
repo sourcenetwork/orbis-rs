@@ -64,6 +64,11 @@ pub enum PreError {
     #[error("Protocol error: {0}")]
     ProtocolError(String),
 
+    /// Ring reshare is in progress or just completed; shares from different
+    /// generations were mixed.  The client should retry shortly.
+    #[error("Ring reshare in progress, try again shortly")]
+    ReshareInProgress,
+
     /// Generic PRE error
     #[error("PRE error: {0}")]
     Generic(String),
@@ -91,6 +96,10 @@ impl From<PreError> for tonic::Status {
             PreError::InsufficientShares { .. } => {
                 metrics::record_pre_request_failed();
                 tonic::Status::new(Code::FailedPrecondition, error.to_string())
+            }
+            PreError::ReshareInProgress => {
+                metrics::record_pre_request_failed();
+                tonic::Status::new(Code::Unavailable, error.to_string())
             }
             PreError::Timeout(_) => {
                 metrics::record_pre_request_failed();

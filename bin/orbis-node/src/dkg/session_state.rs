@@ -365,6 +365,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             .insert(ring_pk_hex.to_string())
     }
 
+    /// Returns `true` if a PSS refresh is currently in progress for this ring.
+    pub async fn is_ring_refreshing(&self, ring_pk_key: &str) -> bool {
+        self.rings_refreshing.read().await.contains(ring_pk_key)
+    }
+
     /// Clear the in-progress refresh flag for a ring (called on Phase 4 success).
     pub async fn unmark_ring_refreshing(&self, ring_pk_hex: &str) {
         self.rings_refreshing.write().await.remove(ring_pk_hex);

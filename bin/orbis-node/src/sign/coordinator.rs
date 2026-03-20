@@ -20,12 +20,11 @@ use crate::constants::{
     PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
 };
 use crate::helpers::helpers::{determine_session_node_id, is_self_peer_id, RingConfig};
-use crate::ring_state::RingPolyState;
+use crate::ring_state::{RingPolyState, RingShareBundle};
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
-    fetch_key_derivation, load_dist_key_share, serialize_commitments, try_load_dist_key_share,
-    validate_sign_claims,
+    fetch_key_derivation, load_dist_key_share, serialize_commitments, validate_sign_claims,
 };
 use crate::sign::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
@@ -548,13 +547,73 @@ where
         actual_peer_count: usize,
         context: SignContext,
     ) -> Result<Vec<u8>> {
-        // 1. Deserialize public polynomial from bulletin data
-        let pub_poly_bytes = hex::decode(&ring.public_polynomial_hex).map_err(|e| {
-            SignError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
-        })?;
-        let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
-            SignError::Deserialization(format!("Failed to deserialize public polynomial: {}", e))
-        })?;
+        // 1. Load the public polynomial and (when self_in_list) the local dist_key_share
+        //    from a SINGLE atomic read of RingShareBundle — same TOCTOU fix as PRE.
+        //
+        //    Without this there are two races:
+        //    • BLS: service reads polynomial (P_old), PSS fires, signing round reads
+        //      share (S_new).  self-share verified against P_old fails → dropped →
+        //      InsufficientShares when we were one share short of threshold.
+        //    • FROST: collect_nonces reads share (S_old) to generate nonce, PSS fires,
+        //      signing round reads share (S_new).  Nonce bound to S_old, signing with
+        //      S_new → wrong sig share → verify_share rejects it → same InsufficientShares.
+        //
+        //    Loading from the same bundle snapshot eliminates both races: pub_poly,
+        //    nonce generation, and signing all use the same PSS generation.
+        let (pub_poly, local_dist_key_share) = if self_in_list {
+            let ring_pk = decode_ring_pk_bytes(&ring.ring_pk_bytes)?;
+            match RingShareBundle::load(&self.app_state.local_storage, &ring_pk) {
+                Ok(bundle) => {
+                    let poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
+                        SignError::Deserialization(format!(
+                            "Failed to decode polynomial hex from bundle: {}",
+                            e
+                        ))
+                    })?;
+                    let poly = <D::PubPoly>::from_bytes(&poly_bytes).map_err(|e| {
+                        SignError::Deserialization(format!(
+                            "Failed to deserialize polynomial from bundle: {}",
+                            e
+                        ))
+                    })?;
+                    let dist_key_share = bundle
+                        .pri_share()
+                        .map(|ps| DistKeyShare { pri_share: ps })
+                        .ok();
+                    (poly, dist_key_share)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Sign Coordinator: local bundle missing, falling back to ring config polynomial"
+                    );
+                    let poly_bytes = hex::decode(&ring.public_polynomial_hex).map_err(|e| {
+                        SignError::Deserialization(format!(
+                            "Failed to decode public polynomial hex: {}",
+                            e
+                        ))
+                    })?;
+                    let poly = <D::PubPoly>::from_bytes(&poly_bytes).map_err(|e| {
+                        SignError::Deserialization(format!(
+                            "Failed to deserialize public polynomial: {}",
+                            e
+                        ))
+                    })?;
+                    (poly, None)
+                }
+            }
+        } else {
+            let poly_bytes = hex::decode(&ring.public_polynomial_hex).map_err(|e| {
+                SignError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
+            })?;
+            let poly = <D::PubPoly>::from_bytes(&poly_bytes).map_err(|e| {
+                SignError::Deserialization(format!(
+                    "Failed to deserialize public polynomial: {}",
+                    e
+                ))
+            })?;
+            (poly, None)
+        };
 
         // Validate we have enough potential shares to meet threshold
         let potential_shares = if self_in_list {
@@ -592,8 +651,15 @@ where
         // ROUND 1 (FROST only): Collect nonce commitments
         // =====================================================================
         let (all_commitments, local_signing_state) = if S::INTERACTIVE {
-            self.collect_nonces(&request_id, &ring, node_id, self_in_list, &context)
-                .await?
+            self.collect_nonces(
+                &request_id,
+                &ring,
+                node_id,
+                self_in_list,
+                &context,
+                local_dist_key_share.as_ref(),
+            )
+            .await?
         } else {
             (Vec::new(), None)
         };
@@ -680,12 +746,11 @@ where
         let mut verified_shares: Vec<PubShare<SigShareInner>> = Vec::new();
         let mut seen_node_ids: HashSet<u32> = HashSet::new();
 
-        // If we're in the peer list, compute our own share locally
+        // If we're in the peer list, compute our own share locally.
+        // Use the dist_key_share loaded above (same snapshot as pub_poly) so that
+        // the share and polynomial are guaranteed to be from the same PSS generation.
         if self_in_list {
-            let ring_pk = decode_ring_pk_bytes(&ring.ring_pk_bytes)?;
-            if let Some(dist_key_share) =
-                try_load_dist_key_share(&self.app_state.local_storage, &ring_pk)
-            {
+            if let Some(dist_key_share) = local_dist_key_share {
                 match signer.sign(
                     &dist_key_share,
                     &message,
@@ -779,6 +844,30 @@ where
 
         // 5. Check if we have enough verified shares
         if verified_shares.len() < ring.threshold {
+            // Before returning a generic InsufficientShares, check whether a PSS
+            // reshare is the likely cause.  We use the rings_refreshing flag: it is
+            // set by the PSS scheduler before Phase 4 and cleared after Phase 4
+            // commits the new bundle.  Initial DKG does NOT set this flag, so there
+            // are no false positives immediately after DKG completion.
+            //
+            // Note: we intentionally do NOT use refreshed_at here.  Both initial DKG
+            // and PSS write refreshed_at = now_secs, so it cannot distinguish the two.
+            let currently_refreshing =
+                if let Ok(ring_pk) = decode_ring_pk_bytes(&ring.ring_pk_bytes) {
+                    self.app_state
+                        .dkg_session_state
+                        .is_ring_refreshing(&ring_pk.to_string())
+                        .await
+                } else {
+                    false
+                };
+            if currently_refreshing {
+                tracing::info!(
+                    request_id = %request_id,
+                    "Sign Coordinator: insufficient shares due to ongoing reshare"
+                );
+                return Err(SignError::ReshareInProgress);
+            }
             return Err(SignError::InsufficientShares {
                 got: verified_shares.len(),
                 need: ring.threshold,
@@ -856,19 +945,18 @@ where
         node_id: u32,
         self_in_list: bool,
         context: &SignContext,
+        local_dist_key_share: Option<&DistKeyShare<Fr>>,
     ) -> Result<(Vec<(u32, S::NonceCommitment)>, Option<S::SigningState>)> {
         let nonce_request_id = format!("nonce-{}", request_id);
         let mut all_commitments: Vec<(u32, S::NonceCommitment)> = Vec::new();
         let mut local_signing_state: Option<S::SigningState> = None;
 
-        // Generate our own nonces if we're in the ring
+        // Generate our own nonces using the pre-loaded dist_key_share (same PSS
+        // generation snapshot as pub_poly and the signing-round share).
         if self_in_list {
-            let ring_pk = decode_ring_pk_bytes(&ring.ring_pk_bytes)?;
-            if let Some(dist_key_share) =
-                try_load_dist_key_share(&self.app_state.local_storage, &ring_pk)
-            {
+            if let Some(dist_key_share) = local_dist_key_share {
                 let signer = S::new();
-                let (commitment, state) = signer.generate_nonces(&dist_key_share).map_err(|e| {
+                let (commitment, state) = signer.generate_nonces(dist_key_share).map_err(|e| {
                     SignError::Crypto(format!("Local nonce generation failed: {}", e))
                 })?;
                 all_commitments.push((node_id, commitment));

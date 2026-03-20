@@ -418,13 +418,69 @@ where
         actual_peer_count: usize,
         ctx: PreRequestContext,
     ) -> Result<Vec<u8>> {
-        // 1. Deserialize public polynomial from bulletin data
-        let pub_poly_bytes = hex::decode(&ring.public_polynomial_hex).map_err(|e| {
-            PreError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
-        })?;
-        let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
-            PreError::Deserialization(format!("Failed to deserialize public polynomial: {}", e))
-        })?;
+        // 1. Load the public polynomial and (when self_in_list) the local share bundle
+        //    from a SINGLE atomic read of RingShareBundle.
+        //
+        //    Without this, there is a TOCTOU race: the service layer reads the polynomial
+        //    in one bundle read, then `self_in_list` reads the share in a second bundle
+        //    read.  If PSS Phase 4 fires between those two reads it updates the bundle
+        //    atomically (new share + new polynomial together), so the two reads can see
+        //    different generations.  A self-share from generation N+1 combined via
+        //    Lagrange with peer shares from generation N produces a wrong xnc_cmt,
+        //    which passes AES-GCM tag verification with a wrong key → "authentication
+        //    failed".
+        //
+        //    Loading both fields from the same snapshot guarantees they are always from
+        //    the same PSS generation, so Lagrange interpolation is correct.
+        let (pub_poly, local_share_bundle) = if self_in_list {
+            let ring_pk = <D::PublicKey>::from_bytes(&ring.ring_pk_bytes[..]).map_err(|e| {
+                PreError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
+            })?;
+            match RingShareBundle::load(&self.app_state.local_storage, &ring_pk) {
+                Ok(bundle) => {
+                    let poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
+                        PreError::Deserialization(format!(
+                            "Failed to decode polynomial hex from bundle: {}",
+                            e
+                        ))
+                    })?;
+                    let poly = <D::PubPoly>::from_bytes(&poly_bytes).map_err(|e| {
+                        PreError::Deserialization(format!(
+                            "Failed to deserialize polynomial from bundle: {}",
+                            e
+                        ))
+                    })?;
+                    (poly, Some(bundle))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "PRE Coordinator: local bundle missing, falling back to ring config polynomial"
+                    );
+                    let poly_bytes = hex::decode(&ring.public_polynomial_hex).map_err(|e| {
+                        PreError::Deserialization(format!(
+                            "Failed to decode public polynomial hex: {}",
+                            e
+                        ))
+                    })?;
+                    let poly = <D::PubPoly>::from_bytes(&poly_bytes).map_err(|e| {
+                        PreError::Deserialization(format!(
+                            "Failed to deserialize public polynomial: {}",
+                            e
+                        ))
+                    })?;
+                    (poly, None)
+                }
+            }
+        } else {
+            let poly_bytes = hex::decode(&ring.public_polynomial_hex).map_err(|e| {
+                PreError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
+            })?;
+            let poly = <D::PubPoly>::from_bytes(&poly_bytes).map_err(|e| {
+                PreError::Deserialization(format!("Failed to deserialize public polynomial: {}", e))
+            })?;
+            (poly, None)
+        };
 
         // Validate we have enough potential shares to meet threshold
         // If we're in the list, we can contribute our own share locally
@@ -537,15 +593,11 @@ where
         let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
         let mut seen_node_ids: HashSet<u32> = HashSet::new();
 
-        // If we're in the peer list (self_in_list), compute our own share locally
+        // If we're in the peer list (self_in_list), compute our own share locally.
+        // Use the bundle loaded above (same snapshot as pub_poly) so the share and
+        // polynomial are guaranteed to be from the same PSS generation.
         if self_in_list {
-            // Try to get our local share and compute reencryption
-            let ring_pk = <D::PublicKey>::from_bytes(&ring.ring_pk_bytes[..]).map_err(|e| {
-                PreError::Deserialization(format!("Failed to deserialize ring public key: {}", e))
-            })?;
-
-            if let Ok(bundle) = RingShareBundle::load(&self.app_state.local_storage, &ring_pk) {
-                // We have a local share bundle, compute our reencryption
+            if let Some(bundle) = local_share_bundle {
                 if let Ok(pri_share) = PriShare::<D::ShareValue>::from_bytes(&bundle.share_bytes) {
                     let dist_key_share = DistKeyShare { pri_share };
 
@@ -640,6 +692,30 @@ where
 
         // 8. Check if we have enough verified shares
         if verified_shares.len() < ring.threshold {
+            // Before returning a generic InsufficientShares, check whether a PSS
+            // reshare is the likely cause.  We use the rings_refreshing flag: it is
+            // set by the PSS scheduler before Phase 4 and cleared after Phase 4
+            // commits the new bundle.  Initial DKG does NOT set this flag, so there
+            // are no false positives immediately after DKG completion.
+            //
+            // Note: we intentionally do NOT use refreshed_at here.  Both initial DKG
+            // and PSS write refreshed_at = now_secs, so it cannot distinguish the two.
+            let currently_refreshing =
+                if let Ok(ring_pk) = <D::PublicKey>::from_bytes(&ring.ring_pk_bytes[..]) {
+                    self.app_state
+                        .dkg_session_state
+                        .is_ring_refreshing(&ring_pk.to_string())
+                        .await
+                } else {
+                    false
+                };
+            if currently_refreshing {
+                tracing::info!(
+                    request_id = %request_id,
+                    "PRE Coordinator: insufficient shares due to ongoing reshare"
+                );
+                return Err(PreError::ReshareInProgress);
+            }
             return Err(PreError::InsufficientShares {
                 got: verified_shares.len(),
                 need: ring.threshold,
