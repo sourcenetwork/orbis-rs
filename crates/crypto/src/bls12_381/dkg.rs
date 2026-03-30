@@ -513,6 +513,10 @@ impl Dkg for DKGNode {
         &self.commitment
     }
 
+    fn role(&self) -> DkgRole {
+        self.role
+    }
+
     fn combine_pub_poly_bytes(a: &[u8], b: &[u8]) -> Result<Vec<u8>>
     where
         Self: Sized,

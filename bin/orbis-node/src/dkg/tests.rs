@@ -1,7 +1,7 @@
 use crate::constants::MAX_DKG_SESSIONS;
 use crate::dkg::{
     coordinator::DkgCoordinator,
-    messages::DkgMessage,
+    messages::{DkgMessage, SessionKind},
     session_state::{DkgMessageType, DkgPhase, SessionStateManager},
 };
 use crate::helpers::helpers::extract_node_part;
@@ -502,8 +502,7 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
             ("peer3".to_string(), 3),
         ]),
         token_string: "not-a-valid-jwt-token".to_string(), // Invalid JWT
-        is_refresh: false,
-        refresh_ring_pk_hex: None,
+        kind: SessionKind::Fresh,
         pss_interval: None,
     };
 
@@ -571,8 +570,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
             ("peer3".to_string(), 3),
         ]),
         token_string: mismatched_token,
-        is_refresh: false,
-        refresh_ring_pk_hex: None,
+        kind: SessionKind::Fresh,
         pss_interval: None,
     };
 
@@ -637,8 +635,7 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
             ("peer3".to_string(), 3),
         ]),
         token_string: mismatched_token,
-        is_refresh: false,
-        refresh_ring_pk_hex: None,
+        kind: SessionKind::Fresh,
         pss_interval: None,
     };
 
@@ -1337,16 +1334,16 @@ async fn test_dkg_followed_by_pss_refresh() {
         .await
         .expect("create refresh session");
 
-    // Mark as refresh so Phase 1 uses DkgMode::Refresh (zero constant term).
+    // Refresh session: Phase 1 uses DkgMode::Refresh (zero constant term).
+    // Ring key is stored on the initiator; non-initiators receive it via SessionInit.
     initiator_state
         .dkg_session_state
-        .mark_as_refresh(&refresh_session_id)
-        .await;
-
-    // Store the ring key on the initiator — non-initiators receive it via SessionInit.
-    initiator_state
-        .dkg_session_state
-        .set_refresh_ring_key(&refresh_session_id, key_string.clone())
+        .set_session_kind(
+            &refresh_session_id,
+            SessionKind::Refresh {
+                ring_pk_hex: key_string.clone(),
+            },
+        )
         .await;
 
     coordinator
@@ -1377,8 +1374,9 @@ async fn test_dkg_followed_by_pss_refresh() {
         peer_ids: peer_ids.clone(),
         node_id_assignments: node_id_assignments.clone(),
         token_string: String::new(), // refresh bypasses JWT
-        is_refresh: true,
-        refresh_ring_pk_hex: Some(key_string.clone()),
+        kind: SessionKind::Refresh {
+            ring_pk_hex: key_string.clone(),
+        },
         pss_interval: None,
     };
     for peer_id_str in &peer_ids {
@@ -1584,7 +1582,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
     // creating a refresh session.
     let marked = app_state
         .dkg_session_state
-        .try_mark_ring_refreshing(ring_key)
+        .try_mark_ring_pss(ring_key)
         .await;
     assert!(marked, "should be able to mark a fresh ring as refreshing");
 
@@ -1596,11 +1594,12 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
         .expect("refresh session creation should succeed");
     app_state
         .dkg_session_state
-        .mark_as_refresh(&refresh_session_id)
-        .await;
-    app_state
-        .dkg_session_state
-        .set_refresh_ring_key(&refresh_session_id, ring_key.to_string())
+        .set_session_kind(
+            &refresh_session_id,
+            SessionKind::Refresh {
+                ring_pk_hex: ring_key.to_string(),
+            },
+        )
         .await;
 
     // ── Step 2: A fresh DKG on the same ring is NOT blocked. ─────────────────
@@ -1701,8 +1700,9 @@ fn g3_refresh_session_init(ring_pk: &str, sender_hex: &str) -> DkgMessage {
         peer_ids: vec![sender_hex.to_string()],
         node_id_assignments,
         token_string: String::new(),
-        is_refresh: true,
-        refresh_ring_pk_hex: Some(ring_pk.to_string()),
+        kind: SessionKind::Refresh {
+            ring_pk_hex: ring_pk.to_string(),
+        },
         pss_interval: None,
     }
 }
@@ -1796,10 +1796,7 @@ async fn test_refresh_rejected_already_in_progress() {
     g3_write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
 
     // Pre-mark the ring as already refreshing so the coordinator rejects the second attempt.
-    let first_mark = app_state
-        .dkg_session_state
-        .try_mark_ring_refreshing(ring_pk)
-        .await;
+    let first_mark = app_state.dkg_session_state.try_mark_ring_pss(ring_pk).await;
     assert!(first_mark, "initial mark should succeed");
 
     let sender_bytes = hex::decode(sender_hex).unwrap();

@@ -5,6 +5,47 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Describes what kind of ceremony a DKG session is running.
+///
+/// Replaces the old `is_refresh: bool` / `refresh_ring_pk_hex: Option<String>` pair.
+/// Used in both the wire protocol (`SessionInit`) and in-process session state.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SessionKind {
+    /// Standard fresh DKG — all nodes are symmetric, new random secret.
+    #[default]
+    Fresh,
+    /// PSS refresh — same secret, new shares, same committee (zero constant term).
+    Refresh {
+        /// Local-storage key of the ring being refreshed (`aggregate_pk.to_string()`).
+        ring_pk_hex: String,
+    },
+    /// Reshare — same secret, new shares, potentially different committee.
+    ///
+    /// Old committee members act as Dealers; new committee members act as Receivers.
+    /// Nodes in both committees are DealerReceivers.
+    Reshare {
+        /// Local-storage key of the ring being reshared (`aggregate_pk.to_string()`).
+        ring_pk_hex: String,
+        /// Peer IDs of the new committee.
+        next_peer_ids: Vec<String>,
+        /// Threshold for the new committee.
+        new_threshold: u32,
+    },
+}
+
+impl SessionKind {
+    /// Returns the ring's local-storage key if this session is a Refresh or Reshare,
+    /// or `None` for a Fresh DKG.  Used by session cleanup to clear the in-progress flag.
+    pub fn ring_key(&self) -> Option<&str> {
+        match self {
+            SessionKind::Fresh => None,
+            SessionKind::Refresh { ring_pk_hex } => Some(ring_pk_hex.as_str()),
+            SessionKind::Reshare { ring_pk_hex, .. } => Some(ring_pk_hex.as_str()),
+        }
+    }
+}
+
 /// DKG protocol message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DkgMessage {
@@ -34,17 +75,17 @@ pub enum DkgMessage {
         session_id: u64,
         threshold: u32,
         total_participants: u32,
-        peer_ids: Vec<String>, // Peer IDs for all participants (so non-initiators know who to send to)
-        node_id_assignments: std::collections::HashMap<String, u32>, // peer_id -> node_id mapping assigned by initiator
-        token_string: String, // JWT token for authentication - validated by receiving nodes
-        /// True when this is a PSS refresh session rather than a fresh DKG
+        /// Peer IDs of the old (or only) committee — used for sender validation
+        /// and commitment/share tracking. For Reshare, new committee IDs are
+        /// carried inside `kind`.
+        peer_ids: Vec<String>,
+        /// peer_id_key → node_id assignments made by the initiator (old committee).
+        node_id_assignments: std::collections::HashMap<String, u32>,
+        /// JWT token for authentication — empty for Refresh/Reshare sessions.
+        token_string: String,
+        /// Session kind: Fresh, Refresh, or Reshare.
         #[serde(default)]
-        is_refresh: bool,
-        /// For refresh sessions: the local-storage key of the ring being refreshed
-        /// (`aggregate_pk.to_string()`).  Recipients use this to load the old share
-        /// and combine it with the refresh delta in Phase 4.
-        #[serde(default)]
-        refresh_ring_pk_hex: Option<String>,
+        kind: SessionKind,
         /// Seconds between automatic PSS refresh ceremonies for this ring.
         /// `None` means automatic refresh is disabled.
         #[serde(default)]

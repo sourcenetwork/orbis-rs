@@ -547,6 +547,9 @@ pub trait Dkg: Send + Sync {
     /// Get a reference to the polynomial commitment
     fn commitment(&self) -> &Self::PolynomialCommitment;
 
+    /// Get the role of this node in the current DKG session.
+    fn role(&self) -> DkgRole;
+
     /// Add two serialized public polynomials coefficient-wise and return the result.
     ///
     /// Used in PSS refresh Phase 4 to compute the updated public polynomial:

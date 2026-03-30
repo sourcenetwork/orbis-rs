@@ -314,7 +314,7 @@ pub fn session_id_string_to_u64(
 /// Returns `true` when a PSS reshare is currently in progress for the ring
 /// identified by `ring_pk_bytes`.
 ///
-/// Uses the `rings_refreshing` flag from `SessionStateManager`, which is
+/// Uses the `rings_pss` flag from `SessionStateManager`, which is
 /// exclusively set/cleared by the PSS scheduler (not initial DKG), so there
 /// are no false positives immediately after DKG completion.
 pub async fn is_ring_reshare_in_progress<D: Dkg + 'static>(
@@ -322,7 +322,7 @@ pub async fn is_ring_reshare_in_progress<D: Dkg + 'static>(
     session_state: &SessionStateManager<D>,
 ) -> bool {
     match G1Affine::from_bytes(ring_pk_bytes) {
-        Ok(ring_pk) => session_state.is_ring_refreshing(&ring_pk.to_string()).await,
+        Ok(ring_pk) => session_state.is_ring_pss_active(&ring_pk.to_string()).await,
         Err(_) => false,
     }
 }

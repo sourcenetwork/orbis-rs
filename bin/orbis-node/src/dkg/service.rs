@@ -2,7 +2,7 @@ use crate::app_state::AppState;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::helpers::validate_dkg_claims;
-use crate::dkg::messages::DkgMessage;
+use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
 use crate::helpers::helpers::{extract_node_part, is_self_peer_id, validate_all_peer_ids};
 use crate::metrics;
@@ -247,8 +247,7 @@ where
                 peer_ids: all_peer_ids.clone(), // Include all peer_ids (including our own) so receivers know all participants
                 node_id_assignments: node_id_assignments.clone(), // Assignments made by initiator
                 token_string: token_str.clone(), // Pass JWT to peer nodes for authentication
-                is_refresh: false,
-                refresh_ring_pk_hex: None,
+                kind: SessionKind::Fresh,
                 pss_interval,
             };
 
