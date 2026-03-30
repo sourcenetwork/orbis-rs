@@ -182,6 +182,7 @@ async fn test_refresh_ring_not_initiator_skips_silently() {
     let ring_payload = RingPayload {
         ring_pk: "fake_pk".to_string(),
         peer_ids: vec![fake_peer_1.clone(), fake_peer_2.clone()],
+        next_peer_ids: None,
         threshold: 1,
         pss_interval: Some(86400),
     };

@@ -36,6 +36,9 @@ pub struct DocumentPayload {
 pub struct RingPayload {
     /// Public key of ring
     pub ring_pk: String,
+    /// Next peer ids to reshare into
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_peer_ids: Option<Vec<String>>,
     /// Network ids of peers in ring
     pub peer_ids: Vec<String>,
     /// Threshold of ring

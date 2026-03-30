@@ -1409,6 +1409,7 @@ where
             let ring_payload_local = RingPayload {
                 ring_pk: ring_pk_hex_for_payload.clone(),
                 peer_ids,
+                next_peer_ids: None,
                 threshold: threshold as u32,
                 pss_interval,
             };
@@ -1501,6 +1502,7 @@ where
             let ring_payload = RingPayload {
                 ring_pk: hex::encode(&ring_pk_bytes),
                 peer_ids,
+                next_peer_ids: None,
                 threshold: threshold as u32,
                 pss_interval,
             };
