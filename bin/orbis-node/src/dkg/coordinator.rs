@@ -1509,6 +1509,8 @@ where
             .ok_or_else(|| session_not_found(session_id))?;
 
         // Pure Dealer nodes don't compute a secret share — they just clean up.
+        // Because they are leaving the ring, delete the local secret share and
+        // remove the ring from the index so the PSS scheduler ignores it.
         if dkg_role == DkgRole::Dealer {
             let ring_key = kind.ring_key().map(|k| k.to_string());
             self.app_state
@@ -1517,12 +1519,74 @@ where
                 .await;
             if let Some(key) = &ring_key {
                 self.app_state.dkg_session_state.unmark_ring_pss(key).await;
+
+                // Delete the encrypted share bundle.
+                if let Err(e) = self
+                    .app_state
+                    .local_storage
+                    .delete(LocalStorageKeys::RingKey(key.clone()))
+                {
+                    tracing::warn!(
+                        session_id = session_id,
+                        ring_key = %key,
+                        error = %e,
+                        "Reshare Dealer: failed to delete share bundle (already absent?)"
+                    );
+                } else {
+                    tracing::info!(
+                        session_id = session_id,
+                        ring_key = %key,
+                        "Reshare Dealer: deleted share bundle — node has left the ring"
+                    );
+                }
+
+                // Remove the ring from the local index so the PSS scheduler skips it.
+                let storage = &self.app_state.local_storage;
+                match storage.get(LocalStorageKeys::RingIndex) {
+                    Ok(Some(raw)) => match serde_json::from_slice::<Vec<RingIndexEntry>>(&raw) {
+                        Ok(mut index) => {
+                            index.retain(|e| e.ring_pk_str != *key);
+                            match serde_json::to_vec(&index) {
+                                Ok(bytes) => {
+                                    if let Err(e) = storage.set(LocalStorageKeys::RingIndex, bytes)
+                                    {
+                                        tracing::warn!(
+                                            session_id = session_id,
+                                            ring_key = %key,
+                                            error = %e,
+                                            "Reshare Dealer: failed to write updated RingIndex"
+                                        );
+                                    }
+                                }
+                                Err(e) => tracing::warn!(
+                                    session_id = session_id,
+                                    ring_key = %key,
+                                    error = %e,
+                                    "Reshare Dealer: failed to serialize RingIndex"
+                                ),
+                            }
+                        }
+                        Err(e) => tracing::warn!(
+                            session_id = session_id,
+                            ring_key = %key,
+                            error = %e,
+                            "Reshare Dealer: failed to deserialize RingIndex"
+                        ),
+                    },
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(
+                        session_id = session_id,
+                        ring_key = %key,
+                        error = %e,
+                        "Reshare Dealer: failed to read RingIndex"
+                    ),
+                }
             }
             self.remove_session(session_id).await;
             metrics::record_dkg_session_completed();
             tracing::info!(
                 session_id = session_id,
-                "Reshare Dealer: Phase 4 complete (share distribution done, no share to compute)"
+                "Reshare Dealer: Phase 4 complete (share distribution done, secret deleted)"
             );
             return Ok(());
         }
