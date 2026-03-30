@@ -791,6 +791,7 @@ pub async fn write_ring_to_bulletin(
     let payload = RingPayload {
         ring_pk: ring_pk.to_string(),
         peer_ids,
+        next_peer_ids: None,
         threshold: 1,
         pss_interval,
     };
