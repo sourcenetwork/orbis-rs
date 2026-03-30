@@ -792,6 +792,7 @@ pub async fn write_ring_to_bulletin(
         ring_pk: ring_pk.to_string(),
         peer_ids,
         next_peer_ids: None,
+        new_threshold: None,
         threshold: 1,
         pss_interval,
     };

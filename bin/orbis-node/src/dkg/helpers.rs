@@ -33,11 +33,17 @@ pub fn serialize_commitment_coefficients(coefficients: &[G1Affine]) -> Result<Ve
 /// Checks (in order):
 /// 1. The ring is known (an entry with `ring_pk_str == ring_pk_hex` exists in `RingIndex`).
 /// 2. The sender's peer ID is a current member of that ring's OLD committee.
+/// 3. If `ring_payload.next_peer_ids` is set, the proposed `next_peer_ids` must match
+///    (order-independent).  Prevents a rogue old-committee member from resharing to an
+///    arbitrary new committee.
+/// 4. If `ring_payload.new_threshold` is set, the proposed `new_threshold` must match.
 ///
 /// No time-based check is performed — reshare is triggered by membership change, not interval.
 pub async fn validate_reshare_session_init<S: LocalStorage>(
     ring_pk_hex: &str,
     sender_hex: &str,
+    proposed_next_peer_ids: &[String],
+    proposed_new_threshold: u32,
     local_storage: &S,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<()> {
@@ -64,6 +70,7 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         serde_json::from_slice(&bulletin_post.payload)
             .map_err(|e| DkgError::Deserialization(format!("Bad ring payload: {}", e)))?;
 
+    // 2. Sender must be in the old committee.
     let sender_in_ring = ring_payload
         .peer_ids
         .iter()
@@ -75,7 +82,31 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         )));
     }
 
-    // TODO: do checks for threshold nodes don't change and maybe other checks
+    // 3. If the bulletin pre-announces the new committee, the proposed list must match.
+    if let Some(ref announced) = ring_payload.next_peer_ids {
+        let mut sorted_announced: Vec<&str> = announced.iter().map(|s| s.as_str()).collect();
+        sorted_announced.sort();
+        let mut sorted_proposed: Vec<&str> =
+            proposed_next_peer_ids.iter().map(|s| s.as_str()).collect();
+        sorted_proposed.sort();
+        if sorted_announced != sorted_proposed {
+            return Err(DkgError::Unauthorized(format!(
+                "Reshare next_peer_ids do not match bulletin-announced committee for ring {}",
+                ring_pk_hex
+            )));
+        }
+    }
+
+    // 4. If the bulletin pre-announces the new threshold, the proposed value must match.
+    if let Some(announced_threshold) = ring_payload.new_threshold {
+        if proposed_new_threshold != announced_threshold {
+            return Err(DkgError::Unauthorized(format!(
+                "Reshare new_threshold {} does not match bulletin-announced threshold {} for ring {}",
+                proposed_new_threshold, announced_threshold, ring_pk_hex
+            )));
+        }
+    }
+
     Ok(())
 }
 

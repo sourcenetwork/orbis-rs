@@ -181,7 +181,11 @@ where
                         "DKG Coordinator: Refresh SessionInit validated and ring marked refreshing"
                     );
                 }
-                SessionKind::Reshare { ring_pk_hex, .. } => {
+                SessionKind::Reshare {
+                    ring_pk_hex,
+                    next_peer_ids: reshare_next_peer_ids,
+                    new_threshold: reshare_new_threshold,
+                } => {
                     tracing::info!(
                         session_id = session_id,
                         ring_pk_hex = %ring_pk_hex,
@@ -191,6 +195,8 @@ where
                     validate_reshare_session_init(
                         ring_pk_hex,
                         &sender_hex,
+                        reshare_next_peer_ids,
+                        *reshare_new_threshold,
                         &self.app_state.local_storage,
                         &self.app_state.bulletin,
                     )
@@ -1704,6 +1710,7 @@ where
                 ring_pk: ring_pk_hex_for_payload.clone(),
                 peer_ids,
                 next_peer_ids: None,
+                new_threshold: None,
                 threshold: threshold as u32,
                 pss_interval,
             };
@@ -1798,6 +1805,7 @@ where
                 ring_pk: hex::encode(&ring_pk_bytes),
                 peer_ids,
                 next_peer_ids: None,
+                new_threshold: None,
                 threshold: threshold as u32,
                 pss_interval,
             };
@@ -1851,6 +1859,7 @@ where
                     ring_pk: ring_pk_hex.clone(),
                     peer_ids: next_peer_ids.clone(),
                     next_peer_ids: None,
+                    new_threshold: None,
                     threshold: *new_threshold,
                     pss_interval,
                 };

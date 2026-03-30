@@ -1666,7 +1666,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
 }
 
 // =============================================================================
-// Group 3: coordinator rejects invalid PSS refresh SessionInit messages
+// coordinator rejects invalid PSS refresh SessionInit messages
 //
 // These tests confirm that the coordinator enforces the three validation
 // checks (sender membership, minimum elapsed time, no concurrent refresh)
@@ -1676,7 +1676,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
 // =============================================================================
 
 /// Write a minimal `RingShareBundle` with the given `refreshed_at` timestamp.
-fn g3_write_last_refresh(
+fn write_last_refresh(
     storage: &impl local_storage::r#trait::LocalStorage,
     ring_pk: &str,
     secs: u64,
@@ -1690,7 +1690,7 @@ fn g3_write_last_refresh(
 }
 
 /// Build a minimal refresh `SessionInit` targeted at `ring_pk`.
-fn g3_refresh_session_init(ring_pk: &str, sender_hex: &str) -> DkgMessage {
+fn refresh_session_init(ring_pk: &str, sender_hex: &str) -> DkgMessage {
     let mut node_id_assignments = std::collections::HashMap::new();
     node_id_assignments.insert(sender_hex.to_string(), 1u32);
     DkgMessage::SessionInit {
@@ -1723,12 +1723,12 @@ async fn test_refresh_rejected_sender_not_in_ring() {
         None, // membership check fires before time check
     )
     .await;
-    g3_write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
+    write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
 
     let sender_bytes = hex::decode("deadbeef").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
     let coordinator = DkgCoordinator::new(app_state);
-    let msg = g3_refresh_session_init(ring_pk, "deadbeef");
+    let msg = refresh_session_init(ring_pk, "deadbeef");
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
@@ -1761,12 +1761,12 @@ async fn test_refresh_rejected_too_soon() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    g3_write_last_refresh(&app_state.local_storage, ring_pk, now_secs);
+    write_last_refresh(&app_state.local_storage, ring_pk, now_secs);
 
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
     let coordinator = DkgCoordinator::new(app_state);
-    let msg = g3_refresh_session_init(ring_pk, sender_hex);
+    let msg = refresh_session_init(ring_pk, sender_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
@@ -1793,7 +1793,7 @@ async fn test_refresh_rejected_already_in_progress() {
         None, // time check irrelevant; rejected by in-progress flag
     )
     .await;
-    g3_write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
+    write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
 
     // Pre-mark the ring as already refreshing so the coordinator rejects the second attempt.
     let first_mark = app_state.dkg_session_state.try_mark_ring_pss(ring_pk).await;
@@ -1802,12 +1802,460 @@ async fn test_refresh_rejected_already_in_progress() {
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
     let coordinator = DkgCoordinator::new(app_state);
-    let msg = g3_refresh_session_init(ring_pk, sender_hex);
+    let msg = refresh_session_init(ring_pk, sender_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
         matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
         "Expected Unauthorized for refresh already in progress, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+// =============================================================================
+// Reshare validation tests (Group 4)
+//
+// These tests mirror the Group 3 refresh tests but exercise the reshare code
+// path: unknown ring, sender not in old committee, concurrent ceremony blocked.
+// Additionally, Group 4 includes unit tests for the Dealer Phase 4 cleanup path
+// (share deletion, ring index removal, PSS flag cleared) and the session-state
+// PSS blocking behaviour (try_mark_ring_pss idempotency).
+// =============================================================================
+
+/// Build a minimal reshare `SessionInit` that the coordinator can inspect.
+///
+/// `peer_ids` = old committee, `next_peer_ids` = new committee.
+fn reshare_session_init(
+    ring_pk: &str,
+    sender_hex: &str,
+    peer_ids: Vec<String>,
+    next_peer_ids: Vec<String>,
+    new_threshold: u32,
+) -> DkgMessage {
+    let mut node_id_assignments = std::collections::HashMap::new();
+    for (i, p) in peer_ids.iter().enumerate() {
+        node_id_assignments.insert(p.clone(), (i + 1) as u32);
+    }
+    DkgMessage::SessionInit {
+        session_id: 99_999_100,
+        threshold: 1,
+        total_participants: peer_ids.len() as u32,
+        peer_ids,
+        node_id_assignments,
+        token_string: String::new(),
+        kind: SessionKind::Reshare {
+            ring_pk_hex: ring_pk.to_string(),
+            next_peer_ids,
+            new_threshold,
+        },
+        pss_interval: None,
+    }
+}
+
+/// `try_mark_ring_pss` is idempotent: marking the same ring twice returns false,
+/// and after unmark it can be marked again.
+#[tokio::test]
+async fn test_rings_pss_blocks_refresh_and_reshare_equally() {
+    use crate::dkg::session_state::SessionStateManager;
+    let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
+    let ring_pk = "ring_pss_idempotent_test";
+
+    let first = manager.try_mark_ring_pss(ring_pk).await;
+    assert!(first, "first mark should succeed");
+
+    let second = manager.try_mark_ring_pss(ring_pk).await;
+    assert!(!second, "second mark on same ring must return false");
+
+    manager.unmark_ring_pss(ring_pk).await;
+    let third = manager.try_mark_ring_pss(ring_pk).await;
+    assert!(third, "mark after unmark should succeed");
+}
+
+/// Reshare `SessionInit` for a ring that does not exist in `RingIndex` must be
+/// rejected with `Unauthorized`.
+#[tokio::test]
+async fn test_reshare_session_init_rejects_unknown_ring() {
+    let db_name = "test_reshare_rejects_unknown_ring";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let coordinator = DkgCoordinator::new(app_state);
+
+    let sender_bytes = hex::decode("aabbccdd").unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+
+    // "unknown_ring_pk" is not present in RingIndex or the bulletin.
+    let msg = reshare_session_init(
+        "unknown_ring_pk",
+        "aabbccdd",
+        vec!["aabbccdd".to_string()],
+        vec!["00112233".to_string()],
+        1,
+    );
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
+        "Expected Unauthorized for unknown ring, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// Reshare `SessionInit` where the ring is known but the sender is not listed in
+/// the ring's old committee (`RingPayload::peer_ids`) must be rejected.
+#[tokio::test]
+async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
+    let db_name = "test_reshare_rejects_sender_not_in_committee";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+
+    let ring_pk = "reshare_ring";
+    // Ring contains "aabbccdd"; sender will be "deadbeef" (not a member).
+    write_ring_to_bulletin(
+        &app_state.local_storage,
+        &app_state.bulletin,
+        ring_pk,
+        vec!["aabbccdd".to_string()],
+        None,
+    )
+    .await;
+
+    let sender_bytes = hex::decode("deadbeef").unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::new(app_state);
+    let msg = reshare_session_init(
+        ring_pk,
+        "deadbeef",
+        vec!["deadbeef".to_string()],
+        vec!["00112233".to_string()],
+        1,
+    );
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
+        "Expected Unauthorized for sender not in old committee, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// If `try_mark_ring_pss` is already held for a ring, an incoming reshare
+/// `SessionInit` for that ring must be rejected with `Unauthorized`.
+#[tokio::test]
+async fn test_reshare_session_init_blocks_concurrent_ceremony() {
+    let db_name = "test_reshare_blocks_concurrent";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+
+    let ring_pk = "reshare_ring";
+    let sender_hex = "aabbccdd";
+    write_ring_to_bulletin(
+        &app_state.local_storage,
+        &app_state.bulletin,
+        ring_pk,
+        vec![sender_hex.to_string()],
+        None,
+    )
+    .await;
+
+    // Pre-mark the ring so the coordinator treats it as already resharing.
+    let marked = app_state.dkg_session_state.try_mark_ring_pss(ring_pk).await;
+    assert!(marked, "initial mark should succeed");
+
+    let sender_bytes = hex::decode(sender_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::new(app_state);
+    let msg = reshare_session_init(
+        ring_pk,
+        sender_hex,
+        vec![sender_hex.to_string()],
+        vec!["00112233".to_string()],
+        1,
+    );
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
+        "Expected Unauthorized for already-in-progress reshare, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// After a pure Dealer's Phase 4 completion:
+/// - `LocalStorageKeys::RingKey(ring_pk)` must be absent (share deleted).
+/// - `RingIndex` must not contain an entry for `ring_pk`.
+#[tokio::test]
+async fn test_dealer_phase4_deletes_share_and_ring_index_entry() {
+    let db_name = "test_dealer_phase4_deletes_share";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+
+    let ring_pk = "dealer_phase4_ring";
+    let session_id = 88_000_001u64;
+
+    // Pre-populate local storage: share bundle + ring index entry.
+    write_last_refresh(&app_state.local_storage, ring_pk, 0);
+    write_ring_to_bulletin(
+        &app_state.local_storage,
+        &app_state.bulletin,
+        ring_pk,
+        vec!["aabbccdd".to_string()],
+        None,
+    )
+    .await;
+
+    // Create a session where this node acts as a pure Dealer.
+    let coordinator = DkgCoordinator::new(app_state.clone());
+    coordinator
+        .create_session(session_id, 1, 1, 3, DkgRole::Dealer)
+        .await
+        .expect("create_session should succeed");
+
+    app_state
+        .dkg_session_state
+        .set_session_kind(
+            &session_id,
+            SessionKind::Reshare {
+                ring_pk_hex: ring_pk.to_string(),
+                next_peer_ids: vec!["00112233".to_string()],
+                new_threshold: 1,
+            },
+        )
+        .await;
+
+    // Trigger Phase 4 directly — the Dealer path cleans up without any crypto.
+    coordinator
+        .initiate_phase4_completion(session_id)
+        .await
+        .expect("phase4 should succeed for Dealer");
+
+    // Share bundle must be gone.
+    assert!(
+        crate::ring_state::RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk)
+            .is_err(),
+        "share bundle should have been deleted after Dealer Phase 4"
+    );
+
+    // RingIndex entry must be removed.
+    let ring_index: Vec<crate::ring_state::RingIndexEntry> = app_state
+        .local_storage
+        .get(local_storage::r#trait::LocalStorageKeys::RingIndex)
+        .ok()
+        .flatten()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    assert!(
+        !ring_index.iter().any(|e| e.ring_pk_str == ring_pk),
+        "RingIndex should not contain the dealer's ring after Phase 4"
+    );
+
+    cleanup_db(&db_path);
+}
+
+/// After a pure Dealer's Phase 4 completion, `is_ring_pss_active` must return
+/// `false` (the PSS flag is cleared regardless of success or failure path).
+#[tokio::test]
+async fn test_dealer_phase4_unmarks_ring_pss() {
+    let db_name = "test_dealer_phase4_unmarks_pss";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+
+    let ring_pk = "dealer_phase4_pss_ring";
+    let session_id = 88_000_002u64;
+
+    write_last_refresh(&app_state.local_storage, ring_pk, 0);
+    write_ring_to_bulletin(
+        &app_state.local_storage,
+        &app_state.bulletin,
+        ring_pk,
+        vec!["aabbccdd".to_string()],
+        None,
+    )
+    .await;
+
+    let coordinator = DkgCoordinator::new(app_state.clone());
+    coordinator
+        .create_session(session_id, 1, 1, 3, DkgRole::Dealer)
+        .await
+        .expect("create_session should succeed");
+
+    app_state
+        .dkg_session_state
+        .set_session_kind(
+            &session_id,
+            SessionKind::Reshare {
+                ring_pk_hex: ring_pk.to_string(),
+                next_peer_ids: vec!["00112233".to_string()],
+                new_threshold: 1,
+            },
+        )
+        .await;
+
+    // Mark the ring as having an active PSS ceremony.
+    let marked = app_state.dkg_session_state.try_mark_ring_pss(ring_pk).await;
+    assert!(marked, "PSS flag should be markable before Phase 4");
+
+    coordinator
+        .initiate_phase4_completion(session_id)
+        .await
+        .expect("phase4 should succeed for Dealer");
+
+    // PSS flag must be cleared.
+    assert!(
+        !app_state
+            .dkg_session_state
+            .is_ring_pss_active(ring_pk)
+            .await,
+        "PSS flag should be cleared after Dealer Phase 4"
+    );
+
+    cleanup_db(&db_path);
+}
+
+// =============================================================================
+// validate_reshare_session_init — bulletin-anchor checks (Group 5)
+//
+// These tests exercise the two new bulletin-anchor checks added to
+// `validate_reshare_session_init`:
+//   • proposed `next_peer_ids` must match `RingPayload::next_peer_ids` when set
+//   • proposed `new_threshold` must match `RingPayload::new_threshold` when set
+// =============================================================================
+
+/// Post a `RingPayload` with caller-supplied `next_peer_ids` / `new_threshold`
+/// and seed `RingIndex` so the coordinator can find the ring.
+async fn write_ring_with_announced_reshare(
+    app_state: &crate::app_state::AppState<crypto::DkgImpl>,
+    ring_pk: &str,
+    peer_ids: Vec<String>,
+    announced_next_peer_ids: Option<Vec<String>>,
+    announced_new_threshold: Option<u32>,
+) {
+    use crate::constants::BULLETIN_RING_NAMESPACE;
+    use crate::ring_state::RingIndexEntry;
+    use local_storage::r#trait::LocalStorageKeys;
+
+    let payload = RingPayload {
+        ring_pk: ring_pk.to_string(),
+        peer_ids,
+        next_peer_ids: announced_next_peer_ids,
+        new_threshold: announced_new_threshold,
+        threshold: 2,
+        pss_interval: None,
+    };
+    let bytes = serde_json::to_vec(&payload).unwrap();
+    app_state
+        .bulletin
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            bytes.clone(),
+            vec![],
+            None,
+        )
+        .await
+        .unwrap();
+    let post_id = app_state
+        .bulletin
+        .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
+        .unwrap();
+    let mut ring_index: Vec<RingIndexEntry> = app_state
+        .local_storage
+        .get(LocalStorageKeys::RingIndex)
+        .ok()
+        .flatten()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    ring_index.push(RingIndexEntry {
+        ring_pk_str: ring_pk.to_string(),
+        bulletin_post_id: post_id,
+    });
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&ring_index).unwrap(),
+        )
+        .unwrap();
+}
+
+/// Reshare `SessionInit` whose `next_peer_ids` differs from the bulletin-announced
+/// committee must be rejected with `Unauthorized`.
+#[tokio::test]
+async fn test_reshare_session_init_rejects_mismatched_next_peer_ids() {
+    let db_name = "test_reshare_rejects_mismatch_peers";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+
+    let ring_pk = "reshare_ring";
+    let sender_hex = "aabbccdd";
+
+    // Bulletin pre-announces "11223344" as the only new-committee member.
+    write_ring_with_announced_reshare(
+        &app_state,
+        ring_pk,
+        vec![sender_hex.to_string()],
+        Some(vec!["11223344".to_string()]),
+        None,
+    )
+    .await;
+
+    let sender_bytes = hex::decode(sender_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::new(app_state);
+
+    // Propose a *different* new committee — should be rejected.
+    let msg = reshare_session_init(
+        ring_pk,
+        sender_hex,
+        vec![sender_hex.to_string()],
+        vec!["deadbeef".to_string()], // does not match "11223344"
+        1,
+    );
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
+        "Expected Unauthorized for mismatched next_peer_ids, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// Reshare `SessionInit` whose `new_threshold` differs from the bulletin-announced
+/// value must be rejected with `Unauthorized`.
+#[tokio::test]
+async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
+    let db_name = "test_reshare_rejects_mismatch_threshold";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+
+    let ring_pk = "reshare_ring";
+    let sender_hex = "aabbccdd";
+
+    // Bulletin pre-announces new_threshold = 2.
+    write_ring_with_announced_reshare(
+        &app_state,
+        ring_pk,
+        vec![sender_hex.to_string()],
+        None, // no committee constraint
+        Some(2),
+    )
+    .await;
+
+    let sender_bytes = hex::decode(sender_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::new(app_state);
+
+    // Propose new_threshold = 1 — does not match announced 2.
+    let msg = reshare_session_init(
+        ring_pk,
+        sender_hex,
+        vec![sender_hex.to_string()],
+        vec!["00112233".to_string()],
+        1, // does not match announced 2
+    );
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
+        "Expected Unauthorized for mismatched new_threshold, got: {:?}",
         result
     );
     cleanup_db(&db_path);
