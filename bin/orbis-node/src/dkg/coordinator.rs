@@ -32,7 +32,7 @@ use crate::metrics;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use bulletin::r#trait::RingPayload;
-use crypto::r#trait::{DistributedShare, Dkg, DkgMode, DkgRole};
+use crypto::r#trait::{DistributedShare, Dkg, DkgRole};
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use crypto::{
@@ -1165,12 +1165,7 @@ where
                             node_id = state.node.node_id(),
                             "DKG Coordinator: Generating polynomial before Phase 2"
                         );
-                        state
-                            .node
-                            .generate_polynomial(DkgMode::Fresh)
-                            .map_err(|e| {
-                                DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
-                            })?;
+                        state.generate_polynomial()?;
                     }
 
                     // Generate shares for all nodes
