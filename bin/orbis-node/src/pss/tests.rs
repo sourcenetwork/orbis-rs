@@ -89,7 +89,7 @@ async fn test_scheduler_zero_interval_is_noop() {
 
     let state = Arc::new(app_state);
     // Should return immediately without spawning
-    super::spawn_reshare_scheduler(state.clone(), Duration::ZERO);
+    super::spawn_pss_scheduler(state.clone(), Duration::ZERO);
 
     // Give the event loop a chance to run any spawned tasks
     tokio::time::sleep(Duration::from_millis(50)).await;

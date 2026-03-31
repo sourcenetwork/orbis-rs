@@ -1828,7 +1828,6 @@ async fn test_refresh_rejected_already_in_progress() {
 /// `peer_ids` = old committee, `next_peer_ids` = new committee.
 fn reshare_session_init(
     ring_pk: &str,
-    sender_hex: &str,
     peer_ids: Vec<String>,
     next_peer_ids: Vec<String>,
     new_threshold: u32,
@@ -1888,7 +1887,6 @@ async fn test_reshare_session_init_rejects_unknown_ring() {
     // "unknown_ring_pk" is not present in RingIndex or the bulletin.
     let msg = reshare_session_init(
         "unknown_ring_pk",
-        "aabbccdd",
         vec!["aabbccdd".to_string()],
         vec!["00112233".to_string()],
         1,
@@ -1926,7 +1924,6 @@ async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
     let coordinator = DkgCoordinator::new(app_state);
     let msg = reshare_session_init(
         ring_pk,
-        "deadbeef",
         vec!["deadbeef".to_string()],
         vec!["00112233".to_string()],
         1,
@@ -1970,13 +1967,7 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
     let coordinator = DkgCoordinator::new(app_state);
-    let msg = reshare_session_init(
-        ring_pk,
-        sender_hex,
-        vec![sender_hex.to_string()],
-        vec![our_hex],
-        1,
-    );
+    let msg = reshare_session_init(ring_pk, vec![sender_hex.to_string()], vec![our_hex], 1);
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
         matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
@@ -2212,7 +2203,6 @@ async fn test_reshare_session_init_rejects_mismatched_next_peer_ids() {
     // Propose a *different* new committee — should be rejected.
     let msg = reshare_session_init(
         ring_pk,
-        sender_hex,
         vec![sender_hex.to_string()],
         vec!["deadbeef".to_string()], // does not match "11223344"
         1,
@@ -2254,7 +2244,6 @@ async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
     // Propose new_threshold = 1 — does not match announced 2.
     let msg = reshare_session_init(
         ring_pk,
-        sender_hex,
         vec![sender_hex.to_string()],
         vec!["00112233".to_string()],
         1, // does not match announced 2

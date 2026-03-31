@@ -134,7 +134,7 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     network::metrics::init();
 
     // Start PSS reshare scheduler (no-op if interval is zero)
-    pss::spawn_reshare_scheduler(node.app_state.clone(), node.reshare_interval);
+    pss::spawn_pss_scheduler(node.app_state.clone(), node.reshare_interval);
 
     tracing::info!("Server is ready to accept connections");
     tracing::info!(grpc_addr = %node.grpc_addr, "Starting gRPC server");

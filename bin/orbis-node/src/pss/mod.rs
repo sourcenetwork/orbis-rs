@@ -37,7 +37,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// whether a refresh is actually triggered on that tick.
 ///
 /// Setting `check_interval` to zero disables the scheduler entirely.
-pub fn spawn_reshare_scheduler<D>(app_state: Arc<AppState<D>>, check_interval: Duration)
+pub fn spawn_pss_scheduler<D>(app_state: Arc<AppState<D>>, check_interval: Duration)
 where
     D: Dkg<
             ShareValue = Fr,

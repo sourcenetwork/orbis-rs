@@ -1258,6 +1258,7 @@ where
         // For Reshare: route using reshare_new_peer_ids (sorted new committee, index = to_id - 1).
         // For Fresh/Refresh: use node_id_to_peer_id map, falling back to broadcast.
         let mut shares_sent = 0;
+        let mut shares_skipped = 0;
 
         for share in shares.iter() {
             // Skip sending share to ourselves.
@@ -1273,6 +1274,7 @@ where
                 share.to_id == node_id
             };
             if skip {
+                shares_skipped += 1;
                 continue;
             }
 
@@ -1408,7 +1410,11 @@ where
             }
         }
 
-        let expected_shares = shares.len().saturating_sub(1); // Exclude share to self
+        // expected = total shares minus the ones we skipped (our own self-share).
+        // Pure Dealers are not in the new committee so nothing is skipped — all
+        // new_total_nodes shares must be delivered.  DealerReceiver / Fresh / Refresh
+        // nodes skip exactly one self-share.
+        let expected_shares = shares.len() - shares_skipped;
         tracing::info!(
             sent = shares_sent,
             total = expected_shares,
