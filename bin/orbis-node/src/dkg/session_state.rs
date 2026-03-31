@@ -68,6 +68,9 @@ pub struct ReshareParams<ShareValue> {
     /// Sorted peer IDs of the new committee (index = node_id - 1), used for routing
     /// outgoing shares in Phase 2.
     pub new_peer_ids: Vec<String>,
+    /// This node's index in the new committee (1-based).  `None` for pure Dealers
+    /// that are not in the new committee.  Used to validate incoming share `to_id`.
+    pub new_node_id: Option<u32>,
 }
 
 /// Unified state for a DKG session combining crypto state and protocol tracking

@@ -311,6 +311,15 @@ where
                 // participating_ids = all old committee node IDs (full participation).
                 let participating_ids: Vec<u32> = (1..=peer_ids.len() as u32).collect();
 
+                let new_node_id = if in_new {
+                    sorted_new
+                        .iter()
+                        .position(|p| extract_node_part(p) == our_node_part)
+                        .map(|i| (i + 1) as u32)
+                } else {
+                    None
+                };
+
                 let params = ReshareParams {
                     ring_key: ring_pk_hex.clone(),
                     old_share,
@@ -318,6 +327,7 @@ where
                     new_threshold: *new_threshold as usize,
                     new_total_nodes: next_peer_ids.len(),
                     new_peer_ids: sorted_new,
+                    new_node_id,
                 };
 
                 (node_id, role, Some(params))
@@ -764,12 +774,19 @@ where
                     )));
                 }
 
-                // Validate this share is intended for us
-                // Get our node_id from the session (session-specific)
+                // Validate this share is intended for us.
+                // For reshare, incoming shares are addressed by new-committee index;
+                // for fresh/refresh, shares are addressed by the session node_id.
                 let our_node_id = self
                     .app_state
                     .dkg_session_state
-                    .with_state(&session_id, |state| state.node.node_id())
+                    .with_state(&session_id, |state| {
+                        state
+                            .reshare_params
+                            .as_ref()
+                            .and_then(|p| p.new_node_id)
+                            .unwrap_or_else(|| state.node.node_id())
+                    })
                     .await
                     .ok_or_else(|| session_not_found(session_id))?;
                 if to_node_id != our_node_id {
