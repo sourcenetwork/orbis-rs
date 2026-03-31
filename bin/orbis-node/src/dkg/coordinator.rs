@@ -387,19 +387,17 @@ where
                     Err(e) => return Err(e),
                 }
 
-                // Set kind (drives generate_polynomial mode and Phase 4 behaviour).
+                // Set kind and reshare params atomically so that a commitment arriving
+                // between the two writes never sees kind=Reshare with reshare_params=None.
                 self.app_state
                     .dkg_session_state
-                    .set_session_kind(&session_id, kind.clone())
+                    .with_state_mut(&session_id, |state| {
+                        state.kind = kind.clone();
+                        if let Some(params) = maybe_reshare_params {
+                            state.reshare_params = Some(params);
+                        }
+                    })
                     .await;
-
-                // Set reshare params for Dealer / DealerReceiver nodes.
-                if let Some(params) = maybe_reshare_params {
-                    self.app_state
-                        .dkg_session_state
-                        .set_reshare_params(&session_id, params)
-                        .await;
-                }
 
                 self.app_state
                     .dkg_session_state
