@@ -203,21 +203,11 @@ where
                         &self.app_state.bulletin,
                     )
                     .await?;
-                    if !self
-                        .app_state
-                        .dkg_session_state
-                        .try_mark_ring_pss(ring_pk_hex)
-                        .await
-                    {
-                        return Err(DkgError::Unauthorized(
-                            "Reshare already in progress for this ring".to_string(),
-                        ));
-                    }
                     tracing::info!(
                         session_id = session_id,
                         ring_pk = %ring_pk_hex,
                         sender_peer_hex = %sender_hex,
-                        "DKG Coordinator: Reshare SessionInit validated and ring marked resharing"
+                        "DKG Coordinator: Reshare SessionInit validated"
                     );
                 }
                 SessionKind::Fresh => {
@@ -275,6 +265,27 @@ where
                         ))
                     }
                 };
+
+                // Mark the ring as having an in-progress reshare.  Done here — after we
+                // know this node is in at least one committee — so that the flag is never
+                // set for nodes that are not participants (which would permanently block
+                // future reshares for that ring on this node).
+                if !self
+                    .app_state
+                    .dkg_session_state
+                    .try_mark_ring_pss(ring_pk_hex)
+                    .await
+                {
+                    return Err(DkgError::Unauthorized(
+                        "Reshare already in progress for this ring".to_string(),
+                    ));
+                }
+                tracing::info!(
+                    session_id = session_id,
+                    ring_pk = %ring_pk_hex,
+                    role = ?role,
+                    "DKG Coordinator: Reshare SessionInit validated and ring marked resharing"
+                );
 
                 // Session node_id: old committee index for Dealers; new committee index for Receivers
                 let node_id = if in_old {
@@ -1911,9 +1922,15 @@ where
                 .unwrap_or(0);
             // TODO: change to needing a threshold signature
             if new_node_id == 1 {
+                // Use the sorted peer list from session state (same list used to derive
+                // new_node_id above) so the bulletin payload has a canonical ordering.
+                // next_peer_ids from SessionKind may be unsorted depending on the initiator.
+                let sorted_new_peer_ids = reshare_new_peer_ids
+                    .clone()
+                    .unwrap_or_else(|| next_peer_ids.clone());
                 let ring_payload = RingPayload {
                     ring_pk: ring_pk_hex.clone(),
-                    peer_ids: next_peer_ids.clone(),
+                    peer_ids: sorted_new_peer_ids,
                     next_peer_ids: None,
                     new_threshold: None,
                     threshold: *new_threshold,

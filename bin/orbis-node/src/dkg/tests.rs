@@ -1950,6 +1950,10 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
 
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
+    // Include this node's own peer ID in the new committee so it is a Receiver
+    // and reaches the try_mark_ring_pss check (the (false,false) guard fires before
+    // the mark check, so the test node must be in at least one committee).
+    let our_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     write_ring_to_bulletin(
         &app_state.local_storage,
         &app_state.bulletin,
@@ -1970,7 +1974,7 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
         ring_pk,
         sender_hex,
         vec![sender_hex.to_string()],
-        vec!["00112233".to_string()],
+        vec![our_hex],
         1,
     );
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
