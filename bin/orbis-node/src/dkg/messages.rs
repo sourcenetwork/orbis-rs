@@ -31,6 +31,10 @@ pub enum SessionKind {
         next_peer_ids: Vec<String>,
         /// Threshold for the new committee.
         new_threshold: u32,
+        /// Bulletin post ID of the current ring entry.  Sent by the Dealer (who has a
+        /// local RingIndexEntry) so that pure Receiver nodes — which have never been in
+        /// this ring — can look up and verify the bulletin payload without a local index.
+        bulletin_post_id: String,
     },
 }
 

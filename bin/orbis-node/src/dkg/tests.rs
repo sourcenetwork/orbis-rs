@@ -1848,6 +1848,7 @@ fn reshare_session_init(
             ring_pk_hex: ring_pk.to_string(),
             next_peer_ids,
             new_threshold,
+            bulletin_post_id: String::new(),
         },
         pss_interval: None,
     }
@@ -2019,6 +2020,7 @@ async fn test_dealer_phase4_deletes_share_and_ring_index_entry() {
                 ring_pk_hex: ring_pk.to_string(),
                 next_peer_ids: vec!["00112233".to_string()],
                 new_threshold: 1,
+                bulletin_post_id: String::new(),
             },
         )
         .await;
@@ -2087,6 +2089,7 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
                 ring_pk_hex: ring_pk.to_string(),
                 next_peer_ids: vec!["00112233".to_string()],
                 new_threshold: 1,
+                bulletin_post_id: String::new(),
             },
         )
         .await;

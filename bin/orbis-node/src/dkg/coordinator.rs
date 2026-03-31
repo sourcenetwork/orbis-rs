@@ -185,6 +185,7 @@ where
                     ring_pk_hex,
                     next_peer_ids: reshare_next_peer_ids,
                     new_threshold: reshare_new_threshold,
+                    bulletin_post_id: reshare_bulletin_post_id,
                 } => {
                     tracing::info!(
                         session_id = session_id,
@@ -197,6 +198,7 @@ where
                         &sender_hex,
                         reshare_next_peer_ids,
                         *reshare_new_threshold,
+                        reshare_bulletin_post_id,
                         &self.app_state.local_storage,
                         &self.app_state.bulletin,
                     )
@@ -248,6 +250,7 @@ where
                 ring_pk_hex,
                 next_peer_ids,
                 new_threshold,
+                bulletin_post_id,
             } = kind
             {
                 let mut sorted_old = peer_ids.clone();
@@ -328,6 +331,7 @@ where
                     new_total_nodes: next_peer_ids.len(),
                     new_peer_ids: sorted_new,
                     new_node_id,
+                    bulletin_post_id: bulletin_post_id.clone(),
                 };
 
                 (node_id, role, Some(params))
@@ -1507,7 +1511,7 @@ where
         );
 
         // Read session metadata before acquiring the mutable state lock.
-        let (kind, pss_interval, dkg_role, reshare_new_peer_ids) = self
+        let (kind, pss_interval, dkg_role, reshare_new_peer_ids, reshare_bulletin_post_id) = self
             .app_state
             .dkg_session_state
             .with_state(&session_id, |state| {
@@ -1519,6 +1523,10 @@ where
                         .reshare_params
                         .as_ref()
                         .map(|p| p.new_peer_ids.clone()),
+                    state
+                        .reshare_params
+                        .as_ref()
+                        .map(|p| p.bulletin_post_id.clone()),
                 )
             })
             .await
@@ -1692,6 +1700,43 @@ where
             "DKG Coordinator: Stored RingShareBundle (share + polynomial) atomically"
         );
 
+        // For Reshare: write a RingIndexEntry so the PSS scheduler can discover this ring.
+        // Receiver and DealerReceiver nodes use the bulletin_post_id carried in the SessionInit
+        // (they had no prior index entry).  Dealers have already left and skip this entirely.
+        if matches!(kind, SessionKind::Reshare { .. }) && dkg_role != DkgRole::Dealer {
+            if let Some(post_id) = reshare_bulletin_post_id {
+                let _guard = self.app_state.ring_index_lock.lock().await;
+                let mut ring_index: Vec<RingIndexEntry> = self
+                    .app_state
+                    .local_storage
+                    .get(LocalStorageKeys::RingIndex)
+                    .ok()
+                    .flatten()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or_default();
+                if !ring_index.iter().any(|e| e.ring_pk_str == storage_key) {
+                    ring_index.push(RingIndexEntry {
+                        ring_pk_str: storage_key.clone(),
+                        bulletin_post_id: post_id,
+                    });
+                    let index_bytes = serde_json::to_vec(&ring_index).map_err(|e| {
+                        DkgError::Serialization(format!("Failed to serialize RingIndex: {}", e))
+                    })?;
+                    self.app_state
+                        .local_storage
+                        .set(LocalStorageKeys::RingIndex, index_bytes)
+                        .map_err(|e| {
+                            DkgError::Storage(format!("Failed to store RingIndex: {}", e))
+                        })?;
+                    tracing::info!(
+                        session_id = session_id,
+                        ring_pk = %storage_key,
+                        "Reshare: wrote RingIndexEntry for new-committee node"
+                    );
+                }
+            }
+        }
+
         // For fresh DKG: cache the RingPayload locally and append a RingIndexEntry so the
         // PSS scheduler can discover this ring.
         //
@@ -1849,6 +1894,7 @@ where
             ring_pk_hex,
             next_peer_ids,
             new_threshold,
+            ..
         } = &kind
         {
             // Determine our position in the new committee (sorted) to find new_node_id.

@@ -44,23 +44,28 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
     sender_hex: &str,
     proposed_next_peer_ids: &[String],
     proposed_new_threshold: u32,
+    bulletin_post_id: &str,
     local_storage: &S,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<()> {
+    // Look up the bulletin post ID from the local index.  Pure Receiver nodes have no
+    // local entry for this ring (they were never members), so fall back to the post ID
+    // carried in the SessionInit message — the bulletin is the source of truth either way.
     let ring_index: Vec<RingIndexEntry> = local_storage
         .get(LocalStorageKeys::RingIndex)
         .map_err(|e| DkgError::Storage(format!("Failed to read RingIndex: {}", e)))?
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
-    let entry = ring_index
+    let resolved_post_id = ring_index
         .iter()
         .find(|e| e.ring_pk_str == ring_pk_hex)
-        .ok_or_else(|| DkgError::Unauthorized(format!("Unknown ring: {}", ring_pk_hex)))?;
+        .map(|e| e.bulletin_post_id.as_str())
+        .unwrap_or(bulletin_post_id);
 
     let bulletin_post = bulletin
         .read(
             BULLETIN_RING_NAMESPACE.to_string(),
-            entry.bulletin_post_id.clone(),
+            resolved_post_id.to_string(),
         )
         .await
         .map_err(|e| {

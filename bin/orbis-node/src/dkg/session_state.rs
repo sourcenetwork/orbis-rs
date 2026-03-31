@@ -71,6 +71,10 @@ pub struct ReshareParams<ShareValue> {
     /// This node's index in the new committee (1-based).  `None` for pure Dealers
     /// that are not in the new committee.  Used to validate incoming share `to_id`.
     pub new_node_id: Option<u32>,
+    /// Bulletin post ID of the ring's current entry.  Carried in the SessionInit so
+    /// pure Receiver nodes (which have no local RingIndexEntry) can write their own
+    /// entry after Phase 4 completes without recomputing the post ID.
+    pub bulletin_post_id: String,
 }
 
 /// Unified state for a DKG session combining crypto state and protocol tracking
