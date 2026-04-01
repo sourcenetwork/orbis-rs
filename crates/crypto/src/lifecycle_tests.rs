@@ -167,6 +167,7 @@ where
             participating_ids: participating_ids.clone(),
             new_threshold: t,
             new_total_nodes: n,
+            new_node_id: None,
         })?;
     }
 

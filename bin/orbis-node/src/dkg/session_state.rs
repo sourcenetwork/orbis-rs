@@ -179,6 +179,7 @@ impl<D: Dkg> DkgSessionState<D> {
                     participating_ids: p.participating_ids.clone(),
                     new_threshold: p.new_threshold,
                     new_total_nodes: p.new_total_nodes,
+                    new_node_id: p.new_node_id,
                 }
             }
         };

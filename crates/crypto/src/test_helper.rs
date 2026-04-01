@@ -514,6 +514,7 @@ pub mod generic_tests {
                 participating_ids: participating_ids.clone(),
                 new_threshold: t,
                 new_total_nodes: n,
+                new_node_id: None,
             })?;
         }
 
@@ -642,6 +643,7 @@ pub mod generic_tests {
                 participating_ids: participating_ids.clone(),
                 new_threshold: t_new,
                 new_total_nodes: n_new,
+                new_node_id: None,
             })?;
         }
 
