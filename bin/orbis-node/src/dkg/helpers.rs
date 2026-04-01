@@ -32,12 +32,16 @@ pub fn serialize_commitment_coefficients(coefficients: &[G1Affine]) -> Result<Ve
 ///
 /// Checks (in order):
 /// 0. Fast structural checks: `next_peer_ids` non-empty, `new_threshold` in `[1, n]`.
-/// 1. The ring is known (an entry with `ring_pk_str == ring_pk_hex` exists in `RingIndex`).
-/// 2. The sender's peer ID is a current member of that ring's OLD committee.
-/// 3. `ring_payload.next_peer_ids` must be set and must match the proposed list
+/// 1. Resolve the bulletin post: use `RingIndex` when this node has an entry for
+///    `ring_pk_hex`, otherwise use `bulletin_post_id` from the `SessionInit` (needed for
+///    pure Receiver nodes that were never on the old committee).
+/// 2. The deserialized `RingPayload::ring_pk` must equal `ring_pk_hex` (binds the read to
+///    the intended ring when the post ID came from the wire).
+/// 3. The sender's peer ID is a current member of that ring's OLD committee.
+/// 4. `ring_payload.next_peer_ids` must be set and must match the proposed list
 ///    (order-independent).  A missing bulletin field is also rejected — the ring must have
 ///    been prepared for reshare on-chain before any node may initiate one.
-/// 4. `ring_payload.new_threshold` must be set and must match the proposed value.
+/// 5. `ring_payload.new_threshold` must be set and must match the proposed value.
 ///    Same rationale: absent means not yet authorised.
 ///
 /// No time-based check is performed — reshare is triggered by membership change, not interval.
@@ -98,11 +102,17 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         .map_err(|e| {
             DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
         })?;
-    let ring_payload: bulletin::r#trait::RingPayload =
-        serde_json::from_slice(&bulletin_post.payload)
-            .map_err(|e| DkgError::Deserialization(format!("Bad ring payload: {}", e)))?;
+    let ring_payload: RingPayload = serde_json::from_slice(&bulletin_post.payload)
+        .map_err(|e| DkgError::Deserialization(format!("Bad ring payload: {}", e)))?;
 
-    // 2. Sender must be in the old committee.
+    if ring_payload.ring_pk != ring_pk_hex {
+        return Err(DkgError::Unauthorized(format!(
+            "Bulletin ring_pk does not match session ring for {}",
+            ring_pk_hex
+        )));
+    }
+
+    // 3. Sender must be in the old committee.
     let sender_in_ring = ring_payload
         .peer_ids
         .iter()
@@ -114,7 +124,7 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         )));
     }
 
-    // 3. The bulletin must pre-announce the new committee, and the proposed list must match.
+    // 4. The bulletin must pre-announce the new committee, and the proposed list must match.
     //    A missing `next_peer_ids` means the ring has not been prepared for reshare on-chain.
     let announced = ring_payload.next_peer_ids.as_ref().ok_or_else(|| {
         DkgError::Unauthorized(format!(
@@ -134,7 +144,7 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         )));
     }
 
-    // 4. The bulletin must pre-announce the new threshold, and the proposed value must match.
+    // 5. The bulletin must pre-announce the new threshold, and the proposed value must match.
     //    A missing `new_threshold` means the ring has not been prepared for reshare on-chain.
     let announced_threshold = ring_payload.new_threshold.ok_or_else(|| {
         DkgError::Unauthorized(format!(

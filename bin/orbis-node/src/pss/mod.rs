@@ -7,8 +7,8 @@
 //!
 //! ## Protocol
 //! On each tick the node with the lexicographically smallest peer ID in the ring acts
-//! as the initiator. It sends a `SessionInit { is_refresh: true }` to all ring members
-//! and runs the standard DKG commitment/share protocol using `DkgMode::Refresh`
+//! as the initiator. It sends a `SessionInit { kind: SessionKind::Refresh { .. } }` to all
+//! ring members and runs the standard DKG commitment/share protocol using `DkgMode::Refresh`
 //! (zero constant term — same secret, new shares).
 //!
 //! Rings with `pss_interval = None` are skipped (automatic refresh disabled).

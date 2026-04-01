@@ -322,7 +322,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     tracing::debug!(
                         session_id = session_id,
                         ring_key = %ring_key,
-                        "SessionStateManager: Cleared in-progress refresh flag on cleanup"
+                        "SessionStateManager: Cleared in-progress PSS flag on cleanup"
                     );
                 }
                 tracing::debug!(
@@ -399,7 +399,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     pss.remove(key);
                     tracing::debug!(
                         ring_key = %key,
-                        "SessionStateManager: Cleared in-progress refresh flag on expiration"
+                        "SessionStateManager: Cleared in-progress PSS flag on expiration"
                     );
                 }
             }
@@ -1115,10 +1115,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cleanup_guard_clears_ring_refreshing_flag() {
+    async fn test_cleanup_guard_clears_ring_pss_flag() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
 
-        // Create a refresh session and mark the ring as in-progress.
+        // Create a refresh session and mark the ring as in-progress (PSS).
         mgr.create_session(50, make_node(1), 3).await;
         mgr.set_session_kind(
             &50,
@@ -1146,15 +1146,15 @@ mod tests {
 
         assert!(
             mgr.try_mark_ring_pss("ring_cleanup").await,
-            "ring_refreshing flag should be cleared after cleanup guard fires"
+            "rings_pss flag should be cleared after cleanup guard fires"
         );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_expiration_clears_ring_refreshing_flag() {
+    async fn test_expiration_clears_ring_pss_flag() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
 
-        // Create a refresh session and mark the ring as in-progress.
+        // Create a refresh session and mark the ring as in-progress (PSS).
         mgr.create_session(60, make_node(1), 3).await;
         mgr.set_session_kind(
             &60,
@@ -1183,7 +1183,7 @@ mod tests {
         );
         assert!(
             mgr.try_mark_ring_pss("ring_expire").await,
-            "ring_refreshing flag should be cleared after session expiration"
+            "rings_pss flag should be cleared after session expiration"
         );
     }
 }

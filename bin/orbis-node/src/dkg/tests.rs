@@ -19,7 +19,6 @@ use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole, PubPoly as PubPolyTrait};
 use crypto::CryptoSerialize;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::PeerId;
-use network::Router;
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use std::sync::Arc;
 use std::time::Instant;
@@ -1899,6 +1898,81 @@ async fn test_reshare_session_init_rejects_unknown_ring() {
     assert!(
         matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
         "Expected Unauthorized for unknown ring, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// Bulletin payload `ring_pk` must match `SessionKind::Reshare::ring_pk_hex` so a wrong
+/// `bulletin_post_id` cannot be paired with a different ring's session.
+#[tokio::test]
+async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
+    let db_name = "test_reshare_rejects_bulletin_ring_pk_mismatch";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+
+    use crate::constants::BULLETIN_RING_NAMESPACE;
+    use local_storage::r#trait::LocalStorageKeys;
+
+    let sender_hex = "aabbccdd";
+    let session_ring_pk = "session_ring_hex";
+    let payload = RingPayload {
+        ring_pk: "payload_ring_pk_other".to_string(),
+        peer_ids: vec![sender_hex.to_string()],
+        next_peer_ids: Some(vec!["00112233".to_string()]),
+        new_threshold: Some(1),
+        threshold: 2,
+        pss_interval: None,
+    };
+    let bytes = serde_json::to_vec(&payload).unwrap();
+    app_state
+        .bulletin
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            bytes.clone(),
+            vec![],
+            None,
+        )
+        .await
+        .unwrap();
+    let post_id = app_state
+        .bulletin
+        .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
+        .unwrap();
+
+    let mut ring_index: Vec<RingIndexEntry> = app_state
+        .local_storage
+        .get(LocalStorageKeys::RingIndex)
+        .ok()
+        .flatten()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    ring_index.push(RingIndexEntry {
+        ring_pk_str: session_ring_pk.to_string(),
+        bulletin_post_id: post_id,
+    });
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&ring_index).unwrap(),
+        )
+        .unwrap();
+
+    let sender_bytes = hex::decode(sender_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::new(app_state);
+
+    let msg = reshare_session_init(
+        session_ring_pk,
+        vec![sender_hex.to_string()],
+        vec!["00112233".to_string()],
+        1,
+    );
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
+        "Expected Unauthorized when bulletin ring_pk != session ring, got: {:?}",
         result
     );
     cleanup_db(&db_path);
