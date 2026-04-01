@@ -1914,6 +1914,7 @@ where
             // Determine our position in the new committee (sorted) to find new_node_id.
             let our_peer_id_hex = hex::encode(self.app_state.network.local_peer_id().as_bytes());
             let our_node_part = extract_node_part(&our_peer_id_hex);
+            // If 0 will skip trying to post (not in new group)
             let new_node_id = reshare_new_peer_ids
                 .as_ref()
                 .and_then(|peers| {
@@ -1945,6 +1946,7 @@ where
                         e
                     ))
                 })?;
+                // TODO: placeholder I guess need to update bulletin to allow updating on reshare (peers = new_peers, old_peers = None, same concept with threshold)
                 self.app_state
                     .bulletin
                     .post(
