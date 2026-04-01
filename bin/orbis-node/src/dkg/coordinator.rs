@@ -22,8 +22,9 @@ use crate::constants::{
 };
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
-    persist_ring_bundle, serialize_commitment_coefficients, session_not_found, validate_dkg_claims,
-    validate_refresh_session_init, validate_reshare_session_init,
+    in_committee, node_index_in, persist_ring_bundle, serialize_commitment_coefficients,
+    session_not_found, validate_dkg_claims, validate_refresh_session_init,
+    validate_reshare_session_init,
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::dkg::session_state::{DkgMessageType, DkgPhase, ReshareParams};
@@ -248,13 +249,15 @@ where
                 let mut sorted_new = next_peer_ids.clone();
                 sorted_new.sort();
 
-                let in_old = sorted_old
-                    .iter()
-                    .any(|p| extract_node_part(p) == our_node_part);
-                let in_new = sorted_new
-                    .iter()
-                    .any(|p| extract_node_part(p) == our_node_part);
+                let in_old = in_committee(&sorted_old, &our_node_part);
+                let in_new = in_committee(&sorted_new, &our_node_part);
 
+                // Role determines both what crypto this node performs and which node_id
+                // namespace it uses.  Dealers use an OLD-committee index; Receivers use a
+                // NEW-committee index; DealerReceivers use old for Phase 1/2 and new for
+                // share routing/storage.  This dual-index design keeps the crypto layer
+                // simple (one session_id, one node_id) at the cost of careful bookkeeping
+                // in coordinator and ReshareParams.
                 let role = match (in_old, in_new) {
                     (true, true) => DkgRole::DealerReceiver,
                     (true, false) => DkgRole::Dealer,
@@ -287,19 +290,14 @@ where
                     "DKG Coordinator: Reshare SessionInit validated and ring marked resharing"
                 );
 
-                // Session node_id: old committee index for Dealers; new committee index for Receivers
+                // Dealers use their old-committee index for polynomial generation and share
+                // routing to the new committee.  Pure Receivers have no old-committee index,
+                // so they use their new-committee index as the session node_id (used only
+                // for dedup and connection tracking — not for crypto output routing).
                 let node_id = if in_old {
-                    sorted_old
-                        .iter()
-                        .position(|p| extract_node_part(p) == our_node_part)
-                        .map(|i| (i + 1) as u32)
-                        .unwrap()
+                    node_index_in(&sorted_old, &our_node_part)
                 } else {
-                    sorted_new
-                        .iter()
-                        .position(|p| extract_node_part(p) == our_node_part)
-                        .map(|i| (i + 1) as u32)
-                        .unwrap()
+                    node_index_in(&sorted_new, &our_node_part)
                 };
 
                 // Pre-load old share for Dealer/DealerReceiver nodes.
@@ -325,14 +323,7 @@ where
                 // participating_ids = all old committee node IDs (full participation).
                 let participating_ids: Vec<u32> = (1..=peer_ids.len() as u32).collect();
 
-                let new_node_id = if in_new {
-                    sorted_new
-                        .iter()
-                        .position(|p| extract_node_part(p) == our_node_part)
-                        .map(|i| (i + 1) as u32)
-                } else {
-                    None
-                };
+                let new_node_id = in_new.then(|| node_index_in(&sorted_new, &our_node_part));
 
                 let params = ReshareParams {
                     ring_key: ring_pk_hex.clone(),
@@ -404,10 +395,20 @@ where
 
                 // Set kind and reshare params atomically so that a commitment arriving
                 // between the two writes never sees kind=Reshare with reshare_params=None.
+                // Also sort next_peer_ids in the stored kind so downstream code
+                // (bulletin post, union building) always uses a canonical ordered list.
                 self.app_state
                     .dkg_session_state
                     .with_state_mut(&session_id, |state| {
-                        state.kind = kind.clone();
+                        let mut stored_kind = kind.clone();
+                        if let SessionKind::Reshare {
+                            ref mut next_peer_ids,
+                            ..
+                        } = stored_kind
+                        {
+                            next_peer_ids.sort();
+                        }
+                        state.kind = stored_kind;
                         if let Some(params) = maybe_reshare_params {
                             state.reshare_params = Some(params);
                         }
@@ -1558,6 +1559,7 @@ where
                 .dkg_session_state
                 .update_phase(&session_id, DkgPhase::Phase4Complete)
                 .await;
+            let mut ring_index_result: Result<()> = Ok(());
             if let Some(key) = &ring_key {
                 self.app_state.dkg_session_state.unmark_ring_pss(key).await;
 
@@ -1583,45 +1585,40 @@ where
 
                 // Remove the ring from the local index so the PSS scheduler skips it.
                 let storage = &self.app_state.local_storage;
-                match storage.get(LocalStorageKeys::RingIndex) {
-                    Ok(Some(raw)) => match serde_json::from_slice::<Vec<RingIndexEntry>>(&raw) {
-                        Ok(mut index) => {
-                            index.retain(|e| e.ring_pk_str != *key);
-                            match serde_json::to_vec(&index) {
-                                Ok(bytes) => {
-                                    if let Err(e) = storage.set(LocalStorageKeys::RingIndex, bytes)
-                                    {
-                                        tracing::warn!(
-                                            session_id = session_id,
-                                            ring_key = %key,
-                                            error = %e,
-                                            "Reshare Dealer: failed to write updated RingIndex"
-                                        );
-                                    }
-                                }
-                                Err(e) => tracing::warn!(
-                                    session_id = session_id,
-                                    ring_key = %key,
-                                    error = %e,
-                                    "Reshare Dealer: failed to serialize RingIndex"
-                                ),
-                            }
+                ring_index_result = (|| {
+                    let raw = match storage.get(LocalStorageKeys::RingIndex) {
+                        Ok(Some(raw)) => raw,
+                        Ok(None) => return Ok(()),
+                        Err(e) => {
+                            return Err(DkgError::Storage(format!(
+                                "Reshare Dealer: failed to read RingIndex: {}",
+                                e
+                            )))
                         }
-                        Err(e) => tracing::warn!(
-                            session_id = session_id,
-                            ring_key = %key,
-                            error = %e,
-                            "Reshare Dealer: failed to deserialize RingIndex"
-                        ),
-                    },
-                    Ok(None) => {}
-                    Err(e) => tracing::warn!(
-                        session_id = session_id,
-                        ring_key = %key,
-                        error = %e,
-                        "Reshare Dealer: failed to read RingIndex"
-                    ),
-                }
+                    };
+                    let mut index: Vec<RingIndexEntry> =
+                        serde_json::from_slice(&raw).map_err(|e| {
+                            DkgError::Storage(format!(
+                                "Reshare Dealer: failed to deserialize RingIndex: {}",
+                                e
+                            ))
+                        })?;
+                    index.retain(|e| e.ring_pk_str != *key);
+                    let bytes = serde_json::to_vec(&index).map_err(|e| {
+                        DkgError::Serialization(format!(
+                            "Reshare Dealer: failed to serialize RingIndex: {}",
+                            e
+                        ))
+                    })?;
+                    storage
+                        .set(LocalStorageKeys::RingIndex, bytes)
+                        .map_err(|e| {
+                            DkgError::Storage(format!(
+                                "Reshare Dealer: failed to write updated RingIndex: {}",
+                                e
+                            ))
+                        })
+                })();
             }
             self.remove_session(session_id).await;
             metrics::record_dkg_session_completed();
@@ -1629,7 +1626,7 @@ where
                 session_id = session_id,
                 "Reshare Dealer: Phase 4 complete (share distribution done, secret deleted)"
             );
-            return Ok(());
+            return ring_index_result;
         }
 
         // Compute final secret share, aggregate public key, and gather data for bulletin

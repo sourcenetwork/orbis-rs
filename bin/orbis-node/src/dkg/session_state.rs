@@ -161,12 +161,15 @@ impl<D: Dkg> DkgSessionState<D> {
             SessionKind::Fresh => DkgMode::Fresh,
             SessionKind::Refresh { .. } => DkgMode::Refresh,
             SessionKind::Reshare { .. } => {
-                let p = self.reshare_params.as_ref().ok_or_else(|| {
+                let p = self.reshare_params.as_mut().ok_or_else(|| {
                     DkgError::Generic(
                         "Reshare session is missing reshare_params — this is a bug".to_string(),
                     )
                 })?;
-                let old_share = p.old_share.clone().ok_or_else(|| {
+                // Move old_share out of the Option (leaving None) so it is dropped
+                // as soon as generate_polynomial returns, rather than sitting in
+                // session state for the remainder of the ceremony.
+                let old_share = p.old_share.take().ok_or_else(|| {
                     DkgError::Generic(
                         "Reshare: Receiver nodes cannot generate a polynomial".to_string(),
                     )

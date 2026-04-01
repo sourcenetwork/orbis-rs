@@ -31,14 +31,26 @@ pub fn serialize_commitment_coefficients(coefficients: &[G1Affine]) -> Result<Ve
 /// Validates an incoming reshare `SessionInit` message.
 ///
 /// Checks (in order):
+/// 0. Fast structural checks: `next_peer_ids` non-empty, `new_threshold` in `[1, n]`.
 /// 1. The ring is known (an entry with `ring_pk_str == ring_pk_hex` exists in `RingIndex`).
 /// 2. The sender's peer ID is a current member of that ring's OLD committee.
-/// 3. If `ring_payload.next_peer_ids` is set, the proposed `next_peer_ids` must match
-///    (order-independent).  Prevents a rogue old-committee member from resharing to an
-///    arbitrary new committee.
-/// 4. If `ring_payload.new_threshold` is set, the proposed `new_threshold` must match.
+/// 3. `ring_payload.next_peer_ids` must be set and must match the proposed list
+///    (order-independent).  A missing bulletin field is also rejected — the ring must have
+///    been prepared for reshare on-chain before any node may initiate one.
+/// 4. `ring_payload.new_threshold` must be set and must match the proposed value.
+///    Same rationale: absent means not yet authorised.
 ///
 /// No time-based check is performed — reshare is triggered by membership change, not interval.
+///
+/// ## Bulletin trust model
+///
+/// This function treats the bulletin as the authoritative source of truth for reshare
+/// parameters.  Both `next_peer_ids` and `new_threshold` **must** be pre-announced on-chain
+/// (e.g. via a governance transaction on SourceHub) before any node will accept a reshare
+/// `SessionInit`.  An old-committee member that sends a `SessionInit` without a matching
+/// bulletin entry — or with parameters that differ from the bulletin — is rejected.  This
+/// ensures that reshares cannot be unilaterally redirected to an arbitrary new committee by
+/// a single old-committee member.
 pub async fn validate_reshare_session_init<S: LocalStorage>(
     ring_pk_hex: &str,
     sender_hex: &str,
@@ -48,6 +60,21 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
     local_storage: &S,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<()> {
+    // 0. Fast-fail on structurally invalid parameters before hitting the bulletin.
+    if proposed_next_peer_ids.is_empty() {
+        return Err(DkgError::InvalidInput(
+            "Reshare next_peer_ids cannot be empty".to_string(),
+        ));
+    }
+    if proposed_new_threshold < 1 || proposed_new_threshold as usize > proposed_next_peer_ids.len()
+    {
+        return Err(DkgError::InvalidInput(format!(
+            "Reshare new_threshold {} is invalid for a committee of {} nodes (must be 1..=n)",
+            proposed_new_threshold,
+            proposed_next_peer_ids.len()
+        )));
+    }
+
     // Look up the bulletin post ID from the local index.  Pure Receiver nodes have no
     // local entry for this ring (they were never members), so fall back to the post ID
     // carried in the SessionInit message — the bulletin is the source of truth either way.
@@ -87,29 +114,39 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         )));
     }
 
-    // 3. If the bulletin pre-announces the new committee, the proposed list must match.
-    if let Some(ref announced) = ring_payload.next_peer_ids {
-        let mut sorted_announced: Vec<&str> = announced.iter().map(|s| s.as_str()).collect();
-        sorted_announced.sort();
-        let mut sorted_proposed: Vec<&str> =
-            proposed_next_peer_ids.iter().map(|s| s.as_str()).collect();
-        sorted_proposed.sort();
-        if sorted_announced != sorted_proposed {
-            return Err(DkgError::Unauthorized(format!(
-                "Reshare next_peer_ids do not match bulletin-announced committee for ring {}",
-                ring_pk_hex
-            )));
-        }
+    // 3. The bulletin must pre-announce the new committee, and the proposed list must match.
+    //    A missing `next_peer_ids` means the ring has not been prepared for reshare on-chain.
+    let announced = ring_payload.next_peer_ids.as_ref().ok_or_else(|| {
+        DkgError::Unauthorized(format!(
+            "Ring {} has no bulletin-announced next_peer_ids; reshare not authorised",
+            ring_pk_hex
+        ))
+    })?;
+    let mut sorted_announced: Vec<&str> = announced.iter().map(|s| s.as_str()).collect();
+    sorted_announced.sort();
+    let mut sorted_proposed: Vec<&str> =
+        proposed_next_peer_ids.iter().map(|s| s.as_str()).collect();
+    sorted_proposed.sort();
+    if sorted_announced != sorted_proposed {
+        return Err(DkgError::Unauthorized(format!(
+            "Reshare next_peer_ids do not match bulletin-announced committee for ring {}",
+            ring_pk_hex
+        )));
     }
 
-    // 4. If the bulletin pre-announces the new threshold, the proposed value must match.
-    if let Some(announced_threshold) = ring_payload.new_threshold {
-        if proposed_new_threshold != announced_threshold {
-            return Err(DkgError::Unauthorized(format!(
-                "Reshare new_threshold {} does not match bulletin-announced threshold {} for ring {}",
-                proposed_new_threshold, announced_threshold, ring_pk_hex
-            )));
-        }
+    // 4. The bulletin must pre-announce the new threshold, and the proposed value must match.
+    //    A missing `new_threshold` means the ring has not been prepared for reshare on-chain.
+    let announced_threshold = ring_payload.new_threshold.ok_or_else(|| {
+        DkgError::Unauthorized(format!(
+            "Ring {} has no bulletin-announced new_threshold; reshare not authorised",
+            ring_pk_hex
+        ))
+    })?;
+    if proposed_new_threshold != announced_threshold {
+        return Err(DkgError::Unauthorized(format!(
+            "Reshare new_threshold {} does not match bulletin-announced threshold {} for ring {}",
+            proposed_new_threshold, announced_threshold, ring_pk_hex
+        )));
     }
 
     Ok(())
@@ -354,6 +391,30 @@ pub fn persist_ring_bundle<S: LocalStorage>(
         }
     }
     Ok(())
+}
+
+/// Returns `true` if `our_node_part` appears as the node portion of any peer ID in
+/// `committee` (sorted or unsorted — membership check is order-independent).
+///
+/// Used during reshare `SessionInit` handling to decide whether this node is in the
+/// old committee, the new committee, or both.
+pub fn in_committee(committee: &[String], our_node_part: &str) -> bool {
+    committee
+        .iter()
+        .any(|p| extract_node_part(p) == our_node_part)
+}
+
+/// Returns the 1-based node index of `our_node_part` in `sorted_committee`.
+///
+/// `sorted_committee` must already be sorted so that all nodes derive the same
+/// index for the same peer.  Panics if not found — callers must confirm membership
+/// with `in_committee` before calling this.
+pub fn node_index_in(sorted_committee: &[String], our_node_part: &str) -> u32 {
+    sorted_committee
+        .iter()
+        .position(|p| extract_node_part(p) == our_node_part)
+        .map(|i| (i + 1) as u32)
+        .expect("node not found in committee — check in_committee() first")
 }
 
 #[cfg(test)]

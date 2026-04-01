@@ -1837,6 +1837,7 @@ fn reshare_session_init(
         node_id_assignments.insert(p.clone(), (i + 1) as u32);
     }
     DkgMessage::SessionInit {
+        // Arbitrary non-colliding session ID for reshare validation tests (Group 4).
         session_id: 99_999_100,
         threshold: 1,
         total_participants: peer_ids.len() as u32,
@@ -1910,12 +1911,14 @@ async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
 
     let ring_pk = "reshare_ring";
     // Ring contains "aabbccdd"; sender will be "deadbeef" (not a member).
-    write_ring_to_bulletin(
-        &app_state.local_storage,
-        &app_state.bulletin,
+    // Bulletin must pre-announce next_peer_ids and new_threshold so checks 3 & 4
+    // pass and the test actually reaches check 2 (sender membership).
+    write_ring_with_announced_reshare(
+        &app_state,
         ring_pk,
         vec!["aabbccdd".to_string()],
-        None,
+        Some(vec!["00112233".to_string()]),
+        Some(1),
     )
     .await;
 
@@ -1951,12 +1954,14 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
     // and reaches the try_mark_ring_pss check (the (false,false) guard fires before
     // the mark check, so the test node must be in at least one committee).
     let our_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
-    write_ring_to_bulletin(
-        &app_state.local_storage,
-        &app_state.bulletin,
+    // Bulletin must pre-announce next_peer_ids and new_threshold (matching what the
+    // message will propose) so checks 3 & 4 pass and the test reaches the PSS flag check.
+    write_ring_with_announced_reshare(
+        &app_state,
         ring_pk,
         vec![sender_hex.to_string()],
-        None,
+        Some(vec![our_hex.clone()]),
+        Some(1),
     )
     .await;
 
@@ -1987,6 +1992,7 @@ async fn test_dealer_phase4_deletes_share_and_ring_index_entry() {
     let app_state = Arc::new(create_test_app_state_default(db_name).await);
 
     let ring_pk = "dealer_phase4_ring";
+    // Arbitrary non-colliding session ID for Dealer Phase 4 tests (Group 4).
     let session_id = 88_000_001u64;
 
     // Pre-populate local storage: share bundle + ring index entry.
@@ -2058,6 +2064,7 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
     let app_state = Arc::new(create_test_app_state_default(db_name).await);
 
     let ring_pk = "dealer_phase4_pss_ring";
+    // Arbitrary non-colliding session ID for Dealer Phase 4 PSS flag test (Group 4).
     let session_id = 88_000_002u64;
 
     write_last_refresh(&app_state.local_storage, ring_pk, 0);
@@ -2186,13 +2193,14 @@ async fn test_reshare_session_init_rejects_mismatched_next_peer_ids() {
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
 
-    // Bulletin pre-announces "11223344" as the only new-committee member.
+    // Bulletin pre-announces "11223344" as the only new-committee member, with threshold 1.
+    // new_threshold must also be set so check 4 passes and the test reaches check 3.
     write_ring_with_announced_reshare(
         &app_state,
         ring_pk,
         vec![sender_hex.to_string()],
         Some(vec!["11223344".to_string()]),
-        None,
+        Some(1),
     )
     .await;
 
@@ -2227,12 +2235,14 @@ async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
 
-    // Bulletin pre-announces new_threshold = 2.
+    // Bulletin pre-announces new_threshold = 2, with a matching next_peer_ids.
+    // next_peer_ids must also be set (matching the proposal) so check 3 passes
+    // and the test actually reaches check 4 (the threshold mismatch).
     write_ring_with_announced_reshare(
         &app_state,
         ring_pk,
         vec![sender_hex.to_string()],
-        None, // no committee constraint
+        Some(vec!["00112233".to_string()]),
         Some(2),
     )
     .await;
@@ -2252,6 +2262,136 @@ async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
     assert!(
         matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
         "Expected Unauthorized for mismatched new_threshold, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+// =============================================================================
+// validate_reshare_session_init — structural parameter checks (Group 6)
+//
+// These tests exercise the fast-fail checks added to validate_reshare_session_init
+// before the bulletin is consulted:
+//   • next_peer_ids must be non-empty
+//   • new_threshold must be in [1, len(next_peer_ids)]
+// No bulletin entry is needed because the checks fire before the bulletin lookup.
+// =============================================================================
+
+/// Reshare `SessionInit` for a ring whose bulletin entry has no `next_peer_ids`
+/// pre-announced must be rejected — the ring has not been authorised for reshare on-chain.
+#[tokio::test]
+async fn test_reshare_session_init_rejects_no_bulletin_announcement() {
+    let db_name = "test_reshare_rejects_no_announcement";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+
+    let ring_pk = "reshare_ring";
+    let sender_hex = "aabbccdd";
+    // Write a ring payload with no reshare announcement (next_peer_ids and new_threshold absent).
+    write_ring_with_announced_reshare(
+        &app_state,
+        ring_pk,
+        vec![sender_hex.to_string()],
+        None, // no pre-announced committee
+        None, // no pre-announced threshold
+    )
+    .await;
+
+    let sender_bytes = hex::decode(sender_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::new(app_state);
+    let msg = reshare_session_init(
+        ring_pk,
+        vec![sender_hex.to_string()],
+        vec!["00112233".to_string()],
+        1,
+    );
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
+        "Expected Unauthorized when bulletin has no reshare announcement, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// Reshare `SessionInit` with an empty `next_peer_ids` must be rejected with
+/// `InvalidInput` before any bulletin lookup occurs.
+#[tokio::test]
+async fn test_reshare_session_init_rejects_empty_new_committee() {
+    let db_name = "test_reshare_rejects_empty_committee";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let coordinator = DkgCoordinator::new(app_state);
+
+    let sender_bytes = hex::decode("aabbccdd").unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+
+    let msg = reshare_session_init(
+        "some_ring",
+        vec!["aabbccdd".to_string()],
+        vec![], // empty new committee
+        0,      // threshold irrelevant — empty check fires first
+    );
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::InvalidInput(_))),
+        "Expected InvalidInput for empty next_peer_ids, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// Reshare `SessionInit` with `new_threshold > len(next_peer_ids)` must be
+/// rejected with `InvalidInput` before any bulletin lookup occurs.
+#[tokio::test]
+async fn test_reshare_session_init_rejects_threshold_exceeds_committee_size() {
+    let db_name = "test_reshare_rejects_threshold_too_high";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let coordinator = DkgCoordinator::new(app_state);
+
+    let sender_bytes = hex::decode("aabbccdd").unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+
+    // new_threshold = 3 with only 1 new-committee member — structurally impossible.
+    let msg = reshare_session_init(
+        "some_ring",
+        vec!["aabbccdd".to_string()],
+        vec!["00112233".to_string()],
+        3, // exceeds committee size of 1
+    );
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::InvalidInput(_))),
+        "Expected InvalidInput for new_threshold > committee size, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// Reshare `SessionInit` with `new_threshold = 0` must be rejected with
+/// `InvalidInput` (threshold must be at least 1).
+#[tokio::test]
+async fn test_reshare_session_init_rejects_zero_threshold() {
+    let db_name = "test_reshare_rejects_zero_threshold";
+    let db_path = test_db_path(db_name);
+    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let coordinator = DkgCoordinator::new(app_state);
+
+    let sender_bytes = hex::decode("aabbccdd").unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+
+    let msg = reshare_session_init(
+        "some_ring",
+        vec!["aabbccdd".to_string()],
+        vec!["00112233".to_string()],
+        0, // threshold of zero is never valid
+    );
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::InvalidInput(_))),
+        "Expected InvalidInput for new_threshold = 0, got: {:?}",
         result
     );
     cleanup_db(&db_path);
