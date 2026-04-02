@@ -386,7 +386,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     continue;
                 }
                 let phase_age = now.duration_since(state.phase_started_at);
-                if phase_age > DKG_PHASE_TIMEOUT && state.phase != DkgPhase::Initializing {
+                if phase_age > DKG_PHASE_TIMEOUT {
                     metrics::record_dkg_session_abandoned();
                     tracing::warn!(
                         session_id = session_id,
@@ -1071,7 +1071,7 @@ mod tests {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
         mgr.create_session(30, make_node(1), 3).await;
 
-        // Move to a non-Initializing phase and backdate phase_started_at past DKG_PHASE_TIMEOUT
+        // Move to Phase1Commitments and backdate phase_started_at past DKG_PHASE_TIMEOUT
         {
             let mut states = mgr.states.write().await;
             if let Some(s) = states.get_mut(&30) {
@@ -1088,6 +1088,34 @@ mod tests {
         assert!(
             !mgr.session_exists(&30).await,
             "session stalled past DKG_PHASE_TIMEOUT should be removed"
+        );
+    }
+
+    /// Regression test for bug where `Initializing` sessions were exempt from
+    /// `DKG_PHASE_TIMEOUT` and could hold a `rings_pss` lock for up to SESSION_TTL
+    /// (30 min) instead of DKG_PHASE_TIMEOUT (2 min).
+    #[tokio::test(start_paused = true)]
+    async fn test_expiration_worker_removes_stalled_initializing_session() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(31, make_node(1), 3).await;
+
+        // Session stays in Initializing; backdate phase_started_at past DKG_PHASE_TIMEOUT.
+        {
+            let mut states = mgr.states.write().await;
+            if let Some(s) = states.get_mut(&31) {
+                assert_eq!(s.phase, DkgPhase::Initializing);
+                s.phase_started_at =
+                    Instant::now() - (DKG_PHASE_TIMEOUT + std::time::Duration::from_secs(10));
+            }
+        }
+
+        tokio::time::advance(SESSION_EXPIRATION_CHECK_INTERVAL + std::time::Duration::from_secs(1))
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !mgr.session_exists(&31).await,
+            "Initializing session stalled past DKG_PHASE_TIMEOUT should be removed"
         );
     }
 
