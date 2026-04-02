@@ -22,17 +22,18 @@ use crate::constants::{
 };
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
-    persist_ring_bundle, serialize_commitment_coefficients, session_not_found, validate_dkg_claims,
-    validate_refresh_session_init,
+    in_committee, node_index_in, persist_ring_bundle, serialize_commitment_coefficients,
+    session_not_found, validate_dkg_claims, validate_refresh_session_init,
+    validate_reshare_session_init,
 };
-use crate::dkg::messages::DkgMessage;
-use crate::dkg::session_state::{DkgMessageType, DkgPhase};
+use crate::dkg::messages::{DkgMessage, SessionKind};
+use crate::dkg::session_state::{DkgMessageType, DkgPhase, ReshareParams};
 use crate::helpers::helpers::{extract_node_part, is_self_peer_id};
 use crate::metrics;
-use crate::ring_state::RingIndexEntry;
+use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use bulletin::r#trait::RingPayload;
-use crypto::r#trait::{DistributedShare, Dkg, DkgMode, DkgRole};
+use crypto::r#trait::{DistributedShare, Dkg, DkgRole};
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use crypto::{
@@ -142,102 +143,230 @@ where
             peer_ids,
             node_id_assignments,
             token_string,
-            is_refresh,
-            refresh_ring_pk_hex,
+            kind,
             pss_interval,
             ..
         } = &message
         {
-            if *is_refresh {
-                let ring_pk_hex = refresh_ring_pk_hex.as_ref().ok_or_else(|| {
-                    DkgError::InvalidInput(
-                        "Refresh SessionInit missing refresh_ring_pk_hex".to_string(),
+            let sender_hex = hex::encode(sender_peer_id.as_bytes());
+
+            match kind {
+                SessionKind::Refresh { ring_pk_hex } => {
+                    tracing::info!(
+                        session_id = session_id,
+                        ring_pk_hex = %ring_pk_hex,
+                        sender_peer_hex = %sender_hex,
+                        "DKG Coordinator: Refresh SessionInit received - pre-validation"
+                    );
+                    validate_refresh_session_init(
+                        ring_pk_hex,
+                        &sender_hex,
+                        &self.app_state.local_storage,
+                        &self.app_state.bulletin,
                     )
-                })?;
-
-                let sender_hex = hex::encode(sender_peer_id.as_bytes());
-
-                tracing::info!(
-                    session_id = session_id,
-                    ring_pk_hex = %ring_pk_hex,
-                    sender_peer_hex = %sender_hex,
-                    "DKG Coordinator: Refresh SessionInit received - pre-validation"
-                );
-
-                validate_refresh_session_init(
+                    .await?;
+                    if !self
+                        .app_state
+                        .dkg_session_state
+                        .try_mark_ring_pss(ring_pk_hex)
+                        .await
+                    {
+                        return Err(DkgError::Unauthorized(
+                            "Refresh already in progress for this ring".to_string(),
+                        ));
+                    }
+                    tracing::info!(
+                        session_id = session_id,
+                        ring_pk = %ring_pk_hex,
+                        sender_peer_hex = %sender_hex,
+                        "DKG Coordinator: Refresh SessionInit validated and ring marked refreshing"
+                    );
+                }
+                SessionKind::Reshare {
                     ring_pk_hex,
-                    &sender_hex,
-                    &self.app_state.local_storage,
-                    &self.app_state.bulletin,
-                )
-                .await?;
+                    next_peer_ids: reshare_next_peer_ids,
+                    new_threshold: reshare_new_threshold,
+                    bulletin_post_id: reshare_bulletin_post_id,
+                } => {
+                    tracing::info!(
+                        session_id = session_id,
+                        ring_pk_hex = %ring_pk_hex,
+                        sender_peer_hex = %sender_hex,
+                        "DKG Coordinator: Reshare SessionInit received - pre-validation"
+                    );
+                    validate_reshare_session_init(
+                        ring_pk_hex,
+                        &sender_hex,
+                        reshare_next_peer_ids,
+                        *reshare_new_threshold,
+                        reshare_bulletin_post_id,
+                        &self.app_state.local_storage,
+                        &self.app_state.bulletin,
+                    )
+                    .await?;
+                    tracing::info!(
+                        session_id = session_id,
+                        ring_pk = %ring_pk_hex,
+                        sender_peer_hex = %sender_hex,
+                        "DKG Coordinator: Reshare SessionInit validated"
+                    );
+                }
+                SessionKind::Fresh => {
+                    // 1. Authenticate: Validate JWT token
+                    let current_time = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
+                        .as_secs();
+                    let token: BearerToken<DkgClaims> =
+                        resolve_jwt_did(token_string, current_time, MAX_TOKEN_LIFETIME_SECS)
+                            .map_err(|e| {
+                                DkgError::Unauthorized(format!("JWT validation failed: {}", e))
+                            })?;
+                    // 2. Authorize: Validate JWT claims match SessionInit fields
+                    validate_dkg_claims(&token, *threshold, peer_ids, *pss_interval)?;
+                    tracing::info!(
+                        issuer = %token.issuer_id,
+                        threshold = threshold,
+                        "DKG Coordinator: SessionInit JWT validated successfully"
+                    );
+                }
+            }
 
+            let our_peer_id_hex = hex::encode(self.app_state.network.local_peer_id().as_bytes());
+            let our_node_part = extract_node_part(&our_peer_id_hex);
+
+            // For Reshare, determine role and node_id from committee membership rather
+            // than looking up node_id_assignments (which only covers the old committee).
+            let (assigned_node_id, dkg_role, maybe_reshare_params) = if let SessionKind::Reshare {
+                ring_pk_hex,
+                next_peer_ids,
+                new_threshold,
+                bulletin_post_id,
+            } = kind
+            {
+                let mut sorted_old = peer_ids.clone();
+                sorted_old.sort();
+                let mut sorted_new = next_peer_ids.clone();
+                sorted_new.sort();
+
+                let in_old = in_committee(&sorted_old, &our_node_part);
+                let in_new = in_committee(&sorted_new, &our_node_part);
+
+                // Role determines both what crypto this node performs and which node_id
+                // namespace it uses.  Dealers use an OLD-committee index; Receivers use a
+                // NEW-committee index; DealerReceivers use old for Phase 1/2 and new for
+                // share routing/storage.  This dual-index design keeps the crypto layer
+                // simple (one session_id, one node_id) at the cost of careful bookkeeping
+                // in coordinator and ReshareParams.
+                let role = match (in_old, in_new) {
+                    (true, true) => DkgRole::DealerReceiver,
+                    (true, false) => DkgRole::Dealer,
+                    (false, true) => DkgRole::Receiver,
+                    (false, false) => {
+                        return Err(DkgError::InvalidInput(
+                            "Reshare SessionInit: this node is not in either committee".to_string(),
+                        ))
+                    }
+                };
+
+                // Mark the ring as having an in-progress reshare.  Done here — after we
+                // know this node is in at least one committee — so that the flag is never
+                // set for nodes that are not participants (which would permanently block
+                // future reshares for that ring on this node).
                 if !self
                     .app_state
                     .dkg_session_state
-                    .try_mark_ring_refreshing(ring_pk_hex)
+                    .try_mark_ring_pss(ring_pk_hex)
                     .await
                 {
                     return Err(DkgError::Unauthorized(
-                        "Refresh already in progress for this ring".to_string(),
+                        "Reshare already in progress for this ring".to_string(),
                     ));
                 }
-
                 tracing::info!(
                     session_id = session_id,
                     ring_pk = %ring_pk_hex,
-                    sender_peer_hex = %sender_hex,
-                    "DKG Coordinator: Refresh SessionInit validated and ring marked refreshing"
+                    role = ?role,
+                    "DKG Coordinator: Reshare SessionInit validated and ring marked resharing"
                 );
+
+                // Dealers use their old-committee index for polynomial generation and share
+                // routing to the new committee.  Pure Receivers have no old-committee index,
+                // so they use their new-committee index as the session node_id (used only
+                // for dedup and connection tracking — not for crypto output routing).
+                let node_id = if in_old {
+                    node_index_in(&sorted_old, &our_node_part)
+                } else {
+                    node_index_in(&sorted_new, &our_node_part)
+                };
+
+                // Pre-load old share for Dealer/DealerReceiver nodes.
+                let old_share = if in_old {
+                    let bundle = RingShareBundle::load_by_ring_key(
+                        &self.app_state.local_storage,
+                        ring_pk_hex,
+                    )
+                    .map_err(|e| {
+                        DkgError::Storage(format!("Reshare: failed to load old share: {}", e))
+                    })?;
+                    let pri = bundle.pri_share().map_err(|e| {
+                        DkgError::Deserialization(format!(
+                            "Reshare: failed to deserialize old share: {}",
+                            e
+                        ))
+                    })?;
+                    Some(pri.v)
+                } else {
+                    None
+                };
+
+                // participating_ids = all old committee node IDs (full participation).
+                let participating_ids: Vec<u32> = (1..=peer_ids.len() as u32).collect();
+
+                let new_node_id = in_new.then(|| node_index_in(&sorted_new, &our_node_part));
+
+                let params = ReshareParams {
+                    ring_key: ring_pk_hex.clone(),
+                    old_share,
+                    participating_ids,
+                    new_threshold: *new_threshold as usize,
+                    new_total_nodes: next_peer_ids.len(),
+                    new_peer_ids: sorted_new,
+                    new_node_id,
+                    bulletin_post_id: bulletin_post_id.clone(),
+                };
+
+                (node_id, role, Some(params))
             } else {
-                // 1. Authenticate: Validate JWT token
-                let current_time = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
-                    .as_secs();
-
-                let token: BearerToken<DkgClaims> =
-                    resolve_jwt_did(token_string, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(
-                        |e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)),
-                    )?;
-                // TODO: use token.issuer_id as AuthZ check
-                // 2. Authorize: Validate JWT claims match SessionInit fields
-                validate_dkg_claims(&token, *threshold, peer_ids, *pss_interval)?;
-
-                tracing::info!(
-                    issuer = %token.issuer_id,
-                    threshold = threshold,
-                    "DKG Coordinator: SessionInit JWT validated successfully"
-                );
-            }
-
-            // Get our assigned node_id from the initiator's assignments
-            let our_peer_id_hex = hex::encode(self.app_state.network.local_peer_id().as_bytes());
-            // Extract just the hex part (before @) for lookup
-            let our_peer_id_key = our_peer_id_hex
-                .split('@')
-                .next()
-                .unwrap_or(&our_peer_id_hex)
-                .to_string();
-
-            let assigned_node_id = node_id_assignments.get(&our_peer_id_key)
-                .ok_or_else(|| {
-                    DkgError::InvalidInput(format!(
-                        "Could not find our node_id assignment in SessionInit. Our peer_id: {}, Available assignments: {:?}",
-                        our_peer_id_key,
-                        node_id_assignments.keys().collect::<Vec<_>>()
-                    ))
-                })?;
+                // Fresh / Refresh: look up our node_id from the initiator's assignments.
+                let our_peer_id_key = our_peer_id_hex
+                    .split('@')
+                    .next()
+                    .unwrap_or(&our_peer_id_hex)
+                    .to_string();
+                let node_id = node_id_assignments
+                    .get(&our_peer_id_key)
+                    .copied()
+                    .ok_or_else(|| {
+                        DkgError::InvalidInput(format!(
+                            "Could not find our node_id in SessionInit. \
+                             Our peer_id: {}, assignments: {:?}",
+                            our_peer_id_key,
+                            node_id_assignments.keys().collect::<Vec<_>>()
+                        ))
+                    })?;
+                (node_id, DkgRole::Standard, None)
+            };
 
             tracing::info!(
                 assigned_node_id = assigned_node_id,
-                is_refresh = is_refresh,
-                "DKG Coordinator: Received SessionInit - assigned node_id from initiator"
+                role = ?dkg_role,
+                kind = ?kind,
+                "DKG Coordinator: Received SessionInit - assigned node_id"
             );
 
-            // If session doesn't exist, create it with assigned node_id.
-            // Idempotent: if a concurrent handler created it (e.g. duplicate SessionInit),
-            // treat "session already exists" as success.
+            // If session doesn't exist, create it.
+            // Idempotent: treat "session already exists" from a concurrent handler as success.
             if !self
                 .app_state
                 .dkg_session_state
@@ -247,10 +376,10 @@ where
                 match self
                     .create_session(
                         session_id,
-                        *assigned_node_id,
+                        assigned_node_id,
                         *threshold as usize,
                         *total_participants as usize,
-                        DkgRole::Standard,
+                        dkg_role,
                     )
                     .await
                 {
@@ -264,31 +393,53 @@ where
                     Err(e) => return Err(e),
                 }
 
-                if *is_refresh {
-                    self.app_state
-                        .dkg_session_state
-                        .mark_as_refresh(&session_id)
-                        .await;
-                    if let Some(ring_key) = refresh_ring_pk_hex {
-                        self.app_state
-                            .dkg_session_state
-                            .set_refresh_ring_key(&session_id, ring_key.clone())
-                            .await;
-                    }
-                }
+                // Set kind and reshare params atomically so that a commitment arriving
+                // between the two writes never sees kind=Reshare with reshare_params=None.
+                // Also sort next_peer_ids in the stored kind so downstream code
+                // (bulletin post, union building) always uses a canonical ordered list.
+                self.app_state
+                    .dkg_session_state
+                    .with_state_mut(&session_id, |state| {
+                        let mut stored_kind = kind.clone();
+                        if let SessionKind::Reshare {
+                            ref mut next_peer_ids,
+                            ..
+                        } = stored_kind
+                        {
+                            next_peer_ids.sort();
+                        }
+                        state.kind = stored_kind;
+                        if let Some(params) = maybe_reshare_params {
+                            state.reshare_params = Some(params);
+                        }
+                    })
+                    .await;
+
                 self.app_state
                     .dkg_session_state
                     .set_pss_interval(&session_id, *pss_interval)
                     .await;
             }
 
-            // Store peer_ids for this session (needed for sending messages)
-            self.set_peer_ids(&session_id, peer_ids.clone()).await;
+            // For Reshare: peer_ids in session state = union(old, new) so that non-initiator
+            // Dealer nodes know who to broadcast their commitment to.
+            let session_peer_ids = if let SessionKind::Reshare { next_peer_ids, .. } = kind {
+                let mut union: Vec<String> = peer_ids.clone();
+                for p in next_peer_ids {
+                    if !union.contains(p) {
+                        union.push(p.clone());
+                    }
+                }
+                union
+            } else {
+                peer_ids.clone()
+            };
+            self.set_peer_ids(&session_id, session_peer_ids).await;
 
-            // Store node_id to peer_id mappings for efficient routing
+            // Store old committee node_id → peer_id mappings for sender validation
+            // (peer_id_to_node_id uses old committee IDs for all session kinds).
             let mut node_id_to_peer_id = std::collections::HashMap::new();
             for (peer_id_key, node_id) in node_id_assignments {
-                // Find the full peer_id (with @address if present) from peer_ids list
                 let full_peer_id = peer_ids
                     .iter()
                     .find(|pid| pid.split('@').next().unwrap_or(pid) == peer_id_key)
@@ -307,6 +458,7 @@ where
                 total_participants = total_participants,
                 peer_count = peer_ids.len(),
                 our_node_id = assigned_node_id,
+                role = ?dkg_role,
                 "DKG Coordinator: Session init"
             );
 
@@ -437,20 +589,20 @@ where
                     )));
                 }
 
-                // Get threshold from session to validate coefficient count
-                let threshold = self
+                // Get expected commitment size from session (= new_threshold for Reshare,
+                // = old threshold for Fresh/Refresh).
+                let expected_coeff_count = self
                     .app_state
                     .dkg_session_state
-                    .with_state(&session_id, |state| state.node.threshold())
+                    .with_state(&session_id, |state| state.expected_commitment_size())
                     .await
                     .ok_or_else(|| session_not_found(session_id))?;
 
-                // Polynomial commitment should have exactly threshold coefficients
-                // (degree t-1 polynomial has t coefficients)
-                if num_coefficients != threshold {
+                // Polynomial commitment should have exactly expected_coeff_count coefficients.
+                if num_coefficients != expected_coeff_count {
                     return Err(DkgError::CommitmentVerificationFailed(format!(
-                        "Invalid number of commitment coefficients: got {}, expected {} (threshold)",
-                        num_coefficients, threshold
+                        "Invalid number of commitment coefficients: got {}, expected {}",
+                        num_coefficients, expected_coeff_count
                     )));
                 }
 
@@ -487,8 +639,12 @@ where
                                 DkgError::Crypto(format!("Failed to receive commitment: {}", e))
                             })?;
 
-                        // Check if we need to generate our polynomial
-                        Ok::<_, DkgError>(state.node.commitment().coefficients.is_empty())
+                        // Receiver nodes never generate a polynomial — they only accumulate
+                        // commitments to verify the shares they will receive.
+                        let generates_polynomial = state.node.role() != DkgRole::Receiver;
+                        Ok::<_, DkgError>(
+                            generates_polynomial && state.node.commitment().coefficients.is_empty(),
+                        )
                     })
                     .await
                     .ok_or_else(|| session_not_found(session_id))??;
@@ -632,12 +788,19 @@ where
                     )));
                 }
 
-                // Validate this share is intended for us
-                // Get our node_id from the session (session-specific)
+                // Validate this share is intended for us.
+                // For reshare, incoming shares are addressed by new-committee index;
+                // for fresh/refresh, shares are addressed by the session node_id.
                 let our_node_id = self
                     .app_state
                     .dkg_session_state
-                    .with_state(&session_id, |state| state.node.node_id())
+                    .with_state(&session_id, |state| {
+                        state
+                            .reshare_params
+                            .as_ref()
+                            .and_then(|p| p.new_node_id)
+                            .unwrap_or_else(|| state.node.node_id())
+                    })
                     .await
                     .ok_or_else(|| session_not_found(session_id))?;
                 if to_node_id != our_node_id {
@@ -960,23 +1123,30 @@ where
         session_id: u64,
         peer_ids: &[String],
     ) -> Result<()> {
-        // Check if we've generated our polynomial and how many nodes we expect
-        let (has_polynomial, expected_commitments, node_id) = self
+        // Check polynomial readiness, expected commitment count, and our role.
+        let (has_polynomial, expected_commitments, node_id, role) = self
             .app_state
             .dkg_session_state
             .with_state(&session_id, |state| {
+                let role = state.node.role();
+                // Receivers expect commitments from ALL old-committee dealers.
+                // Dealers/DealerReceivers expect from all others (excluding self).
+                let expected = match role {
+                    DkgRole::Receiver => state.node.total_nodes(),
+                    _ => state.node.total_nodes() - 1,
+                };
                 (
                     !state.node.commitment().coefficients.is_empty(),
-                    state.node.total_nodes() - 1, // Excluding self
+                    expected,
                     state.node.node_id(),
+                    role,
                 )
             })
             .await
             .ok_or_else(|| session_not_found(session_id))?;
 
-        // First, make sure we've generated our polynomial
-        if !has_polynomial {
-            // Haven't generated polynomial yet, can't proceed to Phase 2
+        // Receiver nodes never generate a polynomial — skip this gate for them.
+        if role != DkgRole::Receiver && !has_polynomial {
             return Ok(());
         }
 
@@ -995,7 +1165,10 @@ where
                 node_id = node_id,
                 "Phase 1 complete: Starting Phase 2"
             );
-            self.initiate_phase2_shares(session_id, peer_ids).await?;
+            // Receiver nodes don't send shares — they just wait for incoming shares.
+            if role != DkgRole::Receiver {
+                self.initiate_phase2_shares(session_id, peer_ids).await?;
+            }
         } else {
             tracing::debug!(
                 received = received_commitments,
@@ -1012,8 +1185,8 @@ where
     ///
     /// This is triggered when all commitments have been received.
     pub async fn initiate_phase2_shares(&self, session_id: u64, peer_ids: &[String]) -> Result<()> {
-        // Generate shares and get node_id and threshold
-        let (shares, node_id, threshold) =
+        // Generate shares and get node_id, threshold, role, and reshare routing info.
+        let (shares, node_id, threshold, role, reshare_new_peer_ids) =
             self.app_state
                 .dkg_session_state
                 .with_state_mut(&session_id, |state| {
@@ -1023,12 +1196,7 @@ where
                             node_id = state.node.node_id(),
                             "DKG Coordinator: Generating polynomial before Phase 2"
                         );
-                        state
-                            .node
-                            .generate_polynomial(DkgMode::Fresh)
-                            .map_err(|e| {
-                                DkgError::Crypto(format!("Failed to generate polynomial: {}", e))
-                            })?;
+                        state.generate_polynomial()?;
                     }
 
                     // Generate shares for all nodes
@@ -1045,7 +1213,17 @@ where
                         share_count = shares.len(),
                         "DKG Coordinator: Generated shares"
                     );
-                    Ok::<_, DkgError>((shares, state.node.node_id(), state.node.threshold()))
+                    let reshare_peer_ids = state
+                        .reshare_params
+                        .as_ref()
+                        .map(|p| p.new_peer_ids.clone());
+                    Ok::<_, DkgError>((
+                        shares,
+                        state.node.node_id(),
+                        state.node.threshold(),
+                        state.node.role(),
+                        reshare_peer_ids,
+                    ))
                 })
                 .await
                 .ok_or_else(|| session_not_found(session_id))??;
@@ -1077,13 +1255,71 @@ where
             "DKG Coordinator: Sending shares to peers"
         );
 
-        // Send shares to peers using O(n) routing with node_id → peer_id mapping
-        // Try to get mapping first, fall back to broadcast if not available
+        // Send shares to peers.
+        // For Reshare: route using reshare_new_peer_ids (sorted new committee, index = to_id - 1).
+        // For Fresh/Refresh: use node_id_to_peer_id map, falling back to broadcast.
         let mut shares_sent = 0;
+        let mut shares_skipped = 0;
 
         for share in shares.iter() {
-            // Skip sending share to ourselves
-            if share.to_id == node_id {
+            // Skip sending share to ourselves.
+            // For DealerReceiver, their new-committee node_id may differ from old-committee
+            // node_id — skip if to_id maps to our own new-committee peer_id.
+            let skip = if let Some(ref new_peers) = reshare_new_peer_ids {
+                // Reshare: to_id is a new-committee index; check if it points to self.
+                new_peers
+                    .get((share.to_id - 1) as usize)
+                    .map(|p| is_self_peer_id(&self.app_state.network, p))
+                    .unwrap_or(false)
+            } else {
+                share.to_id == node_id
+            };
+            if skip {
+                shares_skipped += 1;
+                continue;
+            }
+
+            // For Reshare, route directly via sorted new committee list.
+            if let Some(ref new_peers) = reshare_new_peer_ids {
+                let Some(target_peer_id) = new_peers.get((share.to_id - 1) as usize) else {
+                    tracing::error!(
+                        to_node = share.to_id,
+                        "Reshare: share to_id out of range for new committee"
+                    );
+                    continue;
+                };
+                let share_value_bytes = CryptoSerialize::to_bytes(&share.value).map_err(|e| {
+                    DkgError::Serialization(format!("Failed to serialize share value: {}", e))
+                })?;
+                let share_msg = DkgMessage::Share {
+                    session_id,
+                    from_node_id: node_id,
+                    to_node_id: share.to_id,
+                    share_value: share_value_bytes,
+                    nonce: share.nonce,
+                };
+                match self
+                    .send_message_to_peer(target_peer_id, share_msg, Some(session_id))
+                    .await
+                {
+                    Ok(_) => {
+                        shares_sent += 1;
+                        tracing::debug!(
+                            from_node = node_id,
+                            to_node = share.to_id,
+                            peer_id = %target_peer_id,
+                            "Reshare: Sent share to new committee member"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            to_node = share.to_id,
+                            peer_id = %target_peer_id,
+                            error = %e,
+                            "Reshare: Failed to send share"
+                        );
+                    }
+                }
                 continue;
             }
 
@@ -1175,7 +1411,11 @@ where
             }
         }
 
-        let expected_shares = shares.len().saturating_sub(1); // Exclude share to self
+        // expected = total shares minus the ones we skipped (our own self-share).
+        // Pure Dealers are not in the new committee so nothing is skipped — all
+        // new_total_nodes shares must be delivered.  DealerReceiver / Fresh / Refresh
+        // nodes skip exactly one self-share.
+        let expected_shares = shares.len() - shares_skipped;
         tracing::info!(
             sent = shares_sent,
             total = expected_shares,
@@ -1205,21 +1445,36 @@ where
             });
         }
 
+        // Pure Dealer nodes (not in new committee) are done after distributing shares —
+        // they won't receive any shares themselves, so Phase 4 must be triggered here
+        // rather than from the share-receive path.
+        if role == DkgRole::Dealer {
+            tracing::info!(
+                session_id = session_id,
+                "Reshare Dealer: share distribution complete, triggering Phase 4 cleanup"
+            );
+            self.initiate_phase4_completion(session_id).await?;
+        }
+
         Ok(())
     }
 
     /// Check if Phase 2 is complete (all shares received) and trigger Phase 4 if so.
     pub async fn check_and_trigger_phase4(&self, session_id: u64) -> Result<()> {
         // Read all relevant counters in a single lock to avoid TOCTOU races.
+        // Expected share count depends on role:
+        //   Receiver      → total_nodes (one from each old dealer)
+        //   Standard/DealerReceiver → total_nodes - 1 (excluding self)
+        //   Dealer        → 0 (handled by initiate_phase2_shares, never reaches here)
         let (expected, received_shares, phase) = self
             .app_state
             .dkg_session_state
             .with_state(&session_id, |state| {
-                (
-                    state.node.total_nodes() - 1,
-                    state.shares_received,
-                    state.phase,
-                )
+                let expected = match state.node.role() {
+                    DkgRole::Receiver => state.node.total_nodes(),
+                    _ => state.node.total_nodes() - 1,
+                };
+                (expected, state.shares_received, state.phase)
             })
             .await
             .ok_or_else(|| session_not_found(session_id))?;
@@ -1274,18 +1529,105 @@ where
         );
 
         // Read session metadata before acquiring the mutable state lock.
-        let (is_refresh, refresh_ring_key, pss_interval) = self
+        let (kind, pss_interval, dkg_role, reshare_new_peer_ids, reshare_bulletin_post_id) = self
             .app_state
             .dkg_session_state
             .with_state(&session_id, |state| {
                 (
-                    state.is_refresh,
-                    state.refresh_ring_key.clone(),
+                    state.kind.clone(),
                     state.pss_interval,
+                    state.node.role(),
+                    state
+                        .reshare_params
+                        .as_ref()
+                        .map(|p| p.new_peer_ids.clone()),
+                    state
+                        .reshare_params
+                        .as_ref()
+                        .map(|p| p.bulletin_post_id.clone()),
                 )
             })
             .await
             .ok_or_else(|| session_not_found(session_id))?;
+
+        // Pure Dealer nodes don't compute a secret share — they just clean up.
+        // Because they are leaving the ring, delete the local secret share and
+        // remove the ring from the index so the PSS scheduler ignores it.
+        if dkg_role == DkgRole::Dealer {
+            let ring_key = kind.ring_key().map(|k| k.to_string());
+            self.app_state
+                .dkg_session_state
+                .update_phase(&session_id, DkgPhase::Phase4Complete)
+                .await;
+            let mut ring_index_result: Result<()> = Ok(());
+            if let Some(key) = &ring_key {
+                self.app_state.dkg_session_state.unmark_ring_pss(key).await;
+
+                // Delete the encrypted share bundle.
+                if let Err(e) = self
+                    .app_state
+                    .local_storage
+                    .delete(LocalStorageKeys::RingKey(key.clone()))
+                {
+                    tracing::warn!(
+                        session_id = session_id,
+                        ring_key = %key,
+                        error = %e,
+                        "Reshare Dealer: failed to delete share bundle (already absent?)"
+                    );
+                } else {
+                    tracing::info!(
+                        session_id = session_id,
+                        ring_key = %key,
+                        "Reshare Dealer: deleted share bundle — node has left the ring"
+                    );
+                }
+
+                // Remove the ring from the local index so the PSS scheduler skips it.
+                let storage = &self.app_state.local_storage;
+                ring_index_result = (|| {
+                    let raw = match storage.get(LocalStorageKeys::RingIndex) {
+                        Ok(Some(raw)) => raw,
+                        Ok(None) => return Ok(()),
+                        Err(e) => {
+                            return Err(DkgError::Storage(format!(
+                                "Reshare Dealer: failed to read RingIndex: {}",
+                                e
+                            )))
+                        }
+                    };
+                    let mut index: Vec<RingIndexEntry> =
+                        serde_json::from_slice(&raw).map_err(|e| {
+                            DkgError::Storage(format!(
+                                "Reshare Dealer: failed to deserialize RingIndex: {}",
+                                e
+                            ))
+                        })?;
+                    index.retain(|e| e.ring_pk_str != *key);
+                    let bytes = serde_json::to_vec(&index).map_err(|e| {
+                        DkgError::Serialization(format!(
+                            "Reshare Dealer: failed to serialize RingIndex: {}",
+                            e
+                        ))
+                    })?;
+                    storage
+                        .set(LocalStorageKeys::RingIndex, bytes)
+                        .map_err(|e| {
+                            DkgError::Storage(format!(
+                                "Reshare Dealer: failed to write updated RingIndex: {}",
+                                e
+                            ))
+                        })
+                })();
+            }
+            self.remove_session(session_id).await;
+            metrics::record_dkg_session_completed();
+            tracing::info!(
+                session_id = session_id,
+                "Reshare Dealer: Phase 4 complete (share distribution done, secret deleted)"
+            );
+            return ring_index_result;
+        }
 
         // Compute final secret share, aggregate public key, and gather data for bulletin
         let (node_id, aggregate_pk, final_share_bytes, threshold, pub_poly_bytes) = self
@@ -1341,16 +1683,12 @@ where
             .await
             .ok_or_else(|| session_not_found(session_id))??;
 
-        // Compute storage_key = aggregate_pk.to_string() — the canonical local-storage key used by
-        // sign/pre for share lookup.  For PSS refresh this is the ORIGINAL ring's key (unchanged).
-        let storage_key = if is_refresh {
-            match &refresh_ring_key {
-                Some(k) => k.clone(),
-                None => aggregate_pk.to_string(),
-            }
-        } else {
-            aggregate_pk.to_string()
-        };
+        // Compute storage_key — the canonical local-storage key used by sign/pre for share lookup.
+        // For Refresh and Reshare this is the ORIGINAL ring's key (unchanged secret → same pk).
+        let storage_key = kind
+            .ring_key()
+            .map(|k| k.to_string())
+            .unwrap_or_else(|| aggregate_pk.to_string());
 
         // Write share + polynomial as a single encrypted bundle.
         // Atomicity: both fields land in one set_encrypted call, so a crash leaves the
@@ -1362,8 +1700,7 @@ where
 
         persist_ring_bundle(
             &self.app_state.local_storage,
-            is_refresh,
-            refresh_ring_key,
+            &kind,
             &final_share_bytes,
             &pub_poly_bytes,
             &aggregate_pk,
@@ -1377,17 +1714,49 @@ where
             "DKG Coordinator: Stored RingShareBundle (share + polynomial) atomically"
         );
 
-        // For fresh DKG: cache the RingPayload locally (for incoming refresh validation)
-        // and append the bulletin post_id to RingIndex so the PSS scheduler can discover
-        // this ring and fetch its config directly from the bulletin.
+        // For Reshare: write a RingIndexEntry so the PSS scheduler can discover this ring.
+        // Receiver and DealerReceiver nodes use the bulletin_post_id carried in the SessionInit
+        // (they had no prior index entry).  Dealers have already left and skip this entirely.
+        if matches!(kind, SessionKind::Reshare { .. }) && dkg_role != DkgRole::Dealer {
+            if let Some(post_id) = reshare_bulletin_post_id {
+                let _guard = self.app_state.ring_index_lock.lock().await;
+                let mut ring_index: Vec<RingIndexEntry> = self
+                    .app_state
+                    .local_storage
+                    .get(LocalStorageKeys::RingIndex)
+                    .ok()
+                    .flatten()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or_default();
+                if !ring_index.iter().any(|e| e.ring_pk_str == storage_key) {
+                    ring_index.push(RingIndexEntry {
+                        ring_pk_str: storage_key.clone(),
+                        bulletin_post_id: post_id,
+                    });
+                    let index_bytes = serde_json::to_vec(&ring_index).map_err(|e| {
+                        DkgError::Serialization(format!("Failed to serialize RingIndex: {}", e))
+                    })?;
+                    self.app_state
+                        .local_storage
+                        .set(LocalStorageKeys::RingIndex, index_bytes)
+                        .map_err(|e| {
+                            DkgError::Storage(format!("Failed to store RingIndex: {}", e))
+                        })?;
+                    tracing::info!(
+                        session_id = session_id,
+                        ring_pk = %storage_key,
+                        "Reshare: wrote RingIndexEntry for new-committee node"
+                    );
+                }
+            }
+        }
+
+        // For fresh DKG: cache the RingPayload locally and append a RingIndexEntry so the
+        // PSS scheduler can discover this ring.
         //
-        // All nodes derive the same bulletin post_id deterministically from the payload
-        // bytes — no chain event subscription needed.
-        //
-        // For PSS Refresh: the bulletin entry is unchanged (same ring_pk, peers, threshold,
-        // pss_interval). The polynomial was already updated inside the RingShareBundle write
-        // above. No additional writes needed.
-        if !is_refresh {
+        // For Refresh: bulletin entry is unchanged; polynomial updated in RingShareBundle above.
+        // For Reshare: bulletin is updated below by new-committee node 1.
+        if matches!(kind, SessionKind::Fresh) {
             let peer_ids = self
                 .app_state
                 .dkg_session_state
@@ -1410,6 +1779,7 @@ where
                 ring_pk: ring_pk_hex_for_payload.clone(),
                 peer_ids,
                 next_peer_ids: None,
+                new_threshold: None,
                 threshold: threshold as u32,
                 pss_interval,
             };
@@ -1463,11 +1833,11 @@ where
             }
         }
 
-        // For refresh: clear the in-progress flag now that Phase 4 has succeeded.
-        if is_refresh {
+        // Clear the in-progress ceremony flag now that Phase 4 has succeeded.
+        if let Some(ring_key) = kind.ring_key() {
             self.app_state
                 .dkg_session_state
-                .unmark_ring_refreshing(&storage_key)
+                .unmark_ring_pss(ring_key)
                 .await;
         }
 
@@ -1489,8 +1859,9 @@ where
             "Phase 4: DKG complete! Final share computed"
         );
 
-        // Node 1 is responsible for posting the RingPayload to the bulletin
-        if node_id == 1 && !is_refresh {
+        // Node 1 of the OLD committee posts the RingPayload for fresh DKG.
+        // Reshare bulletin update is handled separately below (new committee node 1).
+        if node_id == 1 && matches!(kind, SessionKind::Fresh) {
             // Get peer_ids from session state
             let peer_ids = self
                 .app_state
@@ -1503,6 +1874,7 @@ where
                 ring_pk: hex::encode(&ring_pk_bytes),
                 peer_ids,
                 next_peer_ids: None,
+                new_threshold: None,
                 threshold: threshold as u32,
                 pss_interval,
             };
@@ -1528,6 +1900,77 @@ where
                 namespace = BULLETIN_RING_NAMESPACE,
                 "DKG Coordinator: Successfully posted RingPayload to bulletin"
             );
+        }
+
+        // For Reshare: node 1 of the NEW committee posts the updated RingPayload with the
+        // new peer_ids and new threshold.  The ring_pk remains the same (same secret).
+        if let SessionKind::Reshare {
+            ring_pk_hex,
+            next_peer_ids,
+            new_threshold,
+            ..
+        } = &kind
+        {
+            // Determine our position in the new committee (sorted) to find new_node_id.
+            let our_peer_id_hex = hex::encode(self.app_state.network.local_peer_id().as_bytes());
+            let our_node_part = extract_node_part(&our_peer_id_hex);
+            // If 0 will skip trying to post (not in new group)
+            let new_node_id = reshare_new_peer_ids
+                .as_ref()
+                .and_then(|peers| {
+                    peers
+                        .iter()
+                        .position(|p| extract_node_part(p) == our_node_part)
+                        .map(|i| (i + 1) as u32)
+                })
+                .unwrap_or(0);
+            // TODO: change to needing a threshold signature
+            if new_node_id == 1 {
+                // Use the sorted peer list from session state (same list used to derive
+                // new_node_id above) so the bulletin payload has a canonical ordering.
+                // next_peer_ids from SessionKind may be unsorted depending on the initiator.
+                let sorted_new_peer_ids = reshare_new_peer_ids
+                    .clone()
+                    .unwrap_or_else(|| next_peer_ids.clone());
+                let ring_payload = RingPayload {
+                    ring_pk: ring_pk_hex.clone(),
+                    peer_ids: sorted_new_peer_ids,
+                    next_peer_ids: None,
+                    new_threshold: None,
+                    threshold: *new_threshold,
+                    pss_interval,
+                };
+                let payload_bytes: Vec<u8> = ring_payload.clone().try_into().map_err(|e| {
+                    DkgError::Serialization(format!(
+                        "Reshare: failed to serialize updated RingPayload: {}",
+                        e
+                    ))
+                })?;
+                // TODO: placeholder I guess need to update bulletin to allow updating on reshare (peers = new_peers, old_peers = None, same concept with threshold)
+                self.app_state
+                    .bulletin
+                    .post(
+                        BULLETIN_RING_NAMESPACE.to_string(),
+                        payload_bytes,
+                        BULLETIN_PLACEHOLDER_PROOF.to_vec(),
+                        Some(session_id.to_string()),
+                    )
+                    .await
+                    .map_err(|e| {
+                        DkgError::Bulletin(format!(
+                            "Reshare: failed to post updated RingPayload: {}",
+                            e
+                        ))
+                    })?;
+
+                tracing::info!(
+                    ring_pk = %ring_pk_hex,
+                    namespace = BULLETIN_RING_NAMESPACE,
+                    new_threshold = new_threshold,
+                    new_committee_size = next_peer_ids.len(),
+                    "Reshare: Successfully posted updated RingPayload to bulletin"
+                );
+            }
         }
 
         // Clean up session data - no longer needed since private share is in local storage

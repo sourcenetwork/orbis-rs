@@ -464,6 +464,11 @@ pub enum DkgMode<F> {
         new_threshold: usize,
         /// Total nodes in the new committee.
         new_total_nodes: usize,
+        /// This node's index in the new committee (1-based), if it is also a
+        /// new-committee member (`DealerReceiver`).  `None` for pure `Dealer` nodes.
+        /// Used so the crypto layer can validate incoming share `to_id` against the
+        /// new-committee index rather than the old-committee `self.id`.
+        new_node_id: Option<u32>,
     },
 }
 
@@ -546,6 +551,9 @@ pub trait Dkg: Send + Sync {
 
     /// Get a reference to the polynomial commitment
     fn commitment(&self) -> &Self::PolynomialCommitment;
+
+    /// Get the role of this node in the current DKG session.
+    fn role(&self) -> DkgRole;
 
     /// Add two serialized public polynomials coefficient-wise and return the result.
     ///
