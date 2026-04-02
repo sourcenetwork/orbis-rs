@@ -29,10 +29,9 @@ pub enum DkgPhase {
     Initializing,
     /// Phase 1 - Generating polynomial and broadcasting commitments
     Phase1Commitments,
-    /// Phase 2 - Generating and sending shares
+    /// Phase 2 - Generating and sending shares; share verification happens
+    /// inline as each share is received (no separate phase state needed).
     Phase2Shares,
-    /// Phase 3 - Verifying shares (happens automatically)
-    Phase3Verification,
     /// Phase 4 - Computing final shares
     Phase4Complete,
     /// Error state
