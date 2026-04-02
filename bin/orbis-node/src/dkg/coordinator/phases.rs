@@ -115,8 +115,8 @@ where
         + Clone
         + 'static,
 {
-    // Check polynomial readiness, expected commitment count, and our role.
-    let (has_polynomial, expected_commitments, node_id, role) = coord
+    // Check phase, polynomial readiness, expected commitment count, and our role.
+    let (phase, has_polynomial, expected_commitments, node_id, role) = coord
         .app_state
         .dkg_session_state
         .with_state(&session_id, |state| {
@@ -128,6 +128,7 @@ where
                 _ => state.node.total_nodes() - 1,
             };
             (
+                state.phase,
                 !state.node.commitment().coefficients.is_empty(),
                 expected,
                 state.node.node_id(),
@@ -136,6 +137,11 @@ where
         })
         .await
         .ok_or_else(|| session_not_found(session_id))?;
+
+    // Guard: Phase 2 (or later) is already running — don't trigger it again.
+    if phase == DkgPhase::Phase2Shares || phase == DkgPhase::Phase4Complete {
+        return Ok(());
+    }
 
     // Receiver nodes never generate a polynomial — skip this gate for them.
     if role != DkgRole::Receiver && !has_polynomial {
