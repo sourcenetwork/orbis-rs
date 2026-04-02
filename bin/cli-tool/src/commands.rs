@@ -934,7 +934,7 @@ pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
     })
 }
 
-/// Query the local RingPolyState from a node (public polynomial + refreshed_at timestamp).
+/// Query the local RingPolyState from a node (public polynomial + last_pss timestamp).
 /// Returns an error if the ring_pk_hex is not found on that node.
 pub async fn query_ring_state(endpoint: String, ring_pk_hex: String) -> Result<(String, u64)> {
     let mut client = InfoServiceClient::connect(endpoint.clone())
@@ -947,7 +947,7 @@ pub async fn query_ring_state(endpoint: String, ring_pk_hex: String) -> Result<(
         .map_err(|e| anyhow!("get_ring_state failed: {}", e))?;
 
     let inner = response.into_inner();
-    Ok((inner.public_polynomial, inner.refreshed_at))
+    Ok((inner.public_polynomial, inner.last_pss))
 }
 
 /// Get the current sequence number for an account address.

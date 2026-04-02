@@ -223,7 +223,7 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
             // `ring_pk_hex` is aggregate_pk.to_string() — same key the bundle is stored under.
             // A missing bundle means the ring hasn't completed DKG yet.
             let last_refresh_secs = RingShareBundle::load_by_ring_key(local_storage, ring_pk_hex)
-                .map(|b| b.refreshed_at)
+                .map(|b| b.last_pss)
                 .map_err(|_| {
                     DkgError::Unauthorized(
                         "Ring has no refresh timestamp; cannot accept refresh".to_string(),
@@ -317,7 +317,7 @@ pub fn persist_ring_bundle<S: LocalStorage>(
             let bundle = RingShareBundle {
                 share_bytes: final_share_bytes.to_vec(),
                 public_polynomial: hex::encode(pub_poly_bytes),
-                refreshed_at: now_secs,
+                last_pss: now_secs,
             };
             bundle
                 .save(storage, aggregate_pk)
@@ -367,7 +367,7 @@ pub fn persist_ring_bundle<S: LocalStorage>(
             let new_bundle = RingShareBundle {
                 share_bytes: new_share_bytes,
                 public_polynomial: hex::encode(&new_poly_bytes),
-                refreshed_at: now_secs,
+                last_pss: now_secs,
             };
             new_bundle
                 .save_by_ring_key(storage, ring_pk_hex)
@@ -387,7 +387,7 @@ pub fn persist_ring_bundle<S: LocalStorage>(
             let bundle = RingShareBundle {
                 share_bytes: final_share_bytes.to_vec(),
                 public_polynomial: hex::encode(pub_poly_bytes),
-                refreshed_at: now_secs,
+                last_pss: now_secs,
             };
             bundle.save_by_ring_key(storage, ring_pk_hex).map_err(|e| {
                 DkgError::Storage(format!("Reshare: failed to store share bundle: {}", e))
@@ -448,7 +448,7 @@ mod tests {
         let bundle = RingShareBundle {
             share_bytes: vec![],
             public_polynomial: String::new(),
-            refreshed_at: secs,
+            last_pss: secs,
         };
         bundle.save_by_ring_key(storage, ring_pk).unwrap();
     }

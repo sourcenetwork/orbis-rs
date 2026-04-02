@@ -163,7 +163,7 @@ where
         .as_secs();
     let last_refresh_secs: u64 =
         RingShareBundle::load_by_ring_key(&app_state.local_storage, &ring_pk_str)
-            .map(|b| b.refreshed_at)
+            .map(|b| b.last_pss)
             .unwrap_or(0);
 
     let elapsed = now_secs.saturating_sub(last_refresh_secs);

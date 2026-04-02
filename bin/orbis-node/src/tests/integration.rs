@@ -727,7 +727,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("Sign correctly rejected unauthorized DID!");
 
     // ====================================================================
-    // Step 4: PSS Refresh — poll all nodes until refreshed_at > 0 and
+    // Step 4: PSS Refresh — poll all nodes until last_pss > 0 and
     // polynomial has changed from the initial DKG value.
     //
     // The DKG was started with pss_interval=1s. The nodes run with
@@ -749,7 +749,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         let mut all_refreshed = true;
         for ep in &node_endpoints {
             match cli_tool::query_ring_state(ep.clone(), ring_pk_hex.clone()).await {
-                Ok((poly, refreshed_at)) if refreshed_at > 0 && poly != initial_poly => {}
+                Ok((poly, last_pss)) if last_pss > 0 && poly != initial_poly => {}
                 _ => {
                     all_refreshed = false;
                     break;

@@ -67,7 +67,7 @@ fn reshare_session_init(
     }
 }
 
-/// Write a minimal `RingShareBundle` with the given `refreshed_at` timestamp.
+/// Write a minimal `RingShareBundle` with the given `last_pss` timestamp.
 ///
 /// Used by Dealer Phase 4 tests that need a persisted bundle before cleanup.
 fn write_last_refresh(
@@ -78,7 +78,7 @@ fn write_last_refresh(
     let bundle = RingShareBundle {
         share_bytes: vec![],
         public_polynomial: String::new(),
-        refreshed_at: secs,
+        last_pss: secs,
     };
     bundle.save_by_ring_key(storage, ring_pk).unwrap();
 }

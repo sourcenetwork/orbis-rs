@@ -4,9 +4,8 @@ use crate::dkg::{
 };
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::{
-    cleanup_db, create_authenticated_request, create_test_app_state_default,
-    get_test_ring_post, setup_three_node_network, test_db_path, write_ring_to_bulletin,
-    TestKeyPair,
+    cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_ring_post,
+    setup_three_node_network, test_db_path, write_ring_to_bulletin, TestKeyPair,
 };
 use crate::ring_state::RingPolyState;
 use crate::DkgServiceImpl;
@@ -121,9 +120,9 @@ async fn test_dkg_followed_by_pss_refresh() {
         .expect("read charlie share")
         .expect("charlie share must exist after DKG");
 
-    // Backdate refreshed_at in each node's RingShareBundle so the time-elapsed
+    // Backdate last_pss in each node's RingShareBundle so the time-elapsed
     // check passes immediately.  We load the real bundle (written by DKG Phase 4),
-    // reset refreshed_at to epoch, and write it back.
+    // reset last_pss to epoch, and write it back.
     for state in [
         &network.alice.app_state,
         &network.bob.app_state,
@@ -132,7 +131,7 @@ async fn test_dkg_followed_by_pss_refresh() {
         let mut bundle =
             crate::ring_state::RingShareBundle::load_by_ring_key(&state.local_storage, &key_string)
                 .expect("load RingShareBundle for backdate");
-        bundle.refreshed_at = 0;
+        bundle.last_pss = 0;
         bundle
             .save_by_ring_key(&state.local_storage, &key_string)
             .expect("save backdated RingShareBundle");
@@ -248,7 +247,7 @@ async fn test_dkg_followed_by_pss_refresh() {
     println!("PSS refresh initiated (session_id={})", refresh_session_id);
 
     // ── Phase C: Wait for refresh to complete ─────────────────────────────────
-    // Poll RingPolyState on all three nodes until each has refreshed_at > 0,
+    // Poll RingPolyState on all three nodes until each has last_pss > 0,
     // which is set atomically with the updated private share in Phase 4.
     {
         let start = Instant::now();
@@ -262,7 +261,7 @@ async fn test_dkg_followed_by_pss_refresh() {
             .iter()
             .all(|storage| {
                 RingPolyState::load_from_ring_pk_hex(*storage, &ring_pk_hex)
-                    .map(|s| s.refreshed_at > 0)
+                    .map(|s| s.last_pss > 0)
                     .unwrap_or(false)
             });
             if all_done {
@@ -479,7 +478,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
     let fresh_dkg_bundle = crate::ring_state::RingShareBundle {
         share_bytes: vec![0xAA; 32],
         public_polynomial: "fresh_poly".to_string(),
-        refreshed_at: 1_000,
+        last_pss: 1_000,
     };
     fresh_dkg_bundle
         .save_by_ring_key(&app_state.local_storage, ring_key)
@@ -489,7 +488,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
     let refresh_bundle = crate::ring_state::RingShareBundle {
         share_bytes: vec![0xBB; 32],
         public_polynomial: "refresh_poly".to_string(),
-        refreshed_at: 2_000,
+        last_pss: 2_000,
     };
     refresh_bundle
         .save_by_ring_key(&app_state.local_storage, ring_key)
@@ -523,7 +522,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
 // checks happen before any network I/O.
 // =============================================================================
 
-/// Write a minimal `RingShareBundle` with the given `refreshed_at` timestamp.
+/// Write a minimal `RingShareBundle` with the given `last_pss` timestamp.
 fn write_last_refresh(
     storage: &impl local_storage::r#trait::LocalStorage,
     ring_pk: &str,
@@ -532,7 +531,7 @@ fn write_last_refresh(
     let bundle = crate::ring_state::RingShareBundle {
         share_bytes: vec![],
         public_polynomial: String::new(),
-        refreshed_at: secs,
+        last_pss: secs,
     };
     bundle.save_by_ring_key(storage, ring_pk).unwrap();
 }

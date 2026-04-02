@@ -72,7 +72,7 @@ where
             .map_err(|e| Status::not_found(e))?;
         Ok(Response::new(GetRingStateResponse {
             public_polynomial: state.public_polynomial,
-            refreshed_at: state.refreshed_at,
+            last_pss: state.last_pss,
         }))
     }
 }
