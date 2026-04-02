@@ -470,57 +470,55 @@ where
         + Clone
         + 'static,
 {
-    // Read all relevant counters in a single lock to avoid TOCTOU races.
+    // Atomically claim Phase 4 — all conditions are checked and the phase
+    // transition happens inside a single write-lock hold, so no two concurrent
+    // share deliveries can both enter initiate_phase4_completion.
+    //
     // Expected share count depends on role:
-    //   Receiver      → total_nodes (one from each old dealer)
+    //   Receiver           → total_nodes (one from each old dealer)
     //   Standard/DealerReceiver → total_nodes - 1 (excluding self)
-    //   Dealer        → 0 (handled by initiate_phase2_shares, never reaches here)
-    let (expected, received_shares, phase) = coord
+    //   Dealer             → 0 (handled by initiate_phase2_shares, never reaches here)
+    let claimed = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_state_mut(&session_id, |state| {
+            if state.phase == DkgPhase::Phase4Complete {
+                return false;
+            }
             let expected = match state.node.role() {
                 DkgRole::Receiver => state.node.total_nodes(),
                 _ => state.node.total_nodes() - 1,
             };
-            (expected, state.shares_received, state.phase)
+            if state.shares_received < expected {
+                return false;
+            }
+            if state.node.compute_aggregate_public_key().is_err() {
+                tracing::warn!(
+                    "DKG Coordinator: Not all commitments received yet, cannot proceed to Phase 4"
+                );
+                return false;
+            }
+            // Mark Phase4Complete now so any concurrent call returns early.
+            state.phase = DkgPhase::Phase4Complete;
+            true
         })
         .await
         .ok_or_else(|| session_not_found(session_id))?;
 
-    // Guard: don't start Phase 4 again if already completed.
-    if phase == DkgPhase::Phase4Complete {
+    if !claimed {
         return Ok(());
     }
 
-    if received_shares >= expected {
-        tracing::info!(
-            received_shares = received_shares,
-            expected = expected,
-            "Phase 2 complete (all shares received): Proceeding to Phase 4"
-        );
+    tracing::info!(
+        session_id = session_id,
+        "DKG Coordinator: All shares and commitments received, initiating Phase 4"
+    );
 
-        let has_all_commitments = coord
-            .app_state
-            .dkg_session_state
-            .with_state(&session_id, |state| {
-                state.node.compute_aggregate_public_key().is_ok()
-            })
-            .await
-            .ok_or_else(|| session_not_found(session_id))?;
-
-        if !has_all_commitments {
-            tracing::warn!(
-                "DKG Coordinator: Not all commitments received yet, cannot proceed to Phase 4"
-            );
-            return Ok(());
-        }
-
-        tracing::info!(
-            session_id = session_id,
-            "DKG Coordinator: All commitments verified, initiating Phase 4"
-        );
-        initiate_phase4_completion(coord, session_id).await?;
+    // Phase4Complete is already set. If Phase 4 fails, remove the session so
+    // the cleanup worker clears the rings_pss flag and frees memory.
+    if let Err(e) = initiate_phase4_completion(coord, session_id).await {
+        coord.remove_session(session_id).await;
+        return Err(e);
     }
 
     Ok(())
@@ -843,6 +841,8 @@ where
     }
 
     // Clear the in-progress ceremony flag now that Phase 4 has succeeded.
+    // (Phase4Complete was already set by check_and_trigger_phase4 before this
+    // function was called; no second update_phase needed here.)
     if let Some(ring_key) = kind.ring_key() {
         coord
             .app_state
@@ -850,12 +850,6 @@ where
             .unmark_ring_pss(ring_key)
             .await;
     }
-
-    coord
-        .app_state
-        .dkg_session_state
-        .update_phase(&session_id, DkgPhase::Phase4Complete)
-        .await;
 
     let ring_pk_bytes = CryptoSerialize::to_bytes(&aggregate_pk).map_err(|e| {
         DkgError::Serialization(format!("Failed to serialize aggregate public key: {}", e))
