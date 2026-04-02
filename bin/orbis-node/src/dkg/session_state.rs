@@ -39,6 +39,22 @@ pub enum DkgPhase {
     Error,
 }
 
+/// Outcome of a `SessionStateManager::create_session` call.
+///
+/// Callers that marked a ring as in-progress PSS (`try_mark_ring_pss`) before
+/// calling `create_session` MUST unmark it when they receive `LimitReached`.
+/// `AlreadyExists` is safe to ignore because a concurrent handler already owns
+/// the session and will clean up the PSS flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateSessionOutcome {
+    /// Session was created successfully.
+    Created,
+    /// A concurrent handler already created this session — treat as success.
+    AlreadyExists,
+    /// `MAX_DKG_SESSIONS` is at capacity; session was NOT created.
+    LimitReached,
+}
+
 /// DKG Message Type for deduplication (more efficient than String)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DkgMessageType {
@@ -460,21 +476,27 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states.get_mut(session_id).map(f)
     }
 
-    /// Create a new DKG session
+    /// Create a new DKG session.
     ///
-    /// Returns false if the session already exists (to avoid overwriting existing state).
+    /// Returns:
+    /// - `CreateSessionOutcome::Created` on success.
+    /// - `CreateSessionOutcome::AlreadyExists` if a concurrent handler already created
+    ///   the session (safe to ignore).
+    /// - `CreateSessionOutcome::LimitReached` if `MAX_DKG_SESSIONS` is already at
+    ///   capacity (must NOT be silently ignored — callers that marked a ring as
+    ///   in-progress PSS before calling this must unmark it on this outcome).
     pub async fn create_session(
         &self,
         session_id: u64,
         node: D,
         total_participants: usize,
-    ) -> bool {
+    ) -> CreateSessionOutcome {
         if total_participants == 0 {
             tracing::warn!(
                 session_id = session_id,
                 "Cannot create DKG session with zero participants"
             );
-            return false;
+            return CreateSessionOutcome::AlreadyExists;
         }
 
         let mut states = self.states.write().await;
@@ -487,20 +509,20 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 max_sessions = MAX_DKG_SESSIONS,
                 "DKG session limit reached, rejecting new session"
             );
-            return false;
+            return CreateSessionOutcome::LimitReached;
         }
 
         // Check if session already exists to avoid overwriting existing state
         if states.contains_key(&session_id) {
-            tracing::warn!(
+            tracing::debug!(
                 session_id = session_id,
                 "DKG session already exists for session_id"
             );
-            return false;
+            return CreateSessionOutcome::AlreadyExists;
         }
 
         states.insert(session_id, DkgSessionState::new(node, total_participants));
-        true
+        CreateSessionOutcome::Created
     }
 
     /// Check if a session exists
@@ -728,16 +750,27 @@ mod tests {
     async fn test_create_session_success() {
         let mgr = SessionStateManager::<DkgImpl>::new();
         let ok = mgr.create_session(1, make_node(1), 3).await;
-        assert!(ok, "first create should succeed");
+        assert_eq!(
+            ok,
+            CreateSessionOutcome::Created,
+            "first create should succeed"
+        );
         assert_eq!(mgr.session_count().await, 1);
     }
 
     #[tokio::test]
     async fn test_create_session_rejects_duplicate_id() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        assert!(mgr.create_session(42, make_node(1), 3).await);
+        assert_eq!(
+            mgr.create_session(42, make_node(1), 3).await,
+            CreateSessionOutcome::Created
+        );
         let dup = mgr.create_session(42, make_node(2), 3).await;
-        assert!(!dup, "duplicate session_id should be rejected");
+        assert_eq!(
+            dup,
+            CreateSessionOutcome::AlreadyExists,
+            "duplicate session_id should be rejected"
+        );
         assert_eq!(mgr.session_count().await, 1, "count must not increment");
     }
 
@@ -745,7 +778,11 @@ mod tests {
     async fn test_create_session_rejects_zero_participants() {
         let mgr = SessionStateManager::<DkgImpl>::new();
         let ok = mgr.create_session(1, make_node(1), 0).await;
-        assert!(!ok, "zero participants should be rejected");
+        assert_eq!(
+            ok,
+            CreateSessionOutcome::AlreadyExists,
+            "zero participants should be rejected"
+        );
         assert_eq!(mgr.session_count().await, 0);
     }
 
@@ -755,14 +792,23 @@ mod tests {
 
         for i in 0..MAX_DKG_SESSIONS as u64 {
             let ok = mgr.create_session(i, make_node(1), 3).await;
-            assert!(ok, "create should succeed for session {}", i);
+            assert_eq!(
+                ok,
+                CreateSessionOutcome::Created,
+                "create should succeed for session {}",
+                i
+            );
         }
 
         // One beyond the limit must be rejected
         let rejected = mgr
             .create_session(MAX_DKG_SESSIONS as u64, make_node(1), 3)
             .await;
-        assert!(!rejected, "create should fail at session limit");
+        assert_eq!(
+            rejected,
+            CreateSessionOutcome::LimitReached,
+            "create should fail at session limit"
+        );
         assert_eq!(mgr.session_count().await, MAX_DKG_SESSIONS);
     }
 

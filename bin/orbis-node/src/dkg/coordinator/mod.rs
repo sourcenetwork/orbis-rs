@@ -28,7 +28,7 @@ use crate::constants::{DKG_PHASE_TIMEOUT, DKG_SESSION_WAIT_POLL_INTERVAL};
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::session_not_found;
 use crate::dkg::messages::DkgMessage;
-use crate::dkg::session_state::DkgMessageType;
+use crate::dkg::session_state::{CreateSessionOutcome, DkgMessageType};
 use crate::helpers::helpers::extract_node_part;
 use crate::metrics;
 use ::network::PeerId;
@@ -296,13 +296,15 @@ where
         let dkg_node = D::new(node_id, threshold, total_nodes, session_id, role)
             .map_err(|e| DkgError::Crypto(format!("Failed to create DKG node: {}", e)))?;
 
-        if !self
+        match self
             .app_state
             .dkg_session_state
             .create_session(session_id, *dkg_node, total_nodes)
             .await
         {
-            return Err(DkgError::SessionAlreadyExists);
+            CreateSessionOutcome::Created => {}
+            CreateSessionOutcome::AlreadyExists => return Err(DkgError::SessionAlreadyExists),
+            CreateSessionOutcome::LimitReached => return Err(DkgError::MaxSessionsReached),
         }
 
         metrics::record_dkg_session_started();

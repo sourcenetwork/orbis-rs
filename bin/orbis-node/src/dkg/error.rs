@@ -48,6 +48,10 @@ pub enum DkgError {
     #[error("DKG session already exists")]
     SessionAlreadyExists,
 
+    /// Node has reached the maximum number of concurrent DKG sessions
+    #[error("DKG session limit reached: cannot accept new sessions")]
+    MaxSessionsReached,
+
     /// Invalid input
     #[error("Invalid input: {0}")]
     InvalidInput(String),
@@ -102,6 +106,9 @@ impl From<DkgError> for tonic::Status {
                 tonic::Status::new(Code::InvalidArgument, error.to_string())
             }
             DkgError::SessionNotFound(_) => tonic::Status::new(Code::NotFound, error.to_string()),
+            DkgError::MaxSessionsReached => {
+                tonic::Status::new(Code::ResourceExhausted, error.to_string())
+            }
             DkgError::ProtocolError(_) => {
                 metrics::record_dkg_session_failed();
                 tonic::Status::new(Code::FailedPrecondition, error.to_string())

@@ -2,7 +2,7 @@ use crate::constants::MAX_DKG_SESSIONS;
 use crate::dkg::{
     coordinator::DkgCoordinator,
     messages::{DkgMessage, SessionKind},
-    session_state::{DkgMessageType, DkgPhase, SessionStateManager},
+    session_state::{CreateSessionOutcome, DkgMessageType, DkgPhase, SessionStateManager},
 };
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::{
@@ -1070,8 +1070,9 @@ async fn test_session_limit_enforced() {
     for i in 0..MAX_DKG_SESSIONS {
         let dkg_node =
             *DkgImpl::new(1, 2, 3, i as u64, DkgRole::Standard).expect("create DKG node");
-        assert!(
+        assert_eq!(
             manager.create_session(i as u64, dkg_node, 3).await,
+            CreateSessionOutcome::Created,
             "Session {} should be created within limit",
             i
         );
@@ -1082,10 +1083,11 @@ async fn test_session_limit_enforced() {
     // One more should be rejected
     let dkg_node = *DkgImpl::new(1, 2, 3, MAX_DKG_SESSIONS as u64, DkgRole::Standard)
         .expect("create DKG node");
-    assert!(
-        !manager
+    assert_eq!(
+        manager
             .create_session(MAX_DKG_SESSIONS as u64, dkg_node, 3)
             .await,
+        CreateSessionOutcome::LimitReached,
         "Session beyond limit should be rejected"
     );
 
@@ -1106,9 +1108,13 @@ async fn test_duplicate_session_id_rejected() {
     let dkg_node_2 =
         *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
 
-    assert!(manager.create_session(session_id, dkg_node_1, 3).await);
-    assert!(
-        !manager.create_session(session_id, dkg_node_2, 3).await,
+    assert_eq!(
+        manager.create_session(session_id, dkg_node_1, 3).await,
+        CreateSessionOutcome::Created
+    );
+    assert_eq!(
+        manager.create_session(session_id, dkg_node_2, 3).await,
+        CreateSessionOutcome::AlreadyExists,
         "Duplicate session_id should be rejected"
     );
 

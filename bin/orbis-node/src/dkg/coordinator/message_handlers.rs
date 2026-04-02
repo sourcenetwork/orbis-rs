@@ -284,6 +284,24 @@ where
                     "DKG Coordinator: Session already created by concurrent handler"
                 );
             }
+            Err(DkgError::MaxSessionsReached) => {
+                // The ring PSS flag was marked before this call; since no session was
+                // created there is nothing for the cleanup/expiration workers to find,
+                // so we must unmark it here or it leaks until node restart.
+                if let Some(ring_key) = kind.ring_key() {
+                    coord
+                        .app_state
+                        .dkg_session_state
+                        .unmark_ring_pss(ring_key)
+                        .await;
+                    tracing::warn!(
+                        session_id = session_id,
+                        ring_key = %ring_key,
+                        "DKG Coordinator: Unmarked ring PSS flag after session limit rejection"
+                    );
+                }
+                return Err(DkgError::MaxSessionsReached);
+            }
             Err(e) => return Err(e),
         }
 
