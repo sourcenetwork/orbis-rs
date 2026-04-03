@@ -627,9 +627,9 @@ async fn main() -> Result<()> {
             endpoint,
             ring_pk_hex,
         } => {
-            let (poly, refreshed_at) = query_ring_state(endpoint, ring_pk_hex).await?;
+            let (poly, last_pss) = query_ring_state(endpoint, ring_pk_hex).await?;
             println!("PUBLIC_POLYNOMIAL={}", poly);
-            println!("REFRESHED_AT={}", refreshed_at);
+            println!("LAST_PSS={}", last_pss);
         }
         SubCommands::GetLatestRing { namespace } => {
             let (ring_id, ring_pk) = get_latest_ring(namespace).await?;

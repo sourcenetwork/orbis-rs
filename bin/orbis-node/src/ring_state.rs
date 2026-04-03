@@ -25,10 +25,10 @@ pub struct RingShareBundle {
     pub share_bytes: Vec<u8>,
     /// Hex-encoded current public polynomial (updated after each PSS refresh).
     pub public_polynomial: String,
-    /// Unix timestamp (seconds) of the most recent PSS refresh, or 0 for the
-    /// initial DKG.
+    /// Unix timestamp (seconds) of the most recent PSS ceremony (fresh DKG, refresh,
+    /// or reshare), or 0 before the first completion.
     #[serde(default)]
-    pub refreshed_at: u64,
+    pub last_pss: u64,
 }
 
 impl RingShareBundle {
@@ -85,7 +85,7 @@ impl RingShareBundle {
     pub fn to_poly_state(&self) -> RingPolyState {
         RingPolyState {
             public_polynomial: self.public_polynomial.clone(),
-            refreshed_at: self.refreshed_at,
+            last_pss: self.last_pss,
         }
     }
 }
@@ -97,10 +97,10 @@ impl RingShareBundle {
 pub struct RingPolyState {
     /// Hex-encoded current public polynomial.
     pub public_polynomial: String,
-    /// Unix timestamp (seconds) of the most recent PSS refresh, or 0 for the
-    /// initial DKG.
+    /// Unix timestamp (seconds) of the most recent PSS ceremony (fresh DKG, refresh,
+    /// or reshare), or 0 before the first completion.
     #[serde(default)]
-    pub refreshed_at: u64,
+    pub last_pss: u64,
 }
 
 impl RingPolyState {
