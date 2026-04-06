@@ -27,8 +27,8 @@ use crate::ring_state::RingPolyState;
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
-    fetch_key_derivation, load_dist_key_share, serialize_commitments, validate_sign_claims,
-    verify_message_and_get_info,
+    fetch_key_derivation, load_dist_key_share, serialize_commitments, store_response,
+    validate_sign_claims, verify_message_and_get_info,
 };
 use crate::sign::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
@@ -69,7 +69,7 @@ where
     D: Dkg + Clone + 'static,
     S: ThresholdSigner,
 {
-    app_state: Arc<AppState<D>>,
+    pub app_state: Arc<AppState<D>>,
     _phantom: std::marker::PhantomData<S>,
 }
 
@@ -453,7 +453,12 @@ where
 
         // Store the response with the authenticated peer identity
         let authenticated_peer_id = stream.peer_id().clone();
-        self.store_response(response, &authenticated_peer_id).await;
+        store_response(
+            response,
+            &authenticated_peer_id,
+            &self.app_state.sign_response_state,
+        )
+        .await;
 
         Ok(())
     }
@@ -1013,26 +1018,5 @@ where
         all_commitments.sort_by_key(|(id, _)| *id);
 
         Ok((all_commitments, local_signing_state))
-    }
-
-    /// Store a received response (called by protocol handler)
-    ///
-    /// The response is only accepted if the authenticated `sender_peer_id` is in the
-    /// expected responder set (established at init time). This rejects both unknown peers
-    /// and duplicate responses from the same peer. Fake `from_node_id` values are caught
-    /// downstream by crypto verification (`signer.verify_share()`).
-    pub async fn store_response(&self, message: SignMessage, sender_peer_id: &PeerId) {
-        let request_id = message.request_id().to_string();
-
-        tracing::debug!(
-            request_id = %request_id,
-            from_node_id = ?message.from_node_id(),
-            sender_peer = %hex::encode(sender_peer_id.as_bytes()),
-            "Sign Coordinator: Storing response"
-        );
-        self.app_state
-            .sign_response_state
-            .store_response(&request_id, message, sender_peer_id.as_bytes())
-            .await;
     }
 }

@@ -2,7 +2,11 @@ use crate::constants::{
     BULLETIN_RING_NAMESPACE, MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE,
 };
 use crate::ring_state::{RingPolyState, RingShareBundle};
-use crate::sign::error::{Result, SignError};
+use crate::sign::{
+    error::{Result, SignError},
+    messages::SignMessage,
+    response_state::SignResponseManager,
+};
 use authn::{BearerToken, SignClaims};
 use authz::r#trait::Authz;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
@@ -10,6 +14,7 @@ use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, KeyDerivation, 
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, ThresholdSigner};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::LocalStorage;
+use network::PeerId;
 use std::sync::Arc;
 
 /// Deserializes a ring public key from raw bytes.
@@ -371,4 +376,29 @@ pub async fn verify_message_and_get_info<D: Dkg>(
     );
 
     Ok((ring_payload.ring_pk, pub_poly))
+}
+
+/// Store a received response (called by protocol handler)
+///
+/// The response is only accepted if the authenticated `sender_peer_id` is in the
+/// expected responder set (established at init time). This rejects both unknown peers
+/// and duplicate responses from the same peer. Fake `from_node_id` values are caught
+/// downstream by crypto verification (`signer.verify_share()`).
+pub async fn store_response(
+    message: SignMessage,
+    sender_peer_id: &PeerId,
+    sign_response_state: &Arc<SignResponseManager>,
+) {
+    let request_id = message.request_id().to_string();
+
+    tracing::debug!(
+        request_id = %request_id,
+        from_node_id = ?message.from_node_id(),
+        sender_peer = %hex::encode(sender_peer_id.as_bytes()),
+        "Sign Coordinator: Storing response"
+    );
+
+    sign_response_state
+        .store_response(&request_id, message, sender_peer_id.as_bytes())
+        .await;
 }
