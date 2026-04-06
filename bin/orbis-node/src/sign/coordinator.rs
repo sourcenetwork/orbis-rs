@@ -16,8 +16,7 @@
 
 use crate::app_state::AppState;
 use crate::constants::{
-    BULLETIN_RING_NAMESPACE, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
-    PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
+    MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS, PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
 };
 use crate::helpers::helpers::{
     determine_session_node_id, is_ring_reshare_in_progress, is_self_peer_id,
@@ -32,7 +31,6 @@ use crate::sign::helpers::{
 };
 use crate::sign::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
-use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PubPoly as PubPolyTrait, PubShare,
     ThresholdSigner,
