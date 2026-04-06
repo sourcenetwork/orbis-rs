@@ -25,17 +25,11 @@ async fn test_bulletin_document() {
     let namespace = "test_namespace";
     let payload = DocumentPayload::default();
     let serialized_payload: Vec<u8> = payload.clone().try_into().unwrap();
-    let proof = vec![0x01];
 
     bulletin.register(namespace.to_string()).await.unwrap();
 
     bulletin
-        .post(
-            namespace.to_string(),
-            serialized_payload.clone(),
-            proof,
-            None,
-        )
+        .post(namespace.to_string(), serialized_payload.clone(), None)
         .await
         .unwrap();
 
@@ -72,17 +66,11 @@ async fn test_bulletin_ring() {
     let namespace = "test_namespace";
     let payload = RingPayload::default();
     let serialized_payload: Vec<u8> = payload.clone().try_into().unwrap();
-    let proof = vec![0x01];
 
     bulletin.register(namespace.to_string()).await.unwrap();
 
     bulletin
-        .post(
-            namespace.to_string(),
-            serialized_payload.clone(),
-            proof,
-            None,
-        )
+        .post(namespace.to_string(), serialized_payload.clone(), None)
         .await
         .unwrap();
 

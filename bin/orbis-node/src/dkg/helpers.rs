@@ -476,12 +476,7 @@ mod tests {
         // Post garbage bytes to the bulletin and point RingIndex at them.
         let garbage = b"not valid json".to_vec();
         bulletin
-            .post(
-                BULLETIN_RING_NAMESPACE.to_string(),
-                garbage.clone(),
-                vec![],
-                None,
-            )
+            .post(BULLETIN_RING_NAMESPACE.to_string(), garbage.clone(), None)
             .await
             .unwrap();
         let post_id = bulletin
