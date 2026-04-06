@@ -1,15 +1,16 @@
 use crate::constants::{
     BULLETIN_RING_NAMESPACE, MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE,
 };
-use crate::ring_state::RingShareBundle;
+use crate::ring_state::{RingPolyState, RingShareBundle};
 use crate::sign::error::{Result, SignError};
 use authn::{BearerToken, SignClaims};
 use authz::r#trait::Authz;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
-use bulletin::r#trait::{Bulletin, KeyDerivation, RingPayload};
-use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, DistKeyShare, ThresholdSigner};
+use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, KeyDerivation, RingPayload};
+use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, ThresholdSigner};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::LocalStorage;
+use std::sync::Arc;
 
 /// Deserializes a ring public key from raw bytes.
 pub fn decode_ring_pk_bytes(ring_pk_bytes: &[u8]) -> Result<G1Affine> {
@@ -300,4 +301,74 @@ pub async fn fetch_bulletin_payloads(
         .map_err(|e| SignError::Deserialization(format!("Failed to parse ring payload: {}", e)))?;
 
     Ok((derivation_payload, ring_payload))
+}
+
+/// Verify that a message exists on the bulletin and return the ring_pk, pub_poly
+pub async fn verify_message_and_get_info<D: Dkg>(
+    message: &[u8],
+    local_storage: &impl LocalStorage,
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+) -> Result<(String, D::PubPoly)> {
+    // 1. Deserialize the BulletinPost from the message
+    let post: BulletinPost = message.to_vec().try_into().map_err(|e| {
+        SignError::Deserialization(format!("Failed to deserialize BulletinPost: {}", e))
+    })?;
+
+    // 2. Verify it exists on bulletin (read by namespace + id)
+    let actual_post = bulletin
+        .read(post.namespace.clone(), post.id.clone())
+        .await
+        .map_err(|e| {
+            SignError::VerificationFailed(format!(
+                "Failed to read from bulletin (namespace={}, id={}): {}",
+                post.namespace, post.id, e
+            ))
+        })?;
+
+    // 3. Verify payload matches what's on bulletin
+    if actual_post.payload != post.payload {
+        return Err(SignError::VerificationFailed(
+            "Payload mismatch: message payload does not match bulletin".to_string(),
+        ));
+    }
+
+    // 4. Parse the DocumentPayload to get ring_id
+    let doc_payload: DocumentPayload = serde_json::from_slice(&post.payload).map_err(|e| {
+        SignError::Deserialization(format!("Failed to parse DocumentPayload: {}", e))
+    })?;
+
+    // 5. Look up ring info from bulletin
+    let ring_info = bulletin
+        .read(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            doc_payload.ring_id.clone(),
+        )
+        .await
+        .map_err(|e| {
+            SignError::VerificationFailed(format!(
+                "Failed to read ring info for ring_id={}: {}",
+                doc_payload.ring_id, e
+            ))
+        })?;
+
+    let ring_payload: RingPayload = serde_json::from_slice(&ring_info.payload)
+        .map_err(|e| SignError::Deserialization(format!("Failed to parse RingPayload: {}", e)))?;
+
+    // 6. Load pub_poly from local RingPolyState (never on the bulletin).
+    let poly_state = RingPolyState::load_from_ring_pk_hex(local_storage, &ring_payload.ring_pk)
+        .map_err(|e| SignError::Storage(format!("Failed to load ring polynomial state: {}", e)))?;
+    let pub_poly_bytes = hex::decode(&poly_state.public_polynomial).map_err(|e| {
+        SignError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
+    })?;
+    let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
+        SignError::Deserialization(format!("Failed to deserialize public polynomial: {}", e))
+    })?;
+
+    tracing::debug!(
+        post_id = %post.id,
+        ring_id = %doc_payload.ring_id,
+        "Sign Coordinator: Message verified on bulletin"
+    );
+
+    Ok((ring_payload.ring_pk, pub_poly))
 }
