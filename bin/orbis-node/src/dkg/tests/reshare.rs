@@ -76,7 +76,7 @@ fn write_last_refresh(
     secs: u64,
 ) {
     let bundle = RingShareBundle {
-        share_bytes: vec![],
+        share_bytes: vec![].into(),
         public_polynomial: String::new(),
         last_pss: secs,
     };
@@ -864,7 +864,7 @@ async fn run_reshare_ceremony(
     let session_id: u64 = rand::random();
 
     // Snapshot share bytes before reshare so we can detect when they change.
-    let pre_snapshots: Vec<Option<Vec<u8>>> = new_committee_states
+    let pre_snapshots: Vec<Option<zeroize::Zeroizing<Vec<u8>>>> = new_committee_states
         .iter()
         .map(|s| {
             RingShareBundle::load_by_ring_key(&s.local_storage, key_string)
