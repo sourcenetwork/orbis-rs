@@ -38,12 +38,9 @@ impl Bulletin for SourceHubBulletin {
         payload: Vec<u8>,
         artifact: Option<String>,
     ) -> Result<()> {
-        // SourceHub requires a non-empty proof field on MsgCreatePost.
-        // Orbis does not use bulletin-level proof; pass a single placeholder byte.
-        let placeholder_proof = vec![0x01];
         let result = self
             .chain_client
-            .bulletin_create_post_with_proof(&namespace, payload, placeholder_proof, artifact)
+            .bulletin_create_post(&namespace, payload, artifact)
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?;
 
