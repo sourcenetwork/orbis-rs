@@ -11,7 +11,6 @@ use std::{
     sync::{Arc, RwLock},
 };
 use zeroize::Zeroizing;
-use zeroize::Zeroizing;
 
 const NAME: &str = "local-storage/memory";
 

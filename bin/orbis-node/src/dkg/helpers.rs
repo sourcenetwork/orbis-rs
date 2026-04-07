@@ -447,7 +447,7 @@ mod tests {
 
     fn write_last_refresh(storage: &LocalStorageImpl, ring_pk: &str, secs: u64) {
         let bundle = RingShareBundle {
-            share_bytes: vec![],
+            share_bytes: vec![].into(),
             public_polynomial: String::new(),
             last_pss: secs,
         };

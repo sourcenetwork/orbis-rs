@@ -34,7 +34,7 @@ where
     Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
     Node::PubPoly: Clone,
     Node::PolynomialCommitment: Clone,
-    Node::ShareValue: Clone,
+    Node::ShareValue: Clone + zeroize::Zeroize,
 {
     /// Create a new DKG coordinator with the specified nodes.
     ///
@@ -219,7 +219,7 @@ pub mod generic_tests {
         Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
-        Node::ShareValue: Clone,
+        Node::ShareValue: Clone + zeroize::Zeroize,
         F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>>,
         Z: Fn(&Node::PublicKey) -> bool,
     {
@@ -258,7 +258,7 @@ pub mod generic_tests {
         Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
         Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
         Node::PolynomialCommitment: Clone,
-        Node::ShareValue: Clone,
+        Node::ShareValue: Clone + zeroize::Zeroize,
         F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>>,
         G: Fn(&Node::ShareValue) -> Node::PublicKey,
     {
@@ -285,7 +285,7 @@ pub mod generic_tests {
         Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
-        Node::ShareValue: Clone,
+        Node::ShareValue: Clone + zeroize::Zeroize,
         F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>>,
         Z: Fn(&Node::PublicKey) -> bool,
     {
@@ -299,7 +299,7 @@ pub mod generic_tests {
         Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
-        Node::ShareValue: Clone,
+        Node::ShareValue: Clone + zeroize::Zeroize,
         F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>>,
         Z: Fn(&Node::PublicKey) -> bool,
     {
@@ -316,7 +316,7 @@ pub mod generic_tests {
         Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
-        Node::ShareValue: Clone,
+        Node::ShareValue: Clone + zeroize::Zeroize,
         F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>>,
         CreateWrong: Fn() -> Node::ShareValue,
     {
@@ -350,7 +350,7 @@ pub mod generic_tests {
         Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
-        Node::ShareValue: Clone,
+        Node::ShareValue: Clone + zeroize::Zeroize,
         F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
     {
         let result = DKGCoordinator::new(node_factory.clone(), 3, 4);
@@ -378,7 +378,7 @@ pub mod generic_tests {
         Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
-        Node::ShareValue: Clone,
+        Node::ShareValue: Clone + zeroize::Zeroize,
         F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
         CreateShare: Fn(u32, u32, u64) -> crate::r#trait::DistributedShare<Node::ShareValue>,
     {
@@ -434,7 +434,7 @@ pub mod generic_tests {
         Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
-        Node::ShareValue: Clone,
+        Node::ShareValue: Clone + zeroize::Zeroize,
         F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
         Z: Fn(&Node::PublicKey) -> bool,
     {
@@ -469,7 +469,7 @@ pub mod generic_tests {
         Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
         Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
         Node::PolynomialCommitment: Clone,
-        Node::ShareValue: Clone,
+        Node::ShareValue: Clone + zeroize::Zeroize,
         F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
     {
         let n: usize = 3;
@@ -592,7 +592,7 @@ pub mod generic_tests {
         Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
-        Node::ShareValue: Clone,
+        Node::ShareValue: Clone + zeroize::Zeroize,
         F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
     {
         let n_old: usize = 3;

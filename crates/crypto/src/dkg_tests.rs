@@ -47,7 +47,7 @@ where
     Node::PublicKey: ark_serialize::CanonicalSerialize + PartialEq + std::fmt::Debug,
     Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
     Node::PolynomialCommitment: Clone,
-    Node::ShareValue: Clone,
+    Node::ShareValue: Clone + zeroize::Zeroize,
     F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
     Z: Fn(&Node::PublicKey) -> bool + Clone,
     G: Fn(&Node::ShareValue) -> Node::PublicKey + Clone,
