@@ -99,7 +99,7 @@ impl LocalStorage for MemoryStorage {
         }
     }
 
-    fn set_encrypted(&self, key: LocalStorageKeys, value: Vec<u8>) -> Result<()> {
+    fn set_encrypted(&self, key: LocalStorageKeys, value: Zeroizing<Vec<u8>>) -> Result<()> {
         let encrypted = encrypt_value(&self.cipher, &value)?;
         self.set(key, encrypted)
     }

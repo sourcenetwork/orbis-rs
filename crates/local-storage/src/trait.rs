@@ -37,6 +37,6 @@ pub trait LocalStorage {
     /// Gets an item stored encrypted at rest, decrypts it, and returns the plaintext
     /// in a `Zeroizing` wrapper so the bytes are wiped from memory when dropped.
     fn get_encrypted(&self, key: LocalStorageKeys) -> Result<Option<Zeroizing<Vec<u8>>>>;
-    /// Sets an item and encrypts it
-    fn set_encrypted(&self, key: LocalStorageKeys, value: Vec<u8>) -> Result<()>;
+    /// Encrypts the value and stores it. The plaintext buffer is zeroed when dropped.
+    fn set_encrypted(&self, key: LocalStorageKeys, value: Zeroizing<Vec<u8>>) -> Result<()>;
 }
