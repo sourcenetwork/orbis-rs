@@ -15,13 +15,13 @@ use crate::dkg::messages::SessionKind;
 use crate::metrics;
 use crypto::r#trait::{Dkg, DkgMode};
 use network::Connection;
-use zeroize::Zeroize;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
+use zeroize::Zeroize;
 
 /// DKG Protocol Phase
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
