@@ -3,6 +3,7 @@ use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::SessionKind;
 use crate::helpers::helpers::extract_node_part;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
+use zeroize::Zeroizing;
 use authn::{BearerToken, DkgClaims};
 use bulletin::r#trait::{Bulletin, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, PriShare};
@@ -315,7 +316,7 @@ pub fn persist_ring_bundle<S: LocalStorage>(
             // Use now_secs so the PSS scheduler waits a full pss_interval before the
             // first refresh rather than treating the ring as immediately overdue.
             let bundle = RingShareBundle {
-                share_bytes: final_share_bytes.to_vec(),
+                share_bytes: Zeroizing::new(final_share_bytes.to_vec()),
                 public_polynomial: hex::encode(pub_poly_bytes),
                 last_pss: now_secs,
             };
@@ -365,7 +366,7 @@ pub fn persist_ring_bundle<S: LocalStorage>(
                 })?;
 
             let new_bundle = RingShareBundle {
-                share_bytes: new_share_bytes,
+                share_bytes: Zeroizing::new(new_share_bytes),
                 public_polynomial: hex::encode(&new_poly_bytes),
                 last_pss: now_secs,
             };
@@ -385,7 +386,7 @@ pub fn persist_ring_bundle<S: LocalStorage>(
             // Reshare: the computed share is the full new share (not a delta).
             // Write it under the old ring key — the ring public key is unchanged.
             let bundle = RingShareBundle {
-                share_bytes: final_share_bytes.to_vec(),
+                share_bytes: Zeroizing::new(final_share_bytes.to_vec()),
                 public_polynomial: hex::encode(pub_poly_bytes),
                 last_pss: now_secs,
             };

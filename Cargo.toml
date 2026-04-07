@@ -31,7 +31,7 @@ async-trait = "0.1"
 hex = "0.4"
 futures = "0.3"
 sha2 = "0.10"
-zeroize = { version = "1", features = ["derive"] }
+zeroize = { version = "1", features = ["derive", "serde"] }
 
 # Networking
 iroh = "0.95"

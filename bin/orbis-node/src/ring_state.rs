@@ -1,6 +1,7 @@
 use crypto::r#trait::{CryptoDeserialize, PriShare};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use zeroize::Zeroizing;
 
 /// One entry in the node's ring index.
 ///
@@ -22,7 +23,7 @@ pub struct RingIndexEntry {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RingShareBundle {
     /// Serialized `PriShare<Fr>` (output of `CryptoSerialize::to_bytes`).
-    pub share_bytes: Vec<u8>,
+    pub share_bytes: Zeroizing<Vec<u8>>,
     /// Hex-encoded current public polynomial (updated after each PSS refresh).
     pub public_polynomial: String,
     /// Unix timestamp (seconds) of the most recent PSS ceremony (fresh DKG, refresh,
