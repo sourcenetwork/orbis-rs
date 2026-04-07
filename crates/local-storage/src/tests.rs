@@ -40,7 +40,10 @@ pub fn test_encrypted_functions<DB: LocalStorage>(db: DB) {
 
     let get_encrypted_result = db.get_encrypted(LocalStorageKeys::RingKey(key.clone()));
     assert!(get_encrypted_result.is_ok());
-    assert_eq!(get_encrypted_result.unwrap().unwrap(), store_value);
+    assert_eq!(
+        get_encrypted_result.unwrap().unwrap().as_slice(),
+        store_value
+    );
 }
 
 // ============================================================================
@@ -176,7 +179,7 @@ where
             .expect("Failed to get encrypted value");
         assert_eq!(
             decrypted,
-            Some(secret_data),
+            Some(zeroize::Zeroizing::new(secret_data)),
             "Encrypted data did not persist or decrypt correctly"
         );
     }

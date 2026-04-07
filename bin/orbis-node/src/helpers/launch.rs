@@ -144,7 +144,8 @@ pub fn get_network_key_secret(
         Ok(secret_node_key_option) => {
             if let Some(secret_node_key) = secret_node_key_option {
                 tracing::info!("secret network key loaded from local storage");
-                return String::from_utf8(secret_node_key).map_err(PasswordError::Utf8Error);
+                return String::from_utf8(secret_node_key.to_vec())
+                    .map_err(PasswordError::Utf8Error);
             }
         }
         Err(e) => {
@@ -340,7 +341,7 @@ pub fn create_and_store_node_key(
     let hex_key = match local_storage.get_encrypted(LocalStorageKeys::NodeSigningKey) {
         Ok(Some(key_bytes)) => {
             // Key exists, use it
-            let hex_key = String::from_utf8(key_bytes)
+            let hex_key = String::from_utf8(key_bytes.to_vec())
                 .map_err(|e| format!("Failed to parse stored key as UTF-8: {}", e))?;
             tracing::info!("Existing signing key loaded from storage");
             hex_key
@@ -408,7 +409,7 @@ pub fn get_node_signer(
             "No signing key found in storage. Run create_and_store_node_key first.".to_string()
         })?;
 
-    let hex_key = String::from_utf8(key_bytes)
+    let hex_key = String::from_utf8(key_bytes.to_vec())
         .map_err(|e| format!("Failed to parse stored key as UTF-8: {}", e))?;
 
     TxSigner::from_hex_key(&hex_key, config).map_err(|e| format!("Failed to create signer: {}", e))

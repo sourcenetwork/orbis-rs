@@ -10,6 +10,7 @@ use crypto::{CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
 
 /// Returns a `SessionNotFound` error for the given session_id.
 pub fn session_not_found(session_id: u64) -> DkgError {
@@ -315,7 +316,7 @@ pub fn persist_ring_bundle<S: LocalStorage>(
             // Use now_secs so the PSS scheduler waits a full pss_interval before the
             // first refresh rather than treating the ring as immediately overdue.
             let bundle = RingShareBundle {
-                share_bytes: final_share_bytes.to_vec(),
+                share_bytes: Zeroizing::new(final_share_bytes.to_vec()),
                 public_polynomial: hex::encode(pub_poly_bytes),
                 last_pss: now_secs,
             };
@@ -365,7 +366,7 @@ pub fn persist_ring_bundle<S: LocalStorage>(
                 })?;
 
             let new_bundle = RingShareBundle {
-                share_bytes: new_share_bytes,
+                share_bytes: Zeroizing::new(new_share_bytes),
                 public_polynomial: hex::encode(&new_poly_bytes),
                 last_pss: now_secs,
             };
@@ -385,7 +386,7 @@ pub fn persist_ring_bundle<S: LocalStorage>(
             // Reshare: the computed share is the full new share (not a delta).
             // Write it under the old ring key — the ring public key is unchanged.
             let bundle = RingShareBundle {
-                share_bytes: final_share_bytes.to_vec(),
+                share_bytes: Zeroizing::new(final_share_bytes.to_vec()),
                 public_polynomial: hex::encode(pub_poly_bytes),
                 last_pss: now_secs,
             };
@@ -446,7 +447,7 @@ mod tests {
 
     fn write_last_refresh(storage: &LocalStorageImpl, ring_pk: &str, secs: u64) {
         let bundle = RingShareBundle {
-            share_bytes: vec![],
+            share_bytes: vec![].into(),
             public_polynomial: String::new(),
             last_pss: secs,
         };

@@ -5,6 +5,7 @@
 use crate::error::{CryptoError, Result};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use zeroize::Zeroize;
 
 /// Trait for types that can be serialized to bytes.
 ///
@@ -40,9 +41,15 @@ pub struct DistributedShare<ShareValue> {
 
 /// Private share containing an index and a scalar value
 #[derive(Clone, Debug)]
-pub struct PriShare<ShareValue> {
+pub struct PriShare<ShareValue: Zeroize> {
     pub i: u32,
     pub v: ShareValue,
+}
+
+impl<ShareValue: Zeroize> Drop for PriShare<ShareValue> {
+    fn drop(&mut self) {
+        self.v.zeroize();
+    }
 }
 
 /// Public share containing an index and a point value
@@ -56,8 +63,14 @@ pub type SigShare<G> = PubShare<G>;
 
 /// Distributed key share
 #[derive(Clone, Debug)]
-pub struct DistKeyShare<ShareValue> {
+pub struct DistKeyShare<ShareValue: Zeroize> {
     pub pri_share: PriShare<ShareValue>,
+}
+
+impl<ShareValue: Zeroize> Drop for DistKeyShare<ShareValue> {
+    fn drop(&mut self) {
+        self.pri_share.v.zeroize();
+    }
 }
 
 /// Secret structure
@@ -196,7 +209,9 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoDeserialize
     }
 }
 
-impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoSerialize for PriShare<ShareValue> {
+impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoSerialize
+    for PriShare<ShareValue>
+{
     fn to_bytes(&self) -> Result<Vec<u8>> {
         let value_bytes = self.v.to_bytes()?;
 
@@ -212,7 +227,9 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoSerialize for PriSha
     }
 }
 
-impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoDeserialize for PriShare<ShareValue> {
+impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoDeserialize
+    for PriShare<ShareValue>
+{
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
         use crate::error::CryptoError;
 
@@ -270,7 +287,9 @@ impl<PublicKey: CryptoSerialize + CryptoDeserialize> CryptoDeserialize for PubSh
     }
 }
 
-impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoSerialize for DistKeyShare<ShareValue> {
+impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoSerialize
+    for DistKeyShare<ShareValue>
+{
     fn to_bytes(&self) -> Result<Vec<u8>> {
         self.pri_share.to_bytes()
     }
@@ -280,7 +299,7 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoSerialize for DistKe
     }
 }
 
-impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoDeserialize
+impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoDeserialize
     for DistKeyShare<ShareValue>
 {
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
@@ -474,7 +493,7 @@ pub enum DkgMode<F> {
 
 /// Trait for DKG
 pub trait Dkg: Send + Sync {
-    type ShareValue: CryptoSerialize + CryptoDeserialize + Clone + Send + Sync;
+    type ShareValue: CryptoSerialize + CryptoDeserialize + Clone + Send + Sync + Zeroize;
     type PublicKey: CryptoSerialize + CryptoDeserialize + Clone;
     type PubPoly: PubPoly<PublicKey = Self::PublicKey>;
     type PolynomialCommitment: PolynomialCommitment<

@@ -476,7 +476,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
     // ── Step 4: Storage last-writer-wins race. ────────────────────────────────
     // Simulate Phase 4 of the fresh DKG writing its bundle first.
     let fresh_dkg_bundle = crate::ring_state::RingShareBundle {
-        share_bytes: vec![0xAA; 32],
+        share_bytes: vec![0xAA; 32].into(),
         public_polynomial: "fresh_poly".to_string(),
         last_pss: 1_000,
     };
@@ -486,7 +486,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
 
     // Simulate Phase 4 of the refresh writing its bundle second (wins).
     let refresh_bundle = crate::ring_state::RingShareBundle {
-        share_bytes: vec![0xBB; 32],
+        share_bytes: vec![0xBB; 32].into(),
         public_polynomial: "refresh_poly".to_string(),
         last_pss: 2_000,
     };
@@ -504,7 +504,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
         "refresh bundle (written last) should have overwritten the fresh DKG bundle"
     );
     assert_eq!(
-        stored.share_bytes,
+        stored.share_bytes.as_slice(),
         vec![0xBB; 32],
         "refresh share bytes should be present (last writer wins)"
     );
@@ -529,7 +529,7 @@ fn write_last_refresh(
     secs: u64,
 ) {
     let bundle = crate::ring_state::RingShareBundle {
-        share_bytes: vec![],
+        share_bytes: vec![].into(),
         public_polynomial: String::new(),
         last_pss: secs,
     };

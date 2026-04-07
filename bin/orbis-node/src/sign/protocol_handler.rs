@@ -5,6 +5,7 @@
 
 use crate::helpers::protocol_handler::MessageCoordinator;
 use crate::sign::coordinator::SignCoordinator;
+use crate::sign::helpers::store_response;
 use crate::sign::messages::SignMessage;
 use async_trait::async_trait;
 use network::PeerId;
@@ -52,7 +53,7 @@ where
             &msg,
             SignMessage::SignResponse { .. } | SignMessage::NonceResponse { .. }
         ) {
-            self.store_response(msg, peer_id).await;
+            store_response(msg, peer_id, &self.app_state.sign_response_state).await;
             None
         } else {
             Some(msg)
