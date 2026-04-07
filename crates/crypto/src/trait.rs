@@ -5,6 +5,7 @@
 use crate::error::{CryptoError, Result};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use zeroize::Zeroize;
 
 /// Trait for types that can be serialized to bytes.
 ///
@@ -474,7 +475,7 @@ pub enum DkgMode<F> {
 
 /// Trait for DKG
 pub trait Dkg: Send + Sync {
-    type ShareValue: CryptoSerialize + CryptoDeserialize + Clone + Send + Sync;
+    type ShareValue: CryptoSerialize + CryptoDeserialize + Clone + Send + Sync + Zeroize;
     type PublicKey: CryptoSerialize + CryptoDeserialize + Clone;
     type PubPoly: PubPoly<PublicKey = Self::PublicKey>;
     type PolynomialCommitment: PolynomialCommitment<

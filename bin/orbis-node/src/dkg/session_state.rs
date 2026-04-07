@@ -15,6 +15,7 @@ use crate::dkg::messages::SessionKind;
 use crate::metrics;
 use crypto::r#trait::{Dkg, DkgMode};
 use network::Connection;
+use zeroize::Zeroize;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -68,7 +69,10 @@ pub enum DkgMessageType {
 ///
 /// Set by the coordinator when a `SessionInit { kind: SessionKind::Reshare { .. } }` is
 /// received.  `generate_polynomial` reads these to construct `DkgMode::Reshare`.
-pub struct ReshareParams<ShareValue> {
+///
+/// `Drop` zeroes `old_share` whenever this struct is dropped — whether at the end of
+/// `generate_polynomial` (via `.take()`), session expiry, or error paths.
+pub struct ReshareParams<ShareValue: Zeroize> {
     /// Old ring's local-storage key (`aggregate_pk.to_string()`).
     pub ring_key: String,
     /// This node's current secret share value, pre-loaded from local storage at session
@@ -90,6 +94,12 @@ pub struct ReshareParams<ShareValue> {
     /// pure Receiver nodes (which have no local RingIndexEntry) can write their own
     /// entry after Phase 4 completes without recomputing the post ID.
     pub bulletin_post_id: String,
+}
+
+impl<ShareValue: Zeroize> Drop for ReshareParams<ShareValue> {
+    fn drop(&mut self) {
+        self.old_share.zeroize();
+    }
 }
 
 /// Unified state for a DKG session combining crypto state and protocol tracking
