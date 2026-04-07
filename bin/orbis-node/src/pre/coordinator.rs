@@ -21,7 +21,7 @@ use crate::helpers::helpers::{
 use crate::pre::error::{PreError, Result};
 use crate::pre::helpers::{
     check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
-    validate_pre_claims, verify_encryption_binding,
+    store_response, validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::ring_state::RingShareBundle;
@@ -32,7 +32,6 @@ use crypto::r#trait::{
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use network::Message as NetworkMessage;
-use network::PeerId;
 use network::REENCRYPT;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -62,7 +61,7 @@ where
     D: Dkg + Clone + 'static,
     T: ThresholdDealer,
 {
-    app_state: Arc<AppState<D>>,
+    pub app_state: Arc<AppState<D>>,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -302,7 +301,12 @@ where
         let authenticated_peer_id = stream.peer_id().clone();
         match &response {
             PreMessage::ReencryptResponse { .. } => {
-                self.store_response(response, &authenticated_peer_id).await;
+                store_response(
+                    response,
+                    &authenticated_peer_id,
+                    &self.app_state.pre_response_state,
+                )
+                .await;
             }
             PreMessage::Error { error, .. } => {
                 tracing::warn!(
@@ -701,26 +705,5 @@ where
         );
 
         Ok(response_bytes)
-    }
-
-    /// Store a received response (called by protocol handler)
-    ///
-    /// The response is only accepted if the authenticated `sender_peer_id` is in the
-    /// expected responder set (established at init time). This rejects both unknown peers
-    /// and duplicate responses from the same peer. Fake `from_node_id` values are caught
-    /// downstream by crypto verification (`dealer.verify()`).
-    pub async fn store_response(&self, message: PreMessage, sender_peer_id: &PeerId) {
-        let request_id = message.request_id().to_string();
-
-        tracing::debug!(
-            request_id = %request_id,
-            from_node_id = ?message.from_node_id(),
-            sender_peer = %hex::encode(sender_peer_id.as_bytes()),
-            "PRE Coordinator: Storing response"
-        );
-        self.app_state
-            .pre_response_state
-            .store_response(&request_id, message, sender_peer_id.as_bytes())
-            .await;
     }
 }

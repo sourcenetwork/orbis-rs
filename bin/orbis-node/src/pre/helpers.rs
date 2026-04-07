@@ -1,11 +1,17 @@
 use crate::constants::BULLETIN_RING_NAMESPACE;
-use crate::pre::error::{PreError, Result};
+use crate::pre::{
+    error::{PreError, Result},
+    messages::PreMessage,
+    response_state::PreResponseManager,
+};
 use authn::{BearerToken, PreClaims};
 use authz::r#trait::Authz;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, DocumentPayload, RingPayload};
 use crypto::r#trait::{EncryptionProof, Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
+use network::PeerId;
+use std::sync::Arc;
 
 /// Fetches and deserializes the document and ring payloads from the bulletin.
 ///
@@ -173,4 +179,29 @@ pub fn validate_pre_claims(
         )));
     }
     Ok(())
+}
+
+/// Store a received response (called by protocol handler)
+///
+/// The response is only accepted if the authenticated `sender_peer_id` is in the
+/// expected responder set (established at init time). This rejects both unknown peers
+/// and duplicate responses from the same peer. Fake `from_node_id` values are caught
+/// downstream by crypto verification (`dealer.verify()`).
+pub async fn store_response(
+    message: PreMessage,
+    sender_peer_id: &PeerId,
+    pre_response_state: &Arc<PreResponseManager>,
+) {
+    let request_id = message.request_id().to_string();
+
+    tracing::debug!(
+        request_id = %request_id,
+        from_node_id = ?message.from_node_id(),
+        sender_peer = %hex::encode(sender_peer_id.as_bytes()),
+        "PRE Coordinator: Storing response"
+    );
+
+    pre_response_state
+        .store_response(&request_id, message, sender_peer_id.as_bytes())
+        .await;
 }
