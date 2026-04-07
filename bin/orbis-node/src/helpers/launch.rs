@@ -144,7 +144,8 @@ pub fn get_network_key_secret(
         Ok(secret_node_key_option) => {
             if let Some(secret_node_key) = secret_node_key_option {
                 tracing::info!("secret network key loaded from local storage");
-                return String::from_utf8(secret_node_key.to_vec()).map_err(PasswordError::Utf8Error);
+                return String::from_utf8(secret_node_key.to_vec())
+                    .map_err(PasswordError::Utf8Error);
             }
         }
         Err(e) => {

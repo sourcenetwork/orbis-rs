@@ -3,7 +3,6 @@ use crate::{
     error::{LocalStorageError, Result},
     r#trait::{LocalStorage, LocalStorageKeys},
 };
-use zeroize::Zeroizing;
 use aes_gcm::{Aes256Gcm, Key, KeyInit};
 use argon2::password_hash::SaltString;
 use rand_core::{OsRng, RngCore};
@@ -11,6 +10,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
 };
+use zeroize::Zeroizing;
 use zeroize::Zeroizing;
 
 const NAME: &str = "local-storage/memory";

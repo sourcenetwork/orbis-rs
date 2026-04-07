@@ -3,7 +3,6 @@ use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::SessionKind;
 use crate::helpers::helpers::extract_node_part;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
-use zeroize::Zeroizing;
 use authn::{BearerToken, DkgClaims};
 use bulletin::r#trait::{Bulletin, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, PriShare};
@@ -11,6 +10,7 @@ use crypto::{CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
 
 /// Returns a `SessionNotFound` error for the given session_id.
 pub fn session_not_found(session_id: u64) -> DkgError {
