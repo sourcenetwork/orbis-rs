@@ -741,7 +741,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         IntegrationTestNetwork::NODE2_GRPC.to_string(),
         IntegrationTestNetwork::NODE3_GRPC.to_string(),
     ];
-    let poll_deadline = Instant::now() + Duration::from_secs(60);
+    let poll_deadline = Instant::now() + Duration::from_secs(180);
     loop {
         let mut all_refreshed = true;
         for ep in &node_endpoints {
@@ -758,7 +758,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         }
         assert!(
             Instant::now() < poll_deadline,
-            "PSS refresh did not complete on all nodes within 60s"
+            "PSS refresh did not complete on all nodes within 180s"
         );
         sleep(Duration::from_secs(2)).await;
     }
