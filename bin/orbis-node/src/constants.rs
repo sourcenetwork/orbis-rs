@@ -273,19 +273,6 @@ pub const SIGN_COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_RESHARE_INTERVAL_SECS: u64 = 60 * 60;
 
 // ============================================================================
-// Bulletin Proof Constants
-// ============================================================================
-
-/// Placeholder proof for bulletin posts
-///
-/// TODO(crypto): Replace this placeholder with a proper cryptographic proof.
-/// The blockchain currently requires a non-empty proof field. This placeholder
-/// satisfies that requirement but provides no cryptographic guarantees.
-/// A proper implementation should generate a ZK proof or signature that
-/// validates the DKG completion.
-pub const BULLETIN_PLACEHOLDER_PROOF: &[u8] = &[0x01];
-
-// ============================================================================
 // Nonce Serialization Constants (FROST)
 // ============================================================================
 

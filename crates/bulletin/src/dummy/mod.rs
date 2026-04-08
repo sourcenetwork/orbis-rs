@@ -23,7 +23,6 @@ impl Bulletin for DummyBulletin {
         &self,
         namespace: String,
         payload: Vec<u8>,
-        proof: Vec<u8>,
         _artifact: Option<String>,
     ) -> Result<()> {
         // Generate deterministic ID from namespace + payload, matching SourceHubBulletin.
@@ -33,7 +32,6 @@ impl Bulletin for DummyBulletin {
             id: id.clone(),
             namespace: namespace.clone(),
             payload,
-            proof,
         };
 
         let mut posts = self.posts.lock().unwrap();

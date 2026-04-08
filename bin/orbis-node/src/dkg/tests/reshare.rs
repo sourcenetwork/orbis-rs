@@ -154,12 +154,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
         .bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            bytes.clone(),
-            vec![],
-            None,
-        )
+        .post(BULLETIN_RING_NAMESPACE.to_string(), bytes.clone(), None)
         .await
         .unwrap();
     let post_id = app_state
@@ -454,12 +449,7 @@ async fn write_ring_with_announced_reshare(
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
         .bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            bytes.clone(),
-            vec![],
-            None,
-        )
+        .post(BULLETIN_RING_NAMESPACE.to_string(), bytes.clone(), None)
         .await
         .unwrap();
     let post_id = app_state
@@ -806,7 +796,6 @@ async fn post_reshare_announcement(
         .post(
             crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
             bytes.clone(),
-            vec![],
             None,
         )
         .await

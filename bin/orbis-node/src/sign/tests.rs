@@ -3,7 +3,7 @@
 //! This module contains end-to-end tests for the threshold BLS signing protocol.
 //! These tests verify the complete flow: DKG → Sign message → Verify signature.
 
-use crate::constants::{BULLETIN_PLACEHOLDER_PROOF, MAX_SIGN_MESSAGE_BYTES};
+use crate::constants::MAX_SIGN_MESSAGE_BYTES;
 use crate::helpers::helpers::RingConfig;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, get_test_ring_post,
@@ -273,14 +273,8 @@ async fn create_test_document_and_post(
         .expect("compute post_id");
 
     // Post to bulletin
-    let proof = BULLETIN_PLACEHOLDER_PROOF.to_vec();
     bulletin
-        .post(
-            namespace.to_string(),
-            payload_bytes.clone(),
-            proof.clone(),
-            None,
-        )
+        .post(namespace.to_string(), payload_bytes.clone(), None)
         .await
         .expect("post to bulletin");
 
@@ -289,7 +283,6 @@ async fn create_test_document_and_post(
         id: post_id,
         namespace: namespace.to_string(),
         payload: payload_bytes,
-        proof,
     };
 
     // Serialize BulletinPost to bytes
@@ -796,7 +789,6 @@ async fn test_sign_fails_post_not_on_bulletin() {
         id: "fake_post_id_that_doesnt_exist".to_string(),
         namespace: "fake_namespace".to_string(),
         payload: payload_bytes,
-        proof: BULLETIN_PLACEHOLDER_PROOF.to_vec(),
     };
 
     let fake_message: Vec<u8> = fake_bulletin_post
@@ -919,12 +911,7 @@ async fn test_sign_fails_tampered_payload() {
         .alice
         .app_state
         .bulletin
-        .post(
-            namespace.to_string(),
-            original_payload.clone(),
-            BULLETIN_PLACEHOLDER_PROOF.to_vec(),
-            None,
-        )
+        .post(namespace.to_string(), original_payload.clone(), None)
         .await
         .expect("post to bulletin");
 
@@ -946,7 +933,6 @@ async fn test_sign_fails_tampered_payload() {
         id: post_id, // Same ID as the posted one
         namespace: namespace.to_string(),
         payload: tampered_payload, // But different payload!
-        proof: BULLETIN_PLACEHOLDER_PROOF.to_vec(),
     };
 
     let tampered_message: Vec<u8> = tampered_bulletin_post
@@ -1069,12 +1055,7 @@ async fn test_sign_fails_invalid_ring_id() {
         .alice
         .app_state
         .bulletin
-        .post(
-            namespace.to_string(),
-            payload_bytes.clone(),
-            BULLETIN_PLACEHOLDER_PROOF.to_vec(),
-            None,
-        )
+        .post(namespace.to_string(), payload_bytes.clone(), None)
         .await
         .expect("post to bulletin");
 
@@ -1082,7 +1063,6 @@ async fn test_sign_fails_invalid_ring_id() {
         id: post_id,
         namespace: namespace.to_string(),
         payload: payload_bytes,
-        proof: BULLETIN_PLACEHOLDER_PROOF.to_vec(),
     };
 
     let message: Vec<u8> = bulletin_post.try_into().expect("serialize BulletinPost");
@@ -1164,7 +1144,6 @@ fn setup_key_derivation_in_bulletin(
         id: POLICY_TEST_DERIVATION_ID.to_string(),
         namespace: POLICY_TEST_NAMESPACE.to_string(),
         payload,
-        proof: vec![],
     };
     dummy_bulletin.set_post(
         POLICY_TEST_NAMESPACE.to_string(),
