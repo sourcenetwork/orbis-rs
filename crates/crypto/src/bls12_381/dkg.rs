@@ -555,6 +555,18 @@ impl Dkg for DKGNode {
     }
 }
 
+impl Drop for DKGNode {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        for coeff in &mut self.polynomial_coeffs {
+            coeff.zeroize();
+        }
+        for val in self.received_shares.values_mut() {
+            val.zeroize();
+        }
+    }
+}
+
 impl DKGNode {
     pub fn eval_polynomial(&self, x: u32) -> Fr {
         if self.polynomial_coeffs.is_empty() {

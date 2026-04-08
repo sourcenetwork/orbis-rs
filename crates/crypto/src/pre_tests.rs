@@ -118,6 +118,7 @@ where
         ReencryptReply = ReencryptReply<SV, PK>,
     >,
     SV: Clone + zeroize::Zeroize,
+    PK: Clone,
     PP: PubPolyTrait<PublicKey = PK>,
 {
     let share = DistKeyShare {
@@ -126,7 +127,7 @@ where
     let dealer = T::new();
     let reply = dealer.reencrypt(&share, encrypted_secret, rdr_pk, derivation)?;
     let xnc_cmt = dealer
-        .recover(&[reply.share], 1, 1)?
+        .recover(&[reply.share.clone()], 1, 1)?
         .expect("recover with 1 share at t=1 must succeed");
     Ok(xnc_cmt)
 }

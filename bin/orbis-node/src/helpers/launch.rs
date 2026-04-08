@@ -11,6 +11,7 @@ use local_storage::{
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::{env, fs};
+use zeroize::Zeroizing;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "orbis-node")]
@@ -166,7 +167,7 @@ pub fn get_network_key_secret(
     local_storage
         .set_encrypted(
             LocalStorageKeys::NodeSecretKey,
-            secret_hex.as_bytes().to_vec(),
+            Zeroizing::new(secret_hex.as_bytes().to_vec()),
         )
         .map_err(|e| PasswordError::StorageError(e.to_string()))?;
 
@@ -358,7 +359,7 @@ pub fn create_and_store_node_key(
             local_storage
                 .set_encrypted(
                     LocalStorageKeys::NodeSigningKey,
-                    hex_key.as_bytes().to_vec(),
+                    Zeroizing::new(hex_key.as_bytes().to_vec()),
                 )
                 .map_err(|e| format!("Failed to store signing key: {}", e))?;
             hex_key

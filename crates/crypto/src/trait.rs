@@ -31,12 +31,18 @@ pub trait CryptoDeserialize: Sized {
 
 /// A share distributed by one participant to another
 #[derive(Clone, Debug)]
-pub struct DistributedShare<ShareValue> {
+pub struct DistributedShare<ShareValue: Zeroize> {
     pub from_id: u32,
     pub to_id: u32,
     pub value: ShareValue,
     pub nonce: [u8; 16], // Nonce to prevent replay attacks
     pub session_id: u64, // Session ID to prevent replay attacks
+}
+
+impl<ShareValue: Zeroize> Drop for DistributedShare<ShareValue> {
+    fn drop(&mut self) {
+        self.value.zeroize();
+    }
 }
 
 /// Private share containing an index and a scalar value
@@ -121,21 +127,28 @@ impl TryFrom<EncryptionProof> for String {
 
 /// Re-encryption reply
 #[derive(Clone, Debug)]
-pub struct ReencryptReply<ShareValue, PublicKey> {
+pub struct ReencryptReply<ShareValue: Zeroize, PublicKey> {
     pub share: PubShare<PublicKey>,
     pub challenge: ShareValue,
     pub proof: ShareValue,
+}
+
+impl<ShareValue: Zeroize, PublicKey> Drop for ReencryptReply<ShareValue, PublicKey> {
+    fn drop(&mut self) {
+        self.challenge.zeroize();
+        self.proof.zeroize();
+    }
 }
 
 // ============================================================================
 // Serialization implementations for generic structs
 // ============================================================================
 
-impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoSerialize
+impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoSerialize
     for DistributedShare<ShareValue>
 {
     fn to_bytes(&self) -> Result<Vec<u8>> {
-        let value_bytes = self.value.to_bytes()?;
+        let value_bytes = zeroize::Zeroizing::new(self.value.to_bytes()?);
         let value_len = value_bytes.len() as u32;
 
         // Format: from_id (4) + to_id (4) + session_id (8) + nonce (16) + value_len (4) + value
@@ -155,7 +168,7 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoSerialize
     }
 }
 
-impl<ShareValue: CryptoSerialize + CryptoDeserialize> CryptoDeserialize
+impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoDeserialize
     for DistributedShare<ShareValue>
 {
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
@@ -213,7 +226,7 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoSerialize
     for PriShare<ShareValue>
 {
     fn to_bytes(&self) -> Result<Vec<u8>> {
-        let value_bytes = self.v.to_bytes()?;
+        let value_bytes = zeroize::Zeroizing::new(self.v.to_bytes()?);
 
         // Format: i (4) + value
         let mut bytes = Vec::with_capacity(4 + value_bytes.len());
@@ -309,14 +322,14 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoDeserializ
 }
 
 impl<
-        ShareValue: CryptoSerialize + CryptoDeserialize,
+        ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize,
         PublicKey: CryptoSerialize + CryptoDeserialize,
     > CryptoSerialize for ReencryptReply<ShareValue, PublicKey>
 {
     fn to_bytes(&self) -> Result<Vec<u8>> {
         let share_bytes = self.share.to_bytes()?;
-        let challenge_bytes = self.challenge.to_bytes()?;
-        let proof_bytes = self.proof.to_bytes()?;
+        let challenge_bytes = zeroize::Zeroizing::new(self.challenge.to_bytes()?);
+        let proof_bytes = zeroize::Zeroizing::new(self.proof.to_bytes()?);
 
         // Format: share_len (4) + share + challenge_len (4) + challenge + proof_len (4) + proof
         let mut bytes =
@@ -339,7 +352,7 @@ impl<
 }
 
 impl<
-        ShareValue: CryptoSerialize + CryptoDeserialize,
+        ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize,
         PublicKey: CryptoSerialize + CryptoDeserialize,
     > CryptoDeserialize for ReencryptReply<ShareValue, PublicKey>
 {
