@@ -43,7 +43,6 @@ async fn make_state_with_ring(
         .post(
             BULLETIN_RING_NAMESPACE.to_string(),
             payload_bytes.clone(),
-            vec![],
             None,
         )
         .await
@@ -242,12 +241,7 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     let garbage = b"not valid json".to_vec();
     app_state
         .bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            garbage.clone(),
-            vec![],
-            None,
-        )
+        .post(BULLETIN_RING_NAMESPACE.to_string(), garbage.clone(), None)
         .await
         .expect("post garbage");
     let post_id = app_state

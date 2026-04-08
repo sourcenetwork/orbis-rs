@@ -1,4 +1,4 @@
-use crate::constants::{BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE};
+use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
     persist_ring_bundle, serialize_commitment_coefficients, session_not_found,
@@ -890,7 +890,6 @@ where
             .post(
                 BULLETIN_RING_NAMESPACE.to_string(),
                 payload_bytes,
-                BULLETIN_PLACEHOLDER_PROOF.to_vec(),
                 Some(session_id.to_string()),
             )
             .await
@@ -952,7 +951,6 @@ where
                 .post(
                     BULLETIN_RING_NAMESPACE.to_string(),
                     payload_bytes,
-                    BULLETIN_PLACEHOLDER_PROOF.to_vec(),
                     Some(session_id.to_string()),
                 )
                 .await

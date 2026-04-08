@@ -8,7 +8,6 @@ pub struct BulletinPost {
     pub id: String,
     pub namespace: String,
     pub payload: Vec<u8>,
-    pub proof: Vec<u8>,
 }
 
 /// Payload for storing a secret on bulletin document_id => payload
@@ -147,7 +146,6 @@ pub trait Bulletin {
         &self,
         namespace: String,
         payload: Vec<u8>,
-        proof: Vec<u8>,
         artifact: Option<String>,
     ) -> Result<()>;
     /// Read a message from the bulletin namespace

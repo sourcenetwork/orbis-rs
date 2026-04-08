@@ -15,8 +15,7 @@ use prost::Message;
 /// - 1: creator (string)
 /// - 2: namespace (string)
 /// - 3: payload (bytes)
-/// - 4: proof (bytes)
-/// - 5: artifact (string)
+/// - 5: artifact (string)  [tag 4 was proof, removed; tag 5 preserved]
 #[derive(Clone, Message)]
 pub struct MsgCreatePost {
     /// Creator's address
@@ -28,9 +27,6 @@ pub struct MsgCreatePost {
     /// Post payload data
     #[prost(bytes = "vec", tag = "3")]
     pub payload: Vec<u8>,
-    /// Cryptographic proof (optional)
-    #[prost(bytes = "vec", tag = "4")]
-    pub proof: Vec<u8>,
     /// Artifact for finding post (optional)
     #[prost(string, tag = "5")]
     pub artifact: String,
@@ -45,24 +41,6 @@ impl MsgCreatePost {
             creator: creator.to_string(),
             namespace: namespace.to_string(),
             payload,
-            proof: Vec::new(),
-            artifact: artifact.unwrap_or("".to_string()),
-        }
-    }
-
-    /// Create a new post message with proof.
-    pub fn with_proof(
-        creator: &str,
-        namespace: &str,
-        payload: Vec<u8>,
-        proof: Vec<u8>,
-        artifact: Option<String>,
-    ) -> Self {
-        Self {
-            creator: creator.to_string(),
-            namespace: namespace.to_string(),
-            payload,
-            proof,
             artifact: artifact.unwrap_or("".to_string()),
         }
     }
@@ -439,7 +417,7 @@ impl SourceHubClient {
         .await
     }
 
-    /// Create a post in a namespace.
+    /// Create a post with in a namespace.
     pub async fn bulletin_create_post(
         &self,
         namespace: &str,
@@ -451,28 +429,6 @@ impl SourceHubClient {
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
 
         let msg = MsgCreatePost::new(&signer.address(), namespace, payload, artifact);
-
-        self.broadcast_proto_msg_with_gas(
-            MsgCreatePost::TYPE_URL,
-            &msg,
-            self.config().gas_multiplier,
-        )
-        .await
-    }
-
-    /// Create a post with proof in a namespace.
-    pub async fn bulletin_create_post_with_proof(
-        &self,
-        namespace: &str,
-        payload: Vec<u8>,
-        proof: Vec<u8>,
-        artifact: Option<String>,
-    ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
-
-        let msg = MsgCreatePost::with_proof(&signer.address(), namespace, payload, proof, artifact);
 
         self.broadcast_proto_msg_with_gas(
             MsgCreatePost::TYPE_URL,
