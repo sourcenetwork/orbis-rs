@@ -14,3 +14,4 @@ serde = { workspace = true }
 jsonwebtoken = "9"
 jwt-simple = { version = "0.12", default-features = false, features = ["pure-rust"] }
 tonic = "0.14.2"
+zeroize = { workspace = true }

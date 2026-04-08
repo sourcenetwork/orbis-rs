@@ -574,7 +574,7 @@ where
                                 "PRE Coordinator: Added local share"
                             );
                             seen_node_ids.insert(reply.share.i);
-                            verified_shares.push(reply.share);
+                            verified_shares.push(reply.share.clone());
                         }
                         Err(e) => {
                             tracing::error!(
@@ -637,7 +637,7 @@ where
                             from_node_id = from_node_id,
                             "PRE Coordinator: Verified share"
                         );
-                        verified_shares.push(reply.share);
+                        verified_shares.push(reply.share.clone());
                     }
                     Err(e) => {
                         tracing::error!(

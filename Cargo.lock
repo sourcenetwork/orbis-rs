@@ -497,6 +497,7 @@ dependencies = [
  "serde",
  "thiserror 1.0.69",
  "tonic 0.14.2",
+ "zeroize",
 ]
 
 [[package]]
