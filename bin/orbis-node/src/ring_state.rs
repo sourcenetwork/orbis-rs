@@ -21,7 +21,7 @@ pub struct RingIndexEntry {
 /// `set_encrypted` call makes them atomic: a crash can leave the entry absent
 /// (ring not yet committed) but never partially updated.
 ///
-/// Serialized with `bincode` so the plaintext buffer can be held in a
+/// Serialized manually so the plaintext buffer can be held in a
 /// `Zeroizing` wrapper throughout the write path.
 #[derive(Clone, Debug)]
 pub struct RingShareBundle {
@@ -34,19 +34,72 @@ pub struct RingShareBundle {
     pub last_pss: u64,
 }
 
+const BUNDLE_VERSION: u8 = 0x01;
+
 impl RingShareBundle {
+    /// Serialize to the binary wire format into a `Zeroizing` buffer so the
+    /// plaintext containing `share_bytes` is wiped when the buffer is dropped.
     fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
-        Zeroizing::new(
-            bincode::serialize(&(&*self.share_bytes, &self.public_polynomial, self.last_pss))
-                .expect("RingShareBundle serialization is infallible"),
-        )
+        let poly_bytes = self.public_polynomial.as_bytes();
+        // 1 (version) + 4 (share len prefix) + share + 4 (poly len prefix) + poly + 8 (last_pss)
+        let capacity = 1 + 4 + self.share_bytes.len() + 4 + poly_bytes.len() + 8;
+        let mut buf = Zeroizing::new(Vec::with_capacity(capacity));
+
+        buf.push(BUNDLE_VERSION);
+        buf.extend_from_slice(&(self.share_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&self.share_bytes);
+        buf.extend_from_slice(&(poly_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(poly_bytes);
+        buf.extend_from_slice(&self.last_pss.to_le_bytes());
+
+        buf
     }
 
+    /// Deserialize from the binary wire format.
     fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        let (share_bytes, public_polynomial, last_pss): (Vec<u8>, String, u64) =
-            bincode::deserialize(bytes).map_err(|e| format!("RingShareBundle: {e}"))?;
+        if bytes.is_empty() {
+            return Err("RingShareBundle: empty buffer".to_string());
+        }
+        if bytes[0] != BUNDLE_VERSION {
+            return Err(format!(
+                "RingShareBundle: unsupported version 0x{:02X}",
+                bytes[0]
+            ));
+        }
+
+        let mut cursor = 1usize;
+
+        let read_u32 = |buf: &[u8], pos: &mut usize| -> Result<u32, String> {
+            if buf.len() < *pos + 4 {
+                return Err("RingShareBundle: buffer too short (u32)".to_string());
+            }
+            let v = u32::from_le_bytes(buf[*pos..*pos + 4].try_into().unwrap());
+            *pos += 4;
+            Ok(v)
+        };
+
+        let share_len = read_u32(bytes, &mut cursor)? as usize;
+        if bytes.len() < cursor + share_len {
+            return Err("RingShareBundle: buffer too short (share_bytes)".to_string());
+        }
+        let share_bytes = Zeroizing::new(bytes[cursor..cursor + share_len].to_vec());
+        cursor += share_len;
+
+        let poly_len = read_u32(bytes, &mut cursor)? as usize;
+        if bytes.len() < cursor + poly_len {
+            return Err("RingShareBundle: buffer too short (public_polynomial)".to_string());
+        }
+        let public_polynomial = String::from_utf8(bytes[cursor..cursor + poly_len].to_vec())
+            .map_err(|e| format!("RingShareBundle: invalid utf-8 in polynomial: {}", e))?;
+        cursor += poly_len;
+
+        if bytes.len() < cursor + 8 {
+            return Err("RingShareBundle: buffer too short (last_pss)".to_string());
+        }
+        let last_pss = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
+
         Ok(Self {
-            share_bytes: Zeroizing::new(share_bytes),
+            share_bytes,
             public_polynomial,
             last_pss,
         })

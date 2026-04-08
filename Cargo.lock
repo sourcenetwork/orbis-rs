@@ -4015,7 +4015,6 @@ dependencies = [
  "authn",
  "authz",
  "base64 0.22.1",
- "bincode",
  "bulletin",
  "clap",
  "cli-tool",
