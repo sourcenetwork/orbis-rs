@@ -213,7 +213,14 @@ where
     // On failure we must unmark the ring ourselves — no session exists yet so the
     // cleanup workers won't do it.
     if let Err(e) = coordinator
-        .create_session(session_id, our_node_id, threshold, total, DkgRole::Standard)
+        .create_session(
+            session_id,
+            our_node_id,
+            threshold,
+            total,
+            DkgRole::Standard,
+            |_| {},
+        )
         .await
     {
         tracing::error!(

@@ -285,21 +285,29 @@ where
     ///
     /// Typically called when a `StartDkg` gRPC request is received,
     /// or internally by the PSS reshare scheduler.
-    pub async fn create_session(
+    ///
+    /// `init_fn` is invoked on the new session state while the state map's write lock
+    /// is held, so the session is fully initialized before any other task can observe
+    /// it. Pass `|_| {}` when no extra initialization is needed.
+    pub async fn create_session<F>(
         &self,
         session_id: u64,
         node_id: u32,
         threshold: usize,
         total_nodes: usize,
         role: DkgRole,
-    ) -> Result<()> {
+        init_fn: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(&mut crate::dkg::session_state::DkgSessionState<D>),
+    {
         let dkg_node = D::new(node_id, threshold, total_nodes, session_id, role)
             .map_err(|e| DkgError::Crypto(format!("Failed to create DKG node: {}", e)))?;
 
         match self
             .app_state
             .dkg_session_state
-            .create_session(session_id, *dkg_node, total_nodes)
+            .create_session(session_id, *dkg_node, total_nodes, init_fn)
             .await
         {
             CreateSessionOutcome::Created => {}

@@ -494,12 +494,24 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// - `CreateSessionOutcome::LimitReached` if `MAX_DKG_SESSIONS` is already at
     ///   capacity (must NOT be silently ignored — callers that marked a ring as
     ///   in-progress PSS before calling this must unmark it on this outcome).
-    pub async fn create_session(
+    /// Create a new DKG session, optionally initializing it via `init_fn` before
+    /// the write lock is released.
+    ///
+    /// `init_fn` is called on the newly created state while the map's write lock is
+    /// still held, so the session is never visible to other tasks in a
+    /// partially-initialized state (e.g. with `kind = Fresh` and `reshare_params = None`
+    /// when this is actually a Reshare session). Pass `|_| {}` when no extra
+    /// initialization is needed.
+    pub async fn create_session<F>(
         &self,
         session_id: u64,
         node: D,
         total_participants: usize,
-    ) -> CreateSessionOutcome {
+        init_fn: F,
+    ) -> CreateSessionOutcome
+    where
+        F: FnOnce(&mut DkgSessionState<D>),
+    {
         if total_participants == 0 {
             tracing::warn!(
                 session_id = session_id,
@@ -530,7 +542,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             return CreateSessionOutcome::AlreadyExists;
         }
 
-        states.insert(session_id, DkgSessionState::new(node, total_participants));
+        let mut new_state = DkgSessionState::new(node, total_participants);
+        init_fn(&mut new_state);
+        states.insert(session_id, new_state);
         CreateSessionOutcome::Created
     }
 
@@ -758,7 +772,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_session_success() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        let ok = mgr.create_session(1, make_node(1), 3).await;
+        let ok = mgr.create_session(1, make_node(1), 3, |_| {}).await;
         assert_eq!(
             ok,
             CreateSessionOutcome::Created,
@@ -771,10 +785,10 @@ mod tests {
     async fn test_create_session_rejects_duplicate_id() {
         let mgr = SessionStateManager::<DkgImpl>::new();
         assert_eq!(
-            mgr.create_session(42, make_node(1), 3).await,
+            mgr.create_session(42, make_node(1), 3, |_| {}).await,
             CreateSessionOutcome::Created
         );
-        let dup = mgr.create_session(42, make_node(2), 3).await;
+        let dup = mgr.create_session(42, make_node(2), 3, |_| {}).await;
         assert_eq!(
             dup,
             CreateSessionOutcome::AlreadyExists,
@@ -786,7 +800,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_session_rejects_zero_participants() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        let ok = mgr.create_session(1, make_node(1), 0).await;
+        let ok = mgr.create_session(1, make_node(1), 0, |_| {}).await;
         assert_eq!(
             ok,
             CreateSessionOutcome::AlreadyExists,
@@ -800,7 +814,7 @@ mod tests {
         let mgr = SessionStateManager::<DkgImpl>::new();
 
         for i in 0..MAX_DKG_SESSIONS as u64 {
-            let ok = mgr.create_session(i, make_node(1), 3).await;
+            let ok = mgr.create_session(i, make_node(1), 3, |_| {}).await;
             assert_eq!(
                 ok,
                 CreateSessionOutcome::Created,
@@ -811,7 +825,7 @@ mod tests {
 
         // One beyond the limit must be rejected
         let rejected = mgr
-            .create_session(MAX_DKG_SESSIONS as u64, make_node(1), 3)
+            .create_session(MAX_DKG_SESSIONS as u64, make_node(1), 3, |_| {})
             .await;
         assert_eq!(
             rejected,
@@ -830,7 +844,7 @@ mod tests {
         let mgr = SessionStateManager::<DkgImpl>::new();
         assert!(!mgr.session_exists(&7).await);
 
-        mgr.create_session(7, make_node(1), 3).await;
+        mgr.create_session(7, make_node(1), 3, |_| {}).await;
         assert!(mgr.session_exists(&7).await);
 
         mgr.remove_session(&7).await;
@@ -841,9 +855,9 @@ mod tests {
     #[tokio::test]
     async fn test_session_count_tracks_multiple() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        mgr.create_session(1, make_node(1), 3).await;
-        mgr.create_session(2, make_node(1), 3).await;
-        mgr.create_session(3, make_node(1), 3).await;
+        mgr.create_session(1, make_node(1), 3, |_| {}).await;
+        mgr.create_session(2, make_node(1), 3, |_| {}).await;
+        mgr.create_session(3, make_node(1), 3, |_| {}).await;
         assert_eq!(mgr.session_count().await, 3);
 
         mgr.remove_session(&2).await;
@@ -867,7 +881,7 @@ mod tests {
     #[tokio::test]
     async fn test_with_state_returns_value_for_existing_session() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        mgr.create_session(5, make_node(1), 7).await;
+        mgr.create_session(5, make_node(1), 7, |_| {}).await;
         let participants = mgr.with_state(&5, |s| s.total_participants).await;
         assert_eq!(participants, Some(7));
     }
@@ -879,7 +893,7 @@ mod tests {
     #[tokio::test]
     async fn test_phase_update_changes_phase_and_resets_timer() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        mgr.create_session(1, make_node(1), 3).await;
+        mgr.create_session(1, make_node(1), 3, |_| {}).await;
 
         // Capture a timestamp just before the update; monotonic time guarantees
         // phase_started_at set inside update_phase will be >= this value.
@@ -905,7 +919,7 @@ mod tests {
     async fn test_increment_commitment_and_share_counters() {
         let mgr = SessionStateManager::<DkgImpl>::new();
         // 3 participants: need 2 from others (total - 1)
-        mgr.create_session(1, make_node(1), 3).await;
+        mgr.create_session(1, make_node(1), 3, |_| {}).await;
 
         mgr.increment_commitments(&1).await;
         let all = mgr
@@ -940,7 +954,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_and_get_peer_ids() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        mgr.create_session(1, make_node(1), 3).await;
+        mgr.create_session(1, make_node(1), 3, |_| {}).await;
 
         let peers = vec!["peer-a".to_string(), "peer-b".to_string()];
         mgr.set_peer_ids(&1, peers.clone()).await;
@@ -956,7 +970,7 @@ mod tests {
     #[tokio::test]
     async fn test_message_dedup() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        mgr.create_session(1, make_node(1), 3).await;
+        mgr.create_session(1, make_node(1), 3, |_| {}).await;
 
         // Not yet processed
         assert!(
@@ -996,8 +1010,8 @@ mod tests {
         let node2 = make_node(2);
 
         let (r1, r2) = tokio::join!(
-            async move { m1.create_session(42, node1, 3).await },
-            async move { m2.create_session(42, node2, 3).await },
+            async move { m1.create_session(42, node1, 3, |_| {}).await },
+            async move { m2.create_session(42, node2, 3, |_| {}).await },
         );
 
         // The RwLock serialises the two writes; exactly one must win
@@ -1012,7 +1026,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_guard_removes_session_on_drop() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
-        mgr.create_session(10, make_node(1), 3).await;
+        mgr.create_session(10, make_node(1), 3, |_| {}).await;
         assert!(mgr.session_exists(&10).await);
 
         {
@@ -1033,7 +1047,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_guard_defuse_prevents_cleanup() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
-        mgr.create_session(11, make_node(1), 3).await;
+        mgr.create_session(11, make_node(1), 3, |_| {}).await;
 
         let guard = mgr.cleanup_guard(11);
         guard.defuse(); // signals success — no cleanup should happen
@@ -1054,7 +1068,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_expiration_worker_removes_sessions_past_ttl() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
-        mgr.create_session(20, make_node(1), 3).await;
+        mgr.create_session(20, make_node(1), 3, |_| {}).await;
 
         // Backdate created_at past SESSION_TTL (std::time::Instant, not tokio time)
         {
@@ -1078,7 +1092,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_expiration_worker_removes_stalled_phase() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
-        mgr.create_session(30, make_node(1), 3).await;
+        mgr.create_session(30, make_node(1), 3, |_| {}).await;
 
         // Move to Phase1Commitments and backdate phase_started_at past DKG_PHASE_TIMEOUT
         {
@@ -1106,7 +1120,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_expiration_worker_removes_stalled_initializing_session() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
-        mgr.create_session(31, make_node(1), 3).await;
+        mgr.create_session(31, make_node(1), 3, |_| {}).await;
 
         // Session stays in Initializing; backdate phase_started_at past DKG_PHASE_TIMEOUT.
         {
@@ -1133,7 +1147,7 @@ mod tests {
         // Phase4Complete sessions are intentionally skipped by the expiration worker
         // (they wait for explicit remove_session() after the DKG result is stored).
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
-        mgr.create_session(40, make_node(1), 3).await;
+        mgr.create_session(40, make_node(1), 3, |_| {}).await;
 
         {
             let mut states = mgr.states.write().await;
@@ -1202,7 +1216,7 @@ mod tests {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
 
         // Create a refresh session and mark the ring as in-progress (PSS).
-        mgr.create_session(50, make_node(1), 3).await;
+        mgr.create_session(50, make_node(1), 3, |_| {}).await;
         mgr.set_session_kind(
             &50,
             SessionKind::Refresh {
@@ -1238,7 +1252,7 @@ mod tests {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
 
         // Create a refresh session and mark the ring as in-progress (PSS).
-        mgr.create_session(60, make_node(1), 3).await;
+        mgr.create_session(60, make_node(1), 3, |_| {}).await;
         mgr.set_session_kind(
             &60,
             SessionKind::Refresh {

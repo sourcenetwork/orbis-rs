@@ -159,6 +159,7 @@ where
                     req.threshold as usize,
                     actual_total_participants,
                     crypto::r#trait::DkgRole::Standard,
+                    |_| {},
                 )
                 .await?;
             // Guard will clean up session if we return early due to error
