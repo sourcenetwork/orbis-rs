@@ -35,6 +35,11 @@ pub struct DKGNode {
     /// For Reshare dealers this is `new_threshold`; otherwise equals `threshold`.
     effective_threshold: usize,
 
+    /// New-committee index for DealerReceiver nodes in a reshare.
+    /// Used to validate `share.to_id` in `receive_share` (incoming shares are addressed
+    /// by new-committee index, not old-committee `self.id`).  `None` → fall back to `self.id`.
+    effective_receive_id: Option<u32>,
+
     // Own polynomial coefficients (kept secret)
     polynomial_coeffs: Vec<Fr>,
 
@@ -104,6 +109,7 @@ impl Dkg for DKGNode {
             role,
             effective_total_nodes: total_nodes,
             effective_threshold: threshold,
+            effective_receive_id: None,
             polynomial_coeffs: Vec::new(),
             commitment: PolynomialCommitment {
                 coefficients: Vec::new(),
@@ -133,6 +139,7 @@ impl Dkg for DKGNode {
                 participating_ids,
                 new_threshold,
                 new_total_nodes,
+                new_node_id,
             } => {
                 if !participating_ids.contains(&self.id) {
                     return Err(CryptoError::DKGError(
@@ -154,6 +161,9 @@ impl Dkg for DKGNode {
                 }
                 self.effective_threshold = new_threshold;
                 self.effective_total_nodes = new_total_nodes;
+                // For DealerReceiver nodes the new-committee index differs from the
+                // old-committee self.id; record it so receive_share can validate correctly.
+                self.effective_receive_id = new_node_id;
                 lagrange_at_zero(self.id, &participating_ids)? * old_share
             }
         };
@@ -244,8 +254,11 @@ impl Dkg for DKGNode {
             )));
         }
 
-        // Verify the share is intended for us
-        if share.to_id != self.id {
+        // Verify the share is intended for us.
+        // DealerReceiver nodes in a reshare use their new-committee index for incoming
+        // shares; effective_receive_id holds that index (set during generate_polynomial).
+        let expected_receive_id = self.effective_receive_id.unwrap_or(self.id);
+        if share.to_id != expected_receive_id {
             return Err(CryptoError::DKGError(
                 "Share not intended for this node".to_string(),
             ));
@@ -513,6 +526,10 @@ impl Dkg for DKGNode {
         &self.commitment
     }
 
+    fn role(&self) -> DkgRole {
+        self.role
+    }
+
     fn combine_pub_poly_bytes(a: &[u8], b: &[u8]) -> Result<Vec<u8>>
     where
         Self: Sized,
@@ -535,6 +552,18 @@ impl Dkg for DKGNode {
                 .collect(),
         };
         combined.to_bytes()
+    }
+}
+
+impl Drop for DKGNode {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        for coeff in &mut self.polynomial_coeffs {
+            coeff.zeroize();
+        }
+        for val in self.received_shares.values_mut() {
+            val.zeroize();
+        }
     }
 }
 

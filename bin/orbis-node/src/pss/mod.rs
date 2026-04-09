@@ -7,8 +7,8 @@
 //!
 //! ## Protocol
 //! On each tick the node with the lexicographically smallest peer ID in the ring acts
-//! as the initiator. It sends a `SessionInit { is_refresh: true }` to all ring members
-//! and runs the standard DKG commitment/share protocol using `DkgMode::Refresh`
+//! as the initiator. It sends a `SessionInit { kind: SessionKind::Refresh { .. } }` to all
+//! ring members and runs the standard DKG commitment/share protocol using `DkgMode::Refresh`
 //! (zero constant term — same secret, new shares).
 //!
 //! Rings with `pss_interval = None` are skipped (automatic refresh disabled).
@@ -20,7 +20,7 @@ use crate::app_state::AppState;
 use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
-use crate::dkg::messages::DkgMessage;
+use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::helpers::helpers::{extract_node_part, validate_all_peer_ids};
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::r#trait::RingPayload;
@@ -37,7 +37,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// whether a refresh is actually triggered on that tick.
 ///
 /// Setting `check_interval` to zero disables the scheduler entirely.
-pub fn spawn_reshare_scheduler<D>(app_state: Arc<AppState<D>>, check_interval: Duration)
+pub fn spawn_pss_scheduler<D>(app_state: Arc<AppState<D>>, check_interval: Duration)
 where
     D: Dkg<
             ShareValue = Fr,
@@ -163,7 +163,7 @@ where
         .as_secs();
     let last_refresh_secs: u64 =
         RingShareBundle::load_by_ring_key(&app_state.local_storage, &ring_pk_str)
-            .map(|b| b.refreshed_at)
+            .map(|b| b.last_pss)
             .unwrap_or(0);
 
     let elapsed = now_secs.saturating_sub(last_refresh_secs);
@@ -182,7 +182,7 @@ where
     // session ends, or manually below if we fail before `set_refresh_ring_key`.
     if !app_state
         .dkg_session_state
-        .try_mark_ring_refreshing(&ring_pk_str)
+        .try_mark_ring_pss(&ring_pk_str)
         .await
     {
         tracing::debug!(
@@ -225,25 +225,21 @@ where
         );
         app_state
             .dkg_session_state
-            .unmark_ring_refreshing(&ring_pk_str)
+            .unmark_ring_pss(&ring_pk_str)
             .await;
         return Err(e);
     }
 
-    // Mark as refresh so generate_polynomial uses DkgMode::Refresh
+    // Set session kind to Refresh so generate_polynomial uses DkgMode::Refresh and
+    // Phase 4 / expiration workers know which ring key to clear on completion/abort.
     app_state
         .dkg_session_state
-        .mark_as_refresh(&session_id)
-        .await;
-
-    // Store the ring key in session state so Phase 4 / expiration workers can
-    // clear `rings_refreshing`. But if we fail after this point we must clean
-    // up explicitly — the expiration worker exempts Initializing sessions from
-    // DKG_PHASE_TIMEOUT (only evicting them after SESSION_TTL = 30 min), which
-    // would block PSS retries for the entire integration-test window.
-    app_state
-        .dkg_session_state
-        .set_refresh_ring_key(&session_id, ring_pk_str.clone())
+        .set_session_kind(
+            &session_id,
+            SessionKind::Refresh {
+                ring_pk_hex: ring_pk_str.clone(),
+            },
+        )
         .await;
 
     // Store peer_ids and node→peer mappings
@@ -287,8 +283,9 @@ where
         peer_ids: peer_ids.clone(),
         node_id_assignments,
         token_string: String::new(), // refresh sessions skip JWT
-        is_refresh: true,
-        refresh_ring_pk_hex: Some(ring_pk_str.clone()),
+        kind: SessionKind::Refresh {
+            ring_pk_hex: ring_pk_str.clone(),
+        },
         pss_interval: ring_payload.pss_interval,
     };
 

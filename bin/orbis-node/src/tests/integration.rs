@@ -6,7 +6,7 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
-use crate::constants::{BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE};
+use crate::constants::BULLETIN_RING_NAMESPACE;
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use common::IntegrationTestNetwork;
 use common::SOURCEHUB_RPC_URL;
@@ -194,7 +194,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let valid_window_end = Some(150u64);
     let salt = Some("salt".to_string());
     let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
-    let proof = vec![0x01];
 
     cli_tool::register_bulletin_namespace(namespace.clone())
         .await
@@ -236,7 +235,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             timestamp: timestamp.clone(),
         };
         let serialized: Vec<u8> = payload.try_into().expect("serialize payload");
-        cli_tool::create_bulletin_post(namespace.clone(), serialized, proof.clone())
+        cli_tool::create_bulletin_post(namespace.clone(), serialized)
             .await
             .expect("create_bulletin_post")
     };
@@ -355,7 +354,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         id: object_id_service.clone(),
         namespace: namespace.clone(),
         payload: service_bytes.clone(),
-        proof: BULLETIN_PLACEHOLDER_PROOF.to_vec(),
     };
 
     // Serialize BulletinPost to bytes (this is what was signed)
@@ -635,7 +633,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
-        proof.clone(),
     )
     .await
     .expect("post_key_derivation");
@@ -727,7 +724,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("Sign correctly rejected unauthorized DID!");
 
     // ====================================================================
-    // Step 4: PSS Refresh — poll all nodes until refreshed_at > 0 and
+    // Step 4: PSS Refresh — poll all nodes until last_pss > 0 and
     // polynomial has changed from the initial DKG value.
     //
     // The DKG was started with pss_interval=1s. The nodes run with
@@ -744,12 +741,12 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         IntegrationTestNetwork::NODE2_GRPC.to_string(),
         IntegrationTestNetwork::NODE3_GRPC.to_string(),
     ];
-    let poll_deadline = Instant::now() + Duration::from_secs(60);
+    let poll_deadline = Instant::now() + Duration::from_secs(180);
     loop {
         let mut all_refreshed = true;
         for ep in &node_endpoints {
             match cli_tool::query_ring_state(ep.clone(), ring_pk_hex.clone()).await {
-                Ok((poly, refreshed_at)) if refreshed_at > 0 && poly != initial_poly => {}
+                Ok((poly, last_pss)) if last_pss > 0 && poly != initial_poly => {}
                 _ => {
                     all_refreshed = false;
                     break;
@@ -761,7 +758,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         }
         assert!(
             Instant::now() < poll_deadline,
-            "PSS refresh did not complete on all nodes within 60s"
+            "PSS refresh did not complete on all nodes within 180s"
         );
         sleep(Duration::from_secs(2)).await;
     }

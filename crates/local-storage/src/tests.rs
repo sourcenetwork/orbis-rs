@@ -29,8 +29,10 @@ pub fn test_encrypted_functions<DB: LocalStorage>(db: DB) {
     let store_value = b"test_store";
     let key = "test_key".to_string();
 
-    let set_encrypted =
-        db.set_encrypted(LocalStorageKeys::RingKey(key.clone()), store_value.to_vec());
+    let set_encrypted = db.set_encrypted(
+        LocalStorageKeys::RingKey(key.clone()),
+        zeroize::Zeroizing::new(store_value.to_vec()),
+    );
     assert!(set_encrypted.is_ok());
 
     // get should return an encrypted data not the same as original value
@@ -40,7 +42,10 @@ pub fn test_encrypted_functions<DB: LocalStorage>(db: DB) {
 
     let get_encrypted_result = db.get_encrypted(LocalStorageKeys::RingKey(key.clone()));
     assert!(get_encrypted_result.is_ok());
-    assert_eq!(get_encrypted_result.unwrap().unwrap(), store_value);
+    assert_eq!(
+        get_encrypted_result.unwrap().unwrap().as_slice(),
+        store_value
+    );
 }
 
 // ============================================================================
@@ -163,7 +168,7 @@ where
         let storage = constructor(Some(password.clone()), path.to_string())
             .expect("Failed to create database");
         storage
-            .set_encrypted(key.clone(), secret_data.clone())
+            .set_encrypted(key.clone(), zeroize::Zeroizing::new(secret_data.clone()))
             .expect("Failed to set encrypted value");
     }
 
@@ -176,7 +181,7 @@ where
             .expect("Failed to get encrypted value");
         assert_eq!(
             decrypted,
-            Some(secret_data),
+            Some(zeroize::Zeroizing::new(secret_data)),
             "Encrypted data did not persist or decrypt correctly"
         );
     }

@@ -40,8 +40,8 @@ impl JwtSigner {
 
     /// Get the signing key for jwt-simple.
     fn get_signing_key(&self) -> Result<Ed25519KeyPair> {
-        let mut keypair_bytes = self.key_pair.private_key_bytes();
-        keypair_bytes.extend(self.key_pair.public_key_bytes());
+        let mut keypair_bytes = zeroize::Zeroizing::new(self.key_pair.private_key_bytes());
+        keypair_bytes.extend_from_slice(&self.key_pair.public_key_bytes());
         Ed25519KeyPair::from_bytes(&keypair_bytes)
             .map_err(|e| AuthNError::JwtError(format!("Failed to create signing key: {}", e)))
     }

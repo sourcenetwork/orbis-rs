@@ -1,7 +1,5 @@
 use crate::app_state::AppState;
-use crate::constants::{
-    BULLETIN_PLACEHOLDER_PROOF, BULLETIN_RING_NAMESPACE, MAX_TOKEN_LIFETIME_SECS,
-};
+use crate::constants::{BULLETIN_RING_NAMESPACE, MAX_TOKEN_LIFETIME_SECS};
 use crate::helpers::helpers::RingConfig;
 use crate::metrics;
 use crate::ring_state::RingPolyState;
@@ -183,8 +181,6 @@ where
             .map_err(|e| StoreSecretError::Storage(format!("Failed to compute post ID: {}", e)))?;
 
         // 6. Post to bulletin (only if it doesn't already exist)
-        let proof = BULLETIN_PLACEHOLDER_PROOF.to_vec();
-
         // Check if the post already exists (read returns NotFound error if not found)
         let post_exists = match self
             .state
@@ -206,12 +202,7 @@ where
         if !post_exists {
             self.state
                 .bulletin
-                .post(
-                    req.namespace.clone(),
-                    payload_bytes.clone(),
-                    proof.clone(),
-                    None,
-                )
+                .post(req.namespace.clone(), payload_bytes.clone(), None)
                 .await
                 .map_err(|e| {
                     StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e))
@@ -242,7 +233,6 @@ where
                 id: object_id.clone(),
                 namespace: req.namespace.clone(),
                 payload: payload_bytes.clone(),
-                proof: proof.clone(),
             };
 
             // Serialize BulletinPost to bytes for signing

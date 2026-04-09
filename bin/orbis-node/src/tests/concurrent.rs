@@ -34,13 +34,17 @@ use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl};
 use proto::{
     dkg_service::dkg_service_server::DkgServiceServer,
-    info_service::info_service_server::InfoServiceServer,
+    info_service::{
+        info_service_client::InfoServiceClient, info_service_server::InfoServiceServer,
+        GetRingStateRequest,
+    },
     pre_service::pre_service_server::PreServiceServer,
     sign_service::sign_service_server::SignServiceServer,
     store_secret_service::store_secret_service_server::StoreSecretServiceServer,
 };
 use std::sync::Arc;
 use tokio::time::Duration;
+use tonic::Request;
 
 /// A running in-process orbis node with its gRPC server.
 struct LiveNodeHandle {
@@ -69,6 +73,27 @@ struct LiveThreeNodeNetwork {
 
 impl LiveThreeNodeNetwork {
     fn peer_addrs(&self) -> Vec<String> {
+        vec![
+            self.alice.peer_addr.clone(),
+            self.bob.peer_addr.clone(),
+            self.charlie.peer_addr.clone(),
+        ]
+    }
+}
+
+/// Four in-process nodes: three DKG participants plus one extra used only as gRPC initiator.
+struct LiveFourNodeNetwork {
+    alice: LiveNodeHandle,
+    bob: LiveNodeHandle,
+    charlie: LiveNodeHandle,
+    /// gRPC-only coordinator: not included in DKG `peer_ids`.
+    non_participant: LiveNodeHandle,
+    _chain: SourceHubTestContainer,
+}
+
+impl LiveFourNodeNetwork {
+    /// Peer addresses for the three DKG participants (same order as `LiveThreeNodeNetwork::peer_addrs`).
+    fn participant_peer_addrs(&self) -> Vec<String> {
         vec![
             self.alice.peer_addr.clone(),
             self.bob.peer_addr.clone(),
@@ -207,6 +232,101 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
         alice: it.next().unwrap(),
         bob: it.next().unwrap(),
         charlie: it.next().unwrap(),
+        _chain: chain,
+    }
+}
+
+async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFourNodeNetwork {
+    let chain = SourceHubTestContainer::new();
+
+    let mut handles: Vec<LiveNodeHandle> = Vec::new();
+    for i in 0..4u16 {
+        let port = base_port + i;
+        let db_path = test_db_path(&format!("{}_{}", db_prefix, i));
+        cleanup_db(&db_path);
+
+        let local_storage = LocalStorageImpl::new(None, db_path.clone()).expect("local storage");
+
+        let signer =
+            create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
+                .expect("create node signing key");
+        let public_address = signer.address();
+
+        cli_tool::fund(
+            public_address.clone(),
+            ChainConfigBuilder::default().build(),
+        )
+        .await
+        .expect("fund node account via faucet");
+
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+            BulletinImpl::with_signer(
+                ChainConfigBuilder::default(),
+                signer,
+                Some(MIN_NODE_BALANCE),
+            )
+            .await
+            .expect("BulletinImpl with signer"),
+        );
+
+        let authz: Arc<dyn Authz> = Arc::new(
+            AuthzImpl::new(ChainConfigBuilder::default())
+                .await
+                .expect("AuthzImpl"),
+        );
+
+        let network: Arc<dyn Network> = Arc::new(NetworkImpl::new().await.expect("NetworkImpl"));
+
+        let local_address = network.local_address().expect("network local_address");
+        let p2p_socket = network
+            .bound_addresses()
+            .first()
+            .copied()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "127.0.0.1:0".to_string());
+        let peer_addr = format!("{}@{}", local_address, p2p_socket);
+
+        let grpc_bind = format!("127.0.0.1:{}", port);
+        let config = NodeConfig {
+            args: Args {
+                addr: grpc_bind.clone(),
+                log_level: LogLevel::Info,
+                authz_grpc: None,
+                bulletin_grpc: None,
+                chain_rest: None,
+                chain_rpc: None,
+                denom: None,
+                metrics_addr: None,
+                loki_url: None,
+                reshare_interval_secs: 0,
+            },
+            network,
+            local_storage,
+            authz,
+            bulletin,
+        };
+
+        let node = init_node(config).await.expect("init_node");
+        let task = spawn_test_grpc_server(node);
+
+        handles.push(LiveNodeHandle {
+            grpc_endpoint: format!("http://{}", grpc_bind),
+            peer_addr,
+            public_address,
+            db_path,
+            task,
+        });
+    }
+
+    let endpoints: Vec<&str> = handles.iter().map(|h| h.grpc_endpoint.as_str()).collect();
+    wait_for_nodes_ready(&endpoints, 30, Duration::from_millis(200)).await;
+
+    let mut it = handles.into_iter();
+    LiveFourNodeNetwork {
+        alice: it.next().unwrap(),
+        bob: it.next().unwrap(),
+        charlie: it.next().unwrap(),
+        non_participant: it.next().unwrap(),
         _chain: chain,
     }
 }
@@ -638,5 +758,97 @@ async fn test_concurrent_sign_requests() {
     println!(
         "All 3 concurrent SIGN requests completed:\n  obj1={}\n  obj2={}\n  obj3={}",
         resp1.object_id, resp2.object_id, resp3.object_id,
+    );
+}
+
+/// DKG must complete when `StartDkg` is invoked on a node that is **not** in `peer_ids`
+/// (pure coordinator). Participants used to stall because only the initiator called
+/// `initiate_phase1_commitments`; node 1 now starts Phase 1 upon `SessionInit`.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_dkg_non_participant_initiator_completes() {
+    let net = setup_live_four_node_network("dkg_non_participant", 51070).await;
+
+    cli_tool::register_bulletin_namespace(BULLETIN_RING_NAMESPACE.to_string())
+        .await
+        .expect("register ring namespace");
+    for addr in [
+        &net.alice.public_address,
+        &net.bob.public_address,
+        &net.charlie.public_address,
+    ] {
+        cli_tool::add_bulletin_collaborator(BULLETIN_RING_NAMESPACE.to_string(), addr.clone())
+            .await
+            .expect("add collaborator to ring namespace");
+    }
+
+    let sub = BulletinEventSubscription::connect(SOURCEHUB_RPC_URL)
+        .await
+        .expect("ring event subscription");
+
+    let peer_ids = net.participant_peer_addrs();
+    let threshold = 2u32;
+
+    let dkg_result = cli_tool::do_dkg(
+        net.non_participant.grpc_endpoint.clone(),
+        threshold,
+        peer_ids,
+        None,
+    )
+    .await
+    .expect("DKG from non-participant initiator");
+
+    let post_event = sub
+        .wait_for_artifact(&dkg_result.session_id, Duration::from_secs(90))
+        .await
+        .expect("timed out waiting for DKG completion (non-participant initiator)");
+
+    assert!(
+        !post_event.post_id.is_empty(),
+        "DKG must produce a ring bulletin post"
+    );
+
+    let post_payload = cli_tool::read_bulletin_post(
+        BULLETIN_RING_NAMESPACE.to_string(),
+        post_event.post_id.clone(),
+    )
+    .await
+    .expect("read ring post");
+
+    let ring_payload: RingPayload =
+        serde_json::from_slice(&post_payload).expect("parse RingPayload");
+    let ring_pk_hex = ring_payload.ring_pk;
+
+    async fn assert_has_ring_state(grpc_endpoint: &str, ring_pk_hex: &str) {
+        let mut client = InfoServiceClient::connect(grpc_endpoint.to_string())
+            .await
+            .expect("connect InfoService");
+        let resp = client
+            .get_ring_state(Request::new(GetRingStateRequest {
+                ring_pk_hex: ring_pk_hex.to_string(),
+            }))
+            .await
+            .expect("participant must store ring state after DKG");
+        assert!(
+            !resp.into_inner().public_polynomial.is_empty(),
+            "public_polynomial must be populated"
+        );
+    }
+
+    assert_has_ring_state(&net.alice.grpc_endpoint, &ring_pk_hex).await;
+    assert_has_ring_state(&net.bob.grpc_endpoint, &ring_pk_hex).await;
+    assert_has_ring_state(&net.charlie.grpc_endpoint, &ring_pk_hex).await;
+
+    let mut np_client = InfoServiceClient::connect(net.non_participant.grpc_endpoint.clone())
+        .await
+        .expect("connect InfoService on non-participant");
+    let np_ring = np_client
+        .get_ring_state(Request::new(GetRingStateRequest {
+            ring_pk_hex: ring_pk_hex.clone(),
+        }))
+        .await;
+    assert!(
+        np_ring.is_err(),
+        "non-participant initiator must not persist ring state for the ceremony it coordinated"
     );
 }

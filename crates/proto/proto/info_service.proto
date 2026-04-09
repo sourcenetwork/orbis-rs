@@ -23,6 +23,6 @@ message GetRingStateRequest {
 message GetRingStateResponse {
   // Hex-encoded current public polynomial (updated after each PSS refresh).
   string public_polynomial = 1;
-  // Unix timestamp (seconds) of the most recent PSS refresh, or 0 for initial DKG.
-  uint64 refreshed_at = 2;
+  // Unix timestamp (seconds) of the most recent PSS ceremony, or 0 before first completion.
+  uint64 last_pss = 2;
 }

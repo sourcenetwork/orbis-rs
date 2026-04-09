@@ -57,11 +57,12 @@ pub const SESSION_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Timeout for a single DKG phase before the session is considered stalled
 ///
-/// If a DKG session remains in the same phase for longer than this duration,
-/// it is removed by the expiration worker. This catches cases where a peer
-/// never sends its commitment or share, rather than waiting the full SESSION_TTL.
-/// Set to 2 minutes, which gives ample headroom over PEER_RESPONSE_TIMEOUT (10s)
-/// even when all peers need to respond.
+/// If a DKG session remains in the same phase for longer than this duration
+/// (including `Initializing`) it is removed by the expiration worker. This
+/// catches cases where the initiator crashes before Phase 1 starts, or where
+/// a peer never sends its commitment or share, without waiting the full
+/// SESSION_TTL. Set to 2 minutes, which gives ample headroom over
+/// PEER_RESPONSE_TIMEOUT (10s) even when all peers need to respond.
 pub const DKG_PHASE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How often to re-check session existence when an early message arrives before
@@ -270,19 +271,6 @@ pub const SIGN_COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default interval between automatic PSS reshare ceremonies (1 hour).
 /// Set reshare_interval_secs to 0 on node startup to disable.
 pub const DEFAULT_RESHARE_INTERVAL_SECS: u64 = 60 * 60;
-
-// ============================================================================
-// Bulletin Proof Constants
-// ============================================================================
-
-/// Placeholder proof for bulletin posts
-///
-/// TODO(crypto): Replace this placeholder with a proper cryptographic proof.
-/// The blockchain currently requires a non-empty proof field. This placeholder
-/// satisfies that requirement but provides no cryptographic guarantees.
-/// A proper implementation should generate a ZK proof or signature that
-/// validates the DKG completion.
-pub const BULLETIN_PLACEHOLDER_PROOF: &[u8] = &[0x01];
 
 // ============================================================================
 // Nonce Serialization Constants (FROST)

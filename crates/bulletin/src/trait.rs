@@ -8,7 +8,6 @@ pub struct BulletinPost {
     pub id: String,
     pub namespace: String,
     pub payload: Vec<u8>,
-    pub proof: Vec<u8>,
 }
 
 /// Payload for storing a secret on bulletin document_id => payload
@@ -36,6 +35,19 @@ pub struct DocumentPayload {
 pub struct RingPayload {
     /// Public key of ring
     pub ring_pk: String,
+    /// Next peer ids to reshare into.
+    /// When set, a reshare `SessionInit` is only accepted if its `next_peer_ids` matches
+    /// this field (order-independent).  `None` means the bulletin does not constrain the next
+    /// committee — **nodes may still require this field** (e.g. orbis-node enforces a
+    /// pre-announced committee for reshare).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_peer_ids: Option<Vec<String>>,
+    /// Threshold for the new committee announced by `next_peer_ids`.
+    /// Validated against `SessionKind::Reshare::new_threshold` when present.
+    /// `None` means the bulletin does not constrain the new threshold — **nodes may still
+    /// require this field** (e.g. orbis-node enforces a pre-announced threshold for reshare).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_threshold: Option<u32>,
     /// Network ids of peers in ring
     pub peer_ids: Vec<String>,
     /// Threshold of ring
@@ -134,7 +146,6 @@ pub trait Bulletin {
         &self,
         namespace: String,
         payload: Vec<u8>,
-        proof: Vec<u8>,
         artifact: Option<String>,
     ) -> Result<()>;
     /// Read a message from the bulletin namespace

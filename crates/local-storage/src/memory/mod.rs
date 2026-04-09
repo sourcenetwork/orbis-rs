@@ -92,14 +92,14 @@ impl LocalStorage for MemoryStorage {
             .map_err(|e| LocalStorageError::PoisonError(e.to_string()))?;
         Ok(store.contains_key(&key))
     }
-    fn get_encrypted(&self, key: LocalStorageKeys) -> Result<Option<Vec<u8>>> {
+    fn get_encrypted(&self, key: LocalStorageKeys) -> Result<Option<Zeroizing<Vec<u8>>>> {
         match self.get(key)? {
             None => Ok(None),
-            Some(stored) => decrypt_value(&self.cipher, &stored).map(Some),
+            Some(stored) => decrypt_value(&self.cipher, &stored).map(|v| Some(Zeroizing::new(v))),
         }
     }
 
-    fn set_encrypted(&self, key: LocalStorageKeys, value: Vec<u8>) -> Result<()> {
+    fn set_encrypted(&self, key: LocalStorageKeys, value: Zeroizing<Vec<u8>>) -> Result<()> {
         let encrypted = encrypt_value(&self.cipher, &value)?;
         self.set(key, encrypted)
     }

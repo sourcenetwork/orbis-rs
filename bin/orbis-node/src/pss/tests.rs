@@ -43,7 +43,6 @@ async fn make_state_with_ring(
         .post(
             BULLETIN_RING_NAMESPACE.to_string(),
             payload_bytes.clone(),
-            vec![],
             None,
         )
         .await
@@ -89,7 +88,7 @@ async fn test_scheduler_zero_interval_is_noop() {
 
     let state = Arc::new(app_state);
     // Should return immediately without spawning
-    super::spawn_reshare_scheduler(state.clone(), Duration::ZERO);
+    super::spawn_pss_scheduler(state.clone(), Duration::ZERO);
 
     // Give the event loop a chance to run any spawned tasks
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -182,6 +181,8 @@ async fn test_refresh_ring_not_initiator_skips_silently() {
     let ring_payload = RingPayload {
         ring_pk: "fake_pk".to_string(),
         peer_ids: vec![fake_peer_1.clone(), fake_peer_2.clone()],
+        next_peer_ids: None,
+        new_threshold: None,
         threshold: 1,
         pss_interval: Some(86400),
     };
@@ -240,12 +241,7 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     let garbage = b"not valid json".to_vec();
     app_state
         .bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            garbage.clone(),
-            vec![],
-            None,
-        )
+        .post(BULLETIN_RING_NAMESPACE.to_string(), garbage.clone(), None)
         .await
         .expect("post garbage");
     let post_id = app_state

@@ -11,6 +11,7 @@ use crate::constants::{
     DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS, SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
 };
 use crate::dkg::error::DkgError;
+use crate::dkg::messages::SessionKind;
 use crate::metrics;
 use crypto::r#trait::{Dkg, DkgMode};
 use network::Connection;
@@ -20,6 +21,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
+use zeroize::Zeroize;
 
 /// DKG Protocol Phase
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,14 +30,29 @@ pub enum DkgPhase {
     Initializing,
     /// Phase 1 - Generating polynomial and broadcasting commitments
     Phase1Commitments,
-    /// Phase 2 - Generating and sending shares
+    /// Phase 2 - Generating and sending shares; share verification happens
+    /// inline as each share is received (no separate phase state needed).
     Phase2Shares,
-    /// Phase 3 - Verifying shares (happens automatically)
-    Phase3Verification,
     /// Phase 4 - Computing final shares
     Phase4Complete,
     /// Error state
     Error,
+}
+
+/// Outcome of a `SessionStateManager::create_session` call.
+///
+/// Callers that marked a ring as in-progress PSS (`try_mark_ring_pss`) before
+/// calling `create_session` MUST unmark it when they receive `LimitReached`.
+/// `AlreadyExists` is safe to ignore because a concurrent handler already owns
+/// the session and will clean up the PSS flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateSessionOutcome {
+    /// Session was created successfully.
+    Created,
+    /// A concurrent handler already created this session — treat as success.
+    AlreadyExists,
+    /// `MAX_DKG_SESSIONS` is at capacity; session was NOT created.
+    LimitReached,
 }
 
 /// DKG Message Type for deduplication (more efficient than String)
@@ -46,6 +63,43 @@ pub enum DkgMessageType {
     Complaint,
     SessionInit,
     Error,
+}
+
+/// Reshare-specific parameters stored in session state during an active reshare ceremony.
+///
+/// Set by the coordinator when a `SessionInit { kind: SessionKind::Reshare { .. } }` is
+/// received.  `generate_polynomial` reads these to construct `DkgMode::Reshare`.
+///
+/// `Drop` zeroes `old_share` whenever this struct is dropped — whether at the end of
+/// `generate_polynomial` (via `.take()`), session expiry, or error paths.
+pub struct ReshareParams<ShareValue: Zeroize> {
+    /// Old ring's local-storage key (`aggregate_pk.to_string()`).
+    pub ring_key: String,
+    /// This node's current secret share value, pre-loaded from local storage at session
+    /// init time.  `None` for pure `Receiver` nodes (they have no old share).
+    pub old_share: Option<ShareValue>,
+    /// Node IDs of the old committee members participating in this reshare.
+    pub participating_ids: Vec<u32>,
+    /// Threshold for the new committee.
+    pub new_threshold: usize,
+    /// Total nodes in the new committee.
+    pub new_total_nodes: usize,
+    /// Sorted peer IDs of the new committee (index = node_id - 1), used for routing
+    /// outgoing shares in Phase 2.
+    pub new_peer_ids: Vec<String>,
+    /// This node's index in the new committee (1-based).  `None` for pure Dealers
+    /// that are not in the new committee.  Used to validate incoming share `to_id`.
+    pub new_node_id: Option<u32>,
+    /// Bulletin post ID of the ring's current entry.  Carried in the SessionInit so
+    /// pure Receiver nodes (which have no local RingIndexEntry) can write their own
+    /// entry after Phase 4 completes without recomputing the post ID.
+    pub bulletin_post_id: String,
+}
+
+impl<ShareValue: Zeroize> Drop for ReshareParams<ShareValue> {
+    fn drop(&mut self) {
+        self.old_share.zeroize();
+    }
 }
 
 /// Unified state for a DKG session combining crypto state and protocol tracking
@@ -81,17 +135,15 @@ pub struct DkgSessionState<D: Dkg> {
     pub shares_received: usize,
     /// Processed message IDs for deduplication (session_id, from_node_id, message_type)
     pub processed_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
-    /// Set when this is a PSS refresh session; causes generate_polynomial to use DkgMode::Refresh
-    pub is_refresh: bool,
+    /// What kind of ceremony this session is running (Fresh, Refresh, or Reshare).
+    ///
+    /// Drives `generate_polynomial` mode selection and Phase 4 storage/bulletin behaviour.
+    pub kind: SessionKind,
     /// Seconds between automatic PSS refresh ceremonies for this ring.
     /// Stored here during the session so Phase 4 can write it into `RingPayload`.
     pub pss_interval: Option<u64>,
-    /// Local-storage key (`aggregate_pk.to_string()`) of the ring being refreshed.
-    ///
-    /// Present only for PSS refresh sessions. Phase 4 uses this to load the old share,
-    /// add the refresh delta, and store the combined share under the same key so the
-    /// ring public key and local-storage slot are unchanged.
-    pub refresh_ring_key: Option<String>,
+    /// Extra parameters required only for Reshare sessions.  `None` for Fresh and Refresh.
+    pub reshare_params: Option<ReshareParams<D::ShareValue>>,
     /// Per-peer QUIC streams for this session.
     ///
     /// All DKG messages to the same peer within a session travel on the same stream,
@@ -115,26 +167,62 @@ impl<D: Dkg> DkgSessionState<D> {
             commitments_received: 0,
             shares_received: 0,
             processed_messages: std::collections::HashSet::new(),
-            is_refresh: false,
+            kind: SessionKind::Fresh,
             pss_interval: None,
-            refresh_ring_key: None,
+            reshare_params: None,
             peer_streams: HashMap::new(),
         }
     }
 
     /// Generate the polynomial for this session.
     ///
-    /// Uses `DkgMode::Refresh` for PSS refresh sessions (zero constant term, same secret),
-    /// otherwise uses `DkgMode::Fresh` (standard DKG).
+    /// Mode is derived from `kind`:
+    /// - `Fresh`   → `DkgMode::Fresh` (new random secret)
+    /// - `Refresh` → `DkgMode::Refresh` (zero constant term, same secret)
+    /// - `Reshare` → `DkgMode::Reshare` (Lagrange-weighted old share; errors if `old_share` is
+    ///               `None`, which only happens for pure `Receiver` nodes — they must not call this)
     pub fn generate_polynomial(&mut self) -> Result<(), DkgError> {
-        let mode = if self.is_refresh {
-            DkgMode::Refresh
-        } else {
-            DkgMode::Fresh
+        let mode = match &self.kind {
+            SessionKind::Fresh => DkgMode::Fresh,
+            SessionKind::Refresh { .. } => DkgMode::Refresh,
+            SessionKind::Reshare { .. } => {
+                let p = self.reshare_params.as_mut().ok_or_else(|| {
+                    DkgError::Generic(
+                        "Reshare session is missing reshare_params — this is a bug".to_string(),
+                    )
+                })?;
+                // Move old_share out of the Option (leaving None) so it is dropped
+                // as soon as generate_polynomial returns, rather than sitting in
+                // session state for the remainder of the ceremony.
+                let old_share = p.old_share.take().ok_or_else(|| {
+                    DkgError::Generic(
+                        "Reshare: Receiver nodes cannot generate a polynomial".to_string(),
+                    )
+                })?;
+                DkgMode::Reshare {
+                    old_share,
+                    participating_ids: p.participating_ids.clone(),
+                    new_threshold: p.new_threshold,
+                    new_total_nodes: p.new_total_nodes,
+                    new_node_id: p.new_node_id,
+                }
+            }
         };
         self.node
             .generate_polynomial(mode)
             .map_err(|e| DkgError::Crypto(format!("Failed to generate polynomial: {}", e)))
+    }
+
+    /// Expected number of commitment coefficients from peer polynomials.
+    ///
+    /// For Reshare, dealers use `new_threshold` (new committee degree); for all
+    /// other kinds the old/current threshold applies.
+    pub fn expected_commitment_size(&self) -> usize {
+        if let Some(ref p) = self.reshare_params {
+            p.new_threshold
+        } else {
+            self.node.threshold()
+        }
     }
 
     /// Check if all commitments have been received
@@ -210,10 +298,10 @@ pub struct SessionStateManager<D: Dkg> {
     pub(crate) states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
     /// Channel for queueing session cleanup requests
     cleanup_tx: mpsc::UnboundedSender<u64>,
-    /// Ring public key strings that currently have an in-progress refresh session.
-    /// Cleared on Phase 4 success (via unmark_ring_refreshing) or on session
-    /// cleanup/expiration so that a new refresh can be initiated after failure.
-    rings_refreshing: Arc<RwLock<HashSet<String>>>,
+    /// Ring public key strings that currently have an in-progress PSS ceremony
+    /// (refresh or reshare). Cleared on Phase 4 success or session cleanup/expiration
+    /// so that a new ceremony can be initiated after failure.
+    rings_pss: Arc<RwLock<HashSet<String>>>,
 }
 
 impl<D: Dkg + 'static> SessionStateManager<D> {
@@ -221,26 +309,26 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub fn new() -> Self {
         let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel();
         let states = Arc::new(RwLock::new(HashMap::new()));
-        let rings_refreshing = Arc::new(RwLock::new(HashSet::new()));
+        let rings_pss = Arc::new(RwLock::new(HashSet::new()));
 
         // Spawn background cleanup task (handles guard-triggered cleanup)
         let states_clone = states.clone();
-        let refreshing_clone = rings_refreshing.clone();
+        let pss_clone = rings_pss.clone();
         tokio::spawn(async move {
-            Self::cleanup_worker(states_clone, cleanup_rx, refreshing_clone).await;
+            Self::cleanup_worker(states_clone, cleanup_rx, pss_clone).await;
         });
 
         // Spawn background expiration task (handles abandoned sessions)
         let states_clone = states.clone();
-        let refreshing_clone = rings_refreshing.clone();
+        let pss_clone = rings_pss.clone();
         tokio::spawn(async move {
-            Self::expiration_worker(states_clone, refreshing_clone).await;
+            Self::expiration_worker(states_clone, pss_clone).await;
         });
 
         Self {
             states,
             cleanup_tx,
-            rings_refreshing,
+            rings_pss,
         }
     }
 
@@ -248,21 +336,19 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     async fn cleanup_worker(
         states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
         mut rx: mpsc::UnboundedReceiver<u64>,
-        rings_refreshing: Arc<RwLock<HashSet<String>>>,
+        rings_pss: Arc<RwLock<HashSet<String>>>,
     ) {
         while let Some(session_id) = rx.recv().await {
             let mut states = states.write().await;
             if let Some(state) = states.remove(&session_id) {
-                // If this was a refresh session, unblock the ring so future refreshes can proceed.
-                if state.is_refresh {
-                    if let Some(ring_key) = &state.refresh_ring_key {
-                        rings_refreshing.write().await.remove(ring_key);
-                        tracing::debug!(
-                            session_id = session_id,
-                            ring_key = %ring_key,
-                            "SessionStateManager: Cleared in-progress refresh flag on cleanup"
-                        );
-                    }
+                // If this was a refresh or reshare session, unblock the ring.
+                if let Some(ring_key) = state.kind.ring_key() {
+                    rings_pss.write().await.remove(ring_key);
+                    tracing::debug!(
+                        session_id = session_id,
+                        ring_key = %ring_key,
+                        "SessionStateManager: Cleared in-progress PSS flag on cleanup"
+                    );
                 }
                 tracing::debug!(
                     session_id = session_id,
@@ -279,7 +365,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// abandoned and are removed to prevent memory leaks.
     async fn expiration_worker(
         states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
-        rings_refreshing: Arc<RwLock<HashSet<String>>>,
+        rings_pss: Arc<RwLock<HashSet<String>>>,
     ) {
         let mut interval = tokio::time::interval(SESSION_EXPIRATION_CHECK_INTERVAL);
 
@@ -309,7 +395,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     continue;
                 }
                 let phase_age = now.duration_since(state.phase_started_at);
-                if phase_age > DKG_PHASE_TIMEOUT && state.phase != DkgPhase::Initializing {
+                if phase_age > DKG_PHASE_TIMEOUT {
                     metrics::record_dkg_session_abandoned();
                     tracing::warn!(
                         session_id = session_id,
@@ -325,20 +411,20 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             let mut refresh_keys_to_clear: Vec<String> = Vec::new();
             for session_id in to_remove_ids {
                 if let Some(state) = states.remove(&session_id) {
-                    if let Some(k) = state.refresh_ring_key {
-                        refresh_keys_to_clear.push(k);
+                    if let Some(k) = state.kind.ring_key() {
+                        refresh_keys_to_clear.push(k.to_string());
                     }
                 }
             }
 
-            // Clear in-progress refresh flags for expired sessions
+            // Clear in-progress PSS flags for expired sessions
             if !refresh_keys_to_clear.is_empty() {
-                let mut refreshing = rings_refreshing.write().await;
+                let mut pss = rings_pss.write().await;
                 for key in &refresh_keys_to_clear {
-                    refreshing.remove(key);
+                    pss.remove(key);
                     tracing::debug!(
                         ring_key = %key,
-                        "SessionStateManager: Cleared in-progress refresh flag on expiration"
+                        "SessionStateManager: Cleared in-progress PSS flag on expiration"
                     );
                 }
             }
@@ -354,25 +440,22 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
-    /// Atomically check whether a ring refresh is in progress and mark it if not.
+    /// Atomically mark a ring as having an in-progress PSS ceremony (refresh or reshare).
     ///
-    /// Returns `true` if the ring was successfully marked (no refresh was in progress).
-    /// Returns `false` if a refresh is already in progress for this ring.
-    pub async fn try_mark_ring_refreshing(&self, ring_pk_hex: &str) -> bool {
-        self.rings_refreshing
-            .write()
-            .await
-            .insert(ring_pk_hex.to_string())
+    /// Returns `true` if the ring was successfully marked (no ceremony was in progress).
+    /// Returns `false` if a ceremony is already in progress for this ring.
+    pub async fn try_mark_ring_pss(&self, ring_pk_hex: &str) -> bool {
+        self.rings_pss.write().await.insert(ring_pk_hex.to_string())
     }
 
-    /// Returns `true` if a PSS refresh is currently in progress for this ring.
-    pub async fn is_ring_refreshing(&self, ring_pk_key: &str) -> bool {
-        self.rings_refreshing.read().await.contains(ring_pk_key)
+    /// Returns `true` if a PSS ceremony is currently in progress for this ring.
+    pub async fn is_ring_pss_active(&self, ring_pk_key: &str) -> bool {
+        self.rings_pss.read().await.contains(ring_pk_key)
     }
 
-    /// Clear the in-progress refresh flag for a ring (called on Phase 4 success).
-    pub async fn unmark_ring_refreshing(&self, ring_pk_hex: &str) {
-        self.rings_refreshing.write().await.remove(ring_pk_hex);
+    /// Clear the in-progress PSS flag for a ring (called on Phase 4 success or abort).
+    pub async fn unmark_ring_pss(&self, ring_pk_hex: &str) {
+        self.rings_pss.write().await.remove(ring_pk_hex);
     }
 
     /// Create a cleanup guard for a session.
@@ -402,21 +485,27 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states.get_mut(session_id).map(f)
     }
 
-    /// Create a new DKG session
+    /// Create a new DKG session.
     ///
-    /// Returns false if the session already exists (to avoid overwriting existing state).
+    /// Returns:
+    /// - `CreateSessionOutcome::Created` on success.
+    /// - `CreateSessionOutcome::AlreadyExists` if a concurrent handler already created
+    ///   the session (safe to ignore).
+    /// - `CreateSessionOutcome::LimitReached` if `MAX_DKG_SESSIONS` is already at
+    ///   capacity (must NOT be silently ignored — callers that marked a ring as
+    ///   in-progress PSS before calling this must unmark it on this outcome).
     pub async fn create_session(
         &self,
         session_id: u64,
         node: D,
         total_participants: usize,
-    ) -> bool {
+    ) -> CreateSessionOutcome {
         if total_participants == 0 {
             tracing::warn!(
                 session_id = session_id,
                 "Cannot create DKG session with zero participants"
             );
-            return false;
+            return CreateSessionOutcome::AlreadyExists;
         }
 
         let mut states = self.states.write().await;
@@ -429,20 +518,20 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 max_sessions = MAX_DKG_SESSIONS,
                 "DKG session limit reached, rejecting new session"
             );
-            return false;
+            return CreateSessionOutcome::LimitReached;
         }
 
         // Check if session already exists to avoid overwriting existing state
         if states.contains_key(&session_id) {
-            tracing::warn!(
+            tracing::debug!(
                 session_id = session_id,
                 "DKG session already exists for session_id"
             );
-            return false;
+            return CreateSessionOutcome::AlreadyExists;
         }
 
         states.insert(session_id, DkgSessionState::new(node, total_participants));
-        true
+        CreateSessionOutcome::Created
     }
 
     /// Check if a session exists
@@ -464,26 +553,25 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
-    /// Mark a session as a PSS refresh ceremony.
+    /// Set the session kind (Fresh / Refresh / Reshare).
     ///
     /// Must be called before `initiate_phase1_commitments` so that
-    /// `generate_polynomial` uses `DkgMode::Refresh` instead of `DkgMode::Fresh`.
-    pub async fn mark_as_refresh(&self, session_id: &u64) {
+    /// `generate_polynomial` uses the correct `DkgMode`.
+    pub async fn set_session_kind(&self, session_id: &u64, kind: SessionKind) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
-            state.is_refresh = true;
+            state.kind = kind;
         }
     }
 
-    /// Store the local-storage key of the ring being refreshed.
+    /// Store reshare-specific parameters.
     ///
-    /// Must be called before Phase 4 runs.  Phase 4 will load the old share from
-    /// `RingKey(key)`, add the refresh delta, and write the result back to the
-    /// same slot — preserving the ring public key.
-    pub async fn set_refresh_ring_key(&self, session_id: &u64, key: String) {
+    /// Must be called (for Dealer / DealerReceiver nodes) before Phase 1 so that
+    /// `generate_polynomial` can construct `DkgMode::Reshare`.
+    pub async fn set_reshare_params(&self, session_id: &u64, params: ReshareParams<D::ShareValue>) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
-            state.refresh_ring_key = Some(key);
+            state.reshare_params = Some(params);
         }
     }
 
@@ -624,23 +712,19 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     session_id = session_id,
                     "SessionStateManager: Removed session"
                 );
-                if state.is_refresh {
-                    state.refresh_ring_key
-                } else {
-                    None
-                }
+                state.kind.ring_key().map(|k| k.to_string())
             } else {
                 return;
             }
         };
 
-        // Clear the in-progress refresh flag so future PSS attempts can proceed.
+        // Clear the in-progress PSS flag so future ceremonies can proceed.
         if let Some(key) = ring_key_to_clear {
-            self.rings_refreshing.write().await.remove(&key);
+            self.rings_pss.write().await.remove(&key);
             tracing::debug!(
                 session_id = session_id,
                 ring_key = %key,
-                "SessionStateManager: Cleared in-progress refresh flag on remove_session"
+                "SessionStateManager: Cleared in-progress PSS flag on remove_session"
             );
         }
     }
@@ -655,6 +739,7 @@ impl<D: Dkg + 'static> Default for SessionStateManager<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dkg::messages::SessionKind;
     use crypto::r#trait::DkgRole;
     use crypto::DkgImpl;
     use std::sync::Arc;
@@ -674,16 +759,27 @@ mod tests {
     async fn test_create_session_success() {
         let mgr = SessionStateManager::<DkgImpl>::new();
         let ok = mgr.create_session(1, make_node(1), 3).await;
-        assert!(ok, "first create should succeed");
+        assert_eq!(
+            ok,
+            CreateSessionOutcome::Created,
+            "first create should succeed"
+        );
         assert_eq!(mgr.session_count().await, 1);
     }
 
     #[tokio::test]
     async fn test_create_session_rejects_duplicate_id() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        assert!(mgr.create_session(42, make_node(1), 3).await);
+        assert_eq!(
+            mgr.create_session(42, make_node(1), 3).await,
+            CreateSessionOutcome::Created
+        );
         let dup = mgr.create_session(42, make_node(2), 3).await;
-        assert!(!dup, "duplicate session_id should be rejected");
+        assert_eq!(
+            dup,
+            CreateSessionOutcome::AlreadyExists,
+            "duplicate session_id should be rejected"
+        );
         assert_eq!(mgr.session_count().await, 1, "count must not increment");
     }
 
@@ -691,7 +787,11 @@ mod tests {
     async fn test_create_session_rejects_zero_participants() {
         let mgr = SessionStateManager::<DkgImpl>::new();
         let ok = mgr.create_session(1, make_node(1), 0).await;
-        assert!(!ok, "zero participants should be rejected");
+        assert_eq!(
+            ok,
+            CreateSessionOutcome::AlreadyExists,
+            "zero participants should be rejected"
+        );
         assert_eq!(mgr.session_count().await, 0);
     }
 
@@ -701,14 +801,23 @@ mod tests {
 
         for i in 0..MAX_DKG_SESSIONS as u64 {
             let ok = mgr.create_session(i, make_node(1), 3).await;
-            assert!(ok, "create should succeed for session {}", i);
+            assert_eq!(
+                ok,
+                CreateSessionOutcome::Created,
+                "create should succeed for session {}",
+                i
+            );
         }
 
         // One beyond the limit must be rejected
         let rejected = mgr
             .create_session(MAX_DKG_SESSIONS as u64, make_node(1), 3)
             .await;
-        assert!(!rejected, "create should fail at session limit");
+        assert_eq!(
+            rejected,
+            CreateSessionOutcome::LimitReached,
+            "create should fail at session limit"
+        );
         assert_eq!(mgr.session_count().await, MAX_DKG_SESSIONS);
     }
 
@@ -971,7 +1080,7 @@ mod tests {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
         mgr.create_session(30, make_node(1), 3).await;
 
-        // Move to a non-Initializing phase and backdate phase_started_at past DKG_PHASE_TIMEOUT
+        // Move to Phase1Commitments and backdate phase_started_at past DKG_PHASE_TIMEOUT
         {
             let mut states = mgr.states.write().await;
             if let Some(s) = states.get_mut(&30) {
@@ -988,6 +1097,34 @@ mod tests {
         assert!(
             !mgr.session_exists(&30).await,
             "session stalled past DKG_PHASE_TIMEOUT should be removed"
+        );
+    }
+
+    /// Regression test for bug where `Initializing` sessions were exempt from
+    /// `DKG_PHASE_TIMEOUT` and could hold a `rings_pss` lock for up to SESSION_TTL
+    /// (30 min) instead of DKG_PHASE_TIMEOUT (2 min).
+    #[tokio::test(start_paused = true)]
+    async fn test_expiration_worker_removes_stalled_initializing_session() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(31, make_node(1), 3).await;
+
+        // Session stays in Initializing; backdate phase_started_at past DKG_PHASE_TIMEOUT.
+        {
+            let mut states = mgr.states.write().await;
+            if let Some(s) = states.get_mut(&31) {
+                assert_eq!(s.phase, DkgPhase::Initializing);
+                s.phase_started_at =
+                    Instant::now() - (DKG_PHASE_TIMEOUT + std::time::Duration::from_secs(10));
+            }
+        }
+
+        tokio::time::advance(SESSION_EXPIRATION_CHECK_INTERVAL + std::time::Duration::from_secs(1))
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !mgr.session_exists(&31).await,
+            "Initializing session stalled past DKG_PHASE_TIMEOUT should be removed"
         );
     }
 
@@ -1018,14 +1155,14 @@ mod tests {
     }
 
     // =========================================================================
-    // rings_refreshing: try_mark / unmark
+    // rings_pss: try_mark / unmark
     // =========================================================================
 
     #[tokio::test]
     async fn test_try_mark_returns_true_first_call() {
         let mgr = SessionStateManager::<DkgImpl>::new();
         assert!(
-            mgr.try_mark_ring_refreshing("ring_abc").await,
+            mgr.try_mark_ring_pss("ring_abc").await,
             "first mark should succeed (ring not yet in progress)"
         );
     }
@@ -1033,14 +1170,14 @@ mod tests {
     #[tokio::test]
     async fn test_try_mark_returns_false_when_already_in_progress() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        assert!(mgr.try_mark_ring_refreshing("ring_abc").await, "first mark");
+        assert!(mgr.try_mark_ring_pss("ring_abc").await, "first mark");
         assert!(
-            !mgr.try_mark_ring_refreshing("ring_abc").await,
+            !mgr.try_mark_ring_pss("ring_abc").await,
             "second mark for same ring should fail"
         );
         // A different ring must not be affected.
         assert!(
-            mgr.try_mark_ring_refreshing("ring_xyz").await,
+            mgr.try_mark_ring_pss("ring_xyz").await,
             "different ring should be markable independently"
         );
     }
@@ -1048,33 +1185,37 @@ mod tests {
     #[tokio::test]
     async fn test_unmark_allows_remark() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        assert!(mgr.try_mark_ring_refreshing("ring_abc").await);
+        assert!(mgr.try_mark_ring_pss("ring_abc").await);
         assert!(
-            !mgr.try_mark_ring_refreshing("ring_abc").await,
+            !mgr.try_mark_ring_pss("ring_abc").await,
             "still in progress"
         );
-        mgr.unmark_ring_refreshing("ring_abc").await;
+        mgr.unmark_ring_pss("ring_abc").await;
         assert!(
-            mgr.try_mark_ring_refreshing("ring_abc").await,
+            mgr.try_mark_ring_pss("ring_abc").await,
             "after unmark the ring should be markable again"
         );
     }
 
     #[tokio::test]
-    async fn test_cleanup_guard_clears_ring_refreshing_flag() {
+    async fn test_cleanup_guard_clears_ring_pss_flag() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
 
-        // Create a refresh session and mark the ring as in-progress.
+        // Create a refresh session and mark the ring as in-progress (PSS).
         mgr.create_session(50, make_node(1), 3).await;
-        mgr.mark_as_refresh(&50).await;
-        mgr.set_refresh_ring_key(&50, "ring_cleanup".to_string())
-            .await;
+        mgr.set_session_kind(
+            &50,
+            SessionKind::Refresh {
+                ring_pk_hex: "ring_cleanup".to_string(),
+            },
+        )
+        .await;
         assert!(
-            mgr.try_mark_ring_refreshing("ring_cleanup").await,
+            mgr.try_mark_ring_pss("ring_cleanup").await,
             "ring should be markable before any cleanup"
         );
         assert!(
-            !mgr.try_mark_ring_refreshing("ring_cleanup").await,
+            !mgr.try_mark_ring_pss("ring_cleanup").await,
             "ring should be blocked while in progress"
         );
 
@@ -1087,21 +1228,25 @@ mod tests {
         tokio::task::yield_now().await;
 
         assert!(
-            mgr.try_mark_ring_refreshing("ring_cleanup").await,
-            "ring_refreshing flag should be cleared after cleanup guard fires"
+            mgr.try_mark_ring_pss("ring_cleanup").await,
+            "rings_pss flag should be cleared after cleanup guard fires"
         );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_expiration_clears_ring_refreshing_flag() {
+    async fn test_expiration_clears_ring_pss_flag() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
 
-        // Create a refresh session and mark the ring as in-progress.
+        // Create a refresh session and mark the ring as in-progress (PSS).
         mgr.create_session(60, make_node(1), 3).await;
-        mgr.mark_as_refresh(&60).await;
-        mgr.set_refresh_ring_key(&60, "ring_expire".to_string())
-            .await;
-        assert!(mgr.try_mark_ring_refreshing("ring_expire").await);
+        mgr.set_session_kind(
+            &60,
+            SessionKind::Refresh {
+                ring_pk_hex: "ring_expire".to_string(),
+            },
+        )
+        .await;
+        assert!(mgr.try_mark_ring_pss("ring_expire").await);
 
         // Backdate created_at past SESSION_TTL so the expiration worker evicts it.
         {
@@ -1120,8 +1265,8 @@ mod tests {
             "expired session should be removed"
         );
         assert!(
-            mgr.try_mark_ring_refreshing("ring_expire").await,
-            "ring_refreshing flag should be cleared after session expiration"
+            mgr.try_mark_ring_pss("ring_expire").await,
+            "rings_pss flag should be cleared after session expiration"
         );
     }
 }

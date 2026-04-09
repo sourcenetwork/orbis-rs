@@ -497,6 +497,7 @@ dependencies = [
  "serde",
  "thiserror 1.0.69",
  "tonic 0.14.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -1308,6 +1309,7 @@ dependencies = [
  "sha2 0.10.9",
  "subtle",
  "thiserror 1.0.69",
+ "zeroize",
 ]
 
 [[package]]
@@ -4046,6 +4048,7 @@ dependencies = [
  "tracing-loki",
  "tracing-subscriber 0.3.22",
  "url",
+ "zeroize",
 ]
 
 [[package]]

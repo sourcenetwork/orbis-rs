@@ -78,7 +78,6 @@ fn setup_document_in_bulletin(
         id: object_id.clone(),
         namespace: namespace.to_string(),
         payload: document_payload_bytes,
-        proof: vec![],
     };
     dummy_bulletin.set_post(namespace.to_string(), object_id.clone(), document_post);
 

@@ -16,8 +16,7 @@
 
 use crate::app_state::AppState;
 use crate::constants::{
-    BULLETIN_RING_NAMESPACE, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
-    PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
+    MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS, PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
 };
 use crate::helpers::helpers::{
     determine_session_node_id, is_ring_reshare_in_progress, is_self_peer_id,
@@ -27,11 +26,11 @@ use crate::ring_state::RingPolyState;
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
-    fetch_key_derivation, load_dist_key_share, serialize_commitments, validate_sign_claims,
+    fetch_key_derivation, load_dist_key_share, serialize_commitments, store_response,
+    validate_sign_claims, verify_message_and_get_info,
 };
 use crate::sign::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
-use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PubPoly as PubPolyTrait, PubShare,
     ThresholdSigner,
@@ -68,7 +67,7 @@ where
     D: Dkg + Clone + 'static,
     S: ThresholdSigner,
 {
-    app_state: Arc<AppState<D>>,
+    pub app_state: Arc<AppState<D>>,
     _phantom: std::marker::PhantomData<S>,
 }
 
@@ -247,7 +246,12 @@ where
             SignContext::Bulletin => {
                 // Message is a BulletinPost; on-chain existence is the authorization.
                 // Signs from root key: no derivation, no metadata.
-                let (ring_pk_hex, pub_poly) = self.verify_message_and_get_info(&message).await?;
+                let (ring_pk_hex, pub_poly) = verify_message_and_get_info::<D>(
+                    &message,
+                    &self.app_state.local_storage,
+                    &self.app_state.bulletin,
+                )
+                .await?;
                 (ring_pk_hex, pub_poly, None, None)
             }
             SignContext::Policy {
@@ -447,7 +451,12 @@ where
 
         // Store the response with the authenticated peer identity
         let authenticated_peer_id = stream.peer_id().clone();
-        self.store_response(response, &authenticated_peer_id).await;
+        store_response(
+            response,
+            &authenticated_peer_id,
+            &self.app_state.sign_response_state,
+        )
+        .await;
 
         Ok(())
     }
@@ -1007,101 +1016,5 @@ where
         all_commitments.sort_by_key(|(id, _)| *id);
 
         Ok((all_commitments, local_signing_state))
-    }
-
-    /// Store a received response (called by protocol handler)
-    ///
-    /// The response is only accepted if the authenticated `sender_peer_id` is in the
-    /// expected responder set (established at init time). This rejects both unknown peers
-    /// and duplicate responses from the same peer. Fake `from_node_id` values are caught
-    /// downstream by crypto verification (`signer.verify_share()`).
-    pub async fn store_response(&self, message: SignMessage, sender_peer_id: &PeerId) {
-        let request_id = message.request_id().to_string();
-
-        tracing::debug!(
-            request_id = %request_id,
-            from_node_id = ?message.from_node_id(),
-            sender_peer = %hex::encode(sender_peer_id.as_bytes()),
-            "Sign Coordinator: Storing response"
-        );
-        self.app_state
-            .sign_response_state
-            .store_response(&request_id, message, sender_peer_id.as_bytes())
-            .await;
-    }
-
-    /// Verify that a message exists on the bulletin and return the ring_pk, pub_poly
-    async fn verify_message_and_get_info(&self, message: &[u8]) -> Result<(String, D::PubPoly)> {
-        // 1. Deserialize the BulletinPost from the message
-        let post: BulletinPost = message.to_vec().try_into().map_err(|e| {
-            SignError::Deserialization(format!("Failed to deserialize BulletinPost: {}", e))
-        })?;
-
-        // 2. Verify it exists on bulletin (read by namespace + id)
-        let actual_post = self
-            .app_state
-            .bulletin
-            .read(post.namespace.clone(), post.id.clone())
-            .await
-            .map_err(|e| {
-                SignError::VerificationFailed(format!(
-                    "Failed to read from bulletin (namespace={}, id={}): {}",
-                    post.namespace, post.id, e
-                ))
-            })?;
-
-        // 3. Verify payload matches what's on bulletin
-        if actual_post.payload != post.payload {
-            return Err(SignError::VerificationFailed(
-                "Payload mismatch: message payload does not match bulletin".to_string(),
-            ));
-        }
-
-        // 4. Parse the DocumentPayload to get ring_id
-        let doc_payload: DocumentPayload = serde_json::from_slice(&post.payload).map_err(|e| {
-            SignError::Deserialization(format!("Failed to parse DocumentPayload: {}", e))
-        })?;
-
-        // 5. Look up ring info from bulletin
-        let ring_info = self
-            .app_state
-            .bulletin
-            .read(
-                BULLETIN_RING_NAMESPACE.to_string(),
-                doc_payload.ring_id.clone(),
-            )
-            .await
-            .map_err(|e| {
-                SignError::VerificationFailed(format!(
-                    "Failed to read ring info for ring_id={}: {}",
-                    doc_payload.ring_id, e
-                ))
-            })?;
-
-        let ring_payload: RingPayload =
-            serde_json::from_slice(&ring_info.payload).map_err(|e| {
-                SignError::Deserialization(format!("Failed to parse RingPayload: {}", e))
-            })?;
-
-        // 6. Load pub_poly from local RingPolyState (never on the bulletin).
-        let poly_state = RingPolyState::load_from_ring_pk_hex(
-            &self.app_state.local_storage,
-            &ring_payload.ring_pk,
-        )
-        .map_err(|e| SignError::Storage(format!("Failed to load ring polynomial state: {}", e)))?;
-        let pub_poly_bytes = hex::decode(&poly_state.public_polynomial).map_err(|e| {
-            SignError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
-        })?;
-        let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
-            SignError::Deserialization(format!("Failed to deserialize public polynomial: {}", e))
-        })?;
-
-        tracing::debug!(
-            post_id = %post.id,
-            ring_id = %doc_payload.ring_id,
-            "Sign Coordinator: Message verified on bulletin"
-        );
-
-        Ok((ring_payload.ring_pk, pub_poly))
     }
 }

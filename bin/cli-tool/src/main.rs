@@ -172,9 +172,6 @@ pub enum SubCommands {
         /// Payload as hex string
         #[clap(long)]
         payload: String,
-        /// Proof as hex string
-        #[clap(long)]
-        proof: String,
     },
     /// Fund an account from the pre funded account
     Fund {
@@ -355,9 +352,6 @@ pub enum SubCommands {
         /// Permission required on the policy
         #[clap(long)]
         permission: String,
-        /// Proof bytes (hex encoded)
-        #[clap(long)]
-        proof: String,
     },
     /// Start a threshold Sign session (Policy pathway)
     Sign {
@@ -499,14 +493,9 @@ async fn main() -> Result<()> {
         } => {
             add_bulletin_collaborator(namespace, collaborator).await?;
         }
-        SubCommands::CreateBulletinPost {
-            namespace,
-            payload,
-            proof,
-        } => {
+        SubCommands::CreateBulletinPost { namespace, payload } => {
             let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
-            let proof_bytes = hex::decode(&proof).expect("Failed to decode proof hex");
-            create_bulletin_post(namespace, payload_bytes, proof_bytes).await?;
+            create_bulletin_post(namespace, payload_bytes).await?;
         }
         SubCommands::Fund { address } => {
             fund(address, ChainConfig::local()).await?;
@@ -627,9 +616,9 @@ async fn main() -> Result<()> {
             endpoint,
             ring_pk_hex,
         } => {
-            let (poly, refreshed_at) = query_ring_state(endpoint, ring_pk_hex).await?;
+            let (poly, last_pss) = query_ring_state(endpoint, ring_pk_hex).await?;
             println!("PUBLIC_POLYNOMIAL={}", poly);
-            println!("REFRESHED_AT={}", refreshed_at);
+            println!("LAST_PSS={}", last_pss);
         }
         SubCommands::GetLatestRing { namespace } => {
             let (ring_id, ring_pk) = get_latest_ring(namespace).await?;
@@ -643,18 +632,9 @@ async fn main() -> Result<()> {
             policy_id,
             resource,
             permission,
-            proof,
         } => {
-            let proof_bytes = hex::decode(&proof)
-                .map_err(|e| anyhow::anyhow!("Failed to decode proof hex: {}", e))?;
             let (derivation_id, derived_pk_hex) = post_key_derivation(
-                namespace,
-                ring_id,
-                derivation,
-                policy_id,
-                resource,
-                permission,
-                proof_bytes,
+                namespace, ring_id, derivation, policy_id, resource, permission,
             )
             .await?;
             println!("DERIVATION_ID={}", derivation_id);

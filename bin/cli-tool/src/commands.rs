@@ -817,11 +817,7 @@ pub async fn add_bulletin_collaborator(
     Ok(())
 }
 
-pub async fn create_bulletin_post(
-    namespace: String,
-    payload: Vec<u8>,
-    proof: Vec<u8>,
-) -> Result<String> {
+pub async fn create_bulletin_post(namespace: String, payload: Vec<u8>) -> Result<String> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
@@ -834,7 +830,7 @@ pub async fn create_bulletin_post(
         .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
 
     bulletin
-        .post(namespace, payload, proof, None)
+        .post(namespace, payload, None)
         .await
         .map_err(|e| anyhow!("Failed to create post: {}", e))?;
 
@@ -934,7 +930,7 @@ pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
     })
 }
 
-/// Query the local RingPolyState from a node (public polynomial + refreshed_at timestamp).
+/// Query the local RingPolyState from a node (public polynomial + last_pss timestamp).
 /// Returns an error if the ring_pk_hex is not found on that node.
 pub async fn query_ring_state(endpoint: String, ring_pk_hex: String) -> Result<(String, u64)> {
     let mut client = InfoServiceClient::connect(endpoint.clone())
@@ -947,7 +943,7 @@ pub async fn query_ring_state(endpoint: String, ring_pk_hex: String) -> Result<(
         .map_err(|e| anyhow!("get_ring_state failed: {}", e))?;
 
     let inner = response.into_inner();
-    Ok((inner.public_polynomial, inner.refreshed_at))
+    Ok((inner.public_polynomial, inner.last_pss))
 }
 
 /// Get the current sequence number for an account address.
@@ -980,7 +976,6 @@ pub async fn post_key_derivation(
     policy_id: String,
     resource: String,
     permission: String,
-    proof: Vec<u8>,
 ) -> Result<(String, String)> {
     // Fetch ring payload from bulletin to get the ring public key
     let ring_bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
@@ -1031,7 +1026,7 @@ pub async fn post_key_derivation(
         .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
 
     bulletin
-        .post(namespace.clone(), payload, proof, None)
+        .post(namespace.clone(), payload, None)
         .await
         .map_err(|e| anyhow!("Failed to post KeyDerivation: {}", e))?;
 

@@ -42,7 +42,7 @@ where
         DistKeyShare = DistKeyShare<SV>,
         ReencryptReply = ReencryptReply<SV, PK>,
     >,
-    SV: Clone,
+    SV: Clone + zeroize::Zeroize,
     PK: Clone + PartialEq + Debug,
     PP: PubPolyTrait<PublicKey = PK>,
 {
@@ -85,7 +85,7 @@ where
     >,
     S::SigShare: Clone,
     S::NonceCommitment: Clone,
-    SV: Clone,
+    SV: Clone + zeroize::Zeroize,
     PK: Clone,
     PP: PubPolyTrait<PublicKey = PK>,
 {
@@ -141,7 +141,7 @@ fn run_reshare_ceremony<Node, SV, PK, PP, NF>(
 where
     Node: TestDkgNode<ShareValue = SV, PublicKey = PK, PubPoly = PP>,
     Node::PolynomialCommitment: Clone,
-    SV: Clone,
+    SV: Clone + zeroize::Zeroize,
     PK: Clone + CanonicalSerialize + Debug,
     PP: Clone + PubPolyTrait<PublicKey = PK>,
     NF: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>>,
@@ -167,6 +167,7 @@ where
             participating_ids: participating_ids.clone(),
             new_threshold: t,
             new_total_nodes: n,
+            new_node_id: None,
         })?;
     }
 
@@ -274,7 +275,7 @@ where
     >,
     S::SigShare: Clone,
     S::NonceCommitment: Clone,
-    SV: Clone,
+    SV: Clone + zeroize::Zeroize,
     PK: Clone + PartialEq + Debug + CanonicalSerialize,
     PP: Clone + PubPolyTrait<PublicKey = PK>,
     NF: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,

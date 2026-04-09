@@ -34,6 +34,7 @@ tracing = { version = "0.1.16"}
 tracing-loki = "0.2"
 url = "2.5"
 sha2 = { workspace = true }
+zeroize = { workspace = true }
 common = { path = "../../crates/common" }
 project-root = { workspace = true }
 cli-tool = { path = "../cli-tool", optional = true, default-features = false }

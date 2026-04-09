@@ -5,6 +5,7 @@
 
 use crate::helpers::protocol_handler::MessageCoordinator;
 use crate::pre::coordinator::PreCoordinator;
+use crate::pre::helpers::store_response;
 use crate::pre::messages::PreMessage;
 use async_trait::async_trait;
 use network::PeerId;
@@ -52,7 +53,7 @@ where
     /// all other messages are routed to `handle_message`.
     async fn try_store_response(&self, msg: PreMessage, peer_id: &PeerId) -> Option<PreMessage> {
         if let PreMessage::ReencryptResponse { .. } = &msg {
-            self.store_response(msg, peer_id).await;
+            store_response(msg, peer_id, &self.app_state.pre_response_state).await;
             None
         } else {
             Some(msg)
