@@ -177,6 +177,7 @@ async fn test_dkg_followed_by_pss_refresh() {
             2,
             3,
             DkgRole::Standard,
+            |_| {},
         )
         .await
         .expect("create refresh session");
@@ -363,7 +364,7 @@ async fn test_share_before_commitment_fails() {
 
     let session_id: u64 = 77_777;
     coordinator
-        .create_session(session_id, 1, 2, 2, DkgRole::Standard)
+        .create_session(session_id, 1, 2, 2, DkgRole::Standard, |_| {})
         .await
         .expect("create session");
 
@@ -436,7 +437,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
     // Create the refresh session.
     let coordinator = DkgCoordinator::new(app_state.clone());
     coordinator
-        .create_session(refresh_session_id, 1, 2, 3, DkgRole::Standard)
+        .create_session(refresh_session_id, 1, 2, 3, DkgRole::Standard, |_| {})
         .await
         .expect("refresh session creation should succeed");
     app_state
@@ -453,7 +454,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
     // rings_refreshing has no effect on create_session for a new DKG.
     let fresh_dkg_session_id: u64 = 200;
     coordinator
-        .create_session(fresh_dkg_session_id, 1, 2, 3, DkgRole::Standard)
+        .create_session(fresh_dkg_session_id, 1, 2, 3, DkgRole::Standard, |_| {})
         .await
         .expect("fresh DKG session creation must not be blocked by rings_refreshing");
 

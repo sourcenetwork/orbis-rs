@@ -256,6 +256,23 @@ where
         "DKG Coordinator: Received SessionInit - assigned node_id"
     );
 
+    // Build the init closure here so kind and reshare_params are set while the
+    // state map's write lock is still held inside create_session — eliminating the
+    // window where a Commitment could arrive and see kind=Fresh / reshare_params=None
+    // on a Reshare session (which would cause expected_commitment_size() to return the
+    // wrong threshold and reject the commitment permanently).
+    // Also sort next_peer_ids in the stored kind so downstream code
+    // (bulletin post, union building) always uses a canonical ordered list.
+    let mut init_kind = kind.clone();
+    if let SessionKind::Reshare {
+        ref mut next_peer_ids,
+        ..
+    } = init_kind
+    {
+        next_peer_ids.sort();
+    }
+    let init_params = maybe_reshare_params;
+
     // If session doesn't exist, create it.
     // Idempotent: treat "session already exists" from a concurrent handler as success.
     let mut session_created_here = false;
@@ -272,6 +289,12 @@ where
                 threshold as usize,
                 total_participants as usize,
                 dkg_role,
+                move |state| {
+                    state.kind = init_kind;
+                    if let Some(params) = init_params {
+                        state.reshare_params = Some(params);
+                    }
+                },
             )
             .await
         {
@@ -304,29 +327,6 @@ where
             }
             Err(e) => return Err(e),
         }
-
-        // Set kind and reshare params atomically so that a commitment arriving
-        // between the two writes never sees kind=Reshare with reshare_params=None.
-        // Also sort next_peer_ids in the stored kind so downstream code
-        // (bulletin post, union building) always uses a canonical ordered list.
-        coord
-            .app_state
-            .dkg_session_state
-            .with_state_mut(&session_id, |state| {
-                let mut stored_kind = kind.clone();
-                if let SessionKind::Reshare {
-                    ref mut next_peer_ids,
-                    ..
-                } = stored_kind
-                {
-                    next_peer_ids.sort();
-                }
-                state.kind = stored_kind;
-                if let Some(params) = maybe_reshare_params {
-                    state.reshare_params = Some(params);
-                }
-            })
-            .await;
 
         coord
             .app_state

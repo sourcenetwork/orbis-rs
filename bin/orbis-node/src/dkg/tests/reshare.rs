@@ -308,7 +308,7 @@ async fn test_dealer_phase4_deletes_share_and_ring_index_entry() {
     // Create a session where this node acts as a pure Dealer.
     let coordinator = DkgCoordinator::new(app_state.clone());
     coordinator
-        .create_session(session_id, 1, 1, 3, DkgRole::Dealer)
+        .create_session(session_id, 1, 1, 3, DkgRole::Dealer, |_| {})
         .await
         .expect("create_session should succeed");
 
@@ -378,7 +378,7 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
 
     let coordinator = DkgCoordinator::new(app_state.clone());
     coordinator
-        .create_session(session_id, 1, 1, 3, DkgRole::Dealer)
+        .create_session(session_id, 1, 1, 3, DkgRole::Dealer, |_| {})
         .await
         .expect("create_session should succeed");
 
