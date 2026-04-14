@@ -675,7 +675,9 @@ async fn test_session_cleanup_guard_cleans_up_on_drop() {
     // Create a mock DKG node and session
     let session_id = 12345u64;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
-    manager.create_session(session_id, dkg_node, 3, |_| {}).await;
+    manager
+        .create_session(session_id, dkg_node, 3, |_| {})
+        .await;
 
     // Verify session exists
     assert!(
@@ -717,7 +719,9 @@ async fn test_session_cleanup_guard_defuse_prevents_cleanup() {
     // Create a mock DKG node and session
     let session_id = 67890u64;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
-    manager.create_session(session_id, dkg_node, 3, |_| {}).await;
+    manager
+        .create_session(session_id, dkg_node, 3, |_| {})
+        .await;
 
     // Verify session exists
     assert!(
@@ -763,7 +767,9 @@ async fn test_session_expiration_removes_old_sessions() {
     // Create a session
     let session_id = 11111u64;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
-    manager.create_session(session_id, dkg_node, 3, |_| {}).await;
+    manager
+        .create_session(session_id, dkg_node, 3, |_| {})
+        .await;
 
     // Verify session exists
     assert!(
@@ -842,7 +848,9 @@ async fn test_message_dedup_detects_duplicates() {
 
     let session_id = 100u64;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
-    manager.create_session(session_id, dkg_node, 3, |_| {}).await;
+    manager
+        .create_session(session_id, dkg_node, 3, |_| {})
+        .await;
 
     // First message should not be seen as processed
     assert!(
@@ -875,7 +883,9 @@ async fn test_message_dedup_different_types_not_duplicate() {
 
     let session_id = 101u64;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
-    manager.create_session(session_id, dkg_node, 3, |_| {}).await;
+    manager
+        .create_session(session_id, dkg_node, 3, |_| {})
+        .await;
 
     // Mark commitment from node 2 as processed
     manager
@@ -900,7 +910,9 @@ async fn test_message_dedup_different_nodes_not_duplicate() {
 
     let session_id = 102u64;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
-    manager.create_session(session_id, dkg_node, 3, |_| {}).await;
+    manager
+        .create_session(session_id, dkg_node, 3, |_| {})
+        .await;
 
     // Mark commitment from node 2 as processed
     manager
@@ -927,8 +939,12 @@ async fn test_message_dedup_different_sessions_isolated() {
     let session_2 = 104u64;
     let dkg_node_1 = *DkgImpl::new(1, 2, 3, session_1, DkgRole::Standard).expect("create DKG node");
     let dkg_node_2 = *DkgImpl::new(1, 2, 3, session_2, DkgRole::Standard).expect("create DKG node");
-    manager.create_session(session_1, dkg_node_1, 3, |_| {}).await;
-    manager.create_session(session_2, dkg_node_2, 3, |_| {}).await;
+    manager
+        .create_session(session_1, dkg_node_1, 3, |_| {})
+        .await;
+    manager
+        .create_session(session_2, dkg_node_2, 3, |_| {})
+        .await;
 
     // Mark message in session 1
     manager
@@ -954,7 +970,9 @@ async fn test_message_dedup_cleaned_up_with_session() {
 
     let session_id = 105u64;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
-    manager.create_session(session_id, dkg_node, 3, |_| {}).await;
+    manager
+        .create_session(session_id, dkg_node, 3, |_| {})
+        .await;
 
     manager
         .mark_message_processed(&session_id, 2, DkgMessageType::Commitment)
@@ -988,7 +1006,9 @@ async fn test_peer_node_mappings_consistent() {
 
     let session_id = 200u64;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
-    manager.create_session(session_id, dkg_node, 3, |_| {}).await;
+    manager
+        .create_session(session_id, dkg_node, 3, |_| {})
+        .await;
 
     let mut mappings = std::collections::HashMap::new();
     mappings.insert(1, "aaa@192.168.1.1:4000".to_string());
@@ -1032,7 +1052,9 @@ async fn test_peer_identity_unknown_peer_not_in_mapping() {
 
     let session_id = 201u64;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
-    manager.create_session(session_id, dkg_node, 3, |_| {}).await;
+    manager
+        .create_session(session_id, dkg_node, 3, |_| {})
+        .await;
 
     let mut mappings = std::collections::HashMap::new();
     mappings.insert(1, "aaa@192.168.1.1:4000".to_string());
@@ -1109,11 +1131,15 @@ async fn test_duplicate_session_id_rejected() {
         *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
 
     assert_eq!(
-        manager.create_session(session_id, dkg_node_1, 3, |_| {}).await,
+        manager
+            .create_session(session_id, dkg_node_1, 3, |_| {})
+            .await,
         CreateSessionOutcome::Created
     );
     assert_eq!(
-        manager.create_session(session_id, dkg_node_2, 3, |_| {}).await,
+        manager
+            .create_session(session_id, dkg_node_2, 3, |_| {})
+            .await,
         CreateSessionOutcome::AlreadyExists,
         "Duplicate session_id should be rejected"
     );
@@ -1128,7 +1154,9 @@ async fn test_commitment_and_share_counters() {
 
     let session_id = 400u64;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
-    manager.create_session(session_id, dkg_node, 3, |_| {}).await;
+    manager
+        .create_session(session_id, dkg_node, 3, |_| {})
+        .await;
 
     // Initially zero
     let (commitments, shares) = manager
