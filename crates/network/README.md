@@ -1,100 +1,113 @@
-# Network Crate
+# Network crate
 
-QUIC-based peer-to-peer networking abstraction built on [iroh](https://github.com/n0-computer/iroh).
+Trait-based networking for Orbis with a **QUIC / [iroh](https://github.com/n0-computer/iroh)** implementation: persistent connections, many independent bidirectional streams per connection, ALPN-style protocol routing, and length-prefixed messages.
 
-## Architecture
+**Scope:** This crate defines [`Network`](src/trait.rs), [`PeerConnection`](src/trait.rs), [`Connection`](src/trait.rs), [`ProtocolHandler`](src/trait.rs), and router traits, plus the iroh types in [`src/iroh/`](src/iroh/). Types such as **`PeerConnectionPool`**, **`GenericProtocolHandler`**, and protocol **coordinators** (DKG / PRE / Sign) live in **`bin/orbis-node`**, not here—they call `Network::connect`, cache connections, and supply `ProtocolHandler` implementations.
+
+## Architecture (this crate + typical node layering)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        APPLICATION LAYER                            │
+│  APPLICATION (e.g. orbis-node — not defined in crates/network)     │
 │                                                                     │
-│   DkgCoordinator        PreCoordinator        SignCoordinator       │
+│   DkgCoordinator / PreCoordinator / SignCoordinator               │
 │         │                     │                     │               │
 │         └─────────────────────┼─────────────────────┘               │
 │                               │                                     │
-│                    PeerConnectionPool                               │
-│              HashMap<(peer_id, protocol), Arc<PeerConnection>>      │
-│              (one persistent QUIC conn per peer+protocol, forever)  │
+│              PeerConnectionPool (caches per peer+protocol)          │
+│              calls Network::connect() + open_stream()               │
 └───────────────────────────────┼─────────────────────────────────────┘
                                 │
-                                │  get_or_connect()
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      NETWORK TRAIT LAYER                            │
+│  crates/network                                                     │
 │                                                                     │
-│   Network::connect()  ──────────────────►  PeerConnection           │
-│   (IrohNetwork)                           (IrohPeerConnection)      │
-│                                           wraps one QUIC connection  │
+│   Network::connect()  ──────────────►  IrohPeerConnection           │
+│   (IrohNetwork)                         (one QUIC connection)       │
 │                                                │                    │
 │                                                │  open_stream()     │
 │                                                ▼                    │
-│                                           Connection                │
-│                                           (IrohStreamWrapper)       │
-│                                           one QUIC bidirectional    │
-│                                           stream — send() + recv()  │
+│                                         IrohStreamWrapper           │
+│                                         one bidirectional stream    │
+│                                         send() / recv()             │
 └─────────────────────────────────────────────────────────────────────┘
                                 │
-                    iroh QUIC transport
+                         iroh QUIC transport
                                 │
          ┌──────────────────────┼──────────────────────┐
-         │  same PeerConnection │  each open_stream()  │
-         │  = same QUIC conn    │  = new QUIC stream   │
-         │                      │  (independent, no    │
-         │                      │   HoL blocking)      │
-         └──────────────────────┼──────────────────────┘
+         │  same IrohPeerConnection                   │
+         │  = same QUIC conn                          │
+         │  each open_stream() = new QUIC stream      │
+         │  (independent ordering vs other streams)   │
+         └────────────────────────────────────────────┘
                                 │
-                                ▼  (remote peer)
+                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        ROUTER (server side)                         │
+│  Router (server side) — [`src/iroh/router.rs`](src/iroh/router.rs)   │
 │                                                                     │
-│   IrohRouter  ──accept()──►  per connection task                    │
-│                                     │                               │
-│                              loop { accept_bi() }                   │
-│                                     │  ◄── fires only when sender   │
-│                                     │       writes first byte       │
-│                                     │                               │
-│                              spawns task per stream                 │
-│                                     │                               │
-│                                     ▼                               │
-│                           ProtocolHandler::handle(stream)           │
+│   IrohRouterBuilder::spawn() → IrohRouterWrapper                  │
+│   Per ALPN: loop { accept_bi() → spawn ProtocolHandler::handle() }  │
 │                                                                     │
-│   DKG: GenericProtocolHandler  ──►  DkgCoordinator::handle_message  │
-│   PRE: GenericProtocolHandler  ──►  PreCoordinator::handle_message  │
-│   Sign: GenericProtocolHandler ──►  SignCoordinator::handle_message  │
+│   Application registers handlers (e.g. orbis-node’s generic       │
+│   handler that deserializes and forwards to a coordinator).         │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Message Flow
+## Message framing
 
-### Outbound (coordinator → peer)
+[`IrohStreamWrapper`](src/iroh/base.rs) frames payloads as **`[4-byte big-endian length][payload]`** on send and expects the same on recv. `Message::data` is the payload only; length is not part of `Bytes` in the `Message` struct.
 
-**DKG (session messages)**
-Pool → `PeerConnection` → cached stream per `(session_id, peer_id)` → all messages in a session travel on the same stream → ordered delivery guaranteed (SessionInit → Commitment → Share).
+## Protocol identifiers
 
-**DKG (fire-and-forget)**
-Pool → `PeerConnection` → fresh stream → dropped after send.
+Re-exported from [`src/protocol.rs`](src/protocol.rs):
 
-**PRE / Sign**
-Pool → `PeerConnection` → fresh stream → send request → recv response on same stream → drop.
+| Constant | Bytes |
+|----------|--------|
+| `DKG` | `b"orbis/dkg/0"` |
+| `REENCRYPT` | `b"orbis/reencrypt/0"` |
+| `SIGN` | `b"orbis/sign/0"` |
 
-### Inbound (peer → handler loop)
+These are ALPN / protocol names passed to `connect` and router registration.
 
-iroh accepts QUIC connection → `accept_bi()` loop per connection → spawns handler task per stream → handler: `recv()` → deserialize → if response: store in `response_state` → if request: handle + send reply back on same stream.
+## Traits and iroh implementations
 
-## Key Invariants
+| Trait | Iroh type | Notes |
+|-------|-----------|--------|
+| `Network` | [`IrohNetwork`](src/iroh/base.rs) | `connect`, `listen`, `create_router_builder`, `bound_addresses`, … |
+| `PeerConnection` | [`IrohPeerConnection`](src/iroh/base.rs) | `open_stream`, `close` |
+| `Connection` | [`IrohStreamWrapper`](src/iroh/base.rs) | `send` / `recv` with length prefix |
+| `ProtocolHandler` | *application* | e.g. orbis-node wraps coordinators; this crate only has [`IrohProtocolHandlerWrapper`](src/iroh/router.rs) (internal) to bridge iroh’s handler API |
+| `RouterBuilder` | [`IrohRouterBuilder`](src/iroh/router.rs) | `accept`, `max_message_size`, `spawn` |
+| `Router` | [`IrohRouterWrapper`](src/iroh/router.rs) | `shutdown` |
 
-- **One `PeerConnection` per `(peer_id, protocol)`** — never closed, lives in the pool forever. Replaced only on connection-level error.
-- **One `Connection` (stream) per logical operation** — independent streams, no head-of-line blocking between concurrent sessions to the same peer.
-- **DKG uses cached streams per `(session_id, peer_id)`** — ensures SessionInit → Commitment → Share arrive in order at the receiver. Streams are dropped when the session is removed.
-- **`accept_bi()` only fires when the sender writes the first byte** — opening a stream without sending data does nothing on the receiver side (QUIC lazy stream creation).
+Public re-exports (with `feature = "iroh"`): **`NetworkImpl`** (`IrohNetwork`), **`IrohNetworkBuilder`**, **`IrohRouterBuilder`**, **`IrohRouterWrapper`**, **`SecretKey`**.
 
-## Traits
+## Features
 
-| Trait | Impl | Description |
-|---|---|---|
-| `Network` | `IrohNetwork` | Creates connections and router builders |
-| `PeerConnection` | `IrohPeerConnection` | Persistent QUIC connection, opens streams |
-| `Connection` | `IrohStreamWrapper` | Single QUIC bidirectional stream, send/recv |
-| `ProtocolHandler` | `GenericProtocolHandler<C>` | Server-side stream handler loop |
-| `RouterBuilder` | `IrohRouterBuilder` | Registers protocol handlers, spawns router |
-| `Router` | `IrohRouterWrapper` | Running router, shutdown handle |
+| Feature | Default | Purpose |
+|---------|---------|---------|
+| `iroh` | yes | Full iroh implementation |
+| `gossip` | no | Pulls in optional [`iroh-gossip`](https://crates.io/crates/iroh-gossip) (`Cargo.toml`); no integration in this crate’s sources yet |
+| `fault-injection` | no | [`FaultNetwork`](src/fault.rs) / [`FaultNetworkController`](src/fault.rs) — block outbound peers to simulate partitions in tests |
+
+## Orchestration behavior (orbis-node, not this crate)
+
+The following are **not** enforced inside `crates/network`; they describe how the node binary typically uses these APIs:
+
+- **Connection pooling** — One cached `PeerConnection` per `(peer_id, protocol)` in `PeerConnectionPool` (replaced on reconnect after errors).
+- **DKG session ordering** — DKG may use a **long-lived stream per `(session_id, peer)`** so session messages stay ordered; **fresh streams** may be used for fire-and-forget. Implementation is in the coordinator / pool, not in this crate.
+- **PRE / Sign** — Usually **one stream per request** (request/response), then drop.
+
+## Key invariants (this crate)
+
+- **`PeerConnection::open_stream`** creates a **new** bidirectional QUIC stream; streams are independent (no head-of-line blocking between concurrent streams on the same connection).
+- **Incoming side:** [`IrohProtocolHandlerWrapper`](src/iroh/router.rs) runs `accept_bi()` in a loop and spawns **`ProtocolHandler::handle`** per stream.
+- **`IrohStreamWrapper` drop** finishes the send half so the peer sees **STREAM_FIN** rather than reset (see `Drop` impl in [`base.rs`](src/iroh/base.rs)).
+
+## Metrics
+
+[`src/metrics.rs`](src/metrics.rs) records connection and message send/recv metrics (Prometheus).
+
+## Dependencies (high level)
+
+`iroh`, `tokio`, `bytes`, `async-trait`, `serde`, `prometheus`; `iroh-gossip` is an optional dependency when `gossip` is enabled.

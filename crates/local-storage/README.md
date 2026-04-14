@@ -1,130 +1,83 @@
-# Local Storage Crate
+# Local storage crate
 
-Encrypted local key-value storage for persisting node secrets.
+Encrypted local key-value storage for persisting node secrets (ring shares, indexes, keys). Two pluggable backends share the same crypto and [`LocalStorage`](src/trait.rs) API.
 
-## Overview
+## Backends (features)
 
-This crate provides:
-- **LocalStorage trait** for pluggable storage backends
-- **MemoryStorage** implementation with optional encryption
-- **AES-256-GCM encryption** with Argon2 key derivation
+| Feature | Default | Type alias | Persistence |
+|---------|---------|------------|-------------|
+| `redb` | **yes** | `LocalStorageImpl` = [`RedbStorage`](src/redb/mod.rs) | Embedded [`redb`](https://crates.io/crates/redb) database at `db_path` |
+| `memory` | no | `LocalStorageImpl` = [`MemoryStorage`](src/memory/mod.rs) | In-memory `HashMap` (tests / ephemeral) |
 
-## Trait
+**`redb` and `memory` are mutually exclusive.** Use `--no-default-features --features memory` to build the in-memory backend only.
 
-```rust
-pub trait LocalStorage {
-    /// Create a new storage instance
-    /// If password is provided, encrypted operations will use it
-    fn new(password: Option<String>) -> Self;
+## `LocalStorage` trait
 
-    /// Get an item from storage (unencrypted)
-    fn get(&self, key: LocalStorageKeys) -> Result<Option<Vec<u8>>>;
+See [`src/trait.rs`](src/trait.rs) for the full definition. Summary:
 
-    /// Set an item in storage (unencrypted)
-    fn set(&self, key: LocalStorageKeys, value: Vec<u8>) -> Result<()>;
+- **`name() -> String`** — Backend identifier (e.g. `"local-storage/redb"`).
+- **`new(password: Option<String>, db_path: String) -> Result<Self>`** — `db_path` is the database file path for **`redb`**; **`memory`** ignores it but the parameter is still required for a uniform API.
+- **`get` / `set` / `delete` / `contains`** — Plain bytes at rest (no extra encryption layer from these helpers).
+- **`get_encrypted` / `set_encrypted`** — AES-256-GCM at rest using a key derived from **`password`** when provided; plaintext is handled as **`Zeroizing`** so sensitive buffers are cleared on drop.
 
-    /// Delete an item from storage
-    fn delete(&self, key: LocalStorageKeys) -> Result<()>;
+Return types match the code: **`get_encrypted`** returns **`Result<Option<Zeroizing<Vec<u8>>>>`**; **`set_encrypted`** takes **`Zeroizing<Vec<u8>>`**.
 
-    /// Check if an item exists
-    fn contains(&self, key: LocalStorageKeys) -> Result<bool>;
+### Password behavior
 
-    /// Get and decrypt an item (requires password)
-    fn get_encrypted(&self, key: LocalStorageKeys) -> Result<Option<Vec<u8>>>;
+- **With `Some(password)`**: Argon2 key derivation from password + stored salt (**`redb`** persists salt and an encrypted password check; **`memory`** keeps salt only in RAM). Opening an existing **`redb`** DB verifies the password before returning.
+- **With `None`**: A random 32-byte AES key is generated per process (**not persisted**). `get_encrypted` / `set_encrypted` still encrypt stored blobs, but the key is lost on restart — suitable only for ephemeral use; do not rely on it for durable encrypted storage without a password.
 
-    /// Encrypt and store an item (requires password)
-    fn set_encrypted(&self, key: LocalStorageKeys, value: Vec<u8>) -> Result<()>;
-}
-```
-
-## Storage Keys
+## `LocalStorageKeys`
 
 ```rust
 pub enum LocalStorageKeys {
-    /// Node's ring key share + polynomial (encrypted at rest)
+    /// Encrypted `RingShareBundle` for one ring, keyed by `aggregate_pk.to_string()`.
+    /// Threshold share, public polynomial, last PSS refresh time — not ring config
+    /// (peer_ids, threshold, etc. live on the bulletin).
     RingKey(String),
-
-    /// Index of rings this node has joined: Vec<RingIndexEntry> (ring_pk_str + bulletin_post_id)
+    /// JSON `Vec<RingIndexEntry>`: local key + bulletin `post_id` for `RingPayload`.
     RingIndex,
-
-    /// The node's iroh secret key for deterministic peer identity
     NodeSecretKey,
-
-    /// The node's secp256k1 signing key for chain transactions
     NodeSigningKey,
 }
 ```
 
 ## Usage
 
-### Basic Storage (Unencrypted)
+### `LocalStorageImpl` (default: Redb)
 
 ```rust
 use local_storage::LocalStorageImpl;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use zeroize::Zeroizing;
 
-// Create storage without encryption
-let storage = LocalStorageImpl::new(None, "".to_string());
-
-// Store and retrieve data
-storage.set(LocalStorageKeys::RingKey("abc123".into()), vec![1, 2, 3])?;
-let data = storage.get(LocalStorageKeys::RingKey("abc123".into()))?;
-```
-
-### Encrypted Storage
-
-```rust
-use local_storage::LocalStorageImpl;
-use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
-
-// Create storage with password for encryption
-let storage = LocalStorageImpl::new(Some("my-secret-password".to_string()), "".to_string());
-
-// Store sensitive data encrypted
-let secret_share = vec![/* ... secret bytes ... */];
-storage.set_encrypted(
-    LocalStorageKeys::RingKey("session-123".into()),
-    secret_share
+let storage = LocalStorageImpl::new(
+    Some("my-secret-password".to_string()),
+    "/path/to/orbis.db".to_string(),
 )?;
 
-// Retrieve and decrypt
-let decrypted = storage.get_encrypted(
-    LocalStorageKeys::RingKey("session-123".into())
-)?;
+let secret_share = Zeroizing::new(vec![/* ... */]);
+storage.set_encrypted(LocalStorageKeys::RingKey("aggregate_pk_hex".into()), secret_share)?;
+
+let decrypted = storage.get_encrypted(LocalStorageKeys::RingKey("aggregate_pk_hex".into()))?;
 ```
 
-## MemoryStorage Implementation
+Unencrypted keys (e.g. index blobs) use **`get`** / **`set`** as plain **`Vec<u8>`**.
 
-The `MemoryStorage` backend stores data in an in-memory `HashMap`.
+## Crypto details ([`src/common.rs`](src/common.rs))
 
-**Encryption Details:**
-- **Key Derivation**: Argon2id with configurable parameters
-- **Encryption**: AES-256-GCM authenticated encryption
-- **Nonce**: 12-byte random nonce prepended to ciphertext
-- **Format**: `[nonce (12 bytes)][ciphertext][auth tag (16 bytes)]`
+- **KDF**: **`argon2::Argon2::default()`** with **`hash_password_into`** into a 32-byte key (see the [`argon2`](https://docs.rs/argon2) crate for default time / memory / parallelism).
+- **AEAD**: **AES-256-GCM**; 12-byte random nonce prepended to the ciphertext returned by **`aes-gcm`** (ciphertext includes the authentication tag).
+- **Nonces**: **`OsRng`** / **`rand_core`** for nonce and ephemeral keys.
 
-```rust
-// Encryption parameters
-const NONCE_SIZE: usize = 12;
-const KEY_SIZE: usize = 32;  // AES-256
+## Security notes
 
-// Argon2 parameters (configurable)
-// - Memory: 64 MB
-// - Iterations: 3
-// - Parallelism: 4
-```
+1. **Zeroizing**: Derived keys and decrypted plaintext use **`zeroize`** where applicable so sensitive bytes are cleared when dropped.
+2. **Authentication**: GCM provides confidentiality and integrity for **`get_encrypted`** / **`set_encrypted`** payloads.
+3. **No password**: Random-key mode does **not** survive restart; use a password for durable encrypted storage.
 
-## Security Considerations
+## Dependencies (high level)
 
-1. **Secure Memory Handling**: Derived key bytes are wrapped in `Zeroizing<[u8; 32]>` and automatically zeroed when they go out of scope, preventing key material from lingering in memory
-2. **Key Derivation**: Argon2id provides resistance against GPU/ASIC attacks
-3. **Nonce Generation**: Uses `OsRng` for cryptographically secure random nonces
-4. **Authentication**: GCM mode provides both confidentiality and integrity
-
-## Dependencies
-
-- `aes-gcm` - AES-256-GCM authenticated encryption
-- `argon2` - Password-based key derivation
-- `rand` - Secure random number generation
-- `serde` - Serialization for storage keys
-- `zeroize` - Secure memory zeroing for sensitive data
+- **`aes-gcm`**, **`argon2`**, **`rand`**, **`rand_core`**, **`zeroize`**, **`serde`**, **`thiserror`**
+- **`redb`**, **`bincode`** — disk backend and key serialization
+- **`memory`** backend adds no extra deps beyond the shared stack

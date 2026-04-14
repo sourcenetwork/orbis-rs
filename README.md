@@ -21,12 +21,93 @@ Orbis enables secure, distributed encryption where:
 ```
 orbis-rs/
 ├── crates/
-│   ├── crypto/         # Cryptographic primitives and protocols
-│   ├── network/        # P2P networking abstraction
-│   └── local-storage/  # Encrypted key-value storage
+│   ├── authn/          # JWT + did:key verification
+│   ├── authz/          # Policy checks (SourceHub ACP)
+│   ├── bulletin/       # Bulletin board (SourceHub)
+│   ├── common/       # SourceHub chain client + Docker test harnesses
+│   ├── crypto/       # DKG, PRE, threshold signing
+│   ├── local-storage/# Encrypted key-value storage
+│   ├── network/      # QUIC / iroh P2P abstraction
+│   └── proto/        # gRPC service definitions
 └── bin/
-    └── orbis-node/     # Main node binary with gRPC services
+    ├── cli-tool/     # CLI client
+    └── orbis-node/   # Ring node (gRPC + MPC) — see bin/orbis-node/README.md
 ```
+
+Crate-level documentation: each of the directories above has or can have a **`README.md`** (e.g. [`crates/crypto/README.md`](crates/crypto/README.md), [`bin/orbis-node/README.md`](bin/orbis-node/README.md)).
+
+## Bird's eye view
+
+Two diagrams: **runtime** (what talks to what in deployment) and **codebase** (how the workspace fits together). They render on GitHub; in other viewers you may need a Mermaid-capable preview.
+
+### Runtime (deployment)
+
+```mermaid
+flowchart TB
+  subgraph clients[Clients and operators]
+    CLI[CLI / apps / automation]
+  end
+
+  subgraph ring[Threshold ring]
+    n1["orbis-node"]
+    n2["orbis-node"]
+    n3["orbis-node"]
+    n1 <--> n2
+    n2 <--> n3
+    n1 <--> n3
+  end
+
+  subgraph chain[SourceHub chain]
+    bb[(Bulletin board)]
+    acp[(Policies / ACP)]
+  end
+
+  CLI -->|"gRPC: DKG, PRE, Sign, store, info"| n1
+  n1 --> bb
+  n2 --> bb
+  n3 --> bb
+  n1 --> acp
+  n2 --> acp
+  n3 --> acp
+```
+
+- **gRPC** — control plane: start ceremonies, submit ciphertext, fetch node info.  
+- **QUIC (iroh)** — data plane between ring nodes: MPC messages for DKG, PRE, and signing.  
+- **Chain** — shared bulletin records (rings, stored secrets metadata) and access-control policy evaluation.
+
+### Codebase (repository)
+
+```mermaid
+flowchart TB
+  subgraph bin[Binaries]
+    on[orbis-node]
+    ct[cli-tool]
+  end
+
+  subgraph crates[Libraries]
+    proto[proto]
+    crypto[crypto]
+    net[network]
+    ls[local-storage]
+    authn[authn]
+    authz[authz]
+    bull[bulletin]
+    com[common]
+  end
+
+  on --> proto
+  on --> crypto
+  on --> net
+  on --> ls
+  on --> authn
+  on --> authz
+  on --> bull
+  authz --> com
+  bull --> com
+  ct --> proto
+```
+
+**`common`** is the SourceHub / Cosmos client shared by **`authz`** and **`bulletin`**. **`crypto`** is swappable (e.g. BLS12-381 vs decaf377) via Cargo features; **`network`** provides QUIC; **`local-storage`** holds encrypted key material on disk.
 
 ## Crates
 
@@ -65,6 +146,18 @@ Encrypted local key-value storage for persisting node secrets.
 | Trait | Description |
 |-------|-------------|
 | [`LocalStorage`](crates/local-storage/src/trait.rs) | Key-value storage with optional AES-256-GCM encryption |
+
+### [`common`](crates/common/)
+
+SourceHub blockchain client (**`SourceHubClient`**, **`ChainConfig`**, **`TxSigner`**), ACP/bulletin helpers, and Docker-based test containers. See [`crates/common/README.md`](crates/common/README.md).
+
+### [`proto`](crates/proto/)
+
+gRPC `.proto` files and tonic-generated Rust types for node APIs. See [`crates/proto/README.md`](crates/proto/README.md).
+
+### [`orbis-node`](bin/orbis-node/)
+
+Main ring node binary: gRPC services, iroh MPC router, coordinators, PSS scheduler. See [`bin/orbis-node/README.md`](bin/orbis-node/README.md).
 
 ## Swappable Implementations
 
@@ -190,6 +283,36 @@ To add a new implementation (e.g., `sqlite` for local-storage):
     │                  │                   │
 ```
 
+### Phase 3: Threshold Signing
+
+```
+┌───────┐         ┌──────────┐         ┌──────┐
+│ Client│         │   Ring   │         │Verify│
+└───┬───┘         └────┬─────┘         └──┬───┘
+    │                  │                  │
+    │ 1. Request       │                  │
+    │    signature on  │                  │
+    │    a message     │                  │
+    │─────────────────►│                  │
+    │                  │                  │
+    │                  │ 2. Nodes run     │
+    │                  │    threshold     │
+    │                  │    signing;      │
+    │                  │    combine shares│
+    │                  │                  │
+    │ 3. Return        │                  │
+    │    aggregate     │                  │
+    │    signature     │                  │
+    │◄─────────────────│                  │
+    │                  │                  │
+    │ 4. Check valid   │                  │
+    │    under ring    │                  │
+    │    public key    │─────────────────►│
+    │                  │                  │
+```
+
+The **Verify** step may be done by the **Client** (local check) or anyone holding the ring’s aggregate public key from DKG. Interactive schemes (e.g. FROST) add nonce rounds between ring nodes before partial signatures are produced.
+
 ## Quick Start
 
 ### Running a Node
@@ -275,9 +398,8 @@ Provisioning files live in `docker/grafana/` and are mounted into the container 
 
 ## Documentation
 
-- [Architecture](docs/Architecture.md) - System design and component overview
-- [Specification](docs/Spec.md) - Protocol specifications
-- [Roadmap](docs/Roadmap.md) - Future development plans
+- **Crate READMEs** — [`crates/crypto`](crates/crypto/README.md), [`crates/network`](crates/network/README.md), [`crates/common`](crates/common/README.md), [`bin/orbis-node`](bin/orbis-node/README.md), and other crates under `crates/` and `bin/`.
+- **Diagrams** — Sequence diagrams in [`docs/SequenceDiagrams/`](docs/SequenceDiagrams/).
 
 ## Security
 
