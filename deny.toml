@@ -1,0 +1,58 @@
+# cargo-deny configuration
+# Run: cargo deny check
+# Install: cargo install cargo-deny
+
+[graph]
+all-features = false
+
+# ---------------------------------------------------------------------------
+# Licenses
+# ---------------------------------------------------------------------------
+# Anything not in the allow list is denied by default.
+# OR-expressions are evaluated lazily — if Apache-2.0 or MIT appears in the
+# expression, the crate passes even if GPL also appears (e.g. self_cell).
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "CC0-1.0",
+    "Zlib",
+    "BSL-1.0",   # Boost Software License (permissive) — used by ryu via serde_json
+    "MPL-2.0",   # file-level copyleft only; we don't modify these files.
+                 # affects: attohttpc (via iroh→igd-next), option-ext (via dirs)
+]
+
+# Confidence threshold for license text scanning (when SPDX field is absent)
+confidence-threshold = 0.8
+
+# ---------------------------------------------------------------------------
+# Security advisories — disabled until prod-ready
+# ---------------------------------------------------------------------------
+[advisories]
+unmaintained = "none"
+yanked = "allow"
+
+# ---------------------------------------------------------------------------
+# Banned crates
+# ---------------------------------------------------------------------------
+[bans]
+# Warn on duplicate versions of the same crate (common with large dep trees)
+multiple-versions = "warn"
+wildcards = "allow"
+
+# ---------------------------------------------------------------------------
+# Source origins
+# ---------------------------------------------------------------------------
+[sources]
+# Only allow crates from crates.io and local path dependencies
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

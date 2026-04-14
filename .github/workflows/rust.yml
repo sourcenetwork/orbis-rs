@@ -10,6 +10,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install protoc
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+    - name: Install cargo-deny
+      run: cargo install cargo-deny --locked
+    - name: Check licences
+      run: cargo deny check licenses
+
   build:
 
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}/\
