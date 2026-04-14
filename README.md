@@ -36,6 +36,79 @@ orbis-rs/
 
 Crate-level documentation: each of the directories above has or can have a **`README.md`** (e.g. [`crates/crypto/README.md`](crates/crypto/README.md), [`bin/orbis-node/README.md`](bin/orbis-node/README.md)).
 
+## Bird's eye view
+
+Two diagrams: **runtime** (what talks to what in deployment) and **codebase** (how the workspace fits together). They render on GitHub; in other viewers you may need a Mermaid-capable preview.
+
+### Runtime (deployment)
+
+```mermaid
+flowchart TB
+  subgraph clients[Clients and operators]
+    CLI[CLI / apps / automation]
+  end
+
+  subgraph ring[Threshold ring]
+    n1["orbis-node"]
+    n2["orbis-node"]
+    n3["orbis-node"]
+    n1 <--> n2
+    n2 <--> n3
+    n1 <--> n3
+  end
+
+  subgraph chain[SourceHub chain]
+    bb[(Bulletin board)]
+    acp[(Policies / ACP)]
+  end
+
+  CLI -->|"gRPC: DKG, PRE, Sign, store, info"| n1
+  n1 --> bb
+  n2 --> bb
+  n3 --> bb
+  n1 --> acp
+  n2 --> acp
+  n3 --> acp
+```
+
+- **gRPC** — control plane: start ceremonies, submit ciphertext, fetch node info.  
+- **QUIC (iroh)** — data plane between ring nodes: MPC messages for DKG, PRE, and signing.  
+- **Chain** — shared bulletin records (rings, stored secrets metadata) and access-control policy evaluation.
+
+### Codebase (repository)
+
+```mermaid
+flowchart TB
+  subgraph bin[Binaries]
+    on[orbis-node]
+    ct[cli-tool]
+  end
+
+  subgraph crates[Libraries]
+    proto[proto]
+    crypto[crypto]
+    net[network]
+    ls[local-storage]
+    authn[authn]
+    authz[authz]
+    bull[bulletin]
+    com[common]
+  end
+
+  on --> proto
+  on --> crypto
+  on --> net
+  on --> ls
+  on --> authn
+  on --> authz
+  on --> bull
+  authz --> com
+  bull --> com
+  ct --> proto
+```
+
+**`common`** is the SourceHub / Cosmos client shared by **`authz`** and **`bulletin`**. **`crypto`** is swappable (e.g. BLS12-381 vs decaf377) via Cargo features; **`network`** provides QUIC; **`local-storage`** holds encrypted key material on disk.
+
 ## Crates
 
 ### [`crypto`](crates/crypto/)
