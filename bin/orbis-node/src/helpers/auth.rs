@@ -1,4 +1,4 @@
-use crate::constants::MAX_TOKEN_LIFETIME_SECS;
+use crate::constants::{MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken};
 use serde::de::DeserializeOwned;
 use std::fmt::Debug;
@@ -30,7 +30,12 @@ where
     let token_str = extract_bearer_token(request)
         .map_err(|e| e.to_string())?
         .to_string();
-    let token = resolve_jwt_did(&token_str, current_time, MAX_TOKEN_LIFETIME_SECS)
-        .map_err(|e| format!("JWT validation failed: {}", e))?;
+    let token = resolve_jwt_did(
+        &token_str,
+        current_time,
+        MAX_TOKEN_LIFETIME_SECS,
+        MAX_JWT_BYTES,
+    )
+    .map_err(|e| format!("JWT validation failed: {}", e))?;
     Ok((token_str, token))
 }

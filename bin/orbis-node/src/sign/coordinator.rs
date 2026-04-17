@@ -16,7 +16,8 @@
 
 use crate::app_state::AppState;
 use crate::constants::{
-    MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS, PEER_RESPONSE_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
+    MAX_JWT_BYTES, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS, PEER_RESPONSE_TIMEOUT,
+    SIGN_COLLECTION_TIMEOUT,
 };
 use crate::helpers::helpers::{
     determine_session_node_id, is_ring_reshare_in_progress, is_self_peer_id,
@@ -161,10 +162,13 @@ where
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
                 .as_secs();
-            let token: BearerToken<SignClaims> =
-                resolve_jwt_did(token_string, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(
-                    |e| SignError::Unauthorized(format!("JWT validation failed: {}", e)),
-                )?;
+            let token: BearerToken<SignClaims> = resolve_jwt_did(
+                token_string,
+                current_time,
+                MAX_TOKEN_LIFETIME_SECS,
+                MAX_JWT_BYTES,
+            )
+            .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
             validate_sign_claims(&token, namespace, derivation_id, None)?;
             let key_derivation =
                 fetch_key_derivation(&*self.app_state.bulletin, namespace, derivation_id).await?;
@@ -266,10 +270,13 @@ where
                     .duration_since(UNIX_EPOCH)
                     .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
                     .as_secs();
-                let token: BearerToken<SignClaims> =
-                    resolve_jwt_did(&token_string, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(
-                        |e| SignError::Unauthorized(format!("JWT validation failed: {}", e)),
-                    )?;
+                let token: BearerToken<SignClaims> = resolve_jwt_did(
+                    &token_string,
+                    current_time,
+                    MAX_TOKEN_LIFETIME_SECS,
+                    MAX_JWT_BYTES,
+                )
+                .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 
                 validate_sign_claims(&token, &namespace, &derivation_id, Some(&message))?;
 

@@ -131,10 +131,19 @@ pub fn resolve_jwt_did<T>(
     token_str: &str,
     current_time: u64,
     max_token_lifetime_secs: u64,
+    max_jwt_bytes: usize,
 ) -> Result<BearerToken<T>>
 where
     T: DeserializeOwned + Debug,
 {
+    if token_str.len() > max_jwt_bytes {
+        return Err(AuthNError::JwtError(format!(
+            "Token too large: {} bytes exceeds maximum {}",
+            token_str.len(),
+            max_jwt_bytes
+        )));
+    }
+
     // First, decode the header to check algorithm
     let header = decode_header(token_str)
         .map_err(|e| AuthNError::JwtError(format!("Failed to decode JWT header: {}", e)))?;

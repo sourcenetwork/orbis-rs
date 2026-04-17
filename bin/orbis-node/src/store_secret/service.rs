@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::constants::{BULLETIN_RING_NAMESPACE, MAX_TOKEN_LIFETIME_SECS};
+use crate::constants::{BULLETIN_RING_NAMESPACE, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
 use crate::helpers::helpers::RingConfig;
 use crate::metrics;
 use crate::ring_state::RingPolyState;
@@ -79,10 +79,13 @@ where
         // 1. Authenticate: Extract and validate JWT
         let token_str = extract_bearer_token(&request)
             .map_err(|e| StoreSecretError::Unauthorized(e.to_string()))?;
-        let token: BearerToken<StoreSecretClaims> =
-            resolve_jwt_did(token_str, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(|e| {
-                StoreSecretError::Unauthorized(format!("JWT validation failed: {}", e))
-            })?;
+        let token: BearerToken<StoreSecretClaims> = resolve_jwt_did(
+            token_str,
+            current_time,
+            MAX_TOKEN_LIFETIME_SECS,
+            MAX_JWT_BYTES,
+        )
+        .map_err(|e| StoreSecretError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 
         let req = request.into_inner();
 
