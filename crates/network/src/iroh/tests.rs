@@ -189,14 +189,11 @@ async fn iroh_router_builder_max_message_size() {
     #[async_trait]
     impl ProtocolHandler for LargeMessageHandler {
         async fn handle(&self, connection: Box<dyn Connection>) -> Result<()> {
-            match connection.recv().await {
-                Ok(msg) => {
-                    assert_eq!(msg.data.len(), self.expected_size);
-                    connection.send(msg).await?;
-                    // Drain until remote closes — keeps stream alive for client read.
-                    let _ = connection.recv().await;
-                }
-                Err(_) => {}
+            if let Ok(msg) = connection.recv().await {
+                assert_eq!(msg.data.len(), self.expected_size);
+                connection.send(msg).await?;
+                // Drain until remote closes — keeps stream alive for client read.
+                let _ = connection.recv().await;
             }
             Ok(())
         }

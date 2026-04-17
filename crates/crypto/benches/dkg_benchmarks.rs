@@ -103,7 +103,7 @@ fn run_dkg_benchmarks<S: DkgBenchSetup>(c: &mut Criterion, prefix: &str) {
         for &(t, n) in &[(2, 3), (3, 5), (5, 9)] {
             group.bench_function(BenchmarkId::new("t_of_n", format!("{t}_of_{n}")), |b| {
                 b.iter(|| {
-                    let mut node = S::create_node(1, black_box(t), black_box(n));
+                    let mut node = S::create_node(1, black_box(t), black_box(n), 0);
                     node.generate_polynomial(DkgMode::Fresh).unwrap();
                 })
             });

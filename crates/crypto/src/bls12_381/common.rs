@@ -98,8 +98,8 @@ impl CryptoSerialize for G2Point {
 
 impl CryptoDeserialize for G2Point {
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let point = G2Affine::deserialize_compressed(bytes)
-            .map_err(|e| CryptoError::SerializationError(e))?;
+        let point =
+            G2Affine::deserialize_compressed(bytes).map_err(CryptoError::SerializationError)?;
         Ok(Self(point))
     }
 }

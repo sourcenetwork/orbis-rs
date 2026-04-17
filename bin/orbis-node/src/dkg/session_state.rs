@@ -180,7 +180,7 @@ impl<D: Dkg> DkgSessionState<D> {
     /// - `Fresh`   → `DkgMode::Fresh` (new random secret)
     /// - `Refresh` → `DkgMode::Refresh` (zero constant term, same secret)
     /// - `Reshare` → `DkgMode::Reshare` (Lagrange-weighted old share; errors if `old_share` is
-    ///               `None`, which only happens for pure `Receiver` nodes — they must not call this)
+    ///   `None`, which only happens for pure `Receiver` nodes — they must not call this)
     pub fn generate_polynomial(&mut self) -> Result<(), DkgError> {
         let mode = match &self.kind {
             SessionKind::Fresh => DkgMode::Fresh,
@@ -494,6 +494,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// - `CreateSessionOutcome::LimitReached` if `MAX_DKG_SESSIONS` is already at
     ///   capacity (must NOT be silently ignored — callers that marked a ring as
     ///   in-progress PSS before calling this must unmark it on this outcome).
+    ///
     /// Create a new DKG session, optionally initializing it via `init_fn` before
     /// the write lock is released.
     ///

@@ -271,18 +271,18 @@ where
                     .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
                     .as_secs();
                 let token: BearerToken<SignClaims> = resolve_jwt_did(
-                    &token_string,
+                    token_string,
                     current_time,
                     MAX_TOKEN_LIFETIME_SECS,
                     MAX_JWT_BYTES,
                 )
                 .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 
-                validate_sign_claims(&token, &namespace, &derivation_id, Some(&message))?;
+                validate_sign_claims(&token, namespace, derivation_id, Some(&message))?;
 
                 // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
                 let (key_derivation, ring_payload) =
-                    fetch_bulletin_payloads(&*self.app_state.bulletin, &namespace, &derivation_id)
+                    fetch_bulletin_payloads(&*self.app_state.bulletin, namespace, derivation_id)
                         .await?;
 
                 // For interactive (FROST), authz was already checked in handle_nonce_request
@@ -291,7 +291,7 @@ where
                 check_policy_access(
                     &*self.app_state.authz,
                     &key_derivation,
-                    &derivation_id,
+                    derivation_id,
                     &token.issuer_id,
                     valid_window.clone(),
                 )
@@ -585,7 +585,7 @@ where
                 &ring,
                 self_in_list,
             )
-            .map_err(|e| SignError::Deserialization(e))?;
+            .map_err(SignError::Deserialization)?;
             let dks =
                 bundle.and_then(|b| b.pri_share().map(|ps| DistKeyShare { pri_share: ps }).ok());
             (poly, dks)

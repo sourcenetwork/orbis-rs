@@ -710,7 +710,7 @@ impl ThresholdDealerNode {
         hasher.update(PROTOCOL);
 
         // Bind share index
-        hasher.update(&idx.to_le_bytes());
+        hasher.update(idx.to_le_bytes());
 
         // Serialize and hash all public inputs then proof points
         // Compressed decaf377 points are 32 bytes

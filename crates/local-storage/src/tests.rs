@@ -15,14 +15,14 @@ pub fn test_set_get_contains_delete<DB: LocalStorage>(db: DB) {
 
     let contains_result = db.contains(LocalStorageKeys::RingKey(key.clone()));
     assert!(contains_result.is_ok());
-    assert_eq!(contains_result.unwrap(), true);
+    assert!(contains_result.unwrap());
 
     let delete_result = db.delete(LocalStorageKeys::RingKey(key.clone()));
     assert!(delete_result.is_ok());
 
     let contains_result_2 = db.contains(LocalStorageKeys::RingKey(key));
     assert!(contains_result_2.is_ok());
-    assert_eq!(contains_result_2.unwrap(), false);
+    assert!(!contains_result_2.unwrap());
 }
 
 pub fn test_encrypted_functions<DB: LocalStorage>(db: DB) {

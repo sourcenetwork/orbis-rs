@@ -28,13 +28,8 @@ pub struct EchoHandler;
 #[async_trait]
 impl ProtocolHandler for EchoHandler {
     async fn handle(&self, connection: Box<dyn Connection>) -> Result<()> {
-        loop {
-            match connection.recv().await {
-                Ok(msg) => {
-                    connection.send(msg).await?;
-                }
-                Err(_) => break,
-            }
+        while let Ok(msg) = connection.recv().await {
+            connection.send(msg).await?;
         }
         Ok(())
     }
@@ -59,12 +54,8 @@ impl ProtocolHandler for CountingHandler {
         let _ = self.sender.send(()).await;
 
         // Keep connection alive briefly to allow message exchange
-        loop {
-            match connection.recv().await {
-                Ok(_) => {}
-                Err(_) => break,
-            }
-        }
+        while connection.recv().await.is_ok() {}
+
         Ok(())
     }
 }

@@ -295,9 +295,9 @@ pub fn validate_dkg_claims(
 ///
 /// - `Fresh`   — write directly under `aggregate_pk`.
 /// - `Refresh` — load old bundle, fold in the delta share and polynomial, write back
-///               under the original ring key.
+///   under the original ring key.
 /// - `Reshare` — write a fresh bundle under the old ring key (the new share replaces
-///               the old one; the ring public key is unchanged).
+///   the old one; the ring public key is unchanged).
 ///
 /// `combine_pub_poly` encapsulates curve-specific polynomial combination (Refresh only).
 pub fn persist_ring_bundle<S: LocalStorage>(

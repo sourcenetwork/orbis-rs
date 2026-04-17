@@ -88,7 +88,7 @@ where
         // extract and validate JWT (no IO) ---
         let (token_string, token) =
             extract_and_validate_jwt::<SignClaims, _>(&request, current_time)
-                .map_err(|e| SignError::Unauthorized(e))?;
+                .map_err(SignError::Unauthorized)?;
 
         let req = request.into_inner();
 

@@ -1470,7 +1470,7 @@ async fn test_sign_policy_fails_wrong_namespace() {
         .create_sign_jwt(
             "wrong-namespace",
             POLICY_TEST_DERIVATION_ID,
-            &b"test message".to_vec(),
+            b"test message",
         )
         .expect("create sign JWT");
 
@@ -1584,7 +1584,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
         .create_sign_jwt(
             POLICY_TEST_NAMESPACE,
             "wrong-derivation-id",
-            &b"test message".to_vec(),
+            b"test message",
         )
         .expect("create sign JWT");
 

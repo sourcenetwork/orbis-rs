@@ -127,7 +127,7 @@ where
     let dealer = T::new();
     let reply = dealer.reencrypt(&share, encrypted_secret, rdr_pk, derivation)?;
     let xnc_cmt = dealer
-        .recover(&[reply.share.clone()], 1, 1)?
+        .recover(std::slice::from_ref(&reply.share), 1, 1)?
         .expect("recover with 1 share at t=1 must succeed");
     Ok(xnc_cmt)
 }

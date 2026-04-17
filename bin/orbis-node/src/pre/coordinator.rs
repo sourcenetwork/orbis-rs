@@ -445,7 +445,7 @@ where
         //    the same PSS generation, so Lagrange interpolation is correct.
         let (pub_poly, local_share_bundle) =
             load_ring_pub_poly_and_bundle::<D>(&self.app_state.local_storage, &ring, self_in_list)
-                .map_err(|e| PreError::Deserialization(e))?;
+                .map_err(PreError::Deserialization)?;
 
         // Validate we have enough potential shares to meet threshold
         // If we're in the list, we can contribute our own share locally

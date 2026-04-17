@@ -79,7 +79,7 @@ where
 
         // 1. Authenticate: Extract and validate JWT
         let (token_str, token) = extract_and_validate_jwt::<PreClaims, _>(&request, current_time)
-            .map_err(|e| PreError::Unauthorized(e))?;
+            .map_err(PreError::Unauthorized)?;
 
         let req = request.into_inner();
         let valid_window = req.valid_window.map(|w| ValidWindow {

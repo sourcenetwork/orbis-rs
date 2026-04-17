@@ -272,10 +272,7 @@ impl Dkg for DKGNode {
         }
 
         // Replay protection: check nonce
-        let nonces = self
-            .received_nonces
-            .entry(share.from_id)
-            .or_insert_with(HashSet::new);
+        let nonces = self.received_nonces.entry(share.from_id).or_default();
 
         if nonces.len() >= MAX_NONCES_PER_NODE {
             return Err(CryptoError::DKGError(
@@ -299,7 +296,7 @@ impl Dkg for DKGNode {
         if !commitment.verify_share(share.to_id, &share.value) {
             self.complaints
                 .entry(self.id)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(share.from_id);
 
             return Err(CryptoError::DKGError(
@@ -379,7 +376,7 @@ impl Dkg for DKGNode {
             self.eval_polynomial(self.id)
         };
 
-        for (_, share_value) in &self.received_shares {
+        for share_value in self.received_shares.values() {
             secret_share += share_value;
         }
 
@@ -415,7 +412,7 @@ impl Dkg for DKGNode {
             G1Projective::from(self.commitment.coefficients[0])
         };
 
-        for (_, commitment) in &self.received_commitments {
+        for commitment in self.received_commitments.values() {
             aggregate_pk += G1Projective::from(commitment.coefficients[0]);
         }
 
@@ -464,7 +461,7 @@ impl Dkg for DKGNode {
 
             // Accumulate in projective coordinates; convert to affine once at the end.
             let mut agg: Vec<G1Projective> = vec![G1Projective::zero(); num_coeffs];
-            for (_, commitment) in &self.received_commitments {
+            for commitment in self.received_commitments.values() {
                 for (i, coeff) in commitment.coefficients.iter().enumerate() {
                     agg[i] += G1Projective::from(*coeff);
                 }
@@ -497,7 +494,7 @@ impl Dkg for DKGNode {
                 .iter()
                 .map(|c| G1Projective::from(*c))
                 .collect();
-            for (_, commitment) in &self.received_commitments {
+            for commitment in self.received_commitments.values() {
                 for (i, coeff) in commitment.coefficients.iter().enumerate() {
                     agg[i] += G1Projective::from(*coeff);
                 }

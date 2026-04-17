@@ -14,8 +14,12 @@ impl SignBenchSetup for Bls12381SignBench {
 
     fn create_fixture(t: usize, n: usize) -> SignBenchFixture<ThresholdBlsSigner> {
         let mut coordinator = DKGCoordinator::new(
-            |id: u32, threshold: usize, total_nodes: usize| {
-                <DKGNode as Dkg>::new(id, threshold, total_nodes)
+            |id: u32,
+             threshold: usize,
+             total_nodes: usize,
+             session_id: u64,
+             role: crypto::r#trait::DkgRole| {
+                <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id, role)
             },
             n,
             t,
@@ -45,7 +49,9 @@ impl SignBenchSetup for Bls12381SignBench {
         // Pre-compute signature shares
         let mut sig_shares = Vec::with_capacity(t);
         for dks in &dist_key_shares {
-            let share = signer.sign(dks, MSG, &pub_poly, None, &[]).unwrap();
+            let share = signer
+                .sign(dks, MSG, &pub_poly, None, &[], None, None)
+                .unwrap();
             sig_shares.push(share);
         }
 

@@ -249,7 +249,7 @@ where
 /// * `make_keypair`  — returns a random reader `(secret_key, public_key)` pair.
 /// * `add_shares`    — adds two share values: used for refresh `new_share = old + delta`.
 /// * `add_pub_poly`  — adds two public polynomials coefficient-wise: used to compute the
-///                     combined pub_poly after refresh (`reshare_poly + delta_poly`).
+///   combined pub_poly after refresh (`reshare_poly + delta_poly`).
 pub fn run_lifecycle_test<Node, T, S, SV, PK, PP, NF, MK, AS, APK>(
     node_factory: NF,
     make_keypair: MK,

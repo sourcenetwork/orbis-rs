@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod create_routers;
+#[allow(clippy::module_inception)]
 pub mod helpers;
 pub mod launch;
 pub mod protocol_handler;

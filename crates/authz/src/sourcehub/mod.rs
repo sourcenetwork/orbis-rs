@@ -142,14 +142,13 @@ impl SourceHubAuth {
     }
 
     pub async fn get_policy(&self, policy_id: String) -> Result<Policy> {
-        Ok(self
-            .chain_client
+        self.chain_client
             .acp_query_policy(&policy_id)
             .await
             .map_err(|e| AuthZError::ChainError(e.to_string()))?
             .record
             .ok_or_else(|| AuthZError::NotFound("Policy record not found".to_string()))?
             .policy
-            .ok_or_else(|| AuthZError::NotFound("Policy not found".to_string()))?)
+            .ok_or_else(|| AuthZError::NotFound("Policy not found".to_string()))
     }
 }

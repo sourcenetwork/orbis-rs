@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 /// - `Bulletin`: message is a serialized `BulletinPost`; authorization is its existence on chain.
 ///   Signs from the root key (no derivation, no metadata).
 /// - `Policy`: policy-authorized derivation signing with JWT auth, mirrors the PRE flow.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SignContext {
     /// Message bytes are a serialized `BulletinPost` verified against the chain.

@@ -238,7 +238,7 @@ pub async fn store_prepared_secret(
         derived_pk: derived_pk.clone(),
         with_proof,
         tier: tier.clone(),
-        timestamp: timestamp.clone(),
+        timestamp,
         metadata_hash: metadata_hash.clone(),
     };
 
@@ -330,7 +330,7 @@ pub async fn do_store_secret(
         resource.clone(),
         permission.clone(),
         tier.clone(),
-        timestamp.clone(),
+        timestamp,
         salt.clone(),
     )?;
     // If derivation was provided, compute derived_pk from the proof

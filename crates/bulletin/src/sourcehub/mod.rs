@@ -115,12 +115,11 @@ impl SourceHubBulletin {
             let client_ref = &client.chain_client;
 
             // Helper to create backoff config for balance check
-            let create_backoff = || {
-                let mut backoff = backoff::ExponentialBackoff::default();
-                backoff.max_elapsed_time = Some(std::time::Duration::from_secs(15 * 60));
-                backoff.initial_interval = std::time::Duration::from_secs(2);
-                backoff.max_interval = std::time::Duration::from_secs(30);
-                backoff
+            let create_backoff = || backoff::ExponentialBackoff {
+                max_elapsed_time: Some(std::time::Duration::from_secs(15 * 60)),
+                initial_interval: std::time::Duration::from_secs(2),
+                max_interval: std::time::Duration::from_secs(30),
+                ..Default::default()
             };
             // Phase 2: Verify balance is sufficient (retry in case balance increases)
             let check_sufficient_balance = || async {
