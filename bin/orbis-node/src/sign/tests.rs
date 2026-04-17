@@ -1768,3 +1768,120 @@ async fn test_sign_service_rejects_oversized_message() {
 
     cleanup_db(&test_db_path(db_name));
 }
+
+/// Policy signing should fail when the JWT was created for a different message than what is sent.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_sign_policy_fails_wrong_message_digest() {
+    let db_name = "test_sign_policy_fails_wrong_message_digest";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let peer_ids = network.get_all_peer_ids();
+
+    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids, None)
+        .expect("create DKG JWT");
+    let result = node1_service
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    threshold: 2,
+                    peer_ids: peer_ids.clone(),
+                    pss_interval: None,
+                },
+                &token,
+            )
+            .unwrap(),
+        )
+        .await;
+    assert!(result.is_ok());
+
+    let (ring_payload, ring_id) = wait_for_dkg_completion(
+        &network,
+        result.unwrap().into_inner().session_id.parse().unwrap(),
+    )
+    .await;
+
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("requires DummyBulletin");
+    let key_derivation = setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
+
+    // JWT is signed for "original message"
+    let original_message = b"original message".to_vec();
+    let sign_token = test_keys
+        .create_sign_jwt(
+            POLICY_TEST_NAMESPACE,
+            POLICY_TEST_DERIVATION_ID,
+            &original_message,
+        )
+        .expect("create sign JWT");
+
+    let sign_coordinator =
+        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+
+    // But the request sends a different message
+    let different_message = b"completely different message".to_vec();
+    let sign_result = sign_coordinator
+        .initiate_signing(
+            format!(
+                "req-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            ),
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: peer_ids.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_ids.len(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
+            },
+            different_message,
+            SignContext::Policy {
+                token_string: sign_token,
+                namespace: POLICY_TEST_NAMESPACE.to_string(),
+                derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
+                valid_window: None,
+                key_derivation,
+            },
+        )
+        .await;
+
+    assert!(
+        sign_result.is_err(),
+        "Should fail when request message differs from JWT digest"
+    );
+    let err = sign_result.unwrap_err().to_string();
+    assert!(
+        err.contains("Insufficient") || err.contains("Timeout"),
+        "Error should indicate peers rejected the request: {}",
+        err
+    );
+
+    println!("SUCCESS! Policy signing correctly failed when message doesn't match JWT digest");
+
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}

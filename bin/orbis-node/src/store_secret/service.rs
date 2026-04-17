@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::constants::{BULLETIN_RING_NAMESPACE, MAX_TOKEN_LIFETIME_SECS};
+use crate::constants::{BULLETIN_RING_NAMESPACE, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
 use crate::helpers::helpers::RingConfig;
 use crate::metrics;
 use crate::ring_state::RingPolyState;
@@ -13,6 +13,7 @@ use crypto::PreImpl as ThresholdDealerNode;
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
 };
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
@@ -78,10 +79,13 @@ where
         // 1. Authenticate: Extract and validate JWT
         let token_str = extract_bearer_token(&request)
             .map_err(|e| StoreSecretError::Unauthorized(e.to_string()))?;
-        let token: BearerToken<StoreSecretClaims> =
-            resolve_jwt_did(token_str, current_time, MAX_TOKEN_LIFETIME_SECS).map_err(|e| {
-                StoreSecretError::Unauthorized(format!("JWT validation failed: {}", e))
-            })?;
+        let token: BearerToken<StoreSecretClaims> = resolve_jwt_did(
+            token_str,
+            current_time,
+            MAX_TOKEN_LIFETIME_SECS,
+            MAX_JWT_BYTES,
+        )
+        .map_err(|e| StoreSecretError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 
         let req = request.into_inner();
 
@@ -369,9 +373,10 @@ fn validate_store_secret_claims(
     token: &BearerToken<StoreSecretClaims>,
     req: &StoreSecretRequest,
 ) -> Result<(), StoreSecretError> {
-    if token.claims.encrypted_document != req.encrypted_document {
+    let expected = Sha256::digest(&req.encrypted_document);
+    if token.claims.encrypted_document_sha256 != expected.as_slice() {
         return Err(StoreSecretError::Unauthorized(
-            "Token encrypted_document does not match request".to_string(),
+            "Token encrypted_document_sha256 does not match request encrypted_document".to_string(),
         ));
     }
 

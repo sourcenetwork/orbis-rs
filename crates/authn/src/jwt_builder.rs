@@ -9,6 +9,7 @@ use crate::{DkgClaims, PreClaims, SignClaims, StoreSecretClaims};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint, KeyMaterial};
 use jwt_simple::prelude::*;
 use serde::{de::DeserializeOwned, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt::Debug;
 use tonic::Request;
 
@@ -122,7 +123,7 @@ impl JwtSigner {
     /// # Arguments
     /// * `namespace` - Namespace of the key derivation entry on the bulletin
     /// * `derivation_id` - Object ID of the key derivation entry
-    /// * `message` - Bytes to sign
+    /// * `message` - Bytes to sign; stored as SHA-256 digest in the claim
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour
@@ -130,12 +131,12 @@ impl JwtSigner {
         &self,
         namespace: &str,
         derivation_id: &str,
-        message: &Vec<u8>,
+        message: &[u8],
     ) -> Result<String> {
         let claims = SignClaims {
             namespace: namespace.to_string(),
             derivation_id: derivation_id.to_string(),
-            message: message.clone(),
+            message_sha256: Sha256::digest(message).to_vec(),
         };
         self.sign(claims, Duration::from_hours(1))
     }
@@ -143,7 +144,7 @@ impl JwtSigner {
     /// Create a JWT with StoreSecret claims.
     ///
     /// # Arguments
-    /// * `encrypted_document` - The encrypted document (JSON-serialized Secret struct)
+    /// * `encrypted_document` - The encrypted document bytes; stored as SHA-256 digest in the claim
     /// * `enc_cmt` - The encryption commitment (hex-encoded G1 point)
     /// * `ring_id` - The ring ID to use for encryption
     /// * `namespace` - The namespace for storing the document
@@ -162,7 +163,7 @@ impl JwtSigner {
     /// The signed JWT string valid for 1 hour
     pub fn create_store_secret_jwt(
         &self,
-        encrypted_document: Vec<u8>,
+        encrypted_document: &[u8],
         enc_cmt: Vec<u8>,
         ring_id: &str,
         namespace: &str,
@@ -179,7 +180,7 @@ impl JwtSigner {
         metadata_hash: Option<Vec<u8>>,
     ) -> Result<String> {
         let claims = StoreSecretClaims {
-            encrypted_document,
+            encrypted_document_sha256: Sha256::digest(encrypted_document).to_vec(),
             enc_cmt,
             ring_id: ring_id.to_string(),
             namespace: namespace.to_string(),
@@ -313,7 +314,7 @@ mod tests {
     fn test_create_store_secret_jwt() {
         let signer = JwtSigner::new();
         let token = signer.create_store_secret_jwt(
-            b"encrypted_doc".to_vec(),
+            b"encrypted_doc",
             b"enc_cmt_bytes".to_vec(),
             "ring_id_value",
             "namespace",

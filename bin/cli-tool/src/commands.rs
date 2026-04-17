@@ -249,7 +249,7 @@ pub async fn store_prepared_secret(
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
         .create_store_secret_jwt(
-            prepared.encrypted_document.clone(),
+            &prepared.encrypted_document,
             prepared.enc_cmt.clone(),
             &ring_id,
             &namespace,

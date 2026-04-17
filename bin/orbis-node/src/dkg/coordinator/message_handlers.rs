@@ -1,4 +1,4 @@
-use crate::constants::{MAX_COMMITMENT_COEFFICIENTS, MAX_TOKEN_LIFETIME_SECS};
+use crate::constants::{MAX_COMMITMENT_COEFFICIENTS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
     in_committee, node_index_in, serialize_commitment_coefficients, session_not_found,
@@ -113,9 +113,13 @@ where
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
                 .as_secs();
-            let token: BearerToken<DkgClaims> =
-                resolve_jwt_did(token_string, current_time, MAX_TOKEN_LIFETIME_SECS)
-                    .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+            let token: BearerToken<DkgClaims> = resolve_jwt_did(
+                token_string,
+                current_time,
+                MAX_TOKEN_LIFETIME_SECS,
+                MAX_JWT_BYTES,
+            )
+            .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
             validate_dkg_claims(&token, threshold, peer_ids, pss_interval)?;
             tracing::info!(
                 issuer = %token.issuer_id,

@@ -58,8 +58,8 @@ pub struct SignClaims {
     pub namespace: String,
     /// Object ID of the key derivation entry on the bulletin
     pub derivation_id: String,
-    /// Message to sign
-    pub message: Vec<u8>,
+    /// SHA-256 digest of the message to sign
+    pub message_sha256: Vec<u8>,
 }
 
 /// Claims for DKG endpoints
@@ -78,8 +78,8 @@ pub struct DkgClaims {
 /// Claims for StoreSecret endpoints
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct StoreSecretClaims {
-    /// The encrypted document (serialized Secret struct bytes)
-    pub encrypted_document: Vec<u8>,
+    /// SHA-256 digest of the encrypted document
+    pub encrypted_document_sha256: Vec<u8>,
     /// The encryption commitment (compressed G1 point bytes)
     pub enc_cmt: Vec<u8>,
     /// Ring ID to use for encryption
@@ -131,10 +131,19 @@ pub fn resolve_jwt_did<T>(
     token_str: &str,
     current_time: u64,
     max_token_lifetime_secs: u64,
+    max_jwt_bytes: usize,
 ) -> Result<BearerToken<T>>
 where
     T: DeserializeOwned + Debug,
 {
+    if token_str.len() > max_jwt_bytes {
+        return Err(AuthNError::JwtError(format!(
+            "Token too large: {} bytes exceeds maximum {}",
+            token_str.len(),
+            max_jwt_bytes
+        )));
+    }
+
     // First, decode the header to check algorithm
     let header = decode_header(token_str)
         .map_err(|e| AuthNError::JwtError(format!("Failed to decode JWT header: {}", e)))?;

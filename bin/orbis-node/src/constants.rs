@@ -15,6 +15,13 @@ use std::time::Duration;
 /// long-lived credentials from being issued and then leaked. Set to 24 hours.
 pub const MAX_TOKEN_LIFETIME_SECS: u64 = 24 * 60 * 60;
 
+/// Maximum allowed byte length for a bearer token string.
+///
+/// Large request payloads are bound via digest claims rather than embedded in full,
+/// so legitimate JWTs are small (typically well under 1 KiB). This cap prevents
+/// oversized tokens from reaching DID resolution and signature verification.
+pub const MAX_JWT_BYTES: usize = 16 * 1024;
+
 // ============================================================================
 // Cryptographic Constants
 // ============================================================================
