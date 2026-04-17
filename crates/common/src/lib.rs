@@ -33,15 +33,7 @@ impl SourceHubTestContainer {
 
         container
     }
-}
 
-impl Default for SourceHubTestContainer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SourceHubTestContainer {
     pub fn wait_for_healthy(&self) {
         let max_attempts = 60;
         let delay = Duration::from_secs(2);
@@ -98,6 +90,12 @@ impl SourceHubTestContainer {
 
     pub fn api_url(&self) -> &'static str {
         SOURCEHUB_API_URL
+    }
+}
+
+impl Default for SourceHubTestContainer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

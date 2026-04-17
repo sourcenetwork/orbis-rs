@@ -30,3 +30,6 @@ default = ["bls12-381"]
 bls12-381 = ["crypto/bls12-381"]
 decaf377 = ["crypto/decaf377"]
 
+
+[lints]
+workspace = true

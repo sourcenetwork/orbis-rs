@@ -22,3 +22,6 @@ test-helpers = []
 tokio = { workspace = true, features = ["full", "process"] }
 serial_test = "3.2.0"
 did-key = { workspace = true }
+
+[lints]
+workspace = true

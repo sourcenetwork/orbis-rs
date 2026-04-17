@@ -13,7 +13,7 @@ use crate::ring_state::RingPolyState;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::error::SignError;
 use crate::sign::helpers::check_policy_access;
-use crate::sign::messages::SignContext;
+use crate::sign::messages::{PolicyContext, SignContext};
 use crate::sign::service::SignServiceImpl;
 use crate::DkgServiceImpl;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
@@ -1243,13 +1243,13 @@ async fn test_dkg_then_sign_policy_end_to_end() {
                 .public_polynomial,
             },
             message.clone(),
-            SignContext::Policy {
+            SignContext::Policy(Box::new(PolicyContext {
                 token_string: sign_token,
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
-            },
+            })),
         )
         .await
         .expect("Policy signing should succeed");
@@ -1388,13 +1388,13 @@ async fn test_sign_policy_fails_invalid_jwt() {
                 .public_polynomial,
             },
             b"some message".to_vec(),
-            SignContext::Policy {
+            SignContext::Policy(Box::new(PolicyContext {
                 token_string: "this.is.not.a.valid.jwt".to_string(),
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
-            },
+            })),
         )
         .await;
 
@@ -1499,13 +1499,13 @@ async fn test_sign_policy_fails_wrong_namespace() {
                 .public_polynomial,
             },
             b"some message".to_vec(),
-            SignContext::Policy {
+            SignContext::Policy(Box::new(PolicyContext {
                 token_string: sign_token,
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
-            },
+            })),
         )
         .await;
 
@@ -1613,13 +1613,13 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                 .public_polynomial,
             },
             b"some message".to_vec(),
-            SignContext::Policy {
+            SignContext::Policy(Box::new(PolicyContext {
                 token_string: sign_token,
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
-            },
+            })),
         )
         .await;
 
@@ -1854,13 +1854,13 @@ async fn test_sign_policy_fails_wrong_message_digest() {
                 .public_polynomial,
             },
             different_message,
-            SignContext::Policy {
+            SignContext::Policy(Box::new(PolicyContext {
                 token_string: sign_token,
                 namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
-            },
+            })),
         )
         .await;
 

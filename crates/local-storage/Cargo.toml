@@ -24,3 +24,5 @@ project-root = { workspace = true }
 default = ["redb"]
 redb = []
 memory = []
+[lints]
+workspace = true

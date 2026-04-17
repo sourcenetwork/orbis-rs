@@ -150,14 +150,13 @@ where
             ..
         } = req;
         // Auth check first — fail fast before burning a nonce.
-        if let SignContext::Policy {
-            ref token_string,
-            ref namespace,
-            ref derivation_id,
-            ref valid_window,
-            ..
-        } = context
-        {
+        if let SignContext::Policy(ref ctx) = context {
+            let (token_string, namespace, derivation_id, valid_window) = (
+                &ctx.token_string,
+                &ctx.namespace,
+                &ctx.derivation_id,
+                &ctx.valid_window,
+            );
             let current_time = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
@@ -200,7 +199,7 @@ where
         // swap to a different derivation using this nonce.
         let context_key = match &context {
             SignContext::Bulletin => "bulletin".to_string(),
-            SignContext::Policy { derivation_id, .. } => derivation_id.clone(),
+            SignContext::Policy(ctx) => ctx.derivation_id.clone(),
         };
 
         if !self
@@ -258,13 +257,13 @@ where
                 .await?;
                 (ring_pk_hex, pub_poly, None, None)
             }
-            SignContext::Policy {
-                ref token_string,
-                ref namespace,
-                ref derivation_id,
-                ref valid_window,
-                ..
-            } => {
+            SignContext::Policy(ref ctx) => {
+                let (token_string, namespace, derivation_id, valid_window) = (
+                    &ctx.token_string,
+                    &ctx.namespace,
+                    &ctx.derivation_id,
+                    &ctx.valid_window,
+                );
                 // Always re-validate JWT (pure crypto, no IO)
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -345,7 +344,7 @@ where
             let nonce_key = format!("nonce-{}", request_id);
             let expected_context_key = match &context {
                 SignContext::Bulletin => "bulletin".to_string(),
-                SignContext::Policy { derivation_id, .. } => derivation_id.clone(),
+                SignContext::Policy(ctx) => ctx.derivation_id.clone(),
             };
             let state_bytes = self
                 .app_state
@@ -612,7 +611,8 @@ where
         // instead of the derived key.
         let (derivation, metadata) = match &context {
             SignContext::Bulletin => (None, None),
-            SignContext::Policy { key_derivation, .. } => {
+            SignContext::Policy(ctx) => {
+                let key_derivation = &ctx.key_derivation;
                 let derivation = Some(key_derivation.derivation.clone().into_bytes());
                 let meta = Some(S::encode_metadata(
                     &key_derivation.policy_id,

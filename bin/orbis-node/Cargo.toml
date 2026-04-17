@@ -66,3 +66,5 @@ bulletin-sourcehub = ["bulletin/sourcehub"]
 iroh = ["network/iroh"]
 integration-test = ["cli-tool"]
 fault-injection = ["network/fault-injection"]
+[lints]
+workspace = true
