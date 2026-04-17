@@ -33,7 +33,7 @@ pub(super) async fn handle_session_init<D>(
     session_id: u64,
     threshold: u32,
     total_participants: u32,
-    peer_ids: &Vec<String>,
+    peer_ids: &[String],
     node_id_assignments: &HashMap<String, u32>,
     token_string: &str,
     kind: &SessionKind,
@@ -141,7 +141,7 @@ where
         bulletin_post_id,
     } = kind
     {
-        let mut sorted_old = peer_ids.clone();
+        let mut sorted_old = peer_ids.to_vec();
         sorted_old.sort();
         let mut sorted_new = next_peer_ids.clone();
         sorted_new.sort();
@@ -342,7 +342,7 @@ where
     // For Reshare: peer_ids in session state = union(old, new) so that non-initiator
     // Dealer nodes know who to broadcast their commitment to.
     let session_peer_ids = if let SessionKind::Reshare { next_peer_ids, .. } = kind {
-        let mut union: Vec<String> = peer_ids.clone();
+        let mut union: Vec<String> = peer_ids.to_vec();
         for p in next_peer_ids {
             if !union.contains(p) {
                 union.push(p.clone());
@@ -350,7 +350,7 @@ where
         }
         union
     } else {
-        peer_ids.clone()
+        peer_ids.to_vec()
     };
     coord.set_peer_ids(&session_id, session_peer_ids).await;
 

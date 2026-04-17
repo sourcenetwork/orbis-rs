@@ -1652,7 +1652,7 @@ async fn test_sign_policy_check_policy_access_enforces_authz_denial() {
 
     #[async_trait::async_trait]
     impl authz::r#trait::Authz for DenyAuthZ {
-        async fn check(&self, _: Vec<u8>, _: &String) -> authz::error::Result<bool> {
+        async fn check(&self, _: Vec<u8>, _: &str) -> authz::error::Result<bool> {
             Ok(false)
         }
     }
@@ -1692,7 +1692,7 @@ async fn test_sign_policy_check_policy_access_expired_valid_window() {
 
     #[async_trait::async_trait]
     impl authz::r#trait::Authz for WindowCheckAuthZ {
-        async fn check(&self, permission: Vec<u8>, _: &String) -> authz::error::Result<bool> {
+        async fn check(&self, permission: Vec<u8>, _: &str) -> authz::error::Result<bool> {
             let req = AccessCheckRequest::from_bytes(&permission)
                 .expect("deserialize AccessCheckRequest");
             if let (Some(window), Some(ts)) = (&req.valid_window, &req.timestamp) {
