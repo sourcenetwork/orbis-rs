@@ -101,7 +101,7 @@ fn create_dummy_request() -> StoreSecretRequest {
 fn create_test_jwt(test_keys: &TestKeyPair) -> String {
     test_keys
         .create_store_secret_jwt(
-            TEST_ENCRYPTED_DOC.as_bytes().to_vec(),
+            TEST_ENCRYPTED_DOC.as_bytes(),
             TEST_ENC_CMT.as_bytes().to_vec(),
             TEST_RING_ID,
             TEST_NAMESPACE,
@@ -196,7 +196,7 @@ async fn test_store_secret_fails_claims_mismatch() {
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            TEST_ENCRYPTED_DOC.as_bytes().to_vec(),
+            TEST_ENCRYPTED_DOC.as_bytes(),
             TEST_ENC_CMT.as_bytes().to_vec(),
             "jwt-ring-id", // Different ring_id in JWT
             TEST_NAMESPACE,
@@ -253,7 +253,7 @@ async fn test_store_secret_fails_namespace_mismatch() {
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            TEST_ENCRYPTED_DOC.as_bytes().to_vec(),
+            TEST_ENCRYPTED_DOC.as_bytes(),
             TEST_ENC_CMT.as_bytes().to_vec(),
             TEST_RING_ID,
             "jwt-namespace", // Different namespace in JWT
@@ -313,7 +313,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            invalid_encrypted_doc.to_vec(),
+            invalid_encrypted_doc,
             TEST_ENC_CMT.as_bytes().to_vec(),
             TEST_RING_ID,
             TEST_NAMESPACE,
@@ -397,7 +397,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            encrypted_doc.clone(),
+            &encrypted_doc,
             enc_cmt_bytes.clone(),
             TEST_RING_ID,
             TEST_NAMESPACE,
@@ -572,7 +572,7 @@ async fn test_store_secret_idempotent() {
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            encrypted_doc.clone(),
+            &encrypted_doc,
             enc_cmt_bytes.clone(),
             &ring_id,
             namespace,
@@ -763,7 +763,7 @@ async fn test_store_secret_fails_wrong_derived_pk() {
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            encrypted_doc.clone(),
+            &encrypted_doc,
             enc_cmt_bytes.clone(),
             &ring_id,
             namespace,
@@ -906,7 +906,7 @@ async fn test_store_secret_fails_with_tampered_proof() {
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
-            encrypted_doc.clone(),
+            &encrypted_doc,
             enc_cmt_bytes.clone(),
             &ring_id,
             namespace,
@@ -962,5 +962,44 @@ async fn test_store_secret_fails_with_tampered_proof() {
         "Validation error: Failed to Validate secret encryption: ElGamal error: Encryption proof verification failed",
     );
 
+    cleanup_db(&db_path);
+}
+
+/// Test that StoreSecret fails when the encrypted_document in the request differs from
+/// the one that was hashed when creating the JWT.
+#[tokio::test]
+async fn test_store_secret_fails_encrypted_document_mismatch() {
+    let db_name = "test_store_secret_fails_encrypted_document_mismatch";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+
+    let test_keys = TestKeyPair::new();
+    // JWT is created for TEST_ENCRYPTED_DOC
+    let token = create_test_jwt(&test_keys);
+
+    // Request sends a different encrypted_document
+    let mut request = create_dummy_request();
+    request.encrypted_document = b"different encrypted document".to_vec();
+
+    let tonic_request = create_authenticated_request(request, &token).unwrap();
+    let result = service.store_secret(tonic_request).await;
+
+    assert!(
+        result.is_err(),
+        "store_secret should fail when encrypted_document doesn't match JWT digest"
+    );
+
+    let status = result.unwrap_err();
+    assert_eq!(
+        status.code(),
+        tonic::Code::Unauthenticated,
+        "Error code should be Unauthenticated for digest mismatch"
+    );
+    assert!(
+        status.message().contains("encrypted_document_sha256"),
+        "Error message should mention encrypted_document_sha256: {}",
+        status.message()
+    );
     cleanup_db(&db_path);
 }

@@ -15,6 +15,7 @@ use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, Thr
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::LocalStorage;
 use network::PeerId;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 /// Deserializes a ring public key from raw bytes.
@@ -195,9 +196,10 @@ pub fn validate_sign_claims(
     }
 
     if let Some(message) = message {
-        if &token.claims.message != message {
+        let expected = Sha256::digest(message);
+        if token.claims.message_sha256 != expected.as_slice() {
             return Err(SignError::Unauthorized(
-                "Token message does not match request message".to_string(),
+                "Token message_sha256 does not match request message".to_string(),
             ));
         }
     }

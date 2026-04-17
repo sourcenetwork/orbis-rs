@@ -13,6 +13,7 @@ use crypto::PreImpl as ThresholdDealerNode;
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
 };
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
@@ -369,9 +370,10 @@ fn validate_store_secret_claims(
     token: &BearerToken<StoreSecretClaims>,
     req: &StoreSecretRequest,
 ) -> Result<(), StoreSecretError> {
-    if token.claims.encrypted_document != req.encrypted_document {
+    let expected = Sha256::digest(&req.encrypted_document);
+    if token.claims.encrypted_document_sha256 != expected.as_slice() {
         return Err(StoreSecretError::Unauthorized(
-            "Token encrypted_document does not match request".to_string(),
+            "Token encrypted_document_sha256 does not match request encrypted_document".to_string(),
         ));
     }
 
