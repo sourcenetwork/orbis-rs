@@ -476,7 +476,7 @@ async fn test_valid_window_out_of_range() {
     );
 
     let result = auth
-        .check(request.to_bytes().unwrap(), &"did:key:any".to_string())
+        .check(request.to_bytes().unwrap(), "did:key:any")
         .await
         .expect("check should not error");
 
