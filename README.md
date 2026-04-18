@@ -1,6 +1,6 @@
 # Orbis
 
-A Rust implementation of threshold cryptography with Distributed Key Generation (DKG) and Proxy Re-Encryption (PRE) protocols.
+A Rust implementation of threshold cryptography with Distributed Key Generation (DKG), Proxy Re-Encryption (PRE), and Threshold signing protocols.
 
 ## Overview
 
@@ -410,4 +410,4 @@ Provisioning files live in `docker/grafana/` and are mounted into the container 
 
 ## License
 
-[Add license information]
+Orbis-rs is licensed under the [Business Source License 1.1](licenses/Bsl.txt)
