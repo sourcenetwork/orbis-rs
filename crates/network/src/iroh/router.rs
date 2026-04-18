@@ -112,25 +112,18 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
             // Loop: accept one QUIC stream per request/session, spawn a handler task per stream.
             // This lets concurrent sessions to the same peer run on independent streams
             // with no head-of-line blocking between them.
-            loop {
-                match connection.accept_bi().await {
-                    Ok((send, recv)) => {
-                        let stream = IrohStreamWrapper::new(
-                            send,
-                            recv,
-                            peer_id.clone(),
-                            Arc::clone(&protocol),
-                            max_message_size,
-                        );
-                        let h = Arc::clone(&handler);
-                        tokio::spawn(async move {
-                            let _ = h.handle(Box::new(stream)).await;
-                        });
-                    }
-                    Err(_) => {
-                        break;
-                    }
-                }
+            while let Ok((send, recv)) = connection.accept_bi().await {
+                let stream = IrohStreamWrapper::new(
+                    send,
+                    recv,
+                    peer_id.clone(),
+                    Arc::clone(&protocol),
+                    max_message_size,
+                );
+                let h = Arc::clone(&handler);
+                tokio::spawn(async move {
+                    let _ = h.handle(Box::new(stream)).await;
+                });
             }
 
             Ok(())

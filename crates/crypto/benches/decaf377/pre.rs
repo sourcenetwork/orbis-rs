@@ -14,11 +14,17 @@ impl BenchSetup for Decaf377Bench {
 
     fn create_fixture(t: usize, n: usize) -> BenchFixture<ThresholdDealerNode> {
         let mut coordinator = DKGCoordinator::new(
-            |id: u32, threshold: usize, total_nodes: usize| {
+            |id: u32,
+             threshold: usize,
+             total_nodes: usize,
+             session_id: u64,
+             role: crypto::r#trait::DkgRole| {
                 <crypto::decaf377::dkg::DKGNode as crypto::r#trait::Dkg>::new(
                     id,
                     threshold,
                     total_nodes,
+                    session_id,
+                    role,
                 )
             },
             n,

@@ -334,7 +334,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         derivation: Option<&[u8]>,
         metadata: Option<&[u8]>,
     ) -> Result<Self::SigShare> {
-        let signing_state = signing_state.ok_or_else(|| CryptoError::InvalidSignatureShare)?;
+        let signing_state = signing_state.ok_or(CryptoError::InvalidSignatureShare)?;
 
         let idx = dist_key_share.pri_share.i;
         let s_i = dist_key_share.pri_share.v;
@@ -506,11 +506,11 @@ impl ThresholdSigner for ThresholdDecafSigner {
     fn encode_metadata(policy_id: &str, resource: &str, permission: &str) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(SIGN_METADATA_DOMAIN);
-        hasher.update(&(policy_id.len() as u64).to_le_bytes());
+        hasher.update((policy_id.len() as u64).to_le_bytes());
         hasher.update(policy_id.as_bytes());
-        hasher.update(&(resource.len() as u64).to_le_bytes());
+        hasher.update((resource.len() as u64).to_le_bytes());
         hasher.update(resource.as_bytes());
-        hasher.update(&(permission.len() as u64).to_le_bytes());
+        hasher.update((permission.len() as u64).to_le_bytes());
         hasher.update(permission.as_bytes());
         hasher.finalize().to_vec()
     }

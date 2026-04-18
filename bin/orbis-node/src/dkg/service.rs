@@ -65,7 +65,7 @@ where
 
         // 1. Authenticate: Extract and validate JWT
         let (token_str, token) = extract_and_validate_jwt::<DkgClaims, _>(&request, current_time)
-            .map_err(|e| DkgError::Unauthorized(e))?;
+            .map_err(DkgError::Unauthorized)?;
         // TODO: use token.issuer_id as AuthZ check
         let req = request.into_inner();
 

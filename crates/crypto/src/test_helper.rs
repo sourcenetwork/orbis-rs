@@ -502,7 +502,7 @@ pub mod generic_tests {
 
         // Create DealerReceiver nodes — total_nodes = n_old, effective will be updated by mode
         let mut reshare_nodes: Vec<Box<Node>> = (1..=n as u32)
-            .map(|i| node_factory(i, t, n, session_id, DkgRole::DealerReceiver).map(|n| n))
+            .map(|i| node_factory(i, t, n, session_id, DkgRole::DealerReceiver))
             .collect::<Result<Vec<_>>>()?;
 
         // Phase 1: generate resharing polynomials

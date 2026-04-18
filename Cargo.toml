@@ -13,6 +13,10 @@ members = [
     "crates/bulletin",
 ]
 
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+
 [workspace.package]
 version = "0.0.1"
 edition = "2021"

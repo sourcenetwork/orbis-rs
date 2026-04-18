@@ -100,12 +100,11 @@ impl SourceHubClient {
         let address = signer.address();
 
         // Retry config: wait up to 15 minutes for chain to be available
-        let backoff_config = || {
-            let mut backoff = backoff::ExponentialBackoff::default();
-            backoff.max_elapsed_time = Some(std::time::Duration::from_secs(15 * 60));
-            backoff.initial_interval = std::time::Duration::from_secs(2);
-            backoff.max_interval = std::time::Duration::from_secs(30);
-            backoff
+        let backoff_config = || backoff::ExponentialBackoff {
+            max_elapsed_time: Some(std::time::Duration::from_secs(15 * 60)),
+            initial_interval: std::time::Duration::from_secs(2),
+            max_interval: std::time::Duration::from_secs(30),
+            ..Default::default()
         };
 
         // Fetch account info with retry (waits for chain to be available)
@@ -445,7 +444,7 @@ impl SourceHubClient {
         prove: bool,
     ) -> Result<Vec<u8>> {
         let height = height
-            .map(|h| tendermint::block::Height::try_from(h))
+            .map(tendermint::block::Height::try_from)
             .transpose()
             .map_err(|e| BlockchainError::Query(format!("Invalid block height: {}", e)))?;
 

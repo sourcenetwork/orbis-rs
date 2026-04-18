@@ -50,3 +50,6 @@ required-features = ["test-helpers"]
 name = "sign_benchmarks"
 harness = false
 required-features = ["test-helpers"]
+
+[lints]
+workspace = true

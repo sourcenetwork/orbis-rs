@@ -1407,7 +1407,7 @@ async fn test_check_policy_access_enforces_authz_denial() {
 
     #[async_trait::async_trait]
     impl authz::r#trait::Authz for DenyAuthZ {
-        async fn check(&self, _: Vec<u8>, _: &String) -> authz::error::Result<bool> {
+        async fn check(&self, _: Vec<u8>, _: &str) -> authz::error::Result<bool> {
             Ok(false)
         }
     }

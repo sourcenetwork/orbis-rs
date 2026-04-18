@@ -11,7 +11,6 @@ pub use commands::{
     store_prepared_secret, PreparedSecret, SignResult,
 };
 use common::blockchain::ChainConfig;
-use hex;
 
 #[derive(Parser, Debug, Clone)]
 #[clap(version, about = "CLI tool for interacting with an orbis network")]

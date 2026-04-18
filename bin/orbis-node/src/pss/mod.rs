@@ -162,7 +162,7 @@ where
         .unwrap_or_default()
         .as_secs();
     let last_refresh_secs: u64 =
-        RingShareBundle::load_by_ring_key(&app_state.local_storage, &ring_pk_str)
+        RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str)
             .map(|b| b.last_pss)
             .unwrap_or(0);
 
@@ -182,7 +182,7 @@ where
     // session ends, or manually below if we fail before `set_refresh_ring_key`.
     if !app_state
         .dkg_session_state
-        .try_mark_ring_pss(&ring_pk_str)
+        .try_mark_ring_pss(ring_pk_str)
         .await
     {
         tracing::debug!(
@@ -232,7 +232,7 @@ where
         );
         app_state
             .dkg_session_state
-            .unmark_ring_pss(&ring_pk_str)
+            .unmark_ring_pss(ring_pk_str)
             .await;
         return Err(e);
     }

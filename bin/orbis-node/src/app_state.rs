@@ -23,6 +23,12 @@ pub struct PeerConnectionPool {
     connections: RwLock<HashMap<(String, Vec<u8>), Arc<dyn PeerConnection>>>,
 }
 
+impl Default for PeerConnectionPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PeerConnectionPool {
     pub fn new() -> Self {
         Self {

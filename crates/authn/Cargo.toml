@@ -16,3 +16,6 @@ jwt-simple = { version = "0.12", default-features = false, features = ["pure-rus
 tonic = "0.14.2"
 zeroize = { workspace = true }
 sha2 = { workspace = true }
+
+[lints]
+workspace = true

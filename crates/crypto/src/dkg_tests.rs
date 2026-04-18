@@ -7,7 +7,7 @@
 //! 2. Create a test module that calls these test functions with your factory function
 //!
 //! Example:
-//! ```rust
+//! ```rust,no_run
 //! #[cfg(test)]
 //! mod tests {
 //!     use super::*;

@@ -194,7 +194,7 @@ async fn test_refresh_ring_not_initiator_skips_silently() {
     let our_node_part = extract_node_part(&our_hex);
 
     // Confirm our peer is NOT the smallest (test precondition)
-    let mut sorted = vec![fake_peer_1.clone(), fake_peer_2.clone()];
+    let mut sorted = [fake_peer_1.clone(), fake_peer_2.clone()];
     sorted.sort();
     assert_ne!(
         extract_node_part(&sorted[0]),

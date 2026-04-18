@@ -93,6 +93,12 @@ impl SourceHubTestContainer {
     }
 }
 
+impl Default for SourceHubTestContainer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for SourceHubTestContainer {
     fn drop(&mut self) {
         println!("Stopping SourceHub test container...");

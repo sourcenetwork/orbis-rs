@@ -72,7 +72,7 @@ pub async fn check_policy_access(
     .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
 
     let is_authorized = authz
-        .check(permission, &issuer_id.to_string())
+        .check(permission, issuer_id)
         .await
         .map_err(|e| PreError::AuthZ(format!("Error in Authz request: {}", e)))?;
 

@@ -7,6 +7,23 @@ use authz::sourcehub::ValidWindow;
 use bulletin::r#trait::KeyDerivation;
 use serde::{Deserialize, Serialize};
 
+/// Payload for the `Policy` variant of [`SignContext`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyContext {
+    /// Raw JWT string issued by the caller
+    pub token_string: String,
+    /// Namespace of the key derivation object on the bulletin
+    pub namespace: String,
+    /// Object ID of the key derivation entry
+    pub derivation_id: String,
+    /// Optional valid window for time-bounded authz checks
+    pub valid_window: Option<ValidWindow>,
+    /// Key derivation payload fetched from the bulletin by the coordinator.
+    /// Carried here to avoid a redundant bulletin lookup for the coordinator;
+    /// peer nodes always re-fetch independently.
+    pub key_derivation: KeyDerivation,
+}
+
 /// Distinguishes the two signing pathways.
 ///
 /// - `Bulletin`: message is a serialized `BulletinPost`; authorization is its existence on chain.
@@ -20,20 +37,7 @@ pub enum SignContext {
     /// Policy-authorized signing: JWT token is validated and policy access is checked.
     /// The derivation path is stored on the bulletin in the `KeyDerivation` entry and is
     /// NOT passed by the client — it is fetched from the chain and used directly.
-    Policy {
-        /// Raw JWT string issued by the caller
-        token_string: String,
-        /// Namespace of the key derivation object on the bulletin
-        namespace: String,
-        /// Object ID of the key derivation entry
-        derivation_id: String,
-        /// Optional valid window for time-bounded authz checks
-        valid_window: Option<ValidWindow>,
-        /// Key derivation payload fetched from the bulletin by the coordinator.
-        /// Carried here to avoid a redundant bulletin for the coordinator
-        /// Peer nodes always re-fetch independently.
-        key_derivation: KeyDerivation,
-    },
+    Policy(Box<PolicyContext>),
 }
 
 /// Wire message sent from the coordinator to each ring node requesting a nonce commitment

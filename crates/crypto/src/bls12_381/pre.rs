@@ -491,19 +491,19 @@ impl ThresholdDealer for ThresholdDealerNode {
 
         let mut hasher = Sha256::new();
         hasher.update(POLICY_METADATA_DOMAIN);
-        hasher.update(&(policy_id.len() as u64).to_le_bytes());
+        hasher.update((policy_id.len() as u64).to_le_bytes());
         hasher.update(policy_id.as_bytes());
-        hasher.update(&(resource.len() as u64).to_le_bytes());
+        hasher.update((resource.len() as u64).to_le_bytes());
         hasher.update(resource.as_bytes());
-        hasher.update(&(permission.len() as u64).to_le_bytes());
+        hasher.update((permission.len() as u64).to_le_bytes());
         hasher.update(permission.as_bytes());
         let tier = tier.unwrap_or("");
-        hasher.update(&(tier.len() as u64).to_le_bytes());
+        hasher.update((tier.len() as u64).to_le_bytes());
         hasher.update(tier.as_bytes());
-        hasher.update(&(ts_bytes.len() as u64).to_le_bytes());
+        hasher.update((ts_bytes.len() as u64).to_le_bytes());
         hasher.update(ts_bytes);
         let salt = salt.unwrap_or("");
-        hasher.update(&(salt.len() as u64).to_le_bytes());
+        hasher.update((salt.len() as u64).to_le_bytes());
         hasher.update(salt.as_bytes());
         hasher.finalize().to_vec()
     }
@@ -756,7 +756,7 @@ impl ThresholdDealerNode {
         hasher.update(PROTOCOL);
 
         // Bind share index
-        hasher.update(&idx.to_le_bytes());
+        hasher.update(idx.to_le_bytes());
 
         // Serialize and hash all public inputs then proof points
         // Compressed G1 points are 48 bytes

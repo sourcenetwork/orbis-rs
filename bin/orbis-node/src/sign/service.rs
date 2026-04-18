@@ -7,7 +7,7 @@ use crate::ring_state::RingPolyState;
 use crate::sign::coordinator::SignCoordinator;
 use crate::sign::error::SignError;
 use crate::sign::helpers::{check_policy_access, fetch_bulletin_payloads, validate_sign_claims};
-use crate::sign::messages::SignContext;
+use crate::sign::messages::{PolicyContext, SignContext};
 use authn::SignClaims;
 use authz::sourcehub::ValidWindow;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
@@ -88,7 +88,7 @@ where
         // extract and validate JWT (no IO) ---
         let (token_string, token) =
             extract_and_validate_jwt::<SignClaims, _>(&request, current_time)
-                .map_err(|e| SignError::Unauthorized(e))?;
+                .map_err(SignError::Unauthorized)?;
 
         let req = request.into_inner();
 
@@ -174,13 +174,13 @@ where
                 request_id,
                 ring,
                 req.message,
-                SignContext::Policy {
+                SignContext::Policy(Box::new(PolicyContext {
                     token_string,
                     namespace: req.namespace,
                     derivation_id: req.derivation_id,
                     valid_window,
                     key_derivation,
-                },
+                })),
             )
             .await?;
 

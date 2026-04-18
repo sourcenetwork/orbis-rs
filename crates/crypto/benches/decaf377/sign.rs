@@ -14,8 +14,12 @@ impl SignBenchSetup for Decaf377SignBench {
 
     fn create_fixture(t: usize, n: usize) -> SignBenchFixture<ThresholdDecafSigner> {
         let mut coordinator = DKGCoordinator::new(
-            |id: u32, threshold: usize, total_nodes: usize| {
-                <DKGNode as Dkg>::new(id, threshold, total_nodes)
+            |id: u32,
+             threshold: usize,
+             total_nodes: usize,
+             session_id: u64,
+             role: crypto::r#trait::DkgRole| {
+                <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id, role)
             },
             n,
             t,
@@ -53,7 +57,15 @@ impl SignBenchSetup for Decaf377SignBench {
         let mut sig_shares = Vec::with_capacity(t);
         for (i, dks) in dist_key_shares.iter().enumerate() {
             let share = signer
-                .sign(dks, MSG, &pub_poly, Some(&signing_states[i]), &commitments)
+                .sign(
+                    dks,
+                    MSG,
+                    &pub_poly,
+                    Some(&signing_states[i]),
+                    &commitments,
+                    None,
+                    None,
+                )
                 .unwrap();
             sig_shares.push(share);
         }

@@ -5,7 +5,7 @@ pub struct DummyAuthZ;
 
 #[async_trait]
 impl Authz for DummyAuthZ {
-    async fn check(&self, _permission: Vec<u8>, _subject: &String) -> Result<bool> {
+    async fn check(&self, _permission: Vec<u8>, _subject: &str) -> Result<bool> {
         Ok(true)
     }
 }

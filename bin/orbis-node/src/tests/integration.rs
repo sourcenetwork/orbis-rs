@@ -232,7 +232,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             resource: resource.clone(),
             permission: permission.clone(),
             tier: tier.clone(),
-            timestamp: timestamp.clone(),
+            timestamp,
         };
         let serialized: Vec<u8> = payload.try_into().expect("serialize payload");
         cli_tool::create_bulletin_post(namespace.clone(), serialized)
@@ -264,7 +264,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         resource.clone(),
         permission.clone(),
         tier.clone(),
-        timestamp.clone(),
+        timestamp,
         salt.clone(),
     )
     .expect("prepare_secret should succeed");
@@ -311,7 +311,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         prepared_secret_derived.derived_pk,
         false,
         tier.clone(),
-        timestamp.clone(),
+        timestamp,
         Some(prepared_secret_derived.metadata.clone()),
     )
     .await

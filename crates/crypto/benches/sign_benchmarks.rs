@@ -107,6 +107,8 @@ fn run_sign_benchmarks<S: SignBenchSetup>(c: &mut Criterion, prefix: &str) {
                             // Some(&state) for FROST.
                             black_box(fixture.signing_states.first()),
                             black_box(&fixture.commitments),
+                            None,
+                            None,
                         )
                         .unwrap()
                 })
@@ -132,6 +134,8 @@ fn run_sign_benchmarks<S: SignBenchSetup>(c: &mut Criterion, prefix: &str) {
                             black_box(&fixture.pub_poly),
                             black_box(&fixture.sig_shares[0]),
                             black_box(&fixture.commitments),
+                            None,
+                            None,
                         )
                         .unwrap()
                 })
@@ -216,6 +220,8 @@ fn run_sign_benchmarks<S: SignBenchSetup>(c: &mut Criterion, prefix: &str) {
                                 black_box(&fixture.pub_poly),
                                 black_box(states.get(i)),
                                 black_box(&commitments),
+                                None,
+                                None,
                             )
                             .unwrap();
                         sig_shares.push(share);
@@ -235,16 +241,14 @@ fn run_sign_benchmarks<S: SignBenchSetup>(c: &mut Criterion, prefix: &str) {
                         .unwrap();
 
                     // Verify
-                    black_box(
-                        fixture
-                            .signer
-                            .verify(
-                                black_box(&fixture.aggregate_pk),
-                                black_box(MSG),
-                                black_box(&full_sig),
-                            )
-                            .unwrap(),
-                    )
+                    fixture
+                        .signer
+                        .verify(
+                            black_box(&fixture.aggregate_pk),
+                            black_box(MSG),
+                            black_box(&full_sig),
+                        )
+                        .unwrap()
                 })
             });
         }
