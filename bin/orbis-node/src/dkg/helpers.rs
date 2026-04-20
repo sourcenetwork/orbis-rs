@@ -1,11 +1,12 @@
 use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::SessionKind;
+use crate::dkg::session_state::ReshareParams;
 use crate::helpers::helpers::extract_node_part;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::{BearerToken, DkgClaims};
 use bulletin::r#trait::{Bulletin, RingPayload};
-use crypto::r#trait::{CryptoDeserialize, PriShare};
+use crypto::r#trait::{CryptoDeserialize, DkgRole, PriShare};
 use crypto::{CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
@@ -402,6 +403,78 @@ pub fn persist_ring_bundle<S: LocalStorage>(
         }
     }
     Ok(())
+}
+
+/// Determine this node's role, `node_id`, and `ReshareParams` for a reshare session.
+///
+/// Returns `(node_id, role, params)`:
+/// - `node_id` — 1-based index in the old committee for Dealer/DealerReceiver, new committee
+///   for pure Receiver.
+/// - `role` — `Dealer`, `Receiver`, or `DealerReceiver`.
+/// - `params` — reshare session parameters including the pre-loaded old share (Dealers only).
+///
+/// Errors if this node is not in either committee, or if the old share cannot be loaded for
+/// a node that is in the old committee.
+pub fn build_reshare_params<S: LocalStorage>(
+    ring_pk_hex: &str,
+    old_peer_ids: &[String],
+    next_peer_ids: &[String],
+    new_threshold: u32,
+    bulletin_post_id: &str,
+    our_node_part: &str,
+    local_storage: &S,
+) -> Result<(u32, DkgRole, ReshareParams<Fr>)> {
+    let mut sorted_old = old_peer_ids.to_vec();
+    sorted_old.sort();
+    let mut sorted_new = next_peer_ids.to_vec();
+    sorted_new.sort();
+
+    let in_old = in_committee(&sorted_old, our_node_part);
+    let in_new = in_committee(&sorted_new, our_node_part);
+
+    let role = match (in_old, in_new) {
+        (true, true) => DkgRole::DealerReceiver,
+        (true, false) => DkgRole::Dealer,
+        (false, true) => DkgRole::Receiver,
+        (false, false) => {
+            return Err(DkgError::InvalidInput(
+                "Reshare: this node is not in either committee".to_string(),
+            ))
+        }
+    };
+
+    let node_id = if in_old {
+        node_index_in(&sorted_old, our_node_part)
+    } else {
+        node_index_in(&sorted_new, our_node_part)
+    };
+
+    let old_share = if in_old {
+        let bundle = RingShareBundle::load_by_ring_key(local_storage, ring_pk_hex)
+            .map_err(|e| DkgError::Storage(format!("Reshare: failed to load old share: {}", e)))?;
+        let pri = bundle.pri_share().map_err(|e| {
+            DkgError::Deserialization(format!("Reshare: failed to deserialize old share: {}", e))
+        })?;
+        Some(pri.v)
+    } else {
+        None
+    };
+
+    let participating_ids: Vec<u32> = (1..=old_peer_ids.len() as u32).collect();
+    let new_node_id = in_new.then(|| node_index_in(&sorted_new, our_node_part));
+
+    let params = ReshareParams {
+        ring_key: ring_pk_hex.to_string(),
+        old_share,
+        participating_ids,
+        new_threshold: new_threshold as usize,
+        new_total_nodes: next_peer_ids.len(),
+        new_peer_ids: sorted_new,
+        new_node_id,
+        bulletin_post_id: bulletin_post_id.to_string(),
+    };
+
+    Ok((node_id, role, params))
 }
 
 /// Returns `true` if `our_node_part` appears as the node portion of any peer ID in

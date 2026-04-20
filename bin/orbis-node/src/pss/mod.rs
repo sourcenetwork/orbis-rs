@@ -1,17 +1,26 @@
-//! PSS (Proactive Secret Sharing) — automatic refresh scheduler
+//! PSS (Proactive Secret Sharing) — automatic refresh and reshare scheduler
 //!
-//! Periodically checks every known ring and initiates a refresh ceremony when the
-//! ring's own `pss_interval` (from the bulletin `RingPayload`) has elapsed since the
-//! last refresh.  The canonical `RingPayload` is always fetched from the bulletin and node
-//! controls its own refresh frequency via the `pss_interval` field in `RingPayload`.
+//! Periodically checks every known ring and initiates a PSS ceremony when due.
 //!
-//! ## Protocol
-//! On each tick the node with the lexicographically smallest peer ID in the ring acts
-//! as the initiator. It sends a `SessionInit { kind: SessionKind::Refresh { .. } }` to all
-//! ring members and runs the standard DKG commitment/share protocol using `DkgMode::Refresh`
-//! (zero constant term — same secret, new shares).
+//! ## Refresh
+//! When the bulletin `RingPayload` has no `next_peer_ids` or `new_threshold`, a
+//! **refresh** ceremony runs once the ring's `pss_interval` has elapsed since the
+//! last ceremony.  Same secret, new shares, same committee (zero constant term).
 //!
-//! Rings with `pss_interval = None` are skipped (automatic refresh disabled).
+//! ## Reshare
+//! When the bulletin `RingPayload` carries `next_peer_ids` or `new_threshold` the ring
+//! has been designated for committee rotation.  The scheduler bypasses the interval
+//! check and immediately initiates a **reshare** (`SessionKind::Reshare`).
+//! Fallback rules (agreed on construction):
+//! - `next_peer_ids` absent → use current `peer_ids` (same committee, threshold change only).
+//! - `new_threshold` absent → use current `threshold` (committee change only).
+//! Phase 4 posts the updated `RingPayload` with `next_peer_ids = None` so subsequent
+//! ticks revert to the normal refresh cadence.
+//!
+//! In both cases only the node with the lexicographically smallest peer ID in the
+//! current (`peer_ids`) committee acts as the initiator.
+//!
+//! Rings with `pss_interval = None` are skipped for refresh (reshare is unaffected).
 
 #[cfg(test)]
 mod tests;
@@ -20,6 +29,7 @@ use crate::app_state::AppState;
 use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
+use crate::dkg::helpers::build_reshare_params;
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::helpers::helpers::{extract_node_part, validate_all_peer_ids};
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
@@ -30,11 +40,11 @@ use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Spawn a background task that periodically checks rings for due PSS refreshes.
+/// Spawn a background task that periodically checks rings for due PSS ceremonies.
 ///
 /// `check_interval` controls how often the scheduler wakes up to inspect all known
 /// rings.  Each ring's own `pss_interval` (from the bulletin `RingPayload`) determines
-/// whether a refresh is actually triggered on that tick.
+/// whether a refresh is actually triggered on that tick; reshare bypasses this check.
 ///
 /// Setting `check_interval` to zero disables the scheduler entirely.
 pub fn spawn_pss_scheduler<D>(app_state: Arc<AppState<D>>, check_interval: Duration)
@@ -49,7 +59,7 @@ where
         + 'static,
 {
     if check_interval.is_zero() {
-        tracing::info!("PSS refresh scheduler disabled (check_interval = 0)");
+        tracing::info!("PSS scheduler disabled (check_interval = 0)");
         return;
     }
 
@@ -59,16 +69,16 @@ where
         ticker.tick().await; // skip the initial immediate tick at t=0
         loop {
             ticker.tick().await;
-            tracing::debug!("PSS refresh scheduler: tick");
-            if let Err(e) = refresh_all_rings(&app_state).await {
-                tracing::error!(error = %e, "PSS refresh scheduler: error");
+            tracing::debug!("PSS scheduler: tick");
+            if let Err(e) = pss_all_rings(&app_state).await {
+                tracing::error!(error = %e, "PSS scheduler: error");
             }
         }
     });
 }
 
-/// Iterate over every known ring and trigger a refresh when its `pss_interval` is due.
-async fn refresh_all_rings<D>(app_state: &Arc<AppState<D>>) -> Result<(), DkgError>
+/// Iterate over every known ring and trigger a PSS ceremony when due.
+async fn pss_all_rings<D>(app_state: &Arc<AppState<D>>) -> Result<(), DkgError>
 where
     D: Dkg<
             ShareValue = Fr,
@@ -79,30 +89,25 @@ where
         + Sync
         + 'static,
 {
-    // RingIndex stores one entry per ring this node has joined.
     let ring_index: Vec<RingIndexEntry> =
         match app_state.local_storage.get(LocalStorageKeys::RingIndex) {
             Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
             _ => {
-                tracing::debug!("PSS: ring index empty, nothing to refresh");
+                tracing::debug!("PSS: ring index empty, nothing to check");
                 return Ok(());
             }
         };
 
     for entry in &ring_index {
-        if let Err(e) = refresh_ring(app_state, entry).await {
-            tracing::error!(ring_pk_str = %entry.ring_pk_str, error = %e, "PSS: refresh failed for ring");
+        if let Err(e) = pss_ring(app_state, entry).await {
+            tracing::error!(ring_pk_str = %entry.ring_pk_str, error = %e, "PSS: ceremony failed for ring");
         }
     }
     Ok(())
 }
 
-/// Run one refresh ceremony for the ring described by `entry`
-/// if this node is the initiator and the ring's `pss_interval` has elapsed.
-async fn refresh_ring<D>(
-    app_state: &Arc<AppState<D>>,
-    entry: &RingIndexEntry,
-) -> Result<(), DkgError>
+/// Check one ring and dispatch to `trigger_reshare` or `trigger_refresh` as appropriate.
+async fn pss_ring<D>(app_state: &Arc<AppState<D>>, entry: &RingIndexEntry) -> Result<(), DkgError>
 where
     D: Dkg<
             ShareValue = Fr,
@@ -116,8 +121,6 @@ where
     let post_id = &entry.bulletin_post_id;
     let ring_pk_str = &entry.ring_pk_str;
 
-    // Fetch the canonical RingPayload from the bulletin — it is the source of truth
-    // for peer_ids, threshold, and pss_interval.
     let bulletin_post = app_state
         .bulletin
         .read(BULLETIN_RING_NAMESPACE.to_string(), post_id.to_string())
@@ -132,23 +135,25 @@ where
     let ring_payload: RingPayload = serde_json::from_slice(&bulletin_post.payload)
         .map_err(|e| DkgError::Deserialization(format!("PSS: bad ring payload: {}", e)))?;
 
-    // Skip rings that have no automatic refresh interval configured.
-    let pss_interval_secs = match ring_payload.pss_interval {
-        Some(v) if v > 0 => v,
-        _ => {
-            tracing::debug!(ring_pk_str = %ring_pk_str, "PSS: no pss_interval set, skipping");
-            return Ok(());
+    // Reshare takes priority over refresh when the bulletin signals a committee transition.
+    let is_reshare = ring_payload.next_peer_ids.is_some() || ring_payload.new_threshold.is_some();
+
+    // Refresh requires pss_interval to be set; reshare bypasses this check.
+    if !is_reshare {
+        match ring_payload.pss_interval {
+            Some(v) if v > 0 => {}
+            _ => {
+                tracing::debug!(ring_pk_str = %ring_pk_str, "PSS: no pss_interval set, skipping");
+                return Ok(());
+            }
         }
-    };
+    }
 
-    let peer_ids = &ring_payload.peer_ids;
-    let threshold = ring_payload.threshold as usize;
-
-    // Initiator check: only the peer with the lexicographically smallest node-part acts.
+    // Only the node with the lexicographically smallest peer ID in the current
+    // committee acts as initiator for both refresh and reshare.
     let our_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let our_node_part = extract_node_part(&our_peer_id_hex);
-
-    let mut sorted_peers = peer_ids.clone();
+    let mut sorted_peers = ring_payload.peer_ids.clone();
     sorted_peers.sort();
 
     if extract_node_part(&sorted_peers[0]) != our_node_part {
@@ -156,16 +161,20 @@ where
         return Ok(());
     }
 
-    // Check whether enough time has elapsed since the last refresh.
+    if is_reshare {
+        return trigger_reshare(app_state, entry, &ring_payload).await;
+    }
+
+    // Refresh: also check that enough time has elapsed since the last ceremony.
+    let pss_interval_secs = ring_payload.pss_interval.unwrap(); // safe: checked above
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let last_refresh_secs: u64 =
+    let last_refresh_secs =
         RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str)
             .map(|b| b.last_pss)
             .unwrap_or(0);
-
     let elapsed = now_secs.saturating_sub(last_refresh_secs);
     if elapsed < pss_interval_secs {
         tracing::debug!(
@@ -177,9 +186,40 @@ where
         return Ok(());
     }
 
-    // Prevent duplicate refresh sessions on this node. The flag is cleared by
-    // the cleanup/expiration workers (via `state.refresh_ring_key`) once the
-    // session ends, or manually below if we fail before `set_refresh_ring_key`.
+    trigger_refresh(
+        app_state,
+        entry,
+        &ring_payload,
+        &sorted_peers,
+        &our_node_part,
+    )
+    .await
+}
+
+/// Initiate a Refresh ceremony (same secret, new shares, same committee).
+async fn trigger_refresh<D>(
+    app_state: &Arc<AppState<D>>,
+    entry: &RingIndexEntry,
+    ring_payload: &RingPayload,
+    sorted_peers: &[String],
+    our_node_part: &str,
+) -> Result<(), DkgError>
+where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = GroupAffine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    let post_id = &entry.bulletin_post_id;
+    let ring_pk_str = &entry.ring_pk_str;
+    let peer_ids = &ring_payload.peer_ids;
+    let threshold = ring_payload.threshold as usize;
+
+    // Prevent duplicate refresh sessions on this node.
     if !app_state
         .dkg_session_state
         .try_mark_ring_pss(ring_pk_str)
@@ -193,7 +233,7 @@ where
         return Ok(());
     }
 
-    // Build deterministic node_id assignments (sorted peer list → 1-indexed)
+    // Build deterministic node_id assignments (sorted peer list → 1-indexed).
     let mut node_id_assignments: std::collections::HashMap<String, u32> =
         std::collections::HashMap::new();
     for (idx, peer_id) in sorted_peers.iter().enumerate() {
@@ -201,7 +241,7 @@ where
     }
 
     let our_node_id = *node_id_assignments
-        .get(&our_node_part)
+        .get(our_node_part)
         .ok_or_else(|| DkgError::InvalidInput("PSS: our peer not in ring".to_string()))?;
 
     let total = peer_ids.len();
@@ -209,9 +249,6 @@ where
 
     let coordinator = DkgCoordinator::new(app_state.clone());
 
-    // Create refresh session (Standard role — all nodes are symmetric in Refresh mode).
-    // On failure we must unmark the ring ourselves — no session exists yet so the
-    // cleanup workers won't do it.
     if let Err(e) = coordinator
         .create_session(
             session_id,
@@ -237,8 +274,6 @@ where
         return Err(e);
     }
 
-    // Set session kind to Refresh so generate_polynomial uses DkgMode::Refresh and
-    // Phase 4 / expiration workers know which ring key to clear on completion/abort.
     app_state
         .dkg_session_state
         .set_session_kind(
@@ -248,8 +283,11 @@ where
             },
         )
         .await;
+    app_state
+        .dkg_session_state
+        .set_pss_interval(&session_id, ring_payload.pss_interval)
+        .await;
 
-    // Store peer_ids and node→peer mappings
     coordinator
         .set_peer_ids(&session_id, peer_ids.clone())
         .await;
@@ -268,7 +306,6 @@ where
         .set_node_peer_mappings(&session_id, node_id_to_peer_id)
         .await;
 
-    // Validate peer ID formats before sending any messages.
     if let Err((bad_peer, err)) = validate_all_peer_ids(peer_ids) {
         app_state
             .dkg_session_state
@@ -280,16 +317,13 @@ where
         )));
     }
 
-    // Send RefreshSessionInit to all peers.
-    // If any peer fails to receive it they will never send a commitment, stalling
-    // the ceremony until DKG_PHASE_TIMEOUT.  Abort early instead.
     let init_msg = DkgMessage::SessionInit {
         session_id,
         threshold: threshold as u32,
         total_participants: total as u32,
         peer_ids: peer_ids.clone(),
         node_id_assignments,
-        token_string: String::new(), // refresh sessions skip JWT
+        token_string: String::new(),
         kind: SessionKind::Refresh {
             ring_pk_hex: ring_pk_str.clone(),
         },
@@ -298,25 +332,24 @@ where
 
     for peer_id_str in peer_ids {
         if extract_node_part(peer_id_str) == our_node_part {
-            continue; // coordinator handles our own session internally
+            continue;
         }
         if let Err(e) = coordinator
             .send_message_to_peer(peer_id_str, init_msg.clone(), Some(session_id))
             .await
         {
-            tracing::error!(peer = %peer_id_str, error = %e, "PSS: failed to send SessionInit, aborting refresh");
+            tracing::error!(peer = %peer_id_str, error = %e, "PSS: failed to send refresh SessionInit, aborting");
             app_state
                 .dkg_session_state
                 .remove_session(&session_id)
                 .await;
             return Err(DkgError::NetworkConnection(format!(
-                "PSS: failed to send SessionInit to {}: {}",
+                "PSS: failed to send refresh SessionInit to {}: {}",
                 peer_id_str, e
             )));
         }
     }
 
-    // Kick off Phase 1 (uses DkgMode::Refresh via session state)
     if let Err(e) = coordinator
         .initiate_phase1_commitments(session_id, peer_ids)
         .await
@@ -332,6 +365,221 @@ where
         session_id = session_id,
         post_id = %post_id,
         "PSS: refresh session initiated"
+    );
+
+    Ok(())
+}
+
+/// Initiate a Reshare ceremony (same secret, new shares, potentially different committee).
+///
+/// Fires whenever the bulletin `RingPayload` has `next_peer_ids` or `new_threshold` set,
+/// bypassing the `pss_interval` timing gate.  Repeats on every scheduler tick until
+/// Phase 4 posts the updated payload clearing those fields.
+async fn trigger_reshare<D>(
+    app_state: &Arc<AppState<D>>,
+    entry: &RingIndexEntry,
+    ring_payload: &RingPayload,
+) -> Result<(), DkgError>
+where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = GroupAffine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    let post_id = &entry.bulletin_post_id;
+    let ring_pk_str = &entry.ring_pk_str;
+    let old_peer_ids = &ring_payload.peer_ids;
+    let old_threshold = ring_payload.threshold as usize;
+
+    // Fallbacks: absent field = keep current value.
+    let next_peer_ids: Vec<String> = ring_payload
+        .next_peer_ids
+        .clone()
+        .unwrap_or_else(|| old_peer_ids.clone());
+    let new_threshold: u32 = ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
+
+    let our_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let our_node_part = extract_node_part(&our_peer_id_hex);
+
+    // Prevent duplicate reshare sessions on this node.
+    if !app_state
+        .dkg_session_state
+        .try_mark_ring_pss(ring_pk_str)
+        .await
+    {
+        tracing::debug!(
+            post_id = %post_id,
+            ring_pk_str = %ring_pk_str,
+            "PSS: reshare already in progress, skipping"
+        );
+        return Ok(());
+    }
+
+    let (our_node_id, dkg_role, reshare_params) = match build_reshare_params(
+        ring_pk_str,
+        old_peer_ids,
+        &next_peer_ids,
+        new_threshold,
+        post_id,
+        &our_node_part,
+        &app_state.local_storage,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            app_state
+                .dkg_session_state
+                .unmark_ring_pss(ring_pk_str)
+                .await;
+            return Err(e);
+        }
+    };
+
+    // sorted_new is already sorted inside reshare_params.new_peer_ids.
+    let sorted_new = reshare_params.new_peer_ids.clone();
+
+    // Build union(old, new) — all peers that must receive SessionInit.
+    let mut union_peers = old_peer_ids.clone();
+    for p in &sorted_new {
+        if !union_peers.contains(p) {
+            union_peers.push(p.clone());
+        }
+    }
+
+    // node_id_assignments covers the OLD committee (1-based sorted index).
+    let mut sorted_old = old_peer_ids.clone();
+    sorted_old.sort();
+    let mut node_id_assignments: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+    for (idx, peer_id) in sorted_old.iter().enumerate() {
+        node_id_assignments.insert(extract_node_part(peer_id), (idx + 1) as u32);
+    }
+
+    let session_id: u64 = rand::random();
+    let total_old = old_peer_ids.len();
+
+    let kind = SessionKind::Reshare {
+        ring_pk_hex: ring_pk_str.clone(),
+        next_peer_ids: sorted_new.clone(),
+        new_threshold,
+        bulletin_post_id: post_id.clone(),
+    };
+
+    let coordinator = DkgCoordinator::new(app_state.clone());
+
+    let kind_for_init = kind.clone();
+    if let Err(e) = coordinator
+        .create_session(
+            session_id,
+            our_node_id,
+            old_threshold,
+            total_old,
+            dkg_role,
+            move |state| {
+                state.kind = kind_for_init;
+                state.reshare_params = Some(reshare_params);
+            },
+        )
+        .await
+    {
+        tracing::error!(
+            post_id = %post_id,
+            ring_pk_str = %ring_pk_str,
+            session_id = session_id,
+            error = %e,
+            "PSS: failed to create reshare DKG session on initiator"
+        );
+        app_state
+            .dkg_session_state
+            .unmark_ring_pss(ring_pk_str)
+            .await;
+        return Err(e);
+    }
+
+    app_state
+        .dkg_session_state
+        .set_pss_interval(&session_id, ring_payload.pss_interval)
+        .await;
+
+    coordinator
+        .set_peer_ids(&session_id, union_peers.clone())
+        .await;
+
+    // Store old-committee node_id → peer_id mappings for sender validation.
+    let mut node_id_to_peer_id = std::collections::HashMap::new();
+    for (peer_key, node_id) in &node_id_assignments {
+        let full_peer_id = old_peer_ids
+            .iter()
+            .find(|pid| extract_node_part(pid) == *peer_key)
+            .cloned()
+            .unwrap_or_else(|| peer_key.clone());
+        node_id_to_peer_id.insert(*node_id, full_peer_id);
+    }
+    app_state
+        .dkg_session_state
+        .set_node_peer_mappings(&session_id, node_id_to_peer_id)
+        .await;
+
+    if let Err((bad_peer, err)) = validate_all_peer_ids(&union_peers) {
+        app_state
+            .dkg_session_state
+            .remove_session(&session_id)
+            .await;
+        return Err(DkgError::InvalidInput(format!(
+            "PSS reshare: invalid peer ID '{}': {}",
+            bad_peer, err
+        )));
+    }
+
+    let init_msg = DkgMessage::SessionInit {
+        session_id,
+        threshold: old_threshold as u32,
+        total_participants: total_old as u32,
+        peer_ids: old_peer_ids.clone(),
+        node_id_assignments,
+        token_string: String::new(),
+        kind,
+        pss_interval: ring_payload.pss_interval,
+    };
+
+    for peer_id_str in &union_peers {
+        if extract_node_part(peer_id_str) == our_node_part {
+            continue;
+        }
+        if let Err(e) = coordinator
+            .send_message_to_peer(peer_id_str, init_msg.clone(), Some(session_id))
+            .await
+        {
+            tracing::error!(peer = %peer_id_str, error = %e, "PSS: failed to send reshare SessionInit, aborting");
+            app_state
+                .dkg_session_state
+                .remove_session(&session_id)
+                .await;
+            return Err(DkgError::NetworkConnection(format!(
+                "PSS: failed to send reshare SessionInit to {}: {}",
+                peer_id_str, e
+            )));
+        }
+    }
+
+    if let Err(e) = coordinator
+        .initiate_phase1_commitments(session_id, &union_peers)
+        .await
+    {
+        app_state
+            .dkg_session_state
+            .remove_session(&session_id)
+            .await;
+        return Err(e);
+    }
+
+    tracing::info!(
+        session_id = session_id,
+        post_id = %post_id,
+        "PSS: reshare session initiated"
     );
 
     Ok(())
