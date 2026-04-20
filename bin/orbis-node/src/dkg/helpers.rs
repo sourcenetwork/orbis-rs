@@ -40,23 +40,23 @@ pub fn serialize_commitment_coefficients(coefficients: &[G1Affine]) -> Result<Ve
 /// 2. The deserialized `RingPayload::ring_pk` must equal `ring_pk_hex` (binds the read to
 ///    the intended ring when the post ID came from the wire).
 /// 3. The sender's peer ID is a current member of that ring's OLD committee.
-/// 4. `ring_payload.next_peer_ids` must be set and must match the proposed list
-///    (order-independent).  A missing bulletin field is also rejected — the ring must have
-///    been prepared for reshare on-chain before any node may initiate one.
-/// 5. `ring_payload.new_threshold` must be set and must match the proposed value.
-///    Same rationale: absent means not yet authorised.
+/// 4. Proposed `next_peer_ids` must match the authoritative committee (order-independent):
+///    - `ring_payload.next_peer_ids` is `Some` → must match that list.
+///    - `ring_payload.next_peer_ids` is `None` → must match `ring_payload.peer_ids`
+///      (fallback: threshold-only reshare keeps the same committee).
+/// 5. Proposed `new_threshold` must equal the authoritative threshold:
+///    - `ring_payload.new_threshold` is `Some` → must equal that value.
+///    - `ring_payload.new_threshold` is `None` → must equal `ring_payload.threshold`
+///      (fallback: committee-only reshare keeps the same threshold).
 ///
 /// No time-based check is performed — reshare is triggered by membership change, not interval.
 ///
 /// ## Bulletin trust model
 ///
-/// This function treats the bulletin as the authoritative source of truth for reshare
-/// parameters.  Both `next_peer_ids` and `new_threshold` **must** be pre-announced on-chain
-/// (e.g. via a governance transaction on SourceHub) before any node will accept a reshare
-/// `SessionInit`.  An old-committee member that sends a `SessionInit` without a matching
-/// bulletin entry — or with parameters that differ from the bulletin — is rejected.  This
-/// ensures that reshares cannot be unilaterally redirected to an arbitrary new committee by
-/// a single old-committee member.
+/// The bulletin is the authoritative source of truth.  Absent fields do not mean
+/// "accept anything" — they mean "keep the current value".  A sender proposing a committee
+/// or threshold that differs from both the announced and current values is rejected,
+/// preventing unilateral redirection of a reshare to an arbitrary new committee.
 pub async fn validate_reshare_session_init<S: LocalStorage>(
     ring_pk_hex: &str,
     sender_hex: &str,
@@ -126,38 +126,45 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         )));
     }
 
-    // 4. The bulletin must pre-announce the new committee, and the proposed list must match.
-    //    A missing `next_peer_ids` means the ring has not been prepared for reshare on-chain.
-    let announced = ring_payload.next_peer_ids.as_ref().ok_or_else(|| {
-        DkgError::Unauthorized(format!(
-            "Ring {} has no bulletin-announced next_peer_ids; reshare not authorised",
-            ring_pk_hex
-        ))
-    })?;
-    let mut sorted_announced: Vec<&str> = announced.iter().map(|s| s.as_str()).collect();
-    sorted_announced.sort();
+    // 4. Proposed next_peer_ids must match the authoritative committee.
+    //    Bulletin present → must match it; absent → must match current peer_ids (fallback).
+    let authoritative_next: &[String] = ring_payload
+        .next_peer_ids
+        .as_deref()
+        .unwrap_or(&ring_payload.peer_ids);
+    let mut sorted_auth: Vec<&str> = authoritative_next.iter().map(|s| s.as_str()).collect();
+    sorted_auth.sort();
     let mut sorted_proposed: Vec<&str> =
         proposed_next_peer_ids.iter().map(|s| s.as_str()).collect();
     sorted_proposed.sort();
-    if sorted_announced != sorted_proposed {
+    if sorted_auth != sorted_proposed {
         return Err(DkgError::Unauthorized(format!(
-            "Reshare next_peer_ids do not match bulletin-announced committee for ring {}",
-            ring_pk_hex
+            "Reshare next_peer_ids do not match authoritative committee for ring {} \
+             (bulletin field: {})",
+            ring_pk_hex,
+            if ring_payload.next_peer_ids.is_some() {
+                "explicitly announced"
+            } else {
+                "absent, fallback to current peer_ids"
+            }
         )));
     }
 
-    // 5. The bulletin must pre-announce the new threshold, and the proposed value must match.
-    //    A missing `new_threshold` means the ring has not been prepared for reshare on-chain.
-    let announced_threshold = ring_payload.new_threshold.ok_or_else(|| {
-        DkgError::Unauthorized(format!(
-            "Ring {} has no bulletin-announced new_threshold; reshare not authorised",
-            ring_pk_hex
-        ))
-    })?;
-    if proposed_new_threshold != announced_threshold {
+    // 5. Proposed new_threshold must equal the authoritative threshold.
+    //    Bulletin present → must equal it; absent → must equal current threshold (fallback).
+    let authoritative_threshold = ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
+    if proposed_new_threshold != authoritative_threshold {
         return Err(DkgError::Unauthorized(format!(
-            "Reshare new_threshold {} does not match bulletin-announced threshold {} for ring {}",
-            proposed_new_threshold, announced_threshold, ring_pk_hex
+            "Reshare new_threshold {} does not match authoritative threshold {} for ring {} \
+             (bulletin field: {})",
+            proposed_new_threshold,
+            authoritative_threshold,
+            ring_pk_hex,
+            if ring_payload.new_threshold.is_some() {
+                "explicitly announced"
+            } else {
+                "absent, fallback to current threshold"
+            }
         )));
     }
 

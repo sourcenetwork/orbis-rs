@@ -571,8 +571,9 @@ async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
 // No bulletin entry is needed because the checks fire before the bulletin lookup.
 // =============================================================================
 
-/// Reshare `SessionInit` for a ring whose bulletin entry has no `next_peer_ids`
-/// pre-announced must be rejected — the ring has not been authorised for reshare on-chain.
+/// When neither bulletin field is set, the fallback authoritative values are the
+/// current `peer_ids` and `threshold`.  Proposing a different committee is still
+/// rejected — absent fields mean "keep current", not "accept anything".
 #[tokio::test]
 async fn test_reshare_session_init_rejects_no_bulletin_announcement() {
     let db_name = "test_reshare_rejects_no_announcement";
@@ -581,29 +582,30 @@ async fn test_reshare_session_init_rejects_no_bulletin_announcement() {
 
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
-    // Write a ring payload with no reshare announcement (next_peer_ids and new_threshold absent).
+    // Bulletin has neither field; fallback committee = peer_ids = ["aabbccdd"].
     write_ring_with_announced_reshare(
         &app_state,
         ring_pk,
         vec![sender_hex.to_string()],
-        None, // no pre-announced committee
-        None, // no pre-announced threshold
+        None,
+        None,
     )
     .await;
 
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
     let coordinator = DkgCoordinator::new(app_state);
+    // Propose a *different* committee — must be rejected even though no field is announced.
     let msg = reshare_session_init(
         ring_pk,
         vec![sender_hex.to_string()],
-        vec!["00112233".to_string()],
+        vec!["00112233".to_string()], // differs from fallback = ["aabbccdd"]
         1,
     );
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
         matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
-        "Expected Unauthorized when bulletin has no reshare announcement, got: {:?}",
+        "Expected Unauthorized when proposed peers differ from fallback committee, got: {:?}",
         result
     );
     cleanup_db(&db_path);
@@ -686,6 +688,240 @@ async fn test_reshare_session_init_rejects_zero_threshold() {
     assert!(
         matches!(result, Err(crate::dkg::error::DkgError::InvalidInput(_))),
         "Expected InvalidInput for new_threshold = 0, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+// =============================================================================
+// validate_reshare_session_init — fallback semantics
+//
+// When a bulletin field is absent the authoritative value falls back to the
+// current ring state rather than rejecting outright:
+//   • next_peer_ids absent → authoritative = ring_payload.peer_ids
+//   • new_threshold absent → authoritative = ring_payload.threshold
+// The tests below call validate_reshare_session_init directly so that committee
+// membership of the receiving node is not a factor.
+// =============================================================================
+
+/// Build and post a RingPayload with configurable threshold and reshare fields,
+/// seeding RingIndex so validate_reshare_session_init can locate the ring.
+async fn post_ring_for_validation(
+    app_state: &crate::app_state::AppState<crypto::DkgImpl>,
+    ring_pk: &str,
+    peer_ids: Vec<String>,
+    threshold: u32,
+    next_peer_ids: Option<Vec<String>>,
+    new_threshold: Option<u32>,
+) {
+    use crate::constants::BULLETIN_RING_NAMESPACE;
+    use crate::ring_state::RingIndexEntry;
+    use local_storage::r#trait::LocalStorageKeys;
+
+    let payload = RingPayload {
+        ring_pk: ring_pk.to_string(),
+        peer_ids,
+        next_peer_ids,
+        new_threshold,
+        threshold,
+        pss_interval: None,
+    };
+    let bytes = serde_json::to_vec(&payload).unwrap();
+    app_state
+        .bulletin
+        .post(BULLETIN_RING_NAMESPACE.to_string(), bytes.clone(), None)
+        .await
+        .unwrap();
+    let post_id = app_state
+        .bulletin
+        .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
+        .unwrap();
+    let mut ring_index: Vec<RingIndexEntry> = app_state
+        .local_storage
+        .get(LocalStorageKeys::RingIndex)
+        .ok()
+        .flatten()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    ring_index.push(RingIndexEntry {
+        ring_pk_str: ring_pk.to_string(),
+        bulletin_post_id: post_id,
+    });
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&ring_index).unwrap(),
+        )
+        .unwrap();
+}
+
+/// When `next_peer_ids` is absent and proposed committee equals current `peer_ids`,
+/// validation must succeed (fallback = keep current committee).
+#[tokio::test]
+async fn test_validate_reshare_accepts_next_peer_ids_fallback_to_current() {
+    use crate::dkg::helpers::validate_reshare_session_init;
+
+    let db_name = "validate_reshare_fallback_accepts_peers";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
+
+    let ring_pk = "fallback_peers_ring";
+    let sender_hex = "aabbccdd";
+
+    // Only new_threshold is announced; next_peer_ids absent → fallback = peer_ids.
+    post_ring_for_validation(
+        &app_state,
+        ring_pk,
+        vec![sender_hex.to_string()],
+        1,
+        None, // absent → fallback = peer_ids = [sender_hex]
+        Some(1),
+    )
+    .await;
+
+    let result = validate_reshare_session_init(
+        ring_pk,
+        sender_hex,
+        &[sender_hex.to_string()], // matches fallback = peer_ids
+        1,
+        "",
+        &app_state.local_storage,
+        &app_state.bulletin,
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "Expected Ok when proposed peers match current peer_ids (fallback): {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// When `new_threshold` is absent and proposed threshold equals current `threshold`,
+/// validation must succeed (fallback = keep current threshold).
+#[tokio::test]
+async fn test_validate_reshare_accepts_new_threshold_fallback_to_current() {
+    use crate::dkg::helpers::validate_reshare_session_init;
+
+    let db_name = "validate_reshare_fallback_accepts_threshold";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
+
+    let ring_pk = "fallback_threshold_ring";
+    let sender_hex = "aabbccdd";
+    let new_peer = "00112233";
+
+    // Only next_peer_ids is announced; new_threshold absent → fallback = threshold = 1.
+    post_ring_for_validation(
+        &app_state,
+        ring_pk,
+        vec![sender_hex.to_string()],
+        1, // current threshold
+        Some(vec![new_peer.to_string()]),
+        None, // absent → fallback = 1
+    )
+    .await;
+
+    let result = validate_reshare_session_init(
+        ring_pk,
+        sender_hex,
+        &[new_peer.to_string()],
+        1, // matches fallback = current threshold
+        "",
+        &app_state.local_storage,
+        &app_state.bulletin,
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "Expected Ok when proposed threshold matches current threshold (fallback): {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// When `next_peer_ids` is absent and proposed committee differs from current `peer_ids`,
+/// validation must reject — absent does not mean "accept any committee".
+#[tokio::test]
+async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
+    use crate::dkg::helpers::validate_reshare_session_init;
+
+    let db_name = "validate_reshare_fallback_rejects_peers";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
+
+    let ring_pk = "fallback_reject_peers_ring";
+    let sender_hex = "aabbccdd";
+
+    // next_peer_ids absent → fallback = peer_ids = ["aabbccdd"].
+    post_ring_for_validation(
+        &app_state,
+        ring_pk,
+        vec![sender_hex.to_string()],
+        1,
+        None,
+        Some(1),
+    )
+    .await;
+
+    let result = validate_reshare_session_init(
+        ring_pk,
+        sender_hex,
+        &["00112233".to_string()], // differs from fallback = ["aabbccdd"]
+        1,
+        "",
+        &app_state.local_storage,
+        &app_state.bulletin,
+    )
+    .await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
+        "Expected Unauthorized when proposed peers differ from fallback: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// When `new_threshold` is absent and proposed threshold differs from current `threshold`,
+/// validation must reject — absent does not mean "accept any threshold".
+#[tokio::test]
+async fn test_validate_reshare_rejects_when_threshold_differs_from_fallback() {
+    use crate::dkg::helpers::validate_reshare_session_init;
+
+    let db_name = "validate_reshare_fallback_rejects_threshold";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
+
+    let ring_pk = "fallback_reject_threshold_ring";
+    let sender_hex = "aabbccdd";
+    let new_peer_1 = "00112233";
+    let new_peer_2 = "11223344";
+
+    // new_threshold absent → fallback = threshold = 2.
+    post_ring_for_validation(
+        &app_state,
+        ring_pk,
+        vec![sender_hex.to_string()],
+        2,                                                          // current threshold
+        Some(vec![new_peer_1.to_string(), new_peer_2.to_string()]), // 2 members, valid for t=2
+        None,                                                       // absent → fallback = 2
+    )
+    .await;
+
+    let result = validate_reshare_session_init(
+        ring_pk,
+        sender_hex,
+        &[new_peer_1.to_string(), new_peer_2.to_string()],
+        1, // differs from fallback = 2
+        "",
+        &app_state.local_storage,
+        &app_state.bulletin,
+    )
+    .await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
+        "Expected Unauthorized when proposed threshold differs from fallback: {:?}",
         result
     );
     cleanup_db(&db_path);
