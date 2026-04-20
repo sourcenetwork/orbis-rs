@@ -14,6 +14,7 @@
 //! Fallback rules (agreed on construction):
 //! - `next_peer_ids` absent → use current `peer_ids` (same committee, threshold change only).
 //! - `new_threshold` absent → use current `threshold` (committee change only).
+//!
 //! Phase 4 posts the updated `RingPayload` with `next_peer_ids = None` so subsequent
 //! ticks revert to the normal refresh cadence.
 //!
