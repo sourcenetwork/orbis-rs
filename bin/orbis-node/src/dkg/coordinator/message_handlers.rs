@@ -1,13 +1,13 @@
 use crate::constants::{MAX_COMMITMENT_COEFFICIENTS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
-    in_committee, node_index_in, serialize_commitment_coefficients, session_not_found,
+    build_reshare_params, serialize_commitment_coefficients, session_not_found,
     validate_dkg_claims, validate_refresh_session_init, validate_reshare_session_init,
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
-use crate::dkg::session_state::{DkgMessageType, ReshareParams};
+use crate::dkg::session_state::DkgMessageType;
 use crate::helpers::helpers::{extract_node_part, is_self_peer_id};
-use crate::ring_state::RingShareBundle;
+
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use crypto::r#trait::{DistributedShare, Dkg, DkgRole};
 use crypto::{
@@ -141,30 +141,16 @@ where
         bulletin_post_id,
     } = kind
     {
-        let mut sorted_old = peer_ids.to_vec();
-        sorted_old.sort();
-        let mut sorted_new = next_peer_ids.clone();
-        sorted_new.sort();
-
-        let in_old = in_committee(&sorted_old, &our_node_part);
-        let in_new = in_committee(&sorted_new, &our_node_part);
-
-        // Role determines both what crypto this node performs and which node_id
-        // namespace it uses.  Dealers use an OLD-committee index; Receivers use a
-        // NEW-committee index; DealerReceivers use old for Phase 1/2 and new for
-        // share routing/storage.  This dual-index design keeps the crypto layer
-        // simple (one session_id, one node_id) at the cost of careful bookkeeping
-        // in coordinator and ReshareParams.
-        let role = match (in_old, in_new) {
-            (true, true) => DkgRole::DealerReceiver,
-            (true, false) => DkgRole::Dealer,
-            (false, true) => DkgRole::Receiver,
-            (false, false) => {
-                return Err(DkgError::InvalidInput(
-                    "Reshare SessionInit: this node is not in either committee".to_string(),
-                ))
-            }
-        };
+        // build_reshare_params errors if this node is not in either committee.
+        let (node_id, role, params) = build_reshare_params(
+            ring_pk_hex,
+            peer_ids,
+            next_peer_ids,
+            *new_threshold,
+            bulletin_post_id,
+            &our_node_part,
+            &coord.app_state.local_storage,
+        )?;
 
         // Mark the ring as having an in-progress reshare.  Done here — after we know
         // this node is in at least one committee — so that the flag is never set for
@@ -186,50 +172,6 @@ where
             role = ?role,
             "DKG Coordinator: Reshare SessionInit validated and ring marked resharing"
         );
-
-        // Dealers use their old-committee index for polynomial generation and share
-        // routing to the new committee.  Pure Receivers have no old-committee index,
-        // so they use their new-committee index as the session node_id (used only
-        // for dedup and connection tracking — not for crypto output routing).
-        let node_id = if in_old {
-            node_index_in(&sorted_old, &our_node_part)
-        } else {
-            node_index_in(&sorted_new, &our_node_part)
-        };
-
-        // Pre-load old share for Dealer/DealerReceiver nodes.
-        let old_share = if in_old {
-            let bundle =
-                RingShareBundle::load_by_ring_key(&coord.app_state.local_storage, ring_pk_hex)
-                    .map_err(|e| {
-                        DkgError::Storage(format!("Reshare: failed to load old share: {}", e))
-                    })?;
-            let pri = bundle.pri_share().map_err(|e| {
-                DkgError::Deserialization(format!(
-                    "Reshare: failed to deserialize old share: {}",
-                    e
-                ))
-            })?;
-            Some(pri.v)
-        } else {
-            None
-        };
-
-        // participating_ids = all old committee node IDs (full participation).
-        let participating_ids: Vec<u32> = (1..=peer_ids.len() as u32).collect();
-
-        let new_node_id = in_new.then(|| node_index_in(&sorted_new, &our_node_part));
-
-        let params = ReshareParams {
-            ring_key: ring_pk_hex.clone(),
-            old_share,
-            participating_ids,
-            new_threshold: *new_threshold as usize,
-            new_total_nodes: next_peer_ids.len(),
-            new_peer_ids: sorted_new,
-            new_node_id,
-            bulletin_post_id: bulletin_post_id.clone(),
-        };
 
         (node_id, role, Some(params))
     } else {

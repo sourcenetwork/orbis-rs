@@ -1,11 +1,12 @@
 use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::SessionKind;
+use crate::dkg::session_state::ReshareParams;
 use crate::helpers::helpers::extract_node_part;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::{BearerToken, DkgClaims};
 use bulletin::r#trait::{Bulletin, RingPayload};
-use crypto::r#trait::{CryptoDeserialize, PriShare};
+use crypto::r#trait::{CryptoDeserialize, DkgRole, PriShare};
 use crypto::{CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
@@ -39,23 +40,23 @@ pub fn serialize_commitment_coefficients(coefficients: &[G1Affine]) -> Result<Ve
 /// 2. The deserialized `RingPayload::ring_pk` must equal `ring_pk_hex` (binds the read to
 ///    the intended ring when the post ID came from the wire).
 /// 3. The sender's peer ID is a current member of that ring's OLD committee.
-/// 4. `ring_payload.next_peer_ids` must be set and must match the proposed list
-///    (order-independent).  A missing bulletin field is also rejected — the ring must have
-///    been prepared for reshare on-chain before any node may initiate one.
-/// 5. `ring_payload.new_threshold` must be set and must match the proposed value.
-///    Same rationale: absent means not yet authorised.
+/// 4. Proposed `next_peer_ids` must match the authoritative committee (order-independent):
+///    - `ring_payload.next_peer_ids` is `Some` → must match that list.
+///    - `ring_payload.next_peer_ids` is `None` → must match `ring_payload.peer_ids`
+///      (fallback: threshold-only reshare keeps the same committee).
+/// 5. Proposed `new_threshold` must equal the authoritative threshold:
+///    - `ring_payload.new_threshold` is `Some` → must equal that value.
+///    - `ring_payload.new_threshold` is `None` → must equal `ring_payload.threshold`
+///      (fallback: committee-only reshare keeps the same threshold).
 ///
 /// No time-based check is performed — reshare is triggered by membership change, not interval.
 ///
 /// ## Bulletin trust model
 ///
-/// This function treats the bulletin as the authoritative source of truth for reshare
-/// parameters.  Both `next_peer_ids` and `new_threshold` **must** be pre-announced on-chain
-/// (e.g. via a governance transaction on SourceHub) before any node will accept a reshare
-/// `SessionInit`.  An old-committee member that sends a `SessionInit` without a matching
-/// bulletin entry — or with parameters that differ from the bulletin — is rejected.  This
-/// ensures that reshares cannot be unilaterally redirected to an arbitrary new committee by
-/// a single old-committee member.
+/// The bulletin is the authoritative source of truth.  Absent fields do not mean
+/// "accept anything" — they mean "keep the current value".  A sender proposing a committee
+/// or threshold that differs from both the announced and current values is rejected,
+/// preventing unilateral redirection of a reshare to an arbitrary new committee.
 pub async fn validate_reshare_session_init<S: LocalStorage>(
     ring_pk_hex: &str,
     sender_hex: &str,
@@ -125,38 +126,45 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         )));
     }
 
-    // 4. The bulletin must pre-announce the new committee, and the proposed list must match.
-    //    A missing `next_peer_ids` means the ring has not been prepared for reshare on-chain.
-    let announced = ring_payload.next_peer_ids.as_ref().ok_or_else(|| {
-        DkgError::Unauthorized(format!(
-            "Ring {} has no bulletin-announced next_peer_ids; reshare not authorised",
-            ring_pk_hex
-        ))
-    })?;
-    let mut sorted_announced: Vec<&str> = announced.iter().map(|s| s.as_str()).collect();
-    sorted_announced.sort();
+    // 4. Proposed next_peer_ids must match the authoritative committee.
+    //    Bulletin present → must match it; absent → must match current peer_ids (fallback).
+    let authoritative_next: &[String] = ring_payload
+        .next_peer_ids
+        .as_deref()
+        .unwrap_or(&ring_payload.peer_ids);
+    let mut sorted_auth: Vec<&str> = authoritative_next.iter().map(|s| s.as_str()).collect();
+    sorted_auth.sort();
     let mut sorted_proposed: Vec<&str> =
         proposed_next_peer_ids.iter().map(|s| s.as_str()).collect();
     sorted_proposed.sort();
-    if sorted_announced != sorted_proposed {
+    if sorted_auth != sorted_proposed {
         return Err(DkgError::Unauthorized(format!(
-            "Reshare next_peer_ids do not match bulletin-announced committee for ring {}",
-            ring_pk_hex
+            "Reshare next_peer_ids do not match authoritative committee for ring {} \
+             (bulletin field: {})",
+            ring_pk_hex,
+            if ring_payload.next_peer_ids.is_some() {
+                "explicitly announced"
+            } else {
+                "absent, fallback to current peer_ids"
+            }
         )));
     }
 
-    // 5. The bulletin must pre-announce the new threshold, and the proposed value must match.
-    //    A missing `new_threshold` means the ring has not been prepared for reshare on-chain.
-    let announced_threshold = ring_payload.new_threshold.ok_or_else(|| {
-        DkgError::Unauthorized(format!(
-            "Ring {} has no bulletin-announced new_threshold; reshare not authorised",
-            ring_pk_hex
-        ))
-    })?;
-    if proposed_new_threshold != announced_threshold {
+    // 5. Proposed new_threshold must equal the authoritative threshold.
+    //    Bulletin present → must equal it; absent → must equal current threshold (fallback).
+    let authoritative_threshold = ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
+    if proposed_new_threshold != authoritative_threshold {
         return Err(DkgError::Unauthorized(format!(
-            "Reshare new_threshold {} does not match bulletin-announced threshold {} for ring {}",
-            proposed_new_threshold, announced_threshold, ring_pk_hex
+            "Reshare new_threshold {} does not match authoritative threshold {} for ring {} \
+             (bulletin field: {})",
+            proposed_new_threshold,
+            authoritative_threshold,
+            ring_pk_hex,
+            if ring_payload.new_threshold.is_some() {
+                "explicitly announced"
+            } else {
+                "absent, fallback to current threshold"
+            }
         )));
     }
 
@@ -404,6 +412,79 @@ pub fn persist_ring_bundle<S: LocalStorage>(
     Ok(())
 }
 
+/// Determine this node's role, `node_id`, and `ReshareParams` for a reshare session.
+///
+/// Returns `(node_id, role, params)`:
+/// - `node_id` — 1-based index in the old committee for Dealer/DealerReceiver, new committee
+///   for pure Receiver.
+/// - `role` — `Dealer`, `Receiver`, or `DealerReceiver`.
+/// - `params` — reshare session parameters including the pre-loaded old share (Dealers only).
+///
+/// Errors if this node is not in either committee, or if the old share cannot be loaded for
+/// a node that is in the old committee.
+pub fn build_reshare_params<S: LocalStorage>(
+    ring_pk_hex: &str,
+    old_peer_ids: &[String],
+    next_peer_ids: &[String],
+    new_threshold: u32,
+    bulletin_post_id: &str,
+    our_node_part: &str,
+    local_storage: &S,
+) -> Result<(u32, DkgRole, ReshareParams<Fr>)> {
+    let mut sorted_old = old_peer_ids.to_vec();
+    sorted_old.sort();
+    let mut sorted_new = next_peer_ids.to_vec();
+    sorted_new.sort();
+
+    let in_old = in_committee(&sorted_old, our_node_part);
+    let in_new = in_committee(&sorted_new, our_node_part);
+
+    let role = match (in_old, in_new) {
+        (true, true) => DkgRole::DealerReceiver,
+        (true, false) => DkgRole::Dealer,
+        (false, true) => DkgRole::Receiver,
+        (false, false) => {
+            return Err(DkgError::InvalidInput(
+                "Reshare: this node is not in either committee".to_string(),
+            ))
+        }
+    };
+
+    let new_idx = in_new.then(|| node_index_in(&sorted_new, our_node_part));
+    let node_id = if in_old {
+        node_index_in(&sorted_old, our_node_part)
+    } else {
+        new_idx.expect("checked in_new above")
+    };
+
+    let old_share = if in_old {
+        let bundle = RingShareBundle::load_by_ring_key(local_storage, ring_pk_hex)
+            .map_err(|e| DkgError::Storage(format!("Reshare: failed to load old share: {}", e)))?;
+        let pri = bundle.pri_share().map_err(|e| {
+            DkgError::Deserialization(format!("Reshare: failed to deserialize old share: {}", e))
+        })?;
+        Some(pri.v)
+    } else {
+        None
+    };
+
+    let participating_ids: Vec<u32> = (1..=old_peer_ids.len() as u32).collect();
+    let new_node_id = in_new.then(|| node_index_in(&sorted_new, our_node_part));
+
+    let params = ReshareParams {
+        ring_key: ring_pk_hex.to_string(),
+        old_share,
+        participating_ids,
+        new_threshold: new_threshold as usize,
+        new_total_nodes: next_peer_ids.len(),
+        new_peer_ids: sorted_new,
+        new_node_id,
+        bulletin_post_id: bulletin_post_id.to_string(),
+    };
+
+    Ok((node_id, role, params))
+}
+
 /// Returns `true` if `our_node_part` appears as the node portion of any peer ID in
 /// `committee` (sorted or unsorted — membership check is order-independent).
 ///
@@ -436,8 +517,11 @@ mod tests {
     use crate::ring_state::{RingIndexEntry, RingShareBundle};
     use bulletin::dummy::DummyBulletin;
     use bulletin::r#trait::Bulletin;
+    use crypto::r#trait::PriShare;
+    use crypto::{CryptoSerialize, ScalarField as Fr};
     use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
     use std::sync::Arc;
+    use zeroize::Zeroizing;
 
     fn make_storage(db_name: &str) -> (LocalStorageImpl, String) {
         let db_path = test_db_path(db_name);
@@ -640,6 +724,175 @@ mod tests {
             "Expected Ok when pss_interval is None (no time check), got: {:?}",
             result
         );
+        cleanup_db(&db_path);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // build_reshare_params tests
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// Serialize a minimal `PriShare<Fr>` so we can write a valid `RingShareBundle`.
+    fn valid_share_bytes() -> Vec<u8> {
+        let pri = PriShare {
+            i: 1u32,
+            v: Fr::from(42u64),
+        };
+        CryptoSerialize::to_bytes(&pri).expect("serialize PriShare")
+    }
+
+    fn write_valid_bundle(storage: &LocalStorageImpl, ring_pk: &str) {
+        let bundle = RingShareBundle {
+            share_bytes: Zeroizing::new(valid_share_bytes()),
+            public_polynomial: String::new(),
+            last_pss: 0,
+        };
+        bundle.save_by_ring_key(storage, ring_pk).unwrap();
+    }
+
+    /// Node is not in either committee → `InvalidInput`.
+    #[test]
+    fn test_build_reshare_params_not_in_committee() {
+        let (storage, db_path) = make_storage("reshare_params_not_in_committee");
+        let result = build_reshare_params(
+            "ring_pk",
+            &["aabbccdd".to_string()],
+            &["11223344".to_string()],
+            1,
+            "post_id",
+            "ffffffff", // not in either committee
+            &storage,
+        );
+        assert!(
+            matches!(result, Err(DkgError::InvalidInput(_))),
+            "Expected InvalidInput for node not in either committee: {:?}",
+            result
+        );
+        cleanup_db(&db_path);
+    }
+
+    /// Pure Receiver (only in new committee) — no share bundle needed.
+    #[test]
+    fn test_build_reshare_params_receiver() {
+        let (storage, db_path) = make_storage("reshare_params_receiver");
+        let result = build_reshare_params(
+            "ring_pk",
+            &["aabbccdd".to_string()],
+            &["11223344".to_string()],
+            1,
+            "post_id",
+            "11223344", // in new committee only
+            &storage,
+        );
+        let (node_id, role, params) = result.expect("Receiver case should succeed");
+        assert_eq!(role, DkgRole::Receiver);
+        assert_eq!(
+            node_id, 1,
+            "Receiver gets 1-based index in sorted new committee"
+        );
+        assert!(params.old_share.is_none(), "Receiver has no old share");
+        assert_eq!(params.new_node_id, Some(1));
+        cleanup_db(&db_path);
+    }
+
+    /// Pure Dealer (only in old committee) — valid share bundle required.
+    #[test]
+    fn test_build_reshare_params_dealer() {
+        let (storage, db_path) = make_storage("reshare_params_dealer");
+        write_valid_bundle(&storage, "ring_pk");
+
+        let result = build_reshare_params(
+            "ring_pk",
+            &["aabbccdd".to_string()],
+            &["11223344".to_string()],
+            1,
+            "post_id",
+            "aabbccdd", // in old committee only
+            &storage,
+        );
+        let (node_id, role, params) = result.expect("Dealer case should succeed");
+        assert_eq!(role, DkgRole::Dealer);
+        assert_eq!(node_id, 1);
+        assert!(params.old_share.is_some(), "Dealer must have old share");
+        assert_eq!(params.new_node_id, None, "Pure Dealer has no new_node_id");
+        cleanup_db(&db_path);
+    }
+
+    /// DealerReceiver (in both committees) — valid share bundle required.
+    #[test]
+    fn test_build_reshare_params_dealer_receiver() {
+        let (storage, db_path) = make_storage("reshare_params_dealer_receiver");
+        write_valid_bundle(&storage, "ring_pk");
+
+        let result = build_reshare_params(
+            "ring_pk",
+            &["aabbccdd".to_string(), "bbbbbbbb".to_string()],
+            &["aabbccdd".to_string(), "cccccccc".to_string()],
+            1,
+            "post_id",
+            "aabbccdd", // in both committees
+            &storage,
+        );
+        let (node_id, role, params) = result.expect("DealerReceiver case should succeed");
+        assert_eq!(role, DkgRole::DealerReceiver);
+        assert_eq!(node_id, 1, "aabbccdd is smallest in old committee");
+        assert!(params.old_share.is_some());
+        assert_eq!(
+            params.new_node_id,
+            Some(1),
+            "aabbccdd is smallest in new committee"
+        );
+        cleanup_db(&db_path);
+    }
+
+    /// Dealer path with missing share bundle must return a `Storage` error.
+    #[test]
+    fn test_build_reshare_params_dealer_missing_bundle() {
+        let (storage, db_path) = make_storage("reshare_params_missing_bundle");
+        // No bundle written — load will fail.
+        let result = build_reshare_params(
+            "ring_pk",
+            &["aabbccdd".to_string()],
+            &["11223344".to_string()],
+            1,
+            "post_id",
+            "aabbccdd",
+            &storage,
+        );
+        assert!(
+            matches!(result, Err(DkgError::Storage(_))),
+            "Expected Storage error when share bundle is absent: {:?}",
+            result
+        );
+        cleanup_db(&db_path);
+    }
+
+    /// Unsorted input peer lists must be sorted before computing node indices.
+    ///
+    /// old = ["cccccccc", "aabbccdd", "bbbbbbbb"] — sorted: ["aabbccdd", "bbbbbbbb", "cccccccc"]
+    /// Our node is "aabbccdd" → index 1 in sorted old committee.
+    #[test]
+    fn test_build_reshare_params_sorts_committees() {
+        let (storage, db_path) = make_storage("reshare_params_sorting");
+        write_valid_bundle(&storage, "ring_pk");
+
+        let result = build_reshare_params(
+            "ring_pk",
+            &[
+                "cccccccc".to_string(),
+                "aabbccdd".to_string(),
+                "bbbbbbbb".to_string(),
+            ],
+            &["11223344".to_string()],
+            1,
+            "post_id",
+            "aabbccdd",
+            &storage,
+        );
+        let (node_id, role, params) = result.expect("sorting test should succeed");
+        assert_eq!(role, DkgRole::Dealer);
+        assert_eq!(node_id, 1, "aabbccdd must be index 1 after sorting");
+        // participating_ids covers the full old committee (3 nodes, 1-based)
+        assert_eq!(params.participating_ids, vec![1, 2, 3]);
         cleanup_db(&db_path);
     }
 }
