@@ -450,10 +450,11 @@ pub fn build_reshare_params<S: LocalStorage>(
         }
     };
 
+    let new_idx = in_new.then(|| node_index_in(&sorted_new, our_node_part));
     let node_id = if in_old {
         node_index_in(&sorted_old, our_node_part)
     } else {
-        node_index_in(&sorted_new, our_node_part)
+        new_idx.expect("checked in_new above")
     };
 
     let old_share = if in_old {

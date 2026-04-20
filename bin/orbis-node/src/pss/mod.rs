@@ -250,6 +250,17 @@ where
 
     let coordinator = DkgCoordinator::new(app_state.clone());
 
+    if let Err((bad_peer, err)) = validate_all_peer_ids(peer_ids) {
+        app_state
+            .dkg_session_state
+            .remove_session(&session_id)
+            .await;
+        return Err(DkgError::InvalidInput(format!(
+            "PSS: invalid peer ID '{}': {}",
+            bad_peer, err
+        )));
+    }
+
     if let Err(e) = coordinator
         .create_session(
             session_id,
@@ -306,17 +317,6 @@ where
         .dkg_session_state
         .set_node_peer_mappings(&session_id, node_id_to_peer_id)
         .await;
-
-    if let Err((bad_peer, err)) = validate_all_peer_ids(peer_ids) {
-        app_state
-            .dkg_session_state
-            .remove_session(&session_id)
-            .await;
-        return Err(DkgError::InvalidInput(format!(
-            "PSS: invalid peer ID '{}': {}",
-            bad_peer, err
-        )));
-    }
 
     let init_msg = DkgMessage::SessionInit {
         session_id,
@@ -471,6 +471,17 @@ where
 
     let coordinator = DkgCoordinator::new(app_state.clone());
 
+    if let Err((bad_peer, err)) = validate_all_peer_ids(&union_peers) {
+        app_state
+            .dkg_session_state
+            .unmark_ring_pss(ring_pk_str)
+            .await;
+        return Err(DkgError::InvalidInput(format!(
+            "PSS reshare: invalid peer ID '{}': {}",
+            bad_peer, err
+        )));
+    }
+
     let kind_for_init = kind.clone();
     if let Err(e) = coordinator
         .create_session(
@@ -523,17 +534,6 @@ where
         .dkg_session_state
         .set_node_peer_mappings(&session_id, node_id_to_peer_id)
         .await;
-
-    if let Err((bad_peer, err)) = validate_all_peer_ids(&union_peers) {
-        app_state
-            .dkg_session_state
-            .remove_session(&session_id)
-            .await;
-        return Err(DkgError::InvalidInput(format!(
-            "PSS reshare: invalid peer ID '{}': {}",
-            bad_peer, err
-        )));
-    }
 
     let init_msg = DkgMessage::SessionInit {
         session_id,
