@@ -102,6 +102,22 @@ impl<ShareValue: Zeroize> Drop for ReshareParams<ShareValue> {
     }
 }
 
+#[cfg(test)]
+impl<ShareValue: Zeroize + std::fmt::Debug> std::fmt::Debug for ReshareParams<ShareValue> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReshareParams")
+            .field("ring_key", &self.ring_key)
+            .field("old_share", &self.old_share.as_ref().map(|_| "<redacted>"))
+            .field("participating_ids", &self.participating_ids)
+            .field("new_threshold", &self.new_threshold)
+            .field("new_total_nodes", &self.new_total_nodes)
+            .field("new_peer_ids", &self.new_peer_ids)
+            .field("new_node_id", &self.new_node_id)
+            .field("bulletin_post_id", &self.bulletin_post_id)
+            .finish()
+    }
+}
+
 /// Unified state for a DKG session combining crypto state and protocol tracking
 ///
 /// This struct holds both:

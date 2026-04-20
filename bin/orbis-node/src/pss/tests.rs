@@ -121,7 +121,7 @@ async fn test_refresh_all_rings_empty_index() {
     .await;
 
     // Local storage has no RingIndex entry
-    let result = super::refresh_all_rings(&Arc::new(app_state)).await;
+    let result = super::pss_all_rings(&Arc::new(app_state)).await;
     assert!(result.is_ok(), "Should succeed with empty ring index");
 
     cleanup_db(&db_path);
@@ -156,8 +156,8 @@ async fn test_refresh_all_rings_bulletin_miss_does_not_propagate() {
         .set(LocalStorageKeys::RingIndex, index_bytes)
         .expect("set RingIndex");
 
-    // refresh_all_rings absorbs per-ring errors; should still be Ok(())
-    let result = super::refresh_all_rings(&Arc::new(app_state)).await;
+    // pss_all_rings absorbs per-ring errors; should still be Ok(())
+    let result = super::pss_all_rings(&Arc::new(app_state)).await;
     assert!(
         result.is_ok(),
         "refresh_all_rings should not propagate per-ring bulletin errors"
@@ -203,7 +203,7 @@ async fn test_refresh_ring_not_initiator_skips_silently() {
     );
 
     let state_arc = Arc::new(app_state);
-    let result = super::refresh_ring(&state_arc, &entry).await;
+    let result = super::pss_ring(&state_arc, &entry).await;
 
     assert!(
         result.is_ok(),
@@ -261,7 +261,7 @@ async fn test_refresh_ring_bad_bulletin_payload() {
         )
         .expect("write RingIndex");
 
-    let result = super::refresh_ring(&Arc::new(app_state), &entry).await;
+    let result = super::pss_ring(&Arc::new(app_state), &entry).await;
     assert!(
         matches!(result, Err(DkgError::Deserialization(_))),
         "Expected Deserialization error, got: {:?}",
@@ -271,8 +271,152 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     cleanup_db(&db_path);
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Dispatch tests — reshare vs refresh routing
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Set up an AppState and return (app_state, our_hex, db_path).
+async fn make_initiator_state(
+    db_name: &str,
+) -> (crate::app_state::AppState<DkgImpl>, String, String) {
+    let db_path = test_db_path(db_name);
+    let bulletin: Arc<dyn Bulletin + Send + Sync> =
+        Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let app_state = create_test_app_state_with_bulletin(
+        Some("127.0.0.1:0".to_string()),
+        true,
+        bulletin,
+        db_name,
+    )
+    .await;
+    let our_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    (app_state, our_hex, db_path)
+}
+
+/// Post a RingPayload to the bulletin and seed RingIndex.
+async fn post_ring_and_seed_index(
+    app_state: &crate::app_state::AppState<DkgImpl>,
+    ring_payload: &RingPayload,
+) -> RingIndexEntry {
+    let payload_bytes = serde_json::to_vec(ring_payload).expect("serialize RingPayload");
+    app_state
+        .bulletin
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            payload_bytes.clone(),
+            None,
+        )
+        .await
+        .expect("post RingPayload");
+    let post_id = app_state
+        .bulletin
+        .get_post_id(BULLETIN_RING_NAMESPACE, &payload_bytes)
+        .expect("compute post_id");
+    let entry = RingIndexEntry {
+        ring_pk_str: ring_payload.ring_pk.clone(),
+        bulletin_post_id: post_id,
+    };
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&vec![&entry]).expect("serialize RingIndex"),
+        )
+        .expect("write RingIndex");
+    entry
+}
+
+/// When `next_peer_ids` is set, `pss_ring` must dispatch to `trigger_reshare`
+/// even when `pss_interval` is absent (which would cause a refresh to skip).
+///
+/// The reshare path loads the old share bundle; since none exists the function
+/// returns `Err(Storage(...))`.  That proves we reached `trigger_reshare` rather
+/// than silently returning at the interval gate.
+#[tokio::test]
+async fn test_pss_ring_reshare_bypasses_interval() {
+    let db_name = "pss_reshare_bypasses_interval";
+    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        ring_pk: "pss_reshare_bypass_pk".to_string(),
+        peer_ids: vec![our_hex.clone()],
+        next_peer_ids: Some(vec![our_hex.clone()]),
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: None, // no interval — refresh would skip silently
+    };
+
+    let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
+    let result = super::pss_ring(&Arc::new(app_state), &entry).await;
+
+    assert!(
+        matches!(result, Err(DkgError::Storage(_))),
+        "Expected Storage error: reshare was triggered despite missing pss_interval, \
+         then failed to load absent share bundle. Got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// When only `new_threshold` is set (and `next_peer_ids` is absent),
+/// `pss_ring` must still dispatch to `trigger_reshare`, using the old committee
+/// as the fallback for `next_peer_ids`.
+#[tokio::test]
+async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
+    let db_name = "pss_new_threshold_triggers_reshare";
+    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        ring_pk: "pss_new_threshold_pk".to_string(),
+        peer_ids: vec![our_hex.clone()],
+        next_peer_ids: None, // only threshold change, no new members
+        new_threshold: Some(1),
+        threshold: 1,
+        pss_interval: None,
+    };
+
+    let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
+    let result = super::pss_ring(&Arc::new(app_state), &entry).await;
+
+    assert!(
+        matches!(result, Err(DkgError::Storage(_))),
+        "Expected Storage error: new_threshold alone triggered reshare which tried to load \
+         an absent share bundle. Got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// When neither `next_peer_ids` nor `new_threshold` is set, and the ring has
+/// no `pss_interval`, `pss_ring` must skip silently (Ok(())) even when our
+/// node is the initiator.
+#[tokio::test]
+async fn test_pss_ring_refresh_skips_without_interval() {
+    let db_name = "pss_refresh_skips_no_interval";
+    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        ring_pk: "pss_no_interval_pk".to_string(),
+        peer_ids: vec![our_hex.clone()],
+        next_peer_ids: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: None, // refresh requires pss_interval; without it, must skip
+    };
+
+    let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
+    let result = super::pss_ring(&Arc::new(app_state), &entry).await;
+
+    assert!(
+        result.is_ok(),
+        "Expected Ok(()): refresh with no pss_interval must skip silently. Got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
 /// When the ring index lists a ring that has no bulletin entry at all,
-/// `refresh_ring` should return a Storage error.
+/// `pss_ring` should return a Storage error.
 #[tokio::test]
 async fn test_refresh_ring_missing_from_bulletin() {
     let db_name = "pss_missing_ring";
@@ -292,7 +436,7 @@ async fn test_refresh_ring_missing_from_bulletin() {
         ring_pk_str: "ghost_ring".to_string(),
         bulletin_post_id: "ghost_ring".to_string(),
     };
-    let result = super::refresh_ring(&Arc::new(app_state), &entry).await;
+    let result = super::pss_ring(&Arc::new(app_state), &entry).await;
     assert!(
         matches!(result, Err(DkgError::Storage(_))),
         "Expected Storage error for missing ring, got: {:?}",

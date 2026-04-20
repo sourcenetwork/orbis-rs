@@ -509,8 +509,11 @@ mod tests {
     use crate::ring_state::{RingIndexEntry, RingShareBundle};
     use bulletin::dummy::DummyBulletin;
     use bulletin::r#trait::Bulletin;
+    use crypto::r#trait::PriShare;
+    use crypto::{CryptoSerialize, ScalarField as Fr};
     use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
     use std::sync::Arc;
+    use zeroize::Zeroizing;
 
     fn make_storage(db_name: &str) -> (LocalStorageImpl, String) {
         let db_path = test_db_path(db_name);
@@ -713,6 +716,175 @@ mod tests {
             "Expected Ok when pss_interval is None (no time check), got: {:?}",
             result
         );
+        cleanup_db(&db_path);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // build_reshare_params tests
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// Serialize a minimal `PriShare<Fr>` so we can write a valid `RingShareBundle`.
+    fn valid_share_bytes() -> Vec<u8> {
+        let pri = PriShare {
+            i: 1u32,
+            v: Fr::from(42u64),
+        };
+        CryptoSerialize::to_bytes(&pri).expect("serialize PriShare")
+    }
+
+    fn write_valid_bundle(storage: &LocalStorageImpl, ring_pk: &str) {
+        let bundle = RingShareBundle {
+            share_bytes: Zeroizing::new(valid_share_bytes()),
+            public_polynomial: String::new(),
+            last_pss: 0,
+        };
+        bundle.save_by_ring_key(storage, ring_pk).unwrap();
+    }
+
+    /// Node is not in either committee → `InvalidInput`.
+    #[test]
+    fn test_build_reshare_params_not_in_committee() {
+        let (storage, db_path) = make_storage("reshare_params_not_in_committee");
+        let result = build_reshare_params(
+            "ring_pk",
+            &["aabbccdd".to_string()],
+            &["11223344".to_string()],
+            1,
+            "post_id",
+            "ffffffff", // not in either committee
+            &storage,
+        );
+        assert!(
+            matches!(result, Err(DkgError::InvalidInput(_))),
+            "Expected InvalidInput for node not in either committee: {:?}",
+            result
+        );
+        cleanup_db(&db_path);
+    }
+
+    /// Pure Receiver (only in new committee) — no share bundle needed.
+    #[test]
+    fn test_build_reshare_params_receiver() {
+        let (storage, db_path) = make_storage("reshare_params_receiver");
+        let result = build_reshare_params(
+            "ring_pk",
+            &["aabbccdd".to_string()],
+            &["11223344".to_string()],
+            1,
+            "post_id",
+            "11223344", // in new committee only
+            &storage,
+        );
+        let (node_id, role, params) = result.expect("Receiver case should succeed");
+        assert_eq!(role, DkgRole::Receiver);
+        assert_eq!(
+            node_id, 1,
+            "Receiver gets 1-based index in sorted new committee"
+        );
+        assert!(params.old_share.is_none(), "Receiver has no old share");
+        assert_eq!(params.new_node_id, Some(1));
+        cleanup_db(&db_path);
+    }
+
+    /// Pure Dealer (only in old committee) — valid share bundle required.
+    #[test]
+    fn test_build_reshare_params_dealer() {
+        let (storage, db_path) = make_storage("reshare_params_dealer");
+        write_valid_bundle(&storage, "ring_pk");
+
+        let result = build_reshare_params(
+            "ring_pk",
+            &["aabbccdd".to_string()],
+            &["11223344".to_string()],
+            1,
+            "post_id",
+            "aabbccdd", // in old committee only
+            &storage,
+        );
+        let (node_id, role, params) = result.expect("Dealer case should succeed");
+        assert_eq!(role, DkgRole::Dealer);
+        assert_eq!(node_id, 1);
+        assert!(params.old_share.is_some(), "Dealer must have old share");
+        assert_eq!(params.new_node_id, None, "Pure Dealer has no new_node_id");
+        cleanup_db(&db_path);
+    }
+
+    /// DealerReceiver (in both committees) — valid share bundle required.
+    #[test]
+    fn test_build_reshare_params_dealer_receiver() {
+        let (storage, db_path) = make_storage("reshare_params_dealer_receiver");
+        write_valid_bundle(&storage, "ring_pk");
+
+        let result = build_reshare_params(
+            "ring_pk",
+            &["aabbccdd".to_string(), "bbbbbbbb".to_string()],
+            &["aabbccdd".to_string(), "cccccccc".to_string()],
+            1,
+            "post_id",
+            "aabbccdd", // in both committees
+            &storage,
+        );
+        let (node_id, role, params) = result.expect("DealerReceiver case should succeed");
+        assert_eq!(role, DkgRole::DealerReceiver);
+        assert_eq!(node_id, 1, "aabbccdd is smallest in old committee");
+        assert!(params.old_share.is_some());
+        assert_eq!(
+            params.new_node_id,
+            Some(1),
+            "aabbccdd is smallest in new committee"
+        );
+        cleanup_db(&db_path);
+    }
+
+    /// Dealer path with missing share bundle must return a `Storage` error.
+    #[test]
+    fn test_build_reshare_params_dealer_missing_bundle() {
+        let (storage, db_path) = make_storage("reshare_params_missing_bundle");
+        // No bundle written — load will fail.
+        let result = build_reshare_params(
+            "ring_pk",
+            &["aabbccdd".to_string()],
+            &["11223344".to_string()],
+            1,
+            "post_id",
+            "aabbccdd",
+            &storage,
+        );
+        assert!(
+            matches!(result, Err(DkgError::Storage(_))),
+            "Expected Storage error when share bundle is absent: {:?}",
+            result
+        );
+        cleanup_db(&db_path);
+    }
+
+    /// Unsorted input peer lists must be sorted before computing node indices.
+    ///
+    /// old = ["cccccccc", "aabbccdd", "bbbbbbbb"] — sorted: ["aabbccdd", "bbbbbbbb", "cccccccc"]
+    /// Our node is "aabbccdd" → index 1 in sorted old committee.
+    #[test]
+    fn test_build_reshare_params_sorts_committees() {
+        let (storage, db_path) = make_storage("reshare_params_sorting");
+        write_valid_bundle(&storage, "ring_pk");
+
+        let result = build_reshare_params(
+            "ring_pk",
+            &[
+                "cccccccc".to_string(),
+                "aabbccdd".to_string(),
+                "bbbbbbbb".to_string(),
+            ],
+            &["11223344".to_string()],
+            1,
+            "post_id",
+            "aabbccdd",
+            &storage,
+        );
+        let (node_id, role, params) = result.expect("sorting test should succeed");
+        assert_eq!(role, DkgRole::Dealer);
+        assert_eq!(node_id, 1, "aabbccdd must be index 1 after sorting");
+        // participating_ids covers the full old committee (3 nodes, 1-based)
+        assert_eq!(params.participating_ids, vec![1, 2, 3]);
         cleanup_db(&db_path);
     }
 }
