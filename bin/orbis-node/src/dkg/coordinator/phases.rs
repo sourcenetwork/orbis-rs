@@ -704,6 +704,7 @@ where
             }
 
             // Remove the ring from the local index so the PSS scheduler skips it.
+            let _guard = coord.app_state.ring_index_lock.lock().await;
             let storage = &coord.app_state.local_storage;
             ring_index_result = (|| {
                 let raw = match storage.get(LocalStorageKeys::RingIndex) {

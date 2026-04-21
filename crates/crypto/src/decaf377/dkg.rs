@@ -606,12 +606,9 @@ impl DKGNode {
             return canonicalize_participant_ids(ids, self.total_nodes);
         }
 
-        if self.is_reshare_receiver() {
-            return Ok((1..=self.total_nodes as u32).collect());
-        }
-
         Err(CryptoError::DKGError(
-            "No reshare participants selected".to_string(),
+            "Reshare participant set not yet selected — call select_reshare_participants first"
+                .to_string(),
         ))
     }
 

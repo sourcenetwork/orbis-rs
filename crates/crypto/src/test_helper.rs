@@ -768,6 +768,7 @@ pub mod generic_tests {
             for (from_id, commitment) in &dealer_commitments {
                 receiver.receive_commitment(*from_id, commitment.clone())?;
             }
+            receiver.select_reshare_participants(participating_ids.clone())?;
         }
 
         // Dealers generate shares for new committee (to_id 1..=n_new)

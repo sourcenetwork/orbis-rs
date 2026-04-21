@@ -834,19 +834,15 @@ where
             receiver_node_id,
             dealer_id,
         };
-        if let Err(e) = coord
+        coord
             .send_message_to_peer(&selector_peer_id, ack_msg, Some(session_id))
             .await
-        {
-            tracing::warn!(
-                session_id = session_id,
-                dealer_id = dealer_id,
-                receiver_node_id = receiver_node_id,
-                selector_peer = %selector_peer_id,
-                error = %e,
-                "Reshare: failed to send valid-share acknowledgement to selector"
-            );
-        }
+            .map_err(|e| {
+                DkgError::NetworkCommunication(format!(
+                    "Reshare: failed to send valid-share acknowledgement to selector {}: {}",
+                    selector_peer_id, e
+                ))
+            })?;
     }
 
     Ok(())
