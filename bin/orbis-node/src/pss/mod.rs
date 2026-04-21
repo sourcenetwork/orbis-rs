@@ -517,7 +517,7 @@ where
         .await;
 
     coordinator
-        .set_peer_ids(&session_id, union_peers.clone())
+        .set_peer_ids(&session_id, sorted_new.clone())
         .await;
 
     // Store old-committee node_id → peer_id mappings for sender validation.
@@ -533,6 +533,16 @@ where
     app_state
         .dkg_session_state
         .set_node_peer_mappings(&session_id, node_id_to_peer_id)
+        .await;
+
+    let new_node_id_to_peer_id = sorted_new
+        .iter()
+        .enumerate()
+        .map(|(idx, peer_id)| ((idx + 1) as u32, peer_id.clone()))
+        .collect();
+    app_state
+        .dkg_session_state
+        .set_reshare_new_peer_mappings(&session_id, new_node_id_to_peer_id)
         .await;
 
     let init_msg = DkgMessage::SessionInit {
@@ -554,20 +564,16 @@ where
             .send_message_to_peer(peer_id_str, init_msg.clone(), Some(session_id))
             .await
         {
-            tracing::error!(peer = %peer_id_str, error = %e, "PSS: failed to send reshare SessionInit, aborting");
-            app_state
-                .dkg_session_state
-                .remove_session(&session_id)
-                .await;
-            return Err(DkgError::NetworkConnection(format!(
-                "PSS: failed to send reshare SessionInit to {}: {}",
-                peer_id_str, e
-            )));
+            tracing::warn!(
+                peer = %peer_id_str,
+                error = %e,
+                "PSS: failed to send reshare SessionInit; continuing until threshold selection or timeout"
+            );
         }
     }
 
     if let Err(e) = coordinator
-        .initiate_phase1_commitments(session_id, &union_peers)
+        .initiate_phase1_commitments(session_id, &sorted_new)
         .await
     {
         app_state

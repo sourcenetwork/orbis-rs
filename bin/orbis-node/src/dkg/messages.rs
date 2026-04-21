@@ -74,6 +74,20 @@ pub enum DkgMessage {
         accused_node_id: u32,
         reason: String,
     },
+    /// Reshare-only: a new-committee receiver confirms it has verified one
+    /// valid share from an old-committee dealer.
+    ReshareShareAck {
+        session_id: u64,
+        receiver_node_id: u32,
+        dealer_id: u32,
+    },
+    /// Reshare-only: new-committee node 1 freezes the old-dealer subset that
+    /// every receiver must use for weighted Phase 4 aggregation.
+    ReshareParticipantSet {
+        session_id: u64,
+        from_node_id: u32,
+        selected_dealer_ids: Vec<u32>,
+    },
     /// Phase 4: Session initialization/coordination
     SessionInit {
         session_id: u64,
@@ -106,6 +120,8 @@ impl DkgMessage {
             DkgMessage::Commitment { session_id, .. } => *session_id,
             DkgMessage::Share { session_id, .. } => *session_id,
             DkgMessage::Complaint { session_id, .. } => *session_id,
+            DkgMessage::ReshareShareAck { session_id, .. } => *session_id,
+            DkgMessage::ReshareParticipantSet { session_id, .. } => *session_id,
             DkgMessage::SessionInit { session_id, .. } => *session_id,
             DkgMessage::Error { session_id, .. } => *session_id,
         }

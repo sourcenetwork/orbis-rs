@@ -85,6 +85,10 @@ where
             DkgMessage::Complaint { from_node_id, .. } => {
                 (DkgMessageType::Complaint, Some(*from_node_id))
             }
+            DkgMessage::ReshareShareAck { .. } => (DkgMessageType::ReshareShareAck, None),
+            DkgMessage::ReshareParticipantSet { from_node_id, .. } => {
+                (DkgMessageType::ReshareParticipantSet, Some(*from_node_id))
+            }
             DkgMessage::SessionInit { .. } => (DkgMessageType::SessionInit, None),
             DkgMessage::Error { .. } => (DkgMessageType::Error, None),
         };
@@ -93,6 +97,8 @@ where
             DkgMessageType::SessionInit => "session_init",
             DkgMessageType::Commitment => "commitment",
             DkgMessageType::Share => "share",
+            DkgMessageType::ReshareShareAck => "reshare_share_ack",
+            DkgMessageType::ReshareParticipantSet => "reshare_participant_set",
             DkgMessageType::Complaint => "complaint",
             DkgMessageType::Error => "error",
         };
@@ -174,16 +180,30 @@ where
             }
         }
 
-        // Validate sender identity for messages that carry from_node_id.
-        if let Some(claimed_node_id) = from_node_id_opt {
-            let sender_hex = hex::encode(sender_peer_id.as_bytes());
+        // Validate sender identity for messages that carry node IDs.
+        let sender_hex = hex::encode(sender_peer_id.as_bytes());
+        let sender_check: Option<(u32, bool)> = match &message {
+            DkgMessage::Commitment { from_node_id, .. }
+            | DkgMessage::Share { from_node_id, .. }
+            | DkgMessage::Complaint { from_node_id, .. } => Some((*from_node_id, false)),
+            DkgMessage::ReshareShareAck {
+                receiver_node_id, ..
+            } => Some((*receiver_node_id, true)),
+            DkgMessage::ReshareParticipantSet { from_node_id, .. } => Some((*from_node_id, true)),
+            DkgMessage::SessionInit { .. } | DkgMessage::Error { .. } => None,
+        };
+
+        if let Some((claimed_node_id, use_new_committee_map)) = sender_check {
             let expected_node_id = self
                 .app_state
                 .dkg_session_state
                 .with_state(&session_id, |state| {
-                    state
-                        .peer_id_to_node_id
-                        .iter()
+                    let map = if use_new_committee_map {
+                        &state.reshare_new_peer_id_to_node_id
+                    } else {
+                        &state.peer_id_to_node_id
+                    };
+                    map.iter()
                         .find(|(peer_id, _)| extract_node_part(peer_id) == sender_hex)
                         .map(|(_, node_id)| *node_id)
                 })
@@ -198,6 +218,7 @@ where
                         expected_node_id = expected,
                         sender_peer = %sender_hex,
                         session_id = session_id,
+                        use_new_committee_map = use_new_committee_map,
                         "DKG Coordinator: Rejecting message - sender identity mismatch"
                     );
                     return Err(DkgError::Unauthorized(format!(
@@ -209,6 +230,7 @@ where
                     tracing::warn!(
                         sender_peer = %sender_hex,
                         session_id = session_id,
+                        use_new_committee_map = use_new_committee_map,
                         "DKG Coordinator: Rejecting message - sender peer not found in session"
                     );
                     return Err(DkgError::Unauthorized(format!(
@@ -264,6 +286,32 @@ where
                     "DKG Coordinator: Received complaint"
                 );
                 None
+            }
+            DkgMessage::ReshareShareAck {
+                receiver_node_id,
+                dealer_id,
+                ..
+            } => {
+                message_handlers::handle_reshare_share_ack(
+                    self,
+                    session_id,
+                    receiver_node_id,
+                    dealer_id,
+                )
+                .await?
+            }
+            DkgMessage::ReshareParticipantSet {
+                from_node_id,
+                selected_dealer_ids,
+                ..
+            } => {
+                message_handlers::handle_reshare_participant_set(
+                    self,
+                    session_id,
+                    from_node_id,
+                    selected_dealer_ids,
+                )
+                .await?
             }
             DkgMessage::Error { error, .. } => {
                 tracing::error!(

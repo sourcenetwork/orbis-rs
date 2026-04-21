@@ -68,6 +68,7 @@ where
     )?;
     generic_tests::test_dkg_refresh(node_factory.clone(), check_zero.clone())?;
     generic_tests::test_dkg_reshare_same_committee(node_factory.clone())?;
+    generic_tests::test_dkg_reshare_selected_subset(node_factory.clone(), share_to_pubkey)?;
     generic_tests::test_dkg_reshare_different_committee(node_factory)?;
 
     Ok(())

@@ -1135,15 +1135,21 @@ async fn run_reshare_ceremony(
         if extract_node_part(peer_addr) == initiator_part {
             continue;
         }
-        coordinator
+        if let Err(e) = coordinator
             .send_message_to_peer(peer_addr, init_msg.clone(), Some(session_id))
             .await
-            .expect("send SessionInit to union peer");
+        {
+            tracing::warn!(
+                peer = %peer_addr,
+                error = %e,
+                "test reshare: failed to send SessionInit to target peer; continuing"
+            );
+        }
     }
 
     // Start Phase 1 on the initiator (generates polynomial + broadcasts commitment).
     coordinator
-        .initiate_phase1_commitments(session_id, union_peer_ids)
+        .initiate_phase1_commitments(session_id, sorted_next_peer_ids)
         .await
         .expect("initiate phase 1 commitments");
 
@@ -1353,13 +1359,6 @@ async fn test_reshare_one_member_rotated() {
     ];
     sorted_next.sort();
 
-    let mut union_peers = peer_ids.clone();
-    for p in &sorted_next {
-        if !union_peers.contains(p) {
-            union_peers.push(p.clone());
-        }
-    }
-
     let old_node_states: Vec<&crate::app_state::AppState<DkgImpl>> = vec![
         &network.alice.app_state,
         &network.bob.app_state,
@@ -1386,7 +1385,7 @@ async fn test_reshare_one_member_rotated() {
         &network.alice.peer_id,
         &peer_ids,
         2,
-        &union_peers,
+        &sorted_next,
         &key_string,
         &sorted_next,
         2,
@@ -1396,6 +1395,118 @@ async fn test_reshare_one_member_rotated() {
     .await;
 
     // Phase D: verify PK preserved on the new committee.
+    verify_reshare_pk_preserved(
+        &[
+            ("alice", &network.alice.app_state),
+            ("bob", &network.bob.app_state),
+            ("dave", &dave.app_state),
+        ],
+        &key_string,
+        &original_pk_bytes,
+    );
+
+    network.shutdown_routers().await.expect("shutdown routers");
+    if let Some(r) = dave.router.take() {
+        r.shutdown().await.expect("shutdown dave router");
+    }
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
+/// Reshare should complete when one old dealer is offline, as long as the old
+/// threshold of valid dealers contributes shares to every new receiver.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_reshare_one_old_dealer_offline_completes() {
+    let db_name = "test_reshare_one_old_dealer_offline_completes";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+        test_db_path(&format!("{}_4", db_name)),
+    ];
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .try_init();
+
+    let mut network = setup_three_node_network(true, db_name).await;
+    let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap().clone();
+    let peer_ids = network.get_all_peer_ids();
+    let mut dave = create_extra_test_node(&format!("{}_4", db_name), dummy_bulletin.clone()).await;
+
+    // Phase A: DKG with A, B, C (t=2).
+    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let test_keys = TestKeyPair::new();
+    let token = test_keys.create_dkg_jwt(2, &peer_ids, None).expect("JWT");
+    alice_service
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    threshold: 2,
+                    peer_ids: peer_ids.clone(),
+                    pss_interval: None,
+                },
+                &token,
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("DKG should start");
+    let (key_string, _ring_pk_hex, original_pk_bytes) =
+        wait_for_dkg_complete_on_bulletin(&dummy_bulletin).await;
+
+    // Phase B: reshare to {A,B,D}, t=2. C is leaving and will be offline.
+    let mut sorted_next = vec![
+        network.alice.address.clone(),
+        network.bob.address.clone(),
+        dave.address.clone(),
+    ];
+    sorted_next.sort();
+
+    let old_node_states: Vec<&crate::app_state::AppState<DkgImpl>> = vec![
+        &network.alice.app_state,
+        &network.bob.app_state,
+        &network.charlie.app_state,
+    ];
+    let announcement_post_id = post_reshare_announcement(
+        &old_node_states,
+        &peer_ids,
+        2,
+        &key_string,
+        &sorted_next,
+        2,
+        &dummy_bulletin,
+    )
+    .await;
+
+    if let Some(router) = network.charlie.router.take() {
+        router
+            .shutdown()
+            .await
+            .expect("shutdown offline old dealer");
+    }
+
+    let new_committee_states: Vec<&crate::app_state::AppState<DkgImpl>> = vec![
+        &network.alice.app_state,
+        &network.bob.app_state,
+        &dave.app_state,
+    ];
+    run_reshare_ceremony(
+        &network.alice.app_state,
+        &network.alice.peer_id,
+        &peer_ids,
+        2,
+        &sorted_next,
+        &key_string,
+        &sorted_next,
+        2,
+        &announcement_post_id,
+        &new_committee_states,
+    )
+    .await;
+
     verify_reshare_pk_preserved(
         &[
             ("alice", &network.alice.app_state),

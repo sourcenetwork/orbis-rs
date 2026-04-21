@@ -60,6 +60,8 @@ pub enum CreateSessionOutcome {
 pub enum DkgMessageType {
     Commitment,
     Share,
+    ReshareShareAck,
+    ReshareParticipantSet,
     Complaint,
     SessionInit,
     Error,
@@ -141,6 +143,10 @@ pub struct DkgSessionState<D: Dkg> {
     pub node_id_to_peer_id: HashMap<u32, String>,
     /// Mapping of peer IDs to node IDs
     pub peer_id_to_node_id: HashMap<String, u32>,
+    /// Mapping of new-committee node IDs to peer IDs for reshare-only messages.
+    pub reshare_new_node_id_to_peer_id: HashMap<u32, String>,
+    /// Mapping of new-committee peer IDs to node IDs for reshare-only sender validation.
+    pub reshare_new_peer_id_to_node_id: HashMap<String, u32>,
     /// List of peer IDs for this session (for sending messages)
     pub peer_ids: Vec<String>,
     /// Expected number of participants
@@ -149,6 +155,14 @@ pub struct DkgSessionState<D: Dkg> {
     pub commitments_received: usize,
     /// Number of shares received
     pub shares_received: usize,
+    /// Reshare-only: old dealers for which this node has a locally verified share.
+    pub reshare_valid_share_dealers: HashSet<u32>,
+    /// Reshare-only: selector state, dealer_id -> new receiver IDs that acked it.
+    pub reshare_share_acks: HashMap<u32, HashSet<u32>>,
+    /// Reshare-only: old dealers ordered by when all new receivers acked them.
+    pub reshare_dealer_completion_order: Vec<u32>,
+    /// Reshare-only: accepted session-wide old-dealer subset.
+    pub reshare_selected_dealers: Option<Vec<u32>>,
     /// Processed message IDs for deduplication (session_id, from_node_id, message_type)
     pub processed_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
     /// What kind of ceremony this session is running (Fresh, Refresh, or Reshare).
@@ -178,10 +192,16 @@ impl<D: Dkg> DkgSessionState<D> {
             phase_started_at: Instant::now(),
             node_id_to_peer_id: HashMap::new(),
             peer_id_to_node_id: HashMap::new(),
+            reshare_new_node_id_to_peer_id: HashMap::new(),
+            reshare_new_peer_id_to_node_id: HashMap::new(),
             peer_ids: Vec::new(),
             total_participants,
             commitments_received: 0,
             shares_received: 0,
+            reshare_valid_share_dealers: HashSet::new(),
+            reshare_share_acks: HashMap::new(),
+            reshare_dealer_completion_order: Vec::new(),
+            reshare_selected_dealers: None,
             processed_messages: std::collections::HashSet::new(),
             kind: SessionKind::Fresh,
             pss_interval: None,
@@ -195,7 +215,7 @@ impl<D: Dkg> DkgSessionState<D> {
     /// Mode is derived from `kind`:
     /// - `Fresh`   → `DkgMode::Fresh` (new random secret)
     /// - `Refresh` → `DkgMode::Refresh` (zero constant term, same secret)
-    /// - `Reshare` → `DkgMode::Reshare` (Lagrange-weighted old share; errors if `old_share` is
+    /// - `Reshare` → `DkgMode::Reshare` (unweighted old share; errors if `old_share` is
     ///   `None`, which only happens for pure `Receiver` nodes — they must not call this)
     pub fn generate_polynomial(&mut self) -> Result<(), DkgError> {
         let mode = match &self.kind {
@@ -636,6 +656,25 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             }
             state.node_id_to_peer_id = node_to_peer;
             state.peer_id_to_node_id = peer_to_node;
+        }
+    }
+
+    /// Set new-committee node_id to peer_id mappings for reshare-only messages.
+    pub async fn set_reshare_new_peer_mappings(
+        &self,
+        session_id: &u64,
+        node_id_to_peer_id: HashMap<u32, String>,
+    ) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            let mut node_to_peer = HashMap::new();
+            let mut peer_to_node = HashMap::new();
+            for (node_id, peer_id) in node_id_to_peer_id {
+                node_to_peer.insert(node_id, peer_id.clone());
+                peer_to_node.insert(peer_id, node_id);
+            }
+            state.reshare_new_node_id_to_peer_id = node_to_peer;
+            state.reshare_new_peer_id_to_node_id = peer_to_node;
         }
     }
 
