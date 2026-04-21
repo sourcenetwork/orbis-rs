@@ -903,11 +903,14 @@ where
                 )));
             }
 
-            state
+            let inserted = state
                 .reshare_share_acks
                 .entry(dealer_id)
                 .or_insert_with(HashSet::new)
                 .insert(receiver_node_id);
+            if !inserted {
+                return Ok(None);
+            }
 
             let complete = state
                 .reshare_share_acks
