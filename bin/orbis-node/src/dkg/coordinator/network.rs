@@ -36,6 +36,8 @@ where
         DkgMessage::SessionInit { .. } => "session_init",
         DkgMessage::Commitment { .. } => "commitment",
         DkgMessage::Share { .. } => "share",
+        DkgMessage::ReshareShareAck { .. } => "reshare_share_ack",
+        DkgMessage::ReshareParticipantSet { .. } => "reshare_participant_set",
         DkgMessage::Complaint { .. } => "complaint",
         DkgMessage::Error { .. } => "error",
     };

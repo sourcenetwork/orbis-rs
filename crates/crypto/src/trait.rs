@@ -483,9 +483,10 @@ pub enum DkgMode<F> {
     Refresh,
     /// Redistribute the same secret to a (potentially different) committee.
     ///
-    /// Each old dealer builds a polynomial whose constant term is `λᵢ · sᵢ`
-    /// (Lagrange weight times their current share). The aggregate constant term
-    /// equals the original secret `S`.
+    /// Each old dealer builds a polynomial whose constant term is its unweighted
+    /// old share `sᵢ`. Receivers call `select_reshare_participants` with the
+    /// session-wide old-dealer subset before Phase 4; aggregation applies the
+    /// Lagrange weights for that selected subset.
     Reshare {
         /// This node's current secret share value.
         old_share: F,
@@ -535,10 +536,17 @@ pub trait Dkg: Send + Sync {
     /// The constant term of the generated polynomial depends on `mode`:
     /// - `Fresh`: uniformly random
     /// - `Refresh`: zero (share rotation without changing the secret)
-    /// - `Reshare`: `λᵢ · old_share` (Lagrange-weighted contribution)
+    /// - `Reshare`: `old_share` (unweighted; receivers weight the selected subset)
     ///
     /// Returns an error if called on a `Receiver`-role node.
     fn generate_polynomial(&mut self, mode: DkgMode<Self::ShareValue>) -> Result<()>;
+
+    /// Select the old-dealer subset to use for reshare Phase 4 aggregation.
+    ///
+    /// This must be called by reshare receivers before computing the final share,
+    /// aggregate public key, or public polynomial when fewer than all old dealers
+    /// participate. Implementations should canonicalize and validate the IDs.
+    fn select_reshare_participants(&mut self, participant_ids: Vec<u32>) -> Result<()>;
     /// Phase 2: Generate shares for all other nodes
     ///
     /// Returns a vector of shares to be sent to each node

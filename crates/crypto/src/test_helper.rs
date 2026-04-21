@@ -580,6 +580,117 @@ pub mod generic_tests {
         Ok(())
     }
 
+    /// Test resharing with a threshold-sized selected subset while another old
+    /// dealer is present but ignored by Phase 4 aggregation.
+    pub fn test_dkg_reshare_selected_subset<Node, F, G>(
+        node_factory: F,
+        share_to_pubkey: G,
+    ) -> Result<()>
+    where
+        Node: TestDkgNode,
+        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
+        Node::PolynomialCommitment: Clone,
+        Node::ShareValue: Clone + zeroize::Zeroize,
+        F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
+        G: Fn(&Node::ShareValue) -> Node::PublicKey,
+    {
+        let n_old: usize = 3;
+        let t_old: usize = 2;
+        let n_new: usize = 4;
+        let t_new: usize = 3;
+        let selected = vec![1u32, 3u32];
+
+        let mut fresh_coord = DKGCoordinator::new(node_factory.clone(), n_old, t_old)?;
+        let (old_pk, old_shares, _) = fresh_coord.run_dkg()?;
+        let mut old_pk_bytes = Vec::new();
+        old_pk
+            .serialize_compressed(&mut old_pk_bytes)
+            .map_err(|e| CryptoError::DKGError(format!("Serialization error: {}", e)))?;
+
+        use rand_core::{OsRng, RngCore};
+        let mut rng = OsRng;
+        let mut session_id_bytes = [0u8; 8];
+        rng.fill_bytes(&mut session_id_bytes);
+        let session_id = u64::from_le_bytes(session_id_bytes);
+
+        let participating_ids: Vec<u32> = (1..=n_old as u32).collect();
+        let share_map: std::collections::HashMap<u32, Node::ShareValue> =
+            old_shares.iter().map(|s| (s.i, s.v.clone())).collect();
+
+        let mut dealer_nodes: Vec<Box<Node>> = (1..=n_old as u32)
+            .map(|i| node_factory(i, t_old, n_old, session_id, DkgRole::Dealer))
+            .collect::<Result<Vec<_>>>()?;
+        let mut receiver_nodes: Vec<Box<Node>> = (1..=n_new as u32)
+            .map(|i| node_factory(i, t_old, n_old, session_id, DkgRole::Receiver))
+            .collect::<Result<Vec<_>>>()?;
+
+        for node in &mut dealer_nodes {
+            let id = node.node_id();
+            node.generate_polynomial(DkgMode::Reshare {
+                old_share: share_map[&id].clone(),
+                participating_ids: participating_ids.clone(),
+                new_threshold: t_new,
+                new_total_nodes: n_new,
+                new_node_id: None,
+            })?;
+        }
+
+        let dealer_commitments: Vec<(u32, Node::PolynomialCommitment)> = dealer_nodes
+            .iter()
+            .map(|n| (n.node_id(), n.commitment().clone()))
+            .collect();
+        for receiver in &mut receiver_nodes {
+            for (from_id, commitment) in &dealer_commitments {
+                receiver.receive_commitment(*from_id, commitment.clone())?;
+            }
+            receiver.select_reshare_participants(selected.clone())?;
+        }
+
+        let dealer_shares: Vec<Vec<DistributedShare<Node::ShareValue>>> = dealer_nodes
+            .iter()
+            .map(|node| node.generate_shares())
+            .collect::<Result<Vec<_>>>()?;
+
+        // Deliver every dealer's shares, including dealer 2. Phase 4 must ignore
+        // dealer 2 because it is not in the selected subset.
+        for shares in &dealer_shares {
+            for share in shares {
+                let receiver = receiver_nodes
+                    .iter_mut()
+                    .find(|n| n.node_id() == share.to_id)
+                    .ok_or_else(|| {
+                        CryptoError::DKGError(format!("Receiver node {} not found", share.to_id))
+                    })?;
+                receiver.receive_share(share.clone())?;
+            }
+        }
+
+        for receiver in &receiver_nodes {
+            let pk = receiver.compute_aggregate_public_key()?;
+            let mut pk_bytes = Vec::new();
+            pk.serialize_compressed(&mut pk_bytes)
+                .map_err(|e| CryptoError::DKGError(format!("Serialization error: {}", e)))?;
+            assert_eq!(
+                old_pk_bytes,
+                pk_bytes,
+                "Receiver {}: selected-subset reshare must preserve aggregate public key",
+                receiver.node_id()
+            );
+
+            let pub_poly = receiver.compute_public_polynomial()?;
+            let share = receiver.compute_secret_share()?;
+            assert_eq!(
+                pub_poly.eval(share.i),
+                share_to_pubkey(&share.v),
+                "Receiver {}: selected-subset share must match weighted public polynomial",
+                receiver.node_id()
+            );
+        }
+
+        Ok(())
+    }
+
     /// Test resharing to a different (larger) committee.
     ///
     /// Old committee: 3 nodes (threshold 2), `Dealer` role.
@@ -657,6 +768,7 @@ pub mod generic_tests {
             for (from_id, commitment) in &dealer_commitments {
                 receiver.receive_commitment(*from_id, commitment.clone())?;
             }
+            receiver.select_reshare_participants(participating_ids.clone())?;
         }
 
         // Dealers generate shares for new committee (to_id 1..=n_new)

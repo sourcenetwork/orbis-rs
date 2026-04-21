@@ -50,6 +50,9 @@ pub struct DKGNode {
     // Commitments received from other nodes
     received_commitments: HashMap<u32, PolynomialCommitment>,
 
+    // Old-dealer subset selected for reshare aggregation.
+    selected_reshare_participants: Option<Vec<u32>>,
+
     // Session ID for this DKG run (prevents replay attacks)
     pub session_id: u64,
 
@@ -114,6 +117,7 @@ impl Dkg for DKGNode {
             },
             received_shares: HashMap::new(),
             received_commitments: HashMap::new(),
+            selected_reshare_participants: None,
             session_id,
             received_nonces: HashMap::new(),
             complaints: HashMap::new(),
@@ -159,10 +163,11 @@ impl Dkg for DKGNode {
                 }
                 self.effective_threshold = new_threshold;
                 self.effective_total_nodes = new_total_nodes;
+                self.selected_reshare_participants = Some(participating_ids.clone());
                 // For DealerReceiver nodes the new-committee index differs from the
                 // old-committee self.id; record it so receive_share can validate correctly.
                 self.effective_receive_id = new_node_id;
-                lagrange_at_zero(self.id, &participating_ids)? * old_share
+                old_share
             }
         };
 
@@ -183,6 +188,28 @@ impl Dkg for DKGNode {
             .map(|coeff| Element::GENERATOR * coeff)
             .collect();
 
+        Ok(())
+    }
+
+    fn select_reshare_participants(&mut self, participant_ids: Vec<u32>) -> Result<()> {
+        if !matches!(
+            self.role,
+            DkgRole::Dealer | DkgRole::Receiver | DkgRole::DealerReceiver
+        ) {
+            return Err(CryptoError::DKGError(
+                "select_reshare_participants is only valid for reshare roles".to_string(),
+            ));
+        }
+
+        let ids = canonicalize_participant_ids(&participant_ids, self.total_nodes)?;
+        if ids.len() < self.threshold {
+            return Err(CryptoError::DKGError(format!(
+                "Reshare participant set has {} dealers, below threshold {}",
+                ids.len(),
+                self.threshold
+            )));
+        }
+        self.selected_reshare_participants = Some(ids);
         Ok(())
     }
 
@@ -347,13 +374,40 @@ impl Dkg for DKGNode {
             ));
         }
 
-        // Receivers get all shares from the old committee (total_nodes shares).
-        // Standard and DealerReceiver get shares from everyone else (total_nodes - 1).
-        let expected = match self.role {
-            DkgRole::Receiver => self.total_nodes,
-            _ => self.total_nodes - 1,
-        };
+        if self.is_reshare_receiver() {
+            let participants = self.reshare_participants()?;
+            let receive_id = self.effective_receive_id.unwrap_or(self.id);
+            let mut secret_share = Fr::zero();
 
+            for participant_id in &participants {
+                let lambda = lagrange_at_zero(*participant_id, &participants)?;
+                let share_value = if self.role == DkgRole::DealerReceiver
+                    && *participant_id == self.id
+                {
+                    if self.polynomial_coeffs.is_empty() {
+                        return Err(CryptoError::DKGError(
+                            "Local polynomial not generated: call generate_polynomial before compute_secret_share".to_string(),
+                        ));
+                    }
+                    self.eval_polynomial(receive_id)
+                } else {
+                    *self.received_shares.get(participant_id).ok_or_else(|| {
+                        CryptoError::DKGError(format!(
+                            "Missing reshare share from selected dealer {}",
+                            participant_id
+                        ))
+                    })?
+                };
+                secret_share += lambda * share_value;
+            }
+
+            return Ok(PriShare {
+                i: receive_id,
+                v: secret_share,
+            });
+        }
+
+        let expected = self.total_nodes - 1;
         if self.received_shares.len() != expected {
             return Err(CryptoError::DKGError(format!(
                 "Missing shares: received {}, expected {}",
@@ -362,18 +416,13 @@ impl Dkg for DKGNode {
             )));
         }
 
-        // Receivers have no own polynomial; Standard and DealerReceiver add their own eval.
-        let mut secret_share = if self.role == DkgRole::Receiver {
-            Fr::zero()
-        } else {
-            if self.polynomial_coeffs.is_empty() {
-                return Err(CryptoError::DKGError(
-                    "Local polynomial not generated: call generate_polynomial before compute_secret_share".to_string(),
-                ));
-            }
-            self.eval_polynomial(self.id)
-        };
+        if self.polynomial_coeffs.is_empty() {
+            return Err(CryptoError::DKGError(
+                "Local polynomial not generated: call generate_polynomial before compute_secret_share".to_string(),
+            ));
+        }
 
+        let mut secret_share = self.eval_polynomial(self.id);
         for share_value in self.received_shares.values() {
             secret_share += share_value;
         }
@@ -385,11 +434,20 @@ impl Dkg for DKGNode {
     }
 
     fn compute_aggregate_public_key(&self) -> Result<Self::PublicKey> {
-        let expected = match self.role {
-            DkgRole::Receiver => self.total_nodes,
-            _ => self.total_nodes - 1,
-        };
+        if self.is_reshare_receiver() {
+            let participants = self.reshare_participants()?;
+            let mut aggregate_pk = Element::default();
 
+            for participant_id in &participants {
+                let lambda = lagrange_at_zero(*participant_id, &participants)?;
+                let commitment = self.reshare_commitment_for(*participant_id)?;
+                aggregate_pk += commitment.coefficients[0] * lambda;
+            }
+
+            return Ok(aggregate_pk);
+        }
+
+        let expected = self.total_nodes - 1;
         if self.received_commitments.len() != expected {
             return Err(CryptoError::DKGError(format!(
                 "Missing commitments: received {}, expected {}",
@@ -398,17 +456,12 @@ impl Dkg for DKGNode {
             )));
         }
 
-        // Receivers have no own commitment; start from identity.
-        let mut aggregate_pk = if self.role == DkgRole::Receiver {
-            Element::default()
-        } else {
-            if self.commitment.coefficients.is_empty() {
-                return Err(CryptoError::DKGError(
-                    "Local commitment not generated: call generate_polynomial first".to_string(),
-                ));
-            }
-            self.commitment.coefficients[0]
-        };
+        if self.commitment.coefficients.is_empty() {
+            return Err(CryptoError::DKGError(
+                "Local commitment not generated: call generate_polynomial first".to_string(),
+            ));
+        }
+        let mut aggregate_pk = self.commitment.coefficients[0];
 
         for commitment in self.received_commitments.values() {
             aggregate_pk += commitment.coefficients[0];
@@ -422,49 +475,38 @@ impl Dkg for DKGNode {
     }
 
     fn compute_public_polynomial(&self) -> Result<Self::PubPoly> {
-        let expected = match self.role {
-            DkgRole::Receiver => self.total_nodes,
-            _ => self.total_nodes - 1,
-        };
-
-        if self.received_commitments.len() != expected {
-            return Err(CryptoError::DKGError(format!(
-                "Missing commitments: received {}, expected {}",
-                self.received_commitments.len(),
-                expected
-            )));
-        }
-
-        let aggregated_coeffs = if self.role == DkgRole::Receiver {
-            // No own polynomial — aggregate only received commitments.
-            // Infer polynomial length from first received commitment.
-            let first = self
-                .received_commitments
-                .values()
-                .next()
-                .ok_or_else(|| CryptoError::DKGError("No commitments received".to_string()))?;
+        let aggregated_coeffs = if self.is_reshare_receiver() {
+            let participants = self.reshare_participants()?;
+            let first = self.reshare_commitment_for(participants[0])?;
             let num_coeffs = first.coefficients.len();
+            let mut agg: Vec<Element> = vec![Element::default(); num_coeffs];
 
-            // All commitments must have the same length (same polynomial degree).
-            for (id, commitment) in &self.received_commitments {
+            for participant_id in &participants {
+                let lambda = lagrange_at_zero(*participant_id, &participants)?;
+                let commitment = self.reshare_commitment_for(*participant_id)?;
                 if commitment.coefficients.len() != num_coeffs {
                     return Err(CryptoError::DKGError(format!(
                         "Commitment from node {} has inconsistent length: expected {}, got {}",
-                        id,
+                        participant_id,
                         num_coeffs,
                         commitment.coefficients.len()
                     )));
                 }
-            }
-
-            let mut agg: Vec<Element> = vec![Element::default(); num_coeffs];
-            for commitment in self.received_commitments.values() {
                 for (i, coeff) in commitment.coefficients.iter().enumerate() {
-                    agg[i] += coeff;
+                    agg[i] += *coeff * lambda;
                 }
             }
             agg
         } else {
+            let expected = self.total_nodes - 1;
+            if self.received_commitments.len() != expected {
+                return Err(CryptoError::DKGError(format!(
+                    "Missing commitments: received {}, expected {}",
+                    self.received_commitments.len(),
+                    expected
+                )));
+            }
+
             if self.commitment.coefficients.is_empty() {
                 return Err(CryptoError::DKGError(
                     "Local commitment not generated: call generate_polynomial first".to_string(),
@@ -472,7 +514,6 @@ impl Dkg for DKGNode {
             }
             let num_coeffs = self.commitment.coefficients.len();
 
-            // All received commitments must match our own polynomial degree.
             for (id, commitment) in &self.received_commitments {
                 if commitment.coefficients.len() != num_coeffs {
                     return Err(CryptoError::DKGError(format!(
@@ -556,6 +597,41 @@ impl Drop for DKGNode {
 }
 
 impl DKGNode {
+    fn is_reshare_receiver(&self) -> bool {
+        matches!(self.role, DkgRole::Receiver | DkgRole::DealerReceiver)
+    }
+
+    fn reshare_participants(&self) -> Result<Vec<u32>> {
+        if let Some(ids) = &self.selected_reshare_participants {
+            return canonicalize_participant_ids(ids, self.total_nodes);
+        }
+
+        Err(CryptoError::DKGError(
+            "Reshare participant set not yet selected — call select_reshare_participants first"
+                .to_string(),
+        ))
+    }
+
+    fn reshare_commitment_for(&self, participant_id: u32) -> Result<&PolynomialCommitment> {
+        if self.role == DkgRole::DealerReceiver && participant_id == self.id {
+            if self.commitment.coefficients.is_empty() {
+                return Err(CryptoError::DKGError(
+                    "Local commitment not generated: call generate_polynomial first".to_string(),
+                ));
+            }
+            Ok(&self.commitment)
+        } else {
+            self.received_commitments
+                .get(&participant_id)
+                .ok_or_else(|| {
+                    CryptoError::DKGError(format!(
+                        "Missing commitment from selected dealer {}",
+                        participant_id
+                    ))
+                })
+        }
+    }
+
     pub fn eval_polynomial(&self, x: u32) -> Fr {
         if self.polynomial_coeffs.is_empty() {
             return Fr::zero();
@@ -572,6 +648,33 @@ impl DKGNode {
 
         result
     }
+}
+
+fn canonicalize_participant_ids(participant_ids: &[u32], total_nodes: usize) -> Result<Vec<u32>> {
+    if participant_ids.is_empty() {
+        return Err(CryptoError::DKGError(
+            "Reshare participant set cannot be empty".to_string(),
+        ));
+    }
+
+    let mut ids = participant_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.len() != participant_ids.len() {
+        return Err(CryptoError::DKGError(
+            "Reshare participant set contains duplicates".to_string(),
+        ));
+    }
+    for id in &ids {
+        if *id == 0 || *id > total_nodes as u32 {
+            return Err(CryptoError::DKGError(format!(
+                "Invalid reshare participant id {} (must be between 1 and {})",
+                id, total_nodes
+            )));
+        }
+    }
+
+    Ok(ids)
 }
 
 /// Compute the Lagrange basis coefficient at x=0 for participant `id` within `participating_ids`.

@@ -17,7 +17,7 @@ use crypto::{
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::DkgCoordinator;
+use super::{message_handlers::record_and_ack_valid_reshare_share, DkgCoordinator};
 
 /// Phase 1: Generate polynomial and broadcast commitment to all peers.
 ///
@@ -32,13 +32,59 @@ where
         + Clone
         + 'static,
 {
-    let (commitment_bytes, node_id, threshold) = coord
+    let already_started = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| {
+            matches!(
+                state.phase,
+                DkgPhase::Phase2Shares | DkgPhase::Phase4Complete
+            )
+        })
+        .await
+        .ok_or_else(|| session_not_found(session_id))?;
+
+    if already_started {
+        tracing::debug!(
+            session_id = session_id,
+            "Phase 1 start requested after shares/completion; ignoring duplicate request"
+        );
+        return Ok(());
+    }
+
+    let is_reshare_receiver = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| {
+            matches!(state.kind, SessionKind::Reshare { .. })
+                && state.node.role() == DkgRole::Receiver
+        })
+        .await
+        .ok_or_else(|| session_not_found(session_id))?;
+
+    if is_reshare_receiver {
+        tracing::debug!(
+            session_id = session_id,
+            "Reshare receiver does not generate Phase 1 commitments; ignoring start request"
+        );
+        return Ok(());
+    }
+
+    let (commitment_bytes, node_id, threshold, is_reshare, role) = coord
         .app_state
         .dkg_session_state
         .with_state_mut(&session_id, |state| {
-            state.generate_polynomial()?;
+            if state.node.commitment().coefficients.is_empty() {
+                state.generate_polynomial()?;
+            }
             let bytes = serialize_commitment_coefficients(&state.node.commitment().coefficients)?;
-            Ok::<_, DkgError>((bytes, state.node.node_id(), state.node.threshold()))
+            Ok::<_, DkgError>((
+                bytes,
+                state.node.node_id(),
+                state.node.threshold(),
+                matches!(state.kind, SessionKind::Reshare { .. }),
+                state.node.role(),
+            ))
         })
         .await
         .ok_or_else(|| session_not_found(session_id))??;
@@ -80,7 +126,7 @@ where
         "Phase 1: Broadcasted commitment to peers"
     );
 
-    if peers_sent < expected_peers {
+    if peers_sent < expected_peers && !is_reshare {
         tracing::error!(
             sent = peers_sent,
             expected = expected_peers,
@@ -97,6 +143,19 @@ where
             total: expected_peers,
             threshold,
         });
+    }
+
+    if peers_sent < expected_peers {
+        tracing::warn!(
+            sent = peers_sent,
+            expected = expected_peers,
+            session_id = session_id,
+            "Reshare: commitment broadcast did not reach every new-committee peer; continuing until threshold selection or timeout"
+        );
+    }
+
+    if is_reshare && role != DkgRole::Receiver {
+        initiate_phase2_shares(coord, session_id, peer_ids).await?;
     }
 
     Ok(())
@@ -121,6 +180,9 @@ where
         .dkg_session_state
         .with_state(&session_id, |state| {
             let role = state.node.role();
+            if matches!(state.kind, SessionKind::Reshare { .. }) {
+                return (state.phase, true, usize::MAX, state.node.node_id(), role);
+            }
             // Receivers expect commitments from ALL old-committee dealers.
             // Dealers/DealerReceivers expect from all others (excluding self).
             let expected = match role {
@@ -137,6 +199,10 @@ where
         })
         .await
         .ok_or_else(|| session_not_found(session_id))?;
+
+    if expected_commitments == usize::MAX {
+        return Ok(());
+    }
 
     // Guard: Phase 2 (or later) is already running — don't trigger it again.
     if phase == DkgPhase::Phase2Shares || phase == DkgPhase::Phase4Complete {
@@ -191,7 +257,7 @@ where
         + Clone
         + 'static,
 {
-    let (shares, node_id, threshold, role, reshare_new_peer_ids) = coord
+    let (shares, node_id, threshold, role, is_reshare, reshare_new_peer_ids) = coord
         .app_state
         .dkg_session_state
         .with_state_mut(&session_id, |state| {
@@ -227,6 +293,7 @@ where
                 state.node.node_id(),
                 state.node.threshold(),
                 state.node.role(),
+                matches!(state.kind, SessionKind::Reshare { .. }),
                 reshare_peer_ids,
             ))
         })
@@ -425,7 +492,7 @@ where
         "Phase 2: Sent shares to peers"
     );
 
-    if shares_sent < expected_shares {
+    if shares_sent < expected_shares && !is_reshare {
         tracing::error!(
             sent = shares_sent,
             expected = expected_shares,
@@ -442,6 +509,19 @@ where
             total: expected_shares,
             threshold,
         });
+    }
+
+    if shares_sent < expected_shares {
+        tracing::warn!(
+            sent = shares_sent,
+            expected = expected_shares,
+            threshold = threshold,
+            "Reshare: share distribution did not reach every new peer; continuing until selector freezes a valid threshold subset or timeout"
+        );
+    }
+
+    if role == DkgRole::DealerReceiver {
+        record_and_ack_valid_reshare_share(coord, session_id, node_id).await?;
     }
 
     // Pure Dealer nodes (not in new committee) are done after distributing shares —
@@ -484,6 +564,30 @@ where
         .with_state_mut(&session_id, |state| {
             if state.phase == DkgPhase::Phase4Complete {
                 return false;
+            }
+            if matches!(state.kind, SessionKind::Reshare { .. })
+                && matches!(
+                    state.node.role(),
+                    DkgRole::Receiver | DkgRole::DealerReceiver
+                )
+            {
+                if state.reshare_selected_dealers.is_none() {
+                    return false;
+                }
+                if state.node.compute_secret_share().is_err() {
+                    tracing::debug!(
+                        "DKG Coordinator: selected reshare shares are not all locally available yet"
+                    );
+                    return false;
+                }
+                if state.node.compute_aggregate_public_key().is_err() {
+                    tracing::warn!(
+                        "DKG Coordinator: selected reshare commitments are not all available yet"
+                    );
+                    return false;
+                }
+                state.phase = DkgPhase::Phase4Complete;
+                return true;
             }
             let expected = match state.node.role() {
                 DkgRole::Receiver => state.node.total_nodes(),
@@ -600,6 +704,7 @@ where
             }
 
             // Remove the ring from the local index so the PSS scheduler skips it.
+            let _guard = coord.app_state.ring_index_lock.lock().await;
             let storage = &coord.app_state.local_storage;
             ring_index_result = (|| {
                 let raw = match storage.get(LocalStorageKeys::RingIndex) {
