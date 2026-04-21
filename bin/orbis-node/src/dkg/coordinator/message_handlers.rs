@@ -16,9 +16,12 @@ use crypto::{
 };
 use network::PeerId;
 use std::collections::{HashMap, HashSet};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::DkgCoordinator;
+
+const RESHARE_PARTICIPANT_SET_SEND_ATTEMPTS: usize = 3;
+const RESHARE_PARTICIPANT_SET_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Handle a `DkgMessage::SessionInit`.
 ///
@@ -789,7 +792,7 @@ where
     let ack = coord
         .app_state
         .dkg_session_state
-        .with_state_mut(&session_id, |state| {
+        .with_state(&session_id, |state| {
             if !matches!(state.kind, SessionKind::Reshare { .. })
                 || !matches!(
                     state.node.role(),
@@ -799,7 +802,7 @@ where
                 return Ok::<_, DkgError>(None);
             }
 
-            if !state.reshare_valid_share_dealers.insert(dealer_id) {
+            if state.reshare_valid_share_dealers.contains(&dealer_id) {
                 return Ok(None);
             }
 
@@ -844,6 +847,14 @@ where
                 ))
             })?;
     }
+
+    coord
+        .app_state
+        .dkg_session_state
+        .with_state_mut(&session_id, |state| {
+            state.reshare_valid_share_dealers.insert(dealer_id);
+        })
+        .await;
 
     Ok(())
 }
@@ -907,6 +918,10 @@ where
                 state.reshare_dealer_completion_order.push(dealer_id);
             }
 
+            if let Some(selected) = &state.reshare_selected_dealers {
+                return Ok(Some((selected.clone(), new_peer_ids, false)));
+            }
+
             if state.reshare_selected_dealers.is_none()
                 && state.reshare_dealer_completion_order.len() >= state.node.threshold()
             {
@@ -923,7 +938,7 @@ where
                         DkgError::Crypto(format!("Failed to select reshare participants: {}", e))
                     })?;
                 state.reshare_selected_dealers = Some(selected.clone());
-                return Ok(Some((selected, new_peer_ids)));
+                return Ok(Some((selected, new_peer_ids, true)));
             }
 
             Ok(None)
@@ -931,39 +946,95 @@ where
         .await
         .ok_or_else(|| session_not_found(session_id))??;
 
-    if let Some((selected_dealer_ids, new_peer_ids)) = selection {
-        tracing::info!(
-            session_id = session_id,
-            selected_dealers = ?selected_dealer_ids,
-            "Reshare: selector froze participant set"
-        );
-
-        for peer_id in &new_peer_ids {
-            if is_self_peer_id(&coord.app_state.network, peer_id) {
-                continue;
-            }
-            let msg = DkgMessage::ReshareParticipantSet {
-                session_id,
-                from_node_id: 1,
-                selected_dealer_ids: selected_dealer_ids.clone(),
-            };
-            if let Err(e) = coord
-                .send_message_to_peer(peer_id, msg, Some(session_id))
-                .await
-            {
-                tracing::warn!(
-                    session_id = session_id,
-                    peer_id = %peer_id,
-                    error = %e,
-                    "Reshare: failed to broadcast selected participant set"
-                );
-            }
+    if let Some((selected_dealer_ids, new_peer_ids, newly_frozen)) = selection {
+        if newly_frozen {
+            tracing::info!(
+                session_id = session_id,
+                selected_dealers = ?selected_dealer_ids,
+                "Reshare: selector froze participant set"
+            );
+        } else {
+            tracing::debug!(
+                session_id = session_id,
+                selected_dealers = ?selected_dealer_ids,
+                "Reshare: selector re-announcing frozen participant set"
+            );
         }
+
+        broadcast_reshare_participant_set(coord, session_id, &selected_dealer_ids, &new_peer_ids)
+            .await?;
 
         coord.check_and_trigger_phase4(session_id).await?;
     }
 
     Ok(None)
+}
+
+async fn broadcast_reshare_participant_set<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u64,
+    selected_dealer_ids: &[u32],
+    new_peer_ids: &[String],
+) -> Result<()>
+where
+    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
+        + Clone
+        + 'static,
+{
+    let mut failures = Vec::new();
+
+    for peer_id in new_peer_ids {
+        if is_self_peer_id(&coord.app_state.network, peer_id) {
+            continue;
+        }
+
+        let mut last_error = None;
+        for attempt in 1..=RESHARE_PARTICIPANT_SET_SEND_ATTEMPTS {
+            let msg = DkgMessage::ReshareParticipantSet {
+                session_id,
+                from_node_id: 1,
+                selected_dealer_ids: selected_dealer_ids.to_vec(),
+            };
+
+            match coord
+                .send_message_to_peer(peer_id, msg, Some(session_id))
+                .await
+            {
+                Ok(()) => {
+                    last_error = None;
+                    break;
+                }
+                Err(e) => {
+                    last_error = Some(e.to_string());
+                    tracing::warn!(
+                        session_id = session_id,
+                        peer_id = %peer_id,
+                        attempt = attempt,
+                        max_attempts = RESHARE_PARTICIPANT_SET_SEND_ATTEMPTS,
+                        error = %e,
+                        "Reshare: failed to broadcast selected participant set"
+                    );
+                    if attempt < RESHARE_PARTICIPANT_SET_SEND_ATTEMPTS {
+                        tokio::time::sleep(RESHARE_PARTICIPANT_SET_RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+
+        if let Some(error) = last_error {
+            failures.push(format!("{} ({})", peer_id, error));
+        }
+    }
+
+    if !failures.is_empty() {
+        return Err(DkgError::NetworkCommunication(format!(
+            "Reshare: failed to broadcast selected participant set after {} attempts to: {}",
+            RESHARE_PARTICIPANT_SET_SEND_ATTEMPTS,
+            failures.join(", ")
+        )));
+    }
+
+    Ok(())
 }
 
 pub(super) async fn handle_reshare_participant_set<D>(
