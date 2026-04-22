@@ -782,7 +782,11 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        write_last_refresh(&storage, ring_pk, now - pss_interval + PSS_GRACE_PERIOD_SECS + 1);
+        write_last_refresh(
+            &storage,
+            ring_pk,
+            now - pss_interval + PSS_GRACE_PERIOD_SECS + 1,
+        );
         let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, &bulletin).await;
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
