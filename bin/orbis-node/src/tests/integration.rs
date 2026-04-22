@@ -15,6 +15,12 @@ use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, PreImpl, SignImpl};
 use tokio::time::{sleep, Duration, Instant};
 
+#[derive(Clone, Debug)]
+struct RingStateSnapshot {
+    public_polynomial: String,
+    last_pss: u64,
+}
+
 /// Docker-based integration test: Run DKG and PRE using Docker Compose
 ///
 /// This test spins up a full integration environment with:
@@ -110,6 +116,11 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let peer_ids = vec![peer1_addr, peer2_addr, peer3_addr];
     let threshold = 2;
     let endpoint = IntegrationTestNetwork::NODE1_GRPC.to_string();
+    let node_endpoints = [
+        IntegrationTestNetwork::NODE1_GRPC.to_string(),
+        IntegrationTestNetwork::NODE2_GRPC.to_string(),
+        IntegrationTestNetwork::NODE3_GRPC.to_string(),
+    ];
 
     let ring_namespace = BULLETIN_RING_NAMESPACE.to_string();
 
@@ -163,11 +174,17 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let ring_id = post_event.post_id;
     let _dkg_ring_payload = ring_payload.clone();
 
-    // Capture the initial polynomial from node 1 right after DKG so we can
-    // confirm it changes after a refresh.
-    let (initial_poly, _) = cli_tool::query_ring_state(endpoint.clone(), ring_pk_hex.clone())
-        .await
-        .expect("query_ring_state after DKG");
+    // The bulletin event proves the DKG was posted, but the other nodes may
+    // still be finishing their local Phase 4 writes. Wait until every node can
+    // serve the local ring state, then use each node's own state as the refresh
+    // baseline.
+    let initial_ring_states = wait_for_ring_state_on_all_nodes(
+        &node_endpoints,
+        &ring_pk_hex,
+        Duration::from_secs(60),
+        Duration::from_millis(500),
+    )
+    .await;
 
     println!(
         "DKG completed! Ring PK: {}..., Ring ID: {}",
@@ -724,43 +741,39 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("Sign correctly rejected unauthorized DID!");
 
     // ====================================================================
-    // Step 4: PSS Refresh — poll all nodes until last_pss > 0 and
-    // polynomial has changed from the initial DKG value.
+    // Step 4: PSS Refresh — poll all nodes until their local polynomial has
+    // changed from the per-node baseline captured after DKG.
     //
     // The DKG was started with pss_interval=1s. The nodes run with
     // --reshare-interval-secs=5 (docker-compose), so the first scheduler
     // tick fires within 5s of DKG completion. The public polynomial is
     // stored locally on each node (not on the bulletin), so the ring_id is
     // unchanged. We poll GetRingState on all three nodes to confirm the
-    // refresh actually completed before testing Sign and PRE.
+    // refresh actually completed before testing Sign and PRE. The 300s
+    // deadline covers a failed/early refresh attempt being cleaned up by the
+    // phase timeout and retried by the next scheduler tick.
     // ====================================================================
     println!("Waiting for PSS refresh to complete (polling all 3 nodes)...");
 
-    let node_endpoints = [
-        IntegrationTestNetwork::NODE1_GRPC.to_string(),
-        IntegrationTestNetwork::NODE2_GRPC.to_string(),
-        IntegrationTestNetwork::NODE3_GRPC.to_string(),
-    ];
-    let poll_deadline = Instant::now() + Duration::from_secs(180);
-    loop {
-        let mut all_refreshed = true;
-        for ep in &node_endpoints {
-            match cli_tool::query_ring_state(ep.clone(), ring_pk_hex.clone()).await {
-                Ok((poly, last_pss)) if last_pss > 0 && poly != initial_poly => {}
-                _ => {
-                    all_refreshed = false;
-                    break;
-                }
-            }
-        }
-        if all_refreshed {
-            break;
-        }
-        assert!(
-            Instant::now() < poll_deadline,
-            "PSS refresh did not complete on all nodes within 180s"
+    let refreshed_ring_states = wait_for_pss_refresh_on_all_nodes(
+        &node_endpoints,
+        &ring_pk_hex,
+        &initial_ring_states,
+        Duration::from_secs(300),
+        Duration::from_secs(2),
+    )
+    .await;
+    for (idx, (before, after)) in initial_ring_states
+        .iter()
+        .zip(refreshed_ring_states.iter())
+        .enumerate()
+    {
+        println!(
+            "  Node {} PSS last_pss: {} -> {}",
+            idx + 1,
+            before.last_pss,
+            after.last_pss
         );
-        sleep(Duration::from_secs(2)).await;
     }
     println!(
         "PSS refresh complete. ring_id={} is unchanged (polynomial is local-only).",
@@ -881,4 +894,119 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("Post-refresh PRE verified: decrypted data matches original secret!");
 
     // Cleanup happens automatically when _network is dropped
+}
+
+async fn wait_for_ring_state_on_all_nodes(
+    endpoints: &[String],
+    ring_pk_hex: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Vec<RingStateSnapshot> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let mut snapshots = Vec::with_capacity(endpoints.len());
+        let mut statuses = Vec::with_capacity(endpoints.len());
+
+        for (idx, endpoint) in endpoints.iter().enumerate() {
+            match cli_tool::query_ring_state(endpoint.clone(), ring_pk_hex.to_string()).await {
+                Ok((public_polynomial, last_pss)) => {
+                    statuses.push(format!("node{}: last_pss={}", idx + 1, last_pss));
+                    snapshots.push(RingStateSnapshot {
+                        public_polynomial,
+                        last_pss,
+                    });
+                }
+                Err(e) => {
+                    statuses.push(format!("node{}: {}", idx + 1, e));
+                    snapshots.clear();
+                    break;
+                }
+            }
+        }
+
+        if snapshots.len() == endpoints.len() {
+            println!(
+                "All nodes have local DKG ring state: {}",
+                statuses.join("; ")
+            );
+            return snapshots;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "Timed out waiting for all nodes to expose DKG ring state. Last observed: {}",
+            statuses.join("; ")
+        );
+        sleep(poll_interval).await;
+    }
+}
+
+async fn wait_for_pss_refresh_on_all_nodes(
+    endpoints: &[String],
+    ring_pk_hex: &str,
+    baselines: &[RingStateSnapshot],
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Vec<RingStateSnapshot> {
+    assert_eq!(
+        endpoints.len(),
+        baselines.len(),
+        "ring-state baselines must match endpoint count"
+    );
+
+    let deadline = Instant::now() + timeout;
+    let mut next_status_log = Instant::now() + Duration::from_secs(15);
+
+    loop {
+        let mut snapshots = Vec::with_capacity(endpoints.len());
+        let mut statuses = Vec::with_capacity(endpoints.len());
+        let mut all_refreshed = true;
+
+        for (idx, endpoint) in endpoints.iter().enumerate() {
+            match cli_tool::query_ring_state(endpoint.clone(), ring_pk_hex.to_string()).await {
+                Ok((public_polynomial, last_pss)) => {
+                    let baseline = &baselines[idx];
+                    let polynomial_changed = public_polynomial != baseline.public_polynomial;
+                    let timestamp_advanced = last_pss > baseline.last_pss;
+                    if !polynomial_changed && !timestamp_advanced {
+                        all_refreshed = false;
+                    }
+                    statuses.push(format!(
+                        "node{}: poly_changed={} timestamp_advanced={} last_pss={} baseline={}",
+                        idx + 1,
+                        polynomial_changed,
+                        timestamp_advanced,
+                        last_pss,
+                        baseline.last_pss,
+                    ));
+                    snapshots.push(RingStateSnapshot {
+                        public_polynomial,
+                        last_pss,
+                    });
+                }
+                Err(e) => {
+                    all_refreshed = false;
+                    statuses.push(format!("node{}: {}", idx + 1, e));
+                }
+            }
+        }
+
+        if all_refreshed && snapshots.len() == endpoints.len() {
+            return snapshots;
+        }
+
+        let now = Instant::now();
+        assert!(
+            now < deadline,
+            "PSS refresh did not complete on all nodes within {}s. Last observed: {}",
+            timeout.as_secs(),
+            statuses.join("; ")
+        );
+        if now >= next_status_log {
+            println!("Still waiting for PSS refresh: {}", statuses.join("; "));
+            next_status_log = now + Duration::from_secs(15);
+        }
+        sleep(poll_interval).await;
+    }
 }
