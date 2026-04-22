@@ -969,16 +969,16 @@ async fn wait_for_pss_refresh_on_all_nodes(
                     let baseline = &baselines[idx];
                     let polynomial_changed = public_polynomial != baseline.public_polynomial;
                     let timestamp_advanced = last_pss > baseline.last_pss;
-                    if !polynomial_changed {
+                    if !polynomial_changed && !timestamp_advanced {
                         all_refreshed = false;
                     }
                     statuses.push(format!(
-                        "node{}: changed={} last_pss={} baseline={} advanced={}",
+                        "node{}: poly_changed={} timestamp_advanced={} last_pss={} baseline={}",
                         idx + 1,
                         polynomial_changed,
+                        timestamp_advanced,
                         last_pss,
                         baseline.last_pss,
-                        timestamp_advanced
                     ));
                     snapshots.push(RingStateSnapshot {
                         public_polynomial,
