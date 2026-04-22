@@ -27,7 +27,7 @@
 mod tests;
 
 use crate::app_state::AppState;
-use crate::constants::BULLETIN_RING_NAMESPACE;
+use crate::constants::{BULLETIN_RING_NAMESPACE, PSS_GRACE_PERIOD_SECS};
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::helpers::build_reshare_params;
@@ -177,7 +177,7 @@ where
             .map(|b| b.last_pss)
             .unwrap_or(0);
     let elapsed = now_secs.saturating_sub(last_refresh_secs);
-    if elapsed < pss_interval_secs {
+    if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
         tracing::debug!(
             post_id = %post_id,
             elapsed_secs = elapsed,
