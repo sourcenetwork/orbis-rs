@@ -242,7 +242,8 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
             if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
                 return Err(DkgError::Unauthorized(format!(
                     "Refresh too soon: {}s elapsed, minimum is {}s",
-                    elapsed, pss_interval_secs
+                    elapsed,
+                    pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)
                 )));
             }
         }
@@ -777,7 +778,9 @@ mod tests {
             Some(pss_interval),
         )
         .await;
-        // elapsed = pss_interval - (PSS_GRACE_PERIOD_SECS + 1): just outside the grace window.
+        // elapsed = pss_interval - (PSS_GRACE_PERIOD_SECS + 2): safely outside the grace window.
+        // The +2 margin ensures the test remains reliable even if SystemTime advances by 1s
+        // between this snapshot and validate_refresh_session_init's own now() call.
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -785,7 +788,7 @@ mod tests {
         write_last_refresh(
             &storage,
             ring_pk,
-            now - pss_interval + PSS_GRACE_PERIOD_SECS + 1,
+            now - pss_interval + PSS_GRACE_PERIOD_SECS + 2,
         );
         let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, &bulletin).await;
         assert!(
