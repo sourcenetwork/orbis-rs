@@ -279,6 +279,11 @@ pub const SIGN_COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
 /// Set reshare_interval_secs to 0 on node startup to disable.
 pub const DEFAULT_RESHARE_INTERVAL_SECS: u64 = 60 * 60;
 
+/// Grace window subtracted from pss_interval when checking if a refresh is due.
+/// Accounts for tick jitter and late last_pss writes so refreshes fire close to
+/// the intended interval rather than up to check_interval seconds late.
+pub const PSS_GRACE_PERIOD_SECS: u64 = 10;
+
 // ============================================================================
 // Nonce Serialization Constants (FROST)
 // ============================================================================

@@ -1,4 +1,4 @@
-use crate::constants::BULLETIN_RING_NAMESPACE;
+use crate::constants::{BULLETIN_RING_NAMESPACE, PSS_GRACE_PERIOD_SECS};
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::SessionKind;
 use crate::dkg::session_state::ReshareParams;
@@ -239,7 +239,7 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
                     )
                 })?;
             let elapsed = now_secs.saturating_sub(last_refresh_secs);
-            if elapsed < pss_interval_secs {
+            if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
                 return Err(DkgError::Unauthorized(format!(
                     "Refresh too soon: {}s elapsed, minimum is {}s",
                     elapsed, pss_interval_secs
@@ -512,7 +512,7 @@ pub fn node_index_in(sorted_committee: &[String], our_node_part: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::BULLETIN_RING_NAMESPACE;
+    use crate::constants::{BULLETIN_RING_NAMESPACE, PSS_GRACE_PERIOD_SECS};
     use crate::helpers::test_helpers::{cleanup_db, test_db_path, write_ring_to_bulletin};
     use crate::ring_state::{RingIndexEntry, RingShareBundle};
     use bulletin::dummy::DummyBulletin;
@@ -722,6 +722,71 @@ mod tests {
         assert!(
             result.is_ok(),
             "Expected Ok when pss_interval is None (no time check), got: {:?}",
+            result
+        );
+        cleanup_db(&db_path);
+    }
+
+    /// A refresh that arrives within the grace window (elapsed just under pss_interval)
+    /// must be accepted — the grace period exists precisely for this case.
+    #[tokio::test]
+    async fn test_refresh_within_grace_period_succeeds() {
+        let (storage, db_path) = make_storage("helpers_within_grace");
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let ring_pk = "ring_pk_grace_ok";
+        let pss_interval: u64 = 86400;
+        write_ring_to_bulletin(
+            &storage,
+            &bulletin,
+            ring_pk,
+            vec!["aabbccdd".to_string()],
+            Some(pss_interval),
+        )
+        .await;
+        // elapsed = pss_interval - (PSS_GRACE_PERIOD_SECS / 2): inside the grace window.
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let half_grace = PSS_GRACE_PERIOD_SECS / 2;
+        write_last_refresh(&storage, ring_pk, now - pss_interval + half_grace);
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, &bulletin).await;
+        assert!(
+            result.is_ok(),
+            "Expected Ok: elapsed is within grace window, got: {:?}",
+            result
+        );
+        cleanup_db(&db_path);
+    }
+
+    /// A refresh that arrives outside the grace window (more than PSS_GRACE_PERIOD_SECS
+    /// before the interval expires) must still be rejected.
+    #[tokio::test]
+    async fn test_refresh_outside_grace_period_rejected() {
+        let (storage, db_path) = make_storage("helpers_outside_grace");
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let ring_pk = "ring_pk_grace_fail";
+        let pss_interval: u64 = 86400;
+        write_ring_to_bulletin(
+            &storage,
+            &bulletin,
+            ring_pk,
+            vec!["aabbccdd".to_string()],
+            Some(pss_interval),
+        )
+        .await;
+        // elapsed = pss_interval - (PSS_GRACE_PERIOD_SECS + 1): just outside the grace window.
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        write_last_refresh(&storage, ring_pk, now - pss_interval + PSS_GRACE_PERIOD_SECS + 1);
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, &bulletin).await;
+        assert!(
+            matches!(result, Err(DkgError::Unauthorized(_))),
+            "Expected Unauthorized: elapsed is outside grace window, got: {:?}",
             result
         );
         cleanup_db(&db_path);
