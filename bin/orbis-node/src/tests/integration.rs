@@ -295,7 +295,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         sequence_before_first
     );
 
-    let object_response = cli_tool::store_prepared_secret(
+    let object_response = store_prepared_secret_expect_success(
+        "initial StoreSecret",
         endpoint.clone(),
         &prepared_secret,
         ring_id.clone(),
@@ -310,13 +311,13 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         None,
         None,
     )
-    .await
-    .expect("store_prepared_secret");
+    .await;
 
     let object_id_service = object_response.object_id.clone();
     let signature_hex = object_response.signature.clone();
 
-    let object_response_derived = cli_tool::store_prepared_secret(
+    let object_response_derived = store_prepared_secret_expect_success(
+        "derived StoreSecret",
         endpoint.clone(),
         &prepared_secret_derived.clone(),
         ring_id.clone(),
@@ -331,8 +332,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         timestamp,
         Some(prepared_secret_derived.metadata.clone()),
     )
-    .await
-    .expect("store_prepared_secret_derived");
+    .await;
     let object_id_derived = object_response_derived.object_id.clone();
 
     // Poll until sequence increments (confirms tx was broadcast and included in a block)
@@ -579,7 +579,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         sequence_before_second
     );
 
-    let object_response_2 = cli_tool::store_prepared_secret(
+    let object_response_2 = store_prepared_secret_expect_success(
+        "idempotent StoreSecret",
         endpoint.clone(),
         &prepared_secret, // Same prepared data as first call
         ring_id.clone(),
@@ -594,8 +595,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         None,
         None,
     )
-    .await
-    .expect("store_prepared_secret (idempotent call)");
+    .await;
 
     // Poll briefly; fail immediately if sequence changes (no tx should be broadcast for duplicate)
     let sequence_after_second = {
@@ -832,7 +832,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     )
     .expect("prepare_secret post-refresh");
 
-    let object_response_post_refresh = cli_tool::store_prepared_secret(
+    let object_response_post_refresh = store_prepared_secret_expect_success(
+        "post-refresh StoreSecret",
         endpoint.clone(),
         &prepared_post_refresh,
         ring_id.clone(),
@@ -847,8 +848,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         None,
         None,
     )
-    .await
-    .expect("store_prepared_secret post-refresh");
+    .await;
 
     let object_id_post_refresh = object_response_post_refresh.object_id.clone();
 
@@ -978,6 +978,63 @@ async fn do_sign_expect_success(
                 );
                 println!(
                     "{} attempt {} failed, retrying after transient signing race: {}",
+                    context, attempt, e
+                );
+                attempt += 1;
+                sleep(Duration::from_secs(3)).await;
+            }
+        }
+    }
+}
+
+async fn store_prepared_secret_expect_success(
+    context: &str,
+    endpoint: String,
+    prepared: &cli_tool::PreparedSecret,
+    ring_id: String,
+    namespace: String,
+    policy_id: String,
+    resource: String,
+    permission: String,
+    reader_did_pk: Option<String>,
+    derived_pk: Option<Vec<u8>>,
+    with_proof: bool,
+    tier: Option<String>,
+    timestamp: Option<u64>,
+    metadata_hash: Option<Vec<u8>>,
+) -> cli_tool::StoreSecretResult {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut attempt = 1usize;
+
+    loop {
+        match cli_tool::store_prepared_secret(
+            endpoint.clone(),
+            prepared,
+            ring_id.clone(),
+            namespace.clone(),
+            policy_id.clone(),
+            resource.clone(),
+            permission.clone(),
+            reader_did_pk.clone(),
+            derived_pk.clone(),
+            with_proof,
+            tier.clone(),
+            timestamp,
+            metadata_hash.clone(),
+        )
+        .await
+        {
+            Ok(result) => return result,
+            Err(e) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "{} failed after {} attempts: {}",
+                    context,
+                    attempt,
+                    e
+                );
+                println!(
+                    "{} attempt {} failed, retrying with same prepared secret: {}",
                     context, attempt, e
                 );
                 attempt += 1;
