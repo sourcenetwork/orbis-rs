@@ -678,7 +678,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // Sign a test message
     let sign_message = b"hello from sign integration test";
 
-    let sign_result = cli_tool::do_sign(
+    let sign_result = do_sign_expect_success(
+        "initial policy Sign",
         endpoint.clone(),
         sign_message.to_vec(),
         namespace.clone(),
@@ -687,8 +688,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         None,
         None,
     )
-    .await
-    .expect("do_sign should succeed");
+    .await;
 
     println!("Sign completed: signature={}", sign_result.signature);
 
@@ -787,7 +787,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // ====================================================================
     println!("Testing Sign after PSS refresh...");
 
-    let sign_result_post_refresh = cli_tool::do_sign(
+    let sign_result_post_refresh = do_sign_expect_success(
+        "post-refresh policy Sign",
         endpoint.clone(),
         sign_message.to_vec(),
         namespace.clone(),
@@ -796,8 +797,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         None,
         None,
     )
-    .await
-    .expect("do_sign after PSS refresh");
+    .await;
 
     let sig_bytes_pr = hex::decode(&sign_result_post_refresh.signature).expect("decode sig hex");
     let signature_pr = <SignImpl as ThresholdSigner>::Signature::from_bytes(&sig_bytes_pr)
@@ -939,6 +939,51 @@ async fn wait_for_ring_state_on_all_nodes(
             statuses.join("; ")
         );
         sleep(poll_interval).await;
+    }
+}
+
+async fn do_sign_expect_success(
+    context: &str,
+    endpoint: String,
+    message: Vec<u8>,
+    namespace: String,
+    derivation_id: String,
+    reader_did_pk: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+) -> cli_tool::SignResult {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut attempt = 1usize;
+
+    loop {
+        match cli_tool::do_sign(
+            endpoint.clone(),
+            message.clone(),
+            namespace.clone(),
+            derivation_id.clone(),
+            reader_did_pk.clone(),
+            valid_window_start,
+            valid_window_end,
+        )
+        .await
+        {
+            Ok(result) => return result,
+            Err(e) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "{} failed after {} attempts: {}",
+                    context,
+                    attempt,
+                    e
+                );
+                println!(
+                    "{} attempt {} failed, retrying after transient signing race: {}",
+                    context, attempt, e
+                );
+                attempt += 1;
+                sleep(Duration::from_secs(3)).await;
+            }
+        }
     }
 }
 

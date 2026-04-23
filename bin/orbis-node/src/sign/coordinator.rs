@@ -23,7 +23,7 @@ use crate::helpers::helpers::{
     determine_session_node_id, is_ring_reshare_in_progress, is_self_peer_id,
     load_ring_pub_poly_and_bundle, RingConfig,
 };
-use crate::ring_state::RingPolyState;
+use crate::ring_state::RingShareBundle;
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
@@ -245,17 +245,17 @@ where
         }
 
         // Resolve ring info and auth based on pathway
-        let (ring_pk_hex, pub_poly, derivation, metadata) = match context {
+        let (ring_pk_hex, derivation, metadata) = match context {
             SignContext::Bulletin => {
                 // Message is a BulletinPost; on-chain existence is the authorization.
                 // Signs from root key: no derivation, no metadata.
-                let (ring_pk_hex, pub_poly) = verify_message_and_get_info::<D>(
+                let (ring_pk_hex, _) = verify_message_and_get_info::<D>(
                     &message,
                     &self.app_state.local_storage,
                     &self.app_state.bulletin,
                 )
                 .await?;
-                (ring_pk_hex, pub_poly, None, None)
+                (ring_pk_hex, None, None)
             }
             SignContext::Policy(ref ctx) => {
                 let (token_string, namespace, derivation_id, valid_window) = (
@@ -304,37 +304,29 @@ where
                     &key_derivation.permission,
                 ));
 
-                // Load pub_poly from local RingPolyState (never on the bulletin).
-                let poly_state = RingPolyState::load_from_ring_pk_hex(
-                    &self.app_state.local_storage,
-                    &ring_payload.ring_pk,
-                )
-                .map_err(|e| {
-                    SignError::Storage(format!("Failed to load ring polynomial state: {}", e))
-                })?;
-                let pub_poly_bytes = hex::decode(&poly_state.public_polynomial).map_err(|e| {
-                    SignError::Deserialization(format!(
-                        "Failed to decode public polynomial hex: {}",
-                        e
-                    ))
-                })?;
-                let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
-                    SignError::Deserialization(format!(
-                        "Failed to deserialize public polynomial: {}",
-                        e
-                    ))
-                })?;
-
-                (ring_payload.ring_pk, pub_poly, derivation, metadata)
+                (ring_payload.ring_pk, derivation, metadata)
             }
         };
 
-        // Deserialize ring public key and load DKG share from local storage
+        // Deserialize ring public key and load the share + public polynomial from one
+        // RingShareBundle snapshot. This mirrors the initiator-side protection and
+        // avoids a PSS Phase 4 write landing between separate polynomial/share reads.
         let ring_pk_bytes = hex::decode(&ring_pk_hex).map_err(|e| {
             SignError::Deserialization(format!("Failed to decode ring_pk hex: {}", e))
         })?;
         let ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
-        let dist_key_share = load_dist_key_share(&self.app_state.local_storage, &ring_pk)?;
+        let bundle = RingShareBundle::load(&self.app_state.local_storage, &ring_pk)
+            .map_err(|e| SignError::Storage(format!("Failed to load share bundle: {}", e)))?;
+        let pub_poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
+            SignError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
+        })?;
+        let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
+            SignError::Deserialization(format!("Failed to deserialize public polynomial: {}", e))
+        })?;
+        let pri_share = bundle.pri_share().map_err(|e| {
+            SignError::Deserialization(format!("Failed to deserialize final share: {}", e))
+        })?;
+        let dist_key_share = DistKeyShare { pri_share };
         let node_id = dist_key_share.pri_share.i;
 
         // Deserialize all_commitments and retrieve signing state if interactive
@@ -640,8 +632,24 @@ where
             (Vec::new(), None)
         };
 
-        // Serialize all_commitments for the SignRequest message
-        let all_commitments_bytes = serialize_commitments::<S>(&all_commitments)?;
+        let signing_commitments = if S::INTERACTIVE {
+            Self::select_signing_commitments(
+                &all_commitments,
+                ring.threshold,
+                self_in_list.then_some(node_id),
+            )?
+        } else {
+            all_commitments
+        };
+        let selected_signer_ids: HashSet<u32> =
+            signing_commitments.iter().map(|(id, _)| *id).collect();
+        let local_signer_selected =
+            !S::INTERACTIVE || (self_in_list && selected_signer_ids.contains(&node_id));
+
+        // Serialize commitments for the exact FROST signing set. FROST shares are
+        // bound to this participant list, so the recovery step must use the same
+        // list that responders signed over.
+        let all_commitments_bytes = serialize_commitments::<S>(&signing_commitments)?;
 
         // =====================================================================
         // ROUND 2: Collect signature shares
@@ -654,6 +662,19 @@ where
             if is_self_peer_id(&self.app_state.network, peer_id_str) {
                 tracing::debug!(peer_id = %peer_id_str, "Skipping self when sending sign request");
                 continue;
+            }
+            if S::INTERACTIVE {
+                let peer_node_id = determine_session_node_id(peer_id_str, &ring.peer_ids);
+                if !peer_node_id
+                    .map(|id| selected_signer_ids.contains(&id))
+                    .unwrap_or(false)
+                {
+                    tracing::debug!(
+                        peer_id = %peer_id_str,
+                        "Skipping peer outside selected FROST signing set"
+                    );
+                    continue;
+                }
             }
 
             let request = SignMessage::SignRequest(SignRequest {
@@ -703,7 +724,7 @@ where
                 SignError::Timeout(format!("No responses found for request {}", &request_id))
             })?;
 
-        let min_needed_from_network = if self_in_list {
+        let min_needed_from_network = if local_signer_selected {
             ring.threshold.saturating_sub(1)
         } else {
             ring.threshold
@@ -725,14 +746,14 @@ where
         // If we're in the peer list, compute our own share locally.
         // Use the dist_key_share loaded above (same snapshot as pub_poly) so that
         // the share and polynomial are guaranteed to be from the same PSS generation.
-        if self_in_list {
+        if local_signer_selected {
             if let Some(dist_key_share) = local_dist_key_share {
                 match signer.sign(
                     &dist_key_share,
                     &message,
                     &pub_poly,
                     local_signing_state.as_ref(),
-                    &all_commitments,
+                    &signing_commitments,
                     derivation.as_deref(),
                     metadata.as_deref(),
                 ) {
@@ -741,7 +762,7 @@ where
                             &message,
                             &pub_poly,
                             &sig_share,
-                            &all_commitments,
+                            &signing_commitments,
                             derivation.as_deref(),
                             metadata.as_deref(),
                         ) {
@@ -796,7 +817,7 @@ where
                     &message,
                     &pub_poly,
                     &sig_share,
-                    &all_commitments,
+                    &signing_commitments,
                     derivation.as_deref(),
                     metadata.as_deref(),
                 ) {
@@ -842,7 +863,7 @@ where
                 ring.threshold,
                 ring.total_participants,
                 &message,
-                &all_commitments,
+                &signing_commitments,
             )
             .map_err(|e| {
                 SignError::RecoveryFailed(format!("Failed to recover signature: {}", e))
@@ -851,11 +872,8 @@ where
         let signature = signature_opt
             .ok_or_else(|| SignError::RecoveryFailed("Recovery returned None".to_string()))?;
 
-        // 7. Verify the final recovered signature before serializing.
-        // This catches aggregation bugs and the FROST liveness case: if a node responded
-        // to Round 1 (its commitment is in all_commitments) but dropped before Round 2,
-        // the Lagrange sum is wrong and the sig is invalid — better to surface a clean
-        // RecoveryFailed here than return a silently bad signature to the caller.
+        // 7. Verify the final recovered signature before serializing. This catches
+        // aggregation bugs before a silently bad signature reaches the caller.
         let aggregate_pk = pub_poly.eval(0);
         let verify_pk = if let Some(deriv) = derivation.as_deref() {
             S::derive_public_key(&aggregate_pk, deriv, metadata.as_deref()).map_err(|e| {
@@ -1023,5 +1041,38 @@ where
         all_commitments.sort_by_key(|(id, _)| *id);
 
         Ok((all_commitments, local_signing_state))
+    }
+
+    fn select_signing_commitments(
+        commitments: &[(u32, S::NonceCommitment)],
+        threshold: usize,
+        preferred_node_id: Option<u32>,
+    ) -> Result<Vec<(u32, S::NonceCommitment)>> {
+        if commitments.len() < threshold {
+            return Err(SignError::InsufficientShares {
+                got: commitments.len(),
+                need: threshold,
+            });
+        }
+
+        let mut selected: Vec<(u32, S::NonceCommitment)> = Vec::with_capacity(threshold);
+        if let Some(preferred) = preferred_node_id {
+            if let Some((id, commitment)) = commitments.iter().find(|(id, _)| *id == preferred) {
+                selected.push((*id, commitment.clone()));
+            }
+        }
+
+        for (id, commitment) in commitments {
+            if selected.len() == threshold {
+                break;
+            }
+            if selected.iter().any(|(selected_id, _)| selected_id == id) {
+                continue;
+            }
+            selected.push((*id, commitment.clone()));
+        }
+
+        selected.sort_by_key(|(id, _)| *id);
+        Ok(selected)
     }
 }
