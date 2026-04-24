@@ -186,17 +186,23 @@ impl ThresholdDealer for ThresholdDealerNode {
         let r = Fr::rand(&mut rng);
         let enc_cmt: G1Affine = (G1Projective::generator() * r).into(); // rG
 
-        // Compute derived public key if derivation is provided
-        // derived_pk = d * dkg_pk where d = H(DERIVATION_DOMAIN || derivation)
-        let (effective_pk, derived_pk_bytes) = if let Some(deriv_bytes) = derivation {
+        // Compute the effective public key if derivation is provided.
+        let effective_pk = if let Some(deriv_bytes) = derivation {
             let d = Self::derive_capability_scalar(deriv_bytes);
+            if d == Fr::zero() {
+                return Err(CryptoError::ElGamalError(
+                    "Derivation produced zero scalar: use different derivation bytes".to_string(),
+                ));
+            }
             let derived_pk: G1Affine = (G1Projective::from(*dkg_pk) * d).into();
-            // Serialize derived_pk for storage in proof (allows verification without derivation)
-            let mut bytes = Vec::new();
-            derived_pk.serialize_compressed(&mut bytes)?;
-            (derived_pk, Some(bytes))
+            if derived_pk.is_zero() {
+                return Err(CryptoError::ElGamalError(
+                    "Derived public key is the identity element".to_string(),
+                ));
+            }
+            derived_pk
         } else {
-            (*dkg_pk, None)
+            *dkg_pk
         };
 
         // shared_point = r * effective_pk = r*d*s*G (with derivation) or r*s*G (without)
@@ -219,7 +225,6 @@ impl ThresholdDealer for ThresholdDealerNode {
             shared_point: shared_point_bytes.clone(),
             challenge: challenge_bytes,
             response: response_bytes,
-            derived_pk: derived_pk_bytes,
         };
 
         // Derive AES key from shared_point
@@ -264,13 +269,6 @@ impl ThresholdDealer for ThresholdDealerNode {
     /// discrete logarithm relative to G and effective_pk respectively. In other words:
     ///   enc_cmt = r * G  AND  shared_point = r * effective_pk  for some r
     ///
-    /// When `proof.derived_pk` is present:
-    ///   effective_pk = derived_pk (the pre-computed d * dkg_pk)
-    /// Otherwise:
-    ///   effective_pk = dkg_pk
-    ///
-    /// This allows verification without knowing the derivation pre-image.
-    ///
     /// ## What this DOES verify:
     /// - The mathematical relationship between enc_cmt and shared_point
     /// - That the encryptor knew the discrete log (randomness r)
@@ -279,14 +277,11 @@ impl ThresholdDealer for ThresholdDealerNode {
     /// ## What this does NOT verify:
     /// - That the ciphertext was actually encrypted using shared_point
     /// - Ciphertext integrity (that's verified at decrypt time via AES-GCM)
-    /// - That derived_pk is actually d * dkg_pk for some valid derivation
-    ///   (the verifier trusts that the encryptor used a valid derivation)
-    ///
-    /// The ciphertext binding is enforced via AAD in AES-GCM: if the wrong
-    /// shared_point was used during encryption, decryption will fail with
-    /// an authentication error.
+    ///   The ciphertext binding is enforced via AAD in AES-GCM: if the wrong
+    ///   shared_point was used during encryption, decryption will fail with
+    ///   an authentication error.
     fn verify_encryption(
-        dkg_pk: &Self::PublicKey,
+        effective_pk: &Self::PublicKey,
         enc_cmt: &Self::PublicKey,
         proof: &EncryptionProof,
         metadata: Option<&[u8]>,
@@ -303,37 +298,17 @@ impl ThresholdDealer for ThresholdDealerNode {
             ));
         }
 
-        // Get effective public key from proof (derived_pk if present, otherwise dkg_pk)
-        let effective_pk: G1Affine = if let Some(ref derived_pk_bytes) = proof.derived_pk {
-            let derived_pk =
-                G1Affine::deserialize_compressed(&derived_pk_bytes[..]).map_err(|e| {
-                    CryptoError::ElGamalError(format!("Failed to deserialize derived_pk: {:?}", e))
-                })?;
-            // Validate derived_pk
-            if derived_pk.is_zero() {
-                return Err(CryptoError::ElGamalError(
-                    "Invalid derived_pk: cannot be the identity element".to_string(),
-                ));
-            }
-            if !derived_pk.is_in_correct_subgroup_assuming_on_curve() {
-                return Err(CryptoError::ElGamalError(
-                    "Invalid derived_pk: not in correct subgroup".to_string(),
-                ));
-            }
-            // Verify the caller's dkg_pk (already derived from supplied derivation bytes)
-            // matches proof.derived_pk. This enforces that the correct derivation was known
-            // at re-encryption time — wrong derivation fails loudly here rather than silently
-            // at AES-GCM decrypt time.
-            if derived_pk != *dkg_pk {
-                return Err(CryptoError::ElGamalError(
-                    "Derivation mismatch: supplied derivation does not match encryption"
-                        .to_string(),
-                ));
-            }
-            derived_pk
-        } else {
-            *dkg_pk
-        };
+        // Validate the caller-supplied effective public key.
+        if effective_pk.is_zero() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid effective_pk: cannot be the identity element".to_string(),
+            ));
+        }
+        if !effective_pk.is_in_correct_subgroup_assuming_on_curve() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid effective_pk: not in correct subgroup".to_string(),
+            ));
+        }
 
         // Deserialize proof components
         let shared_point =
@@ -366,7 +341,7 @@ impl ThresholdDealer for ThresholdDealerNode {
             .into();
 
         // Verify: R2' = s*effective_pk - c*shared_point
-        let r2_prime: G1Affine = (G1Projective::from(effective_pk) * response
+        let r2_prime: G1Affine = (G1Projective::from(*effective_pk) * response
             - G1Projective::from(shared_point) * challenge)
             .into();
 
@@ -381,7 +356,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         let g = G1Affine::generator();
         let challenge_hash = Self::hash_encryption_proof_points(
             &g,
-            &effective_pk,
+            effective_pk,
             enc_cmt,
             &shared_point,
             &r1_prime,
@@ -441,7 +416,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         //
         // With derivation (d applied at re-encrypt time):
         //   xnc_cmt = d*(x+r)*s*G
-        //   effective_pk = d*s*G (derived_pk from proof)
+        //   effective_pk = d*s*G
         //   shared_point = xnc_cmt - x*effective_pk = d*r*s*G
         let xs_g = G1Projective::from(*effective_pk) * rdr_sk; // x * effective_pk
         let shared_point: G1Affine = (G1Projective::from(*xnc_cmt) - xs_g).into();

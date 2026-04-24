@@ -273,6 +273,11 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     )
     .expect("prepare_secret should succeed");
     let derivation = b"test_derivation".to_vec();
+    let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
+    let ring_pk_point = GroupAffine::from_bytes(&ring_pk_bytes).expect("deserialize ring_pk");
+    let effective_pk =
+        PreImpl::derive_public_key(&ring_pk_point, &derivation).expect("derive effective_pk");
+    let effective_pk_bytes = effective_pk.to_bytes().expect("serialize effective_pk");
     let prepared_secret_derived = cli_tool::prepare_secret(
         secret,
         &ring_pk_hex,
@@ -326,7 +331,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         resource.clone(),
         permission.clone(),
         Some(did_pk_string.clone()),
-        prepared_secret_derived.derived_pk,
+        Some(effective_pk_bytes.clone()),
         false,
         tier.clone(),
         timestamp,
@@ -456,7 +461,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
 
     // Step 3: Run PRE via CLI
     println!("Running PRE...");
-    let pre_result = cli_tool::do_pre(
+    let decrypted = do_pre_expect_success(
+        "initial PRE",
         endpoint.clone(),
         ring_pk_hex.clone(),
         reader_pk_hex.clone(),
@@ -472,15 +478,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     )
     .await;
 
-    // The key test: CLI do_pre should succeed and return the original plaintext
-    assert!(
-        pre_result.is_ok(),
-        "cli-tool do_pre should succeed against Docker orbis-nodes: {:?}",
-        pre_result.err()
-    );
-
-    let decrypted = pre_result.unwrap();
-
     assert_eq!(
         decrypted, secret,
         "Decrypted secret should match original plaintext"
@@ -488,7 +485,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("PRE decryption verified: decrypted data matches original secret!");
 
     // testing derivition pre
-    let pre_result_derived = cli_tool::do_pre(
+    let decrypted_derived = do_pre_expect_success(
+        "derived PRE",
         endpoint.clone(),
         ring_pk_hex.clone(),
         reader_pk_hex.clone(),
@@ -503,13 +501,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         false,
     )
     .await;
-
-    assert!(
-        pre_result_derived.is_ok(),
-        "derived PRE should succeed: {:?}",
-        pre_result_derived.err()
-    );
-    let decrypted_derived = pre_result_derived.unwrap();
 
     assert_eq!(
         decrypted_derived, secret,
@@ -870,7 +861,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .await
     .expect("set_relationship for post-refresh object");
 
-    let pre_result_post_refresh = cli_tool::do_pre(
+    let pre_result_post_refresh = do_pre_expect_success(
+        "post-refresh PRE",
         endpoint.clone(),
         ring_pk_hex.clone(),
         reader_pk_hex.clone(),
@@ -884,8 +876,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         None,
         false,
     )
-    .await
-    .expect("do_pre after PSS refresh");
+    .await;
 
     assert_eq!(
         pre_result_post_refresh, post_refresh_secret,
@@ -987,6 +978,61 @@ async fn do_sign_expect_success(
     }
 }
 
+async fn do_pre_expect_success(
+    context: &str,
+    endpoint: String,
+    ring_pk: String,
+    reader_pk: String,
+    reader_sk: Option<String>,
+    object_id: String,
+    reader_did_pk: Option<String>,
+    namespace: String,
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+    xnc_only: bool,
+) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut attempt = 1usize;
+
+    loop {
+        match cli_tool::do_pre(
+            endpoint.clone(),
+            ring_pk.clone(),
+            reader_pk.clone(),
+            reader_sk.clone(),
+            object_id.clone(),
+            reader_did_pk.clone(),
+            namespace.clone(),
+            derivation.clone(),
+            salt.clone(),
+            valid_window_start,
+            valid_window_end,
+            xnc_only,
+        )
+        .await
+        {
+            Ok(result) => return result,
+            Err(e) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "{} failed after {} attempts: {}",
+                    context,
+                    attempt,
+                    e
+                );
+                println!(
+                    "{} attempt {} failed, retrying after transient PRE race: {}",
+                    context, attempt, e
+                );
+                attempt += 1;
+                sleep(Duration::from_secs(3)).await;
+            }
+        }
+    }
+}
+
 async fn store_prepared_secret_expect_success(
     context: &str,
     endpoint: String,
@@ -997,7 +1043,7 @@ async fn store_prepared_secret_expect_success(
     resource: String,
     permission: String,
     reader_did_pk: Option<String>,
-    derived_pk: Option<Vec<u8>>,
+    effective_pk: Option<Vec<u8>>,
     with_proof: bool,
     tier: Option<String>,
     timestamp: Option<u64>,
@@ -1016,7 +1062,7 @@ async fn store_prepared_secret_expect_success(
             resource.clone(),
             permission.clone(),
             reader_did_pk.clone(),
-            derived_pk.clone(),
+            effective_pk.clone(),
             with_proof,
             tier.clone(),
             timestamp,

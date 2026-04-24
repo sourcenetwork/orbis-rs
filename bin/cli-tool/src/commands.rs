@@ -135,9 +135,6 @@ pub struct PreparedSecret {
     pub response: Vec<u8>,
     /// Policy metadata hash
     pub metadata: Vec<u8>,
-    /// Optional derived public key (when derivation was used)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub derived_pk: Option<Vec<u8>>,
 }
 
 /// Prepare a secret for storage by encrypting it locally.
@@ -192,7 +189,6 @@ pub fn prepare_secret(
         challenge: proof.challenge,
         response: proof.response,
         metadata,
-        derived_pk: proof.derived_pk,
     })
 }
 
@@ -208,7 +204,7 @@ pub async fn store_prepared_secret(
     resource: String,
     permission: String,
     reader_did_pk: Option<String>,
-    derived_pk: Option<Vec<u8>>,
+    effective_pk: Option<Vec<u8>>,
     with_proof: bool,
     tier: Option<String>,
     timestamp: Option<u64>,
@@ -235,7 +231,7 @@ pub async fn store_prepared_secret(
         shared_point: prepared.shared_point.clone(),
         challenge: prepared.challenge.clone(),
         response: prepared.response.clone(),
-        derived_pk: derived_pk.clone(),
+        effective_pk: effective_pk.clone(),
         with_proof,
         tier: tier.clone(),
         timestamp,
@@ -259,7 +255,7 @@ pub async fn store_prepared_secret(
             prepared.shared_point.clone(),
             prepared.challenge.clone(),
             prepared.response.clone(),
-            derived_pk,
+            effective_pk,
             with_proof,
             tier,
             timestamp,
@@ -322,6 +318,22 @@ pub async fn do_store_secret(
     derivation: Option<Vec<u8>>,
     with_proof: bool,
 ) -> Result<StoreSecretResult> {
+    let ring_pk_bytes =
+        hex::decode(&ring_pk_hex).map_err(|e| anyhow!("Invalid ring_pk hex: {}", e))?;
+    let ring_pk_point =
+        G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
+    let effective_pk = if let Some(ref derivation) = derivation {
+        let effective_pk = ThresholdDealerNode::derive_public_key(&ring_pk_point, derivation)
+            .map_err(|e| anyhow!("Failed to derive effective_pk: {}", e))?;
+        Some(
+            effective_pk
+                .to_bytes()
+                .map_err(|e| anyhow!("Failed to serialize effective_pk: {}", e))?,
+        )
+    } else {
+        None
+    };
+
     let prepared = prepare_secret(
         secret,
         &ring_pk_hex,
@@ -333,12 +345,6 @@ pub async fn do_store_secret(
         timestamp,
         salt.clone(),
     )?;
-    // If derivation was provided, compute derived_pk from the proof
-    let derived_pk = if derivation.is_some() {
-        prepared.derived_pk.clone()
-    } else {
-        None
-    };
     store_prepared_secret(
         endpoint,
         &prepared.clone(),
@@ -348,7 +354,7 @@ pub async fn do_store_secret(
         resource,
         permission,
         reader_did_pk,
-        derived_pk,
+        effective_pk,
         with_proof,
         tier,
         timestamp,
@@ -489,7 +495,7 @@ pub async fn do_pre(
         let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
             .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
-        // Compute effective_pk: use derived_pk if derivation was provided, otherwise ring_pk
+        // Compute effective_pk from derivation when provided, otherwise use ring_pk
         let effective_pk = if let Some(ref deriv) = derivation {
             ThresholdDealerNode::derive_public_key(&ring_pk_point, deriv)
                 .map_err(|e| anyhow!("Failed to derive public key: {}", e))?

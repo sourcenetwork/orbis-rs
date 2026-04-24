@@ -19,7 +19,7 @@
 //! * `make_pub_poly` — constructs `PP` from a `Vec<PK>`.
 //! * `run_dkg` — runs a full DKG ceremony with `(n, t)`, returning `(agg_pk, shares, pub_poly)`.
 
-use crate::error::Result;
+use crate::error::{CryptoError, Result};
 use crate::r#trait::{
     DistKeyShare, PriShare, PubPoly as PubPolyTrait, PubShare, ReencryptReply, Secret,
     ThresholdDealer,
@@ -83,7 +83,7 @@ where
     test_swap_enc_cmt_fails_decrypt::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_swap_nonce_only_fails_decrypt::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_swap_enc_cmt_and_proof_fails_decrypt::<T, SV, PK, PP, _>(make_keypair.clone())?;
-    test_verify_encryption_wrong_derivation_fails_loudly::<T, SV, PK, PP, _>(make_keypair.clone())?;
+    test_verify_encryption_wrong_derivation_fails::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_metadata_individual_field_tampering_fails::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_dkg_encrypt_decrypt_integration::<T, SV, PK, PP, _, _>(
         make_keypair.clone(),
@@ -621,12 +621,7 @@ where
     let (dkg_sk, dkg_pk) = make_keypair();
     let (rdr_sk, rdr_pk) = make_keypair();
 
-    let (_, encrypted_secret, proof) = T::encrypt_secret(&dkg_pk, secret, Some(derivation), None)?;
-    assert!(
-        proof.derived_pk.is_some(),
-        "proof should contain derived_pk"
-    );
-
+    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, secret, Some(derivation), None)?;
     let derived_pk = T::derive_public_key(&dkg_pk, derivation)?;
     let xnc_cmt =
         single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, Some(derivation))?;
@@ -819,19 +814,17 @@ where
     MK: Fn() -> (SV, PK),
 {
     let (_, dkg_pk) = make_keypair();
-    let secret = b"test";
-
-    let (_, _, proof1) = T::encrypt_secret(&dkg_pk, secret, Some(b"alice"), None)?;
-    let (_, _, proof2) = T::encrypt_secret(&dkg_pk, secret, Some(b"bob"), None)?;
+    let derived_pk_1 = T::derive_public_key(&dkg_pk, b"alice")?;
+    let derived_pk_2 = T::derive_public_key(&dkg_pk, b"bob")?;
 
     assert_ne!(
-        proof1.derived_pk, proof2.derived_pk,
+        derived_pk_1, derived_pk_2,
         "different derivations must produce different derived keys"
     );
 
-    let (_, _, proof1b) = T::encrypt_secret(&dkg_pk, secret, Some(b"alice"), None)?;
+    let derived_pk_1b = T::derive_public_key(&dkg_pk, b"alice")?;
     assert_eq!(
-        proof1.derived_pk, proof1b.derived_pk,
+        derived_pk_1, derived_pk_1b,
         "same derivation must be deterministic"
     );
     Ok(())
@@ -975,10 +968,6 @@ where
 
     let (enc_cmt, _, proof) =
         T::encrypt_secret(&dkg_pk, b"test secret", Some(derivation), Some(&metadata))?;
-    assert!(
-        proof.derived_pk.is_some(),
-        "proof should contain derived_pk when derivation is used"
-    );
 
     let derived_pk = T::derive_public_key(&dkg_pk, derivation)?;
 
@@ -1154,10 +1143,10 @@ where
 }
 
 // ============================================================================
-// Derivation mismatch — loud early failure
+// Derivation mismatch — verification must fail
 // ============================================================================
 
-pub fn test_verify_encryption_wrong_derivation_fails_loudly<T, SV, PK, PP, MK>(
+pub fn test_verify_encryption_wrong_derivation_fails<T, SV, PK, PP, MK>(
     make_keypair: MK,
 ) -> Result<()>
 where
@@ -1185,28 +1174,19 @@ where
         Some(correct_derivation),
         Some(&metadata),
     )?;
-    assert!(proof.derived_pk.is_some());
-
-    // Wrong derivation → must fail with derivation mismatch
+    // Wrong derivation → must fail verification with an ElGamal proof error
     let wrong_derived_pk = T::derive_public_key(&dkg_pk, wrong_derivation)?;
     let result = T::verify_encryption(&wrong_derived_pk, &enc_cmt, &proof, Some(&metadata));
     assert!(
-        result.is_err(),
+        matches!(result, Err(CryptoError::ElGamalError(_))),
         "verify_encryption should fail with wrong derivation"
-    );
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Derivation mismatch"),
-        "error should be a derivation mismatch"
     );
 
     // No derivation when one was used → also fail
     let result = T::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&metadata));
     assert!(
         result.is_err(),
-        "verify_encryption should fail when derivation is omitted but proof has derived_pk"
+        "verify_encryption should fail when derivation is omitted"
     );
 
     // Correct derivation → succeed

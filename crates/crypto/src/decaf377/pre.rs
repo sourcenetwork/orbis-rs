@@ -182,8 +182,8 @@ impl ThresholdDealer for ThresholdDealerNode {
         };
         let enc_cmt = Element::GENERATOR * r; // rG
 
-        // Compute derived public key if derivation is provided
-        let (effective_pk, derived_pk_bytes) = if let Some(deriv_bytes) = derivation {
+        // Compute the effective public key if derivation is provided.
+        let effective_pk = if let Some(deriv_bytes) = derivation {
             let d = Self::derive_capability_scalar(deriv_bytes);
             if d == Fr::zero() {
                 return Err(CryptoError::ElGamalError(
@@ -196,11 +196,9 @@ impl ThresholdDealer for ThresholdDealerNode {
                     "Derived public key is the identity element".to_string(),
                 ));
             }
-            let mut bytes = Vec::new();
-            derived_pk.serialize_compressed(&mut bytes)?;
-            (derived_pk, Some(bytes))
+            derived_pk
         } else {
-            (*dkg_pk, None)
+            *dkg_pk
         };
 
         // shared_point = r * effective_pk
@@ -222,7 +220,6 @@ impl ThresholdDealer for ThresholdDealerNode {
             shared_point: shared_point_bytes.clone(),
             challenge: challenge_bytes,
             response: response_bytes,
-            derived_pk: derived_pk_bytes,
         };
 
         // Derive AES key from shared_point
@@ -262,7 +259,7 @@ impl ThresholdDealer for ThresholdDealerNode {
     }
 
     fn verify_encryption(
-        dkg_pk: &Self::PublicKey,
+        effective_pk: &Self::PublicKey,
         enc_cmt: &Self::PublicKey,
         proof: &EncryptionProof,
         metadata: Option<&[u8]>,
@@ -275,32 +272,12 @@ impl ThresholdDealer for ThresholdDealerNode {
         }
         // decaf377: No subgroup check needed.
 
-        // Get effective public key from proof (derived_pk if present, otherwise dkg_pk)
-        let effective_pk = if let Some(ref derived_pk_bytes) = proof.derived_pk {
-            let derived_pk =
-                Element::deserialize_compressed(&derived_pk_bytes[..]).map_err(|e| {
-                    CryptoError::ElGamalError(format!("Failed to deserialize derived_pk: {:?}", e))
-                })?;
-            // Validate derived_pk
-            if derived_pk == Element::default() {
-                return Err(CryptoError::ElGamalError(
-                    "Invalid derived_pk: cannot be the identity element".to_string(),
-                ));
-            }
-            // Verify the caller's dkg_pk (already derived from supplied derivation bytes)
-            // matches proof.derived_pk. This enforces that the correct derivation was known
-            // at re-encryption time — wrong derivation fails loudly here rather than silently
-            // at AES-GCM decrypt time.
-            if derived_pk != *dkg_pk {
-                return Err(CryptoError::ElGamalError(
-                    "Derivation mismatch: supplied derivation does not match encryption"
-                        .to_string(),
-                ));
-            }
-            derived_pk
-        } else {
-            *dkg_pk
-        };
+        // Validate the caller-supplied effective public key.
+        if *effective_pk == Element::default() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid effective_pk: cannot be the identity element".to_string(),
+            ));
+        }
 
         // Deserialize proof components
         let shared_point =
@@ -326,7 +303,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         let r1_prime = Element::GENERATOR * response - *enc_cmt * challenge;
 
         // Verify: R2' = s*effective_pk - c*shared_point
-        let r2_prime = effective_pk * response - shared_point * challenge;
+        let r2_prime = *effective_pk * response - shared_point * challenge;
 
         // Recompute challenge
         let metadata_arr: Option<[u8; 32]> = metadata
@@ -339,7 +316,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         let g = Element::GENERATOR;
         let recomputed_challenge = Self::hash_encryption_proof_points(
             &g,
-            &effective_pk,
+            effective_pk,
             enc_cmt,
             &shared_point,
             &r1_prime,

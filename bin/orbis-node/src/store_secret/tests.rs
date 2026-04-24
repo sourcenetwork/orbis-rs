@@ -89,7 +89,7 @@ fn create_dummy_request() -> StoreSecretRequest {
         shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
-        derived_pk: None,
+        effective_pk: None,
         with_proof: false,
         tier: None,
         timestamp: None,
@@ -343,7 +343,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
-        derived_pk: None,
+        effective_pk: None,
         with_proof: false,
         tier: None,
         timestamp: None,
@@ -426,7 +426,7 @@ async fn test_store_secret_fails_invalid_encryption_proof() {
         shared_point: invalid_shared_point,
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
-        derived_pk: None,
+        effective_pk: None,
         with_proof: false,
         tier: None,
         timestamp: None,
@@ -601,7 +601,7 @@ async fn test_store_secret_idempotent() {
         shared_point: shared_point_bytes.clone(),
         challenge: challenge_bytes.clone(),
         response: response_bytes.clone(),
-        derived_pk: None,
+        effective_pk: None,
         with_proof: false,
         tier: None,
         timestamp: None,
@@ -640,7 +640,7 @@ async fn test_store_secret_idempotent() {
         shared_point: shared_point_bytes.clone(),
         challenge: challenge_bytes.clone(),
         response: response_bytes.clone(),
-        derived_pk: None,
+        effective_pk: None,
         with_proof: false,
         tier: None,
         timestamp: None,
@@ -679,10 +679,10 @@ async fn test_store_secret_idempotent() {
     cleanup_db(&db_path);
 }
 
-/// Test that StoreSecret fails when wrong derived_pk is provided
+/// Test that StoreSecret fails when the wrong effective_pk is provided
 #[tokio::test]
-async fn test_store_secret_fails_wrong_derived_pk() {
-    let db_name = "test_store_secret_fails_wrong_derived_pk";
+async fn test_store_secret_fails_wrong_effective_pk() {
+    let db_name = "test_store_secret_fails_wrong_effective_pk";
     let db_path = test_db_path(db_name);
 
     // Create bulletin and keep a reference for verification
@@ -735,7 +735,7 @@ async fn test_store_secret_fails_wrong_derived_pk() {
     // Generate valid encryption with derivation
     let plaintext = b"test secret data with derivation";
     let derivation = b"test_derivation_path";
-    let namespace = "test_wrong_derived_pk_namespace";
+    let namespace = "test_wrong_effective_pk_namespace";
     let policy_id = "test_policy";
     let resource = "test_resource";
     let permission = "read";
@@ -751,15 +751,15 @@ async fn test_store_secret_fails_wrong_derived_pk() {
     let challenge_bytes = proof.challenge.clone();
     let response_bytes = proof.response.clone();
 
-    // Create a WRONG derived_pk (use a different derivation path)
+    // Use the wrong effective_pk in the authenticated request.
     let wrong_derivation = b"wrong_derivation_path";
-    let wrong_derived_pk = ThresholdDealerNode::derive_public_key(&ring_pk, wrong_derivation)
-        .expect("derive wrong pk");
-    let wrong_derived_pk_bytes = wrong_derived_pk
+    let wrong_effective_pk = ThresholdDealerNode::derive_public_key(&ring_pk, wrong_derivation)
+        .expect("derive wrong effective_pk");
+    let wrong_effective_pk_bytes = wrong_effective_pk
         .to_bytes()
-        .expect("serialize wrong derived_pk");
+        .expect("serialize wrong effective_pk");
 
-    // Create JWT and request with WRONG derived_pk
+    // Create JWT and request with WRONG effective_pk
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_store_secret_jwt(
@@ -773,7 +773,7 @@ async fn test_store_secret_fails_wrong_derived_pk() {
             shared_point_bytes.clone(),
             challenge_bytes.clone(),
             response_bytes.clone(),
-            Some(wrong_derived_pk_bytes.clone()), // Wrong derived_pk
+            Some(wrong_effective_pk_bytes.clone()),
             false,
             None,
             None,
@@ -792,7 +792,7 @@ async fn test_store_secret_fails_wrong_derived_pk() {
         shared_point: shared_point_bytes.clone(),
         challenge: challenge_bytes.clone(),
         response: response_bytes.clone(),
-        derived_pk: Some(wrong_derived_pk_bytes), // Wrong derived_pk
+        effective_pk: Some(wrong_effective_pk_bytes),
         with_proof: false,
         tier: None,
         timestamp: None,
@@ -804,14 +804,14 @@ async fn test_store_secret_fails_wrong_derived_pk() {
 
     assert!(
         result.is_err(),
-        "store_secret should fail with wrong derived_pk"
+        "store_secret should fail with wrong effective_pk"
     );
 
     let status = result.unwrap_err();
     assert_eq!(
         status.code(),
         tonic::Code::InvalidArgument,
-        "Error code should be InvalidArgument for wrong derived_pk"
+        "Error code should be InvalidArgument for wrong effective_pk"
     );
 
     assert_eq!(
@@ -935,7 +935,7 @@ async fn test_store_secret_fails_with_tampered_proof() {
         shared_point: shared_point_bytes,
         challenge: tampered_challenge,
         response: response_bytes,
-        derived_pk: None,
+        effective_pk: None,
         with_proof: false,
         tier: None,
         timestamp: None,
