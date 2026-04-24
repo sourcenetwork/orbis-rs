@@ -347,7 +347,8 @@ where
 
     // 5. Validate Encryption of secret validity
     // Use the caller-supplied effective key when provided so the serialized
-    // proof does not need to expose it on chain.
+    // proof does not need to expose it on chain. The NIZK proves enc_cmt/shared_point
+    // are consistent with this key; the PRE service enforces effective_pk == d * ring_pk.
     let effective_key = if let Some(effective_pk) = effective_pk {
         D::PublicKey::from_bytes(effective_pk).map_err(|e| {
             StoreSecretError::Validation(format!("effective_pk is not a valid curve point: {}", e))

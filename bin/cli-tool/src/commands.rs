@@ -318,11 +318,11 @@ pub async fn do_store_secret(
     derivation: Option<Vec<u8>>,
     with_proof: bool,
 ) -> Result<StoreSecretResult> {
+    let ring_pk_bytes =
+        hex::decode(&ring_pk_hex).map_err(|e| anyhow!("Invalid ring_pk hex: {}", e))?;
+    let ring_pk_point =
+        G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
     let effective_pk = if let Some(ref derivation) = derivation {
-        let ring_pk_bytes =
-            hex::decode(&ring_pk_hex).map_err(|e| anyhow!("Invalid ring_pk hex: {}", e))?;
-        let ring_pk_point =
-            G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
         let effective_pk = ThresholdDealerNode::derive_public_key(&ring_pk_point, derivation)
             .map_err(|e| anyhow!("Failed to derive effective_pk: {}", e))?;
         Some(

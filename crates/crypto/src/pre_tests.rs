@@ -19,7 +19,7 @@
 //! * `make_pub_poly` — constructs `PP` from a `Vec<PK>`.
 //! * `run_dkg` — runs a full DKG ceremony with `(n, t)`, returning `(agg_pk, shares, pub_poly)`.
 
-use crate::error::Result;
+use crate::error::{CryptoError, Result};
 use crate::r#trait::{
     DistKeyShare, PriShare, PubPoly as PubPolyTrait, PubShare, ReencryptReply, Secret,
     ThresholdDealer,
@@ -83,7 +83,7 @@ where
     test_swap_enc_cmt_fails_decrypt::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_swap_nonce_only_fails_decrypt::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_swap_enc_cmt_and_proof_fails_decrypt::<T, SV, PK, PP, _>(make_keypair.clone())?;
-    test_verify_encryption_wrong_derivation_fails_loudly::<T, SV, PK, PP, _>(make_keypair.clone())?;
+    test_verify_encryption_wrong_derivation_fails::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_metadata_individual_field_tampering_fails::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_dkg_encrypt_decrypt_integration::<T, SV, PK, PP, _, _>(
         make_keypair.clone(),
@@ -1146,7 +1146,7 @@ where
 // Derivation mismatch — verification must fail
 // ============================================================================
 
-pub fn test_verify_encryption_wrong_derivation_fails_loudly<T, SV, PK, PP, MK>(
+pub fn test_verify_encryption_wrong_derivation_fails<T, SV, PK, PP, MK>(
     make_keypair: MK,
 ) -> Result<()>
 where
@@ -1174,11 +1174,11 @@ where
         Some(correct_derivation),
         Some(&metadata),
     )?;
-    // Wrong derivation → must fail verification
+    // Wrong derivation → must fail verification with an ElGamal proof error
     let wrong_derived_pk = T::derive_public_key(&dkg_pk, wrong_derivation)?;
     let result = T::verify_encryption(&wrong_derived_pk, &enc_cmt, &proof, Some(&metadata));
     assert!(
-        result.is_err(),
+        matches!(result, Err(CryptoError::ElGamalError(_))),
         "verify_encryption should fail with wrong derivation"
     );
 
