@@ -34,7 +34,7 @@ Optional crypto backends (see `Cargo.toml`):
 |--------|-------------|
 | `encrypt-secret` | Encrypt a secret to a ring public key locally (no node). Outputs encrypted secret JSON. Options: `--secret`, `--ring-pk`, `--policy-id`, `--resource`, `--permission`, optional `--derivation` (hex). |
 | `prepare-secret` | Encrypt a secret locally and print a **prepared secret** JSON. Use this with `store-prepared-secret` for idempotent storage (same input → same object ID on retries). Same policy/resource/permission/derivation options as above. |
-| `store-prepared-secret` | Send a prepared secret (from `prepare-secret`) to the node. Options: `--endpoint`, `--prepared-json`, `--ring-id`, `--namespace`, `--policy-id`, `--resource`, `--permission`, optional `--reader-did-pk`, `--derived-pk`, `--with-proof`. |
+| `store-prepared-secret` | Send a prepared secret (from `prepare-secret`) to the node. Options: `--endpoint`, `--prepared-json`, `--ring-id`, `--namespace`, `--policy-id`, `--resource`, `--permission`, optional `--reader-did-pk`, `--effective-pk` (must match any derivation used at prepare time), `--with-proof`. |
 | `store-secret` | One-shot: encrypt locally and store on the node. Same args as above plus `--secret`, `--ring-pk-hex`; optional `--derivation`, `--reader-did-pk`, `--with-proof`. |
 | `pre` | Run Proxy Re-Encryption: re-encrypt a stored secret for a reader and decrypt with reader keys. Options: `--endpoint`, `--ring-pk`, `--reader-pk`, `--reader-sk`, `--object-id`, `--namespace`, optional `--reader-did-pk`, `--derivation`. |
 

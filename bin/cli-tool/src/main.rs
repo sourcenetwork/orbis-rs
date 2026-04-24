@@ -249,9 +249,9 @@ pub enum SubCommands {
         /// A private key to generate a reader did
         #[clap(long)]
         reader_did_pk: Option<String>,
-        /// Optional derived public key (hex encoded)
+        /// Optional effective public key (hex encoded)
         #[clap(long)]
-        derived_pk: Option<String>,
+        effective_pk: Option<String>,
         /// Request a proof
         #[clap(long)]
         with_proof: bool,
@@ -543,14 +543,14 @@ async fn main() -> Result<()> {
             resource,
             permission,
             reader_did_pk,
-            derived_pk,
+            effective_pk,
             with_proof,
             tier,
             timestamp,
             metadata_hash,
         } => {
-            let derived_pk_bytes =
-                derived_pk.map(|d| hex::decode(&d).expect("Failed to decode derived_pk hex"));
+            let effective_pk_bytes =
+                effective_pk.map(|d| hex::decode(&d).expect("Failed to decode effective_pk hex"));
             let metadata_hash_bytes =
                 metadata_hash.map(|d| hex::decode(&d).expect("Failed to decode metadata_hash hex"));
             let prepared: PreparedSecret = serde_json::from_str(&prepared_json)
@@ -564,7 +564,7 @@ async fn main() -> Result<()> {
                 resource,
                 permission,
                 reader_did_pk,
-                derived_pk_bytes,
+                effective_pk_bytes,
                 with_proof,
                 tier,
                 timestamp,

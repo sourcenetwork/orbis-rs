@@ -131,7 +131,6 @@ where
             shared_point: req.shared_point,
             challenge: req.challenge,
             response: req.response,
-            derived_pk: req.derived_pk,
         };
 
         // 3. Validate the encrypted document structure
@@ -140,6 +139,7 @@ where
             &req.enc_cmt,
             &ring_payload.ring_pk,
             proof.clone(),
+            req.effective_pk.as_deref(),
             policy_metadata,
         )?;
 
@@ -303,6 +303,7 @@ fn validate_encrypted_document<D>(
     enc_cmt: &[u8],
     ring_key: &str,
     proof: EncryptionProof,
+    effective_pk: Option<&[u8]>,
     policy_metadata: Vec<u8>,
 ) -> Result<Secret, StoreSecretError>
 where
@@ -345,13 +346,11 @@ where
     }
 
     // 5. Validate Encryption of secret validity
-    // The store service never has derivation bytes, so when proof.derived_pk is present
-    // we use it directly as the effective key. The NIZK proves it was used correctly.
-    // Derivation byte correctness (d * ring_pk == derived_pk) is enforced by the PRE
-    // service via verify_encryption_binding, which does have the derivation bytes.
-    let effective_key = if let Some(ref derived_pk_bytes) = proof.derived_pk {
-        D::PublicKey::from_bytes(derived_pk_bytes).map_err(|e| {
-            StoreSecretError::Validation(format!("derived_pk is not a valid curve point: {}", e))
+    // Use the caller-supplied effective key when provided so the serialized
+    // proof does not need to expose it on chain.
+    let effective_key = if let Some(effective_pk) = effective_pk {
+        D::PublicKey::from_bytes(effective_pk).map_err(|e| {
+            StoreSecretError::Validation(format!("effective_pk is not a valid curve point: {}", e))
         })?
     } else {
         ring_key_point
@@ -442,10 +441,10 @@ fn validate_store_secret_claims(
         )));
     }
 
-    if token.claims.derived_pk != req.derived_pk {
+    if token.claims.effective_pk != req.effective_pk {
         return Err(StoreSecretError::Unauthorized(format!(
-            "Token derived_pk '{:?}' does not match request derived_pk '{:?}'",
-            token.claims.derived_pk, req.derived_pk
+            "Token effective_pk '{:?}' does not match request effective_pk '{:?}'",
+            token.claims.effective_pk, req.effective_pk
         )));
     }
 

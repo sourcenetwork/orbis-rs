@@ -154,6 +154,7 @@ impl JwtSigner {
     /// * `shared_point`- rsG - the shared point used for key derivation
     /// * `challenge` - c - Fiat-Shamir challenge
     /// * `response` - s - proof response (s = k + c*r)
+    /// * `effective_pk` - Optional effective public key used to verify the encryption proof
     /// * `with_proof` - If a proof should be returned
     /// * `tier` - Optional tier for policy
     /// * `timestamp` - Optional timestamp for policy
@@ -173,7 +174,7 @@ impl JwtSigner {
         shared_point: Vec<u8>,
         challenge: Vec<u8>,
         response: Vec<u8>,
-        derived_pk: Option<Vec<u8>>,
+        effective_pk: Option<Vec<u8>>,
         with_proof: bool,
         tier: Option<String>,
         timestamp: Option<u64>,
@@ -190,7 +191,7 @@ impl JwtSigner {
             shared_point,
             challenge,
             response,
-            derived_pk,
+            effective_pk,
             with_proof,
             tier,
             timestamp,

@@ -102,11 +102,6 @@ pub struct EncryptionProof {
     pub challenge: Vec<u8>,
     /// Proof response (s = k + c*r)
     pub response: Vec<u8>,
-    /// Derived public key when capability derivation is used: d * dkg_pk
-    /// Allows verification without knowing the derivation pre-image.
-    /// None when no derivation was used (effective_pk = dkg_pk).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub derived_pk: Option<Vec<u8>>,
 }
 
 impl TryFrom<String> for EncryptionProof {
@@ -702,10 +697,10 @@ pub trait ThresholdDealer {
         metadata: Option<&[u8]>,
     ) -> Result<(Self::PublicKey, Self::Secret, EncryptionProof)>;
 
-    /// Verify that a secret was correctly encrypted to the given DKG public key.
+    /// Verify that a secret was correctly encrypted to the given effective public key.
     /// Uses Chaum-Pedersen NIZK proof to verify enc_cmt and shared_point use same randomness.
     fn verify_encryption(
-        dkg_pk: &Self::PublicKey,
+        effective_pk: &Self::PublicKey,
         enc_cmt: &Self::PublicKey,
         proof: &EncryptionProof,
         metadata: Option<&[u8]>,
@@ -715,7 +710,7 @@ pub trait ThresholdDealer {
     ///
     /// Input:
     ///   effective_pk       - The public key used for decryption:
-    ///                        - If derivation was used: derived_pk (from proof.derived_pk)
+    ///                        - If derivation was used: derive_public_key(dkg_pk, derivation)
     ///                        - Otherwise: dkg_pk (aggregate public key of DKG)
     ///   xnc_cmt            - Re-encrypted commitment: d*(x+r)*sG (with derivation)
     ///                        or (x+r)*sG (without derivation).
@@ -727,7 +722,7 @@ pub trait ThresholdDealer {
     ///
     /// Note: When derivation was used during encryption/re-encryption:
     ///   - xnc_cmt = d * (x+r) * sG
-    ///   - effective_pk = d * sG (derived_pk)
+    ///   - effective_pk = d * sG
     ///   - shared_point = xnc_cmt - x * effective_pk = d*r*sG
     fn decrypt_secret(
         effective_pk: &Self::PublicKey,
