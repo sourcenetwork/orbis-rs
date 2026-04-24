@@ -189,7 +189,17 @@ impl ThresholdDealer for ThresholdDealerNode {
         // Compute the effective public key if derivation is provided.
         let effective_pk = if let Some(deriv_bytes) = derivation {
             let d = Self::derive_capability_scalar(deriv_bytes);
+            if d == Fr::zero() {
+                return Err(CryptoError::ElGamalError(
+                    "Derivation produced zero scalar: use different derivation bytes".to_string(),
+                ));
+            }
             let derived_pk: G1Affine = (G1Projective::from(*dkg_pk) * d).into();
+            if derived_pk.is_zero() {
+                return Err(CryptoError::ElGamalError(
+                    "Derived public key is the identity element".to_string(),
+                ));
+            }
             derived_pk
         } else {
             *dkg_pk
