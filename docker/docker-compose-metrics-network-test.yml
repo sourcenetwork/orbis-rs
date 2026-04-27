@@ -2,7 +2,7 @@
 # Spins up sourcehub chain + 3 orbis nodes with proper dependencies and healthchecks
 services:
   sourcehub:
-    image: ghcr.io/sourcenetwork/sourcehub:dev
+    image: ghcr.io/sourcenetwork/sourcehub:c7cf8e7c04798fc95bb2a19e72e369e8aa9643c5
     platform: linux/amd64
     container_name: sourcehub-integration-test
     entrypoint: ["/bin/sh", "-c"]
