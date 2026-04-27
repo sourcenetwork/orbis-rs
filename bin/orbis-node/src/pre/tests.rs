@@ -753,14 +753,16 @@ async fn test_pre_fails_with_invalid_jwt_token() {
 
     let error = pre_result.unwrap_err();
     println!("PRE correctly failed with error: {}", error);
-    // When peers reject due to invalid JWT, the coordinator may get a timeout
-    // (no valid responses) or an explicit auth error depending on error propagation
+    // When peers reject due to invalid JWT, the initiator may surface either the
+    // underlying auth failure or, after early verification/filtering, insufficient
+    // verified shares.
     assert!(
         error.to_string().contains("Unauthorized")
             || error.to_string().contains("JWT")
             || error.to_string().contains("validation")
-            || error.to_string().contains("Insufficient responses"),
-        "Error should indicate authentication failure or timeout due to peer rejection: {}",
+            || error.to_string().contains("Insufficient responses")
+            || error.to_string().contains("Insufficient shares"),
+        "Error should indicate authentication failure or insufficient verified shares due to peer rejection: {}",
         error
     );
 
@@ -908,14 +910,16 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
 
     let error = pre_result.unwrap_err();
     println!("PRE correctly failed with error: {}", error);
-    // When peers reject due to claim mismatch, the coordinator may get a timeout
-    // (no valid responses) or an explicit auth error depending on error propagation
+    // When peers reject due to claim mismatch, the initiator may surface either the
+    // underlying auth failure or, after early verification/filtering, insufficient
+    // verified shares.
     assert!(
         error.to_string().contains("Unauthorized")
             || error.to_string().contains("rdr_pk")
             || error.to_string().contains("match")
-            || error.to_string().contains("Insufficient responses"),
-        "Error should indicate claim mismatch or timeout due to peer rejection: {}",
+            || error.to_string().contains("Insufficient responses")
+            || error.to_string().contains("Insufficient shares"),
+        "Error should indicate claim mismatch or insufficient verified shares due to peer rejection: {}",
         error
     );
 
@@ -1379,12 +1383,11 @@ async fn test_pre_fails_with_bad_proof() {
 
     let error = pre_result.unwrap_err();
     println!("PRE correctly failed with error: {}", error);
-    // With the full ring peer list, the initiator is in the ring so min_needed_from_network
-    // is threshold-1=1. All network peers reject due to bad proof → 0 network responses.
+    // With early verification, peers that answer with a bad proof no longer count toward
+    // the threshold, so the coordinator fails on insufficient verified shares.
     assert!(
-        error.to_string().contains("Insufficient responses")
-            || error.to_string().contains("Timeout"),
-        "Error should indicate insufficient responses or timeout: {}",
+        error.to_string().contains("Insufficient shares"),
+        "Error should indicate insufficient verified shares: {}",
         error
     );
 

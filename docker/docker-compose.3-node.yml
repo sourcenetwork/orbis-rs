@@ -45,7 +45,7 @@ services:
       - orbis-network
 
   sourcehub:
-    image: ghcr.io/sourcenetwork/sourcehub:c83789e436a4d45a15741ae3fd4084e6b13299eb
+    image: ghcr.io/sourcenetwork/sourcehub:sha-c7cf8e7c04798fc95bb2a19e72e369e8aa9643c5
     platform: linux/amd64
     volumes:
       - sourcehub-data:/home/node/.sourcehub
