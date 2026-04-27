@@ -535,9 +535,18 @@ where
             return Ok(None);
         }
 
-        let sig_share_v = SigShareInner::from_bytes(&sig_share_bytes[..]).map_err(|e| {
-            SignError::Deserialization(format!("Failed to deserialize sig_share: {}", e))
-        })?;
+        let sig_share_v = match SigShareInner::from_bytes(&sig_share_bytes[..]) {
+            Ok(sig_share_v) => sig_share_v,
+            Err(e) => {
+                tracing::error!(
+                    from_node_id = from_node_id,
+                    error = %e,
+                    "Sign Coordinator: Failed to deserialize sig_share"
+                );
+                seen_node_ids.insert(from_node_id);
+                return Ok(None);
+            }
+        };
 
         let sig_share = PubShare {
             i: from_node_id,
@@ -588,12 +597,18 @@ where
             return Ok(None);
         }
 
-        let commitment = <S::NonceCommitment>::from_bytes(&nonce_commitment).map_err(|e| {
-            SignError::Deserialization(format!(
-                "Failed to deserialize nonce commitment from node {}: {}",
-                from_node_id, e
-            ))
-        })?;
+        let commitment = match <S::NonceCommitment>::from_bytes(&nonce_commitment) {
+            Ok(commitment) => commitment,
+            Err(e) => {
+                tracing::error!(
+                    from_node_id = from_node_id,
+                    error = %e,
+                    "Sign Coordinator: Failed to deserialize nonce commitment"
+                );
+                seen_node_ids.insert(from_node_id);
+                return Ok(None);
+            }
+        };
 
         seen_node_ids.insert(from_node_id);
         Ok(Some((from_node_id, commitment)))

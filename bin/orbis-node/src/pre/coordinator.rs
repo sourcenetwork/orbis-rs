@@ -373,17 +373,41 @@ where
             return Ok(None);
         }
 
-        let share_v = <D::PublicKey>::from_bytes(&share_bytes[..]).map_err(|e| {
-            PreError::Deserialization(format!("Failed to deserialize share: {}", e))
-        })?;
+        let share_v = match <D::PublicKey>::from_bytes(&share_bytes[..]) {
+            Ok(share_v) => share_v,
+            Err(e) => {
+                tracing::error!(
+                    from_node_id = from_node_id,
+                    error = %e,
+                    "PRE Coordinator: Failed to deserialize share"
+                );
+                return Ok(None);
+            }
+        };
 
-        let challenge = <D::ShareValue>::from_bytes(&challenge_bytes[..]).map_err(|e| {
-            PreError::Deserialization(format!("Failed to deserialize challenge: {}", e))
-        })?;
+        let challenge = match <D::ShareValue>::from_bytes(&challenge_bytes[..]) {
+            Ok(challenge) => challenge,
+            Err(e) => {
+                tracing::error!(
+                    from_node_id = from_node_id,
+                    error = %e,
+                    "PRE Coordinator: Failed to deserialize challenge"
+                );
+                return Ok(None);
+            }
+        };
 
-        let proof = <D::ShareValue>::from_bytes(&proof_bytes[..]).map_err(|e| {
-            PreError::Deserialization(format!("Failed to deserialize proof: {}", e))
-        })?;
+        let proof = match <D::ShareValue>::from_bytes(&proof_bytes[..]) {
+            Ok(proof) => proof,
+            Err(e) => {
+                tracing::error!(
+                    from_node_id = from_node_id,
+                    error = %e,
+                    "PRE Coordinator: Failed to deserialize proof"
+                );
+                return Ok(None);
+            }
+        };
 
         let reply = ReencryptReply {
             share: PubShare {
