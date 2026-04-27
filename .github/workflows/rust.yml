@@ -37,7 +37,7 @@ jobs:
     - name: Install protoc
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - name: Pull SourceHub image
-      run: docker pull ghcr.io/sourcenetwork/sourcehub:c7cf8e7c04798fc95bb2a19e72e369e8aa9643c5
+      run: docker pull ghcr.io/sourcenetwork/sourcehub:sha-c7cf8e7c04798fc95bb2a19e72e369e8aa9643c5
     - name: Run tests
       run: cargo test --features=integration-test,fault-injection --verbose
     - name: Run tests decaf377

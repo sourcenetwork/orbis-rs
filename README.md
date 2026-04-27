@@ -350,6 +350,7 @@ cargo test
 cargo test -p crypto
 cargo test -p network
 cargo test -p local-storage
+cargo test -p authz
 
 # Run tests for a different impl
 cargo test --no-default-features --features=decaf377,redb
