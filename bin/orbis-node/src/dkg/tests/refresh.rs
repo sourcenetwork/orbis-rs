@@ -403,7 +403,7 @@ async fn test_share_before_commitment_fails() {
         share_value: vec![0u8; 32],
         nonce: [0u8; 16],
     };
-    let sender_bytes = hex::decode(&sender_hex).unwrap();
+    let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
 
     let result = coordinator.handle_message(share_msg, &sender_peer_id).await;
