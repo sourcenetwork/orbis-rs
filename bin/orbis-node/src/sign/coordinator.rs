@@ -394,13 +394,25 @@ where
     /// Send a Sign request to a peer and wait for the response
     ///
     /// This method sends a request and waits for the response on the same connection,
-    /// storing the response for later collection.
+    /// storing the response for later collection. Returns `Ok(true)` only when a
+    /// usable response matching the request round was received and stored.
     pub async fn send_request_and_receive_response(
         &self,
         peer_id_str: &str,
         message: SignMessage,
         _request_id: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
+        let expects_nonce_response = match &message {
+            SignMessage::NonceRequest(_) => true,
+            SignMessage::SignRequest(_) => false,
+            _ => {
+                return Err(SignError::ProtocolError(
+                    "send_request_and_receive_response requires a NonceRequest or SignRequest"
+                        .to_string(),
+                ));
+            }
+        };
+
         let stream = self
             .app_state
             .peer_connection_pool
@@ -447,16 +459,47 @@ where
             SignError::Deserialization(format!("Failed to deserialize response: {}", e))
         })?;
 
-        // Store the response with the authenticated peer identity
         let authenticated_peer_id = stream.peer_id().clone();
-        store_response(
-            response,
-            &authenticated_peer_id,
-            &self.app_state.sign_response_state,
-        )
-        .await;
-
-        Ok(())
+        match response {
+            response @ SignMessage::NonceResponse { .. } if expects_nonce_response => {
+                store_response(
+                    response,
+                    &authenticated_peer_id,
+                    &self.app_state.sign_response_state,
+                )
+                .await;
+                Ok(true)
+            }
+            response @ SignMessage::SignResponse { .. } if !expects_nonce_response => {
+                store_response(
+                    response,
+                    &authenticated_peer_id,
+                    &self.app_state.sign_response_state,
+                )
+                .await;
+                Ok(true)
+            }
+            SignMessage::Error { error, .. } => {
+                tracing::warn!(
+                    peer = %peer_id_str,
+                    error = %error,
+                    "Sign Coordinator: peer returned an error, skipping response"
+                );
+                Ok(false)
+            }
+            _ => {
+                tracing::warn!(
+                    peer = %peer_id_str,
+                    expected = if expects_nonce_response {
+                        "NonceResponse"
+                    } else {
+                        "SignResponse"
+                    },
+                    "Sign Coordinator: unexpected response type from peer, skipping"
+                );
+                Ok(false)
+            }
+        }
     }
 
     /// Initiate signing (initiator side)
@@ -697,22 +740,49 @@ where
             });
         }
 
-        // Wait for all responses with an overall deadline.
-        // If the timeout fires, JoinSet drops here, aborting any remaining tasks.
-        tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
-            while let Some(res) = set.join_next().await {
-                if let Err(e) = res {
-                    tracing::error!(error = ?e, "Task failed");
+        let min_needed_from_network = if local_signer_selected {
+            ring.threshold.saturating_sub(1)
+        } else {
+            ring.threshold
+        };
+
+        // Wait until we have enough usable signature shares or the deadline fires.
+        let mut successful_responses = 0usize;
+        if min_needed_from_network > 0 {
+            tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
+                while let Some(res) = set.join_next().await {
+                    match res {
+                        Ok(Ok(true)) => {
+                            successful_responses += 1;
+                            if successful_responses >= min_needed_from_network {
+                                break;
+                            }
+                        }
+                        Ok(Ok(false)) => {}
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                error = %e,
+                                "Sign peer request failed"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(error = ?e, "Task failed");
+                        }
+                    }
                 }
-            }
-        })
-        .await
-        .unwrap_or_else(|_| {
-            tracing::warn!(
-                request_id = %request_id,
-                "Sign collection timed out; proceeding with partial responses"
-            );
-        });
+            })
+            .await
+            .unwrap_or_else(|_| {
+                tracing::warn!(
+                    request_id = %request_id,
+                    "Sign collection timed out; proceeding with partial responses"
+                );
+            });
+        }
+
+        // Cancel any stragglers once we have enough responses or stop waiting.
+        drop(set);
 
         // 3. Collect the stored responses (moves Vec out, no clone; outer fn removes entry on exit)
         let collected_responses = self
@@ -723,12 +793,6 @@ where
             .ok_or_else(|| {
                 SignError::Timeout(format!("No responses found for request {}", &request_id))
             })?;
-
-        let min_needed_from_network = if local_signer_selected {
-            ring.threshold.saturating_sub(1)
-        } else {
-            ring.threshold
-        };
 
         if collected_responses.len() < min_needed_from_network {
             return Err(SignError::Timeout(format!(
@@ -989,22 +1053,49 @@ where
             });
         }
 
-        // Wait for all nonce responses with an overall deadline.
-        // If the timeout fires, JoinSet drops here, aborting any remaining tasks.
-        tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
-            while let Some(res) = set.join_next().await {
-                if let Err(e) = res {
-                    tracing::error!(error = ?e, "Nonce collection task failed");
+        let min_needed_from_network = if local_signing_state.is_some() {
+            ring.threshold.saturating_sub(1)
+        } else {
+            ring.threshold
+        };
+
+        // Wait until we have enough usable nonce commitments or the deadline fires.
+        let mut successful_responses = 0usize;
+        if min_needed_from_network > 0 {
+            tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
+                while let Some(res) = set.join_next().await {
+                    match res {
+                        Ok(Ok(true)) => {
+                            successful_responses += 1;
+                            if successful_responses >= min_needed_from_network {
+                                break;
+                            }
+                        }
+                        Ok(Ok(false)) => {}
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                error = %e,
+                                "Nonce peer request failed"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(error = ?e, "Nonce collection task failed");
+                        }
+                    }
                 }
-            }
-        })
-        .await
-        .unwrap_or_else(|_| {
-            tracing::warn!(
-                request_id = %request_id,
-                "Nonce collection timed out; proceeding with partial responses"
-            );
-        });
+            })
+            .await
+            .unwrap_or_else(|_| {
+                tracing::warn!(
+                    request_id = %request_id,
+                    "Nonce collection timed out; proceeding with partial responses"
+                );
+            });
+        }
+
+        // Cancel any stragglers once we have enough commitments or stop waiting.
+        drop(set);
 
         // Collect nonce responses, removing the entry atomically (no clone, cleanup implicit)
         let nonce_responses = self

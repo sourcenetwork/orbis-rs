@@ -249,13 +249,20 @@ where
     /// Send a PRE request to a peer and wait for the response
     ///
     /// This method sends a request and waits for the response on the same connection,
-    /// storing the response for later collection.
+    /// storing the response for later collection. Returns `Ok(true)` only when a
+    /// usable reencryption response was received and stored.
     pub async fn send_request_and_receive_response(
         &self,
         peer_id_str: &str,
         message: PreMessage,
         _request_id: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
+        if !matches!(&message, PreMessage::ReencryptRequest(_)) {
+            return Err(PreError::ProtocolError(
+                "send_request_and_receive_response requires a ReencryptRequest".to_string(),
+            ));
+        }
+
         let stream = self
             .app_state
             .peer_connection_pool
@@ -304,14 +311,15 @@ where
 
         // Only store valid reencryption responses; log and drop peer errors
         let authenticated_peer_id = stream.peer_id().clone();
-        match &response {
-            PreMessage::ReencryptResponse { .. } => {
+        match response {
+            response @ PreMessage::ReencryptResponse { .. } => {
                 store_response(
                     response,
                     &authenticated_peer_id,
                     &self.app_state.pre_response_state,
                 )
                 .await;
+                Ok(true)
             }
             PreMessage::Error { error, .. } => {
                 tracing::warn!(
@@ -319,16 +327,16 @@ where
                     error = %error,
                     "PRE Coordinator: peer returned an error, skipping share"
                 );
+                Ok(false)
             }
             _ => {
                 tracing::warn!(
                     peer = %peer_id_str,
                     "PRE Coordinator: unexpected response type from peer, skipping"
                 );
+                Ok(false)
             }
         }
-
-        Ok(())
     }
 
     /// Initiate reencryption (initiator side)
@@ -511,22 +519,49 @@ where
             });
         }
 
-        // Wait for all responses with an overall deadline.
-        // If the timeout fires, JoinSet drops here, aborting any remaining tasks.
-        tokio::time::timeout(PRE_COLLECTION_TIMEOUT, async {
-            while let Some(res) = set.join_next().await {
-                if let Err(e) = res {
-                    tracing::error!(error = ?e, "Peer reencrypt task panicked");
+        let min_needed_from_network = if self_in_list {
+            ring.threshold.saturating_sub(1) // We'll contribute our own share locally
+        } else {
+            ring.threshold
+        };
+
+        // Wait until we have enough usable responses or the overall deadline fires.
+        let mut successful_responses = 0usize;
+        if min_needed_from_network > 0 {
+            tokio::time::timeout(PRE_COLLECTION_TIMEOUT, async {
+                while let Some(res) = set.join_next().await {
+                    match res {
+                        Ok(Ok(true)) => {
+                            successful_responses += 1;
+                            if successful_responses >= min_needed_from_network {
+                                break;
+                            }
+                        }
+                        Ok(Ok(false)) => {}
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                error = %e,
+                                "PRE peer request failed"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(error = ?e, "Peer reencrypt task panicked");
+                        }
+                    }
                 }
-            }
-        })
-        .await
-        .unwrap_or_else(|_| {
-            tracing::warn!(
-                request_id = %request_id,
-                "PRE collection timed out; proceeding with partial responses"
-            );
-        });
+            })
+            .await
+            .unwrap_or_else(|_| {
+                tracing::warn!(
+                    request_id = %request_id,
+                    "PRE collection timed out; proceeding with partial responses"
+                );
+            });
+        }
+
+        // Cancel any stragglers once we have enough responses or stop waiting.
+        drop(set);
 
         // 6. Collect the stored responses (moves Vec out, no clone; outer fn removes entry on exit)
         let collected_responses = self
@@ -537,13 +572,6 @@ where
             .ok_or_else(|| {
                 PreError::Timeout(format!("No responses found for request {}", &request_id))
             })?;
-
-        // Check if we have enough responses (accounting for local share if self is participating)
-        let min_needed_from_network = if self_in_list {
-            ring.threshold.saturating_sub(1) // We'll contribute our own share locally
-        } else {
-            ring.threshold
-        };
 
         if collected_responses.len() < min_needed_from_network {
             return Err(PreError::Timeout(format!(
