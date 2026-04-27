@@ -44,7 +44,7 @@ From [`helpers/launch.rs`](src/helpers/launch.rs) (`clap` **`Args`**):
 - **`--loki-url`** — optional Loki log shipping.
 - **`--reshare-interval-secs`** — how often the PSS scheduler wakes to check rings (`0` disables scheduler ticks; ring-level `pss_interval` still comes from bulletin).
 
-Password and node identity: see **`constants`** and **`get_password`**, **`get_network_key_secret`**, **`derive_secret_key_bytes`** in the same module.
+Password and node identity: see **`constants`**, **`get_password`**, **`get_network_key_secret`**, **`derive_secret_key_bytes`** in the same module.
 
 ## In-repo docs
 
