@@ -220,6 +220,48 @@ async fn test_refresh_ring_rejects_non_member() {
     cleanup_db(&db_path);
 }
 
+/// A malformed peer list must not leave the ring marked as in-progress when
+/// refresh setup fails before any session is created.
+#[tokio::test]
+async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
+    let db_name = "pss_invalid_peer_no_wedge";
+    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+
+    let ring_pk = "pss_invalid_peer_ring";
+    let ring_payload = RingPayload {
+        ring_pk: ring_pk.to_string(),
+        peer_ids: vec![our_hex.clone(), "not-a-valid-peer-id".to_string()],
+        next_peer_ids: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: Some(1),
+    };
+
+    let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
+    let state_arc = Arc::new(app_state);
+
+    let result = super::pss_ring(&state_arc, &entry).await;
+    assert!(
+        matches!(result, Err(DkgError::InvalidInput(_))),
+        "Expected InvalidInput for malformed peer ID, got: {:?}",
+        result
+    );
+    assert_eq!(
+        state_arc.dkg_session_state.session_count().await,
+        0,
+        "No session should be created when refresh setup rejects invalid peer IDs"
+    );
+    assert!(
+        !state_arc
+            .dkg_session_state
+            .is_ring_pss_active(ring_pk)
+            .await,
+        "Refresh setup failure must not leave the ring claimed as in-progress"
+    );
+
+    cleanup_db(&db_path);
+}
+
 /// When the bulletin has corrupt bytes for a ring's payload,
 /// `refresh_ring` should return a deserialization error.
 #[tokio::test]
