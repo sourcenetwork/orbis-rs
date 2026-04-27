@@ -249,14 +249,15 @@ where
     /// Send a PRE request to a peer and wait for the response
     ///
     /// This method sends a request and waits for the response on the same connection,
-    /// storing the response for later collection. Returns `Ok(true)` only when a
-    /// usable reencryption response was received and stored.
+    /// storing the response for later collection. Returns the reencryption response
+    /// when one was received and stored; peer errors and unexpected message types
+    /// are logged and returned as `Ok(None)`.
     pub async fn send_request_and_receive_response(
         &self,
         peer_id_str: &str,
         message: PreMessage,
-        _request_id: &str,
-    ) -> Result<bool> {
+        request_id: &str,
+    ) -> Result<Option<PreMessage>> {
         if !matches!(&message, PreMessage::ReencryptRequest(_)) {
             return Err(PreError::ProtocolError(
                 "send_request_and_receive_response requires a ReencryptRequest".to_string(),
@@ -309,17 +310,26 @@ where
             PreError::Deserialization(format!("Failed to deserialize response: {}", e))
         })?;
 
+        if response.request_id() != request_id {
+            return Err(PreError::ProtocolError(format!(
+                "Peer {} responded with mismatched request_id: expected {}, got {}",
+                peer_id_str,
+                request_id,
+                response.request_id()
+            )));
+        }
+
         // Only store valid reencryption responses; log and drop peer errors
         let authenticated_peer_id = stream.peer_id().clone();
         match response {
             response @ PreMessage::ReencryptResponse { .. } => {
                 store_response(
-                    response,
+                    response.clone(),
                     &authenticated_peer_id,
                     &self.app_state.pre_response_state,
                 )
                 .await;
-                Ok(true)
+                Ok(Some(response))
             }
             PreMessage::Error { error, .. } => {
                 tracing::warn!(
@@ -327,14 +337,79 @@ where
                     error = %error,
                     "PRE Coordinator: peer returned an error, skipping share"
                 );
-                Ok(false)
+                Ok(None)
             }
             _ => {
                 tracing::warn!(
                     peer = %peer_id_str,
                     "PRE Coordinator: unexpected response type from peer, skipping"
                 );
-                Ok(false)
+                Ok(None)
+            }
+        }
+    }
+
+    fn verify_peer_response(
+        dealer: &T,
+        response: PreMessage,
+        rdr_pk: &D::PublicKey,
+        pub_poly: &D::PubPoly,
+        enc_cmt: &D::PublicKey,
+        derivation: Option<&[u8]>,
+        seen_node_ids: &mut HashSet<u32>,
+    ) -> Result<Option<PubShare<D::PublicKey>>> {
+        let PreMessage::ReencryptResponse {
+            from_node_id,
+            share: share_bytes,
+            challenge: challenge_bytes,
+            proof: proof_bytes,
+            ..
+        } = response
+        else {
+            return Ok(None);
+        };
+
+        if seen_node_ids.contains(&from_node_id) {
+            return Ok(None);
+        }
+
+        let share_v = <D::PublicKey>::from_bytes(&share_bytes[..]).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize share: {}", e))
+        })?;
+
+        let challenge = <D::ShareValue>::from_bytes(&challenge_bytes[..]).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize challenge: {}", e))
+        })?;
+
+        let proof = <D::ShareValue>::from_bytes(&proof_bytes[..]).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize proof: {}", e))
+        })?;
+
+        let reply = ReencryptReply {
+            share: PubShare {
+                i: from_node_id,
+                v: share_v,
+            },
+            challenge,
+            proof,
+        };
+
+        match dealer.verify(rdr_pk, pub_poly, enc_cmt, &reply, derivation) {
+            Ok(_) => {
+                tracing::debug!(
+                    from_node_id = from_node_id,
+                    "PRE Coordinator: Verified share"
+                );
+                seen_node_ids.insert(reply.share.i);
+                Ok(Some(reply.share.clone()))
+            }
+            Err(e) => {
+                tracing::error!(
+                    from_node_id = from_node_id,
+                    error = %e,
+                    "PRE Coordinator: Failed to verify share"
+                );
+                Ok(None)
             }
         }
     }
@@ -484,117 +559,17 @@ where
             PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e))
         })?;
 
-        // 4. Send reencryption requests to all peers concurrently and receive responses
-        // Note: init_pre_response is called by the outer function to ensure cleanup on all paths
-        // node_id is already obtained from DKG session above
-        let mut set = tokio::task::JoinSet::new();
-
-        // Keep a copy of secret_bytes for later deserialization
-        let secret_bytes_for_later = secret_bytes.clone();
-
-        for peer_id_str in &ring.peer_ids {
-            // Skip self - don't try to connect to ourselves
-            if is_self_peer_id(&self.app_state.network, peer_id_str) {
-                tracing::debug!(peer_id = %peer_id_str, "Skipping self when sending reencrypt request");
-                continue;
-            }
-
-            let request = PreMessage::ReencryptRequest(ReencryptRequest {
-                request_id: request_id.clone(),
-                from_node_id: node_id,
-                context: ctx.clone(),
-            });
-
-            let peer_id = peer_id_str.clone();
-            let req_id = request_id.clone();
-            let app_state = self.app_state.clone();
-
-            // Spawn a task for each peer to send request and receive response
-            // Note: Creating new coordinator is cheap (just holds Arc<AppState>)
-            set.spawn(async move {
-                let coordinator = PreCoordinator::<D, T>::new(app_state);
-                coordinator
-                    .send_request_and_receive_response(&peer_id, request, &req_id)
-                    .await
-            });
-        }
-
-        let min_needed_from_network = if self_in_list {
-            ring.threshold.saturating_sub(1) // We'll contribute our own share locally
-        } else {
-            ring.threshold
-        };
-
-        // Wait until we have enough usable responses or the overall deadline fires.
-        let mut successful_responses = 0usize;
-        if min_needed_from_network > 0 {
-            tokio::time::timeout(PRE_COLLECTION_TIMEOUT, async {
-                while let Some(res) = set.join_next().await {
-                    match res {
-                        Ok(Ok(true)) => {
-                            successful_responses += 1;
-                            if successful_responses >= min_needed_from_network {
-                                break;
-                            }
-                        }
-                        Ok(Ok(false)) => {}
-                        Ok(Err(e)) => {
-                            tracing::warn!(
-                                request_id = %request_id,
-                                error = %e,
-                                "PRE peer request failed"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!(error = ?e, "Peer reencrypt task panicked");
-                        }
-                    }
-                }
-            })
-            .await
-            .unwrap_or_else(|_| {
-                tracing::warn!(
-                    request_id = %request_id,
-                    "PRE collection timed out; proceeding with partial responses"
-                );
-            });
-        }
-
-        // Cancel any stragglers once we have enough responses or stop waiting.
-        drop(set);
-
-        // 6. Collect the stored responses (moves Vec out, no clone; outer fn removes entry on exit)
-        let collected_responses = self
-            .app_state
-            .pre_response_state
-            .take_responses(&request_id)
-            .await
-            .ok_or_else(|| {
-                PreError::Timeout(format!("No responses found for request {}", &request_id))
-            })?;
-
-        if collected_responses.len() < min_needed_from_network {
-            return Err(PreError::Timeout(format!(
-                "Insufficient responses: got {}, need at least {}",
-                collected_responses.len(),
-                min_needed_from_network
-            )));
-        }
-
-        // 7. Verify and extract shares
         let dealer = T::new();
         let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
         let mut seen_node_ids: HashSet<u32> = HashSet::new();
 
-        // If we're in the peer list (self_in_list), compute our own share locally.
-        // Use the bundle loaded above (same snapshot as pub_poly) so the share and
-        // polynomial are guaranteed to be from the same PSS generation.
+        // If we're in the peer list, compute our own share locally before deciding
+        // how many verified shares we still need from the network.
         if self_in_list {
             if let Some(bundle) = local_share_bundle {
                 if let Ok(pri_share) = PriShare::<D::ShareValue>::from_bytes(&bundle.share_bytes) {
                     let dist_key_share = DistKeyShare { pri_share };
 
-                    // Perform local reencryption
                     match dealer.reencrypt(
                         &dist_key_share,
                         &secret,
@@ -620,70 +595,126 @@ where
             }
         }
 
-        for response in collected_responses {
-            if let PreMessage::ReencryptResponse {
-                from_node_id,
-                share: share_bytes,
-                challenge: challenge_bytes,
-                proof: proof_bytes,
-                ..
-            } = response
-            {
-                // Skip if this node_id matches our local share (local-vs-network conflict)
-                if seen_node_ids.contains(&from_node_id) {
+        let min_needed_from_network = ring.threshold.saturating_sub(verified_shares.len());
+
+        // 4. Send reencryption requests to all peers concurrently and receive responses
+        // Note: init_pre_response is called by the outer function to ensure cleanup on all paths
+        // node_id is already obtained from DKG session above
+        let mut set = tokio::task::JoinSet::new();
+
+        // Keep a copy of secret_bytes for later deserialization
+        let secret_bytes_for_later = secret_bytes.clone();
+
+        if min_needed_from_network > 0 {
+            for peer_id_str in &ring.peer_ids {
+                // Skip self - don't try to connect to ourselves
+                if is_self_peer_id(&self.app_state.network, peer_id_str) {
+                    tracing::debug!(peer_id = %peer_id_str, "Skipping self when sending reencrypt request");
                     continue;
                 }
 
-                // Deserialize components using trait methods
-                let share_v = <D::PublicKey>::from_bytes(&share_bytes[..]).map_err(|e| {
-                    PreError::Deserialization(format!("Failed to deserialize share: {}", e))
-                })?;
+                let request = PreMessage::ReencryptRequest(ReencryptRequest {
+                    request_id: request_id.clone(),
+                    from_node_id: node_id,
+                    context: ctx.clone(),
+                });
 
-                let challenge = <D::ShareValue>::from_bytes(&challenge_bytes[..]).map_err(|e| {
-                    PreError::Deserialization(format!("Failed to deserialize challenge: {}", e))
-                })?;
+                let peer_id = peer_id_str.clone();
+                let req_id = request_id.clone();
+                let app_state = self.app_state.clone();
 
-                let proof = <D::ShareValue>::from_bytes(&proof_bytes[..]).map_err(|e| {
-                    PreError::Deserialization(format!("Failed to deserialize proof: {}", e))
-                })?;
+                // Spawn a task for each peer to send request and receive response
+                // Note: Creating new coordinator is cheap (just holds Arc<AppState>)
+                set.spawn(async move {
+                    let coordinator = PreCoordinator::<D, T>::new(app_state);
+                    coordinator
+                        .send_request_and_receive_response(&peer_id, request, &req_id)
+                        .await
+                });
+            }
+        }
 
-                // Create ReencryptReply for verification
-                let reply = ReencryptReply {
-                    share: PubShare {
-                        i: from_node_id,
-                        v: share_v,
-                    },
-                    challenge,
-                    proof,
-                };
-
-                // Verify the reply
-                match dealer.verify(
-                    &rdr_pk,
-                    &pub_poly,
-                    &enc_cmt,
-                    &reply,
-                    ctx.derivation.as_deref(),
-                ) {
-                    Ok(_) => {
-                        tracing::debug!(
-                            from_node_id = from_node_id,
-                            "PRE Coordinator: Verified share"
-                        );
-                        verified_shares.push(reply.share.clone());
+        // Wait until we have enough verified shares from the network or the overall
+        // deadline fires.
+        let mut successful_responses = 0usize;
+        if min_needed_from_network > 0 {
+            match tokio::time::timeout(PRE_COLLECTION_TIMEOUT, async {
+                while let Some(res) = set.join_next().await {
+                    match res {
+                        Ok(Ok(Some(response))) => {
+                            if let Some(share) = Self::verify_peer_response(
+                                &dealer,
+                                response,
+                                &rdr_pk,
+                                &pub_poly,
+                                &enc_cmt,
+                                ctx.derivation.as_deref(),
+                                &mut seen_node_ids,
+                            )? {
+                                verified_shares.push(share);
+                                successful_responses += 1;
+                                if successful_responses >= min_needed_from_network {
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(Ok(None)) => {}
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                error = %e,
+                                "PRE peer request failed"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(error = ?e, "Peer reencrypt task panicked");
+                        }
                     }
-                    Err(e) => {
-                        tracing::error!(
-                            from_node_id = from_node_id,
-                            error = %e,
-                            "PRE Coordinator: Failed to verify share"
-                        );
-                    }
+                }
+                Ok::<(), PreError>(())
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        "PRE collection timed out; proceeding with partial responses"
+                    );
                 }
             }
         }
 
-        // 8. Check if we have enough verified shares
+        // Cancel any stragglers once we have enough verified shares or stop waiting.
+        drop(set);
+
+        // 6. Collect any responses that were already stored before cancellation and
+        // verify the ones we have not counted yet.
+        let collected_responses = self
+            .app_state
+            .pre_response_state
+            .take_responses(&request_id)
+            .await
+            .ok_or_else(|| {
+                PreError::Timeout(format!("No responses found for request {}", &request_id))
+            })?;
+
+        for response in collected_responses {
+            if let Some(share) = Self::verify_peer_response(
+                &dealer,
+                response,
+                &rdr_pk,
+                &pub_poly,
+                &enc_cmt,
+                ctx.derivation.as_deref(),
+                &mut seen_node_ids,
+            )? {
+                verified_shares.push(share);
+            }
+        }
+
+        // 7. Check if we have enough verified shares
         if verified_shares.len() < ring.threshold {
             if is_ring_reshare_in_progress(&ring.ring_pk_bytes, &self.app_state.dkg_session_state)
                 .await
@@ -700,7 +731,7 @@ where
             });
         }
 
-        // 9. Recover the reencrypted commitment
+        // 8. Recover the reencrypted commitment
         let xnc_cmt_opt = dealer
             .recover(&verified_shares, ring.threshold, ring.total_participants)
             .map_err(|e| {

@@ -394,14 +394,15 @@ where
     /// Send a Sign request to a peer and wait for the response
     ///
     /// This method sends a request and waits for the response on the same connection,
-    /// storing the response for later collection. Returns `Ok(true)` only when a
-    /// usable response matching the request round was received and stored.
+    /// storing the response for later collection. Returns the response when one
+    /// matching the request round was received and stored; peer errors and
+    /// unexpected message types are logged and returned as `Ok(None)`.
     pub async fn send_request_and_receive_response(
         &self,
         peer_id_str: &str,
         message: SignMessage,
-        _request_id: &str,
-    ) -> Result<bool> {
+        request_id: &str,
+    ) -> Result<Option<SignMessage>> {
         let expects_nonce_response = match &message {
             SignMessage::NonceRequest(_) => true,
             SignMessage::SignRequest(_) => false,
@@ -459,25 +460,34 @@ where
             SignError::Deserialization(format!("Failed to deserialize response: {}", e))
         })?;
 
+        if response.request_id() != request_id {
+            return Err(SignError::ProtocolError(format!(
+                "Peer {} responded with mismatched request_id: expected {}, got {}",
+                peer_id_str,
+                request_id,
+                response.request_id()
+            )));
+        }
+
         let authenticated_peer_id = stream.peer_id().clone();
         match response {
             response @ SignMessage::NonceResponse { .. } if expects_nonce_response => {
                 store_response(
-                    response,
+                    response.clone(),
                     &authenticated_peer_id,
                     &self.app_state.sign_response_state,
                 )
                 .await;
-                Ok(true)
+                Ok(Some(response))
             }
             response @ SignMessage::SignResponse { .. } if !expects_nonce_response => {
                 store_response(
-                    response,
+                    response.clone(),
                     &authenticated_peer_id,
                     &self.app_state.sign_response_state,
                 )
                 .await;
-                Ok(true)
+                Ok(Some(response))
             }
             SignMessage::Error { error, .. } => {
                 tracing::warn!(
@@ -485,7 +495,7 @@ where
                     error = %error,
                     "Sign Coordinator: peer returned an error, skipping response"
                 );
-                Ok(false)
+                Ok(None)
             }
             _ => {
                 tracing::warn!(
@@ -497,9 +507,96 @@ where
                     },
                     "Sign Coordinator: unexpected response type from peer, skipping"
                 );
-                Ok(false)
+                Ok(None)
             }
         }
+    }
+
+    fn verify_peer_signature_response(
+        signer: &S,
+        response: SignMessage,
+        message: &[u8],
+        pub_poly: &D::PubPoly,
+        signing_commitments: &[(u32, S::NonceCommitment)],
+        derivation: Option<&[u8]>,
+        metadata: Option<&[u8]>,
+        seen_node_ids: &mut HashSet<u32>,
+    ) -> Result<Option<PubShare<SigShareInner>>> {
+        let SignMessage::SignResponse {
+            from_node_id,
+            sig_share: sig_share_bytes,
+            ..
+        } = response
+        else {
+            return Ok(None);
+        };
+
+        if seen_node_ids.contains(&from_node_id) {
+            return Ok(None);
+        }
+
+        let sig_share_v = SigShareInner::from_bytes(&sig_share_bytes[..]).map_err(|e| {
+            SignError::Deserialization(format!("Failed to deserialize sig_share: {}", e))
+        })?;
+
+        let sig_share = PubShare {
+            i: from_node_id,
+            v: sig_share_v,
+        };
+
+        match signer.verify_share(
+            message,
+            pub_poly,
+            &sig_share,
+            signing_commitments,
+            derivation,
+            metadata,
+        ) {
+            Ok(_) => {
+                tracing::debug!(
+                    from_node_id = from_node_id,
+                    "Sign Coordinator: Verified share"
+                );
+                seen_node_ids.insert(sig_share.i);
+                Ok(Some(sig_share))
+            }
+            Err(e) => {
+                tracing::error!(
+                    from_node_id = from_node_id,
+                    error = %e,
+                    "Sign Coordinator: Failed to verify share"
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    fn parse_peer_nonce_response(
+        response: SignMessage,
+        seen_node_ids: &mut HashSet<u32>,
+    ) -> Result<Option<(u32, S::NonceCommitment)>> {
+        let SignMessage::NonceResponse {
+            from_node_id,
+            nonce_commitment,
+            ..
+        } = response
+        else {
+            return Ok(None);
+        };
+
+        if seen_node_ids.contains(&from_node_id) {
+            return Ok(None);
+        }
+
+        let commitment = <S::NonceCommitment>::from_bytes(&nonce_commitment).map_err(|e| {
+            SignError::Deserialization(format!(
+                "Failed to deserialize nonce commitment from node {}: {}",
+                from_node_id, e
+            ))
+        })?;
+
+        seen_node_ids.insert(from_node_id);
+        Ok(Some((from_node_id, commitment)))
     }
 
     /// Initiate signing (initiator side)
@@ -686,8 +783,8 @@ where
         };
         let selected_signer_ids: HashSet<u32> =
             signing_commitments.iter().map(|(id, _)| *id).collect();
-        let local_signer_selected =
-            !S::INTERACTIVE || (self_in_list && selected_signer_ids.contains(&node_id));
+        let should_attempt_local_share = local_dist_key_share.is_some()
+            && (!S::INTERACTIVE || selected_signer_ids.contains(&node_id));
 
         // Serialize commitments for the exact FROST signing set. FROST shares are
         // bound to this participant list, so the recovery step must use the same
@@ -698,67 +795,131 @@ where
         // ROUND 2: Collect signature shares
         // =====================================================================
 
+        let signer = S::new();
+        let mut verified_shares: Vec<PubShare<SigShareInner>> = Vec::new();
+        let mut seen_node_ids: HashSet<u32> = HashSet::new();
+
+        // If we are part of the signing set, compute our own share locally before
+        // deciding how many verified shares we still need from the network.
+        if should_attempt_local_share {
+            if let Some(dist_key_share) = local_dist_key_share {
+                match signer.sign(
+                    &dist_key_share,
+                    &message,
+                    &pub_poly,
+                    local_signing_state.as_ref(),
+                    &signing_commitments,
+                    derivation.as_deref(),
+                    metadata.as_deref(),
+                ) {
+                    Ok(sig_share) => match signer.verify_share(
+                        &message,
+                        &pub_poly,
+                        &sig_share,
+                        &signing_commitments,
+                        derivation.as_deref(),
+                        metadata.as_deref(),
+                    ) {
+                        Ok(_) => {
+                            tracing::debug!(
+                                from_node_id = sig_share.i,
+                                "Sign Coordinator: Added local share"
+                            );
+                            seen_node_ids.insert(sig_share.i);
+                            verified_shares.push(sig_share);
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "Sign Coordinator: Local share verification failed"
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "Sign Coordinator: Local signing failed"
+                        );
+                    }
+                }
+            }
+        }
+
+        let min_needed_from_network = ring.threshold.saturating_sub(verified_shares.len());
+
         // 2. Send sign requests to all peers concurrently and receive responses
         let mut set = tokio::task::JoinSet::new();
 
-        for peer_id_str in &ring.peer_ids {
-            if is_self_peer_id(&self.app_state.network, peer_id_str) {
-                tracing::debug!(peer_id = %peer_id_str, "Skipping self when sending sign request");
-                continue;
-            }
-            if S::INTERACTIVE {
-                let peer_node_id = determine_session_node_id(peer_id_str, &ring.peer_ids);
-                if !peer_node_id
-                    .map(|id| selected_signer_ids.contains(&id))
-                    .unwrap_or(false)
-                {
+        if min_needed_from_network > 0 {
+            for peer_id_str in &ring.peer_ids {
+                if is_self_peer_id(&self.app_state.network, peer_id_str) {
                     tracing::debug!(
                         peer_id = %peer_id_str,
-                        "Skipping peer outside selected FROST signing set"
+                        "Skipping self when sending sign request"
                     );
                     continue;
                 }
+                if S::INTERACTIVE {
+                    let peer_node_id = determine_session_node_id(peer_id_str, &ring.peer_ids);
+                    if !peer_node_id
+                        .map(|id| selected_signer_ids.contains(&id))
+                        .unwrap_or(false)
+                    {
+                        tracing::debug!(
+                            peer_id = %peer_id_str,
+                            "Skipping peer outside selected FROST signing set"
+                        );
+                        continue;
+                    }
+                }
+
+                let request = SignMessage::SignRequest(SignRequest {
+                    request_id: request_id.clone(),
+                    from_node_id: node_id,
+                    message: message.clone(),
+                    all_commitments: all_commitments_bytes.clone(),
+                    context: context.clone(),
+                });
+
+                let peer_id = peer_id_str.clone();
+                let req_id = request_id.clone();
+                let app_state = self.app_state.clone();
+
+                set.spawn(async move {
+                    let coordinator = SignCoordinator::<D, S>::new(app_state);
+                    coordinator
+                        .send_request_and_receive_response(&peer_id, request, &req_id)
+                        .await
+                });
             }
-
-            let request = SignMessage::SignRequest(SignRequest {
-                request_id: request_id.clone(),
-                from_node_id: node_id,
-                message: message.clone(),
-                all_commitments: all_commitments_bytes.clone(),
-                context: context.clone(),
-            });
-
-            let peer_id = peer_id_str.clone();
-            let req_id = request_id.clone();
-            let app_state = self.app_state.clone();
-
-            set.spawn(async move {
-                let coordinator = SignCoordinator::<D, S>::new(app_state);
-                coordinator
-                    .send_request_and_receive_response(&peer_id, request, &req_id)
-                    .await
-            });
         }
 
-        let min_needed_from_network = if local_signer_selected {
-            ring.threshold.saturating_sub(1)
-        } else {
-            ring.threshold
-        };
-
-        // Wait until we have enough usable signature shares or the deadline fires.
+        // Wait until we have enough verified signature shares from the network or
+        // the deadline fires.
         let mut successful_responses = 0usize;
         if min_needed_from_network > 0 {
-            tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
+            match tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
                 while let Some(res) = set.join_next().await {
                     match res {
-                        Ok(Ok(true)) => {
-                            successful_responses += 1;
-                            if successful_responses >= min_needed_from_network {
-                                break;
+                        Ok(Ok(Some(response))) => {
+                            if let Some(share) = Self::verify_peer_signature_response(
+                                &signer,
+                                response,
+                                &message,
+                                &pub_poly,
+                                &signing_commitments,
+                                derivation.as_deref(),
+                                metadata.as_deref(),
+                                &mut seen_node_ids,
+                            )? {
+                                verified_shares.push(share);
+                                successful_responses += 1;
+                                if successful_responses >= min_needed_from_network {
+                                    break;
+                                }
                             }
                         }
-                        Ok(Ok(false)) => {}
+                        Ok(Ok(None)) => {}
                         Ok(Err(e)) => {
                             tracing::warn!(
                                 request_id = %request_id,
@@ -771,20 +932,26 @@ where
                         }
                     }
                 }
+                Ok::<(), SignError>(())
             })
             .await
-            .unwrap_or_else(|_| {
-                tracing::warn!(
-                    request_id = %request_id,
-                    "Sign collection timed out; proceeding with partial responses"
-                );
-            });
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        "Sign collection timed out; proceeding with partial responses"
+                    );
+                }
+            }
         }
 
-        // Cancel any stragglers once we have enough responses or stop waiting.
+        // Cancel any stragglers once we have enough verified shares or stop waiting.
         drop(set);
 
-        // 3. Collect the stored responses (moves Vec out, no clone; outer fn removes entry on exit)
+        // 3. Collect any responses that were already stored before cancellation and
+        // verify the ones we have not counted yet.
         let collected_responses = self
             .app_state
             .sign_response_state
@@ -794,116 +961,22 @@ where
                 SignError::Timeout(format!("No responses found for request {}", &request_id))
             })?;
 
-        if collected_responses.len() < min_needed_from_network {
-            return Err(SignError::Timeout(format!(
-                "Insufficient responses: got {}, need at least {}",
-                collected_responses.len(),
-                min_needed_from_network
-            )));
-        }
-
-        // 4. Verify and extract shares
-        let signer = S::new();
-        let mut verified_shares: Vec<PubShare<SigShareInner>> = Vec::new();
-        let mut seen_node_ids: HashSet<u32> = HashSet::new();
-
-        // If we're in the peer list, compute our own share locally.
-        // Use the dist_key_share loaded above (same snapshot as pub_poly) so that
-        // the share and polynomial are guaranteed to be from the same PSS generation.
-        if local_signer_selected {
-            if let Some(dist_key_share) = local_dist_key_share {
-                match signer.sign(
-                    &dist_key_share,
-                    &message,
-                    &pub_poly,
-                    local_signing_state.as_ref(),
-                    &signing_commitments,
-                    derivation.as_deref(),
-                    metadata.as_deref(),
-                ) {
-                    Ok(sig_share) => {
-                        match signer.verify_share(
-                            &message,
-                            &pub_poly,
-                            &sig_share,
-                            &signing_commitments,
-                            derivation.as_deref(),
-                            metadata.as_deref(),
-                        ) {
-                            Ok(_) => {
-                                tracing::debug!(
-                                    from_node_id = sig_share.i,
-                                    "Sign Coordinator: Added local share"
-                                );
-                                seen_node_ids.insert(sig_share.i);
-                                verified_shares.push(sig_share);
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    error = %e,
-                                    "Sign Coordinator: Local share verification failed"
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            error = %e,
-                            "Sign Coordinator: Local signing failed"
-                        );
-                    }
-                }
-            }
-        }
-
         for response in collected_responses {
-            if let SignMessage::SignResponse {
-                from_node_id,
-                sig_share: sig_share_bytes,
-                ..
-            } = response
-            {
-                if seen_node_ids.contains(&from_node_id) {
-                    continue;
-                }
-
-                // Deserialize signature share using SigShareInner
-                let sig_share_v = SigShareInner::from_bytes(&sig_share_bytes[..]).map_err(|e| {
-                    SignError::Deserialization(format!("Failed to deserialize sig_share: {}", e))
-                })?;
-
-                let sig_share = PubShare {
-                    i: from_node_id,
-                    v: sig_share_v,
-                };
-
-                match signer.verify_share(
-                    &message,
-                    &pub_poly,
-                    &sig_share,
-                    &signing_commitments,
-                    derivation.as_deref(),
-                    metadata.as_deref(),
-                ) {
-                    Ok(_) => {
-                        tracing::debug!(
-                            from_node_id = from_node_id,
-                            "Sign Coordinator: Verified share"
-                        );
-                        verified_shares.push(sig_share);
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            from_node_id = from_node_id,
-                            error = %e,
-                            "Sign Coordinator: Failed to verify share"
-                        );
-                    }
-                }
+            if let Some(share) = Self::verify_peer_signature_response(
+                &signer,
+                response,
+                &message,
+                &pub_poly,
+                &signing_commitments,
+                derivation.as_deref(),
+                metadata.as_deref(),
+                &mut seen_node_ids,
+            )? {
+                verified_shares.push(share);
             }
         }
 
-        // 5. Check if we have enough verified shares
+        // 4. Check if we have enough verified shares
         if verified_shares.len() < ring.threshold {
             if is_ring_reshare_in_progress(&ring.ring_pk_bytes, &self.app_state.dkg_session_state)
                 .await
@@ -920,7 +993,7 @@ where
             });
         }
 
-        // 6. Recover the full signature
+        // 5. Recover the full signature
         let signature_opt = signer
             .recover(
                 &verified_shares,
@@ -936,7 +1009,7 @@ where
         let signature = signature_opt
             .ok_or_else(|| SignError::RecoveryFailed("Recovery returned None".to_string()))?;
 
-        // 7. Verify the final recovered signature before serializing. This catches
+        // 6. Verify the final recovered signature before serializing. This catches
         // aggregation bugs before a silently bad signature reaches the caller.
         let aggregate_pk = pub_poly.eval(0);
         let verify_pk = if let Some(deriv) = derivation.as_deref() {
@@ -952,7 +1025,7 @@ where
                 SignError::RecoveryFailed(format!("Final signature verification failed: {}", e))
             })?;
 
-        // 8. Serialize signature to bytes then hex
+        // 7. Serialize signature to bytes then hex
         let signature_bytes = CryptoSerialize::to_bytes(&signature).map_err(|e| {
             SignError::Serialization(format!("Failed to serialize signature: {}", e))
         })?;
@@ -993,6 +1066,7 @@ where
         let nonce_request_id = format!("nonce-{}", request_id);
         let mut all_commitments: Vec<(u32, S::NonceCommitment)> = Vec::new();
         let mut local_signing_state: Option<S::SigningState> = None;
+        let mut seen_node_ids: HashSet<u32> = HashSet::new();
 
         // Generate our own nonces using the pre-loaded dist_key_share (same PSS
         // generation snapshot as pub_poly and the signing-round share).
@@ -1002,6 +1076,7 @@ where
                 let (commitment, state) = signer.generate_nonces(dist_key_share).map_err(|e| {
                     SignError::Crypto(format!("Local nonce generation failed: {}", e))
                 })?;
+                seen_node_ids.insert(node_id);
                 all_commitments.push((node_id, commitment));
                 local_signing_state = Some(state);
             }
@@ -1027,51 +1102,57 @@ where
             ));
         }
 
+        let min_needed_from_network = ring.threshold.saturating_sub(all_commitments.len());
+
         // Send nonce requests to all peers concurrently
         let mut set = tokio::task::JoinSet::new();
-        for peer_id_str in &ring.peer_ids {
-            if is_self_peer_id(&self.app_state.network, peer_id_str) {
-                continue;
+        if min_needed_from_network > 0 {
+            for peer_id_str in &ring.peer_ids {
+                if is_self_peer_id(&self.app_state.network, peer_id_str) {
+                    continue;
+                }
+
+                let nonce_req = SignMessage::NonceRequest(NonceRequest {
+                    request_id: nonce_request_id.clone(),
+                    from_node_id: node_id,
+                    ring_pk: ring.ring_pk_bytes.clone(),
+                    context: context.clone(),
+                });
+
+                let peer_id = peer_id_str.clone();
+                let req_id = nonce_request_id.clone();
+                let app_state = self.app_state.clone();
+
+                set.spawn(async move {
+                    let coordinator = SignCoordinator::<D, S>::new(app_state);
+                    coordinator
+                        .send_request_and_receive_response(&peer_id, nonce_req, &req_id)
+                        .await
+                });
             }
-
-            let nonce_req = SignMessage::NonceRequest(NonceRequest {
-                request_id: nonce_request_id.clone(),
-                from_node_id: node_id,
-                ring_pk: ring.ring_pk_bytes.clone(),
-                context: context.clone(),
-            });
-
-            let peer_id = peer_id_str.clone();
-            let req_id = nonce_request_id.clone();
-            let app_state = self.app_state.clone();
-
-            set.spawn(async move {
-                let coordinator = SignCoordinator::<D, S>::new(app_state);
-                coordinator
-                    .send_request_and_receive_response(&peer_id, nonce_req, &req_id)
-                    .await
-            });
         }
 
-        let min_needed_from_network = if local_signing_state.is_some() {
-            ring.threshold.saturating_sub(1)
-        } else {
-            ring.threshold
-        };
-
-        // Wait until we have enough usable nonce commitments or the deadline fires.
+        // Wait until we have enough deserializable nonce commitments or the
+        // deadline fires. The signer trait does not expose a standalone
+        // cryptographic verifier for round-1 commitments, so deserialization and
+        // node-id dedupe are the strongest early validation available here.
         let mut successful_responses = 0usize;
         if min_needed_from_network > 0 {
-            tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
+            match tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
                 while let Some(res) = set.join_next().await {
                     match res {
-                        Ok(Ok(true)) => {
-                            successful_responses += 1;
-                            if successful_responses >= min_needed_from_network {
-                                break;
+                        Ok(Ok(Some(response))) => {
+                            if let Some(commitment) =
+                                Self::parse_peer_nonce_response(response, &mut seen_node_ids)?
+                            {
+                                all_commitments.push(commitment);
+                                successful_responses += 1;
+                                if successful_responses >= min_needed_from_network {
+                                    break;
+                                }
                             }
                         }
-                        Ok(Ok(false)) => {}
+                        Ok(Ok(None)) => {}
                         Ok(Err(e)) => {
                             tracing::warn!(
                                 request_id = %request_id,
@@ -1084,14 +1165,19 @@ where
                         }
                     }
                 }
+                Ok::<(), SignError>(())
             })
             .await
-            .unwrap_or_else(|_| {
-                tracing::warn!(
-                    request_id = %request_id,
-                    "Nonce collection timed out; proceeding with partial responses"
-                );
-            });
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        "Nonce collection timed out; proceeding with partial responses"
+                    );
+                }
+            }
         }
 
         // Cancel any stragglers once we have enough commitments or stop waiting.
@@ -1111,20 +1197,9 @@ where
             })?;
 
         for response in nonce_responses {
-            if let SignMessage::NonceResponse {
-                from_node_id,
-                nonce_commitment,
-                ..
-            } = response
+            if let Some(commitment) = Self::parse_peer_nonce_response(response, &mut seen_node_ids)?
             {
-                let commitment =
-                    <S::NonceCommitment>::from_bytes(&nonce_commitment).map_err(|e| {
-                        SignError::Deserialization(format!(
-                            "Failed to deserialize nonce commitment from node {}: {}",
-                            from_node_id, e
-                        ))
-                    })?;
-                all_commitments.push((from_node_id, commitment));
+                all_commitments.push(commitment);
             }
         }
 
