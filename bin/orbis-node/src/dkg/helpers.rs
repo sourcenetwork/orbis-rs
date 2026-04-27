@@ -9,6 +9,7 @@ use bulletin::r#trait::{Bulletin, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, DkgRole, PriShare};
 use crypto::{CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
@@ -16,6 +17,17 @@ use zeroize::Zeroizing;
 /// Returns a `SessionNotFound` error for the given session_id.
 pub fn session_not_found(session_id: u64) -> DkgError {
     DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
+}
+
+const PSS_SESSION_ID_DOMAIN: &[u8] = b"orbis-pss-session-v1";
+
+fn ring_payload_matches_ring_key(ring_pk_key: &str, ring_pk_payload: &str) -> bool {
+    if let Ok(bytes) = hex::decode(ring_pk_payload) {
+        if let Ok(ring_pk) = G1Affine::from_bytes(&bytes) {
+            return ring_pk.to_string() == ring_pk_key;
+        }
+    }
+    ring_pk_payload == ring_pk_key
 }
 
 /// Serializes a slice of G1Affine commitment coefficients to a flat byte buffer.
@@ -28,6 +40,132 @@ pub fn serialize_commitment_coefficients(coefficients: &[G1Affine]) -> Result<Ve
         bytes.extend_from_slice(&coeff_bytes);
     }
     Ok(bytes)
+}
+
+fn hash_labeled_bytes(hasher: &mut Sha256, label: &[u8], bytes: &[u8]) {
+    hasher.update((label.len() as u32).to_le_bytes());
+    hasher.update(label);
+    hasher.update((bytes.len() as u32).to_le_bytes());
+    hasher.update(bytes);
+}
+
+fn hash_labeled_str(hasher: &mut Sha256, label: &[u8], value: &str) {
+    hash_labeled_bytes(hasher, label, value.as_bytes());
+}
+
+fn hash_sorted_peer_ids(hasher: &mut Sha256, label: &[u8], peer_ids: &[String]) {
+    let mut sorted_peer_ids = peer_ids.to_vec();
+    sorted_peer_ids.sort();
+    hasher.update((label.len() as u32).to_le_bytes());
+    hasher.update(label);
+    hasher.update((sorted_peer_ids.len() as u32).to_le_bytes());
+    for peer_id in &sorted_peer_ids {
+        hash_labeled_str(hasher, b"peer", peer_id);
+    }
+}
+
+/// Derive a deterministic refresh session ID from the ring's current generation state.
+pub fn derive_refresh_session_id(
+    ring_pk_hex: &str,
+    peer_ids: &[String],
+    threshold: u32,
+    public_polynomial_hex: &str,
+) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(PSS_SESSION_ID_DOMAIN);
+    hash_labeled_str(&mut hasher, b"kind", "refresh");
+    hash_labeled_str(&mut hasher, b"ring_pk", ring_pk_hex);
+    hash_sorted_peer_ids(&mut hasher, b"peer_ids", peer_ids);
+    hash_labeled_bytes(&mut hasher, b"threshold", &threshold.to_le_bytes());
+    hash_labeled_str(&mut hasher, b"public_polynomial", public_polynomial_hex);
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("digest prefix"))
+}
+
+/// Derive a deterministic reshare session ID from the ring's current generation state
+/// and the authoritative transition announced on the bulletin.
+pub fn derive_reshare_session_id(
+    ring_pk_hex: &str,
+    bulletin_post_id: &str,
+    old_peer_ids: &[String],
+    next_peer_ids: &[String],
+    new_threshold: u32,
+    public_polynomial_hex: &str,
+) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(PSS_SESSION_ID_DOMAIN);
+    hash_labeled_str(&mut hasher, b"kind", "reshare");
+    hash_labeled_str(&mut hasher, b"ring_pk", ring_pk_hex);
+    hash_labeled_str(&mut hasher, b"bulletin_post_id", bulletin_post_id);
+    hash_sorted_peer_ids(&mut hasher, b"old_peer_ids", old_peer_ids);
+    hash_sorted_peer_ids(&mut hasher, b"next_peer_ids", next_peer_ids);
+    hash_labeled_bytes(&mut hasher, b"new_threshold", &new_threshold.to_le_bytes());
+    hash_labeled_str(&mut hasher, b"public_polynomial", public_polynomial_hex);
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("digest prefix"))
+}
+
+/// Load the canonical refresh ring payload from the local RingIndex and bulletin.
+pub async fn load_refresh_ring_payload<S: LocalStorage>(
+    ring_pk_hex: &str,
+    local_storage: &S,
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+) -> Result<RingPayload> {
+    let ring_index: Vec<RingIndexEntry> = local_storage
+        .get(LocalStorageKeys::RingIndex)
+        .map_err(|e| DkgError::Storage(format!("Failed to read RingIndex: {}", e)))?
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let entry = ring_index
+        .iter()
+        .find(|e| e.ring_pk_str == ring_pk_hex)
+        .ok_or_else(|| DkgError::Unauthorized(format!("Unknown ring: {}", ring_pk_hex)))?;
+    load_ring_payload_by_post_id(ring_pk_hex, &entry.bulletin_post_id, bulletin).await
+}
+
+/// Load the canonical reshare ring payload, falling back to the wire-provided bulletin
+/// post ID for pure receivers that do not yet have a local RingIndex entry.
+pub async fn load_reshare_ring_payload<S: LocalStorage>(
+    ring_pk_hex: &str,
+    bulletin_post_id: &str,
+    local_storage: &S,
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+) -> Result<RingPayload> {
+    let ring_index: Vec<RingIndexEntry> = local_storage
+        .get(LocalStorageKeys::RingIndex)
+        .map_err(|e| DkgError::Storage(format!("Failed to read RingIndex: {}", e)))?
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let resolved_post_id = ring_index
+        .iter()
+        .find(|e| e.ring_pk_str == ring_pk_hex)
+        .map(|e| e.bulletin_post_id.as_str())
+        .unwrap_or(bulletin_post_id);
+    load_ring_payload_by_post_id(ring_pk_hex, resolved_post_id, bulletin).await
+}
+
+async fn load_ring_payload_by_post_id(
+    ring_pk_hex: &str,
+    post_id: &str,
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+) -> Result<RingPayload> {
+    let bulletin_post = bulletin
+        .read(BULLETIN_RING_NAMESPACE.to_string(), post_id.to_string())
+        .await
+        .map_err(|e| {
+            DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
+        })?;
+    let ring_payload: RingPayload = serde_json::from_slice(&bulletin_post.payload)
+        .map_err(|e| DkgError::Deserialization(format!("Bad ring payload from bulletin: {}", e)))?;
+
+    if !ring_payload_matches_ring_key(ring_pk_hex, &ring_payload.ring_pk) {
+        return Err(DkgError::Unauthorized(format!(
+            "Bulletin ring_pk does not match session ring for {}",
+            ring_pk_hex
+        )));
+    }
+
+    Ok(ring_payload)
 }
 
 /// Validates an incoming reshare `SessionInit` message.
@@ -107,7 +245,7 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
     let ring_payload: RingPayload = serde_json::from_slice(&bulletin_post.payload)
         .map_err(|e| DkgError::Deserialization(format!("Bad ring payload: {}", e)))?;
 
-    if ring_payload.ring_pk != ring_pk_hex {
+    if !ring_payload_matches_ring_key(ring_pk_hex, &ring_payload.ring_pk) {
         return Err(DkgError::Unauthorized(format!(
             "Bulletin ring_pk does not match session ring for {}",
             ring_pk_hex

@@ -1,12 +1,15 @@
 use crate::constants::{MAX_COMMITMENT_COEFFICIENTS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
-    build_reshare_params, serialize_commitment_coefficients, session_not_found,
-    validate_dkg_claims, validate_refresh_session_init, validate_reshare_session_init,
+    build_reshare_params, derive_refresh_session_id, derive_reshare_session_id,
+    load_refresh_ring_payload, load_reshare_ring_payload, serialize_commitment_coefficients,
+    session_not_found, validate_dkg_claims, validate_refresh_session_init,
+    validate_reshare_session_init,
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
-use crate::dkg::session_state::DkgMessageType;
+use crate::dkg::session_state::{DkgMessageType, RingPssClaimOutcome};
 use crate::helpers::helpers::{extract_node_part, is_self_peer_id};
+use crate::ring_state::RingShareBundle;
 
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use crypto::r#trait::{DistributedShare, Dkg, DkgRole};
@@ -22,6 +25,14 @@ use super::DkgCoordinator;
 
 const RESHARE_PARTICIPANT_SET_SEND_ATTEMPTS: usize = 3;
 const RESHARE_PARTICIPANT_SET_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+fn same_peer_set(left: &[String], right: &[String]) -> bool {
+    let mut left_sorted = left.to_vec();
+    let mut right_sorted = right.to_vec();
+    left_sorted.sort();
+    right_sorted.sort();
+    left_sorted == right_sorted
+}
 
 /// Handle a `DkgMessage::SessionInit`.
 ///
@@ -49,6 +60,7 @@ where
         + 'static,
 {
     let sender_hex = hex::encode(sender_peer_id.as_bytes());
+    let mut pss_claim: Option<&str> = None;
 
     match kind {
         SessionKind::Refresh { ring_pk_hex } => {
@@ -65,22 +77,57 @@ where
                 &coord.app_state.bulletin,
             )
             .await?;
-            if !coord
-                .app_state
-                .dkg_session_state
-                .try_mark_ring_pss(ring_pk_hex)
-                .await
-            {
-                return Err(DkgError::Unauthorized(
-                    "Refresh already in progress for this ring".to_string(),
-                ));
+
+            let ring_payload = load_refresh_ring_payload(
+                ring_pk_hex,
+                &coord.app_state.local_storage,
+                &coord.app_state.bulletin,
+            )
+            .await?;
+
+            if !same_peer_set(peer_ids, &ring_payload.peer_ids) {
+                return Err(DkgError::Unauthorized(format!(
+                    "Refresh peer_ids do not match authoritative committee for ring {}",
+                    ring_pk_hex
+                )));
             }
-            tracing::info!(
-                session_id = session_id,
-                ring_pk = %ring_pk_hex,
-                sender_peer_hex = %sender_hex,
-                "DKG Coordinator: Refresh SessionInit validated and ring marked refreshing"
+            if threshold != ring_payload.threshold {
+                return Err(DkgError::Unauthorized(format!(
+                    "Refresh threshold {} does not match authoritative threshold {} for ring {}",
+                    threshold, ring_payload.threshold, ring_pk_hex
+                )));
+            }
+            if total_participants as usize != ring_payload.peer_ids.len() {
+                return Err(DkgError::Unauthorized(format!(
+                    "Refresh total_participants {} does not match authoritative committee size {} for ring {}",
+                    total_participants,
+                    ring_payload.peer_ids.len(),
+                    ring_pk_hex
+                )));
+            }
+
+            let bundle =
+                RingShareBundle::load_by_ring_key(&coord.app_state.local_storage, ring_pk_hex)
+                    .map_err(|e| {
+                        DkgError::Unauthorized(format!(
+                            "Refresh session validation requires current ring bundle for {}: {}",
+                            ring_pk_hex, e
+                        ))
+                    })?;
+            let expected_session_id = derive_refresh_session_id(
+                ring_pk_hex,
+                &ring_payload.peer_ids,
+                ring_payload.threshold,
+                &bundle.public_polynomial,
             );
+            if session_id != expected_session_id {
+                return Err(DkgError::Unauthorized(format!(
+                    "Refresh session_id mismatch for ring {}: expected {}, got {}",
+                    ring_pk_hex, expected_session_id, session_id
+                )));
+            }
+
+            pss_claim = Some(ring_pk_hex.as_str());
         }
         SessionKind::Reshare {
             ring_pk_hex,
@@ -104,12 +151,69 @@ where
                 &coord.app_state.bulletin,
             )
             .await?;
+
+            let ring_payload = load_reshare_ring_payload(
+                ring_pk_hex,
+                reshare_bulletin_post_id,
+                &coord.app_state.local_storage,
+                &coord.app_state.bulletin,
+            )
+            .await?;
+
+            if !same_peer_set(peer_ids, &ring_payload.peer_ids) {
+                return Err(DkgError::Unauthorized(format!(
+                    "Reshare old peer_ids do not match authoritative committee for ring {}",
+                    ring_pk_hex
+                )));
+            }
+            if threshold != ring_payload.threshold {
+                return Err(DkgError::Unauthorized(format!(
+                    "Reshare old threshold {} does not match authoritative threshold {} for ring {}",
+                    threshold, ring_payload.threshold, ring_pk_hex
+                )));
+            }
+            if total_participants as usize != ring_payload.peer_ids.len() {
+                return Err(DkgError::Unauthorized(format!(
+                    "Reshare total_participants {} does not match authoritative committee size {} for ring {}",
+                    total_participants,
+                    ring_payload.peer_ids.len(),
+                    ring_pk_hex
+                )));
+            }
+
+            if let Ok(bundle) =
+                RingShareBundle::load_by_ring_key(&coord.app_state.local_storage, ring_pk_hex)
+            {
+                let authoritative_next_peer_ids = ring_payload
+                    .next_peer_ids
+                    .clone()
+                    .unwrap_or_else(|| ring_payload.peer_ids.clone());
+                let authoritative_new_threshold =
+                    ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
+                let expected_session_id = derive_reshare_session_id(
+                    ring_pk_hex,
+                    reshare_bulletin_post_id,
+                    &ring_payload.peer_ids,
+                    &authoritative_next_peer_ids,
+                    authoritative_new_threshold,
+                    &bundle.public_polynomial,
+                );
+                if session_id != expected_session_id {
+                    return Err(DkgError::Unauthorized(format!(
+                        "Reshare session_id mismatch for ring {}: expected {}, got {}",
+                        ring_pk_hex, expected_session_id, session_id
+                    )));
+                }
+            }
+
             tracing::info!(
                 session_id = session_id,
                 ring_pk = %ring_pk_hex,
                 sender_peer_hex = %sender_hex,
                 "DKG Coordinator: Reshare SessionInit validated"
             );
+
+            pss_claim = Some(ring_pk_hex.as_str());
         }
         SessionKind::Fresh => {
             let current_time = SystemTime::now()
@@ -155,27 +259,6 @@ where
             &coord.app_state.local_storage,
         )?;
 
-        // Mark the ring as having an in-progress reshare.  Done here — after we know
-        // this node is in at least one committee — so that the flag is never set for
-        // nodes that are not participants (which would permanently block future
-        // reshares for that ring on this node).
-        if !coord
-            .app_state
-            .dkg_session_state
-            .try_mark_ring_pss(ring_pk_hex)
-            .await
-        {
-            return Err(DkgError::Unauthorized(
-                "Reshare already in progress for this ring".to_string(),
-            ));
-        }
-        tracing::info!(
-            session_id = session_id,
-            ring_pk = %ring_pk_hex,
-            role = ?role,
-            "DKG Coordinator: Reshare SessionInit validated and ring marked resharing"
-        );
-
         (node_id, role, Some(params))
     } else {
         // Fresh / Refresh: look up our node_id from the initiator's assignments.
@@ -197,6 +280,36 @@ where
             })?;
         (node_id, DkgRole::Standard, None)
     };
+
+    if let Some(ring_key) = pss_claim {
+        match coord
+            .app_state
+            .dkg_session_state
+            .claim_ring_pss_session(ring_key, session_id)
+            .await
+        {
+            RingPssClaimOutcome::Claimed => {
+                tracing::info!(
+                    session_id = session_id,
+                    ring_key = %ring_key,
+                    "DKG Coordinator: Claimed active PSS session for ring"
+                );
+            }
+            RingPssClaimOutcome::AlreadyClaimedBySameSession => {
+                tracing::debug!(
+                    session_id = session_id,
+                    ring_key = %ring_key,
+                    "DKG Coordinator: Duplicate SessionInit for same PSS session"
+                );
+            }
+            RingPssClaimOutcome::Conflict { active_session_id } => {
+                return Err(DkgError::Unauthorized(format!(
+                    "Ring {} already has conflicting in-progress PSS session {} (got {})",
+                    ring_key, active_session_id, session_id
+                )));
+            }
+        }
+    }
 
     tracing::info!(
         assigned_node_id = assigned_node_id,
@@ -264,7 +377,7 @@ where
                     coord
                         .app_state
                         .dkg_session_state
-                        .unmark_ring_pss(ring_key)
+                        .unmark_ring_pss_if_matches(ring_key, session_id)
                         .await;
                     tracing::warn!(
                         session_id = session_id,
@@ -274,7 +387,16 @@ where
                 }
                 return Err(DkgError::MaxSessionsReached);
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                if let Some(ring_key) = kind.ring_key() {
+                    coord
+                        .app_state
+                        .dkg_session_state
+                        .unmark_ring_pss_if_matches(ring_key, session_id)
+                        .await;
+                }
+                return Err(e);
+            }
         }
 
         coord

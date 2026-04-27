@@ -1,5 +1,6 @@
 use crate::dkg::{
     coordinator::DkgCoordinator,
+    helpers::derive_reshare_session_id,
     messages::{DkgMessage, SessionKind},
 };
 use crate::helpers::create_routers::create_router_with_dkg_handler;
@@ -33,7 +34,7 @@ use crypto::DkgImpl;
 // path: unknown ring, sender not in old committee, concurrent ceremony blocked.
 // Additionally, includes unit tests for the Dealer Phase 4 cleanup path
 // (share deletion, ring index removal, PSS flag cleared) and the session-state
-// PSS blocking behaviour (try_mark_ring_pss idempotency).
+// PSS blocking behaviour (ring/session claim idempotency).
 // =============================================================================
 
 /// Build a minimal reshare `SessionInit` that the coordinator can inspect.
@@ -83,23 +84,40 @@ fn write_last_refresh(
     bundle.save_by_ring_key(storage, ring_pk).unwrap();
 }
 
-/// `try_mark_ring_pss` is idempotent: marking the same ring twice returns false,
-/// and after unmark it can be marked again.
+/// `claim_ring_pss_session` is idempotent for the same session ID, conflicts for a
+/// different session ID, and after unmark the ring can be claimed again.
 #[tokio::test]
 async fn test_rings_pss_blocks_refresh_and_reshare_equally() {
-    use crate::dkg::session_state::SessionStateManager;
+    use crate::dkg::session_state::{RingPssClaimOutcome, SessionStateManager};
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
     let ring_pk = "ring_pss_idempotent_test";
 
-    let first = manager.try_mark_ring_pss(ring_pk).await;
-    assert!(first, "first mark should succeed");
+    assert_eq!(
+        manager.claim_ring_pss_session(ring_pk, 11).await,
+        RingPssClaimOutcome::Claimed,
+        "first claim should succeed"
+    );
 
-    let second = manager.try_mark_ring_pss(ring_pk).await;
-    assert!(!second, "second mark on same ring must return false");
+    assert_eq!(
+        manager.claim_ring_pss_session(ring_pk, 11).await,
+        RingPssClaimOutcome::AlreadyClaimedBySameSession,
+        "same-session claim should be idempotent"
+    );
+
+    assert_eq!(
+        manager.claim_ring_pss_session(ring_pk, 12).await,
+        RingPssClaimOutcome::Conflict {
+            active_session_id: 11
+        },
+        "different-session claim should conflict"
+    );
 
     manager.unmark_ring_pss(ring_pk).await;
-    let third = manager.try_mark_ring_pss(ring_pk).await;
-    assert!(third, "mark after unmark should succeed");
+    assert_eq!(
+        manager.claim_ring_pss_session(ring_pk, 13).await,
+        RingPssClaimOutcome::Claimed,
+        "claim after unmark should succeed"
+    );
 }
 
 /// Reshare `SessionInit` for a ring that does not exist in `RingIndex` must be
@@ -265,8 +283,14 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
     .await;
 
     // Pre-mark the ring so the coordinator treats it as already resharing.
-    let marked = app_state.dkg_session_state.try_mark_ring_pss(ring_pk).await;
-    assert!(marked, "initial mark should succeed");
+    assert_eq!(
+        app_state
+            .dkg_session_state
+            .claim_ring_pss_session(ring_pk, 42)
+            .await,
+        crate::dkg::session_state::RingPssClaimOutcome::Claimed,
+        "initial conflicting claim should succeed"
+    );
 
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
@@ -396,8 +420,14 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
         .await;
 
     // Mark the ring as having an active PSS ceremony.
-    let marked = app_state.dkg_session_state.try_mark_ring_pss(ring_pk).await;
-    assert!(marked, "PSS flag should be markable before Phase 4");
+    assert_eq!(
+        app_state
+            .dkg_session_state
+            .claim_ring_pss_session(ring_pk, session_id)
+            .await,
+        crate::dkg::session_state::RingPssClaimOutcome::Claimed,
+        "PSS claim should be markable before Phase 4"
+    );
 
     coordinator
         .initiate_phase4_completion(session_id)
@@ -1086,7 +1116,17 @@ async fn run_reshare_ceremony(
     bulletin_post_id: &str,
     new_committee_states: &[&crate::app_state::AppState<DkgImpl>],
 ) {
-    let session_id: u64 = rand::random();
+    let initiator_bundle =
+        RingShareBundle::load_by_ring_key(&initiator_state.local_storage, key_string)
+            .expect("load initiator bundle for reshare session id");
+    let session_id = derive_reshare_session_id(
+        key_string,
+        bulletin_post_id,
+        old_peer_ids,
+        sorted_next_peer_ids,
+        new_threshold,
+        &initiator_bundle.public_polynomial,
+    );
 
     // Snapshot share bytes before reshare so we can detect when they change.
     let pre_snapshots: Vec<Option<zeroize::Zeroizing<Vec<u8>>>> = new_committee_states

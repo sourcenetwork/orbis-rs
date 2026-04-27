@@ -1,5 +1,6 @@
 use crate::dkg::{
     coordinator::DkgCoordinator,
+    helpers::derive_refresh_session_id,
     messages::{DkgMessage, SessionKind},
 };
 use crate::helpers::helpers::extract_node_part;
@@ -167,7 +168,17 @@ async fn test_dkg_followed_by_pss_refresh() {
 
     println!("Refresh initiator: node_id={}", initiator_node_id);
 
-    let refresh_session_id: u64 = rand::random();
+    let initiator_bundle = crate::ring_state::RingShareBundle::load_by_ring_key(
+        &initiator_state.local_storage,
+        &key_string,
+    )
+    .expect("load initiator bundle for refresh session id");
+    let refresh_session_id = derive_refresh_session_id(
+        &key_string,
+        &peer_ids,
+        2,
+        &initiator_bundle.public_polynomial,
+    );
     let coordinator = DkgCoordinator::new(Arc::new(initiator_state.clone()));
 
     coordinator
@@ -392,7 +403,7 @@ async fn test_share_before_commitment_fails() {
         share_value: vec![0u8; 32],
         nonce: [0u8; 16],
     };
-    let sender_bytes = hex::decode(sender_hex).unwrap();
+    let sender_bytes = hex::decode(&sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
 
     let result = coordinator.handle_message(share_msg, &sender_peer_id).await;
@@ -428,11 +439,14 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
 
     // Mark the ring as refreshing — this is what PSS mod.rs does before
     // creating a refresh session.
-    let marked = app_state
-        .dkg_session_state
-        .try_mark_ring_pss(ring_key)
-        .await;
-    assert!(marked, "should be able to mark a fresh ring as refreshing");
+    assert_eq!(
+        app_state
+            .dkg_session_state
+            .claim_ring_pss_session(ring_key, refresh_session_id)
+            .await,
+        crate::dkg::session_state::RingPssClaimOutcome::Claimed,
+        "should be able to claim a fresh ring as refreshing"
+    );
 
     // Create the refresh session.
     let coordinator = DkgCoordinator::new(app_state.clone());
@@ -539,13 +553,14 @@ fn write_last_refresh(
 
 /// Build a minimal refresh `SessionInit` targeted at `ring_pk`.
 fn refresh_session_init(ring_pk: &str, sender_hex: &str) -> DkgMessage {
+    let peer_ids = vec![sender_hex.to_string()];
     let mut node_id_assignments = std::collections::HashMap::new();
     node_id_assignments.insert(sender_hex.to_string(), 1u32);
     DkgMessage::SessionInit {
-        session_id: 99_999_001,
+        session_id: derive_refresh_session_id(ring_pk, &peer_ids, 1, ""),
         threshold: 1,
         total_participants: 1,
-        peer_ids: vec![sender_hex.to_string()],
+        peer_ids,
         node_id_assignments,
         token_string: String::new(),
         kind: SessionKind::Refresh {
@@ -594,7 +609,7 @@ async fn test_refresh_rejected_too_soon() {
     let app_state = Arc::new(create_test_app_state_default(db_name).await);
 
     let ring_pk = "ring_pk";
-    let sender_hex = "aabbccdd";
+    let sender_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     write_ring_to_bulletin(
         &app_state.local_storage,
         &app_state.bulletin,
@@ -611,10 +626,10 @@ async fn test_refresh_rejected_too_soon() {
         .as_secs();
     write_last_refresh(&app_state.local_storage, ring_pk, now_secs);
 
-    let sender_bytes = hex::decode(sender_hex).unwrap();
+    let sender_bytes = hex::decode(&sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
     let coordinator = DkgCoordinator::new(app_state);
-    let msg = refresh_session_init(ring_pk, sender_hex);
+    let msg = refresh_session_init(ring_pk, &sender_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
@@ -632,7 +647,7 @@ async fn test_refresh_rejected_already_in_progress() {
     let app_state = Arc::new(create_test_app_state_default(db_name).await);
 
     let ring_pk = "ring_pk";
-    let sender_hex = "aabbccdd";
+    let sender_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     write_ring_to_bulletin(
         &app_state.local_storage,
         &app_state.bulletin,
@@ -644,13 +659,20 @@ async fn test_refresh_rejected_already_in_progress() {
     write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
 
     // Pre-mark the ring as already refreshing so the coordinator rejects the second attempt.
-    let first_mark = app_state.dkg_session_state.try_mark_ring_pss(ring_pk).await;
-    assert!(first_mark, "initial mark should succeed");
+    let expected_session_id = derive_refresh_session_id(ring_pk, &[sender_hex.to_string()], 1, "");
+    assert_eq!(
+        app_state
+            .dkg_session_state
+            .claim_ring_pss_session(ring_pk, expected_session_id + 1)
+            .await,
+        crate::dkg::session_state::RingPssClaimOutcome::Claimed,
+        "initial conflicting claim should succeed"
+    );
 
-    let sender_bytes = hex::decode(sender_hex).unwrap();
+    let sender_bytes = hex::decode(&sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
     let coordinator = DkgCoordinator::new(app_state);
-    let msg = refresh_session_init(ring_pk, sender_hex);
+    let msg = refresh_session_init(ring_pk, &sender_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
