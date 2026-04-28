@@ -403,6 +403,14 @@ mod tests {
             .await
             .expect("create DKG session");
 
+        let (send_lock, _) = coordinator
+            .app_state
+            .dkg_session_state
+            .get_or_create_peer_send_lock(&session_id, &remote_peer_id)
+            .await
+            .expect("session send lock");
+        let test_guard = send_lock.lock().await;
+
         let first = {
             let coordinator = coordinator.clone();
             let remote_peer_id = remote_peer_id.clone();
@@ -421,6 +429,10 @@ mod tests {
             })
         };
 
+        // Hold the same per-peer send lock used by the coordinator so the first
+        // sender queues before we spawn the second sender.
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
         let second = {
             let coordinator = coordinator.clone();
             let remote_peer_id = remote_peer_id.clone();
@@ -438,6 +450,8 @@ mod tests {
                     .await
             })
         };
+
+        drop(test_guard);
 
         first
             .await
