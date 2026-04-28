@@ -41,10 +41,10 @@ pub enum DkgPhase {
 
 /// Outcome of a `SessionStateManager::create_session` call.
 ///
-/// Callers that marked a ring as in-progress PSS (`try_mark_ring_pss`) before
-/// calling `create_session` MUST unmark it when they receive `LimitReached`.
+/// Callers that claimed a ring/session pair for PSS before calling
+/// `create_session` MUST clear that claim when they receive `LimitReached`.
 /// `AlreadyExists` is safe to ignore because a concurrent handler already owns
-/// the session and will clean up the PSS flag.
+/// the session and will clean up the PSS claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateSessionOutcome {
     /// Session was created successfully.
@@ -53,6 +53,17 @@ pub enum CreateSessionOutcome {
     AlreadyExists,
     /// `MAX_DKG_SESSIONS` is at capacity; session was NOT created.
     LimitReached,
+}
+
+/// Outcome of claiming the active PSS session for a ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RingPssClaimOutcome {
+    /// The ring had no active PSS ceremony and is now claimed by this session.
+    Claimed,
+    /// The ring is already claimed by this exact session. Safe to treat as idempotent.
+    AlreadyClaimedBySameSession,
+    /// The ring is currently claimed by a different session.
+    Conflict { active_session_id: u64 },
 }
 
 /// DKG Message Type for deduplication (more efficient than String)
@@ -334,10 +345,10 @@ pub struct SessionStateManager<D: Dkg> {
     pub(crate) states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
     /// Channel for queueing session cleanup requests
     cleanup_tx: mpsc::UnboundedSender<u64>,
-    /// Ring public key strings that currently have an in-progress PSS ceremony
-    /// (refresh or reshare). Cleared on Phase 4 success or session cleanup/expiration
-    /// so that a new ceremony can be initiated after failure.
-    rings_pss: Arc<RwLock<HashSet<String>>>,
+    /// Ring public key strings mapped to their active in-progress PSS ceremony
+    /// session IDs. Cleared on Phase 4 success or session cleanup/expiration so
+    /// that a new ceremony can be initiated after failure.
+    rings_pss: Arc<RwLock<HashMap<String, u64>>>,
 }
 
 impl<D: Dkg + 'static> SessionStateManager<D> {
@@ -345,7 +356,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub fn new() -> Self {
         let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel();
         let states = Arc::new(RwLock::new(HashMap::new()));
-        let rings_pss = Arc::new(RwLock::new(HashSet::new()));
+        let rings_pss = Arc::new(RwLock::new(HashMap::new()));
 
         // Spawn background cleanup task (handles guard-triggered cleanup)
         let states_clone = states.clone();
@@ -372,19 +383,22 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     async fn cleanup_worker(
         states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
         mut rx: mpsc::UnboundedReceiver<u64>,
-        rings_pss: Arc<RwLock<HashSet<String>>>,
+        rings_pss: Arc<RwLock<HashMap<String, u64>>>,
     ) {
         while let Some(session_id) = rx.recv().await {
             let mut states = states.write().await;
             if let Some(state) = states.remove(&session_id) {
                 // If this was a refresh or reshare session, unblock the ring.
                 if let Some(ring_key) = state.kind.ring_key() {
-                    rings_pss.write().await.remove(ring_key);
-                    tracing::debug!(
-                        session_id = session_id,
-                        ring_key = %ring_key,
-                        "SessionStateManager: Cleared in-progress PSS flag on cleanup"
-                    );
+                    let mut claims = rings_pss.write().await;
+                    if claims.get(ring_key).copied() == Some(session_id) {
+                        claims.remove(ring_key);
+                        tracing::debug!(
+                            session_id = session_id,
+                            ring_key = %ring_key,
+                            "SessionStateManager: Cleared in-progress PSS claim on cleanup"
+                        );
+                    }
                 }
                 tracing::debug!(
                     session_id = session_id,
@@ -401,7 +415,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// abandoned and are removed to prevent memory leaks.
     async fn expiration_worker(
         states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
-        rings_pss: Arc<RwLock<HashSet<String>>>,
+        rings_pss: Arc<RwLock<HashMap<String, u64>>>,
     ) {
         let mut interval = tokio::time::interval(SESSION_EXPIRATION_CHECK_INTERVAL);
 
@@ -444,24 +458,27 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             }
 
             // Remove sessions (connections are per-peer and never closed here)
-            let mut refresh_keys_to_clear: Vec<String> = Vec::new();
+            let mut ring_claims_to_clear: Vec<(String, u64)> = Vec::new();
             for session_id in to_remove_ids {
                 if let Some(state) = states.remove(&session_id) {
                     if let Some(k) = state.kind.ring_key() {
-                        refresh_keys_to_clear.push(k.to_string());
+                        ring_claims_to_clear.push((k.to_string(), session_id));
                     }
                 }
             }
 
-            // Clear in-progress PSS flags for expired sessions
-            if !refresh_keys_to_clear.is_empty() {
+            // Clear in-progress PSS claims for expired sessions.
+            if !ring_claims_to_clear.is_empty() {
                 let mut pss = rings_pss.write().await;
-                for key in &refresh_keys_to_clear {
-                    pss.remove(key);
-                    tracing::debug!(
-                        ring_key = %key,
-                        "SessionStateManager: Cleared in-progress PSS flag on expiration"
-                    );
+                for (key, session_id) in &ring_claims_to_clear {
+                    if pss.get(key).copied() == Some(*session_id) {
+                        pss.remove(key);
+                        tracing::debug!(
+                            ring_key = %key,
+                            session_id = session_id,
+                            "SessionStateManager: Cleared in-progress PSS claim on expiration"
+                        );
+                    }
                 }
             }
 
@@ -476,22 +493,54 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
-    /// Atomically mark a ring as having an in-progress PSS ceremony (refresh or reshare).
+    /// Atomically claim the active PSS session for a ring.
     ///
-    /// Returns `true` if the ring was successfully marked (no ceremony was in progress).
-    /// Returns `false` if a ceremony is already in progress for this ring.
-    pub async fn try_mark_ring_pss(&self, ring_pk_hex: &str) -> bool {
-        self.rings_pss.write().await.insert(ring_pk_hex.to_string())
+    /// This lets concurrent refresh/reshare starters converge on one session ID:
+    /// callers racing to start the same deterministic session get
+    /// `AlreadyClaimedBySameSession`, while genuinely conflicting ceremonies get
+    /// `Conflict`.
+    pub async fn claim_ring_pss_session(
+        &self,
+        ring_pk_hex: &str,
+        session_id: u64,
+    ) -> RingPssClaimOutcome {
+        let mut claims = self.rings_pss.write().await;
+        match claims.get(ring_pk_hex).copied() {
+            None => {
+                claims.insert(ring_pk_hex.to_string(), session_id);
+                RingPssClaimOutcome::Claimed
+            }
+            Some(existing) if existing == session_id => {
+                RingPssClaimOutcome::AlreadyClaimedBySameSession
+            }
+            Some(existing) => RingPssClaimOutcome::Conflict {
+                active_session_id: existing,
+            },
+        }
     }
 
     /// Returns `true` if a PSS ceremony is currently in progress for this ring.
     pub async fn is_ring_pss_active(&self, ring_pk_key: &str) -> bool {
-        self.rings_pss.read().await.contains(ring_pk_key)
+        self.rings_pss.read().await.contains_key(ring_pk_key)
     }
 
-    /// Clear the in-progress PSS flag for a ring (called on Phase 4 success or abort).
+    /// Returns the active PSS session ID for a ring, if any.
+    pub async fn active_ring_pss_session(&self, ring_pk_key: &str) -> Option<u64> {
+        self.rings_pss.read().await.get(ring_pk_key).copied()
+    }
+
+    /// Clear the in-progress PSS claim for a ring (called on setup failure before a
+    /// session exists, or when force-clearing state).
     pub async fn unmark_ring_pss(&self, ring_pk_hex: &str) {
         self.rings_pss.write().await.remove(ring_pk_hex);
+    }
+
+    /// Clear the in-progress PSS claim only if this exact session still owns it.
+    pub async fn unmark_ring_pss_if_matches(&self, ring_pk_hex: &str, session_id: u64) {
+        let mut claims = self.rings_pss.write().await;
+        if claims.get(ring_pk_hex).copied() == Some(session_id) {
+            claims.remove(ring_pk_hex);
+        }
     }
 
     /// Create a cleanup guard for a session.
@@ -788,13 +837,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             }
         };
 
-        // Clear the in-progress PSS flag so future ceremonies can proceed.
+        // Clear the in-progress PSS claim so future ceremonies can proceed.
         if let Some(key) = ring_key_to_clear {
-            self.rings_pss.write().await.remove(&key);
+            self.unmark_ring_pss_if_matches(&key, *session_id).await;
             tracing::debug!(
                 session_id = session_id,
                 ring_key = %key,
-                "SessionStateManager: Cleared in-progress PSS flag on remove_session"
+                "SessionStateManager: Cleared in-progress PSS claim on remove_session"
             );
         }
     }
@@ -1225,45 +1274,69 @@ mod tests {
     }
 
     // =========================================================================
-    // rings_pss: try_mark / unmark
+    // rings_pss: claim / unmark
     // =========================================================================
 
     #[tokio::test]
-    async fn test_try_mark_returns_true_first_call() {
+    async fn test_claim_returns_claimed_first_call() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        assert!(
-            mgr.try_mark_ring_pss("ring_abc").await,
-            "first mark should succeed (ring not yet in progress)"
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_abc", 11).await,
+            RingPssClaimOutcome::Claimed,
+            "first claim should succeed (ring not yet in progress)"
         );
     }
 
     #[tokio::test]
-    async fn test_try_mark_returns_false_when_already_in_progress() {
+    async fn test_claim_returns_same_session_for_duplicate() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        assert!(mgr.try_mark_ring_pss("ring_abc").await, "first mark");
-        assert!(
-            !mgr.try_mark_ring_pss("ring_abc").await,
-            "second mark for same ring should fail"
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_abc", 11).await,
+            RingPssClaimOutcome::Claimed
         );
-        // A different ring must not be affected.
-        assert!(
-            mgr.try_mark_ring_pss("ring_xyz").await,
-            "different ring should be markable independently"
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_abc", 11).await,
+            RingPssClaimOutcome::AlreadyClaimedBySameSession,
+            "duplicate claim for same session should be idempotent"
         );
     }
 
     #[tokio::test]
-    async fn test_unmark_allows_remark() {
+    async fn test_claim_returns_conflict_for_different_session() {
         let mgr = SessionStateManager::<DkgImpl>::new();
-        assert!(mgr.try_mark_ring_pss("ring_abc").await);
-        assert!(
-            !mgr.try_mark_ring_pss("ring_abc").await,
-            "still in progress"
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_abc", 11).await,
+            RingPssClaimOutcome::Claimed
         );
-        mgr.unmark_ring_pss("ring_abc").await;
-        assert!(
-            mgr.try_mark_ring_pss("ring_abc").await,
-            "after unmark the ring should be markable again"
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_abc", 22).await,
+            RingPssClaimOutcome::Conflict {
+                active_session_id: 11
+            },
+            "different session should conflict"
+        );
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_xyz", 22).await,
+            RingPssClaimOutcome::Claimed,
+            "different ring should be claimable independently"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unmark_if_matches_preserves_other_session() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_abc", 11).await,
+            RingPssClaimOutcome::Claimed
+        );
+        mgr.unmark_ring_pss_if_matches("ring_abc", 22).await;
+        assert_eq!(mgr.active_ring_pss_session("ring_abc").await, Some(11));
+        mgr.unmark_ring_pss_if_matches("ring_abc", 11).await;
+        assert_eq!(mgr.active_ring_pss_session("ring_abc").await, None);
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_abc", 33).await,
+            RingPssClaimOutcome::Claimed,
+            "after matching unmark the ring should be claimable again"
         );
     }
 
@@ -1280,13 +1353,15 @@ mod tests {
             },
         )
         .await;
-        assert!(
-            mgr.try_mark_ring_pss("ring_cleanup").await,
-            "ring should be markable before any cleanup"
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_cleanup", 50).await,
+            RingPssClaimOutcome::Claimed,
+            "ring should be claimable before any cleanup"
         );
-        assert!(
-            !mgr.try_mark_ring_pss("ring_cleanup").await,
-            "ring should be blocked while in progress"
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_cleanup", 50).await,
+            RingPssClaimOutcome::AlreadyClaimedBySameSession,
+            "same session should remain idempotent while in progress"
         );
 
         // Drop a cleanup guard without defusing — worker removes session + flag.
@@ -1297,9 +1372,10 @@ mod tests {
         tokio::task::yield_now().await;
         tokio::task::yield_now().await;
 
-        assert!(
-            mgr.try_mark_ring_pss("ring_cleanup").await,
-            "rings_pss flag should be cleared after cleanup guard fires"
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_cleanup", 51).await,
+            RingPssClaimOutcome::Claimed,
+            "rings_pss claim should be cleared after cleanup guard fires"
         );
     }
 
@@ -1316,7 +1392,10 @@ mod tests {
             },
         )
         .await;
-        assert!(mgr.try_mark_ring_pss("ring_expire").await);
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_expire", 60).await,
+            RingPssClaimOutcome::Claimed
+        );
 
         // Backdate created_at past SESSION_TTL so the expiration worker evicts it.
         {
@@ -1334,9 +1413,10 @@ mod tests {
             !mgr.session_exists(&60).await,
             "expired session should be removed"
         );
-        assert!(
-            mgr.try_mark_ring_pss("ring_expire").await,
-            "rings_pss flag should be cleared after session expiration"
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_expire", 61).await,
+            RingPssClaimOutcome::Claimed,
+            "rings_pss claim should be cleared after session expiration"
         );
     }
 }

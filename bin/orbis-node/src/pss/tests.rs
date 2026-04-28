@@ -166,18 +166,19 @@ async fn test_refresh_all_rings_bulletin_miss_does_not_propagate() {
     cleanup_db(&db_path);
 }
 
-/// When the ring's peer list doesn't include this node as smallest, `refresh_ring`
-/// should skip gracefully (Ok(())).
+/// When the ring's peer list does not include this node at all, `pss_ring`
+/// should reject the refresh/reshare attempt instead of silently standing down.
 #[tokio::test]
-async fn test_refresh_ring_not_initiator_skips_silently() {
-    let db_name = "pss_not_initiator";
+async fn test_refresh_ring_rejects_non_member() {
+    let db_name = "pss_non_member";
 
     // Two fake peer IDs that sort before any real random peer ID.
     // They are 64-char hex strings (all zeroes / ones) — valid format.
     let fake_peer_1 = "0".repeat(64);
     let fake_peer_2 = "1".repeat(64);
 
-    // ring_pk is not validated on the non-initiator path (we return before deserialization).
+    // ring_pk is not validated on the non-member path because membership is checked
+    // first once the payload is deserialized.
     let ring_payload = RingPayload {
         ring_pk: "fake_pk".to_string(),
         peer_ids: vec![fake_peer_1.clone(), fake_peer_2.clone()],
@@ -189,31 +190,73 @@ async fn test_refresh_ring_not_initiator_skips_silently() {
 
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
 
-    // Our real peer ID (random) is almost certainly larger than all-zeroes
+    // Our real peer ID is not one of the fake committee members.
     let our_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let our_node_part = extract_node_part(&our_hex);
 
-    // Confirm our peer is NOT the smallest (test precondition)
-    let mut sorted = [fake_peer_1.clone(), fake_peer_2.clone()];
-    sorted.sort();
-    assert_ne!(
-        extract_node_part(&sorted[0]),
-        our_node_part,
-        "Test setup: our node must not be the smallest peer for this test to be meaningful"
+    // Confirm our peer is absent from the committee (test precondition).
+    assert!(
+        !ring_payload
+            .peer_ids
+            .iter()
+            .any(|peer_id| extract_node_part(peer_id) == our_node_part),
+        "Test setup: our node must not be in the committee for this test to be meaningful"
     );
 
     let state_arc = Arc::new(app_state);
     let result = super::pss_ring(&state_arc, &entry).await;
 
     assert!(
-        result.is_ok(),
-        "Non-initiator should skip cleanly: {:?}",
+        matches!(result, Err(DkgError::Unauthorized(_))),
+        "Non-member should be rejected explicitly: {:?}",
         result
     );
     assert_eq!(
         state_arc.dkg_session_state.session_count().await,
         0,
-        "No session should be created when this node is not the initiator"
+        "No session should be created when this node is not in the committee"
+    );
+
+    cleanup_db(&db_path);
+}
+
+/// A malformed peer list must not leave the ring marked as in-progress when
+/// refresh setup fails before any session is created.
+#[tokio::test]
+async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
+    let db_name = "pss_invalid_peer_no_wedge";
+    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+
+    let ring_pk = "pss_invalid_peer_ring";
+    let ring_payload = RingPayload {
+        ring_pk: ring_pk.to_string(),
+        peer_ids: vec![our_hex.clone(), "not-a-valid-peer-id".to_string()],
+        next_peer_ids: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: Some(1),
+    };
+
+    let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
+    let state_arc = Arc::new(app_state);
+
+    let result = super::pss_ring(&state_arc, &entry).await;
+    assert!(
+        matches!(result, Err(DkgError::InvalidInput(_))),
+        "Expected InvalidInput for malformed peer ID, got: {:?}",
+        result
+    );
+    assert_eq!(
+        state_arc.dkg_session_state.session_count().await,
+        0,
+        "No session should be created when refresh setup rejects invalid peer IDs"
+    );
+    assert!(
+        !state_arc
+            .dkg_session_state
+            .is_ring_pss_active(ring_pk)
+            .await,
+        "Refresh setup failure must not leave the ring claimed as in-progress"
     );
 
     cleanup_db(&db_path);

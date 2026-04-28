@@ -18,8 +18,9 @@
 //! Phase 4 posts the updated `RingPayload` with `next_peer_ids = None` so subsequent
 //! ticks revert to the normal refresh cadence.
 //!
-//! In both cases only the node with the lexicographically smallest peer ID in the
-//! current (`peer_ids`) committee acts as the initiator.
+//! In both cases any current old-committee node may attempt to start the ceremony.
+//! Concurrent starters converge because they derive the same deterministic session ID
+//! from the ring's current public polynomial and the authoritative transition data.
 //!
 //! Rings with `pss_interval = None` are skipped for refresh (reshare is unaffected).
 
@@ -30,8 +31,11 @@ use crate::app_state::AppState;
 use crate::constants::{BULLETIN_RING_NAMESPACE, PSS_GRACE_PERIOD_SECS};
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
-use crate::dkg::helpers::build_reshare_params;
+use crate::dkg::helpers::{
+    build_reshare_params, derive_refresh_session_id, derive_reshare_session_id,
+};
 use crate::dkg::messages::{DkgMessage, SessionKind};
+use crate::dkg::session_state::RingPssClaimOutcome;
 use crate::helpers::helpers::{extract_node_part, validate_all_peer_ids};
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::r#trait::RingPayload;
@@ -150,16 +154,28 @@ where
         }
     }
 
-    // Only the node with the lexicographically smallest peer ID in the current
-    // committee acts as initiator for both refresh and reshare.
     let our_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let our_node_part = extract_node_part(&our_peer_id_hex);
+
+    if ring_payload.peer_ids.is_empty() {
+        return Err(DkgError::InvalidInput(format!(
+            "PSS: ring {} has an empty committee",
+            ring_pk_str
+        )));
+    }
+
     let mut sorted_peers = ring_payload.peer_ids.clone();
     sorted_peers.sort();
 
-    if extract_node_part(&sorted_peers[0]) != our_node_part {
-        tracing::debug!(ring_pk_str = %ring_pk_str, "PSS: not the initiator, skipping");
-        return Ok(());
+    if !ring_payload
+        .peer_ids
+        .iter()
+        .any(|peer_id| extract_node_part(peer_id) == our_node_part)
+    {
+        return Err(DkgError::Unauthorized(format!(
+            "PSS: local node {} is not a current member of ring {}",
+            our_node_part, ring_pk_str
+        )));
     }
 
     if is_reshare {
@@ -220,20 +236,6 @@ where
     let peer_ids = &ring_payload.peer_ids;
     let threshold = ring_payload.threshold as usize;
 
-    // Prevent duplicate refresh sessions on this node.
-    if !app_state
-        .dkg_session_state
-        .try_mark_ring_pss(ring_pk_str)
-        .await
-    {
-        tracing::debug!(
-            post_id = %post_id,
-            ring_pk_str = %ring_pk_str,
-            "PSS: refresh already in progress, skipping"
-        );
-        return Ok(());
-    }
-
     // Build deterministic node_id assignments (sorted peer list → 1-indexed).
     let mut node_id_assignments: std::collections::HashMap<String, u32> =
         std::collections::HashMap::new();
@@ -246,22 +248,55 @@ where
         .ok_or_else(|| DkgError::InvalidInput("PSS: our peer not in ring".to_string()))?;
 
     let total = peer_ids.len();
-    let session_id: u64 = rand::random();
-
-    let coordinator = DkgCoordinator::new(app_state.clone());
 
     if let Err((bad_peer, err)) = validate_all_peer_ids(peer_ids) {
-        app_state
-            .dkg_session_state
-            .remove_session(&session_id)
-            .await;
         return Err(DkgError::InvalidInput(format!(
             "PSS: invalid peer ID '{}': {}",
             bad_peer, err
         )));
     }
 
-    if let Err(e) = coordinator
+    let bundle =
+        RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str).map_err(|e| {
+            DkgError::Storage(format!("PSS: failed to load current ring bundle: {}", e))
+        })?;
+    let session_id = derive_refresh_session_id(
+        ring_pk_str,
+        peer_ids,
+        ring_payload.threshold,
+        &bundle.public_polynomial,
+    );
+
+    match app_state
+        .dkg_session_state
+        .claim_ring_pss_session(ring_pk_str, session_id)
+        .await
+    {
+        RingPssClaimOutcome::Claimed => {}
+        RingPssClaimOutcome::AlreadyClaimedBySameSession => {
+            tracing::debug!(
+                post_id = %post_id,
+                ring_pk_str = %ring_pk_str,
+                session_id = session_id,
+                "PSS: refresh session already active locally, skipping duplicate start"
+            );
+            return Ok(());
+        }
+        RingPssClaimOutcome::Conflict { active_session_id } => {
+            tracing::warn!(
+                post_id = %post_id,
+                ring_pk_str = %ring_pk_str,
+                session_id = session_id,
+                active_session_id = active_session_id,
+                "PSS: conflicting refresh session already active locally, skipping"
+            );
+            return Ok(());
+        }
+    }
+
+    let coordinator = DkgCoordinator::new(app_state.clone());
+
+    match coordinator
         .create_session(
             session_id,
             our_node_id,
@@ -272,18 +307,30 @@ where
         )
         .await
     {
-        tracing::error!(
-            post_id = %post_id,
-            ring_pk_str = %ring_pk_str,
-            session_id = session_id,
-            error = %e,
-            "PSS: failed to create refresh DKG session on initiator"
-        );
-        app_state
-            .dkg_session_state
-            .unmark_ring_pss(ring_pk_str)
-            .await;
-        return Err(e);
+        Ok(()) => {}
+        Err(DkgError::SessionAlreadyExists) => {
+            tracing::debug!(
+                post_id = %post_id,
+                ring_pk_str = %ring_pk_str,
+                session_id = session_id,
+                "PSS: refresh session already exists locally, skipping duplicate start"
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            tracing::error!(
+                post_id = %post_id,
+                ring_pk_str = %ring_pk_str,
+                session_id = session_id,
+                error = %e,
+                "PSS: failed to create refresh DKG session locally"
+            );
+            app_state
+                .dkg_session_state
+                .unmark_ring_pss_if_matches(ring_pk_str, session_id)
+                .await;
+            return Err(e);
+        }
     }
 
     app_state
@@ -406,20 +453,6 @@ where
     let our_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let our_node_part = extract_node_part(&our_peer_id_hex);
 
-    // Prevent duplicate reshare sessions on this node.
-    if !app_state
-        .dkg_session_state
-        .try_mark_ring_pss(ring_pk_str)
-        .await
-    {
-        tracing::debug!(
-            post_id = %post_id,
-            ring_pk_str = %ring_pk_str,
-            "PSS: reshare already in progress, skipping"
-        );
-        return Ok(());
-    }
-
     let (our_node_id, dkg_role, reshare_params) = match build_reshare_params(
         ring_pk_str,
         old_peer_ids,
@@ -430,14 +463,13 @@ where
         &app_state.local_storage,
     ) {
         Ok(v) => v,
-        Err(e) => {
-            app_state
-                .dkg_session_state
-                .unmark_ring_pss(ring_pk_str)
-                .await;
-            return Err(e);
-        }
+        Err(e) => return Err(e),
     };
+
+    let bundle =
+        RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str).map_err(|e| {
+            DkgError::Storage(format!("PSS: failed to load current ring bundle: {}", e))
+        })?;
 
     // sorted_new is already sorted inside reshare_params.new_peer_ids.
     let sorted_new = reshare_params.new_peer_ids.clone();
@@ -459,7 +491,14 @@ where
         node_id_assignments.insert(extract_node_part(peer_id), (idx + 1) as u32);
     }
 
-    let session_id: u64 = rand::random();
+    let session_id = derive_reshare_session_id(
+        ring_pk_str,
+        post_id,
+        old_peer_ids,
+        &sorted_new,
+        new_threshold,
+        &bundle.public_polynomial,
+    );
     let total_old = old_peer_ids.len();
 
     let kind = SessionKind::Reshare {
@@ -472,18 +511,41 @@ where
     let coordinator = DkgCoordinator::new(app_state.clone());
 
     if let Err((bad_peer, err)) = validate_all_peer_ids(&union_peers) {
-        app_state
-            .dkg_session_state
-            .unmark_ring_pss(ring_pk_str)
-            .await;
         return Err(DkgError::InvalidInput(format!(
             "PSS reshare: invalid peer ID '{}': {}",
             bad_peer, err
         )));
     }
 
+    match app_state
+        .dkg_session_state
+        .claim_ring_pss_session(ring_pk_str, session_id)
+        .await
+    {
+        RingPssClaimOutcome::Claimed => {}
+        RingPssClaimOutcome::AlreadyClaimedBySameSession => {
+            tracing::debug!(
+                post_id = %post_id,
+                ring_pk_str = %ring_pk_str,
+                session_id = session_id,
+                "PSS: reshare session already active locally, skipping duplicate start"
+            );
+            return Ok(());
+        }
+        RingPssClaimOutcome::Conflict { active_session_id } => {
+            tracing::warn!(
+                post_id = %post_id,
+                ring_pk_str = %ring_pk_str,
+                session_id = session_id,
+                active_session_id = active_session_id,
+                "PSS: conflicting reshare session already active locally, skipping"
+            );
+            return Ok(());
+        }
+    }
+
     let kind_for_init = kind.clone();
-    if let Err(e) = coordinator
+    match coordinator
         .create_session(
             session_id,
             our_node_id,
@@ -497,18 +559,30 @@ where
         )
         .await
     {
-        tracing::error!(
-            post_id = %post_id,
-            ring_pk_str = %ring_pk_str,
-            session_id = session_id,
-            error = %e,
-            "PSS: failed to create reshare DKG session on initiator"
-        );
-        app_state
-            .dkg_session_state
-            .unmark_ring_pss(ring_pk_str)
-            .await;
-        return Err(e);
+        Ok(()) => {}
+        Err(DkgError::SessionAlreadyExists) => {
+            tracing::debug!(
+                post_id = %post_id,
+                ring_pk_str = %ring_pk_str,
+                session_id = session_id,
+                "PSS: reshare session already exists locally, skipping duplicate start"
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            tracing::error!(
+                post_id = %post_id,
+                ring_pk_str = %ring_pk_str,
+                session_id = session_id,
+                error = %e,
+                "PSS: failed to create reshare DKG session locally"
+            );
+            app_state
+                .dkg_session_state
+                .unmark_ring_pss_if_matches(ring_pk_str, session_id)
+                .await;
+            return Err(e);
+        }
     }
 
     app_state
