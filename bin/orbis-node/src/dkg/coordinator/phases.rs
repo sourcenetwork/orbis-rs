@@ -398,86 +398,45 @@ where
             DkgError::Serialization(format!("Failed to serialize share value: {}", e))
         })?;
 
-        // Try to get specific peer_id for this node_id (O(1) lookup).
-        if let Some(target_peer_id) = coord
+        // Private DKG shares must be sent only to their intended recipient.
+        let target_peer_id = coord
             .app_state
             .dkg_session_state
             .get_peer_id_for_node(&session_id, share.to_id)
             .await
-        {
-            let share_msg = DkgMessage::Share {
-                session_id,
-                from_node_id: node_id,
-                to_node_id: share.to_id,
-                share_value: share_value_bytes.clone(),
-                nonce: share.nonce,
-            };
-            match coord
-                .send_message_to_peer(&target_peer_id, share_msg, Some(session_id))
-                .await
-            {
-                Ok(_) => {
-                    shares_sent += 1;
-                    tracing::debug!(
-                        from_node = node_id,
-                        to_node = share.to_id,
-                        peer_id = %target_peer_id,
-                        "DKG Coordinator: Sent share"
-                    );
-                }
-                Err(e) => {
-                    tracing::error!(
-                        to_node = share.to_id,
-                        peer_id = %target_peer_id,
-                        error = %e,
-                        "Failed to send share"
-                    );
-                }
-            }
-        } else {
-            // Fallback: broadcast to all peers (only if node_id → peer_id mapping not set up).
-            let mut sent_count = 0;
-            for peer_id_str in peer_ids {
-                if is_self_peer_id(&coord.app_state.network, peer_id_str) {
-                    continue;
-                }
+            .ok_or_else(|| {
+                DkgError::ProtocolError(format!(
+                    "Missing peer mapping for node_id {}; refusing to broadcast private share",
+                    share.to_id
+                ))
+            })?;
 
-                let broadcast_share_msg = DkgMessage::Share {
-                    session_id,
-                    from_node_id: node_id,
-                    to_node_id: share.to_id,
-                    share_value: share_value_bytes.clone(),
-                    nonce: share.nonce,
-                };
-                match coord
-                    .send_message_to_peer(peer_id_str, broadcast_share_msg, Some(session_id))
-                    .await
-                {
-                    Ok(_) => {
-                        sent_count += 1;
-                        tracing::debug!(
-                            from_node = node_id,
-                            to_node = share.to_id,
-                            peer_id = %peer_id_str,
-                            "DKG Coordinator: Sent share (broadcast)"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            peer_id = %peer_id_str,
-                            error = %e,
-                            "Failed to send share to peer"
-                        );
-                    }
-                }
-            }
-            if sent_count > 0 {
+        let share_msg = DkgMessage::Share {
+            session_id,
+            from_node_id: node_id,
+            to_node_id: share.to_id,
+            share_value: share_value_bytes,
+            nonce: share.nonce,
+        };
+        match coord
+            .send_message_to_peer(&target_peer_id, share_msg, Some(session_id))
+            .await
+        {
+            Ok(_) => {
                 shares_sent += 1;
-            } else {
-                tracing::error!(
+                tracing::debug!(
                     from_node = node_id,
                     to_node = share.to_id,
-                    "DKG Coordinator: Failed to send share to any peer"
+                    peer_id = %target_peer_id,
+                    "DKG Coordinator: Sent share"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    to_node = share.to_id,
+                    peer_id = %target_peer_id,
+                    error = %e,
+                    "Failed to send share"
                 );
             }
         }
