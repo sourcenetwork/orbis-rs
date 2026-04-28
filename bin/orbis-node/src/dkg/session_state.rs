@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
+use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use zeroize::Zeroize;
 
@@ -191,6 +192,12 @@ pub struct DkgSessionState<D: Dkg> {
     /// preserving QUIC's within-stream ordering guarantee (SessionInit → Commitment → Share).
     /// Streams are dropped automatically when the session is removed.
     pub peer_streams: HashMap<String, Arc<dyn Connection>>,
+    /// Per-peer send locks for this session.
+    ///
+    /// Serializes outbound sends to a given peer so a broken cached stream can be
+    /// evicted, replaced, and retried without a concurrent sender racing ahead on a
+    /// fresh stream and violating the intended within-peer ordering.
+    pub peer_send_locks: HashMap<String, Arc<Mutex<()>>>,
 }
 
 impl<D: Dkg> DkgSessionState<D> {
@@ -218,6 +225,7 @@ impl<D: Dkg> DkgSessionState<D> {
             pss_interval: None,
             reshare_params: None,
             peer_streams: HashMap::new(),
+            peer_send_locks: HashMap::new(),
         }
     }
 
@@ -812,6 +820,31 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         if let Some(state) = states.get_mut(session_id) {
             state.peer_streams.insert(peer_id, stream);
         }
+    }
+
+    /// Remove the cached outbound stream to a peer for this session, if any.
+    pub async fn remove_peer_stream(&self, session_id: &u64, peer_id: &str) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.peer_streams.remove(peer_id);
+        }
+    }
+
+    /// Get or create the per-peer outbound send lock for this session.
+    pub async fn get_or_create_peer_send_lock(
+        &self,
+        session_id: &u64,
+        peer_id: &str,
+    ) -> Option<Arc<Mutex<()>>> {
+        let mut states = self.states.write().await;
+        let state = states.get_mut(session_id)?;
+        Some(
+            state
+                .peer_send_locks
+                .entry(peer_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone(),
+        )
     }
 
     /// Remove a session and free its memory.

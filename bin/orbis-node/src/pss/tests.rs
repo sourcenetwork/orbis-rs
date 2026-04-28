@@ -314,6 +314,59 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     cleanup_db(&db_path);
 }
 
+/// When the ring index points at a bulletin post for a different ring,
+/// `pss_ring` must reject it before deriving committee state.
+#[tokio::test]
+async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
+    let db_name = "pss_ring_pk_mismatch";
+    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        ring_pk: "bulletin_ring_pk".to_string(),
+        peer_ids: vec![our_hex],
+        next_peer_ids: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: Some(1),
+    };
+
+    let payload_bytes = serde_json::to_vec(&ring_payload).expect("serialize RingPayload");
+    app_state
+        .bulletin
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            payload_bytes.clone(),
+            None,
+        )
+        .await
+        .expect("post RingPayload");
+    let post_id = app_state
+        .bulletin
+        .get_post_id(BULLETIN_RING_NAMESPACE, &payload_bytes)
+        .expect("compute post_id");
+
+    let entry = RingIndexEntry {
+        ring_pk_str: "expected_ring_pk".to_string(),
+        bulletin_post_id: post_id,
+    };
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&vec![&entry]).expect("serialize RingIndex"),
+        )
+        .expect("write RingIndex");
+
+    let result = super::pss_ring(&Arc::new(app_state), &entry).await;
+    assert!(
+        matches!(result, Err(DkgError::Storage(ref msg)) if msg.contains("bulletin post ring_pk mismatch")),
+        "Expected Storage error for mismatched ring_pk, got: {:?}",
+        result
+    );
+
+    cleanup_db(&db_path);
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Dispatch tests — reshare vs refresh routing
 // ──────────────────────────────────────────────────────────────────────────────

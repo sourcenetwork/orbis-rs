@@ -1,4 +1,5 @@
 use crate::dkg::error::{DkgError, Result};
+use crate::dkg::helpers::session_not_found;
 use crate::dkg::messages::DkgMessage;
 use crate::metrics;
 use crypto::r#trait::Dkg;
@@ -9,6 +10,44 @@ use network::{Connection as NetworkConnection, Message as NetworkMessage, DKG};
 use std::sync::Arc;
 
 use super::DkgCoordinator;
+
+async fn send_on_stream(
+    stream: &Arc<dyn NetworkConnection>,
+    peer_id_str: &str,
+    message_data: &[u8],
+) -> Result<()> {
+    stream
+        .send(NetworkMessage::new(message_data.to_vec(), DKG))
+        .await
+        .map_err(|e| {
+            DkgError::NetworkCommunication(format!("Failed to send to peer {}: {}", peer_id_str, e))
+        })
+}
+
+async fn get_cached_or_open_stream<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u64,
+    peer_id_str: &str,
+) -> Result<(Arc<dyn NetworkConnection>, bool)>
+where
+    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
+        + Clone
+        + 'static,
+{
+    if let Some(cached) = coord
+        .app_state
+        .dkg_session_state
+        .get_peer_stream(&session_id, peer_id_str)
+        .await
+    {
+        Ok((cached, true))
+    } else {
+        Ok((
+            Arc::from(coord.open_stream_to_peer(peer_id_str).await?),
+            false,
+        ))
+    }
+}
 
 /// Send a DKG message to a peer.
 ///
@@ -47,26 +86,66 @@ where
 
     let session_state = &coord.app_state.dkg_session_state;
 
-    let stream: Arc<dyn NetworkConnection> = if let Some(sid) = session_id {
-        if let Some(cached) = session_state.get_peer_stream(&sid, peer_id_str).await {
-            cached
-        } else {
-            let new_stream = Arc::from(coord.open_stream_to_peer(peer_id_str).await?);
-            session_state
-                .store_peer_stream(&sid, peer_id_str.to_string(), Arc::clone(&new_stream))
-                .await;
-            new_stream
+    if let Some(sid) = session_id {
+        let send_lock = session_state
+            .get_or_create_peer_send_lock(&sid, peer_id_str)
+            .await
+            .ok_or_else(|| session_not_found(sid))?;
+        let _guard = send_lock.lock().await;
+
+        let (stream, was_cached) = get_cached_or_open_stream(coord, sid, peer_id_str).await?;
+
+        match send_on_stream(&stream, peer_id_str, &message_data).await {
+            Ok(()) => {
+                if !was_cached {
+                    session_state
+                        .store_peer_stream(&sid, peer_id_str.to_string(), stream)
+                        .await;
+                }
+            }
+            Err(first_error) => {
+                tracing::warn!(
+                    session_id = sid,
+                    peer_id = %peer_id_str,
+                    message_type = message_type,
+                    used_cached_stream = was_cached,
+                    error = %first_error,
+                    "DKG send failed; evicting cached stream and retrying once on a fresh stream"
+                );
+
+                session_state.remove_peer_stream(&sid, peer_id_str).await;
+
+                let replacement = Arc::from(coord.open_stream_to_peer(peer_id_str).await?);
+                match send_on_stream(&replacement, peer_id_str, &message_data).await {
+                    Ok(()) => {
+                        session_state
+                            .store_peer_stream(&sid, peer_id_str.to_string(), replacement)
+                            .await;
+                        tracing::debug!(
+                            session_id = sid,
+                            peer_id = %peer_id_str,
+                            message_type = message_type,
+                            "DKG send recovered after replacing cached stream"
+                        );
+                    }
+                    Err(retry_error) => {
+                        tracing::error!(
+                            session_id = sid,
+                            peer_id = %peer_id_str,
+                            message_type = message_type,
+                            error = %retry_error,
+                            "DKG send retry on a fresh stream failed"
+                        );
+                        return Err(retry_error);
+                    }
+                }
+            }
         }
     } else {
-        Arc::from(coord.open_stream_to_peer(peer_id_str).await?)
-    };
-
-    stream
-        .send(NetworkMessage::new(message_data, DKG))
-        .await
-        .map_err(|e| {
-            DkgError::NetworkCommunication(format!("Failed to send to peer {}: {}", peer_id_str, e))
-        })?;
+        let stream: Arc<dyn NetworkConnection> =
+            Arc::from(coord.open_stream_to_peer(peer_id_str).await?);
+        send_on_stream(&stream, peer_id_str, &message_data).await?;
+    }
 
     metrics::record_dkg_message_sent(message_type);
     Ok(())
@@ -93,4 +172,270 @@ where
                 peer_id_str, e
             ))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_state::AppState;
+    use crate::dkg::coordinator::DkgCoordinator;
+    use crate::dkg::messages::DkgMessage;
+    use crate::helpers::test_helpers::{cleanup_db, test_db_path};
+    use async_trait::async_trait;
+    use authz::dummy::DummyAuthZ;
+    use authz::r#trait::Authz;
+    use bulletin::dummy::DummyBulletin;
+    use bulletin::r#trait::Bulletin;
+    use crypto::DkgImpl;
+    use local_storage::r#trait::LocalStorage;
+    use local_storage::LocalStorageImpl;
+    use network::error::NetworkError;
+    use network::{Network, PeerConnection, PeerId, ProtocolHandler, RouterBuilder};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Mutex;
+    use tokio::time::{sleep, Duration};
+
+    #[derive(Default)]
+    struct FakeNetworkState {
+        next_stream_id: AtomicUsize,
+        connect_calls: AtomicUsize,
+        successful_commitments: Mutex<Vec<u8>>,
+    }
+
+    struct FakeStream {
+        peer_id: PeerId,
+        stream_id: usize,
+        state: Arc<FakeNetworkState>,
+    }
+
+    #[async_trait]
+    impl NetworkConnection for FakeStream {
+        async fn send(&self, message: NetworkMessage) -> network::Result<()> {
+            let dkg_message: DkgMessage =
+                serde_json::from_slice(message.data.as_ref()).map_err(|e| {
+                    NetworkError::Serialization(format!("failed to decode test message: {}", e))
+                })?;
+
+            if self.stream_id == 1 {
+                sleep(Duration::from_millis(50)).await;
+                return Err(NetworkError::Connection(
+                    "forced send failure on first stream".to_string(),
+                ));
+            }
+
+            if let DkgMessage::Commitment { commitment, .. } = dkg_message {
+                self.state
+                    .successful_commitments
+                    .lock()
+                    .await
+                    .push(commitment[0]);
+            } else {
+                return Err(NetworkError::Protocol(
+                    "expected commitment message in test".to_string(),
+                ));
+            }
+
+            Ok(())
+        }
+
+        async fn recv(&self) -> network::Result<NetworkMessage> {
+            Err(NetworkError::Protocol(
+                "recv not used in fake DKG stream test".to_string(),
+            ))
+        }
+
+        fn peer_id(&self) -> &PeerId {
+            &self.peer_id
+        }
+    }
+
+    struct FakePeerConnection {
+        peer_id: PeerId,
+        state: Arc<FakeNetworkState>,
+    }
+
+    #[async_trait]
+    impl PeerConnection for FakePeerConnection {
+        async fn open_stream(&self) -> network::Result<Box<dyn NetworkConnection>> {
+            let stream_id = self.state.next_stream_id.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(Box::new(FakeStream {
+                peer_id: self.peer_id.clone(),
+                stream_id,
+                state: self.state.clone(),
+            }))
+        }
+
+        fn peer_id(&self) -> &PeerId {
+            &self.peer_id
+        }
+
+        async fn close(&self) -> network::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FakeNetwork {
+        local_peer_id: PeerId,
+        state: Arc<FakeNetworkState>,
+    }
+
+    #[async_trait]
+    impl Network for FakeNetwork {
+        async fn connect(
+            &self,
+            peer_id: &PeerId,
+            _protocol: &[u8],
+        ) -> network::Result<Box<dyn PeerConnection>> {
+            self.state.connect_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(FakePeerConnection {
+                peer_id: peer_id.clone(),
+                state: self.state.clone(),
+            }))
+        }
+
+        async fn listen(
+            &mut self,
+            _protocol: &[u8],
+            _handler: Box<dyn ProtocolHandler>,
+        ) -> network::Result<()> {
+            Err(NetworkError::Protocol(
+                "listen not used in fake DKG stream test".to_string(),
+            ))
+        }
+
+        fn local_peer_id(&self) -> PeerId {
+            self.local_peer_id.clone()
+        }
+
+        fn local_address(&self) -> network::Result<String> {
+            Ok("fake-local".to_string())
+        }
+
+        fn bound_addresses(&self) -> Vec<std::net::SocketAddr> {
+            Vec::new()
+        }
+
+        fn create_router_builder(&self) -> network::Result<Box<dyn RouterBuilder>> {
+            Err(NetworkError::Protocol(
+                "router builder not used in fake DKG stream test".to_string(),
+            ))
+        }
+    }
+
+    async fn make_fake_app_state(
+        db_name: &str,
+        state: Arc<FakeNetworkState>,
+    ) -> (Arc<AppState<DkgImpl>>, String) {
+        let local_peer_id = PeerId::from_bytes(b"local-peer");
+        let remote_peer_id = PeerId::from_bytes(b"remote-peer");
+        let remote_peer_id_str = String::from_utf8(remote_peer_id.as_bytes().to_vec())
+            .expect("fake remote peer id should be valid utf-8");
+
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let authz: Arc<dyn Authz + Send + Sync> =
+            Arc::new(DummyAuthZ::new().await.expect("DummyAuthZ::new"));
+        let local_storage =
+            LocalStorageImpl::new(None, test_db_path(db_name)).expect("create test storage");
+        let network: Arc<dyn Network> = Arc::new(FakeNetwork {
+            local_peer_id,
+            state,
+        });
+
+        (
+            Arc::new(AppState::<DkgImpl>::new(
+                "127.0.0.1:0".to_string(),
+                network,
+                local_storage,
+                authz,
+                bulletin,
+            )),
+            remote_peer_id_str,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_send_message_replaces_failed_cached_stream_and_preserves_order() {
+        let db_path = test_db_path("dkg_send_retry_replaces_stream");
+        let shared_state = Arc::new(FakeNetworkState::default());
+        let (app_state, remote_peer_id) =
+            make_fake_app_state("dkg_send_retry_replaces_stream", shared_state.clone()).await;
+        let coordinator = Arc::new(DkgCoordinator::new(app_state.clone()));
+        let session_id = 42_u64;
+
+        coordinator
+            .create_session(
+                session_id,
+                1,
+                1,
+                1,
+                crypto::r#trait::DkgRole::Standard,
+                |_| {},
+            )
+            .await
+            .expect("create DKG session");
+
+        let first = {
+            let coordinator = coordinator.clone();
+            let remote_peer_id = remote_peer_id.clone();
+            tokio::spawn(async move {
+                coordinator
+                    .send_message_to_peer(
+                        &remote_peer_id,
+                        DkgMessage::Commitment {
+                            session_id,
+                            from_node_id: 1,
+                            commitment: vec![1],
+                        },
+                        Some(session_id),
+                    )
+                    .await
+            })
+        };
+
+        let second = {
+            let coordinator = coordinator.clone();
+            let remote_peer_id = remote_peer_id.clone();
+            tokio::spawn(async move {
+                coordinator
+                    .send_message_to_peer(
+                        &remote_peer_id,
+                        DkgMessage::Commitment {
+                            session_id,
+                            from_node_id: 1,
+                            commitment: vec![2],
+                        },
+                        Some(session_id),
+                    )
+                    .await
+            })
+        };
+
+        first
+            .await
+            .expect("first send task panicked")
+            .expect("first send should recover");
+        second
+            .await
+            .expect("second send task panicked")
+            .expect("second send should succeed");
+
+        assert_eq!(
+            shared_state.next_stream_id.load(Ordering::SeqCst),
+            2,
+            "a failed cached stream should be replaced once and then reused"
+        );
+        assert_eq!(
+            *shared_state.successful_commitments.lock().await,
+            vec![1, 2],
+            "per-peer session send lock should preserve message order across stream repair"
+        );
+        assert_eq!(
+            shared_state.connect_calls.load(Ordering::SeqCst),
+            1,
+            "stream repair should reuse the pooled peer connection when it remains healthy"
+        );
+
+        cleanup_db(&db_path);
+    }
 }
