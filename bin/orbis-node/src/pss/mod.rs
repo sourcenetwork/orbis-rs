@@ -33,6 +33,7 @@ use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::helpers::{
     build_reshare_params, derive_refresh_session_id, derive_reshare_session_id,
+    ring_payload_matches_ring_key,
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::dkg::session_state::RingPssClaimOutcome;
@@ -139,6 +140,13 @@ where
 
     let ring_payload: RingPayload = serde_json::from_slice(&bulletin_post.payload)
         .map_err(|e| DkgError::Deserialization(format!("PSS: bad ring payload: {}", e)))?;
+
+    if !ring_payload_matches_ring_key(ring_pk_str, &ring_payload.ring_pk) {
+        return Err(DkgError::Storage(format!(
+            "PSS: bulletin post ring_pk mismatch (expected={}, got={})",
+            ring_pk_str, ring_payload.ring_pk
+        )));
+    }
 
     // Reshare takes priority over refresh when the bulletin signals a committee transition.
     let is_reshare = ring_payload.next_peer_ids.is_some() || ring_payload.new_threshold.is_some();

@@ -21,7 +21,7 @@ pub fn session_not_found(session_id: u64) -> DkgError {
 
 const PSS_SESSION_ID_DOMAIN: &[u8] = b"orbis-pss-session-v1";
 
-fn ring_payload_matches_ring_key(ring_pk_key: &str, ring_pk_payload: &str) -> bool {
+pub(crate) fn ring_payload_matches_ring_key(ring_pk_key: &str, ring_pk_payload: &str) -> bool {
     if let Ok(bytes) = hex::decode(ring_pk_payload) {
         if let Ok(ring_pk) = G1Affine::from_bytes(&bytes) {
             return ring_pk.to_string() == ring_pk_key;
