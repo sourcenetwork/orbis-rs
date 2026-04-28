@@ -16,7 +16,7 @@ use crate::metrics;
 use crypto::r#trait::{Dkg, DkgMode};
 use network::Connection;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -138,6 +138,12 @@ impl<ShareValue: Zeroize + std::fmt::Debug> std::fmt::Debug for ReshareParams<Sh
 /// - The cryptographic DKG node (polynomial, commitments, shares)
 /// - Protocol state (phase, connections, message deduplication)
 pub struct DkgSessionState<D: Dkg> {
+    /// Monotonic generation assigned when this session state instance is created.
+    ///
+    /// Lets callers distinguish a stale removed session from a newer session that
+    /// reused the same externally-visible `session_id`.
+    pub generation: u64,
+
     // === Crypto State (the DKG node) ===
     /// The DKG node containing cryptographic state (polynomial, commitments, shares)
     pub node: D,
@@ -202,8 +208,9 @@ pub struct DkgSessionState<D: Dkg> {
 
 impl<D: Dkg> DkgSessionState<D> {
     /// Create a new DKG session state with the given DKG node
-    pub fn new(node: D, total_participants: usize) -> Self {
+    pub fn new(node: D, total_participants: usize, generation: u64) -> Self {
         Self {
+            generation,
             node,
             created_at: Instant::now(),
             phase: DkgPhase::Initializing,
@@ -353,6 +360,8 @@ pub struct SessionStateManager<D: Dkg> {
     pub(crate) states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
     /// Channel for queueing session cleanup requests
     cleanup_tx: mpsc::UnboundedSender<u64>,
+    /// Monotonic counter used to stamp each newly created in-memory session state.
+    next_session_generation: AtomicU64,
     /// Ring public key strings mapped to their active in-progress PSS ceremony
     /// session IDs. Cleared on Phase 4 success or session cleanup/expiration so
     /// that a new ceremony can be initiated after failure.
@@ -383,6 +392,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         Self {
             states,
             cleanup_tx,
+            next_session_generation: AtomicU64::new(1),
             rings_pss,
         }
     }
@@ -636,7 +646,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             return CreateSessionOutcome::AlreadyExists;
         }
 
-        let mut new_state = DkgSessionState::new(node, total_participants);
+        let generation = self.next_session_generation.fetch_add(1, Ordering::SeqCst);
+        let mut new_state = DkgSessionState::new(node, total_participants, generation);
         init_fn(&mut new_state);
         states.insert(session_id, new_state);
         CreateSessionOutcome::Created
@@ -646,6 +657,18 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub async fn session_exists(&self, session_id: &u64) -> bool {
         let states = self.states.read().await;
         states.contains_key(session_id)
+    }
+
+    /// Get the current in-memory generation for a session, if it exists.
+    pub async fn get_session_generation(&self, session_id: &u64) -> Option<u64> {
+        let states = self.states.read().await;
+        states.get(session_id).map(|s| s.generation)
+    }
+
+    /// Returns true iff the session currently exists and still has the expected generation.
+    pub async fn session_generation_matches(&self, session_id: &u64, generation: u64) -> bool {
+        let states = self.states.read().await;
+        matches!(states.get(session_id), Some(state) if state.generation == generation)
     }
 
     /// Get the number of active sessions
@@ -835,16 +858,15 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         &self,
         session_id: &u64,
         peer_id: &str,
-    ) -> Option<Arc<Mutex<()>>> {
+    ) -> Option<(Arc<Mutex<()>>, u64)> {
         let mut states = self.states.write().await;
         let state = states.get_mut(session_id)?;
-        Some(
-            state
-                .peer_send_locks
-                .entry(peer_id.to_string())
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone(),
-        )
+        let lock = state
+            .peer_send_locks
+            .entry(peer_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        Some((lock, state.generation))
     }
 
     /// Remove a session and free its memory.

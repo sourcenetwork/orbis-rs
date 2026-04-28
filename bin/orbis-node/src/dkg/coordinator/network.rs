@@ -49,6 +49,28 @@ where
     }
 }
 
+async fn ensure_session_generation<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u64,
+    generation: u64,
+) -> Result<()>
+where
+    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
+        + Clone
+        + 'static,
+{
+    if coord
+        .app_state
+        .dkg_session_state
+        .session_generation_matches(&session_id, generation)
+        .await
+    {
+        Ok(())
+    } else {
+        Err(session_not_found(session_id))
+    }
+}
+
 /// Send a DKG message to a peer.
 ///
 /// When `session_id` is `Some`, the stream is cached in the session state so that
@@ -87,17 +109,20 @@ where
     let session_state = &coord.app_state.dkg_session_state;
 
     if let Some(sid) = session_id {
-        let send_lock = session_state
+        let (send_lock, session_generation) = session_state
             .get_or_create_peer_send_lock(&sid, peer_id_str)
             .await
             .ok_or_else(|| session_not_found(sid))?;
         let _guard = send_lock.lock().await;
+        ensure_session_generation(coord, sid, session_generation).await?;
 
         let (stream, was_cached) = get_cached_or_open_stream(coord, sid, peer_id_str).await?;
+        ensure_session_generation(coord, sid, session_generation).await?;
 
         match send_on_stream(&stream, peer_id_str, &message_data).await {
             Ok(()) => {
                 if !was_cached {
+                    ensure_session_generation(coord, sid, session_generation).await?;
                     session_state
                         .store_peer_stream(&sid, peer_id_str.to_string(), stream)
                         .await;
@@ -114,10 +139,13 @@ where
                 );
 
                 session_state.remove_peer_stream(&sid, peer_id_str).await;
+                ensure_session_generation(coord, sid, session_generation).await?;
 
                 let replacement = Arc::from(coord.open_stream_to_peer(peer_id_str).await?);
+                ensure_session_generation(coord, sid, session_generation).await?;
                 match send_on_stream(&replacement, peer_id_str, &message_data).await {
                     Ok(()) => {
+                        ensure_session_generation(coord, sid, session_generation).await?;
                         session_state
                             .store_peer_stream(&sid, peer_id_str.to_string(), replacement)
                             .await;
@@ -434,6 +462,100 @@ mod tests {
             shared_state.connect_calls.load(Ordering::SeqCst),
             1,
             "stream repair should reuse the pooled peer connection when it remains healthy"
+        );
+
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn test_send_message_aborts_if_session_is_recreated_while_waiting_on_old_lock() {
+        let db_path = test_db_path("dkg_send_stale_session_generation");
+        let shared_state = Arc::new(FakeNetworkState::default());
+        let (app_state, remote_peer_id) =
+            make_fake_app_state("dkg_send_stale_session_generation", shared_state.clone()).await;
+        let coordinator = Arc::new(DkgCoordinator::new(app_state.clone()));
+        let session_id = 84_u64;
+
+        coordinator
+            .create_session(
+                session_id,
+                1,
+                1,
+                1,
+                crypto::r#trait::DkgRole::Standard,
+                |_| {},
+            )
+            .await
+            .expect("create initial DKG session");
+
+        let (stale_lock, initial_generation) = coordinator
+            .app_state
+            .dkg_session_state
+            .get_or_create_peer_send_lock(&session_id, &remote_peer_id)
+            .await
+            .expect("initial session lock");
+        let stale_guard = stale_lock.lock().await;
+
+        let send_task = {
+            let coordinator = coordinator.clone();
+            let remote_peer_id = remote_peer_id.clone();
+            tokio::spawn(async move {
+                coordinator
+                    .send_message_to_peer(
+                        &remote_peer_id,
+                        DkgMessage::Commitment {
+                            session_id,
+                            from_node_id: 1,
+                            commitment: vec![9],
+                        },
+                        Some(session_id),
+                    )
+                    .await
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        coordinator.remove_session(session_id).await;
+        coordinator
+            .create_session(
+                session_id,
+                1,
+                1,
+                1,
+                crypto::r#trait::DkgRole::Standard,
+                |_| {},
+            )
+            .await
+            .expect("recreate DKG session with same session_id");
+
+        let recreated_generation = coordinator
+            .app_state
+            .dkg_session_state
+            .get_session_generation(&session_id)
+            .await
+            .expect("recreated session generation");
+        assert_ne!(
+            initial_generation, recreated_generation,
+            "recreated session should have a distinct in-memory generation"
+        );
+
+        drop(stale_guard);
+
+        let result = send_task.await.expect("send task panicked");
+        assert!(
+            matches!(result, Err(DkgError::SessionNotFound(_))),
+            "stale sender should bail out instead of sending into the recreated session: {:?}",
+            result
+        );
+        assert_eq!(
+            shared_state.connect_calls.load(Ordering::SeqCst),
+            0,
+            "stale sender should not open a stream after its session was recreated"
+        );
+        assert!(
+            shared_state.successful_commitments.lock().await.is_empty(),
+            "stale sender should not deliver protocol messages for an abandoned session"
         );
 
         cleanup_db(&db_path);
