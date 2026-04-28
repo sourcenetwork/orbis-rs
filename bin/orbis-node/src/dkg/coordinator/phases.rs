@@ -835,7 +835,7 @@ where
     // Receiver and DealerReceiver nodes use the bulletin_post_id carried in the SessionInit
     // (they had no prior index entry).  Dealers have already left and skip this entirely.
     if matches!(kind, SessionKind::Reshare { .. }) && dkg_role != DkgRole::Dealer {
-        if let Some(post_id) = reshare_bulletin_post_id {
+        if let Some(post_id) = &reshare_bulletin_post_id {
             let _guard = coord.app_state.ring_index_lock.lock().await;
             let mut ring_index: Vec<RingIndexEntry> = coord
                 .app_state
@@ -848,7 +848,7 @@ where
             if !ring_index.iter().any(|e| e.ring_pk_str == storage_key) {
                 ring_index.push(RingIndexEntry {
                     ring_pk_str: storage_key.clone(),
-                    bulletin_post_id: post_id,
+                    bulletin_post_id: post_id.clone(),
                 });
                 let index_bytes = serde_json::to_vec(&ring_index).map_err(|e| {
                     DkgError::Serialization(format!("Failed to serialize RingIndex: {}", e))
@@ -1036,7 +1036,7 @@ where
                 .clone()
                 .unwrap_or_else(|| next_peer_ids.clone());
             let ring_payload = RingPayload {
-                ring_pk: ring_pk_hex.clone(),
+                ring_pk: hex::encode(&ring_pk_bytes),
                 peer_ids: sorted_new_peer_ids,
                 next_peer_ids: None,
                 new_threshold: None,
@@ -1049,29 +1049,32 @@ where
                     e
                 ))
             })?;
-            // TODO: placeholder - need to update bulletin to allow updating on reshare
+            let bulletin_post_id = reshare_bulletin_post_id.as_ref().ok_or_else(|| {
+                DkgError::Bulletin(
+                    "Reshare: missing bulletin post id for updated RingPayload".to_string(),
+                )
+            })?;
             coord
                 .app_state
                 .bulletin
-                .post(
+                .update(
                     BULLETIN_RING_NAMESPACE.to_string(),
+                    bulletin_post_id.clone(),
                     payload_bytes,
                     Some(session_id.to_string()),
                 )
                 .await
                 .map_err(|e| {
-                    DkgError::Bulletin(format!(
-                        "Reshare: failed to post updated RingPayload: {}",
-                        e
-                    ))
+                    DkgError::Bulletin(format!("Reshare: failed to update RingPayload: {}", e))
                 })?;
 
             tracing::info!(
                 ring_pk = %ring_pk_hex,
+                post_id = %bulletin_post_id,
                 namespace = BULLETIN_RING_NAMESPACE,
                 new_threshold = new_threshold,
                 new_committee_size = next_peer_ids.len(),
-                "Reshare: Successfully posted updated RingPayload to bulletin"
+                "Reshare: Successfully updated RingPayload on bulletin"
             );
         }
     }

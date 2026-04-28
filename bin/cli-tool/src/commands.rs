@@ -850,6 +850,23 @@ pub async fn create_bulletin_post(namespace: String, payload: Vec<u8>) -> Result
     Ok(post_id)
 }
 
+pub async fn update_bulletin_post(namespace: String, id: String, payload: Vec<u8>) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+
+    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+        .await
+        .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
+
+    bulletin
+        .update(namespace, id.clone(), payload, None)
+        .await
+        .map_err(|e| anyhow!("Failed to update post: {}", e))?;
+
+    println!("Updated bulletin post with ID: {}", id);
+    Ok(())
+}
+
 /// Read a bulletin post by namespace and ID
 pub async fn read_bulletin_post(namespace: String, id: String) -> Result<Vec<u8>> {
     let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())

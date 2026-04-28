@@ -8,7 +8,7 @@ pub use commands::{
     get_account_sequence, get_latest_ring, list_bulletin_posts, post_key_derivation,
     prepare_secret, query_node_info, query_ring_state, read_bulletin_post,
     register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
-    store_prepared_secret, PreparedSecret, SignResult,
+    store_prepared_secret, update_bulletin_post, PreparedSecret, SignResult,
 };
 use common::blockchain::ChainConfig;
 
@@ -169,6 +169,18 @@ pub enum SubCommands {
         #[clap(long)]
         namespace: String,
         /// Payload as hex string
+        #[clap(long)]
+        payload: String,
+    },
+    /// Update an existing bulletin post
+    UpdateBulletinPost {
+        /// Namespace containing the post
+        #[clap(long)]
+        namespace: String,
+        /// ID of the post to update
+        #[clap(long)]
+        id: String,
+        /// New payload as hex string
         #[clap(long)]
         payload: String,
     },
@@ -495,6 +507,14 @@ async fn main() -> Result<()> {
         SubCommands::CreateBulletinPost { namespace, payload } => {
             let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
             create_bulletin_post(namespace, payload_bytes).await?;
+        }
+        SubCommands::UpdateBulletinPost {
+            namespace,
+            id,
+            payload,
+        } => {
+            let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
+            update_bulletin_post(namespace, id, payload_bytes).await?;
         }
         SubCommands::Fund { address } => {
             fund(address, ChainConfig::local()).await?;

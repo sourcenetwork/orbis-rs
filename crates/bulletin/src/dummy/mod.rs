@@ -39,6 +39,21 @@ impl Bulletin for DummyBulletin {
         Ok(())
     }
 
+    async fn update(
+        &self,
+        namespace: String,
+        id: String,
+        payload: Vec<u8>,
+        _artifact: Option<String>,
+    ) -> Result<()> {
+        let mut posts = self.posts.lock().unwrap();
+        let post = posts
+            .get_mut(&(namespace.clone(), id.clone()))
+            .ok_or(BulletinError::NotFound { namespace, id })?;
+        post.payload = payload;
+        Ok(())
+    }
+
     async fn read(&self, namespace: String, id: String) -> Result<BulletinPost> {
         let posts = self.posts.lock().unwrap();
         posts

@@ -148,6 +148,14 @@ pub trait Bulletin {
         payload: Vec<u8>,
         artifact: Option<String>,
     ) -> Result<()>;
+    /// Update an existing message in the bulletin namespace while preserving its ID.
+    async fn update(
+        &self,
+        namespace: String,
+        id: String,
+        payload: Vec<u8>,
+        artifact: Option<String>,
+    ) -> Result<()>;
     /// Read a message from the bulletin namespace
     async fn read(&self, namespace: String, id: String) -> Result<BulletinPost>;
     fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String>;
