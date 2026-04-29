@@ -8,8 +8,7 @@ use crate::sign::messages::SignContext;
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
-use crypto::r#trait::{CryptoDeserialize, Dkg, EncryptionProof, Secret, ThresholdDealer};
-use crypto::PreImpl as ThresholdDealerNode;
+use crypto::r#trait::{Dkg, EncryptionProof, Secret};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
 };
@@ -114,19 +113,6 @@ where
                 StoreSecretError::Deserialization(format!("Failed to parse ring payload: {}", e))
             })?;
 
-        let policy_metadata = if let Some(metadata_hash) = req.metadata_hash {
-            metadata_hash
-        } else {
-            ThresholdDealerNode::encode_metadata(
-                &req.policy_id,
-                &req.resource,
-                &req.permission,
-                req.tier.as_deref(),
-                req.timestamp,
-                None,
-            )
-        };
-
         let proof = EncryptionProof {
             shared_point: req.shared_point,
             challenge: req.challenge,
@@ -134,14 +120,8 @@ where
         };
 
         // 3. Validate the encrypted document structure
-        let _encrypted_secret = validate_encrypted_document::<D>(
-            &req.encrypted_document,
-            &req.enc_cmt,
-            &ring_payload.ring_pk,
-            proof.clone(),
-            req.effective_pk.as_deref(),
-            policy_metadata,
-        )?;
+        let _encrypted_secret =
+            validate_encrypted_document::<D>(&req.encrypted_document, &req.enc_cmt)?;
 
         // 4. Create DocumentPayload with the pre-encrypted secret
         // DocumentPayload.document is a String (JSON), so convert from bytes (valid UTF-8)
@@ -301,10 +281,6 @@ where
 fn validate_encrypted_document<D>(
     encrypted_document: &[u8],
     enc_cmt: &[u8],
-    ring_key: &str,
-    proof: EncryptionProof,
-    effective_pk: Option<&[u8]>,
-    policy_metadata: Vec<u8>,
 ) -> Result<Secret, StoreSecretError>
 where
     D: Dkg<PublicKey = crypto::GroupAffine>,
@@ -315,19 +291,6 @@ where
             "Failed to parse encrypted_document as Secret: {}",
             e
         ))
-    })?;
-
-    // 2. Validate enc_cmt is a valid compressed G1 point
-    let enc_cmt_point = D::PublicKey::from_bytes(enc_cmt).map_err(|e| {
-        StoreSecretError::Validation(format!("enc_cmt is not a valid G1 curve point: {}", e))
-    })?;
-
-    // 2b. Parse ring_key from hex to G1 point
-    let ring_key_bytes = hex::decode(ring_key).map_err(|e| {
-        StoreSecretError::Validation(format!("Invalid ring_key hex encoding: {}", e))
-    })?;
-    let ring_key_point = D::PublicKey::from_bytes(&ring_key_bytes).map_err(|e| {
-        StoreSecretError::Validation(format!("ring_key is not a valid G1 curve point: {}", e))
     })?;
 
     // 3. Validate the enc_cmt in the Secret matches the provided enc_cmt
@@ -344,27 +307,6 @@ where
             secret.nonce.len()
         )));
     }
-
-    // 5. Validate Encryption of secret validity
-    // Use the caller-supplied effective key when provided so the serialized
-    // proof does not need to expose it on chain. The NIZK proves enc_cmt/shared_point
-    // are consistent with this key; the PRE service enforces effective_pk == d * ring_pk.
-    let effective_key = if let Some(effective_pk) = effective_pk {
-        D::PublicKey::from_bytes(effective_pk).map_err(|e| {
-            StoreSecretError::Validation(format!("effective_pk is not a valid curve point: {}", e))
-        })?
-    } else {
-        ring_key_point
-    };
-    ThresholdDealerNode::verify_encryption(
-        &effective_key,
-        &enc_cmt_point,
-        &proof,
-        Some(&policy_metadata),
-    )
-    .map_err(|e| {
-        StoreSecretError::Validation(format!("Failed to Validate secret encryption: {}", e))
-    })?;
 
     Ok(secret)
 }
@@ -442,13 +384,6 @@ fn validate_store_secret_claims(
         )));
     }
 
-    if token.claims.effective_pk != req.effective_pk {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token effective_pk '{:?}' does not match request effective_pk '{:?}'",
-            token.claims.effective_pk, req.effective_pk
-        )));
-    }
-
     if token.claims.with_proof != req.with_proof {
         return Err(StoreSecretError::Unauthorized(format!(
             "Token with_proof '{:?}' does not match request with_proof '{:?}'",
@@ -466,12 +401,6 @@ fn validate_store_secret_claims(
         return Err(StoreSecretError::Unauthorized(format!(
             "Token timestamp '{:?}' does not match request timestamp '{:?}'",
             token.claims.timestamp, req.timestamp
-        )));
-    }
-    if token.claims.metadata_hash != req.metadata_hash {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token metadata_hash '{:?}' does not match request metadata_hash '{:?}'",
-            token.claims.metadata_hash, req.metadata_hash
         )));
     }
 

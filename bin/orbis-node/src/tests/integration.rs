@@ -281,11 +281,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     )
     .expect("prepare_secret should succeed");
     let derivation = b"test_derivation".to_vec();
-    let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
-    let ring_pk_point = GroupAffine::from_bytes(&ring_pk_bytes).expect("deserialize ring_pk");
-    let effective_pk =
-        PreImpl::derive_public_key(&ring_pk_point, &derivation).expect("derive effective_pk");
-    let effective_pk_bytes = effective_pk.to_bytes().expect("serialize effective_pk");
     let prepared_secret_derived = cli_tool::prepare_secret(
         secret,
         &ring_pk_hex,
@@ -318,9 +313,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         resource.clone(),
         permission.clone(),
         Some(did_pk_string.clone()),
-        None,
         true,
-        None,
         None,
         None,
     )
@@ -339,11 +332,9 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         resource.clone(),
         permission.clone(),
         Some(did_pk_string.clone()),
-        Some(effective_pk_bytes.clone()),
         false,
         tier.clone(),
         timestamp,
-        Some(prepared_secret_derived.metadata.clone()),
     )
     .await;
     let object_id_derived = object_response_derived.object_id.clone();
@@ -588,9 +579,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         resource.clone(),
         permission.clone(),
         Some(did_pk_string.clone()),
-        None,
         true,
-        None,
         None,
         None,
     )
@@ -982,9 +971,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         resource.clone(),
         permission.clone(),
         Some(did_pk_string.clone()),
-        None,
         true,
-        None,
         None,
         None,
     )
@@ -1264,11 +1251,9 @@ async fn store_prepared_secret_expect_success(
     resource: String,
     permission: String,
     reader_did_pk: Option<String>,
-    effective_pk: Option<Vec<u8>>,
     with_proof: bool,
     tier: Option<String>,
     timestamp: Option<u64>,
-    metadata_hash: Option<Vec<u8>>,
 ) -> cli_tool::StoreSecretResult {
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut attempt = 1usize;
@@ -1283,11 +1268,9 @@ async fn store_prepared_secret_expect_success(
             resource.clone(),
             permission.clone(),
             reader_did_pk.clone(),
-            effective_pk.clone(),
             with_proof,
             tier.clone(),
             timestamp,
-            metadata_hash.clone(),
         )
         .await
         {

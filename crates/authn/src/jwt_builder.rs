@@ -154,11 +154,9 @@ impl JwtSigner {
     /// * `shared_point`- rsG - the shared point used for key derivation
     /// * `challenge` - c - Fiat-Shamir challenge
     /// * `response` - s - proof response (s = k + c*r)
-    /// * `effective_pk` - Optional effective public key used to verify the encryption proof
     /// * `with_proof` - If a proof should be returned
     /// * `tier` - Optional tier for policy
     /// * `timestamp` - Optional timestamp for policy
-    /// * `metadata_hash` - If salt used pass metadata hash
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour
@@ -174,11 +172,9 @@ impl JwtSigner {
         shared_point: Vec<u8>,
         challenge: Vec<u8>,
         response: Vec<u8>,
-        effective_pk: Option<Vec<u8>>,
         with_proof: bool,
         tier: Option<String>,
         timestamp: Option<u64>,
-        metadata_hash: Option<Vec<u8>>,
     ) -> Result<String> {
         let claims = StoreSecretClaims {
             encrypted_document_sha256: Sha256::digest(encrypted_document).to_vec(),
@@ -191,11 +187,9 @@ impl JwtSigner {
             shared_point,
             challenge,
             response,
-            effective_pk,
             with_proof,
             tier,
             timestamp,
-            metadata_hash,
         };
         self.sign(claims, Duration::from_hours(1))
     }
@@ -325,9 +319,7 @@ mod tests {
             b"shared_point".to_vec(),
             b"challenge".to_vec(),
             b"response".to_vec(),
-            None,
             false,
-            None,
             None,
             None,
         );
