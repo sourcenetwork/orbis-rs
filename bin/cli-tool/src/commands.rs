@@ -924,6 +924,7 @@ pub struct NodeInfoResult {
     pub public_address: String,
     pub peer_id: String,
     pub p2p_address: String,
+    pub status: proto::info_service::NodeStatus,
 }
 
 pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
@@ -941,13 +942,16 @@ pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
         .map_err(|e| anyhow!("Failed to query node info: {}", e))?;
 
     let node_info = response.into_inner();
+    let status = proto::info_service::NodeStatus::try_from(node_info.status)
+        .unwrap_or(proto::info_service::NodeStatus::Unspecified);
 
     let output = format!(
-        "Node Info:\n{}\n  Public Address: {}\n  Peer ID: {}\n  P2P Address: {}",
+        "Node Info:\n{}\n  Public Address: {}\n  Peer ID: {}\n  P2P Address: {}\n  Status: {}",
         "=".repeat(60),
         node_info.public_address,
         node_info.peer_id,
-        node_info.p2p_address
+        node_info.p2p_address,
+        status.as_str_name()
     );
 
     println!("{}", output);
@@ -956,6 +960,7 @@ pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
         public_address: node_info.public_address,
         peer_id: node_info.peer_id,
         p2p_address: node_info.p2p_address,
+        status,
     })
 }
 

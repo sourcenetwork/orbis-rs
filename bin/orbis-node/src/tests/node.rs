@@ -1,20 +1,43 @@
 //! Node initialization, configuration, and key management tests.
 
 use crate::{
+    dkg::service::DkgServiceImpl,
     helpers::{
         launch::{create_and_store_node_key, derive_secret_key_bytes, LogLevel},
         test_helpers::{cleanup_db, test_db_path},
     },
-    init_node, Args, NodeConfig,
+    info::InfoServiceImpl,
+    init_node,
+    pre::service::PreServiceImpl,
+    sign::service::SignServiceImpl,
+    start_bootstrap_info_server,
+    store_secret::StoreSecretServiceImpl,
+    Args, NodeConfig,
 };
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::Bulletin;
 use common::blockchain::ChainConfigBuilder;
+use crypto::{DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl};
+use proto::{
+    dkg_service::{
+        dkg_service_client::DkgServiceClient, dkg_service_server::DkgServiceServer, StartDkgRequest,
+    },
+    info_service::{
+        info_service_client::InfoServiceClient, info_service_server::InfoServiceServer,
+        GetNodeInfoRequest, GetRingStateRequest, NodeStatus,
+    },
+    pre_service::pre_service_server::PreServiceServer,
+    sign_service::sign_service_server::SignServiceServer,
+    store_secret_service::store_secret_service_server::StoreSecretServiceServer,
+};
+use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::{sync::oneshot, task::JoinHandle};
+use tonic::Code;
 
 /// Builds a [`NodeConfig`] for testing, returning it together with the DB path for cleanup.
 ///
@@ -61,6 +84,56 @@ async fn make_test_node_config(
     (config, db_path)
 }
 
+async fn make_bootstrap_identity(
+    test_name: &str,
+) -> (Arc<dyn Network>, LocalStorageImpl, String, String) {
+    let db_path = test_db_path(test_name);
+    cleanup_db(&db_path);
+
+    let local_storage =
+        LocalStorageImpl::new(None, db_path.clone()).expect("Failed to create local storage");
+    let signer =
+        create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
+            .expect("Failed to create and store node key");
+    let network: Arc<dyn Network> =
+        Arc::new(NetworkImpl::new().await.expect("Failed to create network"));
+
+    (network, local_storage, db_path, signer.address())
+}
+
+fn spawn_full_test_grpc_server(
+    node: crate::InitializedNode,
+) -> (SocketAddr, oneshot::Sender<()>, JoinHandle<()>) {
+    let incoming =
+        tonic::transport::server::TcpIncoming::bind(node.grpc_addr).expect("bind full gRPC server");
+    let local_addr = incoming.local_addr().expect("full gRPC local addr");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    let dkg_service = DkgServiceImpl::<DkgImpl>::new((*node.app_state).clone());
+    let pre_service = PreServiceImpl::<DkgImpl, PreImpl>::new((*node.app_state).clone());
+    let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
+    let store_secret_service =
+        StoreSecretServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
+    let sign_service = SignServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
+
+    let task = tokio::spawn(async move {
+        let _ = tonic::transport::Server::builder()
+            .add_service(DkgServiceServer::new(dkg_service))
+            .add_service(PreServiceServer::new(pre_service))
+            .add_service(InfoServiceServer::new(info_service))
+            .add_service(StoreSecretServiceServer::new(store_secret_service))
+            .add_service(SignServiceServer::new(sign_service))
+            .serve_with_incoming_shutdown(incoming, async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+
+        let _ = node.router.shutdown().await;
+    });
+
+    (local_addr, shutdown_tx, task)
+}
+
 /// Test that the node initializes successfully with valid configuration
 #[tokio::test]
 async fn test_init_node_success() {
@@ -83,6 +156,163 @@ async fn test_init_node_success() {
         .shutdown()
         .await
         .expect("Router shutdown failed");
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_bootstrap_info_server_exposes_only_info() {
+    let (network, local_storage, db_path, expected_address) =
+        make_bootstrap_identity("test_bootstrap_info_server_exposes_only_info").await;
+    let bootstrap = start_bootstrap_info_server(
+        "127.0.0.1:0".parse().expect("bootstrap bind addr"),
+        network,
+        local_storage,
+    )
+    .expect("start bootstrap info server");
+    let endpoint = format!("http://{}", bootstrap.local_addr());
+
+    let mut info_client = InfoServiceClient::connect(endpoint.clone())
+        .await
+        .expect("connect bootstrap info service");
+    let node_info = info_client
+        .get_node_info(GetNodeInfoRequest {})
+        .await
+        .expect("get node info during bootstrap")
+        .into_inner();
+
+    assert_eq!(node_info.public_address, expected_address);
+    assert_eq!(node_info.status, NodeStatus::Bootstrapping as i32);
+    assert!(!node_info.peer_id.is_empty(), "peer_id should be set");
+    assert!(
+        node_info
+            .p2p_address
+            .starts_with(&format!("{}@", node_info.peer_id)),
+        "p2p address should include the peer id"
+    );
+
+    let ring_err = info_client
+        .get_ring_state(GetRingStateRequest {
+            ring_pk_hex: String::new(),
+        })
+        .await
+        .expect_err("ring state should be blocked during bootstrap");
+    assert_eq!(ring_err.code(), Code::FailedPrecondition);
+
+    let mut dkg_client = DkgServiceClient::connect(endpoint)
+        .await
+        .expect("connect bootstrap endpoint as dkg client");
+    let err = dkg_client
+        .start_dkg(StartDkgRequest {
+            threshold: 1,
+            peer_ids: vec![],
+            pss_interval: None,
+        })
+        .await
+        .expect_err("dkg should not be registered during bootstrap");
+    assert_eq!(err.code(), Code::Unimplemented);
+
+    bootstrap
+        .shutdown()
+        .await
+        .expect("shutdown bootstrap server");
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
+    let (network, local_storage, db_path, expected_address) =
+        make_bootstrap_identity("test_bootstrap_info_server_hands_off_to_full_server_on_same_port")
+            .await;
+    let bootstrap = start_bootstrap_info_server(
+        "127.0.0.1:0".parse().expect("bootstrap bind addr"),
+        network.clone(),
+        local_storage.clone(),
+    )
+    .expect("start bootstrap info server");
+    let grpc_addr = bootstrap.local_addr();
+    let endpoint = format!("http://{}", grpc_addr);
+
+    let mut bootstrap_dkg_client = DkgServiceClient::connect(endpoint.clone())
+        .await
+        .expect("connect bootstrap endpoint as dkg client");
+    let bootstrap_err = bootstrap_dkg_client
+        .start_dkg(StartDkgRequest {
+            threshold: 1,
+            peer_ids: vec![],
+            pss_interval: None,
+        })
+        .await
+        .expect_err("dkg should not be registered during bootstrap");
+    assert_eq!(bootstrap_err.code(), Code::Unimplemented);
+
+    let authz: Arc<dyn Authz> = Arc::new(
+        AuthzImpl::new(ChainConfigBuilder::default())
+            .await
+            .expect("Failed to initialize Authz"),
+    );
+    let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize bulletin"),
+    );
+    let config = NodeConfig {
+        args: Args {
+            addr: grpc_addr.to_string(),
+            log_level: LogLevel::Info,
+            authz_grpc: None,
+            bulletin_grpc: None,
+            chain_rest: None,
+            chain_rpc: None,
+            denom: None,
+            metrics_addr: None,
+            loki_url: None,
+            reshare_interval_secs: 0,
+        },
+        network,
+        local_storage,
+        authz,
+        bulletin,
+    };
+    let node = init_node(config).await.expect("Node initialization failed");
+
+    bootstrap
+        .shutdown()
+        .await
+        .expect("shutdown bootstrap server");
+    let (full_addr, full_shutdown, full_task) = spawn_full_test_grpc_server(node);
+    assert_eq!(
+        full_addr, grpc_addr,
+        "full server should reuse bootstrap port"
+    );
+
+    let mut info_client = InfoServiceClient::connect(endpoint.clone())
+        .await
+        .expect("connect full info service");
+    let node_info = info_client
+        .get_node_info(GetNodeInfoRequest {})
+        .await
+        .expect("get node info after full server starts")
+        .into_inner();
+    assert_eq!(node_info.public_address, expected_address);
+    assert_eq!(node_info.status, NodeStatus::Ready as i32);
+
+    let mut full_dkg_client = DkgServiceClient::connect(endpoint)
+        .await
+        .expect("connect full endpoint as dkg client");
+    let full_err = full_dkg_client
+        .start_dkg(StartDkgRequest {
+            threshold: 1,
+            peer_ids: vec![],
+            pss_interval: None,
+        })
+        .await
+        .expect_err("unauthenticated dkg should fail after reaching the service");
+    assert_ne!(full_err.code(), Code::Unimplemented);
+
+    let _ = full_shutdown.send(());
+    full_task.await.expect("full server task join");
     cleanup_db(&db_path);
 }
 
