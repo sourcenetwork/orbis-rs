@@ -210,7 +210,6 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     run_server(node).await
 }
 
-
 /// Start an info-only gRPC server before the full node is ready.
 pub fn start_bootstrap_info_server(
     grpc_addr: SocketAddr,
@@ -396,4 +395,3 @@ fn init_tracing(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
