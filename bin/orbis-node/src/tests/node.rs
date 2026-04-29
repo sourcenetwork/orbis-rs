@@ -9,6 +9,7 @@ use crate::{
     info::InfoServiceImpl,
     init_node,
     pre::service::PreServiceImpl,
+    shutdown_bootstrap_after_init,
     sign::service::SignServiceImpl,
     start_bootstrap_info_server,
     store_secret::StoreSecretServiceImpl,
@@ -313,6 +314,33 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
 
     let _ = full_shutdown.send(());
     full_task.await.expect("full server task join");
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_bootstrap_info_server_shutdown_on_init_error() {
+    let (network, local_storage, db_path, _) =
+        make_bootstrap_identity("test_bootstrap_info_server_shutdown_on_init_error").await;
+    let bootstrap = start_bootstrap_info_server(
+        "127.0.0.1:0".parse().expect("bootstrap bind addr"),
+        network,
+        local_storage,
+    )
+    .expect("start bootstrap info server");
+    let grpc_addr = bootstrap.local_addr();
+
+    let init_error = std::io::Error::new(std::io::ErrorKind::Other, "synthetic init failure");
+    let err = match shutdown_bootstrap_after_init(bootstrap, Err(Box::new(init_error))).await {
+        Ok(_) => panic!("synthetic init failure should be returned"),
+        Err(err) => err,
+    };
+    assert!(err.to_string().contains("synthetic init failure"));
+
+    let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)
+        .expect("bootstrap port should be released after init failure");
+    drop(incoming);
+
     cleanup_db(&db_path);
 }
 

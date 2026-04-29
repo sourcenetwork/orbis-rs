@@ -167,45 +167,48 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         grpc_addr = %bootstrap_info_server.local_addr(),
         "Bootstrap info service started while waiting for funding"
     );
-    bootstrap_info_server.set_status(NodeStatus::ConnectingToChain);
 
-    // For integration tests, this funds the account, this is handled differently live
-    // Only fund if both the feature is enabled AND we're in the integration test network
-    #[cfg(feature = "integration-test")]
-    {
+    let init_result = async {
+        bootstrap_info_server.set_status(NodeStatus::ConnectingToChain);
+
+        // For integration tests, this funds the account, this is handled differently live
+        // Only fund if both the feature is enabled AND we're in the integration test network
+        #[cfg(feature = "integration-test")]
+        {
+            bootstrap_info_server.set_status(NodeStatus::WaitingForFunding);
+            // Build chain config with the provided RPC/REST URLs
+            let fund_config = ChainConfigBuilder::default()
+                .rpc_url(args.chain_rpc.clone())
+                .rest_url(args.chain_rest.clone())
+                .grpc_url(args.bulletin_grpc.clone())
+                .build();
+            cli_tool::fund(signer.address(), fund_config)
+                .await
+                .map_err(|e| format!("Failed to fund node account: {}", e))?;
+        }
+
+        // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
         bootstrap_info_server.set_status(NodeStatus::WaitingForFunding);
-        // Build chain config with the provided RPC/REST URLs
-        let fund_config = ChainConfigBuilder::default()
-            .rpc_url(args.chain_rpc.clone())
-            .rest_url(args.chain_rest.clone())
-            .grpc_url(args.bulletin_grpc.clone())
-            .build();
-        cli_tool::fund(signer.address(), fund_config)
-            .await
-            .expect("issue with faucet");
-    }
+        let bulletin: Arc<BulletinImpl> = Arc::new(
+            BulletinImpl::with_signer(bulletin_chain_config, signer, Some(MIN_NODE_BALANCE))
+                .await
+                .map_err(|e| format!("Failed to initialize bulletin: {}", e))?,
+        );
+        bootstrap_info_server.set_status(NodeStatus::Funded);
 
-    // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
-    bootstrap_info_server.set_status(NodeStatus::WaitingForFunding);
-    let bulletin: Arc<BulletinImpl> = Arc::new(
-        BulletinImpl::with_signer(bulletin_chain_config, signer, Some(MIN_NODE_BALANCE))
-            .await
-            .map_err(|e| format!("Failed to initialize bulletin: {}", e))?,
-    );
-    bootstrap_info_server.set_status(NodeStatus::Funded);
+        let config = NodeConfig {
+            args,
+            network,
+            local_storage,
+            authz,
+            bulletin,
+        };
 
-    let config = NodeConfig {
-        args,
-        network,
-        local_storage,
-        authz,
-        bulletin,
+        init_node(config).await
     };
 
-    let node = init_node(config).await?;
-
-    tracing::info!("Funding and bulletin initialization complete; stopping bootstrap info service");
-    bootstrap_info_server.shutdown().await?;
+    let init_result = init_result.await;
+    let node = shutdown_bootstrap_after_init(bootstrap_info_server, init_result).await?;
 
     run_server(node).await
 }
@@ -237,6 +240,34 @@ pub fn start_bootstrap_info_server(
         shutdown_tx,
         task,
     })
+}
+
+async fn shutdown_bootstrap_after_init(
+    bootstrap_info_server: BootstrapInfoServer,
+    init_result: Result<InitializedNode, Box<dyn std::error::Error>>,
+) -> Result<InitializedNode, Box<dyn std::error::Error>> {
+    if init_result.is_ok() {
+        tracing::info!(
+            "Funding and bulletin initialization complete; stopping bootstrap info service"
+        );
+    } else {
+        tracing::info!("Node initialization failed; stopping bootstrap info service");
+    }
+
+    let shutdown_result = bootstrap_info_server.shutdown().await;
+
+    match (init_result, shutdown_result) {
+        (Ok(node), Ok(())) => Ok(node),
+        (Err(init_err), Ok(())) => Err(init_err),
+        (Ok(_), Err(shutdown_err)) => Err(shutdown_err),
+        (Err(init_err), Err(shutdown_err)) => {
+            tracing::error!(
+                error = %shutdown_err,
+                "Bootstrap info service shutdown failed while handling initialization error"
+            );
+            Err(init_err)
+        }
+    }
 }
 
 /// Initialize the node without starting the gRPC server
