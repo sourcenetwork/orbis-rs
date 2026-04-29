@@ -120,8 +120,7 @@ where
         };
 
         // 3. Validate the encrypted document structure
-        let _encrypted_secret =
-            validate_encrypted_document::<D>(&req.encrypted_document, &req.enc_cmt)?;
+        let _encrypted_secret = validate_encrypted_document(&req.encrypted_document, &req.enc_cmt)?;
 
         // 4. Create DocumentPayload with the pre-encrypted secret
         // DocumentPayload.document is a String (JSON), so convert from bytes (valid UTF-8)
@@ -278,13 +277,10 @@ where
 ///
 /// This function performs structural validation to ensure the encrypted data
 /// is well-formed before posting to the bulletin.
-fn validate_encrypted_document<D>(
+fn validate_encrypted_document(
     encrypted_document: &[u8],
     enc_cmt: &[u8],
-) -> Result<Secret, StoreSecretError>
-where
-    D: Dkg<PublicKey = crypto::GroupAffine>,
-{
+) -> Result<Secret, StoreSecretError> {
     // 1. Parse the encrypted document as a Secret struct
     let secret: Secret = serde_json::from_slice(encrypted_document).map_err(|e| {
         StoreSecretError::Validation(format!(
