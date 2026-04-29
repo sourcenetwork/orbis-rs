@@ -261,9 +261,6 @@ pub enum SubCommands {
         /// A private key to generate a reader did
         #[clap(long)]
         reader_did_pk: Option<String>,
-        /// Optional effective public key (hex encoded)
-        #[clap(long)]
-        effective_pk: Option<String>,
         /// Request a proof
         #[clap(long)]
         with_proof: bool,
@@ -273,9 +270,6 @@ pub enum SubCommands {
         /// Optional timestamp
         #[clap(long)]
         timestamp: Option<u64>,
-        /// Optional metadata hash
-        #[clap(long)]
-        metadata_hash: Option<String>,
     },
     /// Store secret by sending it to node (encrypts and stores in one step)
     StoreSecret {
@@ -563,16 +557,10 @@ async fn main() -> Result<()> {
             resource,
             permission,
             reader_did_pk,
-            effective_pk,
             with_proof,
             tier,
             timestamp,
-            metadata_hash,
         } => {
-            let effective_pk_bytes =
-                effective_pk.map(|d| hex::decode(&d).expect("Failed to decode effective_pk hex"));
-            let metadata_hash_bytes =
-                metadata_hash.map(|d| hex::decode(&d).expect("Failed to decode metadata_hash hex"));
             let prepared: PreparedSecret = serde_json::from_str(&prepared_json)
                 .map_err(|e| anyhow::anyhow!("Invalid prepared_json: {}", e))?;
             store_prepared_secret(
@@ -584,11 +572,9 @@ async fn main() -> Result<()> {
                 resource,
                 permission,
                 reader_did_pk,
-                effective_pk_bytes,
                 with_proof,
                 tier,
                 timestamp,
-                metadata_hash_bytes,
             )
             .await?;
         }

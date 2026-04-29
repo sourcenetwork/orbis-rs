@@ -204,11 +204,9 @@ pub async fn store_prepared_secret(
     resource: String,
     permission: String,
     reader_did_pk: Option<String>,
-    effective_pk: Option<Vec<u8>>,
     with_proof: bool,
     tier: Option<String>,
     timestamp: Option<u64>,
-    metadata_hash: Option<Vec<u8>>,
 ) -> Result<StoreSecretResult> {
     println!("Storing secret via StoreSecret service:");
     println!("  Endpoint: {}", endpoint);
@@ -231,11 +229,9 @@ pub async fn store_prepared_secret(
         shared_point: prepared.shared_point.clone(),
         challenge: prepared.challenge.clone(),
         response: prepared.response.clone(),
-        effective_pk: effective_pk.clone(),
         with_proof,
         tier: tier.clone(),
         timestamp,
-        metadata_hash: metadata_hash.clone(),
     };
 
     // Create JWT for authentication with all request fields
@@ -255,11 +251,9 @@ pub async fn store_prepared_secret(
             prepared.shared_point.clone(),
             prepared.challenge.clone(),
             prepared.response.clone(),
-            effective_pk,
             with_proof,
             tier,
             timestamp,
-            metadata_hash,
         )
         .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
 
@@ -318,22 +312,6 @@ pub async fn do_store_secret(
     derivation: Option<Vec<u8>>,
     with_proof: bool,
 ) -> Result<StoreSecretResult> {
-    let ring_pk_bytes =
-        hex::decode(&ring_pk_hex).map_err(|e| anyhow!("Invalid ring_pk hex: {}", e))?;
-    let ring_pk_point =
-        G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
-    let effective_pk = if let Some(ref derivation) = derivation {
-        let effective_pk = ThresholdDealerNode::derive_public_key(&ring_pk_point, derivation)
-            .map_err(|e| anyhow!("Failed to derive effective_pk: {}", e))?;
-        Some(
-            effective_pk
-                .to_bytes()
-                .map_err(|e| anyhow!("Failed to serialize effective_pk: {}", e))?,
-        )
-    } else {
-        None
-    };
-
     let prepared = prepare_secret(
         secret,
         &ring_pk_hex,
@@ -354,11 +332,9 @@ pub async fn do_store_secret(
         resource,
         permission,
         reader_did_pk,
-        effective_pk,
         with_proof,
         tier,
         timestamp,
-        Some(prepared.metadata),
     )
     .await
 }
