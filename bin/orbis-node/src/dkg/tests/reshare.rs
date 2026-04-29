@@ -1,9 +1,10 @@
+use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::dkg::{
     coordinator::DkgCoordinator,
     helpers::derive_reshare_session_id,
     messages::{DkgMessage, SessionKind},
 };
-use crate::helpers::create_routers::create_router_with_dkg_handler;
+use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default,
@@ -25,7 +26,7 @@ use tokio::time::{sleep, Duration};
 use tracing_subscriber;
 
 // Concrete crypto implementation for tests (selected via crypto crate features)
-use crypto::DkgImpl;
+use crypto::{DkgImpl, PreImpl, SignImpl};
 
 // =============================================================================
 // Reshare validation tests
@@ -993,8 +994,11 @@ async fn create_extra_test_node(db_suffix: &str, bulletin: Arc<DummyBulletin>) -
     let router = {
         let arc_state = Arc::new(state.clone());
         Some(
-            create_router_with_dkg_handler::<DkgImpl>(&state.network, arc_state)
-                .expect("extra node router"),
+            create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
+                &state.network,
+                arc_state,
+            )
+            .expect("extra node router"),
         )
     };
 
@@ -1215,6 +1219,42 @@ async fn run_reshare_ceremony(
         assert!(
             start.elapsed() < max_wait,
             "Reshare ceremony did not complete within 60 s"
+        );
+        sleep(Duration::from_millis(500)).await;
+    }
+
+    // The reshare is not complete until the designated new-committee node 1
+    // posts the final bulletin update and clears the pending reshare fields.
+    let start = Instant::now();
+    loop {
+        let post = initiator_state
+            .bulletin
+            .read(
+                BULLETIN_RING_NAMESPACE.to_string(),
+                bulletin_post_id.to_string(),
+            )
+            .await
+            .expect("read reshare bulletin post");
+        let payload: RingPayload =
+            serde_json::from_slice(&post.payload).expect("parse reshare RingPayload");
+
+        let mut actual_peer_ids = payload.peer_ids.clone();
+        actual_peer_ids.sort();
+        let mut expected_peer_ids = sorted_next_peer_ids.to_vec();
+        expected_peer_ids.sort();
+
+        if payload.next_peer_ids.is_none()
+            && payload.new_threshold.is_none()
+            && actual_peer_ids == expected_peer_ids
+            && payload.threshold == new_threshold
+        {
+            break;
+        }
+
+        assert!(
+            start.elapsed() < max_wait,
+            "Reshare ceremony did not update bulletin RingPayload within 60 s; payload={:?}",
+            payload
         );
         sleep(Duration::from_millis(500)).await;
     }

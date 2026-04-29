@@ -41,7 +41,7 @@ use crate::helpers::helpers::{extract_node_part, validate_all_peer_ids};
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{Dkg, DkgRole};
-use crypto::{GroupAffine, PolynomialCommitmentImpl, ScalarField as Fr};
+use crypto::{GroupAffine, PolynomialCommitmentImpl, PubPolyImpl, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -59,6 +59,7 @@ where
             ShareValue = Fr,
             PublicKey = GroupAffine,
             PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
         > + Clone
         + Send
         + Sync
@@ -90,6 +91,7 @@ where
             ShareValue = Fr,
             PublicKey = GroupAffine,
             PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
         > + Clone
         + Send
         + Sync
@@ -119,6 +121,7 @@ where
             ShareValue = Fr,
             PublicKey = GroupAffine,
             PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
         > + Clone
         + Send
         + Sync
@@ -234,6 +237,7 @@ where
             ShareValue = Fr,
             PublicKey = GroupAffine,
             PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
         > + Clone
         + Send
         + Sync
@@ -441,6 +445,7 @@ where
             ShareValue = Fr,
             PublicKey = GroupAffine,
             PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
         > + Clone
         + Send
         + Sync

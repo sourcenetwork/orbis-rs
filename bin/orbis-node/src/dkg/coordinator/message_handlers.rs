@@ -15,7 +15,8 @@ use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use crypto::r#trait::{DistributedShare, Dkg, DkgRole};
 use crypto::{
     CryptoDeserialize, GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
-    ScalarField as Fr, GROUP_POINT_SIZE as G1_COMPRESSED_SIZE, SCALAR_SIZE as FR_COMPRESSED_SIZE,
+    PubPolyImpl as PubPoly, ScalarField as Fr, GROUP_POINT_SIZE as G1_COMPRESSED_SIZE,
+    SCALAR_SIZE as FR_COMPRESSED_SIZE,
 };
 use network::PeerId;
 use std::collections::{HashMap, HashSet};
@@ -55,8 +56,12 @@ pub(super) async fn handle_session_init<D>(
     sender_peer_id: &PeerId,
 ) -> Result<Option<DkgMessage>>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     let sender_hex = hex::encode(sender_peer_id.as_bytes());
@@ -525,8 +530,12 @@ pub(super) async fn handle_commitment_message<D>(
     commitment: Vec<u8>,
 ) -> Result<Option<DkgMessage>>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     tracing::debug!(
@@ -781,8 +790,12 @@ pub(super) async fn handle_share_message<D>(
     nonce: [u8; 16],
 ) -> Result<Option<DkgMessage>>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     if share_value.is_empty() {
@@ -907,8 +920,12 @@ pub(super) async fn record_and_ack_valid_reshare_share<D>(
     dealer_id: u32,
 ) -> Result<()>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     let ack = coord
@@ -988,8 +1005,12 @@ pub(super) async fn handle_reshare_share_ack<D>(
     dealer_id: u32,
 ) -> Result<Option<DkgMessage>>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     let selection = coord
@@ -1102,8 +1123,12 @@ async fn broadcast_reshare_participant_set<D>(
     new_peer_ids: &[String],
 ) -> Result<()>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     let mut failures = Vec::new();
@@ -1169,8 +1194,12 @@ pub(super) async fn handle_reshare_participant_set<D>(
     selected_dealer_ids: Vec<u32>,
 ) -> Result<Option<DkgMessage>>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     let accepted = coord

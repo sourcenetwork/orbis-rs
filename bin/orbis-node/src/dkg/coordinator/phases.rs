@@ -4,20 +4,70 @@ use crate::dkg::helpers::{
     persist_ring_bundle, serialize_commitment_coefficients, session_not_found,
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
-use crate::dkg::session_state::DkgPhase;
-use crate::helpers::helpers::{extract_node_part, is_self_peer_id};
+use crate::dkg::session_state::{DkgPhase, ReshareSignatureReadyKey};
+use crate::helpers::helpers::{extract_node_part, is_self_peer_id, RingConfig};
 use crate::metrics;
 use crate::ring_state::RingIndexEntry;
+use crate::sign::coordinator::{SignCoordinator, SignResponse};
+use crate::sign::error::SignError;
+use crate::sign::helpers::ring_reshare_update_message;
+use crate::sign::messages::{
+    RingReshareUpdateContext, RingReshareUpdateStatement, SignContext, RING_RESHARE_UPDATE_DOMAIN,
+};
 use bulletin::r#trait::RingPayload;
-use crypto::r#trait::{Dkg, DkgRole};
+use crypto::r#trait::{DistKeyShare, Dkg, DkgRole, PubShare, ThresholdSigner};
 use crypto::{
     CryptoSerialize, GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
-    ScalarField as Fr,
+    PubPolyImpl as PubPoly, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint,
 };
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
-use std::time::{SystemTime, UNIX_EPOCH};
+use sha2::{Digest, Sha256};
+use std::future::Future;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::{message_handlers::record_and_ack_valid_reshare_share, DkgCoordinator};
+
+const RESHARE_SIGNATURE_MAX_ATTEMPTS: usize = 6;
+const RESHARE_SIGNATURE_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+fn is_retryable_reshare_signature_error(error: &SignError) -> bool {
+    matches!(
+        error,
+        SignError::ReshareInProgress | SignError::InsufficientShares { .. } | SignError::Timeout(_)
+    )
+}
+
+async fn collect_reshare_update_signature_with_retry<F, Fut>(
+    session_id: u64,
+    retry_delay: Duration,
+    mut sign_attempt: F,
+) -> std::result::Result<Vec<u8>, SignError>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = std::result::Result<Vec<u8>, SignError>>,
+{
+    for attempt in 1..=RESHARE_SIGNATURE_MAX_ATTEMPTS {
+        let request_id = format!("reshare-update-{}-{}", session_id, attempt);
+        match sign_attempt(request_id).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(e)
+                if is_retryable_reshare_signature_error(&e)
+                    && attempt < RESHARE_SIGNATURE_MAX_ATTEMPTS =>
+            {
+                tracing::warn!(
+                    session_id = session_id,
+                    attempt = attempt,
+                    error = %e,
+                    "Reshare: threshold signature not ready yet, retrying"
+                );
+                tokio::time::sleep(retry_delay).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    unreachable!("retry loop either returns a response or the final error")
+}
 
 /// Phase 1: Generate polynomial and broadcast commitment to all peers.
 ///
@@ -28,8 +78,12 @@ pub(super) async fn initiate_phase1_commitments<D>(
     peer_ids: &[String],
 ) -> Result<()>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     let already_started = coord
@@ -170,8 +224,12 @@ pub(super) async fn check_and_trigger_phase2<D>(
     peer_ids: &[String],
 ) -> Result<()>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     // Check phase, polynomial readiness, expected commitment count, and our role.
@@ -253,8 +311,12 @@ pub(super) async fn initiate_phase2_shares<D>(
     peer_ids: &[String],
 ) -> Result<()>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     let (shares, node_id, threshold, role, is_reshare, reshare_new_peer_ids) = coord
@@ -505,8 +567,12 @@ pub(super) async fn check_and_trigger_phase4<D>(
     session_id: u64,
 ) -> Result<()>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     // Atomically claim Phase 4 — all conditions are checked and the phase
@@ -599,8 +665,22 @@ pub(super) async fn initiate_phase4_completion<D>(
     session_id: u64,
 ) -> Result<()>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
+        + 'static,
+    SignImpl: ThresholdSigner<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            DistKeyShare = DistKeyShare<Fr>,
+            PubPoly = D::PubPoly,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
+        > + Send
+        + Sync
         + 'static,
 {
     tracing::info!(
@@ -926,6 +1006,82 @@ where
         "Phase 4: DKG complete! Final share computed"
     );
 
+    let prepared_reshare_update = if let SessionKind::Reshare {
+        ring_pk_hex,
+        next_peer_ids,
+        new_threshold,
+        ..
+    } = &kind
+    {
+        if dkg_role == DkgRole::Dealer {
+            None
+        } else {
+            let sorted_new_peer_ids = reshare_new_peer_ids
+                .clone()
+                .unwrap_or_else(|| next_peer_ids.clone());
+            let new_committee_size = sorted_new_peer_ids.len();
+            let ring_pk_hex_for_payload = hex::encode(&ring_pk_bytes);
+            let ring_payload = RingPayload {
+                ring_pk: ring_pk_hex_for_payload.clone(),
+                peer_ids: sorted_new_peer_ids.clone(),
+                next_peer_ids: None,
+                new_threshold: None,
+                threshold: *new_threshold,
+                pss_interval,
+            };
+            let payload_bytes: Vec<u8> = ring_payload.clone().try_into().map_err(|e| {
+                DkgError::Serialization(format!(
+                    "Reshare: failed to serialize updated RingPayload: {}",
+                    e
+                ))
+            })?;
+            let bulletin_post_id = reshare_bulletin_post_id.as_ref().ok_or_else(|| {
+                DkgError::Bulletin(
+                    "Reshare: missing bulletin post id for updated RingPayload".to_string(),
+                )
+            })?;
+            let current_post = coord
+                .app_state
+                .bulletin
+                .read(
+                    BULLETIN_RING_NAMESPACE.to_string(),
+                    bulletin_post_id.clone(),
+                )
+                .await
+                .map_err(|e| {
+                    DkgError::Bulletin(format!(
+                        "Reshare: failed to read current RingPayload before signing: {}",
+                        e
+                    ))
+                })?;
+            let current_payload_sha256 = hex::encode(Sha256::digest(&current_post.payload));
+            let updated_payload_sha256 = hex::encode(Sha256::digest(&payload_bytes));
+
+            coord
+                .app_state
+                .dkg_session_state
+                .mark_reshare_signature_ready(ReshareSignatureReadyKey {
+                    ring_key: ring_pk_hex.clone(),
+                    session_id,
+                    bulletin_post_id: bulletin_post_id.clone(),
+                    current_payload_sha256: current_payload_sha256.clone(),
+                    updated_payload_sha256,
+                })
+                .await;
+
+            Some((
+                sorted_new_peer_ids,
+                new_committee_size,
+                ring_pk_hex_for_payload,
+                payload_bytes,
+                bulletin_post_id.clone(),
+                current_payload_sha256,
+            ))
+        }
+    } else {
+        None
+    };
+
     // Node 1 of the OLD committee posts the RingPayload for fresh DKG.
     if node_id == 1 && matches!(kind, SessionKind::Fresh) {
         let peer_ids = coord
@@ -970,7 +1126,6 @@ where
     // new peer_ids and new threshold.  The ring_pk remains the same (same secret).
     if let SessionKind::Reshare {
         ring_pk_hex,
-        next_peer_ids,
         new_threshold,
         ..
     } = &kind
@@ -987,32 +1142,79 @@ where
                     .map(|i| (i + 1) as u32)
             })
             .unwrap_or(0);
-        // TODO: change to needing a threshold signature
         if new_node_id == 1 {
-            // Use the sorted peer list from session state (same list used to derive
-            // new_node_id above) so the bulletin payload has a canonical ordering.
-            let sorted_new_peer_ids = reshare_new_peer_ids
-                .clone()
-                .unwrap_or_else(|| next_peer_ids.clone());
-            let ring_payload = RingPayload {
-                ring_pk: hex::encode(&ring_pk_bytes),
-                peer_ids: sorted_new_peer_ids,
-                next_peer_ids: None,
-                new_threshold: None,
-                threshold: *new_threshold,
-                pss_interval,
+            let Some((
+                sorted_new_peer_ids,
+                new_committee_size,
+                ring_pk_hex_for_payload,
+                payload_bytes,
+                bulletin_post_id,
+                current_payload_sha256,
+            )) = prepared_reshare_update.clone()
+            else {
+                return Err(DkgError::ProtocolError(
+                    "Reshare: node 1 selected to update bulletin without ready update state"
+                        .to_string(),
+                ));
             };
-            let payload_bytes: Vec<u8> = ring_payload.clone().try_into().map_err(|e| {
+            let statement = RingReshareUpdateStatement {
+                domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
+                session_id,
+                ring_pk: ring_pk_hex_for_payload,
+                bulletin_post_id: bulletin_post_id.clone(),
+                current_payload_sha256,
+                updated_payload: payload_bytes.clone(),
+            };
+            let message_to_sign = ring_reshare_update_message(&statement).map_err(|e| {
                 DkgError::Serialization(format!(
-                    "Reshare: failed to serialize updated RingPayload: {}",
+                    "Reshare: failed to serialize ring update statement: {}",
                     e
                 ))
             })?;
-            let bulletin_post_id = reshare_bulletin_post_id.as_ref().ok_or_else(|| {
-                DkgError::Bulletin(
-                    "Reshare: missing bulletin post id for updated RingPayload".to_string(),
-                )
+            let sign_coordinator = SignCoordinator::<D, SignImpl>::new(coord.app_state.clone());
+            let ring_config = RingConfig {
+                ring_pk_bytes: ring_pk_bytes.clone(),
+                peer_ids: sorted_new_peer_ids,
+                threshold: *new_threshold as usize,
+                total_participants: new_committee_size,
+                public_polynomial_hex: hex::encode(&pub_poly_bytes),
+            };
+            let sign_context =
+                SignContext::RingReshareUpdate(Box::new(RingReshareUpdateContext { statement }));
+
+            let response_bytes = collect_reshare_update_signature_with_retry(
+                session_id,
+                RESHARE_SIGNATURE_RETRY_DELAY,
+                |request_id| {
+                    sign_coordinator.initiate_signing(
+                        request_id,
+                        ring_config.clone(),
+                        message_to_sign.clone(),
+                        sign_context.clone(),
+                    )
+                },
+            )
+            .await
+            .map_err(|e| {
+                DkgError::Crypto(format!(
+                    "Reshare: failed to collect threshold signature for RingPayload update: {}",
+                    e
+                ))
             })?;
+            let sign_response: SignResponse =
+                serde_json::from_slice(&response_bytes).map_err(|e| {
+                    DkgError::Deserialization(format!(
+                        "Reshare: failed to parse threshold signature response: {}",
+                        e
+                    ))
+                })?;
+
+            if sign_response.signature.is_empty() {
+                return Err(DkgError::Crypto(
+                    "Reshare: threshold signature response was empty".to_string(),
+                ));
+            }
+
             coord
                 .app_state
                 .bulletin
@@ -1020,7 +1222,10 @@ where
                     BULLETIN_RING_NAMESPACE.to_string(),
                     bulletin_post_id.clone(),
                     payload_bytes,
-                    Some(session_id.to_string()),
+                    Some(format!(
+                        "reshare-threshold-signature:{}:{}",
+                        session_id, sign_response.signature
+                    )),
                 )
                 .await
                 .map_err(|e| {
@@ -1032,7 +1237,8 @@ where
                 post_id = %bulletin_post_id,
                 namespace = BULLETIN_RING_NAMESPACE,
                 new_threshold = new_threshold,
-                new_committee_size = next_peer_ids.len(),
+                new_committee_size = new_committee_size,
+                signature_len = sign_response.signature.len(),
                 "Reshare: Successfully updated RingPayload on bulletin"
             );
         }
@@ -1047,4 +1253,45 @@ where
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[tokio::test]
+    async fn reshare_signature_retry_uses_unique_request_ids() {
+        let calls = RefCell::new(Vec::new());
+        let response = collect_reshare_update_signature_with_retry(
+            42,
+            Duration::from_millis(0),
+            |request_id| {
+                let attempt = {
+                    let mut calls = calls.borrow_mut();
+                    calls.push(request_id);
+                    calls.len()
+                };
+                async move {
+                    if attempt < 3 {
+                        Err(SignError::ReshareInProgress)
+                    } else {
+                        Ok(vec![7, 8, 9])
+                    }
+                }
+            },
+        )
+        .await
+        .expect("third retry should succeed");
+
+        assert_eq!(response, vec![7, 8, 9]);
+        assert_eq!(
+            calls.into_inner(),
+            vec![
+                "reshare-update-42-1".to_string(),
+                "reshare-update-42-2".to_string(),
+                "reshare-update-42-3".to_string(),
+            ]
+        );
+    }
 }

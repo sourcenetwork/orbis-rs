@@ -16,6 +16,7 @@ where
             ShareValue = crypto::ScalarField,
             PublicKey = crypto::GroupAffine,
             PolynomialCommitment = crypto::PolynomialCommitmentImpl,
+            PubPoly = crypto::PubPolyImpl,
         > + Clone
         + Send
         + Sync
