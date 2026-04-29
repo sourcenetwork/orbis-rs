@@ -53,6 +53,30 @@ impl Bulletin for SourceHubBulletin {
 
         Ok(())
     }
+
+    async fn update(
+        &self,
+        namespace: String,
+        id: String,
+        payload: Vec<u8>,
+        artifact: Option<String>,
+    ) -> Result<()> {
+        let result = self
+            .chain_client
+            .bulletin_update_post(&namespace, &id, payload, artifact)
+            .await
+            .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+
+        if result.code != 0 {
+            return Err(BulletinError::ChainError(format!(
+                "Failed to update post: code {}",
+                result.code
+            )));
+        }
+
+        Ok(())
+    }
+
     async fn read(&self, namespace: String, id: String) -> Result<BulletinPost> {
         // SourceHub stores posts under "bulletin/{namespace}" on-chain.
         let full_namespace = format!("bulletin/{}", namespace);

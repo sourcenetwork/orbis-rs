@@ -46,6 +46,53 @@ impl MsgCreatePost {
     }
 }
 
+/// Update an existing post in a namespace while preserving its ID.
+/// Proto field numbers match sourcehub/bulletin/tx.proto:
+/// - 1: creator (string)
+/// - 2: namespace (string)
+/// - 3: post_id (string)
+/// - 4: payload (bytes)
+/// - 5: artifact (string)
+#[derive(Clone, Message)]
+pub struct MsgUpdatePost {
+    /// Creator/updater's address
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    /// Namespace identifier
+    #[prost(string, tag = "2")]
+    pub namespace: String,
+    /// Existing post identifier to update
+    #[prost(string, tag = "3")]
+    pub post_id: String,
+    /// New post payload data
+    #[prost(bytes = "vec", tag = "4")]
+    pub payload: Vec<u8>,
+    /// Artifact for finding/tracking update (optional)
+    #[prost(string, tag = "5")]
+    pub artifact: String,
+}
+
+impl MsgUpdatePost {
+    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgUpdatePost";
+
+    /// Create a post update message.
+    pub fn new(
+        creator: &str,
+        namespace: &str,
+        post_id: &str,
+        payload: Vec<u8>,
+        artifact: Option<String>,
+    ) -> Self {
+        Self {
+            creator: creator.to_string(),
+            namespace: namespace.to_string(),
+            post_id: post_id.to_string(),
+            payload,
+            artifact: artifact.unwrap_or_default(),
+        }
+    }
+}
+
 /// Register a new namespace.
 /// Proto field numbers match sourcehub/bulletin/tx.proto:
 /// - 1: creator (string)
@@ -432,6 +479,28 @@ impl SourceHubClient {
 
         self.broadcast_proto_msg_with_gas(
             MsgCreatePost::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    /// Update an existing post while preserving its post ID.
+    pub async fn bulletin_update_post(
+        &self,
+        namespace: &str,
+        post_id: &str,
+        payload: Vec<u8>,
+        artifact: Option<String>,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+
+        let msg = MsgUpdatePost::new(&signer.address(), namespace, post_id, payload, artifact);
+
+        self.broadcast_proto_msg_with_gas(
+            MsgUpdatePost::TYPE_URL,
             &msg,
             self.config().gas_multiplier,
         )

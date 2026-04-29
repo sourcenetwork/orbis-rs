@@ -8,6 +8,7 @@
 
 use crate::constants::BULLETIN_RING_NAMESPACE;
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
+use common::blockchain::{ChainConfig, TxSigner, TEST_ACCOUNT_HEX_KEY};
 use common::IntegrationTestNetwork;
 use common::SOURCEHUB_RPC_URL;
 use crypto::helpers::generate_keypair;
@@ -92,6 +93,13 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     )
     .await
     .expect("add_bulletin_collaborator");
+    let test_account_address = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+        .expect("test account signer")
+        .address();
+    cli_tool::add_bulletin_collaborator(BULLETIN_RING_NAMESPACE.to_string(), test_account_address)
+        .await
+        .expect("add test account as bulletin collaborator");
+
     // Transform P2P addresses for inter-container communication
     // The addresses from nodes will be like "peer_id@0.0.0.0:port"
     // We need to replace 0.0.0.0 with the container name for Docker networking
@@ -172,7 +180,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         serde_json::from_slice(&post_payload).expect("parse RingPayload");
     let ring_pk_hex = ring_payload.ring_pk.clone();
     let ring_id = post_event.post_id;
-    let _dkg_ring_payload = ring_payload.clone();
+    let dkg_ring_payload = ring_payload.clone();
 
     // The bulletin event proves the DKG was posted, but the other nodes may
     // still be finishing their local Phase 4 writes. Wait until every node can
@@ -772,7 +780,148 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     );
 
     // ====================================================================
-    // Step 4a: Post-refresh Sign — reuse existing derivation_id (ring_id
+    // Step 5: PSS Reshare — update the existing ring bulletin post with a
+    // next committee.  SourceHub now supports in-place post updates, so the
+    // ring_id stays stable while the payload first announces next_peer_ids
+    // and then, after Phase 4, converges to peer_ids = next_peer_ids.
+    // ====================================================================
+    println!("Announcing PSS reshare via bulletin update...");
+
+    let reshare_peer_ids = vec![peer_ids[0].clone(), peer_ids[1].clone()];
+    let reshare_threshold = 2u32;
+    assert_ne!(
+        sorted_peer_ids(&dkg_ring_payload.peer_ids),
+        sorted_peer_ids(&reshare_peer_ids),
+        "Reshare test must change the committee"
+    );
+
+    let pre_reshare_ring_states = wait_for_ring_state_on_all_nodes(
+        &node_endpoints[..2],
+        &ring_pk_hex,
+        Duration::from_secs(60),
+        Duration::from_millis(500),
+    )
+    .await;
+
+    let reshare_announcement = RingPayload {
+        ring_pk: ring_pk_hex.clone(),
+        peer_ids: dkg_ring_payload.peer_ids.clone(),
+        threshold: dkg_ring_payload.threshold,
+        next_peer_ids: Some(reshare_peer_ids.clone()),
+        new_threshold: Some(reshare_threshold),
+        pss_interval: dkg_ring_payload.pss_interval,
+    };
+    let reshare_announcement_bytes =
+        serde_json::to_vec(&reshare_announcement).expect("serialize reshare announcement");
+    cli_tool::update_bulletin_post(
+        ring_namespace.clone(),
+        ring_id.clone(),
+        reshare_announcement_bytes,
+    )
+    .await
+    .expect("update ring bulletin post with reshare announcement");
+
+    let announced_payload = read_ring_payload(&ring_namespace, &ring_id).await;
+    let announced_next_peer_ids = announced_payload
+        .next_peer_ids
+        .as_ref()
+        .map(|ids| sorted_peer_ids(ids))
+        .expect("reshare announcement should set next_peer_ids");
+    assert_eq!(
+        announced_next_peer_ids,
+        sorted_peer_ids(&reshare_peer_ids),
+        "Reshare announcement should preserve the requested next committee"
+    );
+    assert_eq!(
+        announced_payload.new_threshold,
+        Some(reshare_threshold),
+        "Reshare announcement should preserve the requested new threshold"
+    );
+    println!(
+        "Reshare announced on stable ring_id={}; waiting for bulletin peer_ids to converge...",
+        &ring_id[..16.min(ring_id.len())]
+    );
+
+    let reshared_payload = wait_for_reshare_bulletin_completion(
+        &ring_namespace,
+        &ring_id,
+        &ring_pk_hex,
+        &reshare_peer_ids,
+        reshare_threshold,
+        Duration::from_secs(300),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(
+        reshared_payload.ring_pk, ring_pk_hex,
+        "Reshare should preserve the ring public key"
+    );
+    assert_eq!(
+        sorted_peer_ids(&reshared_payload.peer_ids),
+        sorted_peer_ids(&reshare_peer_ids),
+        "Reshare should make peer_ids equal the requested next committee"
+    );
+    assert_eq!(
+        reshared_payload.threshold, reshare_threshold,
+        "Reshare should update the ring threshold"
+    );
+    assert!(
+        reshared_payload.next_peer_ids.is_none() && reshared_payload.new_threshold.is_none(),
+        "Completed reshare should clear the announcement fields"
+    );
+
+    let reshared_ring_states = wait_for_pss_refresh_on_all_nodes(
+        &node_endpoints[..2],
+        &ring_pk_hex,
+        &pre_reshare_ring_states,
+        Duration::from_secs(120),
+        Duration::from_secs(2),
+    )
+    .await;
+    for (idx, (before, after)) in pre_reshare_ring_states
+        .iter()
+        .zip(reshared_ring_states.iter())
+        .enumerate()
+    {
+        println!(
+            "  Reshare node {} PSS last_pss: {} -> {}",
+            idx + 1,
+            before.last_pss,
+            after.last_pss
+        );
+    }
+    println!(
+        "PSS reshare complete. ring_id={} is unchanged; committee size is now {}.",
+        &ring_id[..16.min(ring_id.len())],
+        reshared_payload.peer_ids.len()
+    );
+
+    println!("Testing Sign after PSS reshare...");
+    let sign_result_post_reshare = do_sign_expect_success(
+        "post-reshare policy Sign",
+        endpoint.clone(),
+        sign_message.to_vec(),
+        namespace.clone(),
+        derivation_id.clone(),
+        Some(sign_did_pk.clone()),
+        None,
+        None,
+    )
+    .await;
+
+    let sig_bytes_post_reshare =
+        hex::decode(&sign_result_post_reshare.signature).expect("decode post-reshare sig hex");
+    let signature_post_reshare =
+        <SignImpl as ThresholdSigner>::Signature::from_bytes(&sig_bytes_post_reshare)
+            .expect("deserialize post-reshare signature");
+    signer
+        .verify(&derived_pk, sign_message, &signature_post_reshare)
+        .expect("post-reshare signature should verify against derived public key");
+
+    println!("Post-reshare Sign verified against the unchanged derived public key!");
+
+    // ====================================================================
+    // Step 6: Post-refresh Sign — reuse existing derivation_id (ring_id
     // and derived PK are unchanged after PSS; the on-chain post already
     // exists and ACP relationships are already set).
     // ====================================================================
@@ -803,7 +952,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("Post-refresh Sign verified!");
 
     // ====================================================================
-    // Step 4b: Post-refresh PRE — encrypt a fresh secret using the original
+    // Step 6: Post-refresh PRE — encrypt a fresh secret using the original
     // ring_id (unchanged after PSS). Store it as a new object and run PRE
     // to verify decryption still works against the refreshed shares.
     // ====================================================================
@@ -931,6 +1080,78 @@ async fn wait_for_ring_state_on_all_nodes(
         );
         sleep(poll_interval).await;
     }
+}
+
+async fn read_ring_payload(namespace: &str, ring_id: &str) -> RingPayload {
+    let payload_bytes = cli_tool::read_bulletin_post(namespace.to_string(), ring_id.to_string())
+        .await
+        .expect("read ring payload from bulletin");
+    serde_json::from_slice(&payload_bytes).expect("parse RingPayload")
+}
+
+async fn wait_for_reshare_bulletin_completion(
+    namespace: &str,
+    ring_id: &str,
+    ring_pk_hex: &str,
+    expected_peer_ids: &[String],
+    expected_threshold: u32,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> RingPayload {
+    let deadline = Instant::now() + timeout;
+    let mut next_status_log = Instant::now() + Duration::from_secs(15);
+    let expected_sorted = sorted_peer_ids(expected_peer_ids);
+
+    loop {
+        let last_status =
+            match cli_tool::read_bulletin_post(namespace.to_string(), ring_id.to_string()).await {
+                Ok(payload_bytes) => match serde_json::from_slice::<RingPayload>(&payload_bytes) {
+                    Ok(payload) => {
+                        let actual_sorted = sorted_peer_ids(&payload.peer_ids);
+                        let complete = payload.ring_pk == ring_pk_hex
+                            && actual_sorted == expected_sorted
+                            && payload.threshold == expected_threshold
+                            && payload.next_peer_ids.is_none()
+                            && payload.new_threshold.is_none();
+                        let status = format!(
+                            "peer_count={} threshold={} next_peer_ids_set={} new_threshold={:?}",
+                            payload.peer_ids.len(),
+                            payload.threshold,
+                            payload.next_peer_ids.is_some(),
+                            payload.new_threshold
+                        );
+                        if complete {
+                            return payload;
+                        }
+                        status
+                    }
+                    Err(e) => format!("parse error: {}", e),
+                },
+                Err(e) => e.to_string(),
+            };
+
+        let now = Instant::now();
+        assert!(
+            now < deadline,
+            "PSS reshare did not update the bulletin within {}s. Last observed: {}",
+            timeout.as_secs(),
+            last_status
+        );
+        if now >= next_status_log {
+            println!(
+                "Still waiting for PSS reshare bulletin update: {}",
+                last_status
+            );
+            next_status_log = now + Duration::from_secs(15);
+        }
+        sleep(poll_interval).await;
+    }
+}
+
+fn sorted_peer_ids(peer_ids: &[String]) -> Vec<String> {
+    let mut sorted = peer_ids.to_vec();
+    sorted.sort();
+    sorted
 }
 
 async fn do_sign_expect_success(

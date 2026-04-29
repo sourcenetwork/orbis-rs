@@ -628,6 +628,14 @@ pub async fn add_policy_to_chain() -> Result<String> {
     .await
     .map_err(|e| anyhow!("client builder issue: {}", e))?;
 
+    let ids_before: std::collections::HashSet<String> = client
+        .acp_list_policy_ids()
+        .await
+        .map_err(|e| anyhow!("Failed to list policy IDs: {}", e))?
+        .ids
+        .into_iter()
+        .collect();
+
     let create_result = client
         .acp_create_policy(TEST_POLICY_YAML, 1)
         .await
@@ -637,16 +645,14 @@ pub async fn add_policy_to_chain() -> Result<String> {
         create_result.code, create_result.tx_hash, create_result.log
     );
 
-    // TODO: This is dumb grabs the last policy id that exists, fine for now but fix later by grabbing policy id from event or something
-    let policy_ids = client
+    let policy_id = client
         .acp_list_policy_ids()
         .await
-        .map_err(|e| anyhow!("Failed to list policy IDs: {}", e))?;
-    let policy_id = policy_ids
+        .map_err(|e| anyhow!("Failed to list policy IDs: {}", e))?
         .ids
-        .last()
-        .ok_or_else(|| anyhow!("No policy IDs found"))?
-        .clone();
+        .into_iter()
+        .find(|id| !ids_before.contains(id))
+        .ok_or_else(|| anyhow!("Newly created policy ID not found in list"))?;
     println!("[ACP] policy_id from list: {}", policy_id);
     Ok(policy_id)
 }
@@ -842,6 +848,23 @@ pub async fn create_bulletin_post(namespace: String, payload: Vec<u8>) -> Result
 
     println!("Created bulletin post with ID: {}", post_id);
     Ok(post_id)
+}
+
+pub async fn update_bulletin_post(namespace: String, id: String, payload: Vec<u8>) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+
+    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+        .await
+        .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
+
+    bulletin
+        .update(namespace, id.clone(), payload, None)
+        .await
+        .map_err(|e| anyhow!("Failed to update post: {}", e))?;
+
+    println!("Updated bulletin post with ID: {}", id);
+    Ok(())
 }
 
 /// Read a bulletin post by namespace and ID

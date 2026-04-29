@@ -398,86 +398,45 @@ where
             DkgError::Serialization(format!("Failed to serialize share value: {}", e))
         })?;
 
-        // Try to get specific peer_id for this node_id (O(1) lookup).
-        if let Some(target_peer_id) = coord
+        // Private DKG shares must be sent only to their intended recipient.
+        let target_peer_id = coord
             .app_state
             .dkg_session_state
             .get_peer_id_for_node(&session_id, share.to_id)
             .await
-        {
-            let share_msg = DkgMessage::Share {
-                session_id,
-                from_node_id: node_id,
-                to_node_id: share.to_id,
-                share_value: share_value_bytes.clone(),
-                nonce: share.nonce,
-            };
-            match coord
-                .send_message_to_peer(&target_peer_id, share_msg, Some(session_id))
-                .await
-            {
-                Ok(_) => {
-                    shares_sent += 1;
-                    tracing::debug!(
-                        from_node = node_id,
-                        to_node = share.to_id,
-                        peer_id = %target_peer_id,
-                        "DKG Coordinator: Sent share"
-                    );
-                }
-                Err(e) => {
-                    tracing::error!(
-                        to_node = share.to_id,
-                        peer_id = %target_peer_id,
-                        error = %e,
-                        "Failed to send share"
-                    );
-                }
-            }
-        } else {
-            // Fallback: broadcast to all peers (only if node_id → peer_id mapping not set up).
-            let mut sent_count = 0;
-            for peer_id_str in peer_ids {
-                if is_self_peer_id(&coord.app_state.network, peer_id_str) {
-                    continue;
-                }
+            .ok_or_else(|| {
+                DkgError::ProtocolError(format!(
+                    "Missing peer mapping for node_id {}; refusing to broadcast private share",
+                    share.to_id
+                ))
+            })?;
 
-                let broadcast_share_msg = DkgMessage::Share {
-                    session_id,
-                    from_node_id: node_id,
-                    to_node_id: share.to_id,
-                    share_value: share_value_bytes.clone(),
-                    nonce: share.nonce,
-                };
-                match coord
-                    .send_message_to_peer(peer_id_str, broadcast_share_msg, Some(session_id))
-                    .await
-                {
-                    Ok(_) => {
-                        sent_count += 1;
-                        tracing::debug!(
-                            from_node = node_id,
-                            to_node = share.to_id,
-                            peer_id = %peer_id_str,
-                            "DKG Coordinator: Sent share (broadcast)"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            peer_id = %peer_id_str,
-                            error = %e,
-                            "Failed to send share to peer"
-                        );
-                    }
-                }
-            }
-            if sent_count > 0 {
+        let share_msg = DkgMessage::Share {
+            session_id,
+            from_node_id: node_id,
+            to_node_id: share.to_id,
+            share_value: share_value_bytes,
+            nonce: share.nonce,
+        };
+        match coord
+            .send_message_to_peer(&target_peer_id, share_msg, Some(session_id))
+            .await
+        {
+            Ok(_) => {
                 shares_sent += 1;
-            } else {
-                tracing::error!(
+                tracing::debug!(
                     from_node = node_id,
                     to_node = share.to_id,
-                    "DKG Coordinator: Failed to send share to any peer"
+                    peer_id = %target_peer_id,
+                    "DKG Coordinator: Sent share"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    to_node = share.to_id,
+                    peer_id = %target_peer_id,
+                    error = %e,
+                    "Failed to send share"
                 );
             }
         }
@@ -835,7 +794,7 @@ where
     // Receiver and DealerReceiver nodes use the bulletin_post_id carried in the SessionInit
     // (they had no prior index entry).  Dealers have already left and skip this entirely.
     if matches!(kind, SessionKind::Reshare { .. }) && dkg_role != DkgRole::Dealer {
-        if let Some(post_id) = reshare_bulletin_post_id {
+        if let Some(post_id) = &reshare_bulletin_post_id {
             let _guard = coord.app_state.ring_index_lock.lock().await;
             let mut ring_index: Vec<RingIndexEntry> = coord
                 .app_state
@@ -848,7 +807,7 @@ where
             if !ring_index.iter().any(|e| e.ring_pk_str == storage_key) {
                 ring_index.push(RingIndexEntry {
                     ring_pk_str: storage_key.clone(),
-                    bulletin_post_id: post_id,
+                    bulletin_post_id: post_id.clone(),
                 });
                 let index_bytes = serde_json::to_vec(&ring_index).map_err(|e| {
                     DkgError::Serialization(format!("Failed to serialize RingIndex: {}", e))
@@ -1036,7 +995,7 @@ where
                 .clone()
                 .unwrap_or_else(|| next_peer_ids.clone());
             let ring_payload = RingPayload {
-                ring_pk: ring_pk_hex.clone(),
+                ring_pk: hex::encode(&ring_pk_bytes),
                 peer_ids: sorted_new_peer_ids,
                 next_peer_ids: None,
                 new_threshold: None,
@@ -1049,29 +1008,32 @@ where
                     e
                 ))
             })?;
-            // TODO: placeholder - need to update bulletin to allow updating on reshare
+            let bulletin_post_id = reshare_bulletin_post_id.as_ref().ok_or_else(|| {
+                DkgError::Bulletin(
+                    "Reshare: missing bulletin post id for updated RingPayload".to_string(),
+                )
+            })?;
             coord
                 .app_state
                 .bulletin
-                .post(
+                .update(
                     BULLETIN_RING_NAMESPACE.to_string(),
+                    bulletin_post_id.clone(),
                     payload_bytes,
                     Some(session_id.to_string()),
                 )
                 .await
                 .map_err(|e| {
-                    DkgError::Bulletin(format!(
-                        "Reshare: failed to post updated RingPayload: {}",
-                        e
-                    ))
+                    DkgError::Bulletin(format!("Reshare: failed to update RingPayload: {}", e))
                 })?;
 
             tracing::info!(
                 ring_pk = %ring_pk_hex,
+                post_id = %bulletin_post_id,
                 namespace = BULLETIN_RING_NAMESPACE,
                 new_threshold = new_threshold,
                 new_committee_size = next_peer_ids.len(),
-                "Reshare: Successfully posted updated RingPayload to bulletin"
+                "Reshare: Successfully updated RingPayload on bulletin"
             );
         }
     }
