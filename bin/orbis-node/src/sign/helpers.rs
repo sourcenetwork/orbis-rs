@@ -252,143 +252,6 @@ pub async fn validate_ring_reshare_update_statement(
     Ok(statement.ring_pk.clone())
 }
 
-#[cfg(test)]
-mod ring_reshare_update_tests {
-    use super::*;
-    use bulletin::dummy::DummyBulletin;
-    use bulletin::r#trait::Bulletin;
-    use crypto::{CryptoSerialize, DkgImpl};
-
-    async fn fixture(
-        next_peer_ids: Option<Vec<String>>,
-        new_threshold: Option<u32>,
-    ) -> (
-        DummyBulletin,
-        SessionStateManager<DkgImpl>,
-        RingReshareUpdateStatement,
-        ReshareSignatureReadyKey,
-    ) {
-        let (_sk, ring_pk) = crypto::helpers::generate_keypair().expect("generate ring key");
-        let ring_pk_bytes = CryptoSerialize::to_bytes(&ring_pk).expect("serialize ring key");
-        let ring_pk_hex = hex::encode(ring_pk_bytes);
-        let ring_key = storage_key_from_ring_pk_hex(&ring_pk_hex).expect("storage key");
-        let old_peer_ids = vec!["old-a".to_string(), "old-b".to_string()];
-        let final_peer_ids = next_peer_ids
-            .clone()
-            .unwrap_or_else(|| old_peer_ids.clone());
-        let final_threshold = new_threshold.unwrap_or(2);
-
-        let current_payload = RingPayload {
-            ring_pk: ring_pk_hex.clone(),
-            peer_ids: old_peer_ids,
-            next_peer_ids,
-            new_threshold,
-            threshold: 2,
-            pss_interval: Some(30),
-        };
-        let updated_payload = RingPayload {
-            ring_pk: ring_pk_hex.clone(),
-            peer_ids: final_peer_ids,
-            next_peer_ids: None,
-            new_threshold: None,
-            threshold: final_threshold,
-            pss_interval: Some(30),
-        };
-
-        let current_payload_bytes: Vec<u8> = current_payload
-            .try_into()
-            .expect("serialize current RingPayload");
-        let updated_payload_bytes: Vec<u8> = updated_payload
-            .try_into()
-            .expect("serialize updated RingPayload");
-        let bulletin = DummyBulletin::new().await.expect("dummy bulletin");
-        bulletin
-            .post(
-                BULLETIN_RING_NAMESPACE.to_string(),
-                current_payload_bytes.clone(),
-                None,
-            )
-            .await
-            .expect("post current payload");
-        let bulletin_post_id = bulletin
-            .get_post_id(BULLETIN_RING_NAMESPACE, &current_payload_bytes)
-            .expect("post id");
-        let session_id = 77;
-        let current_payload_sha256 = sha256_hex(&current_payload_bytes);
-        let updated_payload_sha256 = sha256_hex(&updated_payload_bytes);
-        let statement = RingReshareUpdateStatement {
-            domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
-            session_id,
-            ring_pk: ring_pk_hex,
-            bulletin_post_id: bulletin_post_id.clone(),
-            current_payload_sha256: current_payload_sha256.clone(),
-            updated_payload: updated_payload_bytes,
-        };
-        let ready_key = ReshareSignatureReadyKey {
-            ring_key,
-            session_id,
-            bulletin_post_id,
-            current_payload_sha256,
-            updated_payload_sha256,
-        };
-
-        (
-            bulletin,
-            SessionStateManager::<DkgImpl>::new(),
-            statement,
-            ready_key,
-        )
-    }
-
-    #[tokio::test]
-    async fn validate_rejects_no_pending_reshare() {
-        let (bulletin, state, statement, ready_key) = fixture(None, None).await;
-        state.mark_reshare_signature_ready(ready_key).await;
-
-        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
-            .await
-            .expect_err("no pending reshare should be rejected");
-
-        match err {
-            SignError::Unauthorized(message) => {
-                assert!(message.contains("pending bulletin reshare announcement"));
-            }
-            other => panic!("expected Unauthorized, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn validate_rejects_pending_reshare_without_ready_marker() {
-        let (bulletin, state, statement, _ready_key) = fixture(
-            Some(vec!["new-a".to_string(), "new-b".to_string()]),
-            Some(2),
-        )
-        .await;
-
-        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
-            .await
-            .expect_err("missing local ready marker should be retryable");
-
-        assert!(matches!(err, SignError::ReshareInProgress));
-    }
-
-    #[tokio::test]
-    async fn validate_accepts_pending_reshare_with_ready_marker() {
-        let (bulletin, state, statement, ready_key) = fixture(
-            Some(vec!["new-a".to_string(), "new-b".to_string()]),
-            Some(2),
-        )
-        .await;
-        state.mark_reshare_signature_ready(ready_key).await;
-
-        let ring_pk = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
-            .await
-            .expect("ready marker should authorize validation");
-
-        assert_eq!(ring_pk, statement.ring_pk);
-    }
-}
-
 /// Serializes a list of `(node_id, commitment)` pairs to a length-prefixed byte buffer.
 pub fn serialize_commitments<S: ThresholdSigner>(
     commitments: &[(u32, S::NonceCommitment)],
@@ -739,4 +602,141 @@ pub async fn store_response(
     sign_response_state
         .store_response(&request_id, message, sender_peer_id.as_bytes())
         .await;
+}
+
+#[cfg(test)]
+mod ring_reshare_update_tests {
+    use super::*;
+    use bulletin::dummy::DummyBulletin;
+    use bulletin::r#trait::Bulletin;
+    use crypto::{CryptoSerialize, DkgImpl};
+
+    async fn fixture(
+        next_peer_ids: Option<Vec<String>>,
+        new_threshold: Option<u32>,
+    ) -> (
+        DummyBulletin,
+        SessionStateManager<DkgImpl>,
+        RingReshareUpdateStatement,
+        ReshareSignatureReadyKey,
+    ) {
+        let (_sk, ring_pk) = crypto::helpers::generate_keypair().expect("generate ring key");
+        let ring_pk_bytes = CryptoSerialize::to_bytes(&ring_pk).expect("serialize ring key");
+        let ring_pk_hex = hex::encode(ring_pk_bytes);
+        let ring_key = storage_key_from_ring_pk_hex(&ring_pk_hex).expect("storage key");
+        let old_peer_ids = vec!["old-a".to_string(), "old-b".to_string()];
+        let final_peer_ids = next_peer_ids
+            .clone()
+            .unwrap_or_else(|| old_peer_ids.clone());
+        let final_threshold = new_threshold.unwrap_or(2);
+
+        let current_payload = RingPayload {
+            ring_pk: ring_pk_hex.clone(),
+            peer_ids: old_peer_ids,
+            next_peer_ids,
+            new_threshold,
+            threshold: 2,
+            pss_interval: Some(30),
+        };
+        let updated_payload = RingPayload {
+            ring_pk: ring_pk_hex.clone(),
+            peer_ids: final_peer_ids,
+            next_peer_ids: None,
+            new_threshold: None,
+            threshold: final_threshold,
+            pss_interval: Some(30),
+        };
+
+        let current_payload_bytes: Vec<u8> = current_payload
+            .try_into()
+            .expect("serialize current RingPayload");
+        let updated_payload_bytes: Vec<u8> = updated_payload
+            .try_into()
+            .expect("serialize updated RingPayload");
+        let bulletin = DummyBulletin::new().await.expect("dummy bulletin");
+        bulletin
+            .post(
+                BULLETIN_RING_NAMESPACE.to_string(),
+                current_payload_bytes.clone(),
+                None,
+            )
+            .await
+            .expect("post current payload");
+        let bulletin_post_id = bulletin
+            .get_post_id(BULLETIN_RING_NAMESPACE, &current_payload_bytes)
+            .expect("post id");
+        let session_id = 77;
+        let current_payload_sha256 = sha256_hex(&current_payload_bytes);
+        let updated_payload_sha256 = sha256_hex(&updated_payload_bytes);
+        let statement = RingReshareUpdateStatement {
+            domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
+            session_id,
+            ring_pk: ring_pk_hex,
+            bulletin_post_id: bulletin_post_id.clone(),
+            current_payload_sha256: current_payload_sha256.clone(),
+            updated_payload: updated_payload_bytes,
+        };
+        let ready_key = ReshareSignatureReadyKey {
+            ring_key,
+            session_id,
+            bulletin_post_id,
+            current_payload_sha256,
+            updated_payload_sha256,
+        };
+
+        (
+            bulletin,
+            SessionStateManager::<DkgImpl>::new(),
+            statement,
+            ready_key,
+        )
+    }
+
+    #[tokio::test]
+    async fn validate_rejects_no_pending_reshare() {
+        let (bulletin, state, statement, ready_key) = fixture(None, None).await;
+        state.mark_reshare_signature_ready(ready_key).await;
+
+        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
+            .await
+            .expect_err("no pending reshare should be rejected");
+
+        match err {
+            SignError::Unauthorized(message) => {
+                assert!(message.contains("pending bulletin reshare announcement"));
+            }
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_rejects_pending_reshare_without_ready_marker() {
+        let (bulletin, state, statement, _ready_key) = fixture(
+            Some(vec!["new-a".to_string(), "new-b".to_string()]),
+            Some(2),
+        )
+        .await;
+
+        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
+            .await
+            .expect_err("missing local ready marker should be retryable");
+
+        assert!(matches!(err, SignError::ReshareInProgress));
+    }
+
+    #[tokio::test]
+    async fn validate_accepts_pending_reshare_with_ready_marker() {
+        let (bulletin, state, statement, ready_key) = fixture(
+            Some(vec!["new-a".to_string(), "new-b".to_string()]),
+            Some(2),
+        )
+        .await;
+        state.mark_reshare_signature_ready(ready_key).await;
+
+        let ring_pk = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
+            .await
+            .expect("ready marker should authorize validation");
+
+        assert_eq!(ring_pk, statement.ring_pk);
+    }
 }
