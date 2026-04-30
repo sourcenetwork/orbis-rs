@@ -5,7 +5,7 @@
 use crate::app_state::AppState;
 use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::helpers::create_routers::{
-    create_router_with_all_handlers, create_router_with_dkg_handler, create_router_with_handlers,
+    create_router_with_all_handlers, create_router_with_handlers,
 };
 use crate::ring_state::RingIndexEntry;
 use authz::dummy::DummyAuthZ;
@@ -343,37 +343,46 @@ pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> Thr
         charlie_address
     );
 
-    // Optionally start routers for all nodes with DKG protocol handler
-    // Use the same production setup as main.rs
-    // Alice also needs a router to accept incoming connections from Bob and Charlie
+    // Optionally start routers for all nodes with the production protocol handlers.
+    // DKG reshare Phase 4 now collects a threshold signature over the bulletin
+    // update, so even DKG-focused network tests need the Sign handler available.
     let alice_router = if start_routers {
-        println!("Starting router for Alice...");
+        println!("Starting router for Alice with DKG, PRE, and Sign handlers...");
         let alice_app_state = Arc::new(alice_state.clone());
         Some(
-            create_router_with_dkg_handler::<DkgImpl>(&alice_state.network, alice_app_state)
-                .expect("Failed to create router for Alice"),
+            create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
+                &alice_state.network,
+                alice_app_state,
+            )
+            .expect("Failed to create router for Alice"),
         )
     } else {
         None
     };
 
     let bob_router = if start_routers {
-        println!("Starting router for Bob...");
+        println!("Starting router for Bob with DKG, PRE, and Sign handlers...");
         let bob_app_state = Arc::new(bob_state.clone());
         Some(
-            create_router_with_dkg_handler::<DkgImpl>(&bob_state.network, bob_app_state)
-                .expect("Failed to create router for Bob"),
+            create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
+                &bob_state.network,
+                bob_app_state,
+            )
+            .expect("Failed to create router for Bob"),
         )
     } else {
         None
     };
 
     let charlie_router = if start_routers {
-        println!("Starting router for Charlie...");
+        println!("Starting router for Charlie with DKG, PRE, and Sign handlers...");
         let charlie_app_state = Arc::new(charlie_state.clone());
         Some(
-            create_router_with_dkg_handler::<DkgImpl>(&charlie_state.network, charlie_app_state)
-                .expect("Failed to create router for Charlie"),
+            create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
+                &charlie_state.network,
+                charlie_app_state,
+            )
+            .expect("Failed to create router for Charlie"),
         )
     } else {
         None

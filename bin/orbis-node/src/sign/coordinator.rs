@@ -27,7 +27,8 @@ use crate::ring_state::RingShareBundle;
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
-    fetch_key_derivation, load_dist_key_share, serialize_commitments, store_response,
+    fetch_key_derivation, load_dist_key_share, ring_reshare_update_context_key,
+    serialize_commitments, store_response, validate_ring_reshare_update_statement,
     validate_sign_claims, verify_message_and_get_info,
 };
 use crate::sign::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
@@ -180,6 +181,15 @@ where
             )
             .await?;
         }
+        if let SignContext::RingReshareUpdate(ref ctx) = context {
+            validate_ring_reshare_update_statement(
+                &*self.app_state.bulletin,
+                &self.app_state.dkg_session_state,
+                &ctx.statement,
+                None,
+            )
+            .await?;
+        }
 
         // Auth passed — load share and generate nonce.
         let ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
@@ -200,6 +210,7 @@ where
         let context_key = match &context {
             SignContext::Bulletin => "bulletin".to_string(),
             SignContext::Policy(ctx) => ctx.derivation_id.clone(),
+            SignContext::RingReshareUpdate(ctx) => ring_reshare_update_context_key(&ctx.statement)?,
         };
 
         if !self
@@ -306,6 +317,16 @@ where
 
                 (ring_payload.ring_pk, derivation, metadata)
             }
+            SignContext::RingReshareUpdate(ref ctx) => {
+                let ring_pk_hex = validate_ring_reshare_update_statement(
+                    &*self.app_state.bulletin,
+                    &self.app_state.dkg_session_state,
+                    &ctx.statement,
+                    Some(&message),
+                )
+                .await?;
+                (ring_pk_hex, None, None)
+            }
         };
 
         // Deserialize ring public key and load the share + public polynomial from one
@@ -337,6 +358,9 @@ where
             let expected_context_key = match &context {
                 SignContext::Bulletin => "bulletin".to_string(),
                 SignContext::Policy(ctx) => ctx.derivation_id.clone(),
+                SignContext::RingReshareUpdate(ctx) => {
+                    ring_reshare_update_context_key(&ctx.statement)?
+                }
             };
             let state_bytes = self
                 .app_state
@@ -768,6 +792,7 @@ where
                 ));
                 (derivation, meta)
             }
+            SignContext::RingReshareUpdate(_) => (None, None),
         };
 
         // =====================================================================

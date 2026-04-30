@@ -7,6 +7,9 @@ use authz::sourcehub::ValidWindow;
 use bulletin::r#trait::KeyDerivation;
 use serde::{Deserialize, Serialize};
 
+/// Domain separator for signed ring reshare bulletin updates.
+pub const RING_RESHARE_UPDATE_DOMAIN: &str = "orbis-ring-reshare-update-v1";
+
 /// Payload for the `Policy` variant of [`SignContext`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyContext {
@@ -24,11 +27,35 @@ pub struct PolicyContext {
     pub key_derivation: KeyDerivation,
 }
 
+/// Canonical message signed by the new committee before a reshare bulletin update.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RingReshareUpdateStatement {
+    /// Domain separator, must equal [`RING_RESHARE_UPDATE_DOMAIN`].
+    pub domain: String,
+    /// DKG/PSS reshare session that produced the new shares.
+    pub session_id: u64,
+    /// Hex-encoded ring public key. Reshare preserves this key.
+    pub ring_pk: String,
+    /// Existing bulletin post ID being updated in place.
+    pub bulletin_post_id: String,
+    /// SHA-256 hex of the current bulletin payload before the update.
+    pub current_payload_sha256: String,
+    /// Serialized final `RingPayload` that should replace the current payload.
+    pub updated_payload: Vec<u8>,
+}
+
+/// Payload for reshare-update signing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RingReshareUpdateContext {
+    pub statement: RingReshareUpdateStatement,
+}
+
 /// Distinguishes the two signing pathways.
 ///
 /// - `Bulletin`: message is a serialized `BulletinPost`; authorization is its existence on chain.
 ///   Signs from the root key (no derivation, no metadata).
 /// - `Policy`: policy-authorized derivation signing with JWT auth, mirrors the PRE flow.
+/// - `RingReshareUpdate`: new-committee signing for an in-place ring bulletin update.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SignContext {
     /// Message bytes are a serialized `BulletinPost` verified against the chain.
@@ -38,6 +65,9 @@ pub enum SignContext {
     /// The derivation path is stored on the bulletin in the `KeyDerivation` entry and is
     /// NOT passed by the client — it is fetched from the chain and used directly.
     Policy(Box<PolicyContext>),
+    /// Reshare bulletin update signing. Responders validate the announced transition
+    /// and sign the canonical statement from the new shares.
+    RingReshareUpdate(Box<RingReshareUpdateContext>),
 }
 
 /// Wire message sent from the coordinator to each ring node requesting a nonce commitment

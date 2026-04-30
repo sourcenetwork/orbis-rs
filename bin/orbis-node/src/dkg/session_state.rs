@@ -79,6 +79,20 @@ pub enum DkgMessageType {
     Error,
 }
 
+/// Exact reshare bulletin update that this node is ready to sign.
+///
+/// A node records this only after it has locally persisted the new reshare bundle.
+/// The hashes bind readiness to one bulletin pre-state and one final payload, so a
+/// later or different update must earn its own readiness marker.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ReshareSignatureReadyKey {
+    pub ring_key: String,
+    pub session_id: u64,
+    pub bulletin_post_id: String,
+    pub current_payload_sha256: String,
+    pub updated_payload_sha256: String,
+}
+
 /// Reshare-specific parameters stored in session state during an active reshare ceremony.
 ///
 /// Set by the coordinator when a `SessionInit { kind: SessionKind::Reshare { .. } }` is
@@ -366,6 +380,8 @@ pub struct SessionStateManager<D: Dkg> {
     /// session IDs. Cleared on Phase 4 success or session cleanup/expiration so
     /// that a new ceremony can be initiated after failure.
     rings_pss: Arc<RwLock<HashMap<String, u64>>>,
+    /// Exact reshare bulletin updates this node is ready to sign.
+    reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
 }
 
 impl<D: Dkg + 'static> SessionStateManager<D> {
@@ -374,19 +390,22 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel();
         let states = Arc::new(RwLock::new(HashMap::new()));
         let rings_pss = Arc::new(RwLock::new(HashMap::new()));
+        let reshare_signature_ready = Arc::new(RwLock::new(HashSet::new()));
 
         // Spawn background cleanup task (handles guard-triggered cleanup)
         let states_clone = states.clone();
         let pss_clone = rings_pss.clone();
+        let ready_clone = reshare_signature_ready.clone();
         tokio::spawn(async move {
-            Self::cleanup_worker(states_clone, cleanup_rx, pss_clone).await;
+            Self::cleanup_worker(states_clone, cleanup_rx, pss_clone, ready_clone).await;
         });
 
         // Spawn background expiration task (handles abandoned sessions)
         let states_clone = states.clone();
         let pss_clone = rings_pss.clone();
+        let ready_clone = reshare_signature_ready.clone();
         tokio::spawn(async move {
-            Self::expiration_worker(states_clone, pss_clone).await;
+            Self::expiration_worker(states_clone, pss_clone, ready_clone).await;
         });
 
         Self {
@@ -394,6 +413,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             cleanup_tx,
             next_session_generation: AtomicU64::new(1),
             rings_pss,
+            reshare_signature_ready,
         }
     }
 
@@ -402,6 +422,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
         mut rx: mpsc::UnboundedReceiver<u64>,
         rings_pss: Arc<RwLock<HashMap<String, u64>>>,
+        reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
     ) {
         while let Some(session_id) = rx.recv().await {
             let mut states = states.write().await;
@@ -418,6 +439,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         );
                     }
                 }
+                reshare_signature_ready
+                    .write()
+                    .await
+                    .retain(|k| k.session_id != session_id);
                 tracing::debug!(
                     session_id = session_id,
                     "SessionStateManager: Cleaned up abandoned session"
@@ -434,6 +459,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     async fn expiration_worker(
         states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
         rings_pss: Arc<RwLock<HashMap<String, u64>>>,
+        reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
     ) {
         let mut interval = tokio::time::interval(SESSION_EXPIRATION_CHECK_INTERVAL);
 
@@ -498,6 +524,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         );
                     }
                 }
+
+                let expired_ids: HashSet<u64> =
+                    ring_claims_to_clear.iter().map(|(_, id)| *id).collect();
+                reshare_signature_ready
+                    .write()
+                    .await
+                    .retain(|k| !expired_ids.contains(&k.session_id));
             }
 
             let removed = initial_count - states.len();
@@ -545,6 +578,16 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Returns the active PSS session ID for a ring, if any.
     pub async fn active_ring_pss_session(&self, ring_pk_key: &str) -> Option<u64> {
         self.rings_pss.read().await.get(ring_pk_key).copied()
+    }
+
+    /// Mark one exact reshare bulletin update as ready to sign.
+    pub async fn mark_reshare_signature_ready(&self, key: ReshareSignatureReadyKey) {
+        self.reshare_signature_ready.write().await.insert(key);
+    }
+
+    /// Returns true iff this node has locally completed the exact reshare update.
+    pub async fn is_reshare_signature_ready(&self, key: &ReshareSignatureReadyKey) -> bool {
+        self.reshare_signature_ready.read().await.contains(key)
     }
 
     /// Clear the in-progress PSS claim for a ring (called on setup failure before a
@@ -901,6 +944,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 "SessionStateManager: Cleared in-progress PSS claim on remove_session"
             );
         }
+
+        self.reshare_signature_ready
+            .write()
+            .await
+            .retain(|k| k.session_id != *session_id);
     }
 }
 
@@ -1010,6 +1058,26 @@ mod tests {
         mgr.remove_session(&7).await;
         assert!(!mgr.session_exists(&7).await);
         assert_eq!(mgr.session_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_remove_session_clears_reshare_signature_ready_markers() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        let ready_key = ReshareSignatureReadyKey {
+            ring_key: "ring".to_string(),
+            session_id: 7,
+            bulletin_post_id: "post".to_string(),
+            current_payload_sha256: "current".to_string(),
+            updated_payload_sha256: "updated".to_string(),
+        };
+
+        mgr.create_session(7, make_node(1), 3, |_| {}).await;
+        mgr.mark_reshare_signature_ready(ready_key.clone()).await;
+        assert!(mgr.is_reshare_signature_ready(&ready_key).await);
+
+        mgr.remove_session(&7).await;
+
+        assert!(!mgr.is_reshare_signature_ready(&ready_key).await);
     }
 
     #[tokio::test]

@@ -4,7 +4,8 @@ use crate::dkg::messages::DkgMessage;
 use crate::metrics;
 use crypto::r#trait::Dkg;
 use crypto::{
-    GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment, ScalarField as Fr,
+    GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
+    PubPolyImpl as PubPoly, ScalarField as Fr,
 };
 use network::{Connection as NetworkConnection, Message as NetworkMessage, DKG};
 use std::sync::Arc;
@@ -30,8 +31,12 @@ async fn get_cached_or_open_stream<D>(
     peer_id_str: &str,
 ) -> Result<(Arc<dyn NetworkConnection>, bool)>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     if let Some(cached) = coord
@@ -55,8 +60,12 @@ async fn ensure_session_generation<D>(
     generation: u64,
 ) -> Result<()>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     if coord
@@ -89,8 +98,12 @@ pub(super) async fn send_message_to_peer<D>(
     session_id: Option<u64>,
 ) -> Result<()>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     let message_type = match &message {
@@ -185,8 +198,12 @@ pub(super) async fn open_stream_to_peer<D>(
     peer_id_str: &str,
 ) -> Result<Box<dyn network::Connection>>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     coord

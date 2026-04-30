@@ -34,7 +34,8 @@ use crate::metrics;
 use ::network::PeerId;
 use crypto::r#trait::{Dkg, DkgRole};
 use crypto::{
-    GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment, ScalarField as Fr,
+    GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
+    PubPolyImpl as PubPoly, ScalarField as Fr,
 };
 use std::sync::Arc;
 
@@ -55,8 +56,12 @@ where
 
 impl<D> DkgCoordinator<D>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine, PolynomialCommitment = PolynomialCommitment>
-        + Clone
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
         + 'static,
 {
     /// Create a new DKG session manager for this node.
