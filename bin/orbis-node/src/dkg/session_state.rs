@@ -395,15 +395,17 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         // Spawn background cleanup task (handles guard-triggered cleanup)
         let states_clone = states.clone();
         let pss_clone = rings_pss.clone();
+        let ready_clone = reshare_signature_ready.clone();
         tokio::spawn(async move {
-            Self::cleanup_worker(states_clone, cleanup_rx, pss_clone).await;
+            Self::cleanup_worker(states_clone, cleanup_rx, pss_clone, ready_clone).await;
         });
 
         // Spawn background expiration task (handles abandoned sessions)
         let states_clone = states.clone();
         let pss_clone = rings_pss.clone();
+        let ready_clone = reshare_signature_ready.clone();
         tokio::spawn(async move {
-            Self::expiration_worker(states_clone, pss_clone).await;
+            Self::expiration_worker(states_clone, pss_clone, ready_clone).await;
         });
 
         Self {
@@ -420,6 +422,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
         mut rx: mpsc::UnboundedReceiver<u64>,
         rings_pss: Arc<RwLock<HashMap<String, u64>>>,
+        reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
     ) {
         while let Some(session_id) = rx.recv().await {
             let mut states = states.write().await;
@@ -436,6 +439,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         );
                     }
                 }
+                reshare_signature_ready
+                    .write()
+                    .await
+                    .retain(|k| k.session_id != session_id);
                 tracing::debug!(
                     session_id = session_id,
                     "SessionStateManager: Cleaned up abandoned session"
@@ -452,6 +459,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     async fn expiration_worker(
         states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
         rings_pss: Arc<RwLock<HashMap<String, u64>>>,
+        reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
     ) {
         let mut interval = tokio::time::interval(SESSION_EXPIRATION_CHECK_INTERVAL);
 
@@ -516,6 +524,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         );
                     }
                 }
+
+                let expired_ids: HashSet<u64> =
+                    ring_claims_to_clear.iter().map(|(_, id)| *id).collect();
+                reshare_signature_ready
+                    .write()
+                    .await
+                    .retain(|k| !expired_ids.contains(&k.session_id));
             }
 
             let removed = initial_count - states.len();

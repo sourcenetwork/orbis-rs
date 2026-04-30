@@ -1,4 +1,6 @@
-use crate::constants::BULLETIN_RING_NAMESPACE;
+use crate::constants::{
+    BULLETIN_RING_NAMESPACE, RESHARE_SIGNATURE_MAX_ATTEMPTS, RESHARE_SIGNATURE_RETRY_DELAY,
+};
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
     persist_ring_bundle, serialize_commitment_coefficients, session_not_found,
@@ -27,9 +29,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::{message_handlers::record_and_ack_valid_reshare_share, DkgCoordinator};
 
-const RESHARE_SIGNATURE_MAX_ATTEMPTS: usize = 6;
-const RESHARE_SIGNATURE_RETRY_DELAY: Duration = Duration::from_millis(500);
-
 fn is_retryable_reshare_signature_error(error: &SignError) -> bool {
     matches!(
         error,
@@ -46,27 +45,26 @@ where
     F: FnMut(String) -> Fut,
     Fut: Future<Output = std::result::Result<Vec<u8>, SignError>>,
 {
-    for attempt in 1..=RESHARE_SIGNATURE_MAX_ATTEMPTS {
+    let mut attempt = 0usize;
+    loop {
+        attempt += 1;
         let request_id = format!("reshare-update-{}-{}", session_id, attempt);
-        match sign_attempt(request_id).await {
+        let err = match sign_attempt(request_id).await {
             Ok(bytes) => return Ok(bytes),
-            Err(e)
-                if is_retryable_reshare_signature_error(&e)
-                    && attempt < RESHARE_SIGNATURE_MAX_ATTEMPTS =>
-            {
-                tracing::warn!(
-                    session_id = session_id,
-                    attempt = attempt,
-                    error = %e,
-                    "Reshare: threshold signature not ready yet, retrying"
-                );
-                tokio::time::sleep(retry_delay).await;
-            }
-            Err(e) => return Err(e),
+            Err(e) => e,
+        };
+        if attempt >= RESHARE_SIGNATURE_MAX_ATTEMPTS || !is_retryable_reshare_signature_error(&err)
+        {
+            return Err(err);
         }
+        tracing::warn!(
+            session_id = session_id,
+            attempt = attempt,
+            error = %err,
+            "Reshare: threshold signature not ready yet, retrying"
+        );
+        tokio::time::sleep(retry_delay).await;
     }
-
-    unreachable!("retry loop either returns a response or the final error")
 }
 
 /// Phase 1: Generate polynomial and broadcast commitment to all peers.
