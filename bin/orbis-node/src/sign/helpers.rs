@@ -195,7 +195,7 @@ pub async fn validate_ring_reshare_update_statement(
             "Ring reshare update must preserve pss_interval".to_string(),
         ));
     }
-    if current_payload.next_peer_ids.is_none() || current_payload.new_threshold.is_none() {
+    if current_payload.next_peer_ids.is_none() && current_payload.new_threshold.is_none() {
         return Err(SignError::Unauthorized(
             "Ring reshare update requires a pending bulletin reshare announcement".to_string(),
         ));
@@ -218,7 +218,7 @@ pub async fn validate_ring_reshare_update_statement(
     let authoritative_next = current_payload
         .next_peer_ids
         .as_ref()
-        .expect("checked pending next_peer_ids above");
+        .unwrap_or(&current_payload.peer_ids);
     if sorted_strings(&updated_payload.peer_ids) != sorted_strings(authoritative_next) {
         return Err(SignError::Unauthorized(
             "Ring reshare update peer_ids do not match the announced next committee".to_string(),
@@ -227,7 +227,7 @@ pub async fn validate_ring_reshare_update_statement(
 
     let authoritative_threshold = current_payload
         .new_threshold
-        .expect("checked pending new_threshold above");
+        .unwrap_or(current_payload.threshold);
     if updated_payload.threshold != authoritative_threshold {
         return Err(SignError::Unauthorized(format!(
             "Ring reshare update threshold {} does not match announced threshold {}",
@@ -736,6 +736,31 @@ mod ring_reshare_update_tests {
         let ring_pk = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
             .await
             .expect("ready marker should authorize validation");
+
+        assert_eq!(ring_pk, statement.ring_pk);
+    }
+
+    #[tokio::test]
+    async fn validate_accepts_committee_only_reshare_with_threshold_fallback() {
+        let (bulletin, state, statement, ready_key) =
+            fixture(Some(vec!["new-a".to_string(), "new-b".to_string()]), None).await;
+        state.mark_reshare_signature_ready(ready_key).await;
+
+        let ring_pk = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
+            .await
+            .expect("missing new_threshold should fall back to current threshold");
+
+        assert_eq!(ring_pk, statement.ring_pk);
+    }
+
+    #[tokio::test]
+    async fn validate_accepts_threshold_only_reshare_with_peer_fallback() {
+        let (bulletin, state, statement, ready_key) = fixture(None, Some(1)).await;
+        state.mark_reshare_signature_ready(ready_key).await;
+
+        let ring_pk = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
+            .await
+            .expect("missing next_peer_ids should fall back to current committee");
 
         assert_eq!(ring_pk, statement.ring_pk);
     }

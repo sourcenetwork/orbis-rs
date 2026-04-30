@@ -944,6 +944,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 "SessionStateManager: Cleared in-progress PSS claim on remove_session"
             );
         }
+
+        self.reshare_signature_ready
+            .write()
+            .await
+            .retain(|k| k.session_id != *session_id);
     }
 }
 
@@ -1053,6 +1058,26 @@ mod tests {
         mgr.remove_session(&7).await;
         assert!(!mgr.session_exists(&7).await);
         assert_eq!(mgr.session_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_remove_session_clears_reshare_signature_ready_markers() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        let ready_key = ReshareSignatureReadyKey {
+            ring_key: "ring".to_string(),
+            session_id: 7,
+            bulletin_post_id: "post".to_string(),
+            current_payload_sha256: "current".to_string(),
+            updated_payload_sha256: "updated".to_string(),
+        };
+
+        mgr.create_session(7, make_node(1), 3, |_| {}).await;
+        mgr.mark_reshare_signature_ready(ready_key.clone()).await;
+        assert!(mgr.is_reshare_signature_ready(&ready_key).await);
+
+        mgr.remove_session(&7).await;
+
+        assert!(!mgr.is_reshare_signature_ready(&ready_key).await);
     }
 
     #[tokio::test]
