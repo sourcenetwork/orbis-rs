@@ -1,5 +1,8 @@
+use crate::app_state::AppState;
 use crate::constants::{
-    BULLETIN_RING_NAMESPACE, RESHARE_SIGNATURE_MAX_ATTEMPTS, RESHARE_SIGNATURE_RETRY_DELAY,
+    BULLETIN_RING_NAMESPACE, RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL,
+    RESHARE_BULLETIN_CONFIRM_TIMEOUT, RESHARE_SIGNATURE_MAX_ATTEMPTS,
+    RESHARE_SIGNATURE_RETRY_DELAY,
 };
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
@@ -25,6 +28,7 @@ use crypto::{
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use sha2::{Digest, Sha256};
 use std::future::Future;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::{message_handlers::record_and_ack_valid_reshare_share, DkgCoordinator};
@@ -651,6 +655,69 @@ where
     Ok(())
 }
 
+/// Holds the PSS ring claim on a non-node-1 reshare committee member until the
+/// bulletin confirms that node 1 has posted the updated `RingPayload`, then
+/// releases the claim and removes the session.
+///
+/// Without this delay the PSS scheduler could observe the still-pending bulletin
+/// (next_peer_ids still set) and re-trigger a duplicate reshare ceremony on this
+/// node before node 1 finishes signing.
+async fn wait_for_reshare_bulletin_finalized<D>(
+    app_state: Arc<AppState<D>>,
+    ring_key: Option<String>,
+    session_id: u64,
+    bulletin_post_id: Option<String>,
+) where
+    D: Dkg + Clone + Send + Sync + 'static,
+{
+    if let Some(post_id) = bulletin_post_id {
+        let deadline = tokio::time::Instant::now() + RESHARE_BULLETIN_CONFIRM_TIMEOUT;
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    session_id = session_id,
+                    "Reshare: timed out waiting for bulletin confirmation, releasing PSS claim"
+                );
+                break;
+            }
+            match app_state
+                .bulletin
+                .read(BULLETIN_RING_NAMESPACE.to_string(), post_id.clone())
+                .await
+            {
+                Ok(post) => {
+                    if let Ok(payload) = serde_json::from_slice::<RingPayload>(&post.payload) {
+                        if payload.next_peer_ids.is_none() && payload.new_threshold.is_none() {
+                            tracing::debug!(
+                                session_id = session_id,
+                                "Reshare: bulletin confirmed updated, releasing PSS claim"
+                            );
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        session_id = session_id,
+                        error = %e,
+                        "Reshare: failed to read bulletin while waiting for confirmation"
+                    );
+                }
+            }
+            tokio::time::sleep(RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL).await;
+        }
+    }
+
+    if let Some(key) = ring_key {
+        app_state.dkg_session_state.unmark_ring_pss(&key).await;
+    }
+    app_state
+        .dkg_session_state
+        .remove_session(&session_id)
+        .await;
+    metrics::record_dkg_session_completed();
+}
+
 /// Phase 4: Compute final secret share and aggregate public key.
 ///
 /// Handles all three session kinds:
@@ -669,6 +736,8 @@ where
             PolynomialCommitment = PolynomialCommitment,
             PubPoly = PubPoly,
         > + Clone
+        + Send
+        + Sync
         + 'static,
     SignImpl: ThresholdSigner<
             ShareValue = Fr,
@@ -1008,7 +1077,6 @@ where
     );
 
     let prepared_reshare_update = if let SessionKind::Reshare {
-        ring_pk_hex,
         next_peer_ids,
         new_threshold,
         ..
@@ -1062,7 +1130,7 @@ where
                 .app_state
                 .dkg_session_state
                 .mark_reshare_signature_ready(ReshareSignatureReadyKey {
-                    ring_key: ring_pk_hex.clone(),
+                    ring_key: storage_key.clone(),
                     session_id,
                     bulletin_post_id: bulletin_post_id.clone(),
                     current_payload_sha256: current_payload_sha256.clone(),
@@ -1123,6 +1191,25 @@ where
         );
     }
 
+    // Determine this node's position in the new committee once, used both inside
+    // the Reshare block below and in the deferred cleanup decision after it.
+    // 0 means not in the new committee (pure Dealer — already returned above).
+    let reshare_new_node_id: u32 = if matches!(kind, SessionKind::Reshare { .. }) {
+        let our_peer_id_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
+        let our_node_part = extract_node_part(&our_peer_id_hex);
+        reshare_new_peer_ids
+            .as_ref()
+            .and_then(|peers| {
+                peers
+                    .iter()
+                    .position(|p| extract_node_part(p) == our_node_part)
+                    .map(|i| (i + 1) as u32)
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
     // For Reshare: node 1 of the NEW committee posts the updated RingPayload with the
     // new peer_ids and new threshold.  The ring_pk remains the same (same secret).
     if let SessionKind::Reshare {
@@ -1131,19 +1218,7 @@ where
         ..
     } = &kind
     {
-        let our_peer_id_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
-        let our_node_part = extract_node_part(&our_peer_id_hex);
-        // If 0 will skip trying to post (not in new group).
-        let new_node_id = reshare_new_peer_ids
-            .as_ref()
-            .and_then(|peers| {
-                peers
-                    .iter()
-                    .position(|p| extract_node_part(p) == our_node_part)
-                    .map(|i| (i + 1) as u32)
-            })
-            .unwrap_or(0);
-        if new_node_id == 1 {
+        if reshare_new_node_id == 1 {
             let Some((
                 sorted_new_peer_ids,
                 new_committee_size,
@@ -1245,16 +1320,21 @@ where
         }
     }
 
-    // Reshare unmark deferred until here so the ring stays claimed across
-    // the signing window and bulletin.update above.
-    if let Some(ring_key) = kind.ring_key() {
-        if matches!(kind, SessionKind::Reshare { .. }) {
-            coord
-                .app_state
-                .dkg_session_state
-                .unmark_ring_pss(ring_key)
+    // All new-committee Reshare nodes defer cleanup to a background task that
+    // polls the bulletin until next_peer_ids is cleared, then releases the PSS
+    // claim and removes the session. Node 1 already posted the update so its
+    // first poll succeeds immediately; non-node-1 nodes wait for node 1 to post.
+    // This single path prevents the PSS scheduler from re-triggering a duplicate
+    // reshare on any node while node 1 is still signing.
+    if matches!(kind, SessionKind::Reshare { .. }) {
+        let app_state = coord.app_state.clone();
+        let ring_key = kind.ring_key().map(|k| k.to_string());
+        let bulletin_post_id = reshare_bulletin_post_id.clone();
+        tokio::spawn(async move {
+            wait_for_reshare_bulletin_finalized(app_state, ring_key, session_id, bulletin_post_id)
                 .await;
-        }
+        });
+        return Ok(());
     }
 
     coord.remove_session(session_id).await;

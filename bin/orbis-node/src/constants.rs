@@ -290,6 +290,15 @@ pub const RESHARE_SIGNATURE_MAX_ATTEMPTS: usize = 6;
 /// Delay between reshare threshold signature collection retries.
 pub const RESHARE_SIGNATURE_RETRY_DELAY: Duration = Duration::from_millis(500);
 
+/// How often a non-node-1 reshare member polls the bulletin waiting for the
+/// node-1 bulletin update to land before releasing its PSS claim.
+pub const RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Maximum time to wait for bulletin confirmation before releasing the PSS claim
+/// unconditionally. Slightly exceeds RESHARE_SIGNATURE_MAX_ATTEMPTS ×
+/// SIGN_COLLECTION_TIMEOUT (6 × 30 s = 180 s) to guarantee we outlast node 1.
+pub const RESHARE_BULLETIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(200);
+
 // ============================================================================
 // Nonce Serialization Constants (FROST)
 // ============================================================================
