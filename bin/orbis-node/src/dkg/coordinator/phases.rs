@@ -983,14 +983,17 @@ where
     }
 
     // Clear the in-progress ceremony flag now that Phase 4 has succeeded.
-    // (Phase4Complete was already set by check_and_trigger_phase4 before this
-    // function was called; no second update_phase needed here.)
+    // For Reshare non-Dealers the bulletin update still happens below (node 1
+    // must sign and post), so defer the unmark until after that completes.
+    // Error paths are handled by check_and_trigger_phase4 → remove_session.
     if let Some(ring_key) = kind.ring_key() {
-        coord
-            .app_state
-            .dkg_session_state
-            .unmark_ring_pss(ring_key)
-            .await;
+        if !matches!(kind, SessionKind::Reshare { .. }) {
+            coord
+                .app_state
+                .dkg_session_state
+                .unmark_ring_pss(ring_key)
+                .await;
+        }
     }
 
     let ring_pk_bytes = CryptoSerialize::to_bytes(&aggregate_pk).map_err(|e| {
@@ -1239,6 +1242,18 @@ where
                 signature_len = sign_response.signature.len(),
                 "Reshare: Successfully updated RingPayload on bulletin"
             );
+        }
+    }
+
+    // Reshare unmark deferred until here so the ring stays claimed across
+    // the signing window and bulletin.update above.
+    if let Some(ring_key) = kind.ring_key() {
+        if matches!(kind, SessionKind::Reshare { .. }) {
+            coord
+                .app_state
+                .dkg_session_state
+                .unmark_ring_pss(ring_key)
+                .await;
         }
     }
 

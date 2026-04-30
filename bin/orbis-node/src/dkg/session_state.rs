@@ -944,6 +944,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 "SessionStateManager: Cleared in-progress PSS claim on remove_session"
             );
         }
+
+        // Purge any reshare-ready markers for this session so abandoned sessions
+        // can't pass validate_ring_reshare_update_statement after teardown.
+        self.reshare_signature_ready
+            .write()
+            .await
+            .retain(|k| k.session_id != *session_id);
     }
 }
 
