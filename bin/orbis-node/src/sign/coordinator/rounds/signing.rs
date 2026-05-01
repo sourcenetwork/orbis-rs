@@ -144,8 +144,12 @@ where
                 self_in_list,
             )
             .map_err(SignError::Deserialization)?;
-            let dks =
-                bundle.and_then(|b| b.pri_share().map(|ps| DistKeyShare { pri_share: ps }).ok());
+            let dks = match bundle {
+                Some(bundle) => Some(DistKeyShare {
+                    pri_share: bundle.pri_share().map_err(SignError::Deserialization)?,
+                }),
+                None => None,
+            };
             (poly, dks)
         };
 
@@ -330,14 +334,24 @@ where
                 while let Some(res) = set.join_next().await {
                     match res {
                         Ok(Ok(Some(response))) => {
+                            let Some(expected_node_id) =
+                                determine_session_node_id(&response.sender_peer_hex, &ring.peer_ids)
+                            else {
+                                tracing::error!(
+                                    sender_peer = %response.sender_peer_hex,
+                                    "Sign Coordinator: accepted signature response from peer outside ring"
+                                );
+                                continue;
+                            };
                             if let Some(share) = Self::verify_peer_signature_response(
                                 &signer,
-                                response,
+                                response.message,
                                 &message,
                                 &pub_poly,
                                 &signing_commitments,
                                 derivation.as_deref(),
                                 metadata.as_deref(),
+                                expected_node_id,
                                 &mut seen_node_ids,
                             )? {
                                 verified_shares.push(share);
@@ -383,21 +397,31 @@ where
         let collected_responses = self
             .app_state
             .sign_response_state
-            .take_responses(&request_id)
+            .take_authenticated_responses(&request_id)
             .await
             .ok_or_else(|| {
                 SignError::Timeout(format!("No responses found for request {}", &request_id))
             })?;
 
         for response in collected_responses {
+            let Some(expected_node_id) =
+                determine_session_node_id(&response.sender_peer_hex, &ring.peer_ids)
+            else {
+                tracing::error!(
+                    sender_peer = %response.sender_peer_hex,
+                    "Sign Coordinator: stored signature response from peer outside ring"
+                );
+                continue;
+            };
             if let Some(share) = Self::verify_peer_signature_response(
                 &signer,
-                response,
+                response.message,
                 &message,
                 &pub_poly,
                 &signing_commitments,
                 derivation.as_deref(),
                 metadata.as_deref(),
+                expected_node_id,
                 &mut seen_node_ids,
             )? {
                 verified_shares.push(share);

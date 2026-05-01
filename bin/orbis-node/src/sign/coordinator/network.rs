@@ -7,6 +7,12 @@ use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignaturePoint};
 use network::Message as NetworkMessage;
 use network::SIGN;
+
+pub(crate) struct AuthenticatedSignMessage {
+    pub(crate) message: SignMessage,
+    pub(crate) sender_peer_hex: String,
+}
+
 impl<D, S> SignCoordinator<D, S>
 where
     D: Dkg<ShareValue = Fr, PublicKey = G1Affine> + Clone + Send + Sync + 'static,
@@ -27,12 +33,12 @@ where
     /// storing the response for later collection. Returns the response when one
     /// matching the request round was received and stored; peer errors and
     /// unexpected message types are logged and returned as `Ok(None)`.
-    pub async fn send_request_and_receive_response(
+    pub(crate) async fn send_request_and_receive_response(
         &self,
         peer_id_str: &str,
         message: SignMessage,
         request_id: &str,
-    ) -> Result<Option<SignMessage>> {
+    ) -> Result<Option<AuthenticatedSignMessage>> {
         let expects_nonce_response = match &message {
             SignMessage::NonceRequest(_) => true,
             SignMessage::SignRequest(_) => false,
@@ -100,24 +106,49 @@ where
         }
 
         let authenticated_peer_id = stream.peer_id().clone();
+        let authenticated_peer_hex = hex::encode(authenticated_peer_id.as_bytes());
         match response {
             response @ SignMessage::NonceResponse { .. } if expects_nonce_response => {
-                store_response(
+                let accepted = store_response(
                     response.clone(),
                     &authenticated_peer_id,
                     &self.app_state.sign_response_state,
                 )
                 .await;
-                Ok(Some(response))
+                if accepted {
+                    Ok(Some(AuthenticatedSignMessage {
+                        message: response,
+                        sender_peer_hex: authenticated_peer_hex,
+                    }))
+                } else {
+                    tracing::warn!(
+                        peer = %peer_id_str,
+                        authenticated_peer = %authenticated_peer_hex,
+                        "Sign Coordinator: rejecting fast-path nonce response from unexpected or duplicate peer"
+                    );
+                    Ok(None)
+                }
             }
             response @ SignMessage::SignResponse { .. } if !expects_nonce_response => {
-                store_response(
+                let accepted = store_response(
                     response.clone(),
                     &authenticated_peer_id,
                     &self.app_state.sign_response_state,
                 )
                 .await;
-                Ok(Some(response))
+                if accepted {
+                    Ok(Some(AuthenticatedSignMessage {
+                        message: response,
+                        sender_peer_hex: authenticated_peer_hex,
+                    }))
+                } else {
+                    tracing::warn!(
+                        peer = %peer_id_str,
+                        authenticated_peer = %authenticated_peer_hex,
+                        "Sign Coordinator: rejecting fast-path signature response from unexpected or duplicate peer"
+                    );
+                    Ok(None)
+                }
             }
             SignMessage::Error { error, .. } => {
                 tracing::warn!(

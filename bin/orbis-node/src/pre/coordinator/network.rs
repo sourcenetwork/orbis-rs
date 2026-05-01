@@ -98,13 +98,22 @@ where
         let authenticated_peer_id = stream.peer_id().clone();
         match response {
             response @ PreMessage::ReencryptResponse { .. } => {
-                store_response(
+                let accepted = store_response(
                     response.clone(),
                     &authenticated_peer_id,
                     &self.app_state.pre_response_state,
                 )
                 .await;
-                Ok(Some(response))
+                if accepted {
+                    Ok(Some(response))
+                } else {
+                    tracing::warn!(
+                        peer = %peer_id_str,
+                        authenticated_peer = %hex::encode(authenticated_peer_id.as_bytes()),
+                        "PRE Coordinator: rejecting fast-path response from unexpected or duplicate peer"
+                    );
+                    Ok(None)
+                }
             }
             PreMessage::Error { error, .. } => {
                 tracing::warn!(

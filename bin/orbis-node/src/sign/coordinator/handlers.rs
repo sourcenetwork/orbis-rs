@@ -4,8 +4,8 @@ use crate::ring_state::RingShareBundle;
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
-    fetch_key_derivation, load_dist_key_share, ring_reshare_update_context_key,
-    validate_ring_reshare_update_statement, validate_sign_claims, verify_message_and_get_info,
+    load_dist_key_share, ring_reshare_update_context_key, validate_ring_reshare_update_statement,
+    validate_sign_claims, verify_message_and_get_info,
 };
 use crate::sign::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
@@ -85,48 +85,71 @@ where
             ..
         } = req;
         // Auth check first — fail fast before burning a nonce.
-        if let SignContext::Policy(ref ctx) = context {
-            let (token_string, namespace, derivation_id, valid_window) = (
-                &ctx.token_string,
-                &ctx.namespace,
-                &ctx.derivation_id,
-                &ctx.valid_window,
-            );
-            let current_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
-                .as_secs();
-            let token: BearerToken<SignClaims> = resolve_jwt_did(
-                token_string,
-                current_time,
-                MAX_TOKEN_LIFETIME_SECS,
-                MAX_JWT_BYTES,
-            )
-            .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-            validate_sign_claims(&token, namespace, derivation_id, None)?;
-            let key_derivation =
-                fetch_key_derivation(&*self.app_state.bulletin, namespace, derivation_id).await?;
-            check_policy_access(
-                &*self.app_state.authz,
-                &key_derivation,
-                derivation_id,
-                &token.issuer_id,
-                valid_window.clone(),
-            )
-            .await?;
-        }
-        if let SignContext::RingReshareUpdate(ref ctx) = context {
-            validate_ring_reshare_update_statement(
-                &*self.app_state.bulletin,
-                &self.app_state.dkg_session_state,
-                &ctx.statement,
-                None,
-            )
-            .await?;
-        }
+        let authoritative_ring_pk_hex = match &context {
+            SignContext::Policy(ctx) => {
+                let (token_string, namespace, derivation_id, valid_window) = (
+                    &ctx.token_string,
+                    &ctx.namespace,
+                    &ctx.derivation_id,
+                    &ctx.valid_window,
+                );
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
+                    .as_secs();
+                let token: BearerToken<SignClaims> = resolve_jwt_did(
+                    token_string,
+                    current_time,
+                    MAX_TOKEN_LIFETIME_SECS,
+                    MAX_JWT_BYTES,
+                )
+                .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+                validate_sign_claims(&token, namespace, derivation_id, None)?;
+                let (key_derivation, ring_payload) =
+                    fetch_bulletin_payloads(&*self.app_state.bulletin, namespace, derivation_id)
+                        .await?;
+                check_policy_access(
+                    &*self.app_state.authz,
+                    &key_derivation,
+                    derivation_id,
+                    &token.issuer_id,
+                    valid_window.clone(),
+                )
+                .await?;
+                Some(ring_payload.ring_pk)
+            }
+            SignContext::RingReshareUpdate(ctx) => Some(
+                validate_ring_reshare_update_statement(
+                    &*self.app_state.bulletin,
+                    &self.app_state.dkg_session_state,
+                    &ctx.statement,
+                    None,
+                )
+                .await?,
+            ),
+            SignContext::Bulletin => None,
+        };
 
         // Auth passed — load share and generate nonce.
-        let ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
+        let client_ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
+        let ring_pk = if let Some(authoritative_ring_pk_hex) = authoritative_ring_pk_hex {
+            let authoritative_ring_pk_bytes =
+                hex::decode(&authoritative_ring_pk_hex).map_err(|e| {
+                    SignError::Deserialization(format!(
+                        "Failed to decode authoritative ring_pk: {}",
+                        e
+                    ))
+                })?;
+            let authoritative_ring_pk = decode_ring_pk_bytes(&authoritative_ring_pk_bytes)?;
+            if client_ring_pk != authoritative_ring_pk {
+                return Err(SignError::Unauthorized(
+                    "Nonce request ring_pk does not match authorized context".to_string(),
+                ));
+            }
+            authoritative_ring_pk
+        } else {
+            client_ring_pk
+        };
         let dist_key_share = load_dist_key_share(&self.app_state.local_storage, &ring_pk)?;
         let node_id = dist_key_share.pri_share.i;
 

@@ -48,7 +48,7 @@ impl PreResponseManager {
         request_id: &str,
         message: PreMessage,
         sender_peer_bytes: &[u8],
-    ) {
+    ) -> bool {
         self.inner
             .store_response(request_id, message, sender_peer_bytes)
             .await

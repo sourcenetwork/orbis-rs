@@ -178,33 +178,35 @@ where
         // If we're in the peer list, compute our own share locally before deciding
         // how many verified shares we still need from the network.
         if self_in_list {
-            if let Some(bundle) = local_share_bundle {
-                if let Ok(pri_share) = PriShare::<D::ShareValue>::from_bytes(&bundle.share_bytes) {
-                    let dist_key_share = DistKeyShare { pri_share };
+            let bundle = local_share_bundle.ok_or_else(|| {
+                tracing::error!("PRE Coordinator: local share bundle missing for ring member");
+                PreError::Storage("Local share bundle missing for ring member".to_string())
+            })?;
+            let pri_share =
+                PriShare::<D::ShareValue>::from_bytes(&bundle.share_bytes).map_err(|e| {
+                    tracing::error!(
+                        error = %e,
+                        "PRE Coordinator: Failed to deserialize local share"
+                    );
+                    PreError::Deserialization(format!("Failed to deserialize local share: {}", e))
+                })?;
+            let dist_key_share = DistKeyShare { pri_share };
 
-                    match dealer.reencrypt(
-                        &dist_key_share,
-                        &secret,
-                        &rdr_pk,
-                        ctx.derivation.as_deref(),
-                    ) {
-                        Ok(reply) => {
-                            tracing::debug!(
-                                from_node_id = reply.share.i,
-                                "PRE Coordinator: Added local share"
-                            );
-                            seen_node_ids.insert(reply.share.i);
-                            verified_shares.push(reply.share.clone());
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                error = %e,
-                                "PRE Coordinator: Local reencryption failed"
-                            );
-                        }
-                    }
-                }
-            }
+            let reply = dealer
+                .reencrypt(&dist_key_share, &secret, &rdr_pk, ctx.derivation.as_deref())
+                .map_err(|e| {
+                    tracing::error!(
+                        error = %e,
+                        "PRE Coordinator: Local reencryption failed"
+                    );
+                    PreError::Crypto(format!("Local reencryption failed: {}", e))
+                })?;
+            tracing::debug!(
+                from_node_id = reply.share.i,
+                "PRE Coordinator: Added local share"
+            );
+            seen_node_ids.insert(reply.share.i);
+            verified_shares.push(reply.share.clone());
         }
 
         let min_needed_from_network = ring.threshold.saturating_sub(verified_shares.len());

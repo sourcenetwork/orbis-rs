@@ -26,6 +26,7 @@ where
         signing_commitments: &[(u32, S::NonceCommitment)],
         derivation: Option<&[u8]>,
         metadata: Option<&[u8]>,
+        expected_node_id: u32,
         seen_node_ids: &mut HashSet<u32>,
     ) -> Result<Option<PubShare<SigShareInner>>> {
         let SignMessage::SignResponse {
@@ -36,6 +37,15 @@ where
         else {
             return Ok(None);
         };
+
+        if from_node_id != expected_node_id {
+            tracing::error!(
+                from_node_id = from_node_id,
+                expected_node_id = expected_node_id,
+                "Sign Coordinator: signature response node_id does not match authenticated peer"
+            );
+            return Ok(None);
+        }
 
         if seen_node_ids.contains(&from_node_id) {
             return Ok(None);
@@ -88,6 +98,7 @@ where
 
     pub(crate) fn parse_peer_nonce_response(
         response: SignMessage,
+        expected_node_id: u32,
         seen_node_ids: &mut HashSet<u32>,
     ) -> Result<Option<(u32, S::NonceCommitment)>> {
         let SignMessage::NonceResponse {
@@ -98,6 +109,15 @@ where
         else {
             return Ok(None);
         };
+
+        if from_node_id != expected_node_id {
+            tracing::error!(
+                from_node_id = from_node_id,
+                expected_node_id = expected_node_id,
+                "Sign Coordinator: nonce response node_id does not match authenticated peer"
+            );
+            return Ok(None);
+        }
 
         if seen_node_ids.contains(&from_node_id) {
             return Ok(None);

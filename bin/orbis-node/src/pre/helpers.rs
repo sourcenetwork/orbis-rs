@@ -191,7 +191,7 @@ pub async fn store_response(
     message: PreMessage,
     sender_peer_id: &PeerId,
     pre_response_state: &Arc<PreResponseManager>,
-) {
+) -> bool {
     let request_id = message.request_id().to_string();
 
     tracing::debug!(
@@ -203,5 +203,5 @@ pub async fn store_response(
 
     pre_response_state
         .store_response(&request_id, message, sender_peer_id.as_bytes())
-        .await;
+        .await
 }

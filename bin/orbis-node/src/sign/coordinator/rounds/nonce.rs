@@ -1,5 +1,5 @@
 use crate::constants::SIGN_COLLECTION_TIMEOUT;
-use crate::helpers::helpers::{is_self_peer_id, RingConfig};
+use crate::helpers::helpers::{determine_session_node_id, is_self_peer_id, RingConfig};
 use crate::sign::coordinator::SignCoordinator;
 use crate::sign::error::{Result, SignError};
 use crate::sign::messages::{NonceRequest, SignContext, SignMessage};
@@ -113,9 +113,20 @@ where
                 while let Some(res) = set.join_next().await {
                     match res {
                         Ok(Ok(Some(response))) => {
-                            if let Some(commitment) =
-                                Self::parse_peer_nonce_response(response, &mut seen_node_ids)?
-                            {
+                            let Some(expected_node_id) =
+                                determine_session_node_id(&response.sender_peer_hex, &ring.peer_ids)
+                            else {
+                                tracing::error!(
+                                    sender_peer = %response.sender_peer_hex,
+                                    "Sign Coordinator: accepted nonce response from peer outside ring"
+                                );
+                                continue;
+                            };
+                            if let Some(commitment) = Self::parse_peer_nonce_response(
+                                response.message,
+                                expected_node_id,
+                                &mut seen_node_ids,
+                            )? {
                                 all_commitments.push(commitment);
                                 successful_responses += 1;
                                 if successful_responses >= min_needed_from_network {
@@ -158,7 +169,7 @@ where
         let nonce_responses = self
             .app_state
             .sign_response_state
-            .take_responses(&nonce_request_id)
+            .take_authenticated_responses(&nonce_request_id)
             .await
             .ok_or_else(|| {
                 SignError::Timeout(format!(
@@ -168,8 +179,20 @@ where
             })?;
 
         for response in nonce_responses {
-            if let Some(commitment) = Self::parse_peer_nonce_response(response, &mut seen_node_ids)?
-            {
+            let Some(expected_node_id) =
+                determine_session_node_id(&response.sender_peer_hex, &ring.peer_ids)
+            else {
+                tracing::error!(
+                    sender_peer = %response.sender_peer_hex,
+                    "Sign Coordinator: stored nonce response from peer outside ring"
+                );
+                continue;
+            };
+            if let Some(commitment) = Self::parse_peer_nonce_response(
+                response.message,
+                expected_node_id,
+                &mut seen_node_ids,
+            )? {
                 all_commitments.push(commitment);
             }
         }
