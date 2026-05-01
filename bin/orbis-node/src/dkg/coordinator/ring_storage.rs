@@ -20,30 +20,25 @@ where
     D: CoordinatorDkg,
 {
     if let Some(key) = &ring_key {
-        coord.app_state.dkg_session_state.unmark_ring_pss(key).await;
-
-        if let Err(e) = coord
+        coord
             .app_state
             .local_storage
             .delete(LocalStorageKeys::RingKey(key.clone()))
-        {
-            tracing::warn!(
-                session_id = session_id,
-                ring_key = %key,
-                error = %e,
-                "Reshare Dealer: failed to delete share bundle (already absent?)"
-            );
-        } else {
-            tracing::info!(
-                session_id = session_id,
-                ring_key = %key,
-                "Reshare Dealer: deleted share bundle - node has left the ring"
-            );
-        }
+            .map_err(|e| {
+                DkgError::Storage(format!(
+                    "Reshare Dealer: failed to delete share bundle for ring {}: {}",
+                    key, e
+                ))
+            })?;
+
+        tracing::info!(
+            session_id = session_id,
+            ring_key = %key,
+            "Reshare Dealer: deleted share bundle - node has left the ring"
+        );
 
         let _guard = coord.app_state.ring_index_lock.lock().await;
-        let ring_index_result = remove_ring_index_entry(&coord.app_state.local_storage, key);
-        if let Err(e) = ring_index_result {
+        if let Err(e) = remove_ring_index_entry(&coord.app_state.local_storage, key) {
             tracing::error!(
                 session_id = session_id,
                 ring_key = %key,
@@ -52,6 +47,10 @@ where
             );
             return Err(e);
         }
+
+        // All storage operations succeeded; release the PSS lock so future
+        // ceremonies are not blocked by a departed dealer.
+        coord.app_state.dkg_session_state.unmark_ring_pss(key).await;
     }
 
     coord.remove_session(session_id).await;
