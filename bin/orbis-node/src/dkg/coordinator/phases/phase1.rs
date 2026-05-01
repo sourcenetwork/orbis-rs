@@ -14,7 +14,7 @@ where
         .with_state(&session_id, |state| {
             matches!(
                 state.phase,
-                DkgPhase::Phase2Shares | DkgPhase::Phase4Complete
+                DkgPhase::Phase2Shares | DkgPhase::Phase4Completing | DkgPhase::Phase4Complete
             )
         })
         .await

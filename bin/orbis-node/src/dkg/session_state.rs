@@ -8,7 +8,8 @@
 //! a single unified structure.
 
 use crate::constants::{
-    DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS, SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
+    DKG_PHASE4_COMPLETION_TIMEOUT, DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS,
+    SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
 };
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::SessionKind;
@@ -34,6 +35,8 @@ pub enum DkgPhase {
     /// Phase 2 - Generating and sending shares; share verification happens
     /// inline as each share is received (no separate phase state needed).
     Phase2Shares,
+    /// Phase 4 has been claimed and durable completion side effects are running.
+    Phase4Completing,
     /// Phase 4 - Computing final shares
     Phase4Complete,
     /// Error state
@@ -489,7 +492,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     continue;
                 }
                 let phase_age = now.duration_since(state.phase_started_at);
-                if phase_age > DKG_PHASE_TIMEOUT {
+                let phase_timeout = match state.phase {
+                    DkgPhase::Phase4Completing => DKG_PHASE4_COMPLETION_TIMEOUT,
+                    _ => DKG_PHASE_TIMEOUT,
+                };
+                if phase_age > phase_timeout {
                     metrics::record_dkg_session_abandoned();
                     tracing::warn!(
                         session_id = session_id,
@@ -1393,6 +1400,31 @@ mod tests {
         assert!(
             mgr.session_exists(&40).await,
             "Phase4Complete sessions should not be removed by the expiration worker"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_expiration_worker_removes_stalled_phase4_completing_session() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(41, make_node(1), 3, |_| {}).await;
+
+        {
+            let mut states = mgr.states.write().await;
+            if let Some(s) = states.get_mut(&41) {
+                s.phase = DkgPhase::Phase4Completing;
+                s.phase_started_at = Instant::now()
+                    - (crate::constants::DKG_PHASE4_COMPLETION_TIMEOUT
+                        + std::time::Duration::from_secs(10));
+            }
+        }
+
+        tokio::time::advance(SESSION_EXPIRATION_CHECK_INTERVAL + std::time::Duration::from_secs(1))
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !mgr.session_exists(&41).await,
+            "stalled Phase4Completing sessions should be removed by the expiration worker"
         );
     }
 

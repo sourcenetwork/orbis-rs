@@ -57,11 +57,6 @@ where
     // remove the ring from the index so the PSS scheduler ignores it.
     if dkg_role == DkgRole::Dealer {
         let ring_key = kind.ring_key().map(|k| k.to_string());
-        coord
-            .app_state
-            .dkg_session_state
-            .update_phase(&session_id, DkgPhase::Phase4Complete)
-            .await;
         return ring_storage::cleanup_departing_dealer(coord, session_id, ring_key).await;
     }
 
@@ -238,6 +233,12 @@ where
         reshare_bulletin_post_id.as_deref(),
     )
     .await?;
+
+    coord
+        .app_state
+        .dkg_session_state
+        .update_phase(&session_id, DkgPhase::Phase4Complete)
+        .await;
 
     // All new-committee Reshare nodes defer cleanup to a background task that
     // polls the bulletin until next_peer_ids is cleared, then releases the PSS

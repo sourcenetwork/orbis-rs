@@ -72,6 +72,13 @@ pub const SESSION_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 /// PEER_RESPONSE_TIMEOUT (10s) even when all peers need to respond.
 pub const DKG_PHASE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Timeout for the durable Phase 4 completion step before cleanup considers the
+/// session abandoned.
+///
+/// Reshare completion can include threshold-signature retries and bulletin
+/// confirmation work, so this must exceed the normal phase timeout.
+pub const DKG_PHASE4_COMPLETION_TIMEOUT: Duration = Duration::from_secs(240);
+
 /// How often to re-check session existence when an early message arrives before
 /// the session has been created (e.g. a peer's commitment races with our own
 /// SessionInit bulletin validation).  Kept small so the ceremony proceeds as

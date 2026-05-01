@@ -78,7 +78,7 @@ impl SessionSnapshot {
     fn should_initiate_phase2(&self) -> bool {
         if matches!(
             self.phase,
-            DkgPhase::Phase2Shares | DkgPhase::Phase4Complete
+            DkgPhase::Phase2Shares | DkgPhase::Phase4Completing | DkgPhase::Phase4Complete
         ) {
             return false;
         }
@@ -97,7 +97,10 @@ impl SessionSnapshot {
     }
 
     pub(in crate::dkg::coordinator) fn should_complete_phase4(&self) -> bool {
-        if self.phase == DkgPhase::Phase4Complete {
+        if matches!(
+            self.phase,
+            DkgPhase::Phase4Completing | DkgPhase::Phase4Complete
+        ) {
             return false;
         }
         if self.is_reshare() && matches!(self.role, DkgRole::Receiver | DkgRole::DealerReceiver) {
@@ -140,7 +143,7 @@ pub(in crate::dkg::coordinator) fn transition(
                 });
             }
             if snapshot.role == DkgRole::Dealer {
-                transition.next_phase = Some(DkgPhase::Phase4Complete);
+                transition.next_phase = Some(DkgPhase::Phase4Completing);
                 transition.commands.push(DkgCommand::CompletePhase4);
             }
         }
@@ -151,7 +154,7 @@ pub(in crate::dkg::coordinator) fn transition(
 
 fn push_phase4_if_ready(snapshot: &SessionSnapshot, transition: &mut Transition) {
     if snapshot.should_complete_phase4() {
-        transition.next_phase = Some(DkgPhase::Phase4Complete);
+        transition.next_phase = Some(DkgPhase::Phase4Completing);
         transition.commands.push(DkgCommand::CompletePhase4);
     }
 }
@@ -220,7 +223,7 @@ mod tests {
 
         let transition = transition(&snapshot, DkgEvent::ReshareParticipantSetAccepted);
 
-        assert_eq!(transition.next_phase, Some(DkgPhase::Phase4Complete));
+        assert_eq!(transition.next_phase, Some(DkgPhase::Phase4Completing));
         assert_eq!(transition.commands, vec![DkgCommand::CompletePhase4]);
     }
 
@@ -240,7 +243,20 @@ mod tests {
             DkgEvent::Phase2SharesDistributed { local_node_id: 3 },
         );
 
-        assert_eq!(transition.next_phase, Some(DkgPhase::Phase4Complete));
+        assert_eq!(transition.next_phase, Some(DkgPhase::Phase4Completing));
         assert_eq!(transition.commands, vec![DkgCommand::CompletePhase4]);
+    }
+
+    #[test]
+    fn phase4_completing_is_not_reclaimed() {
+        let mut snapshot = snapshot();
+        snapshot.phase = DkgPhase::Phase4Completing;
+        snapshot.shares_received = 2;
+        snapshot.aggregate_public_key_available = true;
+
+        let transition = transition(&snapshot, DkgEvent::ReadinessChanged);
+
+        assert_eq!(transition.next_phase, None);
+        assert!(transition.commands.is_empty());
     }
 }

@@ -89,6 +89,7 @@ where
             let transition = state_machine::transition(&snapshot, event);
             if let Some(next_phase) = transition.next_phase {
                 state.phase = next_phase;
+                state.phase_started_at = std::time::Instant::now();
             }
             (snapshot, transition)
         })
@@ -193,7 +194,7 @@ fn log_transition_wait(
         if let Some(expected) = snapshot.phase1_expected_commitments() {
             if matches!(
                 snapshot.phase,
-                DkgPhase::Phase2Shares | DkgPhase::Phase4Complete
+                DkgPhase::Phase2Shares | DkgPhase::Phase4Completing | DkgPhase::Phase4Complete
             ) {
                 return;
             }
@@ -227,7 +228,10 @@ fn log_transition_wait(
 }
 
 fn log_phase4_wait(snapshot: &SessionSnapshot, session_id: u64) {
-    if snapshot.phase == DkgPhase::Phase4Complete {
+    if matches!(
+        snapshot.phase,
+        DkgPhase::Phase4Completing | DkgPhase::Phase4Complete
+    ) {
         return;
     }
     if snapshot.is_reshare() && matches!(snapshot.role, DkgRole::Receiver | DkgRole::DealerReceiver)
