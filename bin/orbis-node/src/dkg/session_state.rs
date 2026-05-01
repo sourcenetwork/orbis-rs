@@ -8,7 +8,8 @@
 //! a single unified structure.
 
 use crate::constants::{
-    DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS, SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
+    DKG_PHASE4_COMPLETION_TIMEOUT, DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS,
+    SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
 };
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::SessionKind;
@@ -34,6 +35,8 @@ pub enum DkgPhase {
     /// Phase 2 - Generating and sending shares; share verification happens
     /// inline as each share is received (no separate phase state needed).
     Phase2Shares,
+    /// Phase 4 has been claimed and durable completion side effects are running.
+    Phase4Completing,
     /// Phase 4 - Computing final shares
     Phase4Complete,
     /// Error state
@@ -77,6 +80,14 @@ pub enum DkgMessageType {
     Complaint,
     SessionInit,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageProcessingClaim {
+    Claimed,
+    AlreadyProcessed,
+    AlreadyProcessing,
+    MissingSession,
 }
 
 /// Exact reshare bulletin update that this node is ready to sign.
@@ -197,6 +208,10 @@ pub struct DkgSessionState<D: Dkg> {
     pub reshare_selected_dealers: Option<Vec<u32>>,
     /// Processed message IDs for deduplication (session_id, from_node_id, message_type)
     pub processed_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
+    /// Message IDs currently being handled.
+    ///
+    /// Prevents concurrent duplicate deliveries from both entering the crypto layer.
+    pub processing_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
     /// What kind of ceremony this session is running (Fresh, Refresh, or Reshare).
     ///
     /// Drives `generate_polynomial` mode selection and Phase 4 storage/bulletin behaviour.
@@ -242,6 +257,7 @@ impl<D: Dkg> DkgSessionState<D> {
             reshare_dealer_completion_order: Vec::new(),
             reshare_selected_dealers: None,
             processed_messages: std::collections::HashSet::new(),
+            processing_messages: std::collections::HashSet::new(),
             kind: SessionKind::Fresh,
             pss_interval: None,
             reshare_params: None,
@@ -489,7 +505,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     continue;
                 }
                 let phase_age = now.duration_since(state.phase_started_at);
-                if phase_age > DKG_PHASE_TIMEOUT {
+                let phase_timeout = match state.phase {
+                    DkgPhase::Phase4Completing => DKG_PHASE4_COMPLETION_TIMEOUT,
+                    _ => DKG_PHASE_TIMEOUT,
+                };
+                if phase_age > phase_timeout {
                     metrics::record_dkg_session_abandoned();
                     tracing::warn!(
                         session_id = session_id,
@@ -825,6 +845,46 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 .contains(&(*session_id, from_node_id, message_type))
         } else {
             false
+        }
+    }
+
+    /// Atomically claim a message for processing.
+    pub async fn try_claim_message_processing(
+        &self,
+        session_id: &u64,
+        from_node_id: u32,
+        message_type: DkgMessageType,
+    ) -> MessageProcessingClaim {
+        let mut states = self.states.write().await;
+        let Some(state) = states.get_mut(session_id) else {
+            return MessageProcessingClaim::MissingSession;
+        };
+
+        let key = (*session_id, from_node_id, message_type);
+        if state.processed_messages.contains(&key) {
+            return MessageProcessingClaim::AlreadyProcessed;
+        }
+        if !state.processing_messages.insert(key) {
+            return MessageProcessingClaim::AlreadyProcessing;
+        }
+        MessageProcessingClaim::Claimed
+    }
+
+    /// Finish a previously claimed message, marking it processed only on success.
+    pub async fn finish_message_processing(
+        &self,
+        session_id: &u64,
+        from_node_id: u32,
+        message_type: DkgMessageType,
+        processed: bool,
+    ) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            let key = (*session_id, from_node_id, message_type);
+            state.processing_messages.remove(&key);
+            if processed {
+                state.processed_messages.insert(key);
+            }
         }
     }
 
@@ -1225,6 +1285,31 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_message_processing_claim_blocks_concurrent_duplicate() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(2, make_node(1), 3, |_| {}).await;
+
+        assert_eq!(
+            mgr.try_claim_message_processing(&2, 3, DkgMessageType::Share)
+                .await,
+            MessageProcessingClaim::Claimed
+        );
+        assert_eq!(
+            mgr.try_claim_message_processing(&2, 3, DkgMessageType::Share)
+                .await,
+            MessageProcessingClaim::AlreadyProcessing
+        );
+
+        mgr.finish_message_processing(&2, 3, DkgMessageType::Share, true)
+            .await;
+        assert_eq!(
+            mgr.try_claim_message_processing(&2, 3, DkgMessageType::Share)
+                .await,
+            MessageProcessingClaim::AlreadyProcessed
+        );
+    }
+
     // =========================================================================
     // Concurrent access
     // =========================================================================
@@ -1393,6 +1478,31 @@ mod tests {
         assert!(
             mgr.session_exists(&40).await,
             "Phase4Complete sessions should not be removed by the expiration worker"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_expiration_worker_removes_stalled_phase4_completing_session() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(41, make_node(1), 3, |_| {}).await;
+
+        {
+            let mut states = mgr.states.write().await;
+            if let Some(s) = states.get_mut(&41) {
+                s.phase = DkgPhase::Phase4Completing;
+                s.phase_started_at = Instant::now()
+                    - (crate::constants::DKG_PHASE4_COMPLETION_TIMEOUT
+                        + std::time::Duration::from_secs(10));
+            }
+        }
+
+        tokio::time::advance(SESSION_EXPIRATION_CHECK_INTERVAL + std::time::Duration::from_secs(1))
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !mgr.session_exists(&41).await,
+            "stalled Phase4Completing sessions should be removed by the expiration worker"
         );
     }
 

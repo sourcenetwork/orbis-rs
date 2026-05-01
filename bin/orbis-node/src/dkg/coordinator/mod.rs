@@ -21,14 +21,19 @@
 
 mod message_handlers;
 mod network;
+mod peers;
 mod phases;
+mod reshare;
+mod ring_storage;
+mod state_machine;
+mod types;
 
 use crate::app_state::AppState;
-use crate::constants::{DKG_PHASE_TIMEOUT, DKG_SESSION_WAIT_POLL_INTERVAL};
+use crate::constants::{DKG_SESSION_WAIT_POLL_INTERVAL, DKG_UNKNOWN_SESSION_MESSAGE_WAIT_TIMEOUT};
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::session_not_found;
 use crate::dkg::messages::DkgMessage;
-use crate::dkg::session_state::{CreateSessionOutcome, DkgMessageType};
+use crate::dkg::session_state::{CreateSessionOutcome, DkgMessageType, MessageProcessingClaim};
 use crate::helpers::helpers::extract_node_part;
 use crate::metrics;
 use ::network::PeerId;
@@ -38,6 +43,78 @@ use crypto::{
     PubPolyImpl as PubPoly, ScalarField as Fr,
 };
 use std::sync::Arc;
+
+/// Releases a `try_claim_message_processing` claim on drop.
+///
+/// Call `finish` to record the outcome and consume the guard cleanly.  If the
+/// guard is dropped without `finish` being called (task cancellation, early
+/// return, panic), `Drop` spawns a background task that releases the entry with
+/// `success = false`, so the message can be retried by a reconnecting peer.
+struct MessageClaimGuard<D: Dkg + Clone + 'static> {
+    session_id: u64,
+    from_node_id: u32,
+    message_type: DkgMessageType,
+    app_state: Arc<AppState<D>>,
+    /// The success flag to pass on an unclean drop (set at the start of `finish`
+    /// so a cancellation mid-`finish_message_processing` still uses the right value).
+    success: bool,
+    completed: bool,
+}
+
+impl<D: Dkg + Clone + 'static> MessageClaimGuard<D> {
+    fn new(
+        session_id: u64,
+        from_node_id: u32,
+        message_type: DkgMessageType,
+        app_state: Arc<AppState<D>>,
+    ) -> Self {
+        Self {
+            session_id,
+            from_node_id,
+            message_type,
+            app_state,
+            success: false,
+            completed: false,
+        }
+    }
+
+    async fn finish(mut self, success: bool) {
+        // Set success before the await so that a cancellation at the await point
+        // causes Drop to spawn with the correct success value.
+        self.success = success;
+        self.app_state
+            .dkg_session_state
+            .finish_message_processing(
+                &self.session_id,
+                self.from_node_id,
+                self.message_type,
+                success,
+            )
+            .await;
+        // Only mark completed after finish_message_processing returns so that a
+        // cancellation inside that call still triggers the Drop fallback.
+        self.completed = true;
+    }
+}
+
+impl<D: Dkg + Clone + 'static> Drop for MessageClaimGuard<D> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        let app_state = self.app_state.clone();
+        let session_id = self.session_id;
+        let from_node_id = self.from_node_id;
+        let message_type = self.message_type;
+        let success = self.success;
+        tokio::spawn(async move {
+            app_state
+                .dkg_session_state
+                .finish_message_processing(&session_id, from_node_id, message_type, success)
+                .await;
+        });
+    }
+}
 
 /// DKG Session Manager
 ///
@@ -109,24 +186,6 @@ where
         };
         metrics::record_dkg_message_received(message_type_str);
 
-        // Check for duplicate messages (except SessionInit and Error).
-        if let Some(from_node_id) = from_node_id_opt {
-            if self
-                .app_state
-                .dkg_session_state
-                .is_message_processed(&session_id, from_node_id, message_type)
-                .await
-            {
-                tracing::debug!(
-                    message_type = ?message_type,
-                    from_node_id = from_node_id,
-                    session_id = session_id,
-                    "DKG Coordinator: Ignoring duplicate message"
-                );
-                return Ok(None);
-            }
-        }
-
         // SessionInit can create a session — handle before the session-exists check.
         if let DkgMessage::SessionInit {
             threshold,
@@ -155,8 +214,8 @@ where
         }
 
         // All other messages require the session to exist first.
-        // Wait up to DKG_PHASE_TIMEOUT to handle the race where a commitment arrives
-        // before this node's SessionInit handler has finished.
+        // Wait briefly to handle the race where a commitment arrives before this
+        // node's SessionInit handler has finished.
         if !self
             .app_state
             .dkg_session_state
@@ -164,15 +223,16 @@ where
             .await
         {
             let session_state = self.app_state.dkg_session_state.clone();
-            let found = tokio::time::timeout(DKG_PHASE_TIMEOUT, async move {
-                loop {
-                    tokio::time::sleep(DKG_SESSION_WAIT_POLL_INTERVAL).await;
-                    if session_state.session_exists(&session_id).await {
-                        return;
+            let found =
+                tokio::time::timeout(DKG_UNKNOWN_SESSION_MESSAGE_WAIT_TIMEOUT, async move {
+                    loop {
+                        tokio::time::sleep(DKG_SESSION_WAIT_POLL_INTERVAL).await;
+                        if session_state.session_exists(&session_id).await {
+                            return;
+                        }
                     }
-                }
-            })
-            .await;
+                })
+                .await;
             if found.is_err() {
                 let sender_hex = hex::encode(sender_peer_id.as_bytes());
                 tracing::warn!(
@@ -246,8 +306,40 @@ where
             }
         }
 
+        let claim_guard: Option<MessageClaimGuard<D>> = if let Some(from_node_id) = from_node_id_opt
+        {
+            match self
+                .app_state
+                .dkg_session_state
+                .try_claim_message_processing(&session_id, from_node_id, message_type)
+                .await
+            {
+                MessageProcessingClaim::Claimed => Some(MessageClaimGuard::new(
+                    session_id,
+                    from_node_id,
+                    message_type,
+                    self.app_state.clone(),
+                )),
+                MessageProcessingClaim::AlreadyProcessed
+                | MessageProcessingClaim::AlreadyProcessing => {
+                    tracing::debug!(
+                        message_type = ?message_type,
+                        from_node_id = from_node_id,
+                        session_id = session_id,
+                        "DKG Coordinator: Ignoring duplicate message"
+                    );
+                    return Ok(None);
+                }
+                MessageProcessingClaim::MissingSession => {
+                    return Err(session_not_found(session_id))
+                }
+            }
+        } else {
+            None
+        };
+
         // Dispatch to per-message-type handlers.
-        let response = match message {
+        let response_result: Result<Option<DkgMessage>> = match message {
             DkgMessage::Commitment {
                 from_node_id,
                 commitment,
@@ -259,7 +351,7 @@ where
                     from_node_id,
                     commitment,
                 )
-                .await?
+                .await
             }
             DkgMessage::Share {
                 from_node_id,
@@ -276,7 +368,7 @@ where
                     share_value,
                     nonce,
                 )
-                .await?
+                .await
             }
             DkgMessage::Complaint {
                 from_node_id,
@@ -290,7 +382,7 @@ where
                     reason = %reason,
                     "DKG Coordinator: Received complaint"
                 );
-                None
+                Ok(None)
             }
             DkgMessage::ReshareShareAck {
                 receiver_node_id,
@@ -303,7 +395,7 @@ where
                     receiver_node_id,
                     dealer_id,
                 )
-                .await?
+                .await
             }
             DkgMessage::ReshareParticipantSet {
                 from_node_id,
@@ -316,7 +408,7 @@ where
                     from_node_id,
                     selected_dealer_ids,
                 )
-                .await?
+                .await
             }
             DkgMessage::Error { error, .. } => {
                 tracing::error!(
@@ -324,12 +416,18 @@ where
                     error = %error,
                     "DKG Coordinator: Received error"
                 );
-                None
+                Ok(None)
             }
             DkgMessage::SessionInit { .. } => {
                 unreachable!("SessionInit handled above")
             }
         };
+
+        if let Some(guard) = claim_guard {
+            guard.finish(response_result.is_ok()).await;
+        }
+
+        let response = response_result?;
 
         Ok(response)
     }
