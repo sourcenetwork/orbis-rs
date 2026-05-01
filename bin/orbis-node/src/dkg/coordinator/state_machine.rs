@@ -108,7 +108,9 @@ impl SessionSnapshot {
                 && self.secret_share_available
                 && self.aggregate_public_key_available;
         }
-        self.shares_received >= self.phase4_expected_shares() && self.aggregate_public_key_available
+        self.shares_received >= self.phase4_expected_shares()
+            && self.secret_share_available
+            && self.aggregate_public_key_available
     }
 }
 

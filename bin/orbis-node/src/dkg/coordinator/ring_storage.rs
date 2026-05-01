@@ -19,7 +19,6 @@ pub(in crate::dkg::coordinator) async fn cleanup_departing_dealer<D>(
 where
     D: CoordinatorDkg,
 {
-    let mut ring_index_result: Result<()> = Ok(());
     if let Some(key) = &ring_key {
         coord.app_state.dkg_session_state.unmark_ring_pss(key).await;
 
@@ -43,7 +42,16 @@ where
         }
 
         let _guard = coord.app_state.ring_index_lock.lock().await;
-        ring_index_result = remove_ring_index_entry(&coord.app_state.local_storage, key);
+        let ring_index_result = remove_ring_index_entry(&coord.app_state.local_storage, key);
+        if let Err(e) = ring_index_result {
+            tracing::error!(
+                session_id = session_id,
+                ring_key = %key,
+                error = %e,
+                "Reshare Dealer: failed to remove ring index entry"
+            );
+            return Err(e);
+        }
     }
 
     coord.remove_session(session_id).await;
@@ -53,7 +61,7 @@ where
         "Reshare Dealer: Phase 4 complete (share distribution done, secret deleted)"
     );
 
-    ring_index_result
+    Ok(())
 }
 
 pub(in crate::dkg::coordinator) async fn add_ring_index_entry<D>(
@@ -65,27 +73,40 @@ where
     D: CoordinatorDkg,
 {
     let _guard = app_state.ring_index_lock.lock().await;
-    let mut ring_index: Vec<RingIndexEntry> = app_state
-        .local_storage
-        .get(LocalStorageKeys::RingIndex)
-        .ok()
-        .flatten()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
 
-    if !ring_index.iter().any(|e| e.ring_pk_str == storage_key) {
+    // Fail closed on read/parse errors: silently falling back to an empty Vec
+    // would overwrite all existing ring mappings if storage hiccups.
+    let mut ring_index: Vec<RingIndexEntry> =
+        match app_state.local_storage.get(LocalStorageKeys::RingIndex) {
+            Ok(None) => Vec::new(),
+            Ok(Some(bytes)) => serde_json::from_slice(&bytes).map_err(|e| {
+                DkgError::Storage(format!("Failed to deserialize RingIndex: {}", e))
+            })?,
+            Err(e) => {
+                return Err(DkgError::Storage(format!(
+                    "Failed to read RingIndex: {}",
+                    e
+                )))
+            }
+        };
+
+    // Upsert: update bulletin_post_id on an existing entry (e.g. DealerReceiver
+    // after reshare), or push a new one for first-time entries.
+    if let Some(entry) = ring_index.iter_mut().find(|e| e.ring_pk_str == storage_key) {
+        entry.bulletin_post_id = bulletin_post_id;
+    } else {
         ring_index.push(RingIndexEntry {
             ring_pk_str: storage_key.to_string(),
             bulletin_post_id,
         });
-        let index_bytes = serde_json::to_vec(&ring_index).map_err(|e| {
-            DkgError::Serialization(format!("Failed to serialize RingIndex: {}", e))
-        })?;
-        app_state
-            .local_storage
-            .set(LocalStorageKeys::RingIndex, index_bytes)
-            .map_err(|e| DkgError::Storage(format!("Failed to store RingIndex: {}", e)))?;
     }
+
+    let index_bytes = serde_json::to_vec(&ring_index)
+        .map_err(|e| DkgError::Serialization(format!("Failed to serialize RingIndex: {}", e)))?;
+    app_state
+        .local_storage
+        .set(LocalStorageKeys::RingIndex, index_bytes)
+        .map_err(|e| DkgError::Storage(format!("Failed to store RingIndex: {}", e)))?;
 
     Ok(())
 }

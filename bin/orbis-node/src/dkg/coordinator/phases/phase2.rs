@@ -149,17 +149,21 @@ where
         })?;
 
         // Private DKG shares must be sent only to their intended recipient.
-        let target_peer_id = coord
+        let target_peer_id = match coord
             .app_state
             .dkg_session_state
             .get_peer_id_for_node(&session_id, share.to_id)
             .await
-            .ok_or_else(|| {
-                DkgError::ProtocolError(format!(
+        {
+            Some(peer_id) => peer_id,
+            None => {
+                coord.remove_session(session_id).await;
+                return Err(DkgError::ProtocolError(format!(
                     "Missing peer mapping for node_id {}; refusing to broadcast private share",
                     share.to_id
-                ))
-            })?;
+                )));
+            }
+        };
 
         let share_msg = DkgMessage::Share {
             session_id,

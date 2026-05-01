@@ -33,18 +33,24 @@ where
     // Validate this share is intended for us.
     // For reshare, incoming shares are addressed by new-committee index;
     // for fresh/refresh, shares are addressed by the session node_id.
+    // Pure Dealers (reshare_params present but new_node_id is None) are not in
+    // the new committee and must never accept incoming shares.
     let our_node_id = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
-            state
-                .reshare_params
-                .as_ref()
-                .and_then(|p| p.new_node_id)
-                .unwrap_or_else(|| state.node.node_id())
+        .with_state(&session_id, |state| -> Result<u32> {
+            if let Some(params) = state.reshare_params.as_ref() {
+                params.new_node_id.ok_or_else(|| {
+                    DkgError::ShareVerificationFailed(
+                        "Reshare share received but this node is a pure Dealer with no new-committee assignment".to_string(),
+                    )
+                })
+            } else {
+                Ok(state.node.node_id())
+            }
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))?;
+        .ok_or_else(|| session_not_found(session_id))??;
 
     if to_node_id != our_node_id {
         return Err(DkgError::ShareVerificationFailed(format!(
