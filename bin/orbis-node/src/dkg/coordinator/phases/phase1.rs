@@ -1,0 +1,219 @@
+use super::*;
+
+pub(in crate::dkg::coordinator) async fn initiate_phase1_commitments<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u64,
+    peer_ids: &[String],
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let already_started = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| {
+            matches!(
+                state.phase,
+                DkgPhase::Phase2Shares | DkgPhase::Phase4Complete
+            )
+        })
+        .await
+        .ok_or_else(|| session_not_found(session_id))?;
+
+    if already_started {
+        tracing::debug!(
+            session_id = session_id,
+            "Phase 1 start requested after shares/completion; ignoring duplicate request"
+        );
+        return Ok(());
+    }
+
+    let is_reshare_receiver = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| {
+            matches!(state.kind, SessionKind::Reshare { .. })
+                && state.node.role() == DkgRole::Receiver
+        })
+        .await
+        .ok_or_else(|| session_not_found(session_id))?;
+
+    if is_reshare_receiver {
+        tracing::debug!(
+            session_id = session_id,
+            "Reshare receiver does not generate Phase 1 commitments; ignoring start request"
+        );
+        return Ok(());
+    }
+
+    let (commitment_bytes, node_id, threshold, is_reshare, role) = coord
+        .app_state
+        .dkg_session_state
+        .with_state_mut(&session_id, |state| {
+            if state.node.commitment().coefficients.is_empty() {
+                state.generate_polynomial()?;
+            }
+            let bytes = serialize_commitment_coefficients(&state.node.commitment().coefficients)?;
+            Ok::<_, DkgError>((
+                bytes,
+                state.node.node_id(),
+                state.node.threshold(),
+                matches!(state.kind, SessionKind::Reshare { .. }),
+                state.node.role(),
+            ))
+        })
+        .await
+        .ok_or_else(|| session_not_found(session_id))??;
+
+    coord
+        .app_state
+        .dkg_session_state
+        .update_phase(&session_id, DkgPhase::Phase1Commitments)
+        .await;
+
+    let mut peers_sent = 0;
+    let mut expected_peers = 0;
+    for peer_id_str in peer_ids {
+        if is_self_peer_id(&coord.app_state.network, peer_id_str) {
+            tracing::debug!(peer_id = %peer_id_str, "Skipping self when broadcasting commitment");
+            continue;
+        }
+        expected_peers += 1;
+
+        let commitment_msg = DkgMessage::Commitment {
+            session_id,
+            from_node_id: node_id,
+            commitment: commitment_bytes.clone(),
+        };
+
+        if let Err(e) = coord
+            .send_message_to_peer(peer_id_str, commitment_msg, Some(session_id))
+            .await
+        {
+            tracing::error!(peer_id = %peer_id_str, error = %e, "Failed to send commitment to peer");
+        } else {
+            peers_sent += 1;
+        }
+    }
+
+    tracing::info!(
+        peers_sent = peers_sent,
+        expected_peers = expected_peers,
+        "Phase 1: Broadcasted commitment to peers"
+    );
+
+    if peers_sent < expected_peers && !is_reshare {
+        tracing::error!(
+            sent = peers_sent,
+            expected = expected_peers,
+            session_id = session_id,
+            "DKG Coordinator: Could not broadcast commitment to all peers - failing DKG to preserve expected redundancy"
+        );
+        coord.remove_session(session_id).await;
+        tracing::debug!(
+            session_id = session_id,
+            "Cleaned up session after Phase 1 broadcast failure"
+        );
+        return Err(DkgError::InsufficientPeers {
+            successful: peers_sent,
+            total: expected_peers,
+            threshold,
+        });
+    }
+
+    if peers_sent < expected_peers {
+        tracing::warn!(
+            sent = peers_sent,
+            expected = expected_peers,
+            session_id = session_id,
+            "Reshare: commitment broadcast did not reach every new-committee peer; continuing until threshold selection or timeout"
+        );
+    }
+
+    if is_reshare && role != DkgRole::Receiver {
+        initiate_phase2_shares(coord, session_id, peer_ids).await?;
+    }
+
+    Ok(())
+}
+
+/// Check if Phase 1 is complete and trigger Phase 2 if so.
+///
+/// Called after each incoming commitment message.
+pub(in crate::dkg::coordinator) async fn check_and_trigger_phase2<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u64,
+    peer_ids: &[String],
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    // Check phase, polynomial readiness, expected commitment count, and our role.
+    let (phase, has_polynomial, expected_commitments, node_id, role) = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| {
+            let role = state.node.role();
+            if matches!(state.kind, SessionKind::Reshare { .. }) {
+                return (state.phase, true, usize::MAX, state.node.node_id(), role);
+            }
+            // Receivers expect commitments from ALL old-committee dealers.
+            // Dealers/DealerReceivers expect from all others (excluding self).
+            let expected = match role {
+                DkgRole::Receiver => state.node.total_nodes(),
+                _ => state.node.total_nodes() - 1,
+            };
+            (
+                state.phase,
+                !state.node.commitment().coefficients.is_empty(),
+                expected,
+                state.node.node_id(),
+                role,
+            )
+        })
+        .await
+        .ok_or_else(|| session_not_found(session_id))?;
+
+    if expected_commitments == usize::MAX {
+        return Ok(());
+    }
+
+    // Guard: Phase 2 (or later) is already running — don't trigger it again.
+    if phase == DkgPhase::Phase2Shares || phase == DkgPhase::Phase4Complete {
+        return Ok(());
+    }
+
+    // Receiver nodes never generate a polynomial — skip this gate for them.
+    if role != DkgRole::Receiver && !has_polynomial {
+        return Ok(());
+    }
+
+    let received_commitments = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| state.commitments_received)
+        .await
+        .ok_or_else(|| session_not_found(session_id))?;
+
+    if received_commitments >= expected_commitments {
+        tracing::info!(
+            received = received_commitments,
+            expected = expected_commitments,
+            node_id = node_id,
+            "Phase 1 complete: Starting Phase 2"
+        );
+        // Receiver nodes don't send shares — they just wait for incoming shares.
+        if role != DkgRole::Receiver {
+            initiate_phase2_shares(coord, session_id, peer_ids).await?;
+        }
+    } else {
+        tracing::debug!(
+            received = received_commitments,
+            expected = expected_commitments,
+            node_id = node_id,
+            "Phase 1 not complete yet"
+        );
+    }
+
+    Ok(())
+}
