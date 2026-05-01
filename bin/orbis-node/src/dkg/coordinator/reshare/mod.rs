@@ -7,6 +7,8 @@ use crypto::r#trait::DkgRole;
 use std::collections::HashSet;
 use std::time::Duration;
 
+use super::phases;
+use super::state_machine::DkgEvent;
 use super::types::CoordinatorDkg;
 use super::DkgCoordinator;
 

@@ -125,9 +125,13 @@ where
         .increment_shares(&session_id)
         .await;
 
-    record_and_ack_valid_reshare_share(coord, session_id, from_node_id).await?;
-
-    coord.check_and_trigger_phase4(session_id).await?;
+    phases::drive_event(
+        coord,
+        session_id,
+        DkgEvent::ShareRecorded { from_node_id },
+        None,
+    )
+    .await?;
 
     Ok(None)
 }

@@ -184,7 +184,13 @@ where
         broadcast_reshare_participant_set(coord, session_id, &selected_dealer_ids, &new_peer_ids)
             .await?;
 
-        coord.check_and_trigger_phase4(session_id).await?;
+        phases::drive_event(
+            coord,
+            session_id,
+            DkgEvent::ReshareParticipantSetAccepted,
+            None,
+        )
+        .await?;
     }
 
     Ok(None)
@@ -353,7 +359,13 @@ where
             selected_dealers = ?selected_dealer_ids,
             "Reshare: accepted participant set"
         );
-        coord.check_and_trigger_phase4(session_id).await?;
+        phases::drive_event(
+            coord,
+            session_id,
+            DkgEvent::ReshareParticipantSetAccepted,
+            None,
+        )
+        .await?;
     }
 
     Ok(None)

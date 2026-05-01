@@ -8,7 +8,7 @@ pub(in crate::dkg::coordinator) async fn initiate_phase2_shares<D>(
 where
     D: CoordinatorDkg,
 {
-    let (shares, node_id, threshold, role, is_reshare, reshare_new_peer_ids) = coord
+    let (shares, node_id, threshold, is_reshare, reshare_new_peer_ids) = coord
         .app_state
         .dkg_session_state
         .with_state_mut(&session_id, |state| {
@@ -43,7 +43,6 @@ where
                 shares,
                 state.node.node_id(),
                 state.node.threshold(),
-                state.node.role(),
                 matches!(state.kind, SessionKind::Reshare { .. }),
                 reshare_peer_ids,
             ))
@@ -230,20 +229,14 @@ where
         );
     }
 
-    if role == DkgRole::DealerReceiver {
-        record_and_ack_valid_reshare_share(coord, session_id, node_id).await?;
-    }
-
-    // Pure Dealer nodes (not in new committee) are done after distributing shares —
-    // they won't receive any shares themselves, so Phase 4 must be triggered here
-    // rather than from the share-receive path.
-    if role == DkgRole::Dealer {
-        tracing::info!(
-            session_id = session_id,
-            "Reshare Dealer: share distribution complete, triggering Phase 4 cleanup"
-        );
-        initiate_phase4_completion(coord, session_id).await?;
-    }
+    drive_post_phase2_event(
+        coord,
+        session_id,
+        DkgEvent::Phase2SharesDistributed {
+            local_node_id: node_id,
+        },
+    )
+    .await?;
 
     Ok(())
 }

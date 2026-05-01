@@ -25,6 +25,7 @@ mod peers;
 mod phases;
 mod reshare;
 mod ring_storage;
+mod state_machine;
 mod types;
 
 use crate::app_state::AppState;

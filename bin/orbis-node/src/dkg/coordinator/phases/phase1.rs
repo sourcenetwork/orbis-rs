@@ -148,72 +148,11 @@ pub(in crate::dkg::coordinator) async fn check_and_trigger_phase2<D>(
 where
     D: CoordinatorDkg,
 {
-    // Check phase, polynomial readiness, expected commitment count, and our role.
-    let (phase, has_polynomial, expected_commitments, node_id, role) = coord
-        .app_state
-        .dkg_session_state
-        .with_state(&session_id, |state| {
-            let role = state.node.role();
-            if matches!(state.kind, SessionKind::Reshare { .. }) {
-                return (state.phase, true, usize::MAX, state.node.node_id(), role);
-            }
-            // Receivers expect commitments from ALL old-committee dealers.
-            // Dealers/DealerReceivers expect from all others (excluding self).
-            let expected = match role {
-                DkgRole::Receiver => state.node.total_nodes(),
-                _ => state.node.total_nodes() - 1,
-            };
-            (
-                state.phase,
-                !state.node.commitment().coefficients.is_empty(),
-                expected,
-                state.node.node_id(),
-                role,
-            )
-        })
-        .await
-        .ok_or_else(|| session_not_found(session_id))?;
-
-    if expected_commitments == usize::MAX {
-        return Ok(());
-    }
-
-    // Guard: Phase 2 (or later) is already running — don't trigger it again.
-    if phase == DkgPhase::Phase2Shares || phase == DkgPhase::Phase4Complete {
-        return Ok(());
-    }
-
-    // Receiver nodes never generate a polynomial — skip this gate for them.
-    if role != DkgRole::Receiver && !has_polynomial {
-        return Ok(());
-    }
-
-    let received_commitments = coord
-        .app_state
-        .dkg_session_state
-        .with_state(&session_id, |state| state.commitments_received)
-        .await
-        .ok_or_else(|| session_not_found(session_id))?;
-
-    if received_commitments >= expected_commitments {
-        tracing::info!(
-            received = received_commitments,
-            expected = expected_commitments,
-            node_id = node_id,
-            "Phase 1 complete: Starting Phase 2"
-        );
-        // Receiver nodes don't send shares — they just wait for incoming shares.
-        if role != DkgRole::Receiver {
-            initiate_phase2_shares(coord, session_id, peer_ids).await?;
-        }
-    } else {
-        tracing::debug!(
-            received = received_commitments,
-            expected = expected_commitments,
-            node_id = node_id,
-            "Phase 1 not complete yet"
-        );
-    }
-
-    Ok(())
+    drive_event(
+        coord,
+        session_id,
+        DkgEvent::CommitmentRecorded,
+        Some(peer_ids),
+    )
+    .await
 }

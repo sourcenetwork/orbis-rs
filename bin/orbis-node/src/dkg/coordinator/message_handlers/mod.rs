@@ -21,8 +21,7 @@ use network::PeerId;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::reshare::selection::record_and_ack_valid_reshare_share;
-use super::{peers, types::CoordinatorDkg, DkgCoordinator};
+use super::{peers, phases, state_machine::DkgEvent, types::CoordinatorDkg, DkgCoordinator};
 
 mod commitment;
 mod session_init;
