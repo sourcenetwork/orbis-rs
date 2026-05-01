@@ -82,6 +82,14 @@ pub enum DkgMessageType {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageProcessingClaim {
+    Claimed,
+    AlreadyProcessed,
+    AlreadyProcessing,
+    MissingSession,
+}
+
 /// Exact reshare bulletin update that this node is ready to sign.
 ///
 /// A node records this only after it has locally persisted the new reshare bundle.
@@ -200,6 +208,10 @@ pub struct DkgSessionState<D: Dkg> {
     pub reshare_selected_dealers: Option<Vec<u32>>,
     /// Processed message IDs for deduplication (session_id, from_node_id, message_type)
     pub processed_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
+    /// Message IDs currently being handled.
+    ///
+    /// Prevents concurrent duplicate deliveries from both entering the crypto layer.
+    pub processing_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
     /// What kind of ceremony this session is running (Fresh, Refresh, or Reshare).
     ///
     /// Drives `generate_polynomial` mode selection and Phase 4 storage/bulletin behaviour.
@@ -245,6 +257,7 @@ impl<D: Dkg> DkgSessionState<D> {
             reshare_dealer_completion_order: Vec::new(),
             reshare_selected_dealers: None,
             processed_messages: std::collections::HashSet::new(),
+            processing_messages: std::collections::HashSet::new(),
             kind: SessionKind::Fresh,
             pss_interval: None,
             reshare_params: None,
@@ -835,6 +848,46 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
+    /// Atomically claim a message for processing.
+    pub async fn try_claim_message_processing(
+        &self,
+        session_id: &u64,
+        from_node_id: u32,
+        message_type: DkgMessageType,
+    ) -> MessageProcessingClaim {
+        let mut states = self.states.write().await;
+        let Some(state) = states.get_mut(session_id) else {
+            return MessageProcessingClaim::MissingSession;
+        };
+
+        let key = (*session_id, from_node_id, message_type);
+        if state.processed_messages.contains(&key) {
+            return MessageProcessingClaim::AlreadyProcessed;
+        }
+        if !state.processing_messages.insert(key) {
+            return MessageProcessingClaim::AlreadyProcessing;
+        }
+        MessageProcessingClaim::Claimed
+    }
+
+    /// Finish a previously claimed message, marking it processed only on success.
+    pub async fn finish_message_processing(
+        &self,
+        session_id: &u64,
+        from_node_id: u32,
+        message_type: DkgMessageType,
+        processed: bool,
+    ) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            let key = (*session_id, from_node_id, message_type);
+            state.processing_messages.remove(&key);
+            if processed {
+                state.processed_messages.insert(key);
+            }
+        }
+    }
+
     /// Mark a message as processed
     pub async fn mark_message_processed(
         &self,
@@ -1229,6 +1282,31 @@ mod tests {
         assert!(
             !mgr.is_message_processed(&1, 3, DkgMessageType::Commitment)
                 .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_message_processing_claim_blocks_concurrent_duplicate() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(2, make_node(1), 3, |_| {}).await;
+
+        assert_eq!(
+            mgr.try_claim_message_processing(&2, 3, DkgMessageType::Share)
+                .await,
+            MessageProcessingClaim::Claimed
+        );
+        assert_eq!(
+            mgr.try_claim_message_processing(&2, 3, DkgMessageType::Share)
+                .await,
+            MessageProcessingClaim::AlreadyProcessing
+        );
+
+        mgr.finish_message_processing(&2, 3, DkgMessageType::Share, true)
+            .await;
+        assert_eq!(
+            mgr.try_claim_message_processing(&2, 3, DkgMessageType::Share)
+                .await,
+            MessageProcessingClaim::AlreadyProcessed
         );
     }
 

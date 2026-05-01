@@ -99,12 +99,6 @@ where
     coord
         .app_state
         .dkg_session_state
-        .mark_message_processed(&session_id, from_node_id, DkgMessageType::Commitment)
-        .await;
-
-    coord
-        .app_state
-        .dkg_session_state
         .increment_commitments(&session_id)
         .await;
 

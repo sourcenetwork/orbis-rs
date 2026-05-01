@@ -11,7 +11,7 @@ where
     let ack = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_state_mut(&session_id, |state| {
             if !matches!(state.kind, SessionKind::Reshare { .. })
                 || !matches!(
                     state.node.role(),
@@ -39,6 +39,8 @@ where
                 DkgError::InvalidInput("Reshare new committee is empty".to_string())
             })?;
 
+            state.reshare_valid_share_dealers.insert(dealer_id);
+
             Ok(Some((receiver_node_id, selector_peer_id)))
         })
         .await
@@ -51,31 +53,106 @@ where
     if is_self_peer_id(&coord.app_state.network, &selector_peer_id) {
         handle_reshare_share_ack(coord, session_id, receiver_node_id, dealer_id).await?;
     } else {
+        spawn_reshare_share_ack_delivery(
+            coord,
+            session_id,
+            receiver_node_id,
+            dealer_id,
+            selector_peer_id,
+        );
+    }
+
+    Ok(())
+}
+
+fn spawn_reshare_share_ack_delivery<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u64,
+    receiver_node_id: u32,
+    dealer_id: u32,
+    selector_peer_id: String,
+) where
+    D: CoordinatorDkg + Send + Sync,
+{
+    let coord = DkgCoordinator::new(coord.app_state.clone());
+    tokio::spawn(async move {
+        deliver_reshare_share_ack_until_done(
+            coord,
+            session_id,
+            receiver_node_id,
+            dealer_id,
+            selector_peer_id,
+        )
+        .await;
+    });
+}
+
+async fn deliver_reshare_share_ack_until_done<D>(
+    coord: DkgCoordinator<D>,
+    session_id: u64,
+    receiver_node_id: u32,
+    dealer_id: u32,
+    selector_peer_id: String,
+) where
+    D: CoordinatorDkg,
+{
+    let mut attempt = 0usize;
+    loop {
+        if !reshare_share_ack_still_needed(&coord, session_id).await {
+            return;
+        }
+
+        attempt += 1;
         let ack_msg = DkgMessage::ReshareShareAck {
             session_id,
             receiver_node_id,
             dealer_id,
         };
-        coord
+        match coord
             .send_message_to_peer(&selector_peer_id, ack_msg, Some(session_id))
             .await
-            .map_err(|e| {
-                DkgError::NetworkCommunication(format!(
-                    "Reshare: failed to send valid-share acknowledgement to selector {}: {}",
-                    selector_peer_id, e
-                ))
-            })?;
-    }
+        {
+            Ok(()) => {
+                tracing::debug!(
+                    session_id = session_id,
+                    receiver_node_id = receiver_node_id,
+                    dealer_id = dealer_id,
+                    selector_peer_id = %selector_peer_id,
+                    attempt = attempt,
+                    "Reshare: delivered valid-share acknowledgement to selector"
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    session_id = session_id,
+                    receiver_node_id = receiver_node_id,
+                    dealer_id = dealer_id,
+                    selector_peer_id = %selector_peer_id,
+                    attempt = attempt,
+                    error = %e,
+                    "Reshare: failed to deliver valid-share acknowledgement to selector, retrying"
+                );
+            }
+        }
 
+        tokio::time::sleep(RESHARE_SHARE_ACK_RETRY_DELAY).await;
+    }
+}
+
+async fn reshare_share_ack_still_needed<D>(coord: &DkgCoordinator<D>, session_id: u64) -> bool
+where
+    D: CoordinatorDkg,
+{
     coord
         .app_state
         .dkg_session_state
-        .with_state_mut(&session_id, |state| {
-            state.reshare_valid_share_dealers.insert(dealer_id);
+        .with_state(&session_id, |state| {
+            matches!(state.kind, SessionKind::Reshare { .. })
+                && state.reshare_selected_dealers.is_none()
         })
-        .await;
-
-    Ok(())
+        .await
+        .unwrap_or(false)
 }
 
 pub(in crate::dkg::coordinator) async fn handle_reshare_share_ack<D>(
@@ -342,16 +419,6 @@ where
         })
         .await
         .ok_or_else(|| session_not_found(session_id))??;
-
-    coord
-        .app_state
-        .dkg_session_state
-        .mark_message_processed(
-            &session_id,
-            from_node_id,
-            DkgMessageType::ReshareParticipantSet,
-        )
-        .await;
 
     if accepted {
         tracing::info!(

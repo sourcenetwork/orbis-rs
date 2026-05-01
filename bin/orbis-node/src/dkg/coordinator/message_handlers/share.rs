@@ -72,11 +72,6 @@ where
             from_node_id = from_node_id,
             "Reshare: ignoring straggler share from unselected dealer"
         );
-        coord
-            .app_state
-            .dkg_session_state
-            .mark_message_processed(&session_id, from_node_id, DkgMessageType::Share)
-            .await;
         return Ok(None);
     }
 
@@ -112,12 +107,6 @@ where
         session_id = session_id,
         "DKG Coordinator: Received and verified share"
     );
-
-    coord
-        .app_state
-        .dkg_session_state
-        .mark_message_processed(&session_id, from_node_id, DkgMessageType::Share)
-        .await;
 
     coord
         .app_state

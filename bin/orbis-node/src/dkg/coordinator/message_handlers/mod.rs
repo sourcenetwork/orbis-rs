@@ -7,7 +7,7 @@ use crate::dkg::helpers::{
     validate_reshare_session_init,
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
-use crate::dkg::session_state::{DkgMessageType, RingPssClaimOutcome};
+use crate::dkg::session_state::RingPssClaimOutcome;
 use crate::helpers::helpers::{extract_node_part, is_self_peer_id};
 use crate::ring_state::RingShareBundle;
 

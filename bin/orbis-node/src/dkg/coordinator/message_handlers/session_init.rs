@@ -200,6 +200,9 @@ where
         }
     }
 
+    let canonical_node_id_assignments =
+        peers::validate_node_id_assignments(peer_ids, node_id_assignments)?;
+
     let our_peer_id_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
     let our_node_part = extract_node_part(&our_peer_id_hex);
 
@@ -225,13 +228,13 @@ where
 
         (node_id, role, Some(params))
     } else {
-        // Fresh / Refresh: look up our node_id from the initiator's assignments.
+        // Fresh / Refresh: look up our node_id from the locally verified canonical assignments.
         let our_peer_id_key = our_peer_id_hex
             .split('@')
             .next()
             .unwrap_or(&our_peer_id_hex)
             .to_string();
-        let node_id = node_id_assignments
+        let node_id = canonical_node_id_assignments
             .get(&our_peer_id_key)
             .copied()
             .ok_or_else(|| {
@@ -239,7 +242,7 @@ where
                     "Could not find our node_id in SessionInit. \
                          Our peer_id: {}, assignments: {:?}",
                     our_peer_id_key,
-                    node_id_assignments.keys().collect::<Vec<_>>()
+                    canonical_node_id_assignments.keys().collect::<Vec<_>>()
                 ))
             })?;
         (node_id, DkgRole::Standard, None)
@@ -378,7 +381,8 @@ where
 
     // Store old committee node_id → peer_id mappings for sender validation
     // (peer_id_to_node_id uses old committee IDs for all session kinds).
-    let node_id_to_peer_id = peers::old_committee_node_peer_mappings(peer_ids, node_id_assignments);
+    let node_id_to_peer_id =
+        peers::old_committee_node_peer_mappings(peer_ids, &canonical_node_id_assignments);
     coord
         .app_state
         .dkg_session_state

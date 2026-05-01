@@ -85,6 +85,13 @@ pub const DKG_PHASE4_COMPLETION_TIMEOUT: Duration = Duration::from_secs(240);
 /// soon as the session appears.
 pub const DKG_SESSION_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// Maximum grace period for a non-SessionInit message whose session has not
+/// appeared locally yet.
+///
+/// This keeps the legitimate SessionInit/message ordering race covered without
+/// letting random-session messages occupy tasks for a full phase timeout.
+pub const DKG_UNKNOWN_SESSION_MESSAGE_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
 // ============================================================================
 // PRE (Proxy Re-Encryption) Constants
 // ============================================================================
