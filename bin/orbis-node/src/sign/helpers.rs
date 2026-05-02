@@ -589,7 +589,7 @@ pub async fn store_response(
     message: SignMessage,
     sender_peer_id: &PeerId,
     sign_response_state: &Arc<SignResponseManager>,
-) {
+) -> bool {
     let request_id = message.request_id().to_string();
 
     tracing::debug!(
@@ -601,7 +601,7 @@ pub async fn store_response(
 
     sign_response_state
         .store_response(&request_id, message, sender_peer_id.as_bytes())
-        .await;
+        .await
 }
 
 #[cfg(test)]

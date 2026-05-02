@@ -20,8 +20,14 @@ pub struct ExpirationConfig {
     pub check_interval: Duration,
 }
 
+#[derive(Clone)]
+pub struct AuthenticatedResponse<M> {
+    pub message: M,
+    pub sender_peer_hex: String,
+}
+
 struct ResponseEntry<M> {
-    responses: Vec<M>,
+    responses: Vec<AuthenticatedResponse<M>>,
     /// Allowlist + dedup set: populated at init, each peer is removed on first
     /// accepted response. A peer that is absent (unknown or already responded)
     /// is rejected.
@@ -160,7 +166,12 @@ impl<M: Clone + Send + Sync + 'static> ResponseManager<M> {
 
     /// Accept a response from `sender_peer_bytes`, rejecting unknown or
     /// duplicate senders.
-    pub async fn store_response(&self, request_id: &str, message: M, sender_peer_bytes: &[u8]) {
+    pub async fn store_response(
+        &self,
+        request_id: &str,
+        message: M,
+        sender_peer_bytes: &[u8],
+    ) -> bool {
         let sender_hex = hex::encode(sender_peer_bytes);
         let mut map = self.states.write().await;
         if let Some(entry) = map.get_mut(request_id) {
@@ -171,10 +182,15 @@ impl<M: Clone + Send + Sync + 'static> ResponseManager<M> {
                     "{}: rejecting response from unexpected or duplicate peer",
                     self.label,
                 );
-                return;
+                return false;
             }
-            entry.responses.push(message);
+            entry.responses.push(AuthenticatedResponse {
+                message,
+                sender_peer_hex: sender_hex,
+            });
+            return true;
         }
+        false
     }
 
     /// Clone the collected responses without consuming the entry.
@@ -182,11 +198,32 @@ impl<M: Clone + Send + Sync + 'static> ResponseManager<M> {
     /// Prefer [`take_responses`] when the entry is no longer needed.
     pub async fn get_responses(&self, request_id: &str) -> Option<Vec<M>> {
         let map = self.states.read().await;
-        map.get(request_id).map(|entry| entry.responses.clone())
+        map.get(request_id).map(|entry| {
+            entry
+                .responses
+                .iter()
+                .map(|response| response.message.clone())
+                .collect()
+        })
     }
 
     /// Remove the entry and return its responses in a single write lock.
     pub async fn take_responses(&self, request_id: &str) -> Option<Vec<M>> {
+        let mut map = self.states.write().await;
+        map.remove(request_id).map(|entry| {
+            entry
+                .responses
+                .into_iter()
+                .map(|response| response.message)
+                .collect()
+        })
+    }
+
+    /// Remove the entry and return responses with their authenticated sender.
+    pub async fn take_authenticated_responses(
+        &self,
+        request_id: &str,
+    ) -> Option<Vec<AuthenticatedResponse<M>>> {
         let mut map = self.states.write().await;
         map.remove(request_id).map(|entry| entry.responses)
     }

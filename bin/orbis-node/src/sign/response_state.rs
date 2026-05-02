@@ -11,7 +11,7 @@ use crate::constants::{
     MAX_NONCE_STATES, MAX_SIGN_RESPONSES, SIGN_EXPIRATION_CHECK_INTERVAL, SIGN_NONCE_TTL,
     SIGN_RESPONSE_TTL,
 };
-use crate::helpers::response_manager::{ExpirationConfig, ResponseManager};
+use crate::helpers::response_manager::{AuthenticatedResponse, ExpirationConfig, ResponseManager};
 use crate::metrics;
 use crate::sign::messages::SignMessage;
 use std::collections::HashMap;
@@ -131,7 +131,7 @@ impl SignResponseManager {
         request_id: &str,
         message: SignMessage,
         sender_peer_bytes: &[u8],
-    ) {
+    ) -> bool {
         self.inner
             .store_response(request_id, message, sender_peer_bytes)
             .await
@@ -149,6 +149,14 @@ impl SignResponseManager {
     /// write lock and moves the `Vec` out without cloning.
     pub async fn take_responses(&self, request_id: &str) -> Option<Vec<SignMessage>> {
         self.inner.take_responses(request_id).await
+    }
+
+    /// Take collected sign responses with their authenticated sender identity.
+    pub async fn take_authenticated_responses(
+        &self,
+        request_id: &str,
+    ) -> Option<Vec<AuthenticatedResponse<SignMessage>>> {
+        self.inner.take_authenticated_responses(request_id).await
     }
 
     /// Remove sign response entry (cleanup after completion)
