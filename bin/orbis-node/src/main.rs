@@ -21,7 +21,7 @@ use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, get_network_key_secret,
     get_password, Args,
 };
-use crate::info::InfoServiceImpl;
+use crate::info::{BootstrapInfoServiceImpl, InfoServiceImpl};
 use crate::pre::service::PreServiceImpl;
 use crate::sign::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
@@ -34,14 +34,21 @@ use common::blockchain::ChainConfigBuilder;
 use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl, Router};
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicI32, Ordering},
+        Arc,
+    },
+};
+use tokio::{sync::oneshot, task::JoinHandle};
 // Concrete crypto implementations
 use constants::MIN_NODE_BALANCE;
 use crypto::{DkgImpl, PreImpl, SignImpl};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use proto::dkg_service::dkg_service_server::DkgServiceServer;
-use proto::info_service::info_service_server::InfoServiceServer;
+use proto::info_service::{info_service_server::InfoServiceServer, NodeStatus};
 use proto::pre_service::pre_service_server::PreServiceServer;
 use proto::sign_service::sign_service_server::SignServiceServer;
 use proto::store_secret_service::store_secret_service_server::StoreSecretServiceServer;
@@ -64,6 +71,203 @@ pub struct InitializedNode {
     pub metrics_addr: Option<SocketAddr>,
     /// Interval between PSS reshare ceremonies. Zero means disabled.
     pub reshare_interval: std::time::Duration,
+}
+
+/// Running info-only gRPC server used while the node waits for chain funding.
+pub struct BootstrapInfoServer {
+    local_addr: SocketAddr,
+    status: Arc<AtomicI32>,
+    shutdown_tx: oneshot::Sender<()>,
+    task: JoinHandle<Result<(), tonic::transport::Error>>,
+}
+
+impl BootstrapInfoServer {
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    pub fn set_status(&self, status: NodeStatus) {
+        self.status.store(status as i32, Ordering::SeqCst);
+    }
+
+    pub async fn shutdown(self) -> Result<(), Box<dyn std::error::Error>> {
+        let _ = self.shutdown_tx.send(());
+        self.task.await??;
+        Ok(())
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    run(args).await
+}
+
+/// Full run function that initializes and runs the server
+pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing with optional Loki support
+    init_tracing(&args)?;
+
+    // List implementaions used for sanity
+    tracing::info!("Crypto PRE implementation: {}", PreImpl::name());
+    tracing::info!("Crypto Sign implementation: {}", SignImpl::name());
+    tracing::info!("Local-storage implementation: {}", LocalStorageImpl::name());
+    tracing::info!("Authz implementation: {}", AuthzImpl::name());
+    tracing::info!("Bulletin implementation: {}", BulletinImpl::name());
+    tracing::info!("Network implementation: {}", NetworkImpl::name());
+
+    // Get password for encrypting ring key shares
+    let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
+    let local_storage = LocalStorageImpl::new(Some(password), db_path("orbis"))
+        .map_err(|e| format!("Failed to create local storage: {}", e))?;
+    // Get node secret hex for netwokring
+    let node_secret_hex = get_network_key_secret(None, local_storage.clone())
+        .map_err(|e| format!("Failed to get node secret: {}", e))?;
+
+    // Derive 32-byte key from input (supports hex or passphrase)
+    let secret_key_bytes = derive_secret_key_bytes(&node_secret_hex)
+        .map_err(|e| format!("Invalid node secret: {}", e))?;
+    let secret_key = network::SecretKey::from_bytes(&secret_key_bytes);
+
+    // Initialize network for node-to-node communication
+    tracing::info!("Initializing network");
+    let network: Arc<dyn Network> = Arc::new(
+        network::NetworkImpl::builder()
+            .secret_key(secret_key)
+            .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
+            .build()
+            .await
+            .map_err(|e| format!("Failed to initialize network: {}", e))?,
+    );
+    let authz_chain_config = ChainConfigBuilder::default()
+        .grpc_url(args.authz_grpc.clone())
+        .rpc_url(args.chain_rpc.clone())
+        .rest_url(args.chain_rest.clone())
+        .denom(args.denom.clone());
+
+    let authz: Arc<dyn Authz> = Arc::new(
+        AuthzImpl::new(authz_chain_config)
+            .await
+            .map_err(|e| format!("Failed to initialize authz: {}", e))?,
+    );
+
+    let bulletin_chain_config = ChainConfigBuilder::default()
+        .grpc_url(args.bulletin_grpc.clone())
+        .rpc_url(args.chain_rpc.clone())
+        .rest_url(args.chain_rest.clone())
+        .denom(args.denom.clone());
+    let chain_config = bulletin_chain_config.clone().build();
+    let signer = create_and_store_node_key(local_storage.clone(), chain_config)
+        .map_err(|e| format!("Failed to create or store node key: {}", e))?;
+
+    let grpc_addr: SocketAddr = args.addr.parse()?;
+    let bootstrap_info_server =
+        start_bootstrap_info_server(grpc_addr, network.clone(), local_storage.clone())?;
+    tracing::info!(
+        grpc_addr = %bootstrap_info_server.local_addr(),
+        "Bootstrap info service started while waiting for funding"
+    );
+
+    let init_result = async {
+        bootstrap_info_server.set_status(NodeStatus::ConnectingToChain);
+
+        // For integration tests, this funds the account, this is handled differently live
+        // Only fund if both the feature is enabled AND we're in the integration test network
+        #[cfg(feature = "integration-test")]
+        {
+            bootstrap_info_server.set_status(NodeStatus::WaitingForFunding);
+            // Build chain config with the provided RPC/REST URLs
+            let fund_config = ChainConfigBuilder::default()
+                .rpc_url(args.chain_rpc.clone())
+                .rest_url(args.chain_rest.clone())
+                .grpc_url(args.bulletin_grpc.clone())
+                .build();
+            cli_tool::fund(signer.address(), fund_config)
+                .await
+                .map_err(|e| format!("Failed to fund node account: {}", e))?;
+        }
+
+        // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
+        bootstrap_info_server.set_status(NodeStatus::WaitingForFunding);
+        let bulletin: Arc<BulletinImpl> = Arc::new(
+            BulletinImpl::with_signer(bulletin_chain_config, signer, Some(MIN_NODE_BALANCE))
+                .await
+                .map_err(|e| format!("Failed to initialize bulletin: {}", e))?,
+        );
+        bootstrap_info_server.set_status(NodeStatus::Funded);
+
+        let config = NodeConfig {
+            args,
+            network,
+            local_storage,
+            authz,
+            bulletin,
+        };
+
+        init_node(config).await
+    };
+
+    let init_result = init_result.await;
+    let node = shutdown_bootstrap_after_init(bootstrap_info_server, init_result).await?;
+
+    run_server(node).await
+}
+
+/// Start an info-only gRPC server before the full node is ready.
+pub fn start_bootstrap_info_server(
+    grpc_addr: SocketAddr,
+    network: Arc<dyn Network>,
+    local_storage: LocalStorageImpl,
+) -> Result<BootstrapInfoServer, Box<dyn std::error::Error>> {
+    let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)?;
+    let local_addr = incoming.local_addr()?;
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let status = Arc::new(AtomicI32::new(NodeStatus::Bootstrapping as i32));
+    let info_service = BootstrapInfoServiceImpl::new(network, local_storage, status.clone());
+
+    let task = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(InfoServiceServer::new(info_service))
+            .serve_with_incoming_shutdown(incoming, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    Ok(BootstrapInfoServer {
+        local_addr,
+        status,
+        shutdown_tx,
+        task,
+    })
+}
+
+async fn shutdown_bootstrap_after_init(
+    bootstrap_info_server: BootstrapInfoServer,
+    init_result: Result<InitializedNode, Box<dyn std::error::Error>>,
+) -> Result<InitializedNode, Box<dyn std::error::Error>> {
+    if init_result.is_ok() {
+        tracing::info!(
+            "Funding and bulletin initialization complete; stopping bootstrap info service"
+        );
+    } else {
+        tracing::info!("Node initialization failed; stopping bootstrap info service");
+    }
+
+    let shutdown_result = bootstrap_info_server.shutdown().await;
+
+    match (init_result, shutdown_result) {
+        (Ok(node), Ok(())) => Ok(node),
+        (Err(init_err), Ok(())) => Err(init_err),
+        (Ok(_), Err(shutdown_err)) => Err(shutdown_err),
+        (Err(init_err), Err(shutdown_err)) => {
+            tracing::error!(
+                error = %shutdown_err,
+                "Bootstrap info service shutdown failed while handling initialization error"
+            );
+            Err(init_err)
+        }
+    }
 }
 
 /// Initialize the node without starting the gRPC server
@@ -221,101 +425,4 @@ fn init_tracing(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-/// Full run function that initializes and runs the server
-pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing with optional Loki support
-    init_tracing(&args)?;
-
-    // List implementaions used for sanity
-    tracing::info!("Crypto PRE implementation: {}", PreImpl::name());
-    tracing::info!("Crypto Sign implementation: {}", SignImpl::name());
-    tracing::info!("Local-storage implementation: {}", LocalStorageImpl::name());
-    tracing::info!("Authz implementation: {}", AuthzImpl::name());
-    tracing::info!("Bulletin implementation: {}", BulletinImpl::name());
-    tracing::info!("Network implementation: {}", NetworkImpl::name());
-
-    // Get password for encrypting ring key shares
-    let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
-    let local_storage = LocalStorageImpl::new(Some(password), db_path("orbis"))
-        .map_err(|e| format!("Failed to create local storage: {}", e))?;
-    // Get node secret hex for netwokring
-    let node_secret_hex = get_network_key_secret(None, local_storage.clone())
-        .map_err(|e| format!("Failed to get node secret: {}", e))?;
-
-    // Derive 32-byte key from input (supports hex or passphrase)
-    let secret_key_bytes = derive_secret_key_bytes(&node_secret_hex)
-        .map_err(|e| format!("Invalid node secret: {}", e))?;
-    let secret_key = network::SecretKey::from_bytes(&secret_key_bytes);
-
-    // Initialize network for node-to-node communication
-    tracing::info!("Initializing network");
-    let network: Arc<dyn Network> = Arc::new(
-        network::NetworkImpl::builder()
-            .secret_key(secret_key)
-            .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
-            .build()
-            .await
-            .map_err(|e| format!("Failed to initialize network: {}", e))?,
-    );
-    let authz_chain_config = ChainConfigBuilder::default()
-        .grpc_url(args.authz_grpc.clone())
-        .rpc_url(args.chain_rpc.clone())
-        .rest_url(args.chain_rest.clone())
-        .denom(args.denom.clone());
-
-    let authz: Arc<dyn Authz> = Arc::new(
-        AuthzImpl::new(authz_chain_config)
-            .await
-            .map_err(|e| format!("Failed to initialize authz: {}", e))?,
-    );
-
-    let bulletin_chain_config = ChainConfigBuilder::default()
-        .grpc_url(args.bulletin_grpc.clone())
-        .rpc_url(args.chain_rpc.clone())
-        .rest_url(args.chain_rest.clone())
-        .denom(args.denom.clone());
-    let chain_config = bulletin_chain_config.clone().build();
-    let signer = create_and_store_node_key(local_storage.clone(), chain_config)
-        .map_err(|e| format!("Failed to create or store node key: {}", e))?;
-
-    // For integration tests, this funds the account, this is handled differently live
-    // Only fund if both the feature is enabled AND we're in the integration test network
-    #[cfg(feature = "integration-test")]
-    {
-        // Build chain config with the provided RPC/REST URLs
-        let fund_config = ChainConfigBuilder::default()
-            .rpc_url(args.chain_rpc.clone())
-            .rest_url(args.chain_rest.clone())
-            .grpc_url(args.bulletin_grpc.clone())
-            .build();
-        cli_tool::fund(signer.address(), fund_config)
-            .await
-            .expect("issue with faucet");
-    }
-
-    // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
-    let bulletin: Arc<BulletinImpl> = Arc::new(
-        BulletinImpl::with_signer(bulletin_chain_config, signer, Some(MIN_NODE_BALANCE))
-            .await
-            .map_err(|e| format!("Failed to initialize bulletin: {}", e))?,
-    );
-
-    let config = NodeConfig {
-        args,
-        network,
-        local_storage,
-        authz,
-        bulletin,
-    };
-
-    let node = init_node(config).await?;
-    run_server(node).await
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
-    run(args).await
 }

@@ -2,7 +2,7 @@ use crate::helpers::launch::create_and_store_node_key;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_default, test_db_path};
 use crate::info::InfoServiceImpl;
 use common::blockchain::ChainConfigBuilder;
-use proto::info_service::{info_service_server::InfoService, GetNodeInfoRequest};
+use proto::info_service::{info_service_server::InfoService, GetNodeInfoRequest, NodeStatus};
 use tonic::Request;
 
 // Concrete crypto implementation for tests (selected via crypto crate features)
@@ -43,6 +43,7 @@ async fn test_get_node_info() {
 
     // Verify response contains peer_id
     assert!(!node_info.peer_id.is_empty(), "peer_id should not be empty");
+    assert_eq!(node_info.status, NodeStatus::Ready as i32);
 
     // Verify peer_id is valid hex (since it's encoded from bytes)
     assert!(

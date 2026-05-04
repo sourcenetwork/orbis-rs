@@ -4,4 +4,4 @@ pub mod service;
 #[cfg(test)]
 mod tests;
 
-pub use service::InfoServiceImpl;
+pub use service::{BootstrapInfoServiceImpl, InfoServiceImpl};

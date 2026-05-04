@@ -24,6 +24,7 @@ use local_storage::{
     LocalStorageImpl,
 };
 use network::{NetworkImpl, Router};
+use proto::info_service::NodeStatus;
 use std::{fs, sync::Arc};
 
 // Concrete crypto implementations for tests (selected via crypto crate features)
@@ -853,9 +854,24 @@ pub fn get_test_ring_post(dummy_bulletin: &DummyBulletin) -> BulletinPost {
     posts.into_iter().next().unwrap_or_default()
 }
 
-/// Wait for multiple gRPC endpoints to become ready
+async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
+    let node_info = cli_tool::query_node_info(endpoint.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if node_info.status == NodeStatus::Ready {
+        Ok(())
+    } else {
+        Err(format!(
+            "node reported status {}",
+            node_info.status.as_str_name()
+        ))
+    }
+}
+
+/// Wait for multiple gRPC endpoints to become fully ready
 ///
-/// Polls each endpoint until it responds to a `query_node_info` request.
+/// Polls each endpoint until it responds to `query_node_info` with `READY`.
 /// This is useful for waiting for Docker-based integration test nodes to initialize.
 ///
 /// # Arguments
@@ -887,7 +903,7 @@ pub async fn wait_for_nodes_ready(
     for (i, endpoint) in endpoints.iter().enumerate() {
         let node_num = i + 1;
         for attempt in 1..=max_attempts {
-            match cli_tool::query_node_info(endpoint.to_string()).await {
+            match check_full_grpc_ready(endpoint).await {
                 Ok(_) => {
                     println!(
                         "Node {} ({}) is ready after {} attempts",

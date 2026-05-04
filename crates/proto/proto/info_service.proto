@@ -9,11 +9,21 @@ service InfoService {
 
 message GetNodeInfoRequest {}
 
+enum NodeStatus {
+  NODE_STATUS_UNSPECIFIED = 0;
+  NODE_STATUS_BOOTSTRAPPING = 1;
+  NODE_STATUS_CONNECTING_TO_CHAIN = 2;
+  NODE_STATUS_WAITING_FOR_FUNDING = 3;
+  NODE_STATUS_FUNDED = 4;
+  NODE_STATUS_READY = 5;
+}
+
 message GetNodeInfoResponse {
   string public_address = 1;
   string peer_id = 2;
   // P2P connection string in format "peer_id@host:port" for node-to-node communication
   string p2p_address = 3;
+  NodeStatus status = 4;
 }
 
 message GetRingStateRequest {
