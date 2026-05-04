@@ -8,8 +8,8 @@
 # Default is bls12-381 when unset.
 services:
   sourcehub:
-    image: ghcr.io/sourcenetwork/sourcehub:dev
-    platform: linux/amd64
+    build:
+      context: https://github.com/sourcenetwork/sourcehub.git#Add-update-by-threshold-signature
     container_name: sourcehub-integration-test
     entrypoint: ["/bin/sh", "-c"]
     command:
