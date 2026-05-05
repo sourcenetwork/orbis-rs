@@ -40,11 +40,7 @@ pub struct RingPayload {
     /// this field (order-independent).  `None` means the bulletin does not constrain the next
     /// committee — **nodes may still require this field** (e.g. orbis-node enforces a
     /// pre-announced committee for reshare).
-    #[serde(
-        default,
-        alias = "next_peer_ids",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_peer_ids: Option<Vec<String>>,
     /// Threshold for the new committee announced by `new_peer_ids`.
     /// Validated against `SessionKind::Reshare::new_threshold` when present.

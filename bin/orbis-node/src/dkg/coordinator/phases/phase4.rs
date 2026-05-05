@@ -224,7 +224,6 @@ where
         coord,
         session_id,
         &kind,
-        pss_interval,
         dkg_role,
         &storage_key,
         &ring_pk_bytes,

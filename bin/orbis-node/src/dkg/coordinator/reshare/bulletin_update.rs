@@ -39,7 +39,6 @@ pub(in crate::dkg::coordinator) async fn update_bulletin_if_selector<D>(
     coord: &DkgCoordinator<D>,
     session_id: u64,
     kind: &SessionKind,
-    _pss_interval: Option<u64>,
     dkg_role: DkgRole,
     storage_key: &str,
     ring_pk_bytes: &[u8],

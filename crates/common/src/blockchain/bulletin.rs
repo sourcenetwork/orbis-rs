@@ -6,7 +6,7 @@
 use crate::blockchain::{BlockchainError, BroadcastResult, Result, SourceHubClient};
 use prost::Message;
 
-pub const RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN: &str = "orbis-ring-reshare-finalize-v1";
+pub const RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN: &str = "orbis-ring-reshare-finalize";
 pub const THRESHOLD_SIGNATURE_SCHEME_BLS12381_G1_PK_G2_SIG_NUL: &str = "bls12_381_g1_pk_g2_sig_nul";
 
 // ============================================================================
