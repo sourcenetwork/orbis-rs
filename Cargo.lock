@@ -842,6 +842,7 @@ dependencies = [
  "async-trait",
  "backoff",
  "common",
+ "crypto",
  "hex",
  "serde",
  "serde_json",

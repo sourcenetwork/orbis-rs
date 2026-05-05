@@ -1,7 +1,6 @@
 use super::SourceHubBulletin;
 use crate::r#trait::{Bulletin, DocumentPayload, RingPayload};
 use common::{
-    blockchain::bulletin::THRESHOLD_SIGNATURE_SCHEME_BLS12381_G1_PK_G2_SIG_NUL,
     blockchain::{ChainConfig, ChainConfigBuilder, TxSigner, TEST_ACCOUNT_HEX_KEY},
     SourceHubTestContainer,
 };
@@ -16,16 +15,16 @@ fn test_parse_threshold_signature_artifact() {
     let artifact = Some("reshare-threshold-signature:42:0x0102ff".to_string());
     let (scheme, signature) =
         SourceHubBulletin::parse_threshold_signature_artifact(&artifact).unwrap();
-    assert_eq!(scheme, THRESHOLD_SIGNATURE_SCHEME_BLS12381_G1_PK_G2_SIG_NUL);
+    assert_eq!(scheme, crypto::THRESHOLD_SIGNATURE_SCHEME);
     assert_eq!(signature, vec![0x01, 0x02, 0xff]);
 
     let artifact = Some(format!(
         "reshare-threshold-signature:42:{}:0102ff",
-        THRESHOLD_SIGNATURE_SCHEME_BLS12381_G1_PK_G2_SIG_NUL
+        crypto::THRESHOLD_SIGNATURE_SCHEME
     ));
     let (scheme, signature) =
         SourceHubBulletin::parse_threshold_signature_artifact(&artifact).unwrap();
-    assert_eq!(scheme, THRESHOLD_SIGNATURE_SCHEME_BLS12381_G1_PK_G2_SIG_NUL);
+    assert_eq!(scheme, crypto::THRESHOLD_SIGNATURE_SCHEME);
     assert_eq!(signature, vec![0x01, 0x02, 0xff]);
 }
 

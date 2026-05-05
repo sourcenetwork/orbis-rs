@@ -10,6 +10,7 @@ rust-version.workspace = true
 async-trait = { workspace = true }
 thiserror ={ workspace = true }
 common = { path = "../common" }
+crypto = { path = "../crypto", optional = true, default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -20,6 +21,8 @@ backoff = { version = "0.4", features = ["tokio"] }
 default = ["sourcehub"]
 sourcehub = []
 dummy = []
+bls12-381 = ["dep:crypto", "crypto/bls12-381"]
+decaf377 = ["dep:crypto", "crypto/decaf377"]
 
 [dev-dependencies]
 serial_test = "3.2.0"

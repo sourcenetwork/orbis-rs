@@ -3,15 +3,14 @@ use crate::{
     r#trait::{Bulletin, BulletinPost},
 };
 use async_trait::async_trait;
-use common::blockchain::bulletin::THRESHOLD_SIGNATURE_SCHEME_BLS12381_G1_PK_G2_SIG_NUL;
 use common::blockchain::{ChainConfigBuilder, SourceHubClient, TxSigner};
 use sha2::{Digest, Sha256};
 
 #[cfg(test)]
 mod tests;
 
-const DEFAULT_THRESHOLD_SIGNATURE_SCHEME: &str =
-    THRESHOLD_SIGNATURE_SCHEME_BLS12381_G1_PK_G2_SIG_NUL;
+#[cfg(any(feature = "bls12-381", feature = "decaf377"))]
+const DEFAULT_THRESHOLD_SIGNATURE_SCHEME: &str = crypto::THRESHOLD_SIGNATURE_SCHEME;
 const RESHARE_THRESHOLD_SIGNATURE_ARTIFACT_PREFIX: &str = "reshare-threshold-signature";
 
 pub struct SourceHubBulletin {

@@ -2,7 +2,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use bulletin::r#trait::RingPayload;
-use common::blockchain::bulletin::THRESHOLD_SIGNATURE_SCHEME_BLS12381_G1_PK_G2_SIG_NUL;
+use crypto::THRESHOLD_SIGNATURE_SCHEME;
 use crypto::r#trait::{DistKeyShare, DkgRole, PubShare, ThresholdSigner};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint};
 use sha2::{Digest, Sha256};
@@ -168,7 +168,7 @@ where
             Some(format!(
                 "reshare-threshold-signature:{}:{}:{}",
                 session_id,
-                THRESHOLD_SIGNATURE_SCHEME_BLS12381_G1_PK_G2_SIG_NUL,
+                THRESHOLD_SIGNATURE_SCHEME,
                 sign_response.signature
             )),
         )
