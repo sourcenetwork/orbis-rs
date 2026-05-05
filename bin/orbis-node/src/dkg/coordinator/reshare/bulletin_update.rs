@@ -2,6 +2,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use bulletin::r#trait::RingPayload;
+use common::blockchain::bulletin::THRESHOLD_SIGNATURE_SCHEME_BLS12381_G1_PK_G2_SIG_NUL;
 use crypto::r#trait::{DistKeyShare, DkgRole, PubShare, ThresholdSigner};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint};
 use sha2::{Digest, Sha256};
@@ -27,17 +28,18 @@ use super::super::DkgCoordinator;
 struct PreparedReshareUpdate {
     sorted_new_peer_ids: Vec<String>,
     new_committee_size: usize,
-    ring_pk_hex_for_payload: String,
-    payload_bytes: Vec<u8>,
+    ring_pk_for_sign_doc: String,
     bulletin_post_id: String,
     current_payload_sha256: String,
+    finalized_payload_sha256: String,
+    chain_id: String,
 }
 
 pub(in crate::dkg::coordinator) async fn update_bulletin_if_selector<D>(
     coord: &DkgCoordinator<D>,
     session_id: u64,
     kind: &SessionKind,
-    pss_interval: Option<u64>,
+    _pss_interval: Option<u64>,
     dkg_role: DkgRole,
     storage_key: &str,
     ring_pk_bytes: &[u8],
@@ -76,10 +78,8 @@ where
                 coord,
                 session_id,
                 storage_key,
-                ring_pk_bytes,
                 next_peer_ids,
                 *new_threshold,
-                pss_interval,
                 reshare_new_peer_ids,
                 reshare_bulletin_post_id,
             )
@@ -103,10 +103,12 @@ where
     let statement = RingReshareUpdateStatement {
         domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
         session_id,
-        ring_pk: prepared.ring_pk_hex_for_payload,
+        chain_id: prepared.chain_id,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_pk: prepared.ring_pk_for_sign_doc,
         bulletin_post_id: prepared.bulletin_post_id.clone(),
         current_payload_sha256: prepared.current_payload_sha256,
-        updated_payload: prepared.payload_bytes.clone(),
+        finalized_payload_sha256: prepared.finalized_payload_sha256,
     };
     let message_to_sign = ring_reshare_update_message(&statement).map_err(|e| {
         DkgError::Serialization(format!(
@@ -163,10 +165,11 @@ where
         .update(
             BULLETIN_RING_NAMESPACE.to_string(),
             prepared.bulletin_post_id.clone(),
-            prepared.payload_bytes,
             Some(format!(
-                "reshare-threshold-signature:{}:{}",
-                session_id, sign_response.signature
+                "reshare-threshold-signature:{}:{}:{}",
+                session_id,
+                THRESHOLD_SIGNATURE_SCHEME_BLS12381_G1_PK_G2_SIG_NUL,
+                sign_response.signature
             )),
         )
         .await
@@ -189,10 +192,8 @@ async fn prepare_reshare_update<D>(
     coord: &DkgCoordinator<D>,
     session_id: u64,
     storage_key: &str,
-    ring_pk_bytes: &[u8],
     next_peer_ids: &[String],
     new_threshold: u32,
-    pss_interval: Option<u64>,
     reshare_new_peer_ids: Option<&[String]>,
     reshare_bulletin_post_id: Option<&str>,
 ) -> Result<PreparedReshareUpdate>
@@ -203,21 +204,6 @@ where
         .map(|peers| peers.to_vec())
         .unwrap_or_else(|| next_peer_ids.to_vec());
     let new_committee_size = sorted_new_peer_ids.len();
-    let ring_pk_hex_for_payload = hex::encode(ring_pk_bytes);
-    let ring_payload = RingPayload {
-        ring_pk: ring_pk_hex_for_payload.clone(),
-        peer_ids: sorted_new_peer_ids.clone(),
-        next_peer_ids: None,
-        new_threshold: None,
-        threshold: new_threshold,
-        pss_interval,
-    };
-    let payload_bytes: Vec<u8> = ring_payload.clone().try_into().map_err(|e| {
-        DkgError::Serialization(format!(
-            "Reshare: failed to serialize updated RingPayload: {}",
-            e
-        ))
-    })?;
     let bulletin_post_id = reshare_bulletin_post_id.ok_or_else(|| {
         DkgError::Bulletin("Reshare: missing bulletin post id for updated RingPayload".to_string())
     })?;
@@ -235,8 +221,43 @@ where
                 e
             ))
         })?;
+    let current_ring_payload: RingPayload =
+        serde_json::from_slice(&current_post.payload).map_err(|e| {
+            DkgError::Deserialization(format!(
+                "Reshare: failed to parse current RingPayload before signing: {}",
+                e
+            ))
+        })?;
+    let mut finalized_ring_payload = current_ring_payload.clone();
+    let payload_next_peer_ids = finalized_ring_payload.next_peer_ids.take().ok_or_else(|| {
+        DkgError::ProtocolError("Reshare: current RingPayload is missing next_peer_ids".to_string())
+    })?;
+    let payload_new_threshold = finalized_ring_payload.new_threshold.take().ok_or_else(|| {
+        DkgError::ProtocolError("Reshare: current RingPayload is missing new_threshold".to_string())
+    })?;
+    if payload_next_peer_ids != sorted_new_peer_ids {
+        return Err(DkgError::ProtocolError(format!(
+            "Reshare: current RingPayload next_peer_ids {:?} do not match session next_peer_ids {:?}",
+            payload_next_peer_ids, sorted_new_peer_ids
+        )));
+    }
+    if payload_new_threshold != new_threshold {
+        return Err(DkgError::ProtocolError(format!(
+            "Reshare: current RingPayload new_threshold {} does not match session new_threshold {}",
+            payload_new_threshold, new_threshold
+        )));
+    }
+    finalized_ring_payload.peer_ids = payload_next_peer_ids;
+    finalized_ring_payload.threshold = payload_new_threshold;
+    let payload_bytes: Vec<u8> = finalized_ring_payload.try_into().map_err(|e| {
+        DkgError::Serialization(format!(
+            "Reshare: failed to serialize finalized RingPayload: {}",
+            e
+        ))
+    })?;
     let current_payload_sha256 = hex::encode(Sha256::digest(&current_post.payload));
-    let updated_payload_sha256 = hex::encode(Sha256::digest(&payload_bytes));
+    let finalized_payload_sha256 = hex::encode(Sha256::digest(&payload_bytes));
+    let chain_id = coord.app_state.bulletin.chain_id();
 
     coord
         .app_state
@@ -246,17 +267,18 @@ where
             session_id,
             bulletin_post_id: bulletin_post_id.to_string(),
             current_payload_sha256: current_payload_sha256.clone(),
-            updated_payload_sha256,
+            updated_payload_sha256: finalized_payload_sha256.clone(),
         })
         .await;
 
     Ok(PreparedReshareUpdate {
         sorted_new_peer_ids,
         new_committee_size,
-        ring_pk_hex_for_payload,
-        payload_bytes,
+        ring_pk_for_sign_doc: current_ring_payload.ring_pk,
         bulletin_post_id: bulletin_post_id.to_string(),
         current_payload_sha256,
+        finalized_payload_sha256,
+        chain_id,
     })
 }
 
