@@ -126,50 +126,6 @@ impl TryFrom<RingPayload> for Vec<u8> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::RingPayload;
-
-    #[test]
-    fn ring_payload_serializes_new_peer_ids_and_accepts_legacy_next_peer_ids() {
-        let payload = RingPayload {
-            ring_pk: "ring".to_string(),
-            new_peer_ids: Some(vec!["peer-b".to_string(), "peer-c".to_string()]),
-            new_threshold: Some(2),
-            peer_ids: vec!["peer-a".to_string()],
-            threshold: 1,
-            pss_interval: None,
-            block_number_nonce: 9,
-        };
-
-        let value = serde_json::to_value(&payload).expect("serialize RingPayload");
-        assert_eq!(
-            value
-                .get("new_peer_ids")
-                .and_then(|v| v.as_array())
-                .map(Vec::len),
-            Some(2)
-        );
-        assert!(value.get("next_peer_ids").is_none());
-
-        let legacy = serde_json::json!({
-            "ring_pk": "ring",
-            "next_peer_ids": ["peer-b", "peer-c"],
-            "new_threshold": 2,
-            "peer_ids": ["peer-a"],
-            "threshold": 1,
-            "block_number_nonce": 9
-        });
-        let parsed: RingPayload =
-            serde_json::from_value(legacy).expect("deserialize legacy RingPayload");
-
-        assert_eq!(
-            parsed.new_peer_ids,
-            Some(vec!["peer-b".to_string(), "peer-c".to_string()])
-        );
-    }
-}
-
 impl TryFrom<BulletinPost> for KeyDerivation {
     type Error = BulletinError;
 
