@@ -179,8 +179,8 @@ async fn load_ring_payload_by_post_id(
 ///    the intended ring when the post ID came from the wire).
 /// 3. The sender's peer ID is a current member of that ring's OLD committee.
 /// 4. Proposed `next_peer_ids` must match the authoritative committee (order-independent):
-///    - `ring_payload.next_peer_ids` is `Some` → must match that list.
-///    - `ring_payload.next_peer_ids` is `None` → must match `ring_payload.peer_ids`
+///    - `ring_payload.new_peer_ids` is `Some` → must match that list.
+///    - `ring_payload.new_peer_ids` is `None` → must match `ring_payload.peer_ids`
 ///      (fallback: threshold-only reshare keeps the same committee).
 /// 5. Proposed `new_threshold` must equal the authoritative threshold:
 ///    - `ring_payload.new_threshold` is `Some` → must equal that value.
@@ -267,7 +267,7 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
     // 4. Proposed next_peer_ids must match the authoritative committee.
     //    Bulletin present → must match it; absent → must match current peer_ids (fallback).
     let authoritative_next: &[String] = ring_payload
-        .next_peer_ids
+        .new_peer_ids
         .as_deref()
         .unwrap_or(&ring_payload.peer_ids);
     let mut sorted_auth: Vec<&str> = authoritative_next.iter().map(|s| s.as_str()).collect();
@@ -280,7 +280,7 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
             "Reshare next_peer_ids do not match authoritative committee for ring {} \
              (bulletin field: {})",
             ring_pk_hex,
-            if ring_payload.next_peer_ids.is_some() {
+            if ring_payload.new_peer_ids.is_some() {
                 "explicitly announced"
             } else {
                 "absent, fallback to current peer_ids"

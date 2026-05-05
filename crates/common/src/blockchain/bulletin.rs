@@ -135,6 +135,7 @@ pub struct MsgUpdatePostByThresholdSignature {
 /// - 5: ring_pk (string)
 /// - 6: current_payload_sha256 (bytes)
 /// - 7: finalized_payload_sha256 (bytes)
+/// - 8: block_number_nonce (uint64)
 #[derive(Clone, Message)]
 pub struct RingReshareFinalizeSignDoc {
     #[prost(string, tag = "1")]
@@ -151,6 +152,8 @@ pub struct RingReshareFinalizeSignDoc {
     pub current_payload_sha256: Vec<u8>,
     #[prost(bytes = "vec", tag = "7")]
     pub finalized_payload_sha256: Vec<u8>,
+    #[prost(uint64, tag = "8")]
+    pub block_number_nonce: u64,
 }
 
 /// Build SourceHub-compatible sign bytes for a ring reshare finalization.
@@ -161,6 +164,7 @@ pub fn ring_reshare_finalize_sign_bytes_from_hashes(
     ring_pk: &str,
     current_payload_sha256: Vec<u8>,
     finalized_payload_sha256: Vec<u8>,
+    block_number_nonce: u64,
 ) -> Result<Vec<u8>> {
     if current_payload_sha256.len() != 32 {
         return Err(BlockchainError::Serialization(format!(
@@ -183,6 +187,7 @@ pub fn ring_reshare_finalize_sign_bytes_from_hashes(
         ring_pk: ring_pk.to_string(),
         current_payload_sha256,
         finalized_payload_sha256,
+        block_number_nonce,
     }
     .encode_to_vec())
 }

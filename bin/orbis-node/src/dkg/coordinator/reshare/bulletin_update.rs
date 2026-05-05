@@ -32,6 +32,7 @@ struct PreparedReshareUpdate {
     bulletin_post_id: String,
     current_payload_sha256: String,
     finalized_payload_sha256: String,
+    block_number_nonce: u64,
     chain_id: String,
 }
 
@@ -109,6 +110,7 @@ where
         bulletin_post_id: prepared.bulletin_post_id.clone(),
         current_payload_sha256: prepared.current_payload_sha256,
         finalized_payload_sha256: prepared.finalized_payload_sha256,
+        block_number_nonce: prepared.block_number_nonce,
     };
     let message_to_sign = ring_reshare_update_message(&statement).map_err(|e| {
         DkgError::Serialization(format!(
@@ -229,16 +231,16 @@ where
             ))
         })?;
     let mut finalized_ring_payload = current_ring_payload.clone();
-    let payload_next_peer_ids = finalized_ring_payload.next_peer_ids.take().ok_or_else(|| {
-        DkgError::ProtocolError("Reshare: current RingPayload is missing next_peer_ids".to_string())
+    let payload_new_peer_ids = finalized_ring_payload.new_peer_ids.take().ok_or_else(|| {
+        DkgError::ProtocolError("Reshare: current RingPayload is missing new_peer_ids".to_string())
     })?;
     let payload_new_threshold = finalized_ring_payload.new_threshold.take().ok_or_else(|| {
         DkgError::ProtocolError("Reshare: current RingPayload is missing new_threshold".to_string())
     })?;
-    if payload_next_peer_ids != sorted_new_peer_ids {
+    if payload_new_peer_ids != sorted_new_peer_ids {
         return Err(DkgError::ProtocolError(format!(
-            "Reshare: current RingPayload next_peer_ids {:?} do not match session next_peer_ids {:?}",
-            payload_next_peer_ids, sorted_new_peer_ids
+            "Reshare: current RingPayload new_peer_ids {:?} do not match session next_peer_ids {:?}",
+            payload_new_peer_ids, sorted_new_peer_ids
         )));
     }
     if payload_new_threshold != new_threshold {
@@ -247,7 +249,7 @@ where
             payload_new_threshold, new_threshold
         )));
     }
-    finalized_ring_payload.peer_ids = payload_next_peer_ids;
+    finalized_ring_payload.peer_ids = payload_new_peer_ids;
     finalized_ring_payload.threshold = payload_new_threshold;
     let payload_bytes: Vec<u8> = finalized_ring_payload.try_into().map_err(|e| {
         DkgError::Serialization(format!(
@@ -278,6 +280,7 @@ where
         bulletin_post_id: bulletin_post_id.to_string(),
         current_payload_sha256,
         finalized_payload_sha256,
+        block_number_nonce: current_ring_payload.block_number_nonce,
         chain_id,
     })
 }

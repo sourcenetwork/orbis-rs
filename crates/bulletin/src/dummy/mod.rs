@@ -46,18 +46,17 @@ impl Bulletin for DummyBulletin {
             .ok_or(BulletinError::NotFound { namespace, id })?;
         let mut payload: RingPayload = serde_json::from_slice(&post.payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-        let next_peer_ids = payload.next_peer_ids.take().ok_or_else(|| {
-            BulletinError::ParseError(
-                "ring payload is missing next_peer_ids for update".to_string(),
-            )
+        let new_peer_ids = payload.new_peer_ids.take().ok_or_else(|| {
+            BulletinError::ParseError("ring payload is missing new_peer_ids for update".to_string())
         })?;
         let new_threshold = payload.new_threshold.take().ok_or_else(|| {
             BulletinError::ParseError(
                 "ring payload is missing new_threshold for update".to_string(),
             )
         })?;
-        payload.peer_ids = next_peer_ids;
+        payload.peer_ids = new_peer_ids;
         payload.threshold = new_threshold;
+        payload.block_number_nonce = payload.block_number_nonce.saturating_add(1);
         post.payload =
             serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))?;
         Ok(())

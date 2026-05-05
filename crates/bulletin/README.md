@@ -19,7 +19,7 @@ Shared **value types** (JSON serde):
 
 - **`BulletinPost`** — `id`, `namespace`, raw **`payload`** bytes.
 - **`DocumentPayload`** — Encrypted document + Chaum–Pedersen proof fields + policy binding (`ring_id`, `policy_id`, `resource`, `permission`, optional tier/timestamp).
-- **`RingPayload`** — Ring metadata: `ring_pk`, `peer_ids`, `threshold`, optional `pss_interval`, optional **`next_peer_ids`** / **`new_threshold`** for reshare coordination.
+- **`RingPayload`** — Ring metadata: `ring_pk`, `peer_ids`, `threshold`, optional `pss_interval`, optional **`new_peer_ids`** / **`new_threshold`** for reshare coordination.
 - **`KeyDerivation`** — Bulletin entry for signing/PRE derivation: `ring_id`, `derivation`, policy fields.
 
 `TryFrom` helpers convert between posts and these structs (JSON in `payload`).

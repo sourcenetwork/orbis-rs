@@ -35,14 +35,18 @@ pub struct DocumentPayload {
 pub struct RingPayload {
     /// Public key of ring
     pub ring_pk: String,
-    /// Next peer ids to reshare into.
-    /// When set, a reshare `SessionInit` is only accepted if its `next_peer_ids` matches
+    /// New peer ids to reshare into.
+    /// When set, a reshare `SessionInit` is only accepted if its proposed peers match
     /// this field (order-independent).  `None` means the bulletin does not constrain the next
     /// committee — **nodes may still require this field** (e.g. orbis-node enforces a
     /// pre-announced committee for reshare).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_peer_ids: Option<Vec<String>>,
-    /// Threshold for the new committee announced by `next_peer_ids`.
+    #[serde(
+        default,
+        alias = "next_peer_ids",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub new_peer_ids: Option<Vec<String>>,
+    /// Threshold for the new committee announced by `new_peer_ids`.
     /// Validated against `SessionKind::Reshare::new_threshold` when present.
     /// `None` means the bulletin does not constrain the new threshold — **nodes may still
     /// require this field** (e.g. orbis-node enforces a pre-announced threshold for reshare).
@@ -56,6 +60,11 @@ pub struct RingPayload {
     /// `None` (or absent in JSON) means automatic refresh is disabled for this ring.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pss_interval: Option<u64>,
+    /// Block number of the last threshold-signature update.
+    /// Each threshold signature uses this as a nonce. The chain updates it to
+    /// the current block number after accepting the signature.
+    #[serde(default)]
+    pub block_number_nonce: u64,
 }
 
 /// Payload for derivation information derivation_id => payload
@@ -118,6 +127,50 @@ impl TryFrom<RingPayload> for Vec<u8> {
 
     fn try_from(payload: RingPayload) -> Result<Self> {
         serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RingPayload;
+
+    #[test]
+    fn ring_payload_serializes_new_peer_ids_and_accepts_legacy_next_peer_ids() {
+        let payload = RingPayload {
+            ring_pk: "ring".to_string(),
+            new_peer_ids: Some(vec!["peer-b".to_string(), "peer-c".to_string()]),
+            new_threshold: Some(2),
+            peer_ids: vec!["peer-a".to_string()],
+            threshold: 1,
+            pss_interval: None,
+            block_number_nonce: 9,
+        };
+
+        let value = serde_json::to_value(&payload).expect("serialize RingPayload");
+        assert_eq!(
+            value
+                .get("new_peer_ids")
+                .and_then(|v| v.as_array())
+                .map(Vec::len),
+            Some(2)
+        );
+        assert!(value.get("next_peer_ids").is_none());
+
+        let legacy = serde_json::json!({
+            "ring_pk": "ring",
+            "next_peer_ids": ["peer-b", "peer-c"],
+            "new_threshold": 2,
+            "peer_ids": ["peer-a"],
+            "threshold": 1,
+            "block_number_nonce": 9
+        });
+        let parsed: RingPayload =
+            serde_json::from_value(legacy).expect("deserialize legacy RingPayload");
+
+        assert_eq!(
+            parsed.new_peer_ids,
+            Some(vec!["peer-b".to_string(), "peer-c".to_string()])
+        );
     }
 }
 

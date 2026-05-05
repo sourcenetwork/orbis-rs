@@ -47,6 +47,8 @@ pub struct RingReshareUpdateStatement {
     pub current_payload_sha256: String,
     /// SHA-256 hex of the SourceHub-derived finalized bulletin payload.
     pub finalized_payload_sha256: String,
+    /// Current payload block-number nonce used for replay protection.
+    pub block_number_nonce: u64,
 }
 
 /// Payload for reshare-update signing.

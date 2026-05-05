@@ -149,7 +149,7 @@ where
                 RingShareBundle::load_by_ring_key(&coord.app_state.local_storage, ring_pk_hex)
             {
                 let authoritative_next_peer_ids = ring_payload
-                    .next_peer_ids
+                    .new_peer_ids
                     .clone()
                     .unwrap_or_else(|| ring_payload.peer_ids.clone());
                 let authoritative_new_threshold =

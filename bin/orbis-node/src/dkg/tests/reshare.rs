@@ -165,10 +165,11 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
     let payload = RingPayload {
         ring_pk: "payload_ring_pk_other".to_string(),
         peer_ids: vec![sender_hex.to_string()],
-        next_peer_ids: Some(vec!["00112233".to_string()]),
+        new_peer_ids: Some(vec!["00112233".to_string()]),
         new_threshold: Some(1),
         threshold: 2,
         pss_interval: None,
+        block_number_nonce: 0,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
@@ -229,7 +230,7 @@ async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
 
     let ring_pk = "reshare_ring";
     // Ring contains "aabbccdd"; sender will be "deadbeef" (not a member).
-    // Bulletin must pre-announce next_peer_ids and new_threshold so checks 3 & 4
+    // Bulletin must pre-announce new_peer_ids and new_threshold so checks 3 & 4
     // pass and the test actually reaches check 2 (sender membership).
     write_ring_with_announced_reshare(
         &app_state,
@@ -272,7 +273,7 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
     // and reaches the try_mark_ring_pss check (the (false,false) guard fires before
     // the mark check, so the test node must be in at least one committee).
     let our_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
-    // Bulletin must pre-announce next_peer_ids and new_threshold (matching what the
+    // Bulletin must pre-announce new_peer_ids and new_threshold (matching what the
     // message will propose) so checks 3 & 4 pass and the test reaches the PSS flag check.
     write_ring_with_announced_reshare(
         &app_state,
@@ -452,11 +453,11 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
 //
 // These tests exercise the two new bulletin-anchor checks added to
 // `validate_reshare_session_init`:
-//   • proposed `next_peer_ids` must match `RingPayload::next_peer_ids` when set
+//   • proposed `next_peer_ids` must match `RingPayload::new_peer_ids` when set
 //   • proposed `new_threshold` must match `RingPayload::new_threshold` when set
 // =============================================================================
 
-/// Post a `RingPayload` with caller-supplied `next_peer_ids` / `new_threshold`
+/// Post a `RingPayload` with caller-supplied `new_peer_ids` / `new_threshold`
 /// and seed `RingIndex` so the coordinator can find the ring.
 async fn write_ring_with_announced_reshare(
     app_state: &crate::app_state::AppState<crypto::DkgImpl>,
@@ -472,10 +473,11 @@ async fn write_ring_with_announced_reshare(
     let payload = RingPayload {
         ring_pk: ring_pk.to_string(),
         peer_ids,
-        next_peer_ids: announced_next_peer_ids,
+        new_peer_ids: announced_next_peer_ids,
         new_threshold: announced_new_threshold,
         threshold: 2,
         pss_interval: None,
+        block_number_nonce: 0,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
@@ -560,8 +562,8 @@ async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
 
-    // Bulletin pre-announces new_threshold = 2, with a matching next_peer_ids.
-    // next_peer_ids must also be set (matching the proposal) so check 3 passes
+    // Bulletin pre-announces new_threshold = 2, with matching new_peer_ids.
+    // new_peer_ids must also be set (matching the proposal) so check 3 passes
     // and the test actually reaches check 4 (the threshold mismatch).
     write_ring_with_announced_reshare(
         &app_state,
@@ -752,10 +754,11 @@ async fn post_ring_for_validation(
     let payload = RingPayload {
         ring_pk: ring_pk.to_string(),
         peer_ids,
-        next_peer_ids,
+        new_peer_ids: next_peer_ids,
         new_threshold,
         threshold,
         pss_interval: None,
+        block_number_nonce: 0,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
@@ -800,7 +803,7 @@ async fn test_validate_reshare_accepts_next_peer_ids_fallback_to_current() {
     let ring_pk = "fallback_peers_ring";
     let sender_hex = "aabbccdd";
 
-    // Only new_threshold is announced; next_peer_ids absent → fallback = peer_ids.
+    // Only new_threshold is announced; new_peer_ids absent → fallback = peer_ids.
     post_ring_for_validation(
         &app_state,
         ring_pk,
@@ -843,7 +846,7 @@ async fn test_validate_reshare_accepts_new_threshold_fallback_to_current() {
     let sender_hex = "aabbccdd";
     let new_peer = "00112233";
 
-    // Only next_peer_ids is announced; new_threshold absent → fallback = threshold = 1.
+    // Only new_peer_ids is announced; new_threshold absent → fallback = threshold = 1.
     post_ring_for_validation(
         &app_state,
         ring_pk,
@@ -885,7 +888,7 @@ async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
     let ring_pk = "fallback_reject_peers_ring";
     let sender_hex = "aabbccdd";
 
-    // next_peer_ids absent → fallback = peer_ids = ["aabbccdd"].
+    // new_peer_ids absent → fallback = peer_ids = ["aabbccdd"].
     post_ring_for_validation(
         &app_state,
         ring_pk,
@@ -1056,9 +1059,10 @@ async fn post_reshare_announcement(
         ring_pk: key_string.to_string(),
         peer_ids: old_peer_ids.to_vec(),
         threshold: old_threshold,
-        next_peer_ids: Some(sorted_next_peer_ids.to_vec()),
+        new_peer_ids: Some(sorted_next_peer_ids.to_vec()),
         new_threshold: Some(new_threshold),
         pss_interval: None,
+        block_number_nonce: 0,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
 
@@ -1243,7 +1247,7 @@ async fn run_reshare_ceremony(
         let mut expected_peer_ids = sorted_next_peer_ids.to_vec();
         expected_peer_ids.sort();
 
-        if payload.next_peer_ids.is_none()
+        if payload.new_peer_ids.is_none()
             && payload.new_threshold.is_none()
             && actual_peer_ids == expected_peer_ids
             && payload.threshold == new_threshold
