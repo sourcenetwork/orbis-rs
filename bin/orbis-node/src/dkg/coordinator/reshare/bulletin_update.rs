@@ -28,7 +28,6 @@ use super::super::DkgCoordinator;
 struct PreparedReshareUpdate {
     sorted_new_peer_ids: Vec<String>,
     new_committee_size: usize,
-    ring_pk_for_sign_doc: String,
     bulletin_post_id: String,
     current_payload_sha256: String,
     finalized_payload_sha256: String,
@@ -106,7 +105,7 @@ where
         session_id,
         chain_id: prepared.chain_id,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
-        ring_pk: prepared.ring_pk_for_sign_doc,
+        ring_pk: hex::encode(ring_pk_bytes),
         bulletin_post_id: prepared.bulletin_post_id.clone(),
         current_payload_sha256: prepared.current_payload_sha256,
         finalized_payload_sha256: prepared.finalized_payload_sha256,
@@ -276,7 +275,6 @@ where
     Ok(PreparedReshareUpdate {
         sorted_new_peer_ids,
         new_committee_size,
-        ring_pk_for_sign_doc: current_ring_payload.ring_pk,
         bulletin_post_id: bulletin_post_id.to_string(),
         current_payload_sha256,
         finalized_payload_sha256,
