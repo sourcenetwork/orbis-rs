@@ -10,8 +10,8 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use lazy_static::lazy_static;
 use prometheus::{
-    register_counter_vec, register_gauge, register_histogram_vec, CounterVec, Encoder, Gauge,
-    HistogramVec, TextEncoder,
+    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec, CounterVec,
+    Encoder, Gauge, GaugeVec, HistogramVec, TextEncoder,
 };
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -147,6 +147,40 @@ lazy_static! {
     .expect("failed to register sign_abandoned_states");
 
     // ============================================================================
+    // Reshare Protocol Metrics
+    // ============================================================================
+
+    pub static ref RESHARE_SESSIONS_TOTAL: CounterVec = register_counter_vec!(
+        "reshare_sessions_total",
+        "Total number of reshare sessions",
+        &["status"]
+    )
+    .expect("failed to register reshare_sessions_total");
+
+    pub static ref RESHARE_ACTIVE_SESSIONS: Gauge = register_gauge!(
+        "reshare_active_sessions",
+        "Number of currently active reshare sessions"
+    )
+    .expect("failed to register reshare_active_sessions");
+
+    // ============================================================================
+    // Refresh Protocol Metrics
+    // ============================================================================
+
+    pub static ref REFRESH_SESSIONS_TOTAL: CounterVec = register_counter_vec!(
+        "refresh_sessions_total",
+        "Total number of refresh (PSS) sessions",
+        &["status"]
+    )
+    .expect("failed to register refresh_sessions_total");
+
+    pub static ref REFRESH_ACTIVE_SESSIONS: Gauge = register_gauge!(
+        "refresh_active_sessions",
+        "Number of currently active refresh sessions"
+    )
+    .expect("failed to register refresh_active_sessions");
+
+    // ============================================================================
     // StoreSecret Metrics
     // ============================================================================
 
@@ -166,14 +200,15 @@ lazy_static! {
     .expect("failed to register store_secret_request_duration_seconds");
 
     // ============================================================================
-    // Node Health Metrics
+    // Build Info Metric
     // ============================================================================
 
-    pub static ref NODE_INFO: Gauge = register_gauge!(
-        "node_info",
-        "Node information (always 1, use labels for metadata)"
+    pub static ref ORBIS_BUILD_INFO: GaugeVec = register_gauge_vec!(
+        "orbis_build_info",
+        "Implementation info for this node (always 1); use labels to identify feature variants",
+        &["pre_impl", "sign_impl", "local_storage_impl", "authz_impl", "bulletin_impl", "network_impl"]
     )
-    .expect("failed to register node_info");
+    .expect("failed to register orbis_build_info");
 }
 
 /// Force initialization of all metrics. Call early in startup so any
@@ -195,9 +230,13 @@ pub fn init() {
     lazy_static::initialize(&SIGN_REQUEST_DURATION_SECONDS);
     lazy_static::initialize(&SIGN_MESSAGES_TOTAL);
     lazy_static::initialize(&SIGN_ABANDONED_STATES);
+    lazy_static::initialize(&RESHARE_SESSIONS_TOTAL);
+    lazy_static::initialize(&RESHARE_ACTIVE_SESSIONS);
+    lazy_static::initialize(&REFRESH_SESSIONS_TOTAL);
+    lazy_static::initialize(&REFRESH_ACTIVE_SESSIONS);
     lazy_static::initialize(&STORE_SECRET_REQUESTS_TOTAL);
     lazy_static::initialize(&STORE_SECRET_REQUEST_DURATION_SECONDS);
-    lazy_static::initialize(&NODE_INFO);
+    lazy_static::initialize(&ORBIS_BUILD_INFO);
 }
 
 // ============================================================================
@@ -379,6 +418,67 @@ pub fn record_store_secret_failed() {
         .inc();
 }
 
+/// Record Reshare session started
+pub fn record_reshare_session_started() {
+    RESHARE_SESSIONS_TOTAL.with_label_values(&["started"]).inc();
+    RESHARE_ACTIVE_SESSIONS.inc();
+}
+
+/// Record Reshare session completed
+pub fn record_reshare_session_completed() {
+    RESHARE_SESSIONS_TOTAL
+        .with_label_values(&["completed"])
+        .inc();
+    RESHARE_ACTIVE_SESSIONS.dec();
+}
+
+/// Record Reshare session failed
+pub fn record_reshare_session_failed() {
+    RESHARE_SESSIONS_TOTAL.with_label_values(&["failed"]).inc();
+    RESHARE_ACTIVE_SESSIONS.dec();
+}
+
+/// Record Refresh session started
+pub fn record_refresh_session_started() {
+    REFRESH_SESSIONS_TOTAL.with_label_values(&["started"]).inc();
+    REFRESH_ACTIVE_SESSIONS.inc();
+}
+
+/// Record Refresh session completed
+pub fn record_refresh_session_completed() {
+    REFRESH_SESSIONS_TOTAL
+        .with_label_values(&["completed"])
+        .inc();
+    REFRESH_ACTIVE_SESSIONS.dec();
+}
+
+/// Record Refresh session failed
+pub fn record_refresh_session_failed() {
+    REFRESH_SESSIONS_TOTAL.with_label_values(&["failed"]).inc();
+    REFRESH_ACTIVE_SESSIONS.dec();
+}
+
+/// Set the build-info gauge. Call once at startup after `init()`.
+pub fn record_build_info(
+    pre_impl: &str,
+    sign_impl: &str,
+    local_storage_impl: &str,
+    authz_impl: &str,
+    bulletin_impl: &str,
+    network_impl: &str,
+) {
+    ORBIS_BUILD_INFO
+        .with_label_values(&[
+            pre_impl,
+            sign_impl,
+            local_storage_impl,
+            authz_impl,
+            bulletin_impl,
+            network_impl,
+        ])
+        .set(1.0);
+}
+
 // ============================================================================
 // HTTP Metrics Server
 // ============================================================================
@@ -419,9 +519,6 @@ pub async fn start_metrics_server(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(addr = %addr, "Metrics server listening");
-
-    // Set node_info to 1 to indicate the node is running
-    NODE_INFO.set(1.0);
 
     loop {
         let (stream, _) = listener.accept().await?;

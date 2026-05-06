@@ -80,4 +80,5 @@ async fn wait_for_reshare_bulletin_finalized<D>(
         .remove_session(&session_id)
         .await;
     metrics::record_dkg_session_completed();
+    metrics::record_reshare_session_completed();
 }
