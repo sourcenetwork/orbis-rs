@@ -10,8 +10,8 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use lazy_static::lazy_static;
 use prometheus::{
-    register_counter_vec, register_gauge, register_histogram_vec, CounterVec, Encoder, Gauge,
-    HistogramVec, TextEncoder,
+    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec, CounterVec,
+    Encoder, Gauge, GaugeVec, HistogramVec, TextEncoder,
 };
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -166,14 +166,15 @@ lazy_static! {
     .expect("failed to register store_secret_request_duration_seconds");
 
     // ============================================================================
-    // Node Health Metrics
+    // Build Info Metric
     // ============================================================================
 
-    pub static ref NODE_INFO: Gauge = register_gauge!(
-        "node_info",
-        "Node information (always 1, use labels for metadata)"
+    pub static ref ORBIS_BUILD_INFO: GaugeVec = register_gauge_vec!(
+        "orbis_build_info",
+        "Implementation info for this node (always 1); use labels to identify feature variants",
+        &["pre_impl", "sign_impl", "local_storage_impl", "authz_impl", "bulletin_impl", "network_impl"]
     )
-    .expect("failed to register node_info");
+    .expect("failed to register orbis_build_info");
 }
 
 /// Force initialization of all metrics. Call early in startup so any
@@ -197,7 +198,7 @@ pub fn init() {
     lazy_static::initialize(&SIGN_ABANDONED_STATES);
     lazy_static::initialize(&STORE_SECRET_REQUESTS_TOTAL);
     lazy_static::initialize(&STORE_SECRET_REQUEST_DURATION_SECONDS);
-    lazy_static::initialize(&NODE_INFO);
+    lazy_static::initialize(&ORBIS_BUILD_INFO);
 }
 
 // ============================================================================
@@ -379,6 +380,27 @@ pub fn record_store_secret_failed() {
         .inc();
 }
 
+/// Set the build-info gauge. Call once at startup after `init()`.
+pub fn record_build_info(
+    pre_impl: &str,
+    sign_impl: &str,
+    local_storage_impl: &str,
+    authz_impl: &str,
+    bulletin_impl: &str,
+    network_impl: &str,
+) {
+    ORBIS_BUILD_INFO
+        .with_label_values(&[
+            pre_impl,
+            sign_impl,
+            local_storage_impl,
+            authz_impl,
+            bulletin_impl,
+            network_impl,
+        ])
+        .set(1.0);
+}
+
 // ============================================================================
 // HTTP Metrics Server
 // ============================================================================
@@ -419,9 +441,6 @@ pub async fn start_metrics_server(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(addr = %addr, "Metrics server listening");
-
-    // Set node_info to 1 to indicate the node is running
-    NODE_INFO.set(1.0);
 
     loop {
         let (stream, _) = listener.accept().await?;

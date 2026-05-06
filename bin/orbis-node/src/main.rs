@@ -45,6 +45,7 @@ use tokio::{sync::oneshot, task::JoinHandle};
 // Concrete crypto implementations
 use constants::MIN_NODE_BALANCE;
 use crypto::{DkgImpl, PreImpl, SignImpl};
+use tracing::Instrument;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use proto::dkg_service::dkg_service_server::DkgServiceServer;
@@ -108,7 +109,18 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing with optional Loki support
     init_tracing(&args)?;
 
-    // List implementaions used for sanity
+    let root_span = tracing::info_span!(
+        "orbis_node",
+        pre_impl = PreImpl::name(),
+        sign_impl = SignImpl::name(),
+        local_storage_impl = LocalStorageImpl::name(),
+        authz_impl = AuthzImpl::name(),
+        bulletin_impl = BulletinImpl::name(),
+        network_impl = NetworkImpl::name(),
+    );
+
+    async move {
+    // List implementations used for sanity
     tracing::info!("Crypto PRE implementation: {}", PreImpl::name());
     tracing::info!("Crypto Sign implementation: {}", SignImpl::name());
     tracing::info!("Local-storage implementation: {}", LocalStorageImpl::name());
@@ -211,6 +223,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let node = shutdown_bootstrap_after_init(bootstrap_info_server, init_result).await?;
 
     run_server(node).await
+    }.instrument(root_span).await
 }
 
 /// Start an info-only gRPC server before the full node is ready.
@@ -336,6 +349,14 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     // Initialize metrics eagerly so registration panics surface here, not in a spawned task
     metrics::init();
     network::metrics::init();
+    metrics::record_build_info(
+        &PreImpl::name(),
+        &SignImpl::name(),
+        &LocalStorageImpl::name(),
+        &AuthzImpl::name(),
+        &BulletinImpl::name(),
+        &NetworkImpl::name(),
+    );
 
     // Start PSS reshare scheduler (no-op if interval is zero)
     pss::spawn_pss_scheduler(node.app_state.clone(), node.reshare_interval);
