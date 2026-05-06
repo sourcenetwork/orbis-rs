@@ -260,6 +260,9 @@ where
 
     coord.remove_session(session_id).await;
     metrics::record_dkg_session_completed();
+    if matches!(kind, SessionKind::Refresh { .. }) {
+        metrics::record_refresh_session_completed();
+    }
 
     tracing::info!(
         session_id = session_id,

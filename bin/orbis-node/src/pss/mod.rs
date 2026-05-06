@@ -29,6 +29,7 @@ mod tests;
 
 use crate::app_state::AppState;
 use crate::constants::{BULLETIN_RING_NAMESPACE, PSS_GRACE_PERIOD_SECS};
+use crate::metrics;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::helpers::{
@@ -345,6 +346,8 @@ where
         }
     }
 
+    metrics::record_refresh_session_started();
+
     app_state
         .dkg_session_state
         .set_session_kind(
@@ -403,6 +406,7 @@ where
                 .dkg_session_state
                 .remove_session(&session_id)
                 .await;
+            metrics::record_refresh_session_failed();
             return Err(DkgError::NetworkConnection(format!(
                 "PSS: failed to send refresh SessionInit to {}: {}",
                 peer_id_str, e
@@ -418,6 +422,7 @@ where
             .dkg_session_state
             .remove_session(&session_id)
             .await;
+        metrics::record_refresh_session_failed();
         return Err(e);
     }
 
@@ -598,6 +603,8 @@ where
         }
     }
 
+    metrics::record_reshare_session_started();
+
     app_state
         .dkg_session_state
         .set_pss_interval(&session_id, ring_payload.pss_interval)
@@ -667,6 +674,7 @@ where
             .dkg_session_state
             .remove_session(&session_id)
             .await;
+        metrics::record_reshare_session_failed();
         return Err(e);
     }
 

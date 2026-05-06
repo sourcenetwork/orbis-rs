@@ -147,6 +147,40 @@ lazy_static! {
     .expect("failed to register sign_abandoned_states");
 
     // ============================================================================
+    // Reshare Protocol Metrics
+    // ============================================================================
+
+    pub static ref RESHARE_SESSIONS_TOTAL: CounterVec = register_counter_vec!(
+        "reshare_sessions_total",
+        "Total number of reshare sessions",
+        &["status"]
+    )
+    .expect("failed to register reshare_sessions_total");
+
+    pub static ref RESHARE_ACTIVE_SESSIONS: Gauge = register_gauge!(
+        "reshare_active_sessions",
+        "Number of currently active reshare sessions"
+    )
+    .expect("failed to register reshare_active_sessions");
+
+    // ============================================================================
+    // Refresh Protocol Metrics
+    // ============================================================================
+
+    pub static ref REFRESH_SESSIONS_TOTAL: CounterVec = register_counter_vec!(
+        "refresh_sessions_total",
+        "Total number of refresh (PSS) sessions",
+        &["status"]
+    )
+    .expect("failed to register refresh_sessions_total");
+
+    pub static ref REFRESH_ACTIVE_SESSIONS: Gauge = register_gauge!(
+        "refresh_active_sessions",
+        "Number of currently active refresh sessions"
+    )
+    .expect("failed to register refresh_active_sessions");
+
+    // ============================================================================
     // StoreSecret Metrics
     // ============================================================================
 
@@ -196,6 +230,10 @@ pub fn init() {
     lazy_static::initialize(&SIGN_REQUEST_DURATION_SECONDS);
     lazy_static::initialize(&SIGN_MESSAGES_TOTAL);
     lazy_static::initialize(&SIGN_ABANDONED_STATES);
+    lazy_static::initialize(&RESHARE_SESSIONS_TOTAL);
+    lazy_static::initialize(&RESHARE_ACTIVE_SESSIONS);
+    lazy_static::initialize(&REFRESH_SESSIONS_TOTAL);
+    lazy_static::initialize(&REFRESH_ACTIVE_SESSIONS);
     lazy_static::initialize(&STORE_SECRET_REQUESTS_TOTAL);
     lazy_static::initialize(&STORE_SECRET_REQUEST_DURATION_SECONDS);
     lazy_static::initialize(&ORBIS_BUILD_INFO);
@@ -378,6 +416,42 @@ pub fn record_store_secret_failed() {
     STORE_SECRET_REQUESTS_TOTAL
         .with_label_values(&["failed"])
         .inc();
+}
+
+/// Record Reshare session started
+pub fn record_reshare_session_started() {
+    RESHARE_SESSIONS_TOTAL.with_label_values(&["started"]).inc();
+    RESHARE_ACTIVE_SESSIONS.inc();
+}
+
+/// Record Reshare session completed
+pub fn record_reshare_session_completed() {
+    RESHARE_SESSIONS_TOTAL.with_label_values(&["completed"]).inc();
+    RESHARE_ACTIVE_SESSIONS.dec();
+}
+
+/// Record Reshare session failed
+pub fn record_reshare_session_failed() {
+    RESHARE_SESSIONS_TOTAL.with_label_values(&["failed"]).inc();
+    RESHARE_ACTIVE_SESSIONS.dec();
+}
+
+/// Record Refresh session started
+pub fn record_refresh_session_started() {
+    REFRESH_SESSIONS_TOTAL.with_label_values(&["started"]).inc();
+    REFRESH_ACTIVE_SESSIONS.inc();
+}
+
+/// Record Refresh session completed
+pub fn record_refresh_session_completed() {
+    REFRESH_SESSIONS_TOTAL.with_label_values(&["completed"]).inc();
+    REFRESH_ACTIVE_SESSIONS.dec();
+}
+
+/// Record Refresh session failed
+pub fn record_refresh_session_failed() {
+    REFRESH_SESSIONS_TOTAL.with_label_values(&["failed"]).inc();
+    REFRESH_ACTIVE_SESSIONS.dec();
 }
 
 /// Set the build-info gauge. Call once at startup after `init()`.
