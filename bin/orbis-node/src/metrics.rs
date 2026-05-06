@@ -426,7 +426,9 @@ pub fn record_reshare_session_started() {
 
 /// Record Reshare session completed
 pub fn record_reshare_session_completed() {
-    RESHARE_SESSIONS_TOTAL.with_label_values(&["completed"]).inc();
+    RESHARE_SESSIONS_TOTAL
+        .with_label_values(&["completed"])
+        .inc();
     RESHARE_ACTIVE_SESSIONS.dec();
 }
 
@@ -444,7 +446,9 @@ pub fn record_refresh_session_started() {
 
 /// Record Refresh session completed
 pub fn record_refresh_session_completed() {
-    REFRESH_SESSIONS_TOTAL.with_label_values(&["completed"]).inc();
+    REFRESH_SESSIONS_TOTAL
+        .with_label_values(&["completed"])
+        .inc();
     REFRESH_ACTIVE_SESSIONS.dec();
 }
 

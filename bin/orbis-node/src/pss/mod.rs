@@ -29,7 +29,6 @@ mod tests;
 
 use crate::app_state::AppState;
 use crate::constants::{BULLETIN_RING_NAMESPACE, PSS_GRACE_PERIOD_SECS};
-use crate::metrics;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::helpers::{
@@ -39,6 +38,7 @@ use crate::dkg::helpers::{
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::dkg::session_state::RingPssClaimOutcome;
 use crate::helpers::helpers::{extract_node_part, validate_all_peer_ids};
+use crate::metrics;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{Dkg, DkgRole};
