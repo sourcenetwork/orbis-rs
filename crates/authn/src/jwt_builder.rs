@@ -5,13 +5,21 @@
 //! - Extracting bearer tokens from gRPC request metadata
 
 use crate::error::{AuthNError, Result};
-use crate::{DkgClaims, PreClaims, SignClaims, StoreSecretClaims};
+use crate::{BearerToken, DkgClaims, PreClaims, SignClaims, StoreSecretClaims};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint, KeyMaterial};
-use jwt_simple::prelude::*;
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use pkcs8::{
+    der::{asn1::OctetStringRef, Encode},
+    AlgorithmIdentifierRef, ObjectIdentifier, PrivateKeyInfo,
+};
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::Debug;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tonic::Request;
+
+const TOKEN_TTL: Duration = Duration::from_secs(60 * 60);
+const ED25519_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
 
 /// A DID-based key pair for signing JWTs.
 ///
@@ -39,12 +47,82 @@ impl JwtSigner {
         Self { key_pair, did_uri }
     }
 
-    /// Get the signing key for jwt-simple.
-    fn get_signing_key(&self) -> Result<Ed25519KeyPair> {
-        let mut keypair_bytes = zeroize::Zeroizing::new(self.key_pair.private_key_bytes());
-        keypair_bytes.extend_from_slice(&self.key_pair.public_key_bytes());
-        Ed25519KeyPair::from_bytes(&keypair_bytes)
-            .map_err(|e| AuthNError::JwtError(format!("Failed to create signing key: {}", e)))
+    fn ed25519_seed_to_pkcs8_der(seed: &[u8]) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+        if seed.len() != 32 {
+            return Err(AuthNError::JwtError(format!(
+                "Invalid Ed25519 private key length: {}",
+                seed.len()
+            )));
+        }
+
+        // RFC 8410 stores Ed25519 seeds inside an algorithm-specific OCTET STRING,
+        // which is then wrapped by PKCS#8 PrivateKeyInfo.
+        let private_key = zeroize::Zeroizing::new(
+            OctetStringRef::new(seed)
+                .and_then(|seed| seed.to_der())
+                .map_err(|e| {
+                    AuthNError::JwtError(format!("Failed to encode Ed25519 seed: {}", e))
+                })?,
+        );
+        let private_key_info = PrivateKeyInfo::new(
+            AlgorithmIdentifierRef {
+                oid: ED25519_OID,
+                parameters: None,
+            },
+            private_key.as_slice(),
+        );
+        private_key_info
+            .to_der()
+            .map(zeroize::Zeroizing::new)
+            .map_err(|e| {
+                AuthNError::JwtError(format!("Failed to encode Ed25519 PKCS#8 key: {}", e))
+            })
+    }
+
+    /// Get the signing key for jsonwebtoken/ring.
+    fn signing_key_for(key_pair: &did_key::PatchedKeyPair) -> Result<EncodingKey> {
+        let seed = zeroize::Zeroizing::new(key_pair.private_key_bytes());
+        let pkcs8 = Self::ed25519_seed_to_pkcs8_der(&seed)?;
+        Ok(EncodingKey::from_ed_der(&pkcs8))
+    }
+
+    fn get_signing_key(&self) -> Result<EncodingKey> {
+        Self::signing_key_for(&self.key_pair)
+    }
+
+    fn current_unix_time() -> Result<u64> {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .map_err(|e| AuthNError::JwtError(format!("System clock before Unix epoch: {}", e)))
+    }
+
+    pub(crate) fn sign_bearer_token<T>(&self, token: &BearerToken<T>) -> Result<String>
+    where
+        T: Serialize,
+    {
+        Self::sign_bearer_token_with_key(&self.get_signing_key()?, token)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sign_bearer_token_with_key_pair<T>(
+        key_pair: &did_key::PatchedKeyPair,
+        token: &BearerToken<T>,
+    ) -> Result<String>
+    where
+        T: Serialize,
+    {
+        Self::sign_bearer_token_with_key(&Self::signing_key_for(key_pair)?, token)
+    }
+
+    fn sign_bearer_token_with_key<T>(key: &EncodingKey, token: &BearerToken<T>) -> Result<String>
+    where
+        T: Serialize,
+    {
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.typ = Some("JWT".to_string());
+        encode(&header, token, key)
+            .map_err(|e| AuthNError::JwtError(format!("Failed to sign JWT: {}", e)))
     }
 
     /// Create a signed JWT with custom claims.
@@ -59,11 +137,18 @@ impl JwtSigner {
     where
         T: Serialize + DeserializeOwned,
     {
-        let signing_key = self.get_signing_key()?;
-        let jwt_claims = Claims::with_custom_claims(claims, duration).with_issuer(&self.did_uri);
-        signing_key
-            .sign(jwt_claims)
-            .map_err(|e| AuthNError::JwtError(format!("Failed to sign JWT: {}", e)))
+        let issued_time = Self::current_unix_time()?;
+        let expiration_time = issued_time
+            .checked_add(duration.as_secs())
+            .ok_or_else(|| AuthNError::JwtError("JWT expiration overflow".to_string()))?;
+        let token = BearerToken {
+            issuer_id: self.did_uri.clone(),
+            issued_time,
+            expiration_time,
+            not_before: None,
+            claims,
+        };
+        self.sign_bearer_token(&token)
     }
 
     /// Create a JWT with DKG claims.
@@ -86,7 +171,7 @@ impl JwtSigner {
             peer_ids: peer_ids.to_vec(),
             pss_interval,
         };
-        self.sign(claims, Duration::from_hours(1))
+        self.sign(claims, TOKEN_TTL)
     }
 
     /// Create a JWT with PRE claims.
@@ -115,7 +200,7 @@ impl JwtSigner {
             derivation,
             salt,
         };
-        self.sign(claims, Duration::from_hours(1))
+        self.sign(claims, TOKEN_TTL)
     }
 
     /// Create a JWT with Sign (threshold signing) claims.
@@ -138,7 +223,7 @@ impl JwtSigner {
             derivation_id: derivation_id.to_string(),
             message_sha256: Sha256::digest(message).to_vec(),
         };
-        self.sign(claims, Duration::from_hours(1))
+        self.sign(claims, TOKEN_TTL)
     }
 
     /// Create a JWT with StoreSecret claims.
@@ -191,7 +276,7 @@ impl JwtSigner {
             tier,
             timestamp,
         };
-        self.sign(claims, Duration::from_hours(1))
+        self.sign(claims, TOKEN_TTL)
     }
 }
 
@@ -278,6 +363,21 @@ mod tests {
     fn test_jwt_signer_new() {
         let signer = JwtSigner::new();
         assert!(signer.did_uri.starts_with("did:key:"));
+    }
+
+    #[test]
+    fn test_ed25519_seed_to_pkcs8_der() {
+        let seed = [7u8; 32];
+        let der = JwtSigner::ed25519_seed_to_pkcs8_der(&seed).unwrap();
+        let private_key_info = PrivateKeyInfo::try_from(der.as_slice()).unwrap();
+        let expected_private_key = OctetStringRef::new(&seed).unwrap().to_der().unwrap();
+
+        assert_eq!(private_key_info.algorithm.oid, ED25519_OID);
+        assert_eq!(private_key_info.algorithm.parameters, None);
+        assert_eq!(
+            private_key_info.private_key,
+            expected_private_key.as_slice()
+        );
     }
 
     #[test]

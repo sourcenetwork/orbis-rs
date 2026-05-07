@@ -4,11 +4,15 @@
 //! CometBFT's WebSocket endpoint, replacing polling-based approaches.
 
 use crate::blockchain::{BlockchainError, Result};
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Duration;
-use tendermint_rpc::query::{EventType, Query};
-use tendermint_rpc::{SubscriptionClient, WebSocketClient};
+use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+
+type EventStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Data extracted from a bulletin post creation event.
 #[derive(Debug, Clone)]
@@ -35,9 +39,7 @@ pub struct BulletinPostEvent {
 /// let event = subscription.wait_for_artifact(&dkg_result.session_id, Duration::from_secs(60)).await?;
 /// ```
 pub struct BulletinEventSubscription {
-    subscription: tendermint_rpc::Subscription,
-    client: WebSocketClient,
-    driver_handle: tokio::task::JoinHandle<core::result::Result<(), tendermint_rpc::Error>>,
+    stream: EventStream,
 }
 
 impl BulletinEventSubscription {
@@ -49,32 +51,24 @@ impl BulletinEventSubscription {
     pub async fn connect(rpc_url: &str) -> Result<Self> {
         let ws_url = rpc_url_to_ws(rpc_url);
 
-        let (client, driver) = WebSocketClient::new(ws_url.as_str())
+        let (mut stream, _) = connect_async(ws_url.as_str())
             .await
             .map_err(|e| BlockchainError::Rpc(format!("WebSocket connection failed: {}", e)))?;
 
-        let driver_handle = tokio::spawn(async move { driver.run().await });
-
         // Subscribe to all Tx events - we filter client-side for robustness
-        let query = Query::from(EventType::Tx);
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "subscribe",
+            "id": "orbis-bulletin-events",
+            "params": { "query": "tm.event='Tx'" }
+        });
 
-        let subscription = match client.subscribe(query).await {
-            Ok(sub) => sub,
-            Err(e) => {
-                let _ = client.close();
-                driver_handle.abort();
-                return Err(BlockchainError::Rpc(format!(
-                    "Event subscription failed: {}",
-                    e
-                )));
-            }
-        };
+        stream
+            .send(Message::Text(request.to_string().into()))
+            .await
+            .map_err(|e| BlockchainError::Rpc(format!("Event subscription failed: {}", e)))?;
 
-        Ok(Self {
-            subscription,
-            client,
-            driver_handle,
-        })
+        Ok(Self { stream })
     }
 
     /// Wait for a bulletin post event whose `artifact` attribute matches the given value.
@@ -87,26 +81,8 @@ impl BulletinEventSubscription {
         artifact: &str,
         timeout: Duration,
     ) -> Result<BulletinPostEvent> {
-        let result = tokio::time::timeout(timeout, async {
-            while let Some(event_result) = self.subscription.next().await {
-                let event = event_result
-                    .map_err(|e| BlockchainError::Rpc(format!("Event stream error: {}", e)))?;
-
-                if let Some(post_event) = find_artifact_event(&event.events, artifact) {
-                    return Ok(post_event);
-                }
-            }
-
-            Err(BlockchainError::Rpc(
-                "Event subscription ended unexpectedly".to_string(),
-            ))
-        })
-        .await;
-
-        // Cleanup
-        drop(self.subscription);
-        let _ = self.client.close();
-        self.driver_handle.abort();
+        let result = tokio::time::timeout(timeout, self.wait_for_artifact_inner(artifact)).await;
+        let _ = self.stream.close(None).await;
 
         match result {
             Ok(inner) => inner,
@@ -116,6 +92,76 @@ impl BulletinEventSubscription {
             ))),
         }
     }
+
+    async fn wait_for_artifact_inner(&mut self, artifact: &str) -> Result<BulletinPostEvent> {
+        while let Some(message_result) = self.stream.next().await {
+            let message = message_result
+                .map_err(|e| BlockchainError::Rpc(format!("Event stream error: {}", e)))?;
+
+            let events = match message {
+                Message::Text(payload) => extract_events(payload.as_str()),
+                Message::Binary(payload) => {
+                    std::str::from_utf8(&payload).ok().and_then(extract_events)
+                }
+                Message::Close(_) => break,
+                _ => None,
+            };
+
+            if let Some(post_event) = find_artifact_event(&events, artifact) {
+                return Ok(post_event);
+            }
+        }
+
+        Err(BlockchainError::Rpc(
+            "Event subscription ended unexpectedly".to_string(),
+        ))
+    }
+}
+
+fn extract_events(payload: &str) -> Option<BTreeMap<String, Vec<String>>> {
+    let value: Value = serde_json::from_str(payload).ok()?;
+
+    if let Some(events) = value.pointer("/result/events").and_then(Value::as_object) {
+        let mut flattened = BTreeMap::new();
+        for (key, values) in events {
+            let values = values
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            flattened.insert(key.clone(), values);
+        }
+        return Some(flattened);
+    }
+
+    let event_items = value
+        .pointer("/result/data/value/TxResult/result/events")
+        .and_then(Value::as_array)?;
+
+    let mut flattened = BTreeMap::new();
+    for event in event_items {
+        let event_type = event.get("type").and_then(Value::as_str)?;
+        let attributes = event.get("attributes").and_then(Value::as_array)?;
+
+        for attr in attributes {
+            let key = attr.get("key").and_then(Value::as_str)?;
+            let value = attr
+                .get("value")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            flattened
+                .entry(format!("{}.{}", event_type, key))
+                .or_insert_with(Vec::new)
+                .push(value.to_string());
+        }
+    }
+
+    Some(flattened)
 }
 
 /// Scan the flattened event attributes map for any event with a matching `artifact`.

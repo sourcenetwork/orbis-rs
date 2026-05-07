@@ -1,7 +1,6 @@
 use super::*;
 use crate::jwt_builder::JwtSigner;
-use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint, KeyMaterial};
-use jwt_simple::prelude::*;
+use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
 
 const TEST_MAX_LIFETIME: u64 = 86400; // 24 hours, mirrors the node constant
 const TEST_MAX_JWT_BYTES: usize = 16 * 1024; // mirrors the node constant
@@ -11,29 +10,7 @@ fn create_test_jwt_with_pre_claims(
     key_pair: &did_key::PatchedKeyPair,
     token: &BearerToken<PreClaims>,
 ) -> String {
-    // jwt-simple expects 64 bytes: seed (32) + public key (32)
-    let mut keypair_bytes = key_pair.private_key_bytes();
-    keypair_bytes.extend(key_pair.public_key_bytes());
-
-    let signing_key = Ed25519KeyPair::from_bytes(&keypair_bytes).unwrap();
-
-    let custom = PreClaims {
-        rdr_pk: token.claims.rdr_pk.clone(),
-        object_id: "".to_string(),
-        namespace: "".to_string(),
-        derivation: None,
-        salt: None,
-    };
-
-    let mut jwt_claims =
-        Claims::with_custom_claims(custom, Duration::from_secs(0)).with_issuer(&token.issuer_id);
-    jwt_claims.issued_at = Some(UnixTimeStamp::from_secs(token.issued_time));
-    jwt_claims.expires_at = Some(UnixTimeStamp::from_secs(token.expiration_time));
-    // Clear the auto-set nbf so tests using synthetic timestamps aren't rejected
-    // by the real wall-clock value jwt-simple inserts by default.
-    jwt_claims.invalid_before = None;
-
-    signing_key.sign(jwt_claims).unwrap()
+    JwtSigner::sign_bearer_token_with_key_pair(key_pair, token).unwrap()
 }
 
 /// Helper to create a test JWT with PreClaims and an explicit nbf value
@@ -42,26 +19,9 @@ fn create_test_jwt_with_nbf(
     token: &BearerToken<PreClaims>,
     not_before: Option<u64>,
 ) -> String {
-    let mut keypair_bytes = key_pair.private_key_bytes();
-    keypair_bytes.extend(key_pair.public_key_bytes());
-
-    let signing_key = Ed25519KeyPair::from_bytes(&keypair_bytes).unwrap();
-
-    let custom = PreClaims {
-        rdr_pk: token.claims.rdr_pk.clone(),
-        object_id: "".to_string(),
-        namespace: "".to_string(),
-        derivation: None,
-        salt: None,
-    };
-
-    let mut jwt_claims =
-        Claims::with_custom_claims(custom, Duration::from_secs(0)).with_issuer(&token.issuer_id);
-    jwt_claims.issued_at = Some(UnixTimeStamp::from_secs(token.issued_time));
-    jwt_claims.expires_at = Some(UnixTimeStamp::from_secs(token.expiration_time));
-    jwt_claims.invalid_before = not_before.map(UnixTimeStamp::from_secs);
-
-    signing_key.sign(jwt_claims).unwrap()
+    let mut token = token.clone();
+    token.not_before = not_before;
+    JwtSigner::sign_bearer_token_with_key_pair(key_pair, &token).unwrap()
 }
 
 /// Helper to create a test JWT with no custom claims (for DKG)
@@ -69,25 +29,7 @@ fn create_test_jwt_no_claims(
     key_pair: &did_key::PatchedKeyPair,
     token: &BearerToken<DkgClaims>,
 ) -> String {
-    let mut keypair_bytes = key_pair.private_key_bytes();
-    keypair_bytes.extend(key_pair.public_key_bytes());
-
-    let signing_key = Ed25519KeyPair::from_bytes(&keypair_bytes).unwrap();
-
-    let mut jwt_claims = Claims::with_custom_claims(
-        DkgClaims {
-            peer_ids: vec![],
-            threshold: 2,
-            pss_interval: None,
-        },
-        Duration::from_secs(0),
-    )
-    .with_issuer(&token.issuer_id);
-    jwt_claims.issued_at = Some(UnixTimeStamp::from_secs(token.issued_time));
-    jwt_claims.expires_at = Some(UnixTimeStamp::from_secs(token.expiration_time));
-    jwt_claims.invalid_before = None;
-
-    signing_key.sign(jwt_claims).unwrap()
+    JwtSigner::sign_bearer_token_with_key_pair(key_pair, token).unwrap()
 }
 
 #[test]
@@ -414,7 +356,7 @@ fn test_token_at_max_size_reaches_normal_validation() {
         TEST_MAX_JWT_BYTES
     );
 
-    // resolve_jwt_did will fail with a clock/iat error (jwt-simple sets iat to now),
+    // resolve_jwt_did will fail with a clock/iat error (the builder sets iat to now),
     // but it must NOT fail with a size error.
     let result: Result<BearerToken<SignClaims>> =
         resolve_jwt_did(&token, u64::MAX, TEST_MAX_LIFETIME, TEST_MAX_JWT_BYTES);

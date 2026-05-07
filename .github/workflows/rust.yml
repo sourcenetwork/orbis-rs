@@ -25,7 +25,7 @@ jobs:
     - name: Install cargo-deny
       run: cargo install cargo-deny --locked
     - name: Check licences
-      run: cargo deny check licenses
+      run: cargo deny check
 
   build:
 
