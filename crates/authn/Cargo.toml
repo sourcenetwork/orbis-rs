@@ -12,6 +12,7 @@ thiserror = { workspace = true }
 form_urlencoded = { workspace = true }
 serde = { workspace = true }
 jsonwebtoken = "9"
+pkcs8 = { version = "0.10.2", features = ["alloc"] }
 tonic = "0.14.2"
 zeroize = { workspace = true }
 sha2 = { workspace = true }

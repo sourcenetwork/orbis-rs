@@ -476,6 +476,7 @@ dependencies = [
  "did-key",
  "form_urlencoded",
  "jsonwebtoken",
+ "pkcs8 0.10.2",
  "serde",
  "sha2 0.10.9",
  "thiserror 1.0.69",

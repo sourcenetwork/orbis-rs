@@ -8,6 +8,10 @@ use crate::error::{AuthNError, Result};
 use crate::{BearerToken, DkgClaims, PreClaims, SignClaims, StoreSecretClaims};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint, KeyMaterial};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use pkcs8::{
+    der::{asn1::OctetStringRef, Encode},
+    AlgorithmIdentifierRef, ObjectIdentifier, PrivateKeyInfo,
+};
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::Debug;
@@ -15,9 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tonic::Request;
 
 const TOKEN_TTL: Duration = Duration::from_secs(60 * 60);
-const ED25519_PKCS8_PREFIX: [u8; 16] = [
-    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
-];
+const ED25519_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
 
 /// A DID-based key pair for signing JWTs.
 ///
@@ -45,9 +47,7 @@ impl JwtSigner {
         Self { key_pair, did_uri }
     }
 
-    /// Get the signing key for jsonwebtoken/ring.
-    fn signing_key_for(key_pair: &did_key::PatchedKeyPair) -> Result<EncodingKey> {
-        let seed = zeroize::Zeroizing::new(key_pair.private_key_bytes());
+    fn ed25519_seed_to_pkcs8_der(seed: &[u8]) -> Result<zeroize::Zeroizing<Vec<u8>>> {
         if seed.len() != 32 {
             return Err(AuthNError::JwtError(format!(
                 "Invalid Ed25519 private key length: {}",
@@ -55,9 +55,34 @@ impl JwtSigner {
             )));
         }
 
-        let mut pkcs8 = zeroize::Zeroizing::new(Vec::with_capacity(48));
-        pkcs8.extend_from_slice(&ED25519_PKCS8_PREFIX);
-        pkcs8.extend_from_slice(&seed);
+        // RFC 8410 stores Ed25519 seeds inside an algorithm-specific OCTET STRING,
+        // which is then wrapped by PKCS#8 PrivateKeyInfo.
+        let private_key = zeroize::Zeroizing::new(
+            OctetStringRef::new(seed)
+                .and_then(|seed| seed.to_der())
+                .map_err(|e| {
+                    AuthNError::JwtError(format!("Failed to encode Ed25519 seed: {}", e))
+                })?,
+        );
+        let private_key_info = PrivateKeyInfo::new(
+            AlgorithmIdentifierRef {
+                oid: ED25519_OID,
+                parameters: None,
+            },
+            private_key.as_slice(),
+        );
+        private_key_info
+            .to_der()
+            .map(zeroize::Zeroizing::new)
+            .map_err(|e| {
+                AuthNError::JwtError(format!("Failed to encode Ed25519 PKCS#8 key: {}", e))
+            })
+    }
+
+    /// Get the signing key for jsonwebtoken/ring.
+    fn signing_key_for(key_pair: &did_key::PatchedKeyPair) -> Result<EncodingKey> {
+        let seed = zeroize::Zeroizing::new(key_pair.private_key_bytes());
+        let pkcs8 = Self::ed25519_seed_to_pkcs8_der(&seed)?;
         Ok(EncodingKey::from_ed_der(&pkcs8))
     }
 
@@ -338,6 +363,21 @@ mod tests {
     fn test_jwt_signer_new() {
         let signer = JwtSigner::new();
         assert!(signer.did_uri.starts_with("did:key:"));
+    }
+
+    #[test]
+    fn test_ed25519_seed_to_pkcs8_der() {
+        let seed = [7u8; 32];
+        let der = JwtSigner::ed25519_seed_to_pkcs8_der(&seed).unwrap();
+        let private_key_info = PrivateKeyInfo::try_from(der.as_slice()).unwrap();
+        let expected_private_key = OctetStringRef::new(&seed).unwrap().to_der().unwrap();
+
+        assert_eq!(private_key_info.algorithm.oid, ED25519_OID);
+        assert_eq!(private_key_info.algorithm.parameters, None);
+        assert_eq!(
+            private_key_info.private_key,
+            expected_private_key.as_slice()
+        );
     }
 
     #[test]
