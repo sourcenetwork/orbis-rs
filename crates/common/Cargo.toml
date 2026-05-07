@@ -27,8 +27,10 @@ tonic = { workspace = true }
 rand = { workspace = true }
 backoff = { version = "0.4", features = ["tokio"] }
 futures = { workspace = true }
+tokio-tungstenite = { workspace = true }
 
 [features]
+default = []
 bls12-381 = []
 decaf377 = []
 
