@@ -11,6 +11,7 @@ use crypto::{
     CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl,
     SignaturePoint,
 };
+use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::reshare::selection::record_and_ack_valid_reshare_share;

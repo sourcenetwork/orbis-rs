@@ -1,7 +1,9 @@
 use crate::helpers::launch::create_and_store_node_key;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_default, test_db_path};
 use crate::info::InfoServiceImpl;
+use crate::ring_state::RingIndexEntry;
 use common::blockchain::ChainConfigBuilder;
+use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::info_service::{info_service_server::InfoService, GetNodeInfoRequest, NodeStatus};
 use tonic::Request;
 
@@ -19,6 +21,23 @@ async fn test_get_node_info() {
     let config = ChainConfigBuilder::default().build();
     create_and_store_node_key(app_state.local_storage.clone(), config.clone())
         .expect("Failed to create and store node key");
+    let ring_index = vec![
+        RingIndexEntry {
+            ring_pk_str: "ring-key-1".to_string(),
+            bulletin_post_id: "post-1".to_string(),
+        },
+        RingIndexEntry {
+            ring_pk_str: "ring-key-2".to_string(),
+            bulletin_post_id: "post-2".to_string(),
+        },
+    ];
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&ring_index).expect("serialize ring index"),
+        )
+        .expect("Failed to store ring index");
 
     // Create the info service
     let service = InfoServiceImpl::<DkgImpl>::new(app_state);
@@ -44,6 +63,7 @@ async fn test_get_node_info() {
     // Verify response contains peer_id
     assert!(!node_info.peer_id.is_empty(), "peer_id should not be empty");
     assert_eq!(node_info.status, NodeStatus::Ready as i32);
+    assert_eq!(node_info.managed_ring_count, 2);
 
     // Verify peer_id is valid hex (since it's encoded from bytes)
     assert!(

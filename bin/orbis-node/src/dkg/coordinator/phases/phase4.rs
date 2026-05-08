@@ -118,6 +118,12 @@ where
         .map(|k| k.to_string())
         .unwrap_or_else(|| aggregate_pk.to_string());
 
+    let adds_new_local_ring = matches!(kind, SessionKind::Fresh)
+        || (matches!(kind, SessionKind::Reshare { .. }) && dkg_role == DkgRole::Receiver);
+    if adds_new_local_ring {
+        ring_storage::preflight_new_ring_capacity(&coord.app_state, &storage_key).await?;
+    }
+
     // Write share + polynomial as a single encrypted bundle.
     // Atomicity: both fields land in one set_encrypted call, so a crash leaves the
     // entry either fully written or absent — never partially updated.
@@ -147,8 +153,17 @@ where
     // (they had no prior index entry).  Dealers have already left and skip this entirely.
     if matches!(kind, SessionKind::Reshare { .. }) && dkg_role != DkgRole::Dealer {
         if let Some(post_id) = &reshare_bulletin_post_id {
-            ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, post_id.clone())
-                .await?;
+            if let Err(e) =
+                ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, post_id.clone())
+                    .await
+            {
+                cleanup_new_ring_bundle_after_index_failure(
+                    &coord.app_state.local_storage,
+                    &storage_key,
+                    adds_new_local_ring,
+                );
+                return Err(e);
+            }
             tracing::info!(
                 session_id = session_id,
                 ring_pk = %storage_key,
@@ -177,8 +192,17 @@ where
             threshold,
             pss_interval,
         )?;
-        ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, bulletin_post_id)
-            .await?;
+        if let Err(e) =
+            ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, bulletin_post_id)
+                .await
+        {
+            cleanup_new_ring_bundle_after_index_failure(
+                &coord.app_state.local_storage,
+                &storage_key,
+                adds_new_local_ring,
+            );
+            return Err(e);
+        }
     }
 
     // Clear the in-progress ceremony flag now that Phase 4 has succeeded.
@@ -270,4 +294,22 @@ where
     );
 
     Ok(())
+}
+
+fn cleanup_new_ring_bundle_after_index_failure(
+    storage: &impl LocalStorage,
+    storage_key: &str,
+    should_cleanup: bool,
+) {
+    if !should_cleanup {
+        return;
+    }
+
+    if let Err(e) = storage.delete(LocalStorageKeys::RingKey(storage_key.to_string())) {
+        tracing::error!(
+            ring_key = %storage_key,
+            error = %e,
+            "Phase 4: failed to delete new RingShareBundle after RingIndex write failure"
+        );
+    }
 }

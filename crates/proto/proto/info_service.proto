@@ -24,6 +24,8 @@ message GetNodeInfoResponse {
   // P2P connection string in format "peer_id@host:port" for node-to-node communication
   string p2p_address = 3;
   NodeStatus status = 4;
+  // Number of locally managed ring keys stored in this node's RingIndex.
+  uint32 managed_ring_count = 5;
 }
 
 message GetRingStateRequest {
