@@ -1,9 +1,12 @@
 use crate::app_state::AppState;
 use crate::helpers::launch::get_node_signer;
 use crate::info::error::InfoError;
-use crate::ring_state::RingPolyState;
+use crate::ring_state::{RingIndexEntry, RingPolyState};
 use common::blockchain::ChainConfigBuilder;
-use local_storage::LocalStorageImpl;
+use local_storage::{
+    r#trait::{LocalStorage, LocalStorageKeys},
+    LocalStorageImpl,
+};
 use network::Network;
 use proto::info_service::{
     info_service_server::InfoService, GetNodeInfoRequest, GetNodeInfoResponse, GetRingStateRequest,
@@ -78,6 +81,8 @@ fn get_node_info_response(
         .unwrap_or_else(|| "0.0.0.0:0".to_string());
     let p2p_address = format!("{}@{}", peer_id, socket_addr);
 
+    let managed_ring_count = managed_ring_count(&local_storage)?;
+
     // Get the signer address from local storage
     let config = ChainConfigBuilder::default().build();
     let public_address = get_node_signer(local_storage, config)
@@ -89,7 +94,23 @@ fn get_node_info_response(
         peer_id,
         p2p_address,
         status,
+        managed_ring_count,
     })
+}
+
+fn managed_ring_count(local_storage: &LocalStorageImpl) -> Result<u32, Status> {
+    let Some(bytes) = local_storage
+        .get(LocalStorageKeys::RingIndex)
+        .map_err(|e| InfoError::InfoError(format!("Error reading RingIndex: {}", e)))?
+    else {
+        return Ok(0);
+    };
+
+    let ring_index: Vec<RingIndexEntry> = serde_json::from_slice(&bytes)
+        .map_err(|e| InfoError::InfoError(format!("Error parsing RingIndex: {}", e)))?;
+
+    u32::try_from(ring_index.len())
+        .map_err(|_| InfoError::InfoError("RingIndex length exceeds u32".to_string()).into())
 }
 
 fn get_ring_state_response(

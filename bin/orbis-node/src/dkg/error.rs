@@ -52,6 +52,10 @@ pub enum DkgError {
     #[error("DKG session limit reached: cannot accept new sessions")]
     MaxSessionsReached,
 
+    /// Node has reached the maximum number of persisted local rings
+    #[error("local ring limit reached: node already manages {current} rings (max {max})")]
+    MaxLocalRingsReached { current: usize, max: usize },
+
     /// Invalid input
     #[error("Invalid input: {0}")]
     InvalidInput(String),
@@ -102,7 +106,7 @@ impl From<DkgError> for tonic::Status {
                 tonic::Status::new(Code::InvalidArgument, error.to_string())
             }
             DkgError::SessionNotFound(_) => tonic::Status::new(Code::NotFound, error.to_string()),
-            DkgError::MaxSessionsReached => {
+            DkgError::MaxSessionsReached | DkgError::MaxLocalRingsReached { .. } => {
                 tonic::Status::new(Code::ResourceExhausted, error.to_string())
             }
             DkgError::ProtocolError(_) => {

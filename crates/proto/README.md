@@ -22,7 +22,7 @@ Use paths like `proto::dkg_service::dkg_service_client::DkgServiceClient`, `prot
 - **`PreService::StartPre`** — Reader pubkey, object/namespace, optional derivation/salt, optional validity window.
 - **`SignService::StartSign`** — Message bytes, bulletin derivation (`namespace` + `derivation_id`), optional validity window.
 - **`StoreSecretService::StoreSecret`** — Encrypted document + Chaum–Pedersen proof fields + policy metadata; optional storage proof signature.
-- **`InfoService::GetNodeInfo`** — Public address, peer id, `p2p_address` (`peer_id@host:port`).
+- **`InfoService::GetNodeInfo`** — Public address, peer id, `p2p_address` (`peer_id@host:port`), managed ring count.
 - **`InfoService::GetRingState`** — Current public polynomial hex and last PSS timestamp for a ring.
 
 Field-level documentation is in the **`.proto`** files.

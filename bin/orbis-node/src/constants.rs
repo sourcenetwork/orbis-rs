@@ -47,6 +47,13 @@ pub const MAX_COMMITMENT_COEFFICIENTS: usize = 256;
 /// activity while maintaining reasonable resource usage.
 pub const MAX_DKG_SESSIONS: usize = 100;
 
+/// Maximum number of persisted rings this node will manage locally.
+///
+/// PSS scans the local `RingIndex` linearly on each scheduler tick, so this
+/// bounds the steady-state work a node can accumulate through fresh DKG and
+/// reshare receiver participation. Existing ring entries may still be updated.
+pub const MAX_LOCAL_RINGS_PER_NODE: usize = 256;
+
 /// Time-to-live for DKG sessions before they are eligible for cleanup
 ///
 /// Sessions older than this duration are automatically cleaned up to prevent
