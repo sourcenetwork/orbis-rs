@@ -60,6 +60,17 @@ where
         return ring_storage::cleanup_departing_dealer(coord, session_id, ring_key).await;
     }
 
+    let is_fresh = matches!(kind, SessionKind::Fresh);
+    let is_reshare_receiver =
+        matches!(kind, SessionKind::Reshare { .. }) && dkg_role == DkgRole::Receiver;
+    if is_reshare_receiver {
+        let storage_key = kind
+            .ring_key()
+            .ok_or_else(|| DkgError::InvalidState("Reshare session missing ring key".to_string()))?
+            .to_string();
+        ring_storage::preflight_new_ring_capacity(&coord.app_state, &storage_key).await?;
+    }
+
     // Compute final secret share, aggregate public key, and data for bulletin.
     let (node_id, aggregate_pk, final_share_bytes, threshold, pub_poly_bytes) = coord
         .app_state
@@ -118,9 +129,8 @@ where
         .map(|k| k.to_string())
         .unwrap_or_else(|| aggregate_pk.to_string());
 
-    let adds_new_local_ring = matches!(kind, SessionKind::Fresh)
-        || (matches!(kind, SessionKind::Reshare { .. }) && dkg_role == DkgRole::Receiver);
-    if adds_new_local_ring {
+    let adds_new_local_ring = is_fresh || is_reshare_receiver;
+    if is_fresh {
         ring_storage::preflight_new_ring_capacity(&coord.app_state, &storage_key).await?;
     }
 
@@ -177,7 +187,7 @@ where
     //
     // For Refresh: bulletin entry is unchanged; polynomial updated in RingShareBundle above.
     // For Reshare: bulletin is updated below by new-committee node 1.
-    if matches!(kind, SessionKind::Fresh) {
+    if is_fresh {
         let peer_ids = coord
             .app_state
             .dkg_session_state
