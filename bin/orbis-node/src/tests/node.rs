@@ -184,6 +184,7 @@ async fn test_bootstrap_info_server_exposes_only_info() {
 
     assert_eq!(node_info.public_address, expected_address);
     assert_eq!(node_info.status, NodeStatus::Bootstrapping as i32);
+    assert_eq!(node_info.managed_ring_count, 0);
     assert!(!node_info.peer_id.is_empty(), "peer_id should be set");
     assert!(
         node_info
@@ -298,6 +299,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
         .into_inner();
     assert_eq!(node_info.public_address, expected_address);
     assert_eq!(node_info.status, NodeStatus::Ready as i32);
+    assert_eq!(node_info.managed_ring_count, 0);
 
     let mut full_dkg_client = DkgServiceClient::connect(endpoint)
         .await
