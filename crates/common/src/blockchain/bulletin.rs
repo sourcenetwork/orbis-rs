@@ -115,13 +115,13 @@ pub struct MsgUpdatePostByThresholdSignature {
     #[prost(string, tag = "3")]
     pub post_id: String,
     /// Artifact for finding/tracking update (optional)
-    #[prost(string, tag = "5")]
+    #[prost(string, tag = "4")]
     pub artifact: String,
     /// Threshold signature scheme identifier
-    #[prost(string, tag = "6")]
+    #[prost(string, tag = "5")]
     pub signature_scheme: String,
     /// Threshold signature bytes
-    #[prost(bytes = "vec", tag = "7")]
+    #[prost(bytes = "vec", tag = "6")]
     pub signature: Vec<u8>,
 }
 
