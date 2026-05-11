@@ -1,8 +1,7 @@
 services:
   sourcehub:
-    build:
-      context: https://github.com/sourcenetwork/sourcehub.git#Add-update-by-threshold-signature
-    container_name: sourcehub-test
+    image: ghcr.io/sourcenetwork/sourcehub:dev
+    platform: linux/amd64
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |

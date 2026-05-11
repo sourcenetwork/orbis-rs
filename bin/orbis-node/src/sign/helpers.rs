@@ -96,17 +96,14 @@ fn payload_ring_pk_matches(
 
 fn finalized_ring_payload_bytes(current_payload: &RingPayload) -> Result<Vec<u8>> {
     let mut finalized = current_payload.clone();
-    let new_peer_ids = finalized.new_peer_ids.take().ok_or_else(|| {
-        SignError::Unauthorized(
-            "Ring reshare update requires new_peer_ids in the current bulletin payload".to_string(),
-        )
-    })?;
-    let new_threshold = finalized.new_threshold.take().ok_or_else(|| {
-        SignError::Unauthorized(
-            "Ring reshare update requires new_threshold in the current bulletin payload"
-                .to_string(),
-        )
-    })?;
+    let new_peer_ids = finalized
+        .new_peer_ids
+        .take()
+        .unwrap_or_else(|| current_payload.peer_ids.clone());
+    let new_threshold = finalized
+        .new_threshold
+        .take()
+        .unwrap_or(current_payload.threshold);
 
     finalized.peer_ids = new_peer_ids;
     finalized.threshold = new_threshold;
@@ -171,10 +168,11 @@ pub async fn validate_ring_reshare_update_statement(
             bulletin.chain_id()
         )));
     }
-    if statement.namespace.is_empty() {
-        return Err(SignError::InvalidInput(
-            "Ring reshare update namespace cannot be empty".to_string(),
-        ));
+    if statement.namespace != BULLETIN_RING_NAMESPACE {
+        return Err(SignError::InvalidInput(format!(
+            "Ring reshare update namespace '{}' does not match expected '{}'",
+            statement.namespace, BULLETIN_RING_NAMESPACE
+        )));
     }
 
     let canonical_message = ring_reshare_update_message(statement)?;
@@ -725,20 +723,15 @@ mod ring_reshare_update_tests {
     }
 
     #[tokio::test]
-    async fn validate_rejects_no_pending_reshare() {
+    async fn validate_accepts_current_payload_fallback_with_ready_marker() {
         let (bulletin, state, statement, ready_key) = fixture(None, None).await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
+        let ring_pk = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
             .await
-            .expect_err("no pending reshare should be rejected");
+            .expect("ready marker should authorize validation with current payload fallback");
 
-        match err {
-            SignError::Unauthorized(message) => {
-                assert!(message.contains("requires new_peer_ids"));
-            }
-            other => panic!("expected Unauthorized, got {other:?}"),
-        }
+        assert_eq!(ring_pk, statement.ring_pk);
     }
 
     #[tokio::test]
@@ -773,6 +766,29 @@ mod ring_reshare_update_tests {
     }
 
     #[tokio::test]
+    async fn validate_rejects_non_ring_namespace() {
+        let (bulletin, state, mut statement, ready_key) = fixture(
+            Some(vec!["new-a".to_string(), "new-b".to_string()]),
+            Some(2),
+        )
+        .await;
+        state.mark_reshare_signature_ready(ready_key).await;
+        statement.namespace = "other".to_string();
+
+        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
+            .await
+            .expect_err("non-ring namespace should be rejected");
+
+        match err {
+            SignError::InvalidInput(message) => {
+                assert!(message.contains("namespace"));
+                assert!(message.contains(BULLETIN_RING_NAMESPACE));
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn validate_rejects_nonce_mismatch() {
         let (bulletin, state, mut statement, ready_key) = fixture(
             Some(vec!["new-a".to_string(), "new-b".to_string()]),
@@ -795,38 +811,28 @@ mod ring_reshare_update_tests {
     }
 
     #[tokio::test]
-    async fn validate_rejects_committee_only_reshare() {
+    async fn validate_accepts_committee_only_reshare() {
         let (bulletin, state, statement, ready_key) =
             fixture(Some(vec!["new-a".to_string(), "new-b".to_string()]), None).await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
+        let ring_pk = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
             .await
-            .expect_err("missing new_threshold should be rejected");
+            .expect("committee-only reshare should use current threshold fallback");
 
-        match err {
-            SignError::Unauthorized(message) => {
-                assert!(message.contains("requires new_threshold"));
-            }
-            other => panic!("expected Unauthorized, got {other:?}"),
-        }
+        assert_eq!(ring_pk, statement.ring_pk);
     }
 
     #[tokio::test]
-    async fn validate_rejects_threshold_only_reshare() {
+    async fn validate_accepts_threshold_only_reshare() {
         let (bulletin, state, statement, ready_key) = fixture(None, Some(1)).await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
+        let ring_pk = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
             .await
-            .expect_err("missing new_peer_ids should be rejected");
+            .expect("threshold-only reshare should use current committee fallback");
 
-        match err {
-            SignError::Unauthorized(message) => {
-                assert!(message.contains("requires new_peer_ids"));
-            }
-            other => panic!("expected Unauthorized, got {other:?}"),
-        }
+        assert_eq!(ring_pk, statement.ring_pk);
     }
 
     #[test]

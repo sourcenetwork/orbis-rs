@@ -9,7 +9,6 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 mod tests;
 
-#[cfg(any(feature = "bls12-381", feature = "decaf377"))]
 const DEFAULT_THRESHOLD_SIGNATURE_SCHEME: &str = crypto::THRESHOLD_SIGNATURE_SCHEME;
 const RESHARE_THRESHOLD_SIGNATURE_ARTIFACT_PREFIX: &str = "reshare-threshold-signature";
 

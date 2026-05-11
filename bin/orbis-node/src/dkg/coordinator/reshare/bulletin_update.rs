@@ -227,12 +227,14 @@ where
             ))
         })?;
     let mut finalized_ring_payload = current_ring_payload.clone();
-    let payload_new_peer_ids = finalized_ring_payload.new_peer_ids.take().ok_or_else(|| {
-        DkgError::ProtocolError("Reshare: current RingPayload is missing new_peer_ids".to_string())
-    })?;
-    let payload_new_threshold = finalized_ring_payload.new_threshold.take().ok_or_else(|| {
-        DkgError::ProtocolError("Reshare: current RingPayload is missing new_threshold".to_string())
-    })?;
+    let payload_new_peer_ids = finalized_ring_payload
+        .new_peer_ids
+        .take()
+        .unwrap_or_else(|| current_ring_payload.peer_ids.clone());
+    let payload_new_threshold = finalized_ring_payload
+        .new_threshold
+        .take()
+        .unwrap_or(current_ring_payload.threshold);
     if payload_new_peer_ids != sorted_new_peer_ids {
         return Err(DkgError::ProtocolError(format!(
             "Reshare: current RingPayload new_peer_ids {:?} do not match session next_peer_ids {:?}",
