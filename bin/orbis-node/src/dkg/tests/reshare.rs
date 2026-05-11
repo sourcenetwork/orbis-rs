@@ -754,7 +754,7 @@ async fn post_ring_for_validation(
     let payload = RingPayload {
         ring_pk: ring_pk.to_string(),
         peer_ids,
-        new_peer_ids: new_peer_ids,
+        new_peer_ids,
         new_threshold,
         threshold,
         pss_interval: None,

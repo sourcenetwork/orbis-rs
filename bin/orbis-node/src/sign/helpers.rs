@@ -656,7 +656,7 @@ mod ring_reshare_update_tests {
         let current_payload = RingPayload {
             ring_pk: ring_pk_hex.clone(),
             peer_ids: old_peer_ids,
-            new_peer_ids: new_peer_ids,
+            new_peer_ids,
             new_threshold,
             threshold: 2,
             pss_interval: Some(30),
