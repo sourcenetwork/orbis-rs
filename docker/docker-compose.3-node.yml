@@ -45,8 +45,8 @@ services:
       - orbis-network
 
   sourcehub:
-    image: ghcr.io/sourcenetwork/sourcehub:dev
-    platform: linux/amd64
+    build:
+      context: https://github.com/sourcenetwork/sourcehub.git#dev
     volumes:
       - sourcehub-data:/home/node/.sourcehub
     entrypoint: ["/bin/sh", "-c"]

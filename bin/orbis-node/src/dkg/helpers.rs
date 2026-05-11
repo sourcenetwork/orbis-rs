@@ -88,7 +88,7 @@ pub fn derive_reshare_session_id(
     ring_pk_hex: &str,
     bulletin_post_id: &str,
     old_peer_ids: &[String],
-    next_peer_ids: &[String],
+    new_peer_ids: &[String],
     new_threshold: u32,
     public_polynomial_hex: &str,
 ) -> u64 {
@@ -98,7 +98,7 @@ pub fn derive_reshare_session_id(
     hash_labeled_str(&mut hasher, b"ring_pk", ring_pk_hex);
     hash_labeled_str(&mut hasher, b"bulletin_post_id", bulletin_post_id);
     hash_sorted_peer_ids(&mut hasher, b"old_peer_ids", old_peer_ids);
-    hash_sorted_peer_ids(&mut hasher, b"next_peer_ids", next_peer_ids);
+    hash_sorted_peer_ids(&mut hasher, b"new_peer_ids", new_peer_ids);
     hash_labeled_bytes(&mut hasher, b"new_threshold", &new_threshold.to_le_bytes());
     hash_labeled_str(&mut hasher, b"public_polynomial", public_polynomial_hex);
     let digest = hasher.finalize();
@@ -171,16 +171,16 @@ async fn load_ring_payload_by_post_id(
 /// Validates an incoming reshare `SessionInit` message.
 ///
 /// Checks (in order):
-/// 0. Fast structural checks: `next_peer_ids` non-empty, `new_threshold` in `[1, n]`.
+/// 0. Fast structural checks: `new_peer_ids` non-empty, `new_threshold` in `[1, n]`.
 /// 1. Resolve the bulletin post: use `RingIndex` when this node has an entry for
 ///    `ring_pk_hex`, otherwise use `bulletin_post_id` from the `SessionInit` (needed for
 ///    pure Receiver nodes that were never on the old committee).
 /// 2. The deserialized `RingPayload::ring_pk` must equal `ring_pk_hex` (binds the read to
 ///    the intended ring when the post ID came from the wire).
 /// 3. The sender's peer ID is a current member of that ring's OLD committee.
-/// 4. Proposed `next_peer_ids` must match the authoritative committee (order-independent):
-///    - `ring_payload.next_peer_ids` is `Some` → must match that list.
-///    - `ring_payload.next_peer_ids` is `None` → must match `ring_payload.peer_ids`
+/// 4. Proposed `new_peer_ids` must match the authoritative committee (order-independent):
+///    - `ring_payload.new_peer_ids` is `Some` → must match that list.
+///    - `ring_payload.new_peer_ids` is `None` → must match `ring_payload.peer_ids`
 ///      (fallback: threshold-only reshare keeps the same committee).
 /// 5. Proposed `new_threshold` must equal the authoritative threshold:
 ///    - `ring_payload.new_threshold` is `Some` → must equal that value.
@@ -198,24 +198,23 @@ async fn load_ring_payload_by_post_id(
 pub async fn validate_reshare_session_init<S: LocalStorage>(
     ring_pk_hex: &str,
     sender_hex: &str,
-    proposed_next_peer_ids: &[String],
+    proposed_new_peer_ids: &[String],
     proposed_new_threshold: u32,
     bulletin_post_id: &str,
     local_storage: &S,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<()> {
     // 0. Fast-fail on structurally invalid parameters before hitting the bulletin.
-    if proposed_next_peer_ids.is_empty() {
+    if proposed_new_peer_ids.is_empty() {
         return Err(DkgError::InvalidInput(
-            "Reshare next_peer_ids cannot be empty".to_string(),
+            "Reshare new_peer_ids cannot be empty".to_string(),
         ));
     }
-    if proposed_new_threshold < 1 || proposed_new_threshold as usize > proposed_next_peer_ids.len()
-    {
+    if proposed_new_threshold < 1 || proposed_new_threshold as usize > proposed_new_peer_ids.len() {
         return Err(DkgError::InvalidInput(format!(
             "Reshare new_threshold {} is invalid for a committee of {} nodes (must be 1..=n)",
             proposed_new_threshold,
-            proposed_next_peer_ids.len()
+            proposed_new_peer_ids.len()
         )));
     }
 
@@ -264,23 +263,22 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         )));
     }
 
-    // 4. Proposed next_peer_ids must match the authoritative committee.
+    // 4. Proposed new_peer_ids must match the authoritative committee.
     //    Bulletin present → must match it; absent → must match current peer_ids (fallback).
-    let authoritative_next: &[String] = ring_payload
-        .next_peer_ids
+    let authoritative_new: &[String] = ring_payload
+        .new_peer_ids
         .as_deref()
         .unwrap_or(&ring_payload.peer_ids);
-    let mut sorted_auth: Vec<&str> = authoritative_next.iter().map(|s| s.as_str()).collect();
+    let mut sorted_auth: Vec<&str> = authoritative_new.iter().map(|s| s.as_str()).collect();
     sorted_auth.sort();
-    let mut sorted_proposed: Vec<&str> =
-        proposed_next_peer_ids.iter().map(|s| s.as_str()).collect();
+    let mut sorted_proposed: Vec<&str> = proposed_new_peer_ids.iter().map(|s| s.as_str()).collect();
     sorted_proposed.sort();
     if sorted_auth != sorted_proposed {
         return Err(DkgError::Unauthorized(format!(
-            "Reshare next_peer_ids do not match authoritative committee for ring {} \
+            "Reshare new_peer_ids do not match authoritative committee for ring {} \
              (bulletin field: {})",
             ring_pk_hex,
-            if ring_payload.next_peer_ids.is_some() {
+            if ring_payload.new_peer_ids.is_some() {
                 "explicitly announced"
             } else {
                 "absent, fallback to current peer_ids"
@@ -564,7 +562,7 @@ pub fn persist_ring_bundle<S: LocalStorage>(
 pub fn build_reshare_params<S: LocalStorage>(
     ring_pk_hex: &str,
     old_peer_ids: &[String],
-    next_peer_ids: &[String],
+    new_peer_ids: &[String],
     new_threshold: u32,
     bulletin_post_id: &str,
     our_node_part: &str,
@@ -572,7 +570,7 @@ pub fn build_reshare_params<S: LocalStorage>(
 ) -> Result<(u32, DkgRole, ReshareParams<Fr>)> {
     let mut sorted_old = old_peer_ids.to_vec();
     sorted_old.sort();
-    let mut sorted_new = next_peer_ids.to_vec();
+    let mut sorted_new = new_peer_ids.to_vec();
     sorted_new.sort();
 
     let in_old = in_committee(&sorted_old, our_node_part);
@@ -615,7 +613,7 @@ pub fn build_reshare_params<S: LocalStorage>(
         old_share,
         participating_ids,
         new_threshold: new_threshold as usize,
-        new_total_nodes: next_peer_ids.len(),
+        new_total_nodes: new_peer_ids.len(),
         new_peer_ids: sorted_new,
         new_node_id,
         bulletin_post_id: bulletin_post_id.to_string(),

@@ -3,19 +3,19 @@
 //! Periodically checks every known ring and initiates a PSS ceremony when due.
 //!
 //! ## Refresh
-//! When the bulletin `RingPayload` has no `next_peer_ids` or `new_threshold`, a
+//! When the bulletin `RingPayload` has no `new_peer_ids` or `new_threshold`, a
 //! **refresh** ceremony runs once the ring's `pss_interval` has elapsed since the
 //! last ceremony.  Same secret, new shares, same committee (zero constant term).
 //!
 //! ## Reshare
-//! When the bulletin `RingPayload` carries `next_peer_ids` or `new_threshold` the ring
+//! When the bulletin `RingPayload` carries `new_peer_ids` or `new_threshold` the ring
 //! has been designated for committee rotation.  The scheduler bypasses the interval
 //! check and immediately initiates a **reshare** (`SessionKind::Reshare`).
 //! Fallback rules (agreed on construction):
-//! - `next_peer_ids` absent → use current `peer_ids` (same committee, threshold change only).
+//! - `new_peer_ids` absent → use current `peer_ids` (same committee, threshold change only).
 //! - `new_threshold` absent → use current `threshold` (committee change only).
 //!
-//! Phase 4 posts the updated `RingPayload` with `next_peer_ids = None` so subsequent
+//! Phase 4 posts the updated `RingPayload` with `new_peer_ids = None` so subsequent
 //! ticks revert to the normal refresh cadence.
 //!
 //! In both cases any current old-committee node may attempt to start the ceremony.
@@ -153,7 +153,7 @@ where
     }
 
     // Reshare takes priority over refresh when the bulletin signals a committee transition.
-    let is_reshare = ring_payload.next_peer_ids.is_some() || ring_payload.new_threshold.is_some();
+    let is_reshare = ring_payload.new_peer_ids.is_some() || ring_payload.new_threshold.is_some();
 
     // Refresh requires pss_interval to be set; reshare bypasses this check.
     if !is_reshare {
@@ -437,7 +437,7 @@ where
 
 /// Initiate a Reshare ceremony (same secret, new shares, potentially different committee).
 ///
-/// Fires whenever the bulletin `RingPayload` has `next_peer_ids` or `new_threshold` set,
+/// Fires whenever the bulletin `RingPayload` has `new_peer_ids` or `new_threshold` set,
 /// bypassing the `pss_interval` timing gate.  Repeats on every scheduler tick until
 /// Phase 4 posts the updated payload clearing those fields.
 async fn trigger_reshare<D>(
@@ -462,8 +462,8 @@ where
     let old_threshold = ring_payload.threshold as usize;
 
     // Fallbacks: absent field = keep current value.
-    let next_peer_ids: Vec<String> = ring_payload
-        .next_peer_ids
+    let new_peer_ids: Vec<String> = ring_payload
+        .new_peer_ids
         .clone()
         .unwrap_or_else(|| old_peer_ids.clone());
     let new_threshold: u32 = ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
@@ -474,7 +474,7 @@ where
     let (our_node_id, dkg_role, reshare_params) = match build_reshare_params(
         ring_pk_str,
         old_peer_ids,
-        &next_peer_ids,
+        &new_peer_ids,
         new_threshold,
         post_id,
         &our_node_part,
@@ -521,7 +521,7 @@ where
 
     let kind = SessionKind::Reshare {
         ring_pk_hex: ring_pk_str.clone(),
-        next_peer_ids: sorted_new.clone(),
+        new_peer_ids: sorted_new.clone(),
         new_threshold,
         bulletin_post_id: post_id.clone(),
     };

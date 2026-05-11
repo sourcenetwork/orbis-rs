@@ -9,6 +9,9 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 mod tests;
 
+const DEFAULT_THRESHOLD_SIGNATURE_SCHEME: &str = crypto::THRESHOLD_SIGNATURE_SCHEME;
+const RESHARE_THRESHOLD_SIGNATURE_ARTIFACT_PREFIX: &str = "reshare-threshold-signature";
+
 pub struct SourceHubBulletin {
     pub chain_client: SourceHubClient,
 }
@@ -54,16 +57,17 @@ impl Bulletin for SourceHubBulletin {
         Ok(())
     }
 
-    async fn update(
-        &self,
-        namespace: String,
-        id: String,
-        payload: Vec<u8>,
-        artifact: Option<String>,
-    ) -> Result<()> {
+    async fn update(&self, namespace: String, id: String, artifact: Option<String>) -> Result<()> {
+        let (signature_scheme, signature) = Self::parse_threshold_signature_artifact(&artifact)?;
         let result = self
             .chain_client
-            .bulletin_update_post(&namespace, &id, payload, artifact)
+            .bulletin_update_post_by_threshold_signature(
+                &namespace,
+                &id,
+                artifact,
+                &signature_scheme,
+                signature,
+            )
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?;
 
@@ -95,6 +99,10 @@ impl Bulletin for SourceHubBulletin {
             namespace: post.namespace,
             payload: post.payload,
         })
+    }
+
+    fn chain_id(&self) -> String {
+        self.chain_client.config().chain_id.clone()
     }
 
     fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String> {
@@ -207,5 +215,59 @@ impl SourceHubBulletin {
         hasher.update(format!("bulletin/{}", namespace).as_bytes());
         hasher.update(payload);
         hex::encode(hasher.finalize())
+    }
+
+    fn parse_threshold_signature_artifact(artifact: &Option<String>) -> Result<(String, Vec<u8>)> {
+        let artifact = artifact.as_deref().ok_or_else(|| {
+            BulletinError::ParseError(
+                "threshold-signature update requires a signature artifact".to_string(),
+            )
+        })?;
+
+        let rest = artifact
+            .strip_prefix(&format!("{RESHARE_THRESHOLD_SIGNATURE_ARTIFACT_PREFIX}:"))
+            .ok_or_else(|| {
+                BulletinError::ParseError(format!(
+                    "invalid threshold-signature artifact prefix: {artifact}"
+                ))
+            })?;
+        let (signature_scheme, signature_hex) = match rest.split(':').collect::<Vec<_>>().as_slice()
+        {
+            [_, signature_hex] => (DEFAULT_THRESHOLD_SIGNATURE_SCHEME, *signature_hex),
+            [_, signature_scheme, signature_hex] => (*signature_scheme, *signature_hex),
+            _ => {
+                return Err(BulletinError::ParseError(format!(
+                    "invalid threshold-signature artifact format: {artifact}"
+                )));
+            }
+        };
+
+        let signature_scheme = if signature_scheme.trim().is_empty() {
+            DEFAULT_THRESHOLD_SIGNATURE_SCHEME
+        } else {
+            signature_scheme.trim()
+        };
+        if signature_scheme != DEFAULT_THRESHOLD_SIGNATURE_SCHEME {
+            return Err(BulletinError::ParseError(format!(
+                "unsupported threshold signature scheme: {signature_scheme}"
+            )));
+        }
+
+        let signature_hex = signature_hex.trim();
+        let signature_hex = signature_hex
+            .strip_prefix("0x")
+            .or_else(|| signature_hex.strip_prefix("0X"))
+            .unwrap_or(signature_hex);
+        let signature = hex::decode(signature_hex).map_err(|e| {
+            BulletinError::ParseError(format!("invalid threshold signature hex: {e}"))
+        })?;
+
+        if signature.is_empty() {
+            return Err(BulletinError::ParseError(
+                "threshold signature cannot be empty".to_string(),
+            ));
+        }
+
+        Ok((signature_scheme.to_string(), signature))
     }
 }

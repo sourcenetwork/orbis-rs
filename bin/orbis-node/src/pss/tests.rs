@@ -182,10 +182,11 @@ async fn test_refresh_ring_rejects_non_member() {
     let ring_payload = RingPayload {
         ring_pk: "fake_pk".to_string(),
         peer_ids: vec![fake_peer_1.clone(), fake_peer_2.clone()],
-        next_peer_ids: None,
+        new_peer_ids: None,
         new_threshold: None,
         threshold: 1,
         pss_interval: Some(86400),
+        block_number_nonce: 0,
     };
 
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
@@ -231,10 +232,11 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
     let ring_payload = RingPayload {
         ring_pk: ring_pk.to_string(),
         peer_ids: vec![our_hex.clone(), "not-a-valid-peer-id".to_string()],
-        next_peer_ids: None,
+        new_peer_ids: None,
         new_threshold: None,
         threshold: 1,
         pss_interval: Some(1),
+        block_number_nonce: 0,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
@@ -324,10 +326,11 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
     let ring_payload = RingPayload {
         ring_pk: "bulletin_ring_pk".to_string(),
         peer_ids: vec![our_hex],
-        next_peer_ids: None,
+        new_peer_ids: None,
         new_threshold: None,
         threshold: 1,
         pss_interval: Some(1),
+        block_number_nonce: 0,
     };
 
     let payload_bytes = serde_json::to_vec(&ring_payload).expect("serialize RingPayload");
@@ -422,7 +425,7 @@ async fn post_ring_and_seed_index(
     entry
 }
 
-/// When `next_peer_ids` is set, `pss_ring` must dispatch to `trigger_reshare`
+/// When `new_peer_ids` is set, `pss_ring` must dispatch to `trigger_reshare`
 /// even when `pss_interval` is absent (which would cause a refresh to skip).
 ///
 /// The reshare path loads the old share bundle; since none exists the function
@@ -436,10 +439,11 @@ async fn test_pss_ring_reshare_bypasses_interval() {
     let ring_payload = RingPayload {
         ring_pk: "pss_reshare_bypass_pk".to_string(),
         peer_ids: vec![our_hex.clone()],
-        next_peer_ids: Some(vec![our_hex.clone()]),
+        new_peer_ids: Some(vec![our_hex.clone()]),
         new_threshold: None,
         threshold: 1,
         pss_interval: None, // no interval — refresh would skip silently
+        block_number_nonce: 0,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
@@ -454,9 +458,9 @@ async fn test_pss_ring_reshare_bypasses_interval() {
     cleanup_db(&db_path);
 }
 
-/// When only `new_threshold` is set (and `next_peer_ids` is absent),
+/// When only `new_threshold` is set (and `new_peer_ids` is absent),
 /// `pss_ring` must still dispatch to `trigger_reshare`, using the old committee
-/// as the fallback for `next_peer_ids`.
+/// as the fallback for the reshare session's `new_peer_ids`.
 #[tokio::test]
 async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
     let db_name = "pss_new_threshold_triggers_reshare";
@@ -465,10 +469,11 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
     let ring_payload = RingPayload {
         ring_pk: "pss_new_threshold_pk".to_string(),
         peer_ids: vec![our_hex.clone()],
-        next_peer_ids: None, // only threshold change, no new members
+        new_peer_ids: None, // only threshold change, no new members
         new_threshold: Some(1),
         threshold: 1,
         pss_interval: None,
+        block_number_nonce: 0,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
@@ -483,7 +488,7 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
     cleanup_db(&db_path);
 }
 
-/// When neither `next_peer_ids` nor `new_threshold` is set, and the ring has
+/// When neither `new_peer_ids` nor `new_threshold` is set, and the ring has
 /// no `pss_interval`, `pss_ring` must skip silently (Ok(())) even when our
 /// node is the initiator.
 #[tokio::test]
@@ -494,10 +499,11 @@ async fn test_pss_ring_refresh_skips_without_interval() {
     let ring_payload = RingPayload {
         ring_pk: "pss_no_interval_pk".to_string(),
         peer_ids: vec![our_hex.clone()],
-        next_peer_ids: None,
+        new_peer_ids: None,
         new_threshold: None,
         threshold: 1,
         pss_interval: None, // refresh requires pss_interval; without it, must skip
+        block_number_nonce: 0,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;

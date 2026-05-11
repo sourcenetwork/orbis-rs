@@ -258,7 +258,6 @@ where
         coord,
         session_id,
         &kind,
-        pss_interval,
         dkg_role,
         &storage_key,
         &ring_pk_bytes,
@@ -275,7 +274,7 @@ where
         .await;
 
     // All new-committee Reshare nodes defer cleanup to a background task that
-    // polls the bulletin until next_peer_ids is cleared, then releases the PSS
+    // polls the bulletin until new_peer_ids is cleared, then releases the PSS
     // claim and removes the session. Node 1 already posted the update so its
     // first poll succeeds immediately; non-node-1 nodes wait for node 1 to post.
     // This single path prevents the PSS scheduler from re-triggering a duplicate

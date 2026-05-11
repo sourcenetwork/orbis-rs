@@ -771,8 +771,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // ====================================================================
     // Step 5: PSS Reshare — update the existing ring bulletin post with a
     // next committee.  SourceHub now supports in-place post updates, so the
-    // ring_id stays stable while the payload first announces next_peer_ids
-    // and then, after Phase 4, converges to peer_ids = next_peer_ids.
+    // ring_id stays stable while the payload first announces new_peer_ids
+    // and then, after Phase 4, converges to peer_ids = new_peer_ids.
     // ====================================================================
     println!("Announcing PSS reshare via bulletin update...");
 
@@ -796,9 +796,10 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         ring_pk: ring_pk_hex.clone(),
         peer_ids: dkg_ring_payload.peer_ids.clone(),
         threshold: dkg_ring_payload.threshold,
-        next_peer_ids: Some(reshare_peer_ids.clone()),
+        new_peer_ids: Some(reshare_peer_ids.clone()),
         new_threshold: Some(reshare_threshold),
         pss_interval: dkg_ring_payload.pss_interval,
+        block_number_nonce: dkg_ring_payload.block_number_nonce,
     };
     let reshare_announcement_bytes =
         serde_json::to_vec(&reshare_announcement).expect("serialize reshare announcement");
@@ -811,13 +812,13 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .expect("update ring bulletin post with reshare announcement");
 
     let announced_payload = read_ring_payload(&ring_namespace, &ring_id).await;
-    let announced_next_peer_ids = announced_payload
-        .next_peer_ids
+    let announced_new_peer_ids = announced_payload
+        .new_peer_ids
         .as_ref()
         .map(|ids| sorted_peer_ids(ids))
-        .expect("reshare announcement should set next_peer_ids");
+        .expect("reshare announcement should set new_peer_ids");
     assert_eq!(
-        announced_next_peer_ids,
+        announced_new_peer_ids,
         sorted_peer_ids(&reshare_peer_ids),
         "Reshare announcement should preserve the requested next committee"
     );
@@ -855,7 +856,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         "Reshare should update the ring threshold"
     );
     assert!(
-        reshared_payload.next_peer_ids.is_none() && reshared_payload.new_threshold.is_none(),
+        reshared_payload.new_peer_ids.is_none() && reshared_payload.new_threshold.is_none(),
         "Completed reshare should clear the announcement fields"
     );
 
@@ -1098,13 +1099,13 @@ async fn wait_for_reshare_bulletin_completion(
                         let complete = payload.ring_pk == ring_pk_hex
                             && actual_sorted == expected_sorted
                             && payload.threshold == expected_threshold
-                            && payload.next_peer_ids.is_none()
+                            && payload.new_peer_ids.is_none()
                             && payload.new_threshold.is_none();
                         let status = format!(
-                            "peer_count={} threshold={} next_peer_ids_set={} new_threshold={:?}",
+                            "peer_count={} threshold={} new_peer_ids_set={} new_threshold={:?}",
                             payload.peer_ids.len(),
                             payload.threshold,
-                            payload.next_peer_ids.is_some(),
+                            payload.new_peer_ids.is_some(),
                             payload.new_threshold
                         );
                         if complete {

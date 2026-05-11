@@ -6,6 +6,8 @@
 use crate::blockchain::{BlockchainError, BroadcastResult, Result, SourceHubClient};
 use prost::Message;
 
+pub const RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN: &str = "orbis-ring-reshare-finalize";
+
 // ============================================================================
 // Message Types (for transactions)
 // ============================================================================
@@ -89,6 +91,125 @@ impl MsgUpdatePost {
             post_id: post_id.to_string(),
             payload,
             artifact: artifact.unwrap_or_default(),
+        }
+    }
+}
+
+/// Update an existing post by threshold signature while preserving its ID.
+/// Proto field numbers match sourcehub/bulletin/tx.proto:
+/// - 1: creator (string)
+/// - 2: namespace (string)
+/// - 3: post_id (string)
+/// - 5: artifact (string)
+/// - 6: signature_scheme (string)
+/// - 7: signature (bytes)
+#[derive(Clone, Message)]
+pub struct MsgUpdatePostByThresholdSignature {
+    /// Creator/updater's address
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    /// Namespace identifier
+    #[prost(string, tag = "2")]
+    pub namespace: String,
+    /// Existing post identifier to update
+    #[prost(string, tag = "3")]
+    pub post_id: String,
+    /// Artifact for finding/tracking update (optional)
+    #[prost(string, tag = "4")]
+    pub artifact: String,
+    /// Threshold signature scheme identifier
+    #[prost(string, tag = "5")]
+    pub signature_scheme: String,
+    /// Threshold signature bytes
+    #[prost(bytes = "vec", tag = "6")]
+    pub signature: Vec<u8>,
+}
+
+/// Canonical sign document for finalizing a ring reshare.
+/// Canonical sign-doc field numbers:
+/// - 1: domain (string)
+/// - 2: chain_id (string)
+/// - 3: namespace (string)
+/// - 4: post_id (string)
+/// - 5: ring_pk (string)
+/// - 6: current_payload_sha256 (bytes)
+/// - 7: finalized_payload_sha256 (bytes)
+/// - 8: block_number_nonce (uint64)
+#[derive(Clone, Message)]
+pub struct RingReshareFinalizeSignDoc {
+    #[prost(string, tag = "1")]
+    pub domain: String,
+    #[prost(string, tag = "2")]
+    pub chain_id: String,
+    #[prost(string, tag = "3")]
+    pub namespace: String,
+    #[prost(string, tag = "4")]
+    pub post_id: String,
+    #[prost(string, tag = "5")]
+    pub ring_pk: String,
+    #[prost(bytes = "vec", tag = "6")]
+    pub current_payload_sha256: Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub finalized_payload_sha256: Vec<u8>,
+    #[prost(uint64, tag = "8")]
+    pub block_number_nonce: u64,
+}
+
+/// Build SourceHub-compatible sign bytes for a ring reshare finalization.
+pub fn ring_reshare_finalize_sign_bytes_from_hashes(
+    chain_id: &str,
+    namespace: &str,
+    post_id: &str,
+    ring_pk: &str,
+    current_payload_sha256: Vec<u8>,
+    finalized_payload_sha256: Vec<u8>,
+    block_number_nonce: u64,
+) -> Result<Vec<u8>> {
+    if current_payload_sha256.len() != 32 {
+        return Err(BlockchainError::Serialization(format!(
+            "current_payload_sha256 must be 32 bytes, got {}",
+            current_payload_sha256.len()
+        )));
+    }
+    if finalized_payload_sha256.len() != 32 {
+        return Err(BlockchainError::Serialization(format!(
+            "finalized_payload_sha256 must be 32 bytes, got {}",
+            finalized_payload_sha256.len()
+        )));
+    }
+
+    Ok(RingReshareFinalizeSignDoc {
+        domain: RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN.to_string(),
+        chain_id: chain_id.to_string(),
+        namespace: namespace.to_string(),
+        post_id: post_id.to_string(),
+        ring_pk: ring_pk.to_string(),
+        current_payload_sha256,
+        finalized_payload_sha256,
+        block_number_nonce,
+    }
+    .encode_to_vec())
+}
+
+impl MsgUpdatePostByThresholdSignature {
+    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgUpdatePostByThresholdSignature";
+
+    /// Create a threshold-signature post update message.
+    pub fn new(
+        creator: &str,
+        namespace: &str,
+        post_id: &str,
+        artifact: Option<String>,
+        signature_scheme: &str,
+        signature: Vec<u8>,
+    ) -> Self {
+        Self {
+            creator: creator.to_string(),
+            namespace: namespace.to_string(),
+            post_id: post_id.to_string(),
+            artifact: artifact.unwrap_or_default(),
+            signature_scheme: signature_scheme.to_string(),
+            signature,
         }
     }
 }
@@ -501,6 +622,36 @@ impl SourceHubClient {
 
         self.broadcast_proto_msg_with_gas(
             MsgUpdatePost::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    /// Update an existing post using a threshold signature.
+    pub async fn bulletin_update_post_by_threshold_signature(
+        &self,
+        namespace: &str,
+        post_id: &str,
+        artifact: Option<String>,
+        signature_scheme: &str,
+        signature: Vec<u8>,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+
+        let msg = MsgUpdatePostByThresholdSignature::new(
+            &signer.address(),
+            namespace,
+            post_id,
+            artifact,
+            signature_scheme,
+            signature,
+        );
+
+        self.broadcast_proto_msg_with_gas(
+            MsgUpdatePostByThresholdSignature::TYPE_URL,
             &msg,
             self.config().gas_multiplier,
         )

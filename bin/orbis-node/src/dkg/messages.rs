@@ -28,7 +28,7 @@ pub enum SessionKind {
         /// Local-storage key of the ring being reshared (`aggregate_pk.to_string()`).
         ring_pk_hex: String,
         /// Peer IDs of the new committee.
-        next_peer_ids: Vec<String>,
+        new_peer_ids: Vec<String>,
         /// Threshold for the new committee.
         new_threshold: u32,
         /// Bulletin post ID of the current ring entry.  Sent by the Dealer (who has a

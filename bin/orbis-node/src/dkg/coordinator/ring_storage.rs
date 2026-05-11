@@ -131,10 +131,12 @@ where
     let ring_payload = RingPayload {
         ring_pk: hex::encode(ring_pk_bytes),
         peer_ids,
-        next_peer_ids: None,
+        new_peer_ids: None,
         new_threshold: None,
         threshold: threshold as u32,
         pss_interval,
+        // setting to 0 is fine since 0 can act as the first nonce, subsequent nonces set on update
+        block_number_nonce: 0,
     };
 
     let payload_bytes: Vec<u8> = ring_payload
@@ -184,10 +186,11 @@ where
     let ring_payload_local = RingPayload {
         ring_pk: ring_pk_hex_for_payload,
         peer_ids,
-        next_peer_ids: None,
+        new_peer_ids: None,
         new_threshold: None,
         threshold: threshold as u32,
         pss_interval,
+        block_number_nonce: 0,
     };
     let ring_payload_bytes: Vec<u8> = ring_payload_local.try_into().map_err(|e| {
         DkgError::Serialization(format!(

@@ -195,7 +195,7 @@ mod tests {
         let mut snapshot = snapshot();
         snapshot.kind = SessionKind::Reshare {
             ring_pk_hex: "ring".to_string(),
-            next_peer_ids: vec!["a".to_string(), "b".to_string()],
+            new_peer_ids: vec!["a".to_string(), "b".to_string()],
             new_threshold: 2,
             bulletin_post_id: "post".to_string(),
         };
@@ -214,7 +214,7 @@ mod tests {
         let mut snapshot = snapshot();
         snapshot.kind = SessionKind::Reshare {
             ring_pk_hex: "ring".to_string(),
-            next_peer_ids: vec!["a".to_string(), "b".to_string()],
+            new_peer_ids: vec!["a".to_string(), "b".to_string()],
             new_threshold: 2,
             bulletin_post_id: "post".to_string(),
         };
@@ -234,7 +234,7 @@ mod tests {
         let mut snapshot = snapshot();
         snapshot.kind = SessionKind::Reshare {
             ring_pk_hex: "ring".to_string(),
-            next_peer_ids: vec!["a".to_string(), "b".to_string()],
+            new_peer_ids: vec!["a".to_string(), "b".to_string()],
             new_threshold: 2,
             bulletin_post_id: "post".to_string(),
         };

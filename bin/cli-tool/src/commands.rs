@@ -830,14 +830,22 @@ pub async fn update_bulletin_post(namespace: String, id: String, payload: Vec<u8
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let client = SourceHubClient::with_signer(ChainConfig::local(), signer)
         .await
-        .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
 
-    bulletin
-        .update(namespace, id.clone(), payload, None)
+    let result = client
+        .bulletin_update_post(&namespace, &id, payload, None)
         .await
         .map_err(|e| anyhow!("Failed to update post: {}", e))?;
+
+    if result.code != 0 {
+        return Err(anyhow!(
+            "Failed to update post: code {} {}",
+            result.code,
+            result.log
+        ));
+    }
 
     println!("Updated bulletin post with ID: {}", id);
     Ok(())

@@ -1,6 +1,6 @@
 use crate::{
     error::{BulletinError, Result},
-    r#trait::{Bulletin, BulletinPost},
+    r#trait::{Bulletin, BulletinPost, RingPayload},
 };
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
@@ -39,18 +39,26 @@ impl Bulletin for DummyBulletin {
         Ok(())
     }
 
-    async fn update(
-        &self,
-        namespace: String,
-        id: String,
-        payload: Vec<u8>,
-        _artifact: Option<String>,
-    ) -> Result<()> {
+    async fn update(&self, namespace: String, id: String, _artifact: Option<String>) -> Result<()> {
         let mut posts = self.posts.lock().unwrap();
         let post = posts
             .get_mut(&(namespace.clone(), id.clone()))
             .ok_or(BulletinError::NotFound { namespace, id })?;
-        post.payload = payload;
+        let mut payload: RingPayload = serde_json::from_slice(&post.payload)
+            .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        let new_peer_ids = payload.new_peer_ids.take().ok_or_else(|| {
+            BulletinError::ParseError("ring payload is missing new_peer_ids for update".to_string())
+        })?;
+        let new_threshold = payload.new_threshold.take().ok_or_else(|| {
+            BulletinError::ParseError(
+                "ring payload is missing new_threshold for update".to_string(),
+            )
+        })?;
+        payload.peer_ids = new_peer_ids;
+        payload.threshold = new_threshold;
+        payload.block_number_nonce = payload.block_number_nonce.saturating_add(1);
+        post.payload =
+            serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))?;
         Ok(())
     }
 
@@ -60,6 +68,10 @@ impl Bulletin for DummyBulletin {
             .get(&(namespace.clone(), id.clone()))
             .cloned()
             .ok_or(BulletinError::NotFound { namespace, id })
+    }
+
+    fn chain_id(&self) -> String {
+        "sourcehub-localnet".to_string()
     }
 
     fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String> {

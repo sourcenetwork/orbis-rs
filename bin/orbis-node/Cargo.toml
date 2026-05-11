@@ -57,8 +57,8 @@ cli-tool = { path = "../cli-tool", default-features = false }
 
 [features]
 default = ["local-storage/redb", "bls12-381", "authz-sourcehub", "bulletin-sourcehub", "network/iroh"]
-bls12-381 = ["crypto/bls12-381", "cli-tool?/bls12-381", "common/bls12-381"]
-decaf377 = ["crypto/decaf377", "cli-tool?/decaf377", "common/decaf377"]
+bls12-381 = ["crypto/bls12-381", "cli-tool?/bls12-381", "common/bls12-381", "bulletin/bls12-381"]
+decaf377 = ["crypto/decaf377", "cli-tool?/decaf377", "common/decaf377", "bulletin/decaf377"]
 redb = ["local-storage/redb"]
 memory = ["local-storage/memory"]
 authz-sourcehub = ["authz/sourcehub"]

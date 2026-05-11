@@ -95,7 +95,7 @@ where
         }
         SessionKind::Reshare {
             ring_pk_hex,
-            next_peer_ids: reshare_next_peer_ids,
+            new_peer_ids: reshare_new_peer_ids,
             new_threshold: reshare_new_threshold,
             bulletin_post_id: reshare_bulletin_post_id,
         } => {
@@ -108,7 +108,7 @@ where
             validate_reshare_session_init(
                 ring_pk_hex,
                 &sender_hex,
-                reshare_next_peer_ids,
+                reshare_new_peer_ids,
                 *reshare_new_threshold,
                 reshare_bulletin_post_id,
                 &coord.app_state.local_storage,
@@ -148,8 +148,8 @@ where
             if let Ok(bundle) =
                 RingShareBundle::load_by_ring_key(&coord.app_state.local_storage, ring_pk_hex)
             {
-                let authoritative_next_peer_ids = ring_payload
-                    .next_peer_ids
+                let authoritative_new_peer_ids = ring_payload
+                    .new_peer_ids
                     .clone()
                     .unwrap_or_else(|| ring_payload.peer_ids.clone());
                 let authoritative_new_threshold =
@@ -158,7 +158,7 @@ where
                     ring_pk_hex,
                     reshare_bulletin_post_id,
                     &ring_payload.peer_ids,
-                    &authoritative_next_peer_ids,
+                    &authoritative_new_peer_ids,
                     authoritative_new_threshold,
                     &bundle.public_polynomial,
                 );
@@ -210,7 +210,7 @@ where
     // looking up node_id_assignments (which only covers the old committee).
     let (assigned_node_id, dkg_role, maybe_reshare_params) = if let SessionKind::Reshare {
         ring_pk_hex,
-        next_peer_ids,
+        new_peer_ids,
         new_threshold,
         bulletin_post_id,
     } = kind
@@ -219,7 +219,7 @@ where
         let (node_id, role, params) = build_reshare_params(
             ring_pk_hex,
             peer_ids,
-            next_peer_ids,
+            new_peer_ids,
             *new_threshold,
             bulletin_post_id,
             &our_node_part,
@@ -290,15 +290,15 @@ where
     // window where a Commitment could arrive and see kind=Fresh / reshare_params=None
     // on a Reshare session (which would cause expected_commitment_size() to return the
     // wrong threshold and reject the commitment permanently).
-    // Also sort next_peer_ids in the stored kind so downstream code
+    // Also sort new_peer_ids in the stored kind so downstream code
     // (bulletin post, union building) always uses a canonical ordered list.
     let mut init_kind = kind.clone();
     if let SessionKind::Reshare {
-        ref mut next_peer_ids,
+        ref mut new_peer_ids,
         ..
     } = init_kind
     {
-        next_peer_ids.sort();
+        new_peer_ids.sort();
     }
     let init_params = maybe_reshare_params;
 

@@ -801,10 +801,11 @@ pub async fn write_ring_to_bulletin(
     let payload = RingPayload {
         ring_pk: ring_pk.to_string(),
         peer_ids,
-        next_peer_ids: None,
+        new_peer_ids: None,
         new_threshold: None,
         threshold: 1,
         pss_interval,
+        block_number_nonce: 0,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     bulletin

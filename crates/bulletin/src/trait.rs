@@ -35,14 +35,14 @@ pub struct DocumentPayload {
 pub struct RingPayload {
     /// Public key of ring
     pub ring_pk: String,
-    /// Next peer ids to reshare into.
-    /// When set, a reshare `SessionInit` is only accepted if its `next_peer_ids` matches
+    /// New peer ids to reshare into.
+    /// When set, a reshare `SessionInit` is only accepted if its proposed peers match
     /// this field (order-independent).  `None` means the bulletin does not constrain the next
     /// committee — **nodes may still require this field** (e.g. orbis-node enforces a
     /// pre-announced committee for reshare).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_peer_ids: Option<Vec<String>>,
-    /// Threshold for the new committee announced by `next_peer_ids`.
+    pub new_peer_ids: Option<Vec<String>>,
+    /// Threshold for the new committee announced by `new_peer_ids`.
     /// Validated against `SessionKind::Reshare::new_threshold` when present.
     /// `None` means the bulletin does not constrain the new threshold — **nodes may still
     /// require this field** (e.g. orbis-node enforces a pre-announced threshold for reshare).
@@ -56,6 +56,11 @@ pub struct RingPayload {
     /// `None` (or absent in JSON) means automatic refresh is disabled for this ring.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pss_interval: Option<u64>,
+    /// Block number of the last threshold-signature update.
+    /// Each threshold signature uses this as a nonce. The chain updates it to
+    /// the current block number after accepting the signature.
+    #[serde(default)]
+    pub block_number_nonce: u64,
 }
 
 /// Payload for derivation information derivation_id => payload
@@ -148,15 +153,11 @@ pub trait Bulletin {
         payload: Vec<u8>,
         artifact: Option<String>,
     ) -> Result<()>;
-    /// Update an existing message in the bulletin namespace while preserving its ID.
-    async fn update(
-        &self,
-        namespace: String,
-        id: String,
-        payload: Vec<u8>,
-        artifact: Option<String>,
-    ) -> Result<()>;
+    /// Finalize an existing message update in the bulletin namespace while preserving its ID.
+    async fn update(&self, namespace: String, id: String, artifact: Option<String>) -> Result<()>;
     /// Read a message from the bulletin namespace
     async fn read(&self, namespace: String, id: String) -> Result<BulletinPost>;
+    /// Chain ID used when building chain-bound signing statements.
+    fn chain_id(&self) -> String;
     fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String>;
 }

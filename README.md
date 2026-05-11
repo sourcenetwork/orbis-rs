@@ -373,6 +373,8 @@ ORBIS_INTEGRATION_CRYPTO=decaf377 docker compose -f docker/docker-compose-integr
 # Metrics network test (3 nodes + Prometheus + Grafana)
 docker compose -f docker/docker-compose-metrics-network-test.yml up --build
 
+# follow test logs 
+docker compose -f docker/docker-compose-integration-test.yml logs -f node1 node2 node3                                                                                                                                            
 ```
 
 ### Metrics & Monitoring
