@@ -1,10 +1,8 @@
 # Docker Compose for integration tests
 # Spins up sourcehub chain + 3 orbis nodes with proper dependencies and healthchecks
 services:
-  sourcehub:
-    image: ghcr.io/sourcenetwork/sourcehub:dev
-    platform: linux/amd64
-    entrypoint: ["/bin/sh", "-c"]
+  s build:
+    context: https://github.com/sourcenetwork/sourcehub.git#dev
     command:
       - |
         rm -rf /home/node/.sourcehub/*
@@ -150,4 +148,3 @@ services:
 networks:
   orbis-integration-network:
     driver: bridge
-

@@ -8,9 +8,9 @@
 # Default is bls12-381 when unset.
 services:
   sourcehub:
-    image: ghcr.io/sourcenetwork/sourcehub:dev
+    build:
+      context: https://github.com/sourcenetwork/sourcehub.git#dev
     container_name: sourcehub-integration-test
-    platform: linux/amd64
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -125,4 +125,3 @@ services:
 networks:
   orbis-integration-network:
     driver: bridge
-

@@ -1,8 +1,7 @@
 services:
   sourcehub:
-    image: ghcr.io/sourcenetwork/sourcehub:dev
-    platform: linux/amd64
-    entrypoint: ["/bin/sh", "-c"]
+    build:
+      context: https://github.com/sourcenetwork/sourcehub.git#dev
     command:
       - |
         rm -rf /home/node/.sourcehub/*
