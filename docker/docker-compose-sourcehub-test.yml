@@ -2,6 +2,8 @@ services:
   sourcehub:
     build:
       context: https://github.com/sourcenetwork/sourcehub.git#dev
+    entrypoint: ["/bin/sh", "-c"]
+    container_name: sourcehub-integration-test
     command:
       - |
         rm -rf /home/node/.sourcehub/*

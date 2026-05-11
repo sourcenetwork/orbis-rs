@@ -1,8 +1,11 @@
 # Docker Compose for integration tests
 # Spins up sourcehub chain + 3 orbis nodes with proper dependencies and healthchecks
 services:
-  build:
-    context: https://github.com/sourcenetwork/sourcehub.git#dev
+  sourcehub:
+    build:
+      context: https://github.com/sourcenetwork/sourcehub.git#dev
+    entrypoint: ["/bin/sh", "-c"]
+    container_name: sourcehub-integration-test
     command:
       - |
         rm -rf /home/node/.sourcehub/*
