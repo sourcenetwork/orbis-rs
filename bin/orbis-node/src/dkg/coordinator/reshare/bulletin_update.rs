@@ -61,7 +61,7 @@ where
 {
     let SessionKind::Reshare {
         ring_pk_hex,
-        next_peer_ids,
+        new_peer_ids,
         new_threshold,
         ..
     } = kind
@@ -77,7 +77,7 @@ where
                 coord,
                 session_id,
                 storage_key,
-                next_peer_ids,
+                new_peer_ids,
                 *new_threshold,
                 reshare_new_peer_ids,
                 reshare_bulletin_post_id,
@@ -87,7 +87,7 @@ where
     };
 
     let reshare_new_node_id =
-        reshare_new_node_id(coord, reshare_new_peer_ids.unwrap_or(next_peer_ids));
+        reshare_new_node_id(coord, reshare_new_peer_ids.unwrap_or(new_peer_ids));
 
     if reshare_new_node_id != 1 {
         return Ok(());
@@ -190,7 +190,7 @@ async fn prepare_reshare_update<D>(
     coord: &DkgCoordinator<D>,
     session_id: u64,
     storage_key: &str,
-    next_peer_ids: &[String],
+    new_peer_ids: &[String],
     new_threshold: u32,
     reshare_new_peer_ids: Option<&[String]>,
     reshare_bulletin_post_id: Option<&str>,
@@ -200,7 +200,7 @@ where
 {
     let sorted_new_peer_ids = reshare_new_peer_ids
         .map(|peers| peers.to_vec())
-        .unwrap_or_else(|| next_peer_ids.to_vec());
+        .unwrap_or_else(|| new_peer_ids.to_vec());
     let new_committee_size = sorted_new_peer_ids.len();
     let bulletin_post_id = reshare_bulletin_post_id.ok_or_else(|| {
         DkgError::Bulletin("Reshare: missing bulletin post id for updated RingPayload".to_string())
@@ -237,7 +237,7 @@ where
         .unwrap_or(current_ring_payload.threshold);
     if payload_new_peer_ids != sorted_new_peer_ids {
         return Err(DkgError::ProtocolError(format!(
-            "Reshare: current RingPayload new_peer_ids {:?} do not match session next_peer_ids {:?}",
+            "Reshare: current RingPayload new_peer_ids {:?} do not match session new_peer_ids {:?}",
             payload_new_peer_ids, sorted_new_peer_ids
         )));
     }

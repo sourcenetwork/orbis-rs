@@ -460,7 +460,7 @@ async fn test_pss_ring_reshare_bypasses_interval() {
 
 /// When only `new_threshold` is set (and `new_peer_ids` is absent),
 /// `pss_ring` must still dispatch to `trigger_reshare`, using the old committee
-/// as the fallback for the reshare session's `next_peer_ids`.
+/// as the fallback for the reshare session's `new_peer_ids`.
 #[tokio::test]
 async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
     let db_name = "pss_new_threshold_triggers_reshare";

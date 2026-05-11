@@ -16,8 +16,8 @@ pub(in crate::dkg::coordinator) fn session_peer_ids(
     kind: &SessionKind,
     peer_ids: &[String],
 ) -> Vec<String> {
-    if let SessionKind::Reshare { next_peer_ids, .. } = kind {
-        let mut new_peers = next_peer_ids.clone();
+    if let SessionKind::Reshare { new_peer_ids, .. } = kind {
+        let mut new_peers = new_peer_ids.clone();
         new_peers.sort();
         new_peers
     } else {

@@ -636,7 +636,7 @@ mod ring_reshare_update_tests {
     use crypto::{CryptoSerialize, DkgImpl};
 
     async fn fixture(
-        next_peer_ids: Option<Vec<String>>,
+        new_peer_ids: Option<Vec<String>>,
         new_threshold: Option<u32>,
     ) -> (
         DummyBulletin,
@@ -649,16 +649,14 @@ mod ring_reshare_update_tests {
         let ring_pk_hex = hex::encode(ring_pk_bytes);
         let ring_key = storage_key_from_ring_pk_hex(&ring_pk_hex).expect("storage key");
         let old_peer_ids = vec!["old-a".to_string(), "old-b".to_string()];
-        let final_peer_ids = next_peer_ids
-            .clone()
-            .unwrap_or_else(|| old_peer_ids.clone());
+        let final_peer_ids = new_peer_ids.clone().unwrap_or_else(|| old_peer_ids.clone());
         let final_threshold = new_threshold.unwrap_or(2);
         let block_number_nonce = 0;
 
         let current_payload = RingPayload {
             ring_pk: ring_pk_hex.clone(),
             peer_ids: old_peer_ids,
-            new_peer_ids: next_peer_ids,
+            new_peer_ids: new_peer_ids,
             new_threshold,
             threshold: 2,
             pss_interval: Some(30),

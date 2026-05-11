@@ -224,20 +224,22 @@ impl SourceHubBulletin {
             )
         })?;
 
-        let (signature_scheme, signature_hex) = if let Some(rest) =
-            artifact.strip_prefix(&format!("{RESHARE_THRESHOLD_SIGNATURE_ARTIFACT_PREFIX}:"))
+        let rest = artifact
+            .strip_prefix(&format!("{RESHARE_THRESHOLD_SIGNATURE_ARTIFACT_PREFIX}:"))
+            .ok_or_else(|| {
+                BulletinError::ParseError(format!(
+                    "invalid threshold-signature artifact prefix: {artifact}"
+                ))
+            })?;
+        let (signature_scheme, signature_hex) = match rest.split(':').collect::<Vec<_>>().as_slice()
         {
-            match rest.split(':').collect::<Vec<_>>().as_slice() {
-                [_, signature_hex] => (DEFAULT_THRESHOLD_SIGNATURE_SCHEME, *signature_hex),
-                [_, signature_scheme, signature_hex] => (*signature_scheme, *signature_hex),
-                _ => {
-                    return Err(BulletinError::ParseError(format!(
-                        "invalid threshold-signature artifact format: {artifact}"
-                    )));
-                }
+            [_, signature_hex] => (DEFAULT_THRESHOLD_SIGNATURE_SCHEME, *signature_hex),
+            [_, signature_scheme, signature_hex] => (*signature_scheme, *signature_hex),
+            _ => {
+                return Err(BulletinError::ParseError(format!(
+                    "invalid threshold-signature artifact format: {artifact}"
+                )));
             }
-        } else {
-            (DEFAULT_THRESHOLD_SIGNATURE_SCHEME, artifact)
         };
 
         let signature_scheme = if signature_scheme.trim().is_empty() {
@@ -245,6 +247,12 @@ impl SourceHubBulletin {
         } else {
             signature_scheme.trim()
         };
+        if signature_scheme != DEFAULT_THRESHOLD_SIGNATURE_SCHEME {
+            return Err(BulletinError::ParseError(format!(
+                "unsupported threshold signature scheme: {signature_scheme}"
+            )));
+        }
+
         let signature_hex = signature_hex.trim();
         let signature_hex = signature_hex
             .strip_prefix("0x")

@@ -521,7 +521,7 @@ where
 
     let kind = SessionKind::Reshare {
         ring_pk_hex: ring_pk_str.clone(),
-        next_peer_ids: sorted_new.clone(),
+        new_peer_ids: sorted_new.clone(),
         new_threshold,
         bulletin_post_id: post_id.clone(),
     };

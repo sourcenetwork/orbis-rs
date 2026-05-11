@@ -126,7 +126,7 @@ pub struct MsgUpdatePostByThresholdSignature {
 }
 
 /// Canonical sign document for finalizing a ring reshare.
-/// Proto field numbers match sourcehub/bulletin/tx.proto:
+/// Canonical sign-doc field numbers:
 /// - 1: domain (string)
 /// - 2: chain_id (string)
 /// - 3: namespace (string)

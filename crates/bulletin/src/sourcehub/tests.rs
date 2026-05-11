@@ -28,6 +28,29 @@ fn test_parse_threshold_signature_artifact() {
     assert_eq!(signature, vec![0x01, 0x02, 0xff]);
 }
 
+#[test]
+fn test_parse_threshold_signature_artifact_rejects_invalid_inputs() {
+    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&None).is_err());
+
+    let artifact = Some("0102ff".to_string());
+    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&artifact).is_err());
+
+    let artifact = Some("wrong-prefix:42:0102ff".to_string());
+    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&artifact).is_err());
+
+    let artifact = Some("reshare-threshold-signature:42:not-hex".to_string());
+    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&artifact).is_err());
+
+    let artifact = Some("reshare-threshold-signature:42:abc".to_string());
+    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&artifact).is_err());
+
+    let artifact = Some("reshare-threshold-signature:42:unsupported:0102ff".to_string());
+    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&artifact).is_err());
+
+    let artifact = Some("reshare-threshold-signature:42:".to_string());
+    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&artifact).is_err());
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bulletin_document() {
