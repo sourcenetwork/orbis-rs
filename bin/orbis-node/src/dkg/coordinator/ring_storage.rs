@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::constants::BULLETIN_RING_NAMESPACE;
+use crate::constants::{BULLETIN_RING_NAMESPACE, MAX_LOCAL_RINGS_PER_NODE};
 use crate::dkg::error::{DkgError, Result};
 use crate::metrics;
 use crate::ring_state::RingIndexEntry;
@@ -73,27 +73,16 @@ where
 {
     let _guard = app_state.ring_index_lock.lock().await;
 
-    // Fail closed on read/parse errors: silently falling back to an empty Vec
-    // would overwrite all existing ring mappings if storage hiccups.
-    let mut ring_index: Vec<RingIndexEntry> =
-        match app_state.local_storage.get(LocalStorageKeys::RingIndex) {
-            Ok(None) => Vec::new(),
-            Ok(Some(bytes)) => serde_json::from_slice(&bytes).map_err(|e| {
-                DkgError::Storage(format!("Failed to deserialize RingIndex: {}", e))
-            })?,
-            Err(e) => {
-                return Err(DkgError::Storage(format!(
-                    "Failed to read RingIndex: {}",
-                    e
-                )))
-            }
-        };
+    let mut ring_index = read_ring_index(&app_state.local_storage, "RingIndex")?;
 
     // Upsert: update bulletin_post_id on an existing entry (e.g. DealerReceiver
     // after reshare), or push a new one for first-time entries.
     if let Some(entry) = ring_index.iter_mut().find(|e| e.ring_pk_str == storage_key) {
         entry.bulletin_post_id = bulletin_post_id;
     } else {
+        ensure_local_ring_capacity(&ring_index, storage_key)?;
+        // This push is where the node's managed-ring count increases:
+        // `RingIndex.len()` is the durable count PSS scans and the cap bounds.
         ring_index.push(RingIndexEntry {
             ring_pk_str: storage_key.to_string(),
             bulletin_post_id,
@@ -108,6 +97,18 @@ where
         .map_err(|e| DkgError::Storage(format!("Failed to store RingIndex: {}", e)))?;
 
     Ok(())
+}
+
+pub(in crate::dkg::coordinator) async fn preflight_new_ring_capacity<D>(
+    app_state: &Arc<AppState<D>>,
+    storage_key: &str,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let _guard = app_state.ring_index_lock.lock().await;
+    let ring_index = read_ring_index(&app_state.local_storage, "RingIndex")?;
+    ensure_local_ring_capacity(&ring_index, storage_key)
 }
 
 pub(in crate::dkg::coordinator) async fn post_fresh_ring_payload<D>(
@@ -205,22 +206,11 @@ where
 }
 
 fn remove_ring_index_entry(storage: &impl LocalStorage, ring_key: &str) -> Result<()> {
-    let raw = match storage.get(LocalStorageKeys::RingIndex) {
-        Ok(Some(raw)) => raw,
-        Ok(None) => return Ok(()),
-        Err(e) => {
-            return Err(DkgError::Storage(format!(
-                "Reshare Dealer: failed to read RingIndex: {}",
-                e
-            )))
-        }
-    };
-    let mut index: Vec<RingIndexEntry> = serde_json::from_slice(&raw).map_err(|e| {
-        DkgError::Storage(format!(
-            "Reshare Dealer: failed to deserialize RingIndex: {}",
-            e
-        ))
-    })?;
+    let mut index = read_ring_index(storage, "Reshare Dealer: RingIndex")?;
+    if index.is_empty() {
+        return Ok(());
+    }
+
     index.retain(|e| e.ring_pk_str != ring_key);
     let bytes = serde_json::to_vec(&index).map_err(|e| {
         DkgError::Serialization(format!(
@@ -236,4 +226,33 @@ fn remove_ring_index_entry(storage: &impl LocalStorage, ring_key: &str) -> Resul
                 e
             ))
         })
+}
+
+fn read_ring_index(storage: &impl LocalStorage, context: &str) -> Result<Vec<RingIndexEntry>> {
+    // Fail closed on read/parse errors: silently falling back to an empty Vec
+    // would overwrite all existing ring mappings if storage hiccups.
+    match storage.get(LocalStorageKeys::RingIndex) {
+        Ok(None) => Ok(Vec::new()),
+        Ok(Some(bytes)) => serde_json::from_slice(&bytes)
+            .map_err(|e| DkgError::Storage(format!("Failed to deserialize {}: {}", context, e))),
+        Err(e) => Err(DkgError::Storage(format!(
+            "Failed to read {}: {}",
+            context, e
+        ))),
+    }
+}
+
+fn ensure_local_ring_capacity(ring_index: &[RingIndexEntry], storage_key: &str) -> Result<()> {
+    if ring_index.iter().any(|e| e.ring_pk_str == storage_key) {
+        return Ok(());
+    }
+
+    if ring_index.len() >= MAX_LOCAL_RINGS_PER_NODE {
+        return Err(DkgError::MaxLocalRingsReached {
+            current: ring_index.len(),
+            max: MAX_LOCAL_RINGS_PER_NODE,
+        });
+    }
+
+    Ok(())
 }

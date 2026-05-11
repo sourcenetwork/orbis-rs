@@ -39,6 +39,25 @@ confidence-threshold = 0.8
 [advisories]
 unmaintained = "none"
 yanked = "allow"
+ignore = [
+    # did-key 0.2.1 is the latest did-key release and still depends on
+    # ed25519-dalek 1.x / curve25519-dalek 3.x. We only accept EdDSA did:key
+    # tokens and no patched did-key upgrade is available yet.
+    "RUSTSEC-2022-0093",
+    "RUSTSEC-2024-0344",
+
+    # iroh 0.95.1 is the current API used by network/orbis-node and pins
+    # hickory-proto 0.25.x. Revisit when moving to a newer iroh line.
+    "RUSTSEC-2026-0118",
+    "RUSTSEC-2026-0119",
+
+    # tendermint-rpc 0.40.4 is the latest tendermint-rpc release and its
+    # http-client feature still pins reqwest 0.11 / rustls-webpki 0.101.x.
+    # We removed its websocket-client feature and use reqwest 0.12 elsewhere.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+]
 
 # ---------------------------------------------------------------------------
 # Banned crates

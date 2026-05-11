@@ -60,6 +60,17 @@ where
         return ring_storage::cleanup_departing_dealer(coord, session_id, ring_key).await;
     }
 
+    let is_fresh = matches!(kind, SessionKind::Fresh);
+    let is_reshare_receiver =
+        matches!(kind, SessionKind::Reshare { .. }) && dkg_role == DkgRole::Receiver;
+    if is_reshare_receiver {
+        let storage_key = kind
+            .ring_key()
+            .ok_or_else(|| DkgError::InvalidState("Reshare session missing ring key".to_string()))?
+            .to_string();
+        ring_storage::preflight_new_ring_capacity(&coord.app_state, &storage_key).await?;
+    }
+
     // Compute final secret share, aggregate public key, and data for bulletin.
     let (node_id, aggregate_pk, final_share_bytes, threshold, pub_poly_bytes) = coord
         .app_state
@@ -118,6 +129,11 @@ where
         .map(|k| k.to_string())
         .unwrap_or_else(|| aggregate_pk.to_string());
 
+    let adds_new_local_ring = is_fresh || is_reshare_receiver;
+    if is_fresh {
+        ring_storage::preflight_new_ring_capacity(&coord.app_state, &storage_key).await?;
+    }
+
     // Write share + polynomial as a single encrypted bundle.
     // Atomicity: both fields land in one set_encrypted call, so a crash leaves the
     // entry either fully written or absent — never partially updated.
@@ -147,8 +163,17 @@ where
     // (they had no prior index entry).  Dealers have already left and skip this entirely.
     if matches!(kind, SessionKind::Reshare { .. }) && dkg_role != DkgRole::Dealer {
         if let Some(post_id) = &reshare_bulletin_post_id {
-            ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, post_id.clone())
-                .await?;
+            if let Err(e) =
+                ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, post_id.clone())
+                    .await
+            {
+                cleanup_new_ring_bundle_after_index_failure(
+                    &coord.app_state.local_storage,
+                    &storage_key,
+                    adds_new_local_ring,
+                );
+                return Err(e);
+            }
             tracing::info!(
                 session_id = session_id,
                 ring_pk = %storage_key,
@@ -162,7 +187,7 @@ where
     //
     // For Refresh: bulletin entry is unchanged; polynomial updated in RingShareBundle above.
     // For Reshare: bulletin is updated below by new-committee node 1.
-    if matches!(kind, SessionKind::Fresh) {
+    if is_fresh {
         let peer_ids = coord
             .app_state
             .dkg_session_state
@@ -177,8 +202,17 @@ where
             threshold,
             pss_interval,
         )?;
-        ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, bulletin_post_id)
-            .await?;
+        if let Err(e) =
+            ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, bulletin_post_id)
+                .await
+        {
+            cleanup_new_ring_bundle_after_index_failure(
+                &coord.app_state.local_storage,
+                &storage_key,
+                adds_new_local_ring,
+            );
+            return Err(e);
+        }
     }
 
     // Clear the in-progress ceremony flag now that Phase 4 has succeeded.
@@ -259,6 +293,9 @@ where
 
     coord.remove_session(session_id).await;
     metrics::record_dkg_session_completed();
+    if matches!(kind, SessionKind::Refresh { .. }) {
+        metrics::record_refresh_session_completed();
+    }
 
     tracing::info!(
         session_id = session_id,
@@ -266,4 +303,22 @@ where
     );
 
     Ok(())
+}
+
+fn cleanup_new_ring_bundle_after_index_failure(
+    storage: &impl LocalStorage,
+    storage_key: &str,
+    should_cleanup: bool,
+) {
+    if !should_cleanup {
+        return;
+    }
+
+    if let Err(e) = storage.delete(LocalStorageKeys::RingKey(storage_key.to_string())) {
+        tracing::error!(
+            ring_key = %storage_key,
+            error = %e,
+            "Phase 4: failed to delete new RingShareBundle after RingIndex write failure"
+        );
+    }
 }

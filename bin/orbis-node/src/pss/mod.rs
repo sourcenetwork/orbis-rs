@@ -38,6 +38,7 @@ use crate::dkg::helpers::{
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::dkg::session_state::RingPssClaimOutcome;
 use crate::helpers::helpers::{extract_node_part, validate_all_peer_ids};
+use crate::metrics;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{Dkg, DkgRole};
@@ -345,6 +346,8 @@ where
         }
     }
 
+    metrics::record_refresh_session_started();
+
     app_state
         .dkg_session_state
         .set_session_kind(
@@ -403,6 +406,7 @@ where
                 .dkg_session_state
                 .remove_session(&session_id)
                 .await;
+            metrics::record_refresh_session_failed();
             return Err(DkgError::NetworkConnection(format!(
                 "PSS: failed to send refresh SessionInit to {}: {}",
                 peer_id_str, e
@@ -418,6 +422,7 @@ where
             .dkg_session_state
             .remove_session(&session_id)
             .await;
+        metrics::record_refresh_session_failed();
         return Err(e);
     }
 
@@ -598,6 +603,8 @@ where
         }
     }
 
+    metrics::record_reshare_session_started();
+
     app_state
         .dkg_session_state
         .set_pss_interval(&session_id, ring_payload.pss_interval)
@@ -667,6 +674,7 @@ where
             .dkg_session_state
             .remove_session(&session_id)
             .await;
+        metrics::record_reshare_session_failed();
         return Err(e);
     }
 

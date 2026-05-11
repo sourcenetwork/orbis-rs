@@ -38,7 +38,7 @@ Pass a caller-supplied **`current_time`** (Unix seconds) so tests and nodes can 
 ## Signing (`JwtSigner`)
 
 - **`JwtSigner::new()`** / **`from_key_pair`** — Ed25519 via `did-key`; **`did_uri`** is `did:key:<fingerprint>`.
-- **`sign(claims, duration)`** — Generic JWT with `jwt-simple`; issuer is set to **`did_uri`**.
+- **`sign(claims, duration)`** — Generic EdDSA JWT with `jsonwebtoken`; issuer is set to **`did_uri`**.
 - Convenience methods **`create_dkg_jwt`**, **`create_pre_jwt`**, **`create_sign_jwt`**, **`create_store_secret_jwt`** — Build the corresponding `*Claims` and sign (default **1 hour** in the helpers).
 
 ## gRPC usage
@@ -62,8 +62,7 @@ let bearer: authn::BearerToken<PreClaims> =
 ## Dependencies (high level)
 
 - **`did-key`** — `did:key` resolution and Ed25519 key material  
-- **`jsonwebtoken`** — Decode and verify incoming JWTs  
-- **`jwt-simple`** — Sign outgoing JWTs (pure Rust, used by `JwtSigner`)  
+- **`jsonwebtoken`** — Sign outgoing JWTs and decode/verify incoming JWTs
 - **`tonic`** — Request metadata for bearer extraction  
 - **`serde`**, **`thiserror`**, **`zeroize`**
 
