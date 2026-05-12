@@ -717,7 +717,12 @@ pub async fn add_ring_governance_policy(bulletin_namespace: &str) -> Result<Stri
             },
         )
         .await
-        .map_err(|e| anyhow!("Failed to register namespace object in ring governance policy: {}", e))?;
+        .map_err(|e| {
+            anyhow!(
+                "Failed to register namespace object in ring governance policy: {}",
+                e
+            )
+        })?;
     println!(
         "[ACP] ring governance register_object({}): code={} hash={}",
         namespace_object_id, result.code, result.tx_hash
