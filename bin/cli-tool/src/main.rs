@@ -8,7 +8,7 @@ pub use commands::{
     do_store_secret, fund, get_account_sequence, get_latest_ring, list_bulletin_posts,
     post_key_derivation, prepare_secret, query_node_info, query_ring_state, read_bulletin_post,
     register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
-    store_prepared_secret, update_bulletin_post, PreparedSecret, SignResult,
+    store_prepared_secret, update_ring_post_by_acp, PreparedSecret, SignResult,
 };
 use common::blockchain::ChainConfig;
 
@@ -176,17 +176,23 @@ pub enum SubCommands {
         #[clap(long)]
         payload: String,
     },
-    /// Update an existing bulletin post
-    UpdateBulletinPost {
+    /// Update a ring post via ACP authorization
+    UpdateRingPostByAcp {
         /// Namespace containing the post
         #[clap(long)]
         namespace: String,
         /// ID of the post to update
         #[clap(long)]
         id: String,
-        /// New payload as hex string
+        /// New peer IDs for reshare (comma-separated)
+        #[clap(long, value_delimiter = ',')]
+        new_peer_ids: Vec<String>,
+        /// New threshold for the reshare committee
         #[clap(long)]
-        payload: String,
+        new_threshold: Option<u32>,
+        /// Seconds between automatic PSS refresh ceremonies
+        #[clap(long)]
+        pss_interval: Option<u64>,
     },
     /// Fund an account from the pre funded account
     Fund {
@@ -507,13 +513,15 @@ async fn main() -> Result<()> {
             let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
             create_bulletin_post(namespace, payload_bytes).await?;
         }
-        SubCommands::UpdateBulletinPost {
+        SubCommands::UpdateRingPostByAcp {
             namespace,
             id,
-            payload,
+            new_peer_ids,
+            new_threshold,
+            pss_interval,
         } => {
-            let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
-            update_bulletin_post(namespace, id, payload_bytes).await?;
+            update_ring_post_by_acp(namespace, id, new_peer_ids, new_threshold, pss_interval)
+                .await?;
         }
         SubCommands::Fund { address } => {
             fund(address, ChainConfig::local()).await?;

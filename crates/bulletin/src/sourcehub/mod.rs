@@ -61,7 +61,7 @@ impl Bulletin for SourceHubBulletin {
         let (signature_scheme, signature) = Self::parse_threshold_signature_artifact(&artifact)?;
         let result = self
             .chain_client
-            .bulletin_update_post_by_threshold_signature(
+            .bulletin_update_ring_post_by_threshold_signature(
                 &namespace,
                 &id,
                 artifact,

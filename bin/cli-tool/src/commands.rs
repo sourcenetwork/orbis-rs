@@ -840,7 +840,13 @@ pub async fn create_bulletin_post(namespace: String, payload: Vec<u8>) -> Result
     Ok(post_id)
 }
 
-pub async fn update_bulletin_post(namespace: String, id: String, payload: Vec<u8>) -> Result<()> {
+pub async fn update_ring_post_by_acp(
+    namespace: String,
+    id: String,
+    new_peer_ids: Vec<String>,
+    new_threshold: Option<u32>,
+    pss_interval: Option<u64>,
+) -> Result<()> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
@@ -849,19 +855,26 @@ pub async fn update_bulletin_post(namespace: String, id: String, payload: Vec<u8
         .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
 
     let result = client
-        .bulletin_update_post(&namespace, &id, payload, None)
+        .bulletin_update_ring_post_by_acp(
+            &namespace,
+            &id,
+            None,
+            new_peer_ids,
+            new_threshold,
+            pss_interval,
+        )
         .await
-        .map_err(|e| anyhow!("Failed to update post: {}", e))?;
+        .map_err(|e| anyhow!("Failed to update ring post: {}", e))?;
 
     if result.code != 0 {
         return Err(anyhow!(
-            "Failed to update post: code {} {}",
+            "Failed to update ring post: code {} {}",
             result.code,
             result.log
         ));
     }
 
-    println!("Updated bulletin post with ID: {}", id);
+    println!("Updated ring post with ID: {}", id);
     Ok(())
 }
 

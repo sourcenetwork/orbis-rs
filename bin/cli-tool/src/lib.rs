@@ -11,6 +11,6 @@ pub use commands::{
     do_store_secret, fund, get_account_sequence, get_latest_ring, list_bulletin_posts,
     post_key_derivation, prepare_secret, query_node_info, query_ring_state, read_bulletin_post,
     register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
-    store_prepared_secret, update_bulletin_post, DkgResult, NodeInfoResult, PreparedSecret,
+    store_prepared_secret, update_ring_post_by_acp, DkgResult, NodeInfoResult, PreparedSecret,
     SignResult, StoreSecretResult,
 };

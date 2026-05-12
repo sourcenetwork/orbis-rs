@@ -9,7 +9,7 @@
 services:
   sourcehub:
     build:
-      context: https://github.com/sourcenetwork/sourcehub.git#dev
+      context: https://github.com/sourcenetwork/sourcehub.git#update-ring-by-acp
     container_name: sourcehub-integration-test
     entrypoint: ["/bin/sh", "-c"]
     command:

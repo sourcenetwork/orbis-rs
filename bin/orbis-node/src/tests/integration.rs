@@ -792,22 +792,12 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     )
     .await;
 
-    let reshare_announcement = RingPayload {
-        ring_pk: ring_pk_hex.clone(),
-        peer_ids: dkg_ring_payload.peer_ids.clone(),
-        threshold: dkg_ring_payload.threshold,
-        new_peer_ids: Some(reshare_peer_ids.clone()),
-        new_threshold: Some(reshare_threshold),
-        pss_interval: dkg_ring_payload.pss_interval,
-        block_number_nonce: dkg_ring_payload.block_number_nonce,
-        policy_id: dkg_ring_payload.policy_id.clone(),
-    };
-    let reshare_announcement_bytes =
-        serde_json::to_vec(&reshare_announcement).expect("serialize reshare announcement");
-    cli_tool::update_bulletin_post(
+    cli_tool::update_ring_post_by_acp(
         ring_namespace.clone(),
         ring_id.clone(),
-        reshare_announcement_bytes,
+        reshare_peer_ids.clone(),
+        Some(reshare_threshold),
+        dkg_ring_payload.pss_interval,
     )
     .await
     .expect("update ring bulletin post with reshare announcement");
