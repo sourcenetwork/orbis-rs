@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::reshare::selection::record_and_ack_valid_reshare_share;
 use super::state_machine::{self, DkgCommand, DkgEvent, SessionSnapshot};
 use super::types::CoordinatorDkg;
-use super::{reshare, ring_storage, DkgCoordinator};
+use super::{refresh_health_check, reshare, ring_storage, DkgCoordinator};
 
 mod phase1;
 mod phase2;

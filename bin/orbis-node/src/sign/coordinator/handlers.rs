@@ -4,7 +4,8 @@ use crate::ring_state::RingShareBundle;
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
-    load_dist_key_share, ring_reshare_update_context_key, validate_ring_reshare_update_statement,
+    load_dist_key_share, refresh_health_check_context_key, ring_reshare_update_context_key,
+    validate_refresh_health_check_statement, validate_ring_reshare_update_statement,
     validate_sign_claims, verify_message_and_get_info,
 };
 use crate::sign::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
@@ -127,6 +128,11 @@ where
                 )
                 .await?,
             ),
+            SignContext::RefreshHealthCheck(ctx) => Some(validate_refresh_health_check_statement(
+                &self.app_state.local_storage,
+                &ctx.statement,
+                None,
+            )?),
             SignContext::Bulletin => None,
         };
 
@@ -168,6 +174,9 @@ where
             SignContext::Bulletin => "bulletin".to_string(),
             SignContext::Policy(ctx) => ctx.derivation_id.clone(),
             SignContext::RingReshareUpdate(ctx) => ring_reshare_update_context_key(&ctx.statement)?,
+            SignContext::RefreshHealthCheck(ctx) => {
+                refresh_health_check_context_key(&ctx.statement)?
+            }
         };
 
         if !self
@@ -284,6 +293,14 @@ where
                 .await?;
                 (ring_pk_hex, None, None)
             }
+            SignContext::RefreshHealthCheck(ref ctx) => {
+                let ring_pk_hex = validate_refresh_health_check_statement(
+                    &self.app_state.local_storage,
+                    &ctx.statement,
+                    Some(&message),
+                )?;
+                (ring_pk_hex, None, None)
+            }
         };
 
         // Deserialize ring public key and load the share + public polynomial from one
@@ -317,6 +334,9 @@ where
                 SignContext::Policy(ctx) => ctx.derivation_id.clone(),
                 SignContext::RingReshareUpdate(ctx) => {
                     ring_reshare_update_context_key(&ctx.statement)?
+                }
+                SignContext::RefreshHealthCheck(ctx) => {
+                    refresh_health_check_context_key(&ctx.statement)?
                 }
             };
             let state_bytes = self

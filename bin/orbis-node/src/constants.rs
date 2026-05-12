@@ -311,6 +311,12 @@ pub const RESHARE_SIGNATURE_MAX_ATTEMPTS: usize = 6;
 /// Delay between reshare threshold signature collection retries.
 pub const RESHARE_SIGNATURE_RETRY_DELAY: Duration = Duration::from_millis(500);
 
+/// Maximum number of attempts for the post-refresh diagnostic threshold signature.
+pub const REFRESH_HEALTH_CHECK_MAX_ATTEMPTS: usize = 6;
+
+/// Delay between post-refresh diagnostic threshold signature retries.
+pub const REFRESH_HEALTH_CHECK_RETRY_DELAY: Duration = Duration::from_millis(500);
+
 /// How often a non-node-1 reshare member polls the bulletin waiting for the
 /// node-1 bulletin update to land before releasing its PSS claim.
 pub const RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(2);

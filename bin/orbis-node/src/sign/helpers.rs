@@ -5,7 +5,10 @@ use crate::dkg::session_state::{ReshareSignatureReadyKey, SessionStateManager};
 use crate::ring_state::{RingPolyState, RingShareBundle};
 use crate::sign::{
     error::{Result, SignError},
-    messages::{RingReshareUpdateStatement, SignMessage, RING_RESHARE_UPDATE_DOMAIN},
+    messages::{
+        RefreshHealthCheckStatement, RingReshareUpdateStatement, SignMessage,
+        REFRESH_HEALTH_CHECK_DOMAIN, RING_RESHARE_UPDATE_DOMAIN,
+    },
     response_state::SignResponseManager,
 };
 use authn::{BearerToken, SignClaims};
@@ -144,6 +147,59 @@ pub fn ring_reshare_update_context_key(statement: &RingReshareUpdateStatement) -
     Ok(format!("ring-reshare-update:{}", sha256_hex(&bytes)))
 }
 
+fn write_len_prefixed_str(out: &mut Vec<u8>, value: &str) {
+    out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+    out.extend_from_slice(value.as_bytes());
+}
+
+fn write_len_prefixed_bytes(out: &mut Vec<u8>, value: &[u8]) {
+    out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+    out.extend_from_slice(value);
+}
+
+/// SHA-256 over a canonical sorted peer-id list.
+pub fn refresh_health_check_peer_ids_sha256(peer_ids: &[String]) -> String {
+    let mut sorted = peer_ids.to_vec();
+    sorted.sort();
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(sorted.len() as u32).to_le_bytes());
+    for peer_id in &sorted {
+        write_len_prefixed_str(&mut bytes, peer_id);
+    }
+
+    sha256_hex(&bytes)
+}
+
+/// Serialize the canonical post-refresh health-check statement.
+///
+/// This is intentionally not SourceHub-compatible signing material. It is an
+/// internal diagnostic domain so the recovered signature cannot be replayed as a
+/// reshare-finalization signature or any user-facing signing result.
+pub fn refresh_health_check_message(statement: &RefreshHealthCheckStatement) -> Result<Vec<u8>> {
+    let public_polynomial_sha256 = decode_sha256_hex(
+        "public_polynomial_sha256",
+        &statement.public_polynomial_sha256,
+    )?;
+    let peer_ids_sha256 = decode_sha256_hex("peer_ids_sha256", &statement.peer_ids_sha256)?;
+
+    let mut bytes = Vec::new();
+    write_len_prefixed_str(&mut bytes, &statement.domain);
+    bytes.extend_from_slice(&statement.session_id.to_le_bytes());
+    write_len_prefixed_str(&mut bytes, &statement.ring_pk);
+    write_len_prefixed_bytes(&mut bytes, &public_polynomial_sha256);
+    write_len_prefixed_bytes(&mut bytes, &peer_ids_sha256);
+    bytes.extend_from_slice(&statement.threshold.to_le_bytes());
+    bytes.extend_from_slice(&statement.total_participants.to_le_bytes());
+    Ok(bytes)
+}
+
+/// Context key used to bind FROST nonces to one exact refresh health-check statement.
+pub fn refresh_health_check_context_key(statement: &RefreshHealthCheckStatement) -> Result<String> {
+    let bytes = refresh_health_check_message(statement)?;
+    Ok(format!("refresh-health-check:{}", sha256_hex(&bytes)))
+}
+
 /// Validate a ring reshare update statement before signing it.
 ///
 /// This keeps the relay node untrusted: responders only sign when the statement
@@ -270,6 +326,56 @@ pub async fn validate_ring_reshare_update_statement(
         .is_reshare_signature_ready(&ready_key)
         .await
     {
+        return Err(SignError::ReshareInProgress);
+    }
+
+    Ok(statement.ring_pk.clone())
+}
+
+/// Validate a PSS refresh health-check statement before signing it.
+///
+/// Responders only sign if the requested statement matches the message bytes and
+/// their active ring bundle is on the advertised refreshed public polynomial.
+pub fn validate_refresh_health_check_statement(
+    local_storage: &impl LocalStorage,
+    statement: &RefreshHealthCheckStatement,
+    expected_message: Option<&[u8]>,
+) -> Result<String> {
+    if statement.domain != REFRESH_HEALTH_CHECK_DOMAIN {
+        return Err(SignError::Unauthorized(format!(
+            "Invalid refresh health-check domain '{}'",
+            statement.domain
+        )));
+    }
+    if statement.threshold == 0 {
+        return Err(SignError::InvalidInput(
+            "Refresh health-check threshold cannot be zero".to_string(),
+        ));
+    }
+    if statement.total_participants == 0 || statement.threshold > statement.total_participants {
+        return Err(SignError::InvalidInput(format!(
+            "Refresh health-check threshold {} is invalid for committee size {}",
+            statement.threshold, statement.total_participants
+        )));
+    }
+
+    let canonical_message = refresh_health_check_message(statement)?;
+    if let Some(expected) = expected_message {
+        if expected != canonical_message.as_slice() {
+            return Err(SignError::Unauthorized(
+                "Refresh health-check message does not match context statement".to_string(),
+            ));
+        }
+    }
+
+    let storage_key = storage_key_from_ring_pk_hex(&statement.ring_pk)?;
+    let bundle = RingShareBundle::load_by_ring_key(local_storage, &storage_key)
+        .map_err(|e| SignError::Storage(format!("Failed to load refresh bundle: {}", e)))?;
+    let pub_poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
+        SignError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
+    })?;
+    let actual_public_polynomial_sha256 = sha256_hex(&pub_poly_bytes);
+    if actual_public_polynomial_sha256 != statement.public_polynomial_sha256 {
         return Err(SignError::ReshareInProgress);
     }
 
@@ -882,6 +988,102 @@ mod ring_reshare_update_tests {
         assert!(
             hex::encode(sign_bytes).ends_with("4007"),
             "field 8 should encode block_number_nonce"
+        );
+    }
+}
+
+#[cfg(test)]
+mod refresh_health_check_tests {
+    use super::*;
+    use crate::helpers::test_helpers::{cleanup_db, test_db_path};
+    use crypto::CryptoSerialize;
+    use local_storage::LocalStorageImpl;
+    use zeroize::Zeroizing;
+
+    fn fixture(
+        db_name: &str,
+    ) -> (
+        LocalStorageImpl,
+        String,
+        RefreshHealthCheckStatement,
+        Vec<u8>,
+    ) {
+        let db_path = test_db_path(db_name);
+        let storage = LocalStorageImpl::new(None, db_path.clone()).expect("create storage");
+        let (_sk, ring_pk) = crypto::helpers::generate_keypair().expect("generate ring key");
+        let ring_pk_bytes = CryptoSerialize::to_bytes(&ring_pk).expect("serialize ring key");
+        let ring_pk_hex = hex::encode(ring_pk_bytes);
+        let ring_key = storage_key_from_ring_pk_hex(&ring_pk_hex).expect("storage key");
+        let pub_poly_bytes = vec![1, 2, 3, 4, 5];
+        let bundle = RingShareBundle {
+            share_bytes: Zeroizing::new(Vec::new()),
+            public_polynomial: hex::encode(&pub_poly_bytes),
+            last_pss: 123,
+        };
+        bundle
+            .save_by_ring_key(&storage, &ring_key)
+            .expect("save bundle");
+
+        let peer_ids = vec!["peer-b".to_string(), "peer-a".to_string()];
+        let statement = RefreshHealthCheckStatement {
+            domain: REFRESH_HEALTH_CHECK_DOMAIN.to_string(),
+            session_id: 99,
+            ring_pk: ring_pk_hex,
+            public_polynomial_sha256: sha256_hex(&pub_poly_bytes),
+            peer_ids_sha256: refresh_health_check_peer_ids_sha256(&peer_ids),
+            threshold: 2,
+            total_participants: 2,
+        };
+
+        (storage, db_path, statement, pub_poly_bytes)
+    }
+
+    #[test]
+    fn validate_accepts_active_refreshed_bundle() {
+        let (storage, db_path, statement, _pub_poly_bytes) =
+            fixture("refresh_health_check_accepts_active");
+
+        let ring_pk =
+            validate_refresh_health_check_statement(&storage, &statement, None).expect("valid");
+
+        assert_eq!(ring_pk, statement.ring_pk);
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn validate_rejects_message_mismatch() {
+        let (storage, db_path, statement, _pub_poly_bytes) =
+            fixture("refresh_health_check_rejects_message_mismatch");
+
+        let err = validate_refresh_health_check_statement(&storage, &statement, Some(b"wrong"))
+            .expect_err("message mismatch should reject");
+
+        assert!(matches!(err, SignError::Unauthorized(_)));
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn validate_retries_when_active_bundle_hash_differs() {
+        let (storage, db_path, mut statement, _pub_poly_bytes) =
+            fixture("refresh_health_check_retries_hash_mismatch");
+        statement.public_polynomial_sha256 =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+
+        let err = validate_refresh_health_check_statement(&storage, &statement, None)
+            .expect_err("hash mismatch should be retryable");
+
+        assert!(matches!(err, SignError::ReshareInProgress));
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn peer_hash_is_order_independent() {
+        let a = vec!["peer-b".to_string(), "peer-a".to_string()];
+        let b = vec!["peer-a".to_string(), "peer-b".to_string()];
+
+        assert_eq!(
+            refresh_health_check_peer_ids_sha256(&a),
+            refresh_health_check_peer_ids_sha256(&b)
         );
     }
 }

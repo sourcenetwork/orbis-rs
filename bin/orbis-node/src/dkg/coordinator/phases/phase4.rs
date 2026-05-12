@@ -215,6 +215,44 @@ where
         }
     }
 
+    let ring_pk_bytes = CryptoSerialize::to_bytes(&aggregate_pk).map_err(|e| {
+        DkgError::Serialization(format!("Failed to serialize aggregate public key: {}", e))
+    })?;
+
+    tracing::info!(
+        aggregate_pk = ?aggregate_pk,
+        ring_key_hex = hex::encode(&ring_pk_bytes),
+        node_id = node_id,
+        "Phase 4: DKG complete! Final share computed"
+    );
+
+    if matches!(kind, SessionKind::Refresh { .. }) {
+        let peer_ids = coord
+            .app_state
+            .dkg_session_state
+            .get_peer_ids(&session_id)
+            .await
+            .unwrap_or_default();
+        if let Err(e) = refresh_health_check::run_if_refresh_selector(
+            coord,
+            session_id,
+            &kind,
+            node_id,
+            &ring_pk_bytes,
+            &pub_poly_bytes,
+            &peer_ids,
+            threshold,
+        )
+        .await
+        {
+            tracing::warn!(
+                session_id = session_id,
+                error = %e,
+                "Refresh health check failed after Phase 4; keeping refreshed bundle and continuing cleanup"
+            );
+        }
+    }
+
     // Clear the in-progress ceremony flag now that Phase 4 has succeeded.
     // For Reshare non-Dealers the bulletin update still happens below (node 1
     // must sign and post), so defer the unmark until after that completes.
@@ -228,17 +266,6 @@ where
                 .await;
         }
     }
-
-    let ring_pk_bytes = CryptoSerialize::to_bytes(&aggregate_pk).map_err(|e| {
-        DkgError::Serialization(format!("Failed to serialize aggregate public key: {}", e))
-    })?;
-
-    tracing::info!(
-        aggregate_pk = ?aggregate_pk,
-        ring_key_hex = hex::encode(&ring_pk_bytes),
-        node_id = node_id,
-        "Phase 4: DKG complete! Final share computed"
-    );
 
     // Node 1 of the OLD committee posts the RingPayload for fresh DKG.
     if node_id == 1 && matches!(kind, SessionKind::Fresh) {

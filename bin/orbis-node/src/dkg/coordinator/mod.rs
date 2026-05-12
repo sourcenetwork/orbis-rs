@@ -23,6 +23,7 @@ mod message_handlers;
 mod network;
 mod peers;
 mod phases;
+mod refresh_health_check;
 mod reshare;
 mod ring_storage;
 mod state_machine;

@@ -185,6 +185,7 @@ where
                 (derivation, meta)
             }
             SignContext::RingReshareUpdate(_) => (None, None),
+            SignContext::RefreshHealthCheck(_) => (None, None),
         };
 
         // =====================================================================
