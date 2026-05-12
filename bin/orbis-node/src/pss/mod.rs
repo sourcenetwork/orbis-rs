@@ -391,6 +391,7 @@ where
             ring_pk_hex: ring_pk_str.clone(),
         },
         pss_interval: ring_payload.pss_interval,
+        policy_id: None,
     };
 
     for peer_id_str in peer_ids {
@@ -648,6 +649,7 @@ where
         token_string: String::new(),
         kind,
         pss_interval: ring_payload.pss_interval,
+        policy_id: None,
     };
 
     for peer_id_str in &union_peers {

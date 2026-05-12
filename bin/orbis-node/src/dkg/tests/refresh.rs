@@ -69,6 +69,7 @@ async fn test_dkg_followed_by_pss_refresh() {
             threshold: 2,
             peer_ids: peer_ids.clone(),
             pss_interval: None,
+            policy_id: None,
         },
         &token,
     )
@@ -237,6 +238,7 @@ async fn test_dkg_followed_by_pss_refresh() {
             ring_pk_hex: key_string.clone(),
         },
         pss_interval: None,
+        policy_id: None,
     };
     for peer_id_str in &peer_ids {
         if let Err(e) = coordinator
@@ -567,6 +569,7 @@ fn refresh_session_init(ring_pk: &str, sender_hex: &str) -> DkgMessage {
             ring_pk_hex: ring_pk.to_string(),
         },
         pss_interval: None,
+        policy_id: None,
     }
 }
 

@@ -4,9 +4,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg,
-    do_encrypt_secret, do_generate_reader_key, do_pre, do_sign, do_store_secret, fund,
-    get_account_sequence, get_latest_ring, list_bulletin_posts, post_key_derivation,
-    prepare_secret, query_node_info, query_ring_state, read_bulletin_post,
+    do_dkg_with_policy, do_encrypt_secret, do_generate_reader_key, do_pre, do_sign,
+    do_store_secret, fund, get_account_sequence, get_latest_ring, list_bulletin_posts,
+    post_key_derivation, prepare_secret, query_node_info, query_ring_state, read_bulletin_post,
     register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
     store_prepared_secret, update_bulletin_post, PreparedSecret, SignResult,
 };
@@ -34,6 +34,10 @@ pub enum SubCommands {
         /// Peer IDs for P2P connections (required)
         #[clap(long, required = true, num_args = 1..)]
         peer_ids: Vec<String>,
+
+        /// Optional policy that externally governs ring updates
+        #[clap(long)]
+        policy_id: Option<String>,
     },
 
     /// Start a Proxy Re-Encryption session
@@ -393,8 +397,9 @@ async fn main() -> Result<()> {
             endpoint,
             threshold,
             peer_ids,
+            policy_id,
         } => {
-            do_dkg(endpoint, threshold, peer_ids, None).await?;
+            do_dkg_with_policy(endpoint, threshold, peer_ids, None, policy_id).await?;
         }
         SubCommands::Pre {
             endpoint,

@@ -108,6 +108,9 @@ pub enum DkgMessage {
         /// `None` means automatic refresh is disabled.
         #[serde(default)]
         pss_interval: Option<u64>,
+        /// Optional policy that externally governs ring updates.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy_id: Option<String>,
     },
     /// Error message
     Error { session_id: u64, error: String },

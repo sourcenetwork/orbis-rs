@@ -69,13 +69,21 @@ where
             .map_err(DkgError::Unauthorized)?;
         // TODO: use token.issuer_id as AuthZ check
         let req = request.into_inner();
+        let policy_id = req.policy_id.clone().filter(|s| !s.is_empty());
 
         // 2. Authorize: Validate JWT claims match request fields (compare raw, pre-normalization)
-        validate_dkg_claims(&token, req.threshold, &req.peer_ids, req.pss_interval)?;
+        validate_dkg_claims(
+            &token,
+            req.threshold,
+            &req.peer_ids,
+            req.pss_interval,
+            req.policy_id.as_deref(),
+        )?;
 
         tracing::info!(
             threshold = req.threshold,
             peer_ids = ?req.peer_ids,
+            policy_id = ?policy_id,
             issuer = %token.issuer_id,
             "Authenticated StartDkg request"
         );
@@ -160,7 +168,12 @@ where
                     req.threshold as usize,
                     actual_total_participants,
                     crypto::r#trait::DkgRole::Standard,
-                    |_| {},
+                    {
+                        let policy_id = policy_id.clone();
+                        move |state| {
+                            state.policy_id = policy_id;
+                        }
+                    },
                 )
                 .await?;
             // Guard will clean up session if we return early due to error
@@ -251,6 +264,7 @@ where
                 token_string: token_str.clone(), // Pass JWT to peer nodes for authentication
                 kind: SessionKind::Fresh,
                 pss_interval,
+                policy_id: policy_id.clone(),
             };
 
             // Send SessionInit to all peers (they will create their sessions and start Phase 1).

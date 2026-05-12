@@ -394,6 +394,7 @@ pub fn validate_dkg_claims(
     threshold: u32,
     peer_ids: &[String],
     pss_interval: Option<u64>,
+    policy_id: Option<&str>,
 ) -> Result<()> {
     // Validate threshold matches
     if token.claims.threshold != threshold {
@@ -429,6 +430,15 @@ pub fn validate_dkg_claims(
         return Err(DkgError::Unauthorized(format!(
             "Token pss_interval ({:?}) does not match request pss_interval ({:?})",
             token.claims.pss_interval, pss_interval
+        )));
+    }
+
+    let token_policy_id = token.claims.policy_id.as_deref().filter(|s| !s.is_empty());
+    let request_policy_id = policy_id.filter(|s| !s.is_empty());
+    if token_policy_id != request_policy_id {
+        return Err(DkgError::Unauthorized(format!(
+            "Token policy_id ({:?}) does not match request policy_id ({:?})",
+            token.claims.policy_id, policy_id
         )));
     }
 

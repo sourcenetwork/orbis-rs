@@ -800,6 +800,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         new_threshold: Some(reshare_threshold),
         pss_interval: dkg_ring_payload.pss_interval,
         block_number_nonce: dkg_ring_payload.block_number_nonce,
+        policy_id: dkg_ring_payload.policy_id.clone(),
     };
     let reshare_announcement_bytes =
         serde_json::to_vec(&reshare_announcement).expect("serialize reshare announcement");

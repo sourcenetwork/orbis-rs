@@ -31,26 +31,28 @@ where
         "DKG Coordinator: Starting Phase 4 completion"
     );
 
-    let (kind, pss_interval, dkg_role, reshare_new_peer_ids, reshare_bulletin_post_id) = coord
-        .app_state
-        .dkg_session_state
-        .with_state(&session_id, |state| {
-            (
-                state.kind.clone(),
-                state.pss_interval,
-                state.node.role(),
-                state
-                    .reshare_params
-                    .as_ref()
-                    .map(|p| p.new_peer_ids.clone()),
-                state
-                    .reshare_params
-                    .as_ref()
-                    .map(|p| p.bulletin_post_id.clone()),
-            )
-        })
-        .await
-        .ok_or_else(|| session_not_found(session_id))?;
+    let (kind, pss_interval, policy_id, dkg_role, reshare_new_peer_ids, reshare_bulletin_post_id) =
+        coord
+            .app_state
+            .dkg_session_state
+            .with_state(&session_id, |state| {
+                (
+                    state.kind.clone(),
+                    state.pss_interval,
+                    state.policy_id.clone(),
+                    state.node.role(),
+                    state
+                        .reshare_params
+                        .as_ref()
+                        .map(|p| p.new_peer_ids.clone()),
+                    state
+                        .reshare_params
+                        .as_ref()
+                        .map(|p| p.bulletin_post_id.clone()),
+                )
+            })
+            .await
+            .ok_or_else(|| session_not_found(session_id))?;
 
     // Pure Dealer nodes don't compute a secret share — they just clean up.
     // Because they are leaving the ring, delete the local secret share and
@@ -201,6 +203,7 @@ where
             peer_ids,
             threshold,
             pss_interval,
+            policy_id.clone(),
         )?;
         if let Err(e) =
             ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, bulletin_post_id)
@@ -248,6 +251,7 @@ where
             &ring_pk_bytes,
             threshold,
             pss_interval,
+            policy_id,
         )
         .await?;
     }

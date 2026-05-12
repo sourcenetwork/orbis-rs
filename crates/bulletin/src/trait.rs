@@ -61,6 +61,9 @@ pub struct RingPayload {
     /// the current block number after accepting the signature.
     #[serde(default)]
     pub block_number_nonce: u64,
+    /// If set, the ring is updated externally governed by this policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_id: Option<String>,
 }
 
 /// Payload for derivation information derivation_id => payload

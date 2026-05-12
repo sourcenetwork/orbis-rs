@@ -166,10 +166,31 @@ impl JwtSigner {
         peer_ids: &[String],
         pss_interval: Option<u64>,
     ) -> Result<String> {
+        self.create_dkg_jwt_with_policy(threshold, peer_ids, pss_interval, None)
+    }
+
+    /// Create a JWT with DKG claims and an optional governing policy.
+    ///
+    /// # Arguments
+    /// * `threshold` - The threshold value for DKG
+    /// * `peer_ids` - List of peer IDs
+    /// * `pss_interval` - Optional seconds between automatic PSS refresh ceremonies
+    /// * `policy_id` - Optional policy that externally governs ring updates
+    ///
+    /// # Returns
+    /// The signed JWT string valid for 1 hour
+    pub fn create_dkg_jwt_with_policy(
+        &self,
+        threshold: u32,
+        peer_ids: &[String],
+        pss_interval: Option<u64>,
+        policy_id: Option<String>,
+    ) -> Result<String> {
         let claims = DkgClaims {
             threshold,
             peer_ids: peer_ids.to_vec(),
             pss_interval,
+            policy_id,
         };
         self.sign(claims, TOKEN_TTL)
     }

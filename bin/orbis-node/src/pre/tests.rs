@@ -127,6 +127,7 @@ async fn test_dkg_then_pre_end_to_end() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
+        policy_id: None,
     };
 
     // Create authenticated request
@@ -386,6 +387,7 @@ async fn test_pre_with_large_secret() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
+        policy_id: None,
     };
 
     // Create authenticated request
@@ -524,6 +526,7 @@ async fn test_pre_fails_with_wrong_key() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
+        policy_id: None,
     };
 
     // Create authenticated request
@@ -664,6 +667,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
+        policy_id: None,
     };
 
     // Create authenticated request
@@ -812,6 +816,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
+        policy_id: None,
     };
 
     let test_keys = TestKeyPair::new();
@@ -1107,6 +1112,7 @@ async fn test_pre_fails_with_wrong_derivation() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
+        policy_id: None,
     };
 
     let test_keys = TestKeyPair::new();
@@ -1289,6 +1295,7 @@ async fn test_pre_fails_with_bad_proof() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
+        policy_id: None,
     };
 
     let test_keys = TestKeyPair::new();

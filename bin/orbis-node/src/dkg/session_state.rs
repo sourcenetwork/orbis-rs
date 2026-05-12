@@ -219,6 +219,9 @@ pub struct DkgSessionState<D: Dkg> {
     /// Seconds between automatic PSS refresh ceremonies for this ring.
     /// Stored here during the session so Phase 4 can write it into `RingPayload`.
     pub pss_interval: Option<u64>,
+    /// Optional policy that externally governs ring updates.
+    /// Stored here during fresh DKG so Phase 4 can write it into `RingPayload`.
+    pub policy_id: Option<String>,
     /// Extra parameters required only for Reshare sessions.  `None` for Fresh and Refresh.
     pub reshare_params: Option<ReshareParams<D::ShareValue>>,
     /// Per-peer QUIC streams for this session.
@@ -260,6 +263,7 @@ impl<D: Dkg> DkgSessionState<D> {
             processing_messages: std::collections::HashSet::new(),
             kind: SessionKind::Fresh,
             pss_interval: None,
+            policy_id: None,
             reshare_params: None,
             peer_streams: HashMap::new(),
             peer_send_locks: HashMap::new(),

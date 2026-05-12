@@ -18,6 +18,7 @@ pub(in crate::dkg::coordinator) async fn handle_session_init<D>(
     token_string: &str,
     kind: &SessionKind,
     pss_interval: Option<u64>,
+    policy_id: Option<String>,
     sender_peer_id: &PeerId,
 ) -> Result<Option<DkgMessage>>
 where
@@ -191,10 +192,17 @@ where
                 MAX_JWT_BYTES,
             )
             .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-            validate_dkg_claims(&token, threshold, peer_ids, pss_interval)?;
+            validate_dkg_claims(
+                &token,
+                threshold,
+                peer_ids,
+                pss_interval,
+                policy_id.as_deref(),
+            )?;
             tracing::info!(
                 issuer = %token.issuer_id,
                 threshold = threshold,
+                policy_id = ?policy_id,
                 "DKG Coordinator: SessionInit JWT validated successfully"
             );
         }
@@ -301,6 +309,7 @@ where
         new_peer_ids.sort();
     }
     let init_params = maybe_reshare_params;
+    let init_policy_id = policy_id.filter(|s| !s.is_empty());
 
     // If session doesn't exist, create it.
     // Idempotent: treat "session already exists" from a concurrent handler as success.
@@ -320,6 +329,7 @@ where
                 dkg_role,
                 move |state| {
                     state.kind = init_kind;
+                    state.policy_id = init_policy_id;
                     if let Some(params) = init_params {
                         state.reshare_params = Some(params);
                     }

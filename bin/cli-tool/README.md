@@ -24,7 +24,7 @@ Optional crypto backends (see `Cargo.toml`):
 | Command | Description |
 |--------|-------------|
 | `info` | Query node info (public address, peer ID, P2P address). Default endpoint: `http://localhost:50051`. |
-| `dkg` | Start a Distributed Key Generation session. Requires `--threshold`, `--peer-ids` (one or more), and optionally `--endpoint`. |
+| `dkg` | Start a Distributed Key Generation session. Requires `--threshold`, `--peer-ids` (one or more), and optionally `--endpoint`, `--policy-id`. |
 | `generate-reader-key` | Generate a reader keypair (hex). Use the output as `--reader-pk` / `--reader-sk` for PRE. |
 | `get-latest-ring` | Read the latest ring from the bulletin (e.g. after DKG). Prints `RING_ID=` and `RING_PK=` for use in scripts. Optional `--namespace` (default: `orbis`). |
 
@@ -75,6 +75,7 @@ cargo run -p cli-tool -- info --endpoint http://localhost:50051
 
 # DKG (e.g. 2-of-2 with one peer)
 cargo run -p cli-tool -- dkg --threshold 2 --peer-ids <PEER_ID>
+cargo run -p cli-tool -- dkg --threshold 2 --peer-ids <PEER_ID> --policy-id <POLICY_ID>
 
 # Reader keypair for PRE
 cargo run -p cli-tool -- generate-reader-key

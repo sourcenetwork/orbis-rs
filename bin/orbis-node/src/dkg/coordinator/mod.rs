@@ -195,6 +195,7 @@ where
             token_string,
             kind,
             pss_interval,
+            policy_id,
             ..
         } = &message
         {
@@ -208,6 +209,7 @@ where
                 token_string,
                 kind,
                 *pss_interval,
+                policy_id.clone(),
                 sender_peer_id,
             )
             .await;
