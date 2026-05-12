@@ -143,6 +143,14 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             .await
             .expect("WebSocket event subscription");
 
+    // Create the ring governance ACP policy before DKG so it can be embedded in the ring
+    // payload. The bulletin keeper checks `update_post` permission on this policy when
+    // UpdateRingPostByAcp is called. Registering the namespace object makes the signer the
+    // `owner`, which grants `update_post` via the policy's permission expression.
+    let ring_policy_id = cli_tool::add_ring_governance_policy(BULLETIN_RING_NAMESPACE)
+        .await
+        .expect("create ring governance policy");
+
     println!(
         "Starting DKG with threshold {} and {} peers...",
         threshold,
@@ -150,7 +158,14 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     );
     // pss_interval = 1s so the PSS scheduler (5s check interval in docker-compose) fires a
     // refresh shortly after DKG completes.
-    let dkg_result = cli_tool::do_dkg(endpoint.clone(), threshold, peer_ids.clone(), Some(1)).await;
+    let dkg_result = cli_tool::do_dkg_with_policy(
+        endpoint.clone(),
+        threshold,
+        peer_ids.clone(),
+        Some(1),
+        Some(ring_policy_id),
+    )
+    .await;
     assert!(
         dkg_result.is_ok(),
         "DKG should succeed: {:?}",

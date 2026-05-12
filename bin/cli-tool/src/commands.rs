@@ -592,6 +592,24 @@ pub fn do_generate_reader_key() -> Result<()> {
     Ok(())
 }
 
+/// Ring governance policy. Uses SourceHub bulletin's ACP model:
+/// - resource `namespace`, object = "bulletin/<namespace>", permission `update_post`.
+/// - `owner` is reserved and automatically injected by acp_core's DiscretionaryTransformer
+///   into every permission expression (`update_post = collaborator` → `owner + collaborator`).
+/// - `RegisterObject` sets the signer as `owner`, so no explicit collaborator setup is needed.
+const RING_GOVERNANCE_POLICY_YAML: &str = r#"
+name: ring-governance-policy
+resources:
+  - name: namespace
+    relations:
+      - name: collaborator
+        types:
+          - actor
+    permissions:
+      - name: update_post
+        expr: collaborator
+"#;
+
 const TEST_POLICY_YAML: &str = r#"
 name: test-policy
 resources:
@@ -646,6 +664,75 @@ pub async fn add_policy_to_chain() -> Result<String> {
     println!("[ACP] policy_id from list: {}", policy_id);
     Ok(policy_id)
 }
+
+/// Creates a ring governance ACP policy and registers the bulletin ring namespace
+/// as an object within it. The signer (TEST_ACCOUNT_HEX_KEY) becomes the object
+/// `owner`, which grants `update_post` permission for `UpdateRingPostByAcp`.
+///
+/// Returns the ring governance `policy_id`.
+pub async fn add_ring_governance_policy(bulletin_namespace: &str) -> Result<String> {
+    let client = SourceHubClient::with_signer(
+        ChainConfig::local(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
+    )
+    .await
+    .map_err(|e| anyhow!("client builder issue: {}", e))?;
+
+    let ids_before: std::collections::HashSet<String> = client
+        .acp_list_policy_ids()
+        .await
+        .map_err(|e| anyhow!("Failed to list policy IDs: {}", e))?
+        .ids
+        .into_iter()
+        .collect();
+
+    let create_result = client
+        .acp_create_policy(RING_GOVERNANCE_POLICY_YAML, 1)
+        .await
+        .map_err(|e| anyhow!("Failed to create ring governance policy: {}", e))?;
+    println!(
+        "[ACP] ring governance create_policy: code={} hash={} log={}",
+        create_result.code, create_result.tx_hash, create_result.log
+    );
+
+    let policy_id = client
+        .acp_list_policy_ids()
+        .await
+        .map_err(|e| anyhow!("Failed to list policy IDs: {}", e))?
+        .ids
+        .into_iter()
+        .find(|id| !ids_before.contains(id))
+        .ok_or_else(|| anyhow!("Newly created ring governance policy ID not found in list"))?;
+    println!("[ACP] ring governance policy_id: {}", policy_id);
+
+    // The bulletin keeper uses namespaceId = "bulletin/" + namespace.
+    // Registering this object makes the signer the `owner`, granting `update_post`.
+    let namespace_object_id = format!("bulletin/{}", bulletin_namespace);
+    let result = client
+        .acp_register_object(
+            &policy_id,
+            Object {
+                resource: "namespace".to_string(),
+                id: namespace_object_id.clone(),
+            },
+        )
+        .await
+        .map_err(|e| anyhow!("Failed to register namespace object in ring governance policy: {}", e))?;
+    println!(
+        "[ACP] ring governance register_object({}): code={} hash={}",
+        namespace_object_id, result.code, result.tx_hash
+    );
+    if result.code != 0 {
+        return Err(anyhow!(
+            "register_object failed: code={} log={}",
+            result.code,
+            result.log
+        ));
+    }
+
+    Ok(policy_id)
+}
+
 pub async fn register_object_to_chain(
     policy_id: String,
     object_id: String,
