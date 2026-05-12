@@ -5,10 +5,11 @@ use crate::helpers::helpers::{
 };
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::error::{Result, SignError};
-use crate::sign::helpers::serialize_commitments;
+use crate::sign::helpers::{serialize_commitments, validate_refresh_health_check_statement};
 use crate::sign::messages::{SignContext, SignMessage, SignRequest};
 use crypto::r#trait::{
-    CryptoSerialize, DistKeyShare, Dkg, PubPoly as PubPolyTrait, PubShare, ThresholdSigner,
+    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PubPoly as PubPolyTrait, PubShare,
+    ThresholdSigner,
 };
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignaturePoint};
 use std::collections::HashSet;
@@ -137,21 +138,49 @@ where
         //
         //    Loading from the same bundle snapshot eliminates both races: pub_poly,
         //    nonce generation, and signing all use the same PSS generation.
-        let (pub_poly, local_dist_key_share) = {
-            let (poly, bundle) = load_ring_pub_poly_and_bundle::<D>(
-                &self.app_state.local_storage,
-                &ring,
-                self_in_list,
-            )
-            .map_err(SignError::Deserialization)?;
-            let dks = match bundle {
-                Some(bundle) => Some(DistKeyShare {
-                    pri_share: bundle.pri_share().map_err(SignError::Deserialization)?,
-                }),
-                None => None,
+        let (pub_poly, local_dist_key_share) =
+            if let SignContext::RefreshHealthCheck(ctx) = &context {
+                let (_, bundle) = validate_refresh_health_check_statement(
+                    &self.app_state.dkg_session_state,
+                    &ctx.statement,
+                    Some(&message),
+                )
+                .await?;
+                let pub_poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
+                    SignError::Deserialization(format!(
+                        "Failed to decode staged refresh public polynomial: {}",
+                        e
+                    ))
+                })?;
+                let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
+                    SignError::Deserialization(format!(
+                        "Failed to deserialize staged refresh public polynomial: {}",
+                        e
+                    ))
+                })?;
+                let dks = if self_in_list {
+                    Some(DistKeyShare {
+                        pri_share: bundle.pri_share().map_err(SignError::Deserialization)?,
+                    })
+                } else {
+                    None
+                };
+                (pub_poly, dks)
+            } else {
+                let (poly, bundle) = load_ring_pub_poly_and_bundle::<D>(
+                    &self.app_state.local_storage,
+                    &ring,
+                    self_in_list,
+                )
+                .map_err(SignError::Deserialization)?;
+                let dks = match bundle {
+                    Some(bundle) => Some(DistKeyShare {
+                        pri_share: bundle.pri_share().map_err(SignError::Deserialization)?,
+                    }),
+                    None => None,
+                };
+                (poly, dks)
             };
-            (poly, dks)
-        };
 
         // Validate we have enough potential shares to meet threshold
         let potential_shares = if self_in_list {

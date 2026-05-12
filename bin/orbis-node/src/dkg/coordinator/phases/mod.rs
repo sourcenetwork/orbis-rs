@@ -1,12 +1,15 @@
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
-    persist_ring_bundle, serialize_commitment_coefficients, session_not_found,
+    build_refresh_ring_bundle, persist_ring_bundle, serialize_commitment_coefficients,
+    session_not_found,
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
-use crate::dkg::session_state::DkgPhase;
+use crate::dkg::session_state::{DkgPhase, RefreshHealthCheckCandidate};
 use crate::helpers::helpers::is_self_peer_id;
 use crate::metrics;
-use crypto::r#trait::{DistKeyShare, DkgRole, PubShare, ThresholdSigner};
+use crypto::r#trait::{
+    CryptoDeserialize, DistKeyShare, DkgRole, PubPoly as PubPolyTrait, PubShare, ThresholdSigner,
+};
 use crypto::{
     CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl,
     SignaturePoint,

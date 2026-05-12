@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::sign::messages::RefreshHealthCheckStatement;
+
 /// Describes what kind of ceremony a DKG session is running.
 ///
 /// Replaces the old `is_refresh: bool` / `refresh_ring_pk_hex: Option<String>` pair.
@@ -88,6 +90,15 @@ pub enum DkgMessage {
         from_node_id: u32,
         selected_dealer_ids: Vec<u32>,
     },
+    /// Refresh-only: node 1 distributes the diagnostic threshold signature
+    /// result. Receivers verify the signature against their staged refresh
+    /// bundle before promoting; `None` means rollback.
+    RefreshHealthCheckResult {
+        session_id: u64,
+        from_node_id: u32,
+        statement: RefreshHealthCheckStatement,
+        signature: Option<String>,
+    },
     /// Phase 4: Session initialization/coordination
     SessionInit {
         session_id: u64,
@@ -122,6 +133,7 @@ impl DkgMessage {
             DkgMessage::Complaint { session_id, .. } => *session_id,
             DkgMessage::ReshareShareAck { session_id, .. } => *session_id,
             DkgMessage::ReshareParticipantSet { session_id, .. } => *session_id,
+            DkgMessage::RefreshHealthCheckResult { session_id, .. } => *session_id,
             DkgMessage::SessionInit { session_id, .. } => *session_id,
             DkgMessage::Error { session_id, .. } => *session_id,
         }

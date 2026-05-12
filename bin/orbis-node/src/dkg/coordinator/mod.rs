@@ -172,6 +172,10 @@ where
             DkgMessage::ReshareParticipantSet { from_node_id, .. } => {
                 (DkgMessageType::ReshareParticipantSet, Some(*from_node_id))
             }
+            DkgMessage::RefreshHealthCheckResult { from_node_id, .. } => (
+                DkgMessageType::RefreshHealthCheckResult,
+                Some(*from_node_id),
+            ),
             DkgMessage::SessionInit { .. } => (DkgMessageType::SessionInit, None),
             DkgMessage::Error { .. } => (DkgMessageType::Error, None),
         };
@@ -182,6 +186,7 @@ where
             DkgMessageType::Share => "share",
             DkgMessageType::ReshareShareAck => "reshare_share_ack",
             DkgMessageType::ReshareParticipantSet => "reshare_participant_set",
+            DkgMessageType::RefreshHealthCheckResult => "refresh_health_check_result",
             DkgMessageType::Complaint => "complaint",
             DkgMessageType::Error => "error",
         };
@@ -256,6 +261,9 @@ where
                 receiver_node_id, ..
             } => Some((*receiver_node_id, true)),
             DkgMessage::ReshareParticipantSet { from_node_id, .. } => Some((*from_node_id, true)),
+            DkgMessage::RefreshHealthCheckResult { from_node_id, .. } => {
+                Some((*from_node_id, false))
+            }
             DkgMessage::SessionInit { .. } | DkgMessage::Error { .. } => None,
         };
 
@@ -408,6 +416,21 @@ where
                     session_id,
                     from_node_id,
                     selected_dealer_ids,
+                )
+                .await
+            }
+            DkgMessage::RefreshHealthCheckResult {
+                from_node_id,
+                statement,
+                signature,
+                ..
+            } => {
+                refresh_health_check::handle_result(
+                    self,
+                    session_id,
+                    from_node_id,
+                    statement,
+                    signature,
                 )
                 .await
             }

@@ -86,6 +86,7 @@ where
             ..
         } = req;
         // Auth check first — fail fast before burning a nonce.
+        let mut refresh_candidate_bundle: Option<RingShareBundle> = None;
         let authoritative_ring_pk_hex = match &context {
             SignContext::Policy(ctx) => {
                 let (token_string, namespace, derivation_id, valid_window) = (
@@ -128,11 +129,16 @@ where
                 )
                 .await?,
             ),
-            SignContext::RefreshHealthCheck(ctx) => Some(validate_refresh_health_check_statement(
-                &self.app_state.local_storage,
-                &ctx.statement,
-                None,
-            )?),
+            SignContext::RefreshHealthCheck(ctx) => {
+                let (ring_pk_hex, bundle) = validate_refresh_health_check_statement(
+                    &self.app_state.dkg_session_state,
+                    &ctx.statement,
+                    None,
+                )
+                .await?;
+                refresh_candidate_bundle = Some(bundle);
+                Some(ring_pk_hex)
+            }
             SignContext::Bulletin => None,
         };
 
@@ -156,7 +162,17 @@ where
         } else {
             client_ring_pk
         };
-        let dist_key_share = load_dist_key_share(&self.app_state.local_storage, &ring_pk)?;
+        let dist_key_share = if let Some(bundle) = refresh_candidate_bundle {
+            let pri_share = bundle.pri_share().map_err(|e| {
+                SignError::Deserialization(format!(
+                    "Failed to deserialize staged refresh share: {}",
+                    e
+                ))
+            })?;
+            DistKeyShare { pri_share }
+        } else {
+            load_dist_key_share(&self.app_state.local_storage, &ring_pk)?
+        };
         let node_id = dist_key_share.pri_share.i;
 
         let signer = S::new();
@@ -294,11 +310,12 @@ where
                 (ring_pk_hex, None, None)
             }
             SignContext::RefreshHealthCheck(ref ctx) => {
-                let ring_pk_hex = validate_refresh_health_check_statement(
-                    &self.app_state.local_storage,
+                let (ring_pk_hex, _) = validate_refresh_health_check_statement(
+                    &self.app_state.dkg_session_state,
                     &ctx.statement,
                     Some(&message),
-                )?;
+                )
+                .await?;
                 (ring_pk_hex, None, None)
             }
         };
@@ -310,8 +327,19 @@ where
             SignError::Deserialization(format!("Failed to decode ring_pk hex: {}", e))
         })?;
         let ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
-        let bundle = RingShareBundle::load(&self.app_state.local_storage, &ring_pk)
-            .map_err(|e| SignError::Storage(format!("Failed to load share bundle: {}", e)))?;
+        let bundle = match &context {
+            SignContext::RefreshHealthCheck(ctx) => {
+                let (_, bundle) = validate_refresh_health_check_statement(
+                    &self.app_state.dkg_session_state,
+                    &ctx.statement,
+                    Some(&message),
+                )
+                .await?;
+                bundle
+            }
+            _ => RingShareBundle::load(&self.app_state.local_storage, &ring_pk)
+                .map_err(|e| SignError::Storage(format!("Failed to load share bundle: {}", e)))?,
+        };
         let pub_poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
             SignError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
         })?;

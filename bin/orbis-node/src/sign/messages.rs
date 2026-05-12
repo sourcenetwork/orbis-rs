@@ -107,7 +107,7 @@ pub enum SignContext {
     /// and sign the canonical statement from the new shares.
     RingReshareUpdate(Box<RingReshareUpdateContext>),
     /// PSS refresh health check. Responders validate the canonical statement
-    /// against their active refreshed bundle and sign only this domain.
+    /// against their staged refreshed bundle and sign only this domain.
     RefreshHealthCheck(Box<RefreshHealthCheckContext>),
 }
 

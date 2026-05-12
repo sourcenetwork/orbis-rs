@@ -335,12 +335,12 @@ pub async fn validate_ring_reshare_update_statement(
 /// Validate a PSS refresh health-check statement before signing it.
 ///
 /// Responders only sign if the requested statement matches the message bytes and
-/// their active ring bundle is on the advertised refreshed public polynomial.
-pub fn validate_refresh_health_check_statement(
-    local_storage: &impl LocalStorage,
+/// their staged refresh candidate is on the advertised public polynomial.
+pub async fn validate_refresh_health_check_statement<D: Dkg + 'static>(
+    dkg_session_state: &SessionStateManager<D>,
     statement: &RefreshHealthCheckStatement,
     expected_message: Option<&[u8]>,
-) -> Result<String> {
+) -> Result<(String, RingShareBundle)> {
     if statement.domain != REFRESH_HEALTH_CHECK_DOMAIN {
         return Err(SignError::Unauthorized(format!(
             "Invalid refresh health-check domain '{}'",
@@ -368,9 +368,38 @@ pub fn validate_refresh_health_check_statement(
         }
     }
 
-    let storage_key = storage_key_from_ring_pk_hex(&statement.ring_pk)?;
-    let bundle = RingShareBundle::load_by_ring_key(local_storage, &storage_key)
-        .map_err(|e| SignError::Storage(format!("Failed to load refresh bundle: {}", e)))?;
+    let candidate = dkg_session_state
+        .refresh_health_check_candidate(&statement.session_id)
+        .await
+        .ok_or(SignError::ReshareInProgress)?;
+
+    let statement_storage_key = storage_key_from_ring_pk_hex(&statement.ring_pk)?;
+    if candidate.ring_key != statement_storage_key || candidate.ring_pk_hex != statement.ring_pk {
+        return Err(SignError::Unauthorized(
+            "Refresh health-check statement ring_pk does not match staged candidate".to_string(),
+        ));
+    }
+    if candidate.threshold != statement.threshold as usize {
+        return Err(SignError::Unauthorized(format!(
+            "Refresh health-check threshold {} does not match staged threshold {}",
+            statement.threshold, candidate.threshold
+        )));
+    }
+    if candidate.peer_ids.len() != statement.total_participants as usize {
+        return Err(SignError::Unauthorized(format!(
+            "Refresh health-check committee size {} does not match staged committee size {}",
+            statement.total_participants,
+            candidate.peer_ids.len()
+        )));
+    }
+    let expected_peer_hash = refresh_health_check_peer_ids_sha256(&candidate.peer_ids);
+    if expected_peer_hash != statement.peer_ids_sha256 {
+        return Err(SignError::Unauthorized(
+            "Refresh health-check peer set hash does not match staged candidate".to_string(),
+        ));
+    }
+
+    let bundle = candidate.bundle;
     let pub_poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
         SignError::Deserialization(format!("Failed to decode public polynomial hex: {}", e))
     })?;
@@ -379,7 +408,7 @@ pub fn validate_refresh_health_check_statement(
         return Err(SignError::ReshareInProgress);
     }
 
-    Ok(statement.ring_pk.clone())
+    Ok((statement.ring_pk.clone(), bundle))
 }
 
 /// Serializes a list of `(node_id, commitment)` pairs to a length-prefixed byte buffer.
@@ -995,21 +1024,17 @@ mod ring_reshare_update_tests {
 #[cfg(test)]
 mod refresh_health_check_tests {
     use super::*;
-    use crate::helpers::test_helpers::{cleanup_db, test_db_path};
-    use crypto::CryptoSerialize;
-    use local_storage::LocalStorageImpl;
+    use crate::dkg::session_state::RefreshHealthCheckCandidate;
+    use crypto::r#trait::{Dkg, DkgRole};
+    use crypto::{CryptoSerialize, DkgImpl};
     use zeroize::Zeroizing;
 
-    fn fixture(
-        db_name: &str,
-    ) -> (
-        LocalStorageImpl,
-        String,
+    async fn fixture() -> (
+        SessionStateManager<DkgImpl>,
         RefreshHealthCheckStatement,
         Vec<u8>,
     ) {
-        let db_path = test_db_path(db_name);
-        let storage = LocalStorageImpl::new(None, db_path.clone()).expect("create storage");
+        let state = SessionStateManager::<DkgImpl>::new();
         let (_sk, ring_pk) = crypto::helpers::generate_keypair().expect("generate ring key");
         let ring_pk_bytes = CryptoSerialize::to_bytes(&ring_pk).expect("serialize ring key");
         let ring_pk_hex = hex::encode(ring_pk_bytes);
@@ -1020,14 +1045,26 @@ mod refresh_health_check_tests {
             public_polynomial: hex::encode(&pub_poly_bytes),
             last_pss: 123,
         };
-        bundle
-            .save_by_ring_key(&storage, &ring_key)
-            .expect("save bundle");
 
         let peer_ids = vec!["peer-b".to_string(), "peer-a".to_string()];
+        let session_id = 99;
+        let node = DkgImpl::new(1, 2, 2, session_id, DkgRole::Standard).expect("create node");
+        state.create_session(session_id, *node, 2, |_| {}).await;
+        state
+            .set_refresh_health_check_candidate(
+                &session_id,
+                RefreshHealthCheckCandidate {
+                    ring_key,
+                    ring_pk_hex: ring_pk_hex.clone(),
+                    bundle,
+                    peer_ids: peer_ids.clone(),
+                    threshold: 2,
+                },
+            )
+            .await;
         let statement = RefreshHealthCheckStatement {
             domain: REFRESH_HEALTH_CHECK_DOMAIN.to_string(),
-            session_id: 99,
+            session_id,
             ring_pk: ring_pk_hex,
             public_polynomial_sha256: sha256_hex(&pub_poly_bytes),
             peer_ids_sha256: refresh_health_check_peer_ids_sha256(&peer_ids),
@@ -1035,45 +1072,42 @@ mod refresh_health_check_tests {
             total_participants: 2,
         };
 
-        (storage, db_path, statement, pub_poly_bytes)
+        (state, statement, pub_poly_bytes)
     }
 
-    #[test]
-    fn validate_accepts_active_refreshed_bundle() {
-        let (storage, db_path, statement, _pub_poly_bytes) =
-            fixture("refresh_health_check_accepts_active");
+    #[tokio::test]
+    async fn validate_accepts_staged_refreshed_bundle() {
+        let (state, statement, _pub_poly_bytes) = fixture().await;
 
-        let ring_pk =
-            validate_refresh_health_check_statement(&storage, &statement, None).expect("valid");
+        let (ring_pk, _) = validate_refresh_health_check_statement(&state, &statement, None)
+            .await
+            .expect("valid");
 
         assert_eq!(ring_pk, statement.ring_pk);
-        cleanup_db(&db_path);
     }
 
-    #[test]
-    fn validate_rejects_message_mismatch() {
-        let (storage, db_path, statement, _pub_poly_bytes) =
-            fixture("refresh_health_check_rejects_message_mismatch");
+    #[tokio::test]
+    async fn validate_rejects_message_mismatch() {
+        let (state, statement, _pub_poly_bytes) = fixture().await;
 
-        let err = validate_refresh_health_check_statement(&storage, &statement, Some(b"wrong"))
+        let err = validate_refresh_health_check_statement(&state, &statement, Some(b"wrong"))
+            .await
             .expect_err("message mismatch should reject");
 
         assert!(matches!(err, SignError::Unauthorized(_)));
-        cleanup_db(&db_path);
     }
 
-    #[test]
-    fn validate_retries_when_active_bundle_hash_differs() {
-        let (storage, db_path, mut statement, _pub_poly_bytes) =
-            fixture("refresh_health_check_retries_hash_mismatch");
+    #[tokio::test]
+    async fn validate_retries_when_staged_bundle_hash_differs() {
+        let (state, mut statement, _pub_poly_bytes) = fixture().await;
         statement.public_polynomial_sha256 =
             "0000000000000000000000000000000000000000000000000000000000000000".to_string();
 
-        let err = validate_refresh_health_check_statement(&storage, &statement, None)
+        let err = validate_refresh_health_check_statement(&state, &statement, None)
+            .await
             .expect_err("hash mismatch should be retryable");
 
         assert!(matches!(err, SignError::ReshareInProgress));
-        cleanup_db(&db_path);
     }
 
     #[test]
