@@ -1,24 +1,27 @@
-use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::pre::{
     error::{PreError, Result},
     messages::PreMessage,
     response_state::PreResponseManager,
 };
+use crate::ring_state::RingIndexEntry;
 use authn::{BearerToken, PreClaims};
 use authz::r#trait::Authz;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, DocumentPayload, RingPayload};
 use crypto::r#trait::{EncryptionProof, Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
+use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::PeerId;
 use std::sync::Arc;
 
 /// Fetches and deserializes the document and ring payloads from the bulletin.
 ///
 /// Reads the document by `namespace`/`object_id`, then follows the embedded
-/// `ring_id` to load the corresponding ring payload.
+/// `ring_id` to load the corresponding ring payload. The ring's bulletin namespace
+/// is resolved from the local `RingIndex` by matching `bulletin_post_id == ring_id`.
 pub async fn fetch_bulletin_payloads(
     bulletin: &(dyn Bulletin + Send + Sync),
+    local_storage: &impl LocalStorage,
     namespace: &str,
     object_id: &str,
 ) -> Result<(DocumentPayload, RingPayload)> {
@@ -32,11 +35,16 @@ pub async fn fetch_bulletin_payloads(
             PreError::Deserialization(format!("Failed to parse document payload: {}", e))
         })?;
 
+    let ring_namespace = ring_namespace_for_post_id(local_storage, &document_payload.ring_id)
+        .ok_or_else(|| {
+            PreError::Storage(format!(
+                "Ring '{}' not found in local ring index",
+                document_payload.ring_id
+            ))
+        })?;
+
     let ring_info = bulletin
-        .read(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            document_payload.ring_id.clone(),
-        )
+        .read(ring_namespace, document_payload.ring_id.clone())
         .await
         .map_err(|e| {
             PreError::Storage(format!(
@@ -49,6 +57,19 @@ pub async fn fetch_bulletin_payloads(
         .map_err(|e| PreError::Deserialization(format!("Failed to parse ring payload: {}", e)))?;
 
     Ok((document_payload, ring_payload))
+}
+
+fn ring_namespace_for_post_id(local_storage: &impl LocalStorage, post_id: &str) -> Option<String> {
+    let ring_index: Vec<RingIndexEntry> = local_storage
+        .get(LocalStorageKeys::RingIndex)
+        .ok()
+        .flatten()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    ring_index
+        .iter()
+        .find(|e| e.bulletin_post_id == post_id)
+        .map(|e| e.bulletin_namespace.clone())
 }
 
 /// Checks whether the token issuer has the required policy access for a document.

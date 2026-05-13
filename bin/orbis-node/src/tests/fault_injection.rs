@@ -240,9 +240,15 @@ async fn setup_ring(
         .await
         .expect("ring event subscription");
 
-    let dkg_result = cli_tool::do_dkg(endpoint.to_string(), threshold, peer_ids, None)
-        .await
-        .expect("DKG initiation");
+    let dkg_result = cli_tool::do_dkg(
+        endpoint.to_string(),
+        threshold,
+        peer_ids,
+        None,
+        crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+    )
+    .await
+    .expect("DKG initiation");
 
     let post_event = sub
         .wait_for_artifact(&dkg_result.session_id, Duration::from_secs(90))
@@ -730,7 +736,14 @@ async fn test_dkg_fails_when_node_unreachable() {
     // Initiate DKG — the DKG service checks connectivity to all peers upfront.
     // Because charlie is blocked on alice's outbound controller, alice cannot
     // reach charlie and the DKG call must return an error immediately.
-    let dkg_result = cli_tool::do_dkg(endpoint.to_string(), 2, peer_ids, None).await;
+    let dkg_result = cli_tool::do_dkg(
+        endpoint.to_string(),
+        2,
+        peer_ids,
+        None,
+        crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+    )
+    .await;
 
     assert!(
         dkg_result.is_err(),

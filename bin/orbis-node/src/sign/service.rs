@@ -106,9 +106,13 @@ where
         });
 
         // Fetch ring and key derivation from bulletin (IO) ---
-        let (key_derivation, ring_payload) =
-            fetch_bulletin_payloads(&*self.state.bulletin, &req.namespace, &req.derivation_id)
-                .await?;
+        let (key_derivation, ring_payload) = fetch_bulletin_payloads(
+            &*self.state.bulletin,
+            &self.state.local_storage,
+            &req.namespace,
+            &req.derivation_id,
+        )
+        .await?;
 
         // Authorize: check on-chain policy access (IO) ---
         check_policy_access(

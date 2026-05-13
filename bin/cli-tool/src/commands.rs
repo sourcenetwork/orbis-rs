@@ -49,6 +49,7 @@ pub async fn do_dkg(
     threshold: u32,
     peer_ids: Vec<String>,
     pss_interval: Option<u64>,
+    namespace: String,
 ) -> Result<DkgResult> {
     // Total nodes = peers + the node we're connecting to
     let total_nodes = peer_ids.len() as u32;
@@ -65,6 +66,7 @@ pub async fn do_dkg(
     println!("  Endpoint: {}", endpoint);
     println!("  Threshold: {}/{}", threshold, total_nodes);
     println!("  Peer IDs: {:?}", peer_ids);
+    println!("  Namespace: {}", namespace);
     println!();
 
     println!("Connecting to {}...", endpoint);
@@ -77,12 +79,13 @@ pub async fn do_dkg(
         threshold,
         peer_ids: peer_ids.clone(),
         pss_interval,
+        namespace: namespace.clone(),
     };
 
     // JWT work
     let jwt_signer = JwtSigner::new();
     let token = jwt_signer
-        .create_dkg_jwt(threshold, &peer_ids, pss_interval)
+        .create_dkg_jwt(threshold, &peer_ids, pss_interval, &namespace)
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token)
         .map_err(|e| anyhow!("Failed to create_dkg_jwt: {}", e))?;

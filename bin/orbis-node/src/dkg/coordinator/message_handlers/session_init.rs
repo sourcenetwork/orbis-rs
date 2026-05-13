@@ -18,6 +18,7 @@ pub(in crate::dkg::coordinator) async fn handle_session_init<D>(
     token_string: &str,
     kind: &SessionKind,
     pss_interval: Option<u64>,
+    namespace: String,
     sender_peer_id: &PeerId,
 ) -> Result<Option<DkgMessage>>
 where
@@ -111,6 +112,7 @@ where
                 reshare_new_peer_ids,
                 *reshare_new_threshold,
                 reshare_bulletin_post_id,
+                &namespace,
                 &coord.app_state.local_storage,
                 &coord.app_state.bulletin,
             )
@@ -119,6 +121,7 @@ where
             let ring_payload = load_reshare_ring_payload(
                 ring_pk_hex,
                 reshare_bulletin_post_id,
+                &namespace,
                 &coord.app_state.local_storage,
                 &coord.app_state.bulletin,
             )
@@ -191,7 +194,7 @@ where
                 MAX_JWT_BYTES,
             )
             .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-            validate_dkg_claims(&token, threshold, peer_ids, pss_interval)?;
+            validate_dkg_claims(&token, threshold, peer_ids, pss_interval, &namespace)?;
             tracing::info!(
                 issuer = %token.issuer_id,
                 threshold = threshold,
@@ -370,6 +373,12 @@ where
             .app_state
             .dkg_session_state
             .set_pss_interval(&session_id, pss_interval)
+            .await;
+
+        coord
+            .app_state
+            .dkg_session_state
+            .set_namespace(&session_id, namespace.clone())
             .await;
     }
 

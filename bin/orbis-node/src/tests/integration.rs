@@ -150,7 +150,14 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     );
     // pss_interval = 1s so the PSS scheduler (5s check interval in docker-compose) fires a
     // refresh shortly after DKG completes.
-    let dkg_result = cli_tool::do_dkg(endpoint.clone(), threshold, peer_ids.clone(), Some(1)).await;
+    let dkg_result = cli_tool::do_dkg(
+        endpoint.clone(),
+        threshold,
+        peer_ids.clone(),
+        Some(1),
+        crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+    )
+    .await;
     assert!(
         dkg_result.is_ok(),
         "DKG should succeed: {:?}",

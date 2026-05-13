@@ -108,6 +108,8 @@ pub enum DkgMessage {
         /// `None` means automatic refresh is disabled.
         #[serde(default)]
         pss_interval: Option<u64>,
+        /// Bulletin namespace this ring's payload lives under.
+        namespace: String,
     },
     /// Error message
     Error { session_id: u64, error: String },

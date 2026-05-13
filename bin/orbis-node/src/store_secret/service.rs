@@ -1,14 +1,15 @@
 use crate::app_state::AppState;
-use crate::constants::{BULLETIN_RING_NAMESPACE, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
+use crate::constants::{MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
 use crate::helpers::helpers::RingConfig;
 use crate::metrics;
-use crate::ring_state::RingPolyState;
+use crate::ring_state::{RingIndexEntry, RingPolyState};
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::messages::SignContext;
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{Dkg, EncryptionProof, Secret};
+use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
 };
@@ -99,10 +100,30 @@ where
         );
 
         // Get ring public_key from bulletin
+        let ring_namespace = {
+            let ring_index: Vec<RingIndexEntry> = self
+                .state
+                .local_storage
+                .get(LocalStorageKeys::RingIndex)
+                .ok()
+                .flatten()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_default();
+            ring_index
+                .iter()
+                .find(|e| e.bulletin_post_id == req.ring_id)
+                .map(|e| e.bulletin_namespace.clone())
+                .ok_or_else(|| {
+                    StoreSecretError::Storage(format!(
+                        "Ring '{}' not found in local ring index",
+                        req.ring_id
+                    ))
+                })?
+        };
         let ring_info = self
             .state
             .bulletin
-            .read(BULLETIN_RING_NAMESPACE.to_string(), req.ring_id.clone())
+            .read(ring_namespace, req.ring_id.clone())
             .await
             .map_err(|e| {
                 StoreSecretError::Storage(format!("Failed to read ring '{}': {}", req.ring_id, e))
