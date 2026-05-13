@@ -3,7 +3,8 @@
 //! This module provides utility functions for setting up test environments.
 
 use crate::app_state::AppState;
-use crate::constants::BULLETIN_RING_NAMESPACE;
+
+pub const BULLETIN_RING_NAMESPACE: &str = "orbis";
 use crate::helpers::create_routers::{
     create_router_with_all_handlers, create_router_with_handlers,
 };

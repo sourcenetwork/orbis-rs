@@ -673,7 +673,8 @@ pub fn node_index_in(sorted_committee: &[String], our_node_part: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{BULLETIN_RING_NAMESPACE, PSS_GRACE_PERIOD_SECS};
+    use crate::constants::PSS_GRACE_PERIOD_SECS;
+    use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
     use crate::helpers::test_helpers::{cleanup_db, test_db_path, write_ring_to_bulletin};
     use crate::ring_state::{RingIndexEntry, RingShareBundle};
     use bulletin::dummy::DummyBulletin;

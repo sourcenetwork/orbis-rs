@@ -256,9 +256,6 @@ pub const SECRET_KEY_ENV_VAR: &str = "ORBIS_SECRET_KEY";
 // Bulletin Configuration Constants
 // ============================================================================
 
-/// Namespace for ring information on the bulletin board for tests
-pub const BULLETIN_RING_NAMESPACE: &str = "orbis";
-
 /// The minimum amount a node can have in chain balance to start the node
 pub const MIN_NODE_BALANCE: u64 = 1_000_000u64;
 

@@ -7,8 +7,9 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
+use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::{
-    constants::{BULLETIN_RING_NAMESPACE, MIN_NODE_BALANCE},
+    constants::MIN_NODE_BALANCE,
     dkg::service::DkgServiceImpl,
     helpers::{
         launch::{create_and_store_node_key, LogLevel},
@@ -361,7 +362,7 @@ async fn setup_ring(
         threshold,
         peer_ids,
         None,
-        crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+        BULLETIN_RING_NAMESPACE.to_string(),
     )
     .await
     .expect("DKG initiation");
@@ -432,14 +433,14 @@ async fn test_two_simultaneous_dkg_sessions() {
             threshold,
             peer_ids.clone(),
             None,
-            crate::constants::BULLETIN_RING_NAMESPACE.to_string()
+            BULLETIN_RING_NAMESPACE.to_string()
         ),
         cli_tool::do_dkg(
             endpoint.clone(),
             threshold,
             peer_ids.clone(),
             None,
-            crate::constants::BULLETIN_RING_NAMESPACE.to_string()
+            BULLETIN_RING_NAMESPACE.to_string()
         ),
     );
 
@@ -804,7 +805,7 @@ async fn test_dkg_non_participant_initiator_completes() {
         threshold,
         peer_ids,
         None,
-        crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+        BULLETIN_RING_NAMESPACE.to_string(),
     )
     .await
     .expect("DKG from non-participant initiator");

@@ -11,14 +11,13 @@
 //!     -- fault_injection --nocapture
 
 use crate::dkg::service::DkgServiceImpl;
+use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::info::InfoServiceImpl;
 use crate::pre::service::PreServiceImpl;
 use crate::sign::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{
-    constants::{
-        BULLETIN_RING_NAMESPACE, MIN_NODE_BALANCE, PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
-    },
+    constants::{MIN_NODE_BALANCE, PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT},
     helpers::{
         launch::{create_and_store_node_key, LogLevel},
         test_helpers::{cleanup_db, test_db_path, wait_for_nodes_ready},
@@ -245,7 +244,7 @@ async fn setup_ring(
         threshold,
         peer_ids,
         None,
-        crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+        BULLETIN_RING_NAMESPACE.to_string(),
     )
     .await
     .expect("DKG initiation");
@@ -741,7 +740,7 @@ async fn test_dkg_fails_when_node_unreachable() {
         2,
         peer_ids,
         None,
-        crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+        BULLETIN_RING_NAMESPACE.to_string(),
     )
     .await;
 

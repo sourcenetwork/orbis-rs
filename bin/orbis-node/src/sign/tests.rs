@@ -7,7 +7,7 @@ use crate::constants::MAX_SIGN_MESSAGE_BYTES;
 use crate::helpers::helpers::RingConfig;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, get_test_ring_post,
-    setup_three_node_network_with_sign, test_db_path, TestKeyPair,
+    setup_three_node_network_with_sign, test_db_path, TestKeyPair, BULLETIN_RING_NAMESPACE,
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
@@ -68,18 +68,13 @@ async fn test_dkg_then_sign_end_to_end() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
-        namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            crate::constants::BULLETIN_RING_NAMESPACE,
-        )
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     println!("Node1 sending StartDkgRequest...");
@@ -319,17 +314,12 @@ async fn test_sign_different_messages() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
-        namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            crate::constants::BULLETIN_RING_NAMESPACE,
-        )
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -440,17 +430,12 @@ async fn test_sign_fails_wrong_message() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
-        namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            crate::constants::BULLETIN_RING_NAMESPACE,
-        )
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -566,17 +551,12 @@ async fn test_sign_response_cleanup() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
-        namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            crate::constants::BULLETIN_RING_NAMESPACE,
-        )
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -681,17 +661,12 @@ async fn test_sign_fails_invalid_bulletin_post() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
-        namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            crate::constants::BULLETIN_RING_NAMESPACE,
-        )
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -780,17 +755,12 @@ async fn test_sign_fails_post_not_on_bulletin() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
-        namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            crate::constants::BULLETIN_RING_NAMESPACE,
-        )
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -901,17 +871,12 @@ async fn test_sign_fails_tampered_payload() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
-        namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            crate::constants::BULLETIN_RING_NAMESPACE,
-        )
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -1051,17 +1016,12 @@ async fn test_sign_fails_invalid_ring_id() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
-        namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            crate::constants::BULLETIN_RING_NAMESPACE,
-        )
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -1222,12 +1182,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            crate::constants::BULLETIN_RING_NAMESPACE,
-        )
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
@@ -1236,7 +1191,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
-                    namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
             )
@@ -1386,12 +1341,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            crate::constants::BULLETIN_RING_NAMESPACE,
-        )
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
@@ -1400,7 +1350,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
-                    namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
             )
@@ -1494,12 +1444,7 @@ async fn test_sign_policy_fails_wrong_namespace() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            crate::constants::BULLETIN_RING_NAMESPACE,
-        )
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
@@ -1508,7 +1453,7 @@ async fn test_sign_policy_fails_wrong_namespace() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
-                    namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
             )
@@ -1614,12 +1559,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            crate::constants::BULLETIN_RING_NAMESPACE,
-        )
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
@@ -1628,7 +1568,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
-                    namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
             )
@@ -1858,12 +1798,7 @@ async fn test_sign_policy_fails_wrong_message_digest() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            crate::constants::BULLETIN_RING_NAMESPACE,
-        )
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
@@ -1872,7 +1807,7 @@ async fn test_sign_policy_fails_wrong_message_digest() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
-                    namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
             )

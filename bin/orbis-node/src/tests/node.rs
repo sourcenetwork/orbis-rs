@@ -1,5 +1,6 @@
 //! Node initialization, configuration, and key management tests.
 
+use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::{
     dkg::service::DkgServiceImpl,
     helpers::{
@@ -209,7 +210,7 @@ async fn test_bootstrap_info_server_exposes_only_info() {
             threshold: 1,
             peer_ids: vec![],
             pss_interval: None,
-            namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+            namespace: BULLETIN_RING_NAMESPACE.to_string(),
         })
         .await
         .expect_err("dkg should not be registered during bootstrap");
@@ -245,7 +246,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             threshold: 1,
             peer_ids: vec![],
             pss_interval: None,
-            namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+            namespace: BULLETIN_RING_NAMESPACE.to_string(),
         })
         .await
         .expect_err("dkg should not be registered during bootstrap");
@@ -311,7 +312,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             threshold: 1,
             peer_ids: vec![],
             pss_interval: None,
-            namespace: crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+            namespace: BULLETIN_RING_NAMESPACE.to_string(),
         })
         .await
         .expect_err("unauthenticated dkg should fail after reaching the service");

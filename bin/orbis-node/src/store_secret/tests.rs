@@ -3,18 +3,18 @@
 //! This module contains tests for the StoreSecret service.
 //! Tests verify authentication, validation, and error handling.
 
-use crate::constants::BULLETIN_RING_NAMESPACE;
+use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default,
     create_test_app_state_with_bulletin, test_db_path, TestKeyPair,
 };
 use crate::ring_state::RingIndexEntry;
-use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use crate::store_secret::StoreSecretServiceImpl;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{Bulletin, BulletinPost, RingPayload};
 use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
 use crypto::{DkgImpl, PreImpl as ThresholdDealerNode, SignImpl};
+use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest,
 };
@@ -75,7 +75,8 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         post,
     );
 
-    let app_state = create_test_app_state_with_bulletin(None, true, Arc::new(bulletin), db_name).await;
+    let app_state =
+        create_test_app_state_with_bulletin(None, true, Arc::new(bulletin), db_name).await;
 
     // Write RingIndexEntry so service can resolve the ring's namespace from local storage.
     let ring_index = vec![RingIndexEntry {
@@ -85,7 +86,10 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
     }];
     app_state
         .local_storage
-        .set(LocalStorageKeys::RingIndex, serde_json::to_vec(&ring_index).unwrap())
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&ring_index).unwrap(),
+        )
         .unwrap();
 
     app_state
@@ -486,7 +490,10 @@ async fn test_store_secret_idempotent() {
     }];
     app_state
         .local_storage
-        .set(LocalStorageKeys::RingIndex, serde_json::to_vec(&ring_index).unwrap())
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&ring_index).unwrap(),
+        )
         .unwrap();
 
     let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);

@@ -6,7 +6,7 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
-use crate::constants::BULLETIN_RING_NAMESPACE;
+use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use common::blockchain::{ChainConfig, TxSigner, TEST_ACCOUNT_HEX_KEY};
 use common::IntegrationTestNetwork;
@@ -155,7 +155,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         threshold,
         peer_ids.clone(),
         Some(1),
-        crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
+        BULLETIN_RING_NAMESPACE.to_string(),
     )
     .await;
     assert!(
