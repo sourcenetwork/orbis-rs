@@ -19,10 +19,18 @@ bincode = { workspace = true }
 
 [dev-dependencies]
 project-root = { workspace = true }
+criterion = { version = "0.5", features = ["html_reports"] }
+serde_json = { workspace = true }
 
 [features]
 default = ["redb"]
 redb = []
 memory = []
+
+[[bench]]
+name = "local_storage"
+harness = false
+required-features = ["redb"]
+
 [lints]
 workspace = true
