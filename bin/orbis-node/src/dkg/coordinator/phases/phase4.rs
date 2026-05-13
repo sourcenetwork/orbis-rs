@@ -31,13 +31,21 @@ where
         "DKG Coordinator: Starting Phase 4 completion"
     );
 
-    let (kind, pss_interval, dkg_role, reshare_new_peer_ids, reshare_bulletin_post_id) = coord
+    let (
+        kind,
+        pss_interval,
+        bulletin_namespace,
+        dkg_role,
+        reshare_new_peer_ids,
+        reshare_bulletin_post_id,
+    ) = coord
         .app_state
         .dkg_session_state
         .with_state(&session_id, |state| {
             (
                 state.kind.clone(),
                 state.pss_interval,
+                state.namespace.clone(),
                 state.node.role(),
                 state
                     .reshare_params
@@ -222,9 +230,13 @@ where
     // (they had no prior index entry).  Dealers have already left and skip this entirely.
     if matches!(kind, SessionKind::Reshare { .. }) && dkg_role != DkgRole::Dealer {
         if let Some(post_id) = &reshare_bulletin_post_id {
-            if let Err(e) =
-                ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, post_id.clone())
-                    .await
+            if let Err(e) = ring_storage::add_ring_index_entry(
+                &coord.app_state,
+                &storage_key,
+                post_id.clone(),
+                bulletin_namespace.clone(),
+            )
+            .await
             {
                 cleanup_new_ring_bundle_after_index_failure(
                     &coord.app_state.local_storage,
@@ -260,10 +272,15 @@ where
             peer_ids,
             threshold,
             pss_interval,
+            &bulletin_namespace,
         )?;
-        if let Err(e) =
-            ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, bulletin_post_id)
-                .await
+        if let Err(e) = ring_storage::add_ring_index_entry(
+            &coord.app_state,
+            &storage_key,
+            bulletin_post_id,
+            bulletin_namespace.clone(),
+        )
+        .await
         {
             cleanup_new_ring_bundle_after_index_failure(
                 &coord.app_state.local_storage,
@@ -324,6 +341,7 @@ where
             &ring_pk_bytes,
             threshold,
             pss_interval,
+            &bulletin_namespace,
         )
         .await?;
     }
@@ -363,6 +381,7 @@ where
             ring_key,
             session_id,
             bulletin_post_id,
+            bulletin_namespace.clone(),
         );
         return Ok(());
     }

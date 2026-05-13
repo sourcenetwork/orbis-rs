@@ -4,6 +4,7 @@ use crate::dkg::{
     messages::{DkgMessage, SessionKind},
 };
 use crate::helpers::helpers::extract_node_part;
+use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_ring_post,
     setup_three_node_network, test_db_path, write_ring_to_bulletin, TestKeyPair,
@@ -62,13 +63,14 @@ async fn test_dkg_followed_by_pss_refresh() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None)
+        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
         .expect("create JWT");
     let tonic_req = create_authenticated_request(
         StartDkgRequest {
             threshold: 2,
             peer_ids: peer_ids.clone(),
             pss_interval: None,
+            namespace: BULLETIN_RING_NAMESPACE.to_string(),
         },
         &token,
     )
@@ -237,6 +239,7 @@ async fn test_dkg_followed_by_pss_refresh() {
             ring_pk_hex: key_string.clone(),
         },
         pss_interval: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
     for peer_id_str in &peer_ids {
         if let Err(e) = coordinator
@@ -567,6 +570,7 @@ fn refresh_session_init(ring_pk: &str, sender_hex: &str) -> DkgMessage {
             ring_pk_hex: ring_pk.to_string(),
         },
         pss_interval: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     }
 }
 

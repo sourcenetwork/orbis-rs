@@ -201,6 +201,7 @@ where
             token_string,
             kind,
             pss_interval,
+            namespace,
             ..
         } = &message
         {
@@ -214,6 +215,7 @@ where
                 token_string,
                 kind,
                 *pss_interval,
+                namespace.clone(),
                 sender_peer_id,
             )
             .await;

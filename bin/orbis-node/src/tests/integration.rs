@@ -6,7 +6,7 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
-use crate::constants::BULLETIN_RING_NAMESPACE;
+use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
 use common::blockchain::{ChainConfig, TxSigner, TEST_ACCOUNT_HEX_KEY};
 use common::IntegrationTestNetwork;
@@ -70,33 +70,25 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("Node 1 P2P address: {}", node1_info.p2p_address);
     println!("Node 2 P2P address: {}", node2_info.p2p_address);
     println!("Node 3 P2P address: {}", node3_info.p2p_address);
+    let namespace = BULLETIN_RING_NAMESPACE.to_string();
 
     // Register the namespace and add collaborators
-    cli_tool::register_bulletin_namespace(BULLETIN_RING_NAMESPACE.to_string())
+    cli_tool::register_bulletin_namespace(namespace.clone())
         .await
         .expect("Failed to register namespace");
-    cli_tool::add_bulletin_collaborator(
-        BULLETIN_RING_NAMESPACE.to_string(),
-        node1_info.public_address.clone(),
-    )
-    .await
-    .expect("add_bulletin_collaborator");
-    cli_tool::add_bulletin_collaborator(
-        BULLETIN_RING_NAMESPACE.to_string(),
-        node2_info.public_address.clone(),
-    )
-    .await
-    .expect("add_bulletin_collaborator");
-    cli_tool::add_bulletin_collaborator(
-        BULLETIN_RING_NAMESPACE.to_string(),
-        node3_info.public_address.clone(),
-    )
-    .await
-    .expect("add_bulletin_collaborator");
+    cli_tool::add_bulletin_collaborator(namespace.clone(), node1_info.public_address.clone())
+        .await
+        .expect("add_bulletin_collaborator");
+    cli_tool::add_bulletin_collaborator(namespace.clone(), node2_info.public_address.clone())
+        .await
+        .expect("add_bulletin_collaborator");
+    cli_tool::add_bulletin_collaborator(namespace.clone(), node3_info.public_address.clone())
+        .await
+        .expect("add_bulletin_collaborator");
     let test_account_address = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .expect("test account signer")
         .address();
-    cli_tool::add_bulletin_collaborator(BULLETIN_RING_NAMESPACE.to_string(), test_account_address)
+    cli_tool::add_bulletin_collaborator(namespace.clone(), test_account_address)
         .await
         .expect("add test account as bulletin collaborator");
 
@@ -130,7 +122,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         IntegrationTestNetwork::NODE3_GRPC.to_string(),
     ];
 
-    let ring_namespace = BULLETIN_RING_NAMESPACE.to_string();
+    let ring_namespace = namespace.clone();
 
     // Step 1: Run DKG via CLI to get a ring public key
     //
@@ -150,7 +142,14 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     );
     // pss_interval = 1s so the PSS scheduler (5s check interval in docker-compose) fires a
     // refresh shortly after DKG completes.
-    let dkg_result = cli_tool::do_dkg(endpoint.clone(), threshold, peer_ids.clone(), Some(1)).await;
+    let dkg_result = cli_tool::do_dkg(
+        endpoint.clone(),
+        threshold,
+        peer_ids.clone(),
+        Some(1),
+        namespace.clone(),
+    )
+    .await;
     assert!(
         dkg_result.is_ok(),
         "DKG should succeed: {:?}",
@@ -212,7 +211,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let relation = "reader".to_string();
     let permission = "read".to_string();
     let did_pk_string = "test_did_secret".to_string();
-    let namespace = "docker_test_namespace".to_string();
     let tier = Some("tier".to_string());
     let timestamp = Some(100u64);
     let valid_window_start = Some(50u64);

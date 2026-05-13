@@ -4,10 +4,7 @@ use bulletin::r#trait::RingPayload;
 use crypto::r#trait::Dkg;
 
 use crate::app_state::AppState;
-use crate::constants::{
-    BULLETIN_RING_NAMESPACE, RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL,
-    RESHARE_BULLETIN_CONFIRM_TIMEOUT,
-};
+use crate::constants::{RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL, RESHARE_BULLETIN_CONFIRM_TIMEOUT};
 use crate::metrics;
 
 pub(in crate::dkg::coordinator) fn spawn_bulletin_finalized_cleanup<D>(
@@ -15,12 +12,19 @@ pub(in crate::dkg::coordinator) fn spawn_bulletin_finalized_cleanup<D>(
     ring_key: Option<String>,
     session_id: u64,
     bulletin_post_id: Option<String>,
+    bulletin_namespace: String,
 ) where
     D: Dkg + Clone + Send + Sync + 'static,
 {
     tokio::spawn(async move {
-        wait_for_reshare_bulletin_finalized(app_state, ring_key, session_id, bulletin_post_id)
-            .await;
+        wait_for_reshare_bulletin_finalized(
+            app_state,
+            ring_key,
+            session_id,
+            bulletin_post_id,
+            bulletin_namespace,
+        )
+        .await;
     });
 }
 
@@ -31,6 +35,7 @@ async fn wait_for_reshare_bulletin_finalized<D>(
     ring_key: Option<String>,
     session_id: u64,
     bulletin_post_id: Option<String>,
+    bulletin_namespace: String,
 ) where
     D: Dkg + Clone + Send + Sync + 'static,
 {
@@ -46,7 +51,7 @@ async fn wait_for_reshare_bulletin_finalized<D>(
             }
             match app_state
                 .bulletin
-                .read(BULLETIN_RING_NAMESPACE.to_string(), post_id.clone())
+                .read(bulletin_namespace.clone(), post_id.clone())
                 .await
             {
                 Ok(post) => {
