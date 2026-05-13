@@ -261,6 +261,12 @@ where
             from_node_id
         )));
     }
+    if statement.session_id != session_id {
+        return Err(DkgError::Unauthorized(format!(
+            "Refresh health-check statement session_id {} does not match routed session {}",
+            statement.session_id, session_id
+        )));
+    }
 
     let candidate = coord
         .app_state
