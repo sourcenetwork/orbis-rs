@@ -165,11 +165,13 @@ impl JwtSigner {
         threshold: u32,
         peer_ids: &[String],
         pss_interval: Option<u64>,
+        namespace: &str,
     ) -> Result<String> {
         let claims = DkgClaims {
             threshold,
             peer_ids: peer_ids.to_vec(),
             pss_interval,
+            namespace: namespace.to_string(),
         };
         self.sign(claims, TOKEN_TTL)
     }
@@ -384,7 +386,7 @@ mod tests {
     fn test_create_dkg_jwt() {
         let signer = JwtSigner::new();
         let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
-        let token = signer.create_dkg_jwt(2, &peer_ids, None);
+        let token = signer.create_dkg_jwt(2, &peer_ids, None, "");
         assert!(token.is_ok());
 
         // Token should have 3 parts (header.payload.signature)

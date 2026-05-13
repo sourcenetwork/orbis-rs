@@ -7,9 +7,7 @@ use crypto::THRESHOLD_SIGNATURE_SCHEME;
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint};
 use sha2::{Digest, Sha256};
 
-use crate::constants::{
-    BULLETIN_RING_NAMESPACE, RESHARE_SIGNATURE_MAX_ATTEMPTS, RESHARE_SIGNATURE_RETRY_DELAY,
-};
+use crate::constants::{RESHARE_SIGNATURE_MAX_ATTEMPTS, RESHARE_SIGNATURE_RETRY_DELAY};
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::SessionKind;
 use crate::dkg::session_state::ReshareSignatureReadyKey;
@@ -99,11 +97,23 @@ where
         ));
     };
 
+    let bulletin_namespace = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| state.namespace.clone())
+        .await
+        .ok_or_else(|| {
+            DkgError::SessionNotFound(format!(
+                "Reshare: session {} not found when reading namespace for bulletin update",
+                session_id
+            ))
+        })?;
+
     let statement = RingReshareUpdateStatement {
         domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
         session_id,
         chain_id: prepared.chain_id,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        namespace: bulletin_namespace.clone(),
         ring_pk: hex::encode(ring_pk_bytes),
         bulletin_post_id: prepared.bulletin_post_id.clone(),
         current_payload_sha256: prepared.current_payload_sha256,
@@ -163,7 +173,7 @@ where
         .app_state
         .bulletin
         .update(
-            BULLETIN_RING_NAMESPACE.to_string(),
+            bulletin_namespace.clone(),
             prepared.bulletin_post_id.clone(),
             Some(format!(
                 "reshare-threshold-signature:{}:{}:{}",
@@ -176,7 +186,7 @@ where
     tracing::info!(
         ring_pk = %ring_pk_hex,
         post_id = %prepared.bulletin_post_id,
-        namespace = BULLETIN_RING_NAMESPACE,
+        namespace = %bulletin_namespace,
         new_threshold = new_threshold,
         new_committee_size = prepared.new_committee_size,
         signature_len = sign_response.signature.len(),
@@ -205,13 +215,22 @@ where
     let bulletin_post_id = reshare_bulletin_post_id.ok_or_else(|| {
         DkgError::Bulletin("Reshare: missing bulletin post id for updated RingPayload".to_string())
     })?;
+    let bulletin_namespace = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| state.namespace.clone())
+        .await
+        .ok_or_else(|| {
+            DkgError::SessionNotFound(format!(
+                "Reshare: session {} not found when reading namespace for bulletin read",
+                session_id
+            ))
+        })?;
+
     let current_post = coord
         .app_state
         .bulletin
-        .read(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            bulletin_post_id.to_string(),
-        )
+        .read(bulletin_namespace, bulletin_post_id.to_string())
         .await
         .map_err(|e| {
             DkgError::Bulletin(format!(

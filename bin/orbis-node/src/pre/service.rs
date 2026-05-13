@@ -87,8 +87,13 @@ where
             end: w.end,
         });
 
-        let (document_payload, ring_payload) =
-            fetch_bulletin_payloads(&*self.state.bulletin, &req.namespace, &req.object_id).await?;
+        let (document_payload, ring_payload) = fetch_bulletin_payloads(
+            &*self.state.bulletin,
+            &self.state.local_storage,
+            &req.namespace,
+            &req.object_id,
+        )
+        .await?;
 
         check_policy_access(
             &*self.state.authz,

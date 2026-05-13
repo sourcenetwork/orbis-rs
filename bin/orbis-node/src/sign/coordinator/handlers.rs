@@ -105,9 +105,13 @@ where
                 )
                 .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
                 validate_sign_claims(&token, namespace, derivation_id, None)?;
-                let (key_derivation, ring_payload) =
-                    fetch_bulletin_payloads(&*self.app_state.bulletin, namespace, derivation_id)
-                        .await?;
+                let (key_derivation, ring_payload) = fetch_bulletin_payloads(
+                    &*self.app_state.bulletin,
+                    &self.app_state.local_storage,
+                    namespace,
+                    derivation_id,
+                )
+                .await?;
                 check_policy_access(
                     &*self.app_state.authz,
                     &key_derivation,
@@ -248,9 +252,13 @@ where
                 validate_sign_claims(&token, namespace, derivation_id, Some(&message))?;
 
                 // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
-                let (key_derivation, ring_payload) =
-                    fetch_bulletin_payloads(&*self.app_state.bulletin, namespace, derivation_id)
-                        .await?;
+                let (key_derivation, ring_payload) = fetch_bulletin_payloads(
+                    &*self.app_state.bulletin,
+                    &self.app_state.local_storage,
+                    namespace,
+                    derivation_id,
+                )
+                .await?;
 
                 // For interactive (FROST), authz was already checked in handle_nonce_request
                 // (Round 1) before the nonce was generated — can decide to skip the IO here (I choose not to but can if speed is needed).

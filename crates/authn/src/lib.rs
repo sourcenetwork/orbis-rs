@@ -73,6 +73,9 @@ pub struct DkgClaims {
     /// `None` (or absent) means automatic refresh is disabled for this ring.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pss_interval: Option<u64>,
+    /// Bulletin namespace for this ring. Empty string means use the default namespace.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub namespace: String,
 }
 
 /// Claims for StoreSecret endpoints

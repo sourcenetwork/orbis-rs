@@ -34,6 +34,10 @@ pub enum SubCommands {
         /// Peer IDs for P2P connections (required)
         #[clap(long, required = true, num_args = 1..)]
         peer_ids: Vec<String>,
+
+        /// Bulletin namespace for this ring (default: orbis)
+        #[clap(long, default_value = "orbis")]
+        namespace: String,
     },
 
     /// Start a Proxy Re-Encryption session
@@ -393,8 +397,9 @@ async fn main() -> Result<()> {
             endpoint,
             threshold,
             peer_ids,
+            namespace,
         } => {
-            do_dkg(endpoint, threshold, peer_ids, None).await?;
+            do_dkg(endpoint, threshold, peer_ids, None, namespace).await?;
         }
         SubCommands::Pre {
             endpoint,

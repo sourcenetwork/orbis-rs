@@ -1,7 +1,6 @@
-use crate::constants::{
-    BULLETIN_RING_NAMESPACE, MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE,
-};
+use crate::constants::{MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE};
 use crate::dkg::session_state::{ReshareSignatureReadyKey, SessionStateManager};
+use crate::helpers::helpers::ring_namespace_for_post_id;
 use crate::ring_state::{RingPolyState, RingShareBundle};
 use crate::sign::{
     error::{Result, SignError},
@@ -168,11 +167,10 @@ pub async fn validate_ring_reshare_update_statement(
             bulletin.chain_id()
         )));
     }
-    if statement.namespace != BULLETIN_RING_NAMESPACE {
-        return Err(SignError::InvalidInput(format!(
-            "Ring reshare update namespace '{}' does not match expected '{}'",
-            statement.namespace, BULLETIN_RING_NAMESPACE
-        )));
+    if statement.namespace.is_empty() {
+        return Err(SignError::InvalidInput(
+            "Ring reshare update namespace cannot be empty".to_string(),
+        ));
     }
 
     let canonical_message = ring_reshare_update_message(statement)?;
@@ -499,6 +497,7 @@ pub async fn fetch_key_derivation(
 /// `ring_id` to load the corresponding ring payload.
 pub async fn fetch_bulletin_payloads(
     bulletin: &(dyn Bulletin + Send + Sync),
+    local_storage: &impl LocalStorage,
     namespace: &str,
     derivation_id: &str,
 ) -> Result<(KeyDerivation, RingPayload)> {
@@ -514,11 +513,11 @@ pub async fn fetch_bulletin_payloads(
             SignError::Deserialization(format!("Failed to parse document payload: {}", e))
         })?;
 
+    let ring_namespace = ring_namespace_for_post_id(local_storage, &derivation_payload.ring_id)
+        .map_err(SignError::Storage)?;
+
     let ring_info = bulletin
-        .read(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            derivation_payload.ring_id.clone(),
-        )
+        .read(ring_namespace, derivation_payload.ring_id.clone())
         .await
         .map_err(|e| {
             SignError::Storage(format!(
@@ -568,11 +567,10 @@ pub async fn verify_message_and_get_info<D: Dkg>(
     })?;
 
     // 5. Look up ring info from bulletin
+    let ring_namespace = ring_namespace_for_post_id(local_storage, &doc_payload.ring_id)
+        .map_err(SignError::Storage)?;
     let ring_info = bulletin
-        .read(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            doc_payload.ring_id.clone(),
-        )
+        .read(ring_namespace, doc_payload.ring_id.clone())
         .await
         .map_err(|e| {
             SignError::VerificationFailed(format!(
@@ -680,15 +678,11 @@ mod ring_reshare_update_tests {
             .expect("serialize updated RingPayload");
         let bulletin = DummyBulletin::new().await.expect("dummy bulletin");
         bulletin
-            .post(
-                BULLETIN_RING_NAMESPACE.to_string(),
-                current_payload_bytes.clone(),
-                None,
-            )
+            .post("orbis".to_string(), current_payload_bytes.clone(), None)
             .await
             .expect("post current payload");
         let bulletin_post_id = bulletin
-            .get_post_id(BULLETIN_RING_NAMESPACE, &current_payload_bytes)
+            .get_post_id("orbis", &current_payload_bytes)
             .expect("post id");
         let session_id = 77;
         let current_payload_sha256 = sha256_hex(&current_payload_bytes);
@@ -697,7 +691,7 @@ mod ring_reshare_update_tests {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id,
             chain_id: bulletin.chain_id(),
-            namespace: BULLETIN_RING_NAMESPACE.to_string(),
+            namespace: "orbis".to_string(),
             ring_pk: ring_pk_hex,
             bulletin_post_id: bulletin_post_id.clone(),
             current_payload_sha256: current_payload_sha256.clone(),
@@ -764,23 +758,22 @@ mod ring_reshare_update_tests {
     }
 
     #[tokio::test]
-    async fn validate_rejects_non_ring_namespace() {
+    async fn validate_rejects_empty_namespace() {
         let (bulletin, state, mut statement, ready_key) = fixture(
             Some(vec!["new-a".to_string(), "new-b".to_string()]),
             Some(2),
         )
         .await;
         state.mark_reshare_signature_ready(ready_key).await;
-        statement.namespace = "other".to_string();
+        statement.namespace = String::new();
 
         let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
             .await
-            .expect_err("non-ring namespace should be rejected");
+            .expect_err("empty namespace should be rejected");
 
         match err {
             SignError::InvalidInput(message) => {
                 assert!(message.contains("namespace"));
-                assert!(message.contains(BULLETIN_RING_NAMESPACE));
             }
             other => panic!("expected InvalidInput, got {other:?}"),
         }

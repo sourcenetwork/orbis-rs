@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
-use crate::constants::{BULLETIN_RING_NAMESPACE, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
-use crate::helpers::helpers::RingConfig;
+use crate::constants::{MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
+use crate::helpers::helpers::{ring_namespace_for_post_id, RingConfig};
 use crate::metrics;
 use crate::ring_state::RingPolyState;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
@@ -99,10 +99,12 @@ where
         );
 
         // Get ring public_key from bulletin
+        let ring_namespace = ring_namespace_for_post_id(&self.state.local_storage, &req.ring_id)
+            .map_err(StoreSecretError::Storage)?;
         let ring_info = self
             .state
             .bulletin
-            .read(BULLETIN_RING_NAMESPACE.to_string(), req.ring_id.clone())
+            .read(ring_namespace, req.ring_id.clone())
             .await
             .map_err(|e| {
                 StoreSecretError::Storage(format!("Failed to read ring '{}': {}", req.ring_id, e))
