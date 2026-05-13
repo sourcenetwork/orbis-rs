@@ -102,7 +102,12 @@ where
         .dkg_session_state
         .with_state(&session_id, |state| state.namespace.clone())
         .await
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            DkgError::SessionNotFound(format!(
+                "Reshare: session {} not found when reading namespace for bulletin update",
+                session_id
+            ))
+        })?;
 
     let statement = RingReshareUpdateStatement {
         domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
@@ -215,7 +220,12 @@ where
         .dkg_session_state
         .with_state(&session_id, |state| state.namespace.clone())
         .await
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            DkgError::SessionNotFound(format!(
+                "Reshare: session {} not found when reading namespace for bulletin read",
+                session_id
+            ))
+        })?;
 
     let current_post = coord
         .app_state

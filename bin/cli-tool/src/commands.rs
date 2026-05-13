@@ -1006,7 +1006,7 @@ pub async fn post_key_derivation(
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
     let ring_post = ring_bulletin
-        .read("orbis".to_string(), ring_id.clone())
+        .read(namespace.to_string(), ring_id.clone())
         .await
         .map_err(|e| anyhow!("Failed to read ring post '{}': {}", ring_id, e))?;
     let ring_payload: RingPayload = serde_json::from_slice(&ring_post.payload)

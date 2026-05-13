@@ -87,6 +87,7 @@ fn test_resolve_jwt_did_with_dkg_claims() {
     assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
     let decoded = result.unwrap();
     assert_eq!(decoded.issuer_id, did_uri);
+    assert_eq!(decoded.claims.namespace, "test_namespace");
 }
 
 #[test]
