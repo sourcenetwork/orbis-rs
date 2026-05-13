@@ -299,7 +299,8 @@ where
             false
         }
     };
-
+    // a partial broadcast failure can leave peers in inconsistent staged state;
+    // this is tolerated because the health check is diagnostic and the underlying key material is already persisted independently
     if should_promote {
         promote_candidate(coord, session_id, candidate).await?;
     } else {
