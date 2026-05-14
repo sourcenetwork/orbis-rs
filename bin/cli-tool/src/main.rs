@@ -3,12 +3,12 @@ mod commands;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 pub use commands::{
-    add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg,
-    do_encrypt_secret, do_generate_reader_key, do_pre, do_sign, do_store_secret, fund,
-    get_account_sequence, get_latest_ring, list_bulletin_posts, post_key_derivation,
-    prepare_secret, query_node_info, query_ring_state, read_bulletin_post,
+    add_bulletin_collaborator, add_policy_to_chain, add_ring_governance_policy,
+    create_bulletin_post, do_dkg, do_encrypt_secret, do_generate_reader_key, do_pre, do_sign,
+    do_store_secret, fund, get_account_sequence, get_latest_ring, list_bulletin_posts,
+    post_key_derivation, prepare_secret, query_node_info, query_ring_state, read_bulletin_post,
     register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
-    store_prepared_secret, update_bulletin_post, PreparedSecret, SignResult,
+    store_prepared_secret, update_ring_post_by_acp, PreparedSecret, SignResult,
 };
 use common::blockchain::ChainConfig;
 
@@ -34,6 +34,13 @@ pub enum SubCommands {
         /// Peer IDs for P2P connections (required)
         #[clap(long, required = true, num_args = 1..)]
         peer_ids: Vec<String>,
+
+        /// Optional policy that externally governs ring updates
+        #[clap(long)]
+        policy_id: Option<String>,
+        /// Bulletin namespace for this ring (default: orbis)
+        #[clap(long, default_value = "orbis")]
+        namespace: String,
     },
 
     /// Start a Proxy Re-Encryption session
@@ -121,6 +128,12 @@ pub enum SubCommands {
     GenerateReaderKey,
     /// Add a policy to the chain
     AddPolicyToChain,
+    /// Add a ring governance policy and register its bulletin namespace object
+    AddRingGovernancePolicy {
+        /// Bulletin namespace governed by the policy
+        #[clap(long, default_value = "orbis")]
+        namespace: String,
+    },
     /// Register object to the chain
     RegisterObjectToChain {
         /// Policy to add object to
@@ -172,17 +185,23 @@ pub enum SubCommands {
         #[clap(long)]
         payload: String,
     },
-    /// Update an existing bulletin post
-    UpdateBulletinPost {
+    /// Update a ring post via ACP authorization
+    UpdateRingPostByAcp {
         /// Namespace containing the post
         #[clap(long)]
         namespace: String,
         /// ID of the post to update
         #[clap(long)]
         id: String,
-        /// New payload as hex string
+        /// New peer IDs for reshare (comma-separated)
+        #[clap(long, value_delimiter = ',')]
+        new_peer_ids: Vec<String>,
+        /// New threshold for the reshare committee
         #[clap(long)]
-        payload: String,
+        new_threshold: Option<u32>,
+        /// Seconds between automatic PSS refresh ceremonies
+        #[clap(long)]
+        pss_interval: Option<u64>,
     },
     /// Fund an account from the pre funded account
     Fund {
@@ -393,8 +412,10 @@ async fn main() -> Result<()> {
             endpoint,
             threshold,
             peer_ids,
+            policy_id,
+            namespace,
         } => {
-            do_dkg(endpoint, threshold, peer_ids, None).await?;
+            do_dkg(endpoint, threshold, peer_ids, None, policy_id, namespace).await?;
         }
         SubCommands::Pre {
             endpoint,
@@ -472,6 +493,10 @@ async fn main() -> Result<()> {
             let policy_id = add_policy_to_chain().await?;
             println!("POLICY_ID={}", policy_id);
         }
+        SubCommands::AddRingGovernancePolicy { namespace } => {
+            let policy_id = add_ring_governance_policy(&namespace).await?;
+            println!("POLICY_ID={}", policy_id);
+        }
         SubCommands::RegisterObjectToChain {
             policy_id,
             object_id,
@@ -502,13 +527,15 @@ async fn main() -> Result<()> {
             let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
             create_bulletin_post(namespace, payload_bytes).await?;
         }
-        SubCommands::UpdateBulletinPost {
+        SubCommands::UpdateRingPostByAcp {
             namespace,
             id,
-            payload,
+            new_peer_ids,
+            new_threshold,
+            pss_interval,
         } => {
-            let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
-            update_bulletin_post(namespace, id, payload_bytes).await?;
+            update_ring_post_by_acp(namespace, id, new_peer_ids, new_threshold, pss_interval)
+                .await?;
         }
         SubCommands::Fund { address } => {
             fund(address, ChainConfig::local()).await?;

@@ -3,16 +3,18 @@
 //! This module contains tests for the StoreSecret service.
 //! Tests verify authentication, validation, and error handling.
 
-use crate::constants::BULLETIN_RING_NAMESPACE;
+use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default,
     create_test_app_state_with_bulletin, test_db_path, TestKeyPair,
 };
+use crate::ring_state::RingIndexEntry;
 use crate::store_secret::StoreSecretServiceImpl;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{Bulletin, BulletinPost, RingPayload};
 use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
 use crypto::{DkgImpl, PreImpl as ThresholdDealerNode, SignImpl};
+use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest,
 };
@@ -58,6 +60,7 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         threshold: 1,
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     // Serialize and set in bulletin
@@ -73,7 +76,24 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         post,
     );
 
-    create_test_app_state_with_bulletin(None, true, Arc::new(bulletin), db_name).await
+    let app_state =
+        create_test_app_state_with_bulletin(None, true, Arc::new(bulletin), db_name).await;
+
+    // Write RingIndexEntry so service can resolve the ring's namespace from local storage.
+    let ring_index = vec![RingIndexEntry {
+        ring_pk_str: TEST_RING_ID.to_string(),
+        bulletin_post_id: TEST_RING_ID.to_string(),
+        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
+    }];
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&ring_index).unwrap(),
+        )
+        .unwrap();
+
+    app_state
 }
 
 /// Helper to create a dummy StoreSecretRequest for auth tests.
@@ -436,6 +456,7 @@ async fn test_store_secret_idempotent() {
         threshold: 1,
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     // Compute the ring_id (deterministic hash of the ring payload)
@@ -462,6 +483,21 @@ async fn test_store_secret_idempotent() {
     // Create app state with this bulletin
     let app_state =
         create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
+
+    // Write RingIndexEntry so service can resolve the ring's namespace.
+    let ring_index = vec![RingIndexEntry {
+        ring_pk_str: ring_id.clone(),
+        bulletin_post_id: ring_id.clone(),
+        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
+    }];
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&ring_index).unwrap(),
+        )
+        .unwrap();
+
     let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
 
     // Generate valid encryption proof using ThresholdDealerNode

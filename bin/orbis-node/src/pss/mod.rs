@@ -28,7 +28,7 @@
 mod tests;
 
 use crate::app_state::AppState;
-use crate::constants::{BULLETIN_RING_NAMESPACE, PSS_GRACE_PERIOD_SECS};
+use crate::constants::PSS_GRACE_PERIOD_SECS;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::helpers::{
@@ -133,7 +133,7 @@ where
 
     let bulletin_post = app_state
         .bulletin
-        .read(BULLETIN_RING_NAMESPACE.to_string(), post_id.to_string())
+        .read(entry.bulletin_namespace.clone(), post_id.to_string())
         .await
         .map_err(|e| {
             DkgError::Storage(format!(
@@ -361,6 +361,10 @@ where
         .dkg_session_state
         .set_pss_interval(&session_id, ring_payload.pss_interval)
         .await;
+    app_state
+        .dkg_session_state
+        .set_namespace(&session_id, entry.bulletin_namespace.clone())
+        .await;
 
     coordinator
         .set_peer_ids(&session_id, peer_ids.clone())
@@ -391,6 +395,8 @@ where
             ring_pk_hex: ring_pk_str.clone(),
         },
         pss_interval: ring_payload.pss_interval,
+        policy_id: None,
+        namespace: entry.bulletin_namespace.clone(),
     };
 
     for peer_id_str in peer_ids {
@@ -609,6 +615,10 @@ where
         .dkg_session_state
         .set_pss_interval(&session_id, ring_payload.pss_interval)
         .await;
+    app_state
+        .dkg_session_state
+        .set_namespace(&session_id, entry.bulletin_namespace.clone())
+        .await;
 
     coordinator
         .set_peer_ids(&session_id, sorted_new.clone())
@@ -648,6 +658,8 @@ where
         token_string: String::new(),
         kind,
         pss_interval: ring_payload.pss_interval,
+        policy_id: None,
+        namespace: entry.bulletin_namespace.clone(),
     };
 
     for peer_id_str in &union_peers {

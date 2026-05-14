@@ -10,6 +10,8 @@ message StartDkgRequest {
   uint32 threshold = 2;
   repeated string peer_ids = 3;  // Iroh peer IDs that this node needs to connect to
   optional uint64 pss_interval = 4;  // Seconds between automatic PSS refresh ceremonies (0 / absent = disabled)
+  optional string policy_id = 5;  // Optional policy that externally governs ring updates
+  string namespace = 6;  // Bulletin namespace for this ring
 }
 
 message StartDkgResponse {

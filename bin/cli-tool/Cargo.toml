@@ -18,7 +18,7 @@ crypto = { path = "../../crates/crypto", default-features = false }
 authn = { path = "../../crates/authn" }
 authz = { path = "../../crates/authz" }
 common = { path = "../../crates/common" }
-bulletin = { path = "../../crates/bulletin" }
+bulletin = { path = "../../crates/bulletin", default-features = false, features = ["sourcehub"] }
 hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -27,8 +27,8 @@ sha2 = { workspace = true }
 
 [features]
 default = ["bls12-381"]
-bls12-381 = ["crypto/bls12-381"]
-decaf377 = ["crypto/decaf377"]
+bls12-381 = ["crypto/bls12-381", "bulletin/bls12-381", "common/bls12-381"]
+decaf377 = ["crypto/decaf377", "bulletin/decaf377", "common/decaf377"]
 
 
 [lints]

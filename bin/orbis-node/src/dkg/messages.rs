@@ -5,15 +5,16 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::sign::messages::RefreshHealthCheckStatement;
+
 /// Describes what kind of ceremony a DKG session is running.
 ///
 /// Replaces the old `is_refresh: bool` / `refresh_ring_pk_hex: Option<String>` pair.
 /// Used in both the wire protocol (`SessionInit`) and in-process session state.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionKind {
     /// Standard fresh DKG — all nodes are symmetric, new random secret.
-    #[default]
     Fresh,
     /// PSS refresh — same secret, new shares, same committee (zero constant term).
     Refresh {
@@ -88,6 +89,15 @@ pub enum DkgMessage {
         from_node_id: u32,
         selected_dealer_ids: Vec<u32>,
     },
+    /// Refresh-only: node 1 distributes the diagnostic threshold signature
+    /// result. Receivers verify the signature against their staged refresh
+    /// bundle before promoting; `None` means rollback.
+    RefreshHealthCheckResult {
+        session_id: u64,
+        from_node_id: u32,
+        statement: RefreshHealthCheckStatement,
+        signature: Option<String>,
+    },
     /// Phase 4: Session initialization/coordination
     SessionInit {
         session_id: u64,
@@ -102,12 +112,16 @@ pub enum DkgMessage {
         /// JWT token for authentication — empty for Refresh/Reshare sessions.
         token_string: String,
         /// Session kind: Fresh, Refresh, or Reshare.
-        #[serde(default)]
         kind: SessionKind,
         /// Seconds between automatic PSS refresh ceremonies for this ring.
         /// `None` means automatic refresh is disabled.
-        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
         pss_interval: Option<u64>,
+        /// Optional policy that externally governs ring updates.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        policy_id: Option<String>,
+        /// Bulletin namespace this ring's payload lives under.
+        namespace: String,
     },
     /// Error message
     Error { session_id: u64, error: String },
@@ -122,8 +136,49 @@ impl DkgMessage {
             DkgMessage::Complaint { session_id, .. } => *session_id,
             DkgMessage::ReshareShareAck { session_id, .. } => *session_id,
             DkgMessage::ReshareParticipantSet { session_id, .. } => *session_id,
+            DkgMessage::RefreshHealthCheckResult { session_id, .. } => *session_id,
             DkgMessage::SessionInit { session_id, .. } => *session_id,
             DkgMessage::Error { session_id, .. } => *session_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn session_init_omits_absent_optionals_and_requires_kind() {
+        let message = DkgMessage::SessionInit {
+            session_id: 1,
+            threshold: 1,
+            total_participants: 1,
+            peer_ids: vec!["peer-a".to_string()],
+            node_id_assignments: HashMap::new(),
+            token_string: "token".to_string(),
+            kind: SessionKind::Fresh,
+            pss_interval: None,
+            policy_id: None,
+            namespace: "orbis".to_string(),
+        };
+
+        let value = serde_json::to_value(&message).expect("serialize SessionInit");
+        let init = value
+            .get("SessionInit")
+            .and_then(|v| v.as_object())
+            .expect("SessionInit variant payload");
+
+        assert!(!init.contains_key("pss_interval"));
+        assert!(!init.contains_key("policy_id"));
+        assert_eq!(init.get("kind"), Some(&json!({ "type": "fresh" })));
+
+        let mut missing_kind = init.clone();
+        missing_kind.remove("kind");
+        let result = serde_json::from_value::<DkgMessage>(json!({
+            "SessionInit": missing_kind
+        }));
+        assert!(result.is_err());
     }
 }

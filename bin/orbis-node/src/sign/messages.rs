@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 
 /// Domain separator for signed ring reshare bulletin updates.
 pub const RING_RESHARE_UPDATE_DOMAIN: &str = RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN;
+/// Domain separator for discarded post-refresh diagnostic signatures.
+pub const REFRESH_HEALTH_CHECK_DOMAIN: &str = "orbis-pss-refresh-healthcheck-v1";
 
 /// Payload for the `Policy` variant of [`SignContext`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,12 +59,41 @@ pub struct RingReshareUpdateContext {
     pub statement: RingReshareUpdateStatement,
 }
 
+/// Canonical message signed as a post-refresh smoke test.
+///
+/// This signature is never posted or persisted. It exists only to prove that at
+/// least a threshold subset can sign using the refreshed active public polynomial.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefreshHealthCheckStatement {
+    /// Domain separator, must equal [`REFRESH_HEALTH_CHECK_DOMAIN`].
+    pub domain: String,
+    /// DKG/PSS refresh session that produced the current refreshed shares.
+    pub session_id: u64,
+    /// Hex-encoded ring public key. Refresh preserves this key.
+    pub ring_pk: String,
+    /// SHA-256 hex of the refreshed public polynomial bytes.
+    pub public_polynomial_sha256: String,
+    /// SHA-256 hex of the canonical sorted peer-id list.
+    pub peer_ids_sha256: String,
+    /// Current ring threshold.
+    pub threshold: u32,
+    /// Current ring committee size.
+    pub total_participants: u32,
+}
+
+/// Payload for refresh health-check signing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefreshHealthCheckContext {
+    pub statement: RefreshHealthCheckStatement,
+}
+
 /// Distinguishes the two signing pathways.
 ///
 /// - `Bulletin`: message is a serialized `BulletinPost`; authorization is its existence on chain.
 ///   Signs from the root key (no derivation, no metadata).
 /// - `Policy`: policy-authorized derivation signing with JWT auth, mirrors the PRE flow.
 /// - `RingReshareUpdate`: new-committee signing for an in-place ring bulletin update.
+/// - `RefreshHealthCheck`: post-refresh diagnostic signing with no persisted result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SignContext {
     /// Message bytes are a serialized `BulletinPost` verified against the chain.
@@ -75,6 +106,9 @@ pub enum SignContext {
     /// Reshare bulletin update signing. Responders validate the announced transition
     /// and sign the canonical statement from the new shares.
     RingReshareUpdate(Box<RingReshareUpdateContext>),
+    /// PSS refresh health check. Responders validate the canonical statement
+    /// against their staged refreshed bundle and sign only this domain.
+    RefreshHealthCheck(Box<RefreshHealthCheckContext>),
 }
 
 /// Wire message sent from the coordinator to each ring node requesting a nonce commitment

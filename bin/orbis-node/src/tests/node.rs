@@ -1,5 +1,6 @@
 //! Node initialization, configuration, and key management tests.
 
+use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::{
     dkg::service::DkgServiceImpl,
     helpers::{
@@ -37,8 +38,15 @@ use proto::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::{sync::oneshot, task::JoinHandle};
+use std::time::Duration;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::oneshot,
+    task::JoinHandle,
+};
 use tonic::Code;
+use tonic_web::GrpcWebLayer;
+use tower_http::cors::CorsLayer;
 
 /// Builds a [`NodeConfig`] for testing, returning it together with the DB path for cleanup.
 ///
@@ -119,6 +127,9 @@ fn spawn_full_test_grpc_server(
 
     let task = tokio::spawn(async move {
         let _ = tonic::transport::Server::builder()
+            .accept_http1(true)
+            .layer(CorsLayer::permissive())
+            .layer(GrpcWebLayer::new())
             .add_service(DkgServiceServer::new(dkg_service))
             .add_service(PreServiceServer::new(pre_service))
             .add_service(InfoServiceServer::new(info_service))
@@ -133,6 +144,99 @@ fn spawn_full_test_grpc_server(
     });
 
     (local_addr, shutdown_tx, task)
+}
+
+async fn send_http1_request(addr: SocketAddr, request: Vec<u8>) -> String {
+    let mut stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("connect test HTTP/1 client");
+    stream
+        .write_all(&request)
+        .await
+        .expect("write test HTTP/1 request");
+
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+        .await
+        .expect("timed out reading test HTTP/1 response")
+        .expect("read test HTTP/1 response");
+
+    String::from_utf8_lossy(&response).into_owned()
+}
+
+#[tokio::test]
+async fn test_store_secret_endpoint_accepts_browser_grpc_web_requests() {
+    let (config, db_path) = make_test_node_config(
+        "test_store_secret_endpoint_accepts_browser_grpc_web_requests",
+        "127.0.0.1:0",
+        None,
+    )
+    .await;
+    let node = init_node(config).await.expect("initialize test node");
+    let (addr, shutdown_tx, task) = spawn_full_test_grpc_server(node);
+
+    let preflight = format!(
+        "OPTIONS /store_secret_service.StoreSecretService/StoreSecret HTTP/1.1\r\n\
+Host: {addr}\r\n\
+Origin: http://localhost:5173\r\n\
+Access-Control-Request-Method: POST\r\n\
+Access-Control-Request-Headers: content-type,x-grpc-web,authorization\r\n\
+Content-Length: 0\r\n\
+Connection: close\r\n\
+\r\n"
+    );
+    let preflight_response = send_http1_request(addr, preflight.into_bytes()).await;
+    let preflight_headers = preflight_response.to_ascii_lowercase();
+
+    assert!(
+        preflight_response.starts_with("HTTP/1.1 200 OK"),
+        "unexpected preflight response:\n{preflight_response}"
+    );
+    assert!(
+        preflight_headers.contains("access-control-allow-origin: *"),
+        "preflight response did not allow browser origin:\n{preflight_response}"
+    );
+    assert!(
+        preflight_headers.contains("access-control-allow-methods: *"),
+        "preflight response did not allow browser method:\n{preflight_response}"
+    );
+    assert!(
+        preflight_headers.contains("access-control-allow-headers: *"),
+        "preflight response did not allow browser headers:\n{preflight_response}"
+    );
+
+    let mut grpc_web_post = format!(
+        "POST /store_secret_service.StoreSecretService/StoreSecret HTTP/1.1\r\n\
+Host: {addr}\r\n\
+Origin: http://localhost:5173\r\n\
+Content-Type: application/grpc-web+proto\r\n\
+X-Grpc-Web: 1\r\n\
+Content-Length: 5\r\n\
+Connection: close\r\n\
+\r\n"
+    )
+    .into_bytes();
+    grpc_web_post.extend_from_slice(&[0, 0, 0, 0, 0]);
+
+    let post_response = send_http1_request(addr, grpc_web_post).await;
+    let post_headers = post_response.to_ascii_lowercase();
+
+    assert!(
+        post_response.starts_with("HTTP/1.1 200 OK"),
+        "unexpected gRPC-Web POST response:\n{post_response}"
+    );
+    assert!(
+        post_headers.contains("content-type: application/grpc-web+proto"),
+        "POST response was not translated as gRPC-Web:\n{post_response}"
+    );
+    assert!(
+        post_headers.contains("access-control-allow-origin: *"),
+        "POST response did not include browser CORS headers:\n{post_response}"
+    );
+
+    shutdown_tx.send(()).expect("shutdown full test server");
+    task.await.expect("join full test server task");
+    cleanup_db(&db_path);
 }
 
 /// Test that the node initializes successfully with valid configuration
@@ -209,6 +313,8 @@ async fn test_bootstrap_info_server_exposes_only_info() {
             threshold: 1,
             peer_ids: vec![],
             pss_interval: None,
+            policy_id: None,
+            namespace: BULLETIN_RING_NAMESPACE.to_string(),
         })
         .await
         .expect_err("dkg should not be registered during bootstrap");
@@ -244,6 +350,8 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             threshold: 1,
             peer_ids: vec![],
             pss_interval: None,
+            policy_id: None,
+            namespace: BULLETIN_RING_NAMESPACE.to_string(),
         })
         .await
         .expect_err("dkg should not be registered during bootstrap");
@@ -309,6 +417,8 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             threshold: 1,
             peer_ids: vec![],
             pss_interval: None,
+            policy_id: None,
+            namespace: BULLETIN_RING_NAMESPACE.to_string(),
         })
         .await
         .expect_err("unauthenticated dkg should fail after reaching the service");

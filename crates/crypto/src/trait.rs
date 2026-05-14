@@ -199,13 +199,21 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoDeserializ
                 .map_err(|_| CryptoError::DKGError("Invalid value_len bytes".to_string()))?,
         ) as usize;
 
-        if bytes.len() < 36 + value_len {
+        let expected_len = 36 + value_len;
+        if bytes.len() < expected_len {
             return Err(CryptoError::DKGError(
                 "DistributedShare bytes too short for value".to_string(),
             ));
         }
+        if bytes.len() != expected_len {
+            return Err(CryptoError::DKGError(format!(
+                "DistributedShare bytes length mismatch: expected {}, got {}",
+                expected_len,
+                bytes.len()
+            )));
+        }
 
-        let value = ShareValue::from_bytes(&bytes[36..36 + value_len])?;
+        let value = ShareValue::from_bytes(&bytes[36..expected_len])?;
 
         Ok(Self {
             from_id,
@@ -396,12 +404,20 @@ impl<
                 .map_err(|_| CryptoError::DKGError("Invalid proof_len bytes".to_string()))?,
         ) as usize;
         offset += 4;
-        if bytes.len() < offset + proof_len {
+        let expected_len = offset + proof_len;
+        if bytes.len() < expected_len {
             return Err(CryptoError::DKGError(
                 "ReencryptReply bytes too short for proof".to_string(),
             ));
         }
-        let proof = ShareValue::from_bytes(&bytes[offset..offset + proof_len])?;
+        if bytes.len() != expected_len {
+            return Err(CryptoError::DKGError(format!(
+                "ReencryptReply bytes length mismatch: expected {}, got {}",
+                expected_len,
+                bytes.len()
+            )));
+        }
+        let proof = ShareValue::from_bytes(&bytes[offset..expected_len])?;
 
         Ok(Self {
             share,
@@ -426,8 +442,14 @@ impl CryptoSerialize for () {
 }
 
 impl CryptoDeserialize for () {
-    fn from_bytes(_bytes: &[u8]) -> Result<Self> {
-        Ok(())
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.is_empty() {
+            Ok(())
+        } else {
+            Err(CryptoError::SerializationError(
+                ark_serialize::SerializationError::InvalidData,
+            ))
+        }
     }
 }
 

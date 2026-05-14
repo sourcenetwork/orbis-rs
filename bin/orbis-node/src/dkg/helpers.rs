@@ -1,4 +1,4 @@
-use crate::constants::{BULLETIN_RING_NAMESPACE, PSS_GRACE_PERIOD_SECS};
+use crate::constants::PSS_GRACE_PERIOD_SECS;
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::SessionKind;
 use crate::dkg::session_state::ReshareParams;
@@ -120,14 +120,21 @@ pub async fn load_refresh_ring_payload<S: LocalStorage>(
         .iter()
         .find(|e| e.ring_pk_str == ring_pk_hex)
         .ok_or_else(|| DkgError::Unauthorized(format!("Unknown ring: {}", ring_pk_hex)))?;
-    load_ring_payload_by_post_id(ring_pk_hex, &entry.bulletin_post_id, bulletin).await
+    load_ring_payload_by_post_id(
+        ring_pk_hex,
+        &entry.bulletin_post_id,
+        &entry.bulletin_namespace,
+        bulletin,
+    )
+    .await
 }
 
 /// Load the canonical reshare ring payload, falling back to the wire-provided bulletin
-/// post ID for pure receivers that do not yet have a local RingIndex entry.
+/// post ID and namespace for pure receivers that do not yet have a local RingIndex entry.
 pub async fn load_reshare_ring_payload<S: LocalStorage>(
     ring_pk_hex: &str,
     bulletin_post_id: &str,
+    namespace: &str,
     local_storage: &S,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<RingPayload> {
@@ -136,21 +143,24 @@ pub async fn load_reshare_ring_payload<S: LocalStorage>(
         .map_err(|e| DkgError::Storage(format!("Failed to read RingIndex: {}", e)))?
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
-    let resolved_post_id = ring_index
-        .iter()
-        .find(|e| e.ring_pk_str == ring_pk_hex)
+    let entry = ring_index.iter().find(|e| e.ring_pk_str == ring_pk_hex);
+    let resolved_post_id = entry
         .map(|e| e.bulletin_post_id.as_str())
         .unwrap_or(bulletin_post_id);
-    load_ring_payload_by_post_id(ring_pk_hex, resolved_post_id, bulletin).await
+    let resolved_namespace = entry
+        .map(|e| e.bulletin_namespace.as_str())
+        .unwrap_or(namespace);
+    load_ring_payload_by_post_id(ring_pk_hex, resolved_post_id, resolved_namespace, bulletin).await
 }
 
 async fn load_ring_payload_by_post_id(
     ring_pk_hex: &str,
     post_id: &str,
+    namespace: &str,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<RingPayload> {
     let bulletin_post = bulletin
-        .read(BULLETIN_RING_NAMESPACE.to_string(), post_id.to_string())
+        .read(namespace.to_string(), post_id.to_string())
         .await
         .map_err(|e| {
             DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
@@ -201,6 +211,7 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
     proposed_new_peer_ids: &[String],
     proposed_new_threshold: u32,
     bulletin_post_id: &str,
+    namespace: &str,
     local_storage: &S,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<()> {
@@ -218,25 +229,24 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         )));
     }
 
-    // Look up the bulletin post ID from the local index.  Pure Receiver nodes have no
-    // local entry for this ring (they were never members), so fall back to the post ID
-    // carried in the SessionInit message — the bulletin is the source of truth either way.
+    // Look up the bulletin post ID and namespace from the local index.  Pure Receiver nodes
+    // have no local entry for this ring (they were never members), so fall back to the
+    // post ID and namespace carried in the SessionInit message.
     let ring_index: Vec<RingIndexEntry> = local_storage
         .get(LocalStorageKeys::RingIndex)
         .map_err(|e| DkgError::Storage(format!("Failed to read RingIndex: {}", e)))?
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
-    let resolved_post_id = ring_index
-        .iter()
-        .find(|e| e.ring_pk_str == ring_pk_hex)
+    let entry = ring_index.iter().find(|e| e.ring_pk_str == ring_pk_hex);
+    let resolved_post_id = entry
         .map(|e| e.bulletin_post_id.as_str())
         .unwrap_or(bulletin_post_id);
+    let resolved_namespace = entry
+        .map(|e| e.bulletin_namespace.as_str())
+        .unwrap_or(namespace);
 
     let bulletin_post = bulletin
-        .read(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            resolved_post_id.to_string(),
-        )
+        .read(resolved_namespace.to_string(), resolved_post_id.to_string())
         .await
         .map_err(|e| {
             DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
@@ -337,7 +347,7 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
 
     // Fetch the canonical RingPayload from the bulletin — it is the source of truth.
     let bulletin_post = bulletin
-        .read(BULLETIN_RING_NAMESPACE.to_string(), post_id.to_string())
+        .read(entry.bulletin_namespace.clone(), post_id.to_string())
         .await
         .map_err(|e| {
             DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
@@ -394,6 +404,8 @@ pub fn validate_dkg_claims(
     threshold: u32,
     peer_ids: &[String],
     pss_interval: Option<u64>,
+    policy_id: Option<&str>,
+    namespace: &str,
 ) -> Result<()> {
     // Validate threshold matches
     if token.claims.threshold != threshold {
@@ -432,6 +444,25 @@ pub fn validate_dkg_claims(
         )));
     }
 
+    if token.claims.policy_id.as_deref() != policy_id {
+        return Err(DkgError::Unauthorized(format!(
+            "Token policy_id ({:?}) does not match request policy_id ({:?})",
+            token.claims.policy_id, policy_id
+        )));
+    }
+    // Validate namespace: must be non-empty and match the JWT claim.
+    if namespace.is_empty() {
+        return Err(DkgError::Unauthorized(
+            "namespace must not be empty".to_string(),
+        ));
+    }
+    if token.claims.namespace != namespace {
+        return Err(DkgError::Unauthorized(format!(
+            "Token namespace ({:?}) does not match request namespace ({:?})",
+            token.claims.namespace, namespace
+        )));
+    }
+
     Ok(())
 }
 
@@ -445,6 +476,61 @@ pub fn validate_dkg_claims(
 ///   the old one; the ring public key is unchanged).
 ///
 /// `combine_pub_poly` encapsulates curve-specific polynomial combination (Refresh only).
+pub fn build_refresh_ring_bundle<S: LocalStorage>(
+    storage: &S,
+    ring_pk_hex: &str,
+    final_share_bytes: &[u8],
+    pub_poly_bytes: &[u8],
+    now_secs: u64,
+    session_id: u64,
+    combine_pub_poly: impl Fn(&[u8], &[u8]) -> std::result::Result<Vec<u8>, String>,
+) -> Result<RingShareBundle> {
+    // PSS Refresh: load old bundle, add delta share + polynomial, return the
+    // candidate bundle without writing it. The caller decides whether to stage
+    // or persist it.
+    let old_bundle = RingShareBundle::load_by_ring_key(storage, ring_pk_hex).map_err(|e| {
+        DkgError::Storage(format!("Refresh: failed to load old share bundle: {}", e))
+    })?;
+
+    let old_pri = old_bundle.pri_share().map_err(|e| {
+        DkgError::Deserialization(format!("Refresh: failed to deserialize old share: {}", e))
+    })?;
+    let delta_pri = PriShare::<Fr>::from_bytes(final_share_bytes).map_err(|e| {
+        DkgError::Deserialization(format!("Refresh: failed to deserialize delta share: {}", e))
+    })?;
+    let new_pri = PriShare {
+        i: old_pri.i,
+        v: old_pri.v + delta_pri.v,
+    };
+    let new_share_bytes = CryptoSerialize::to_bytes(&new_pri).map_err(|e| {
+        DkgError::Serialization(format!(
+            "Refresh: failed to serialize combined share: {}",
+            e
+        ))
+    })?;
+
+    let old_poly_bytes = hex::decode(&old_bundle.public_polynomial).map_err(|e| {
+        DkgError::Deserialization(format!(
+            "Refresh: failed to decode old polynomial hex: {}",
+            e
+        ))
+    })?;
+    let new_poly_bytes = combine_pub_poly(&old_poly_bytes, pub_poly_bytes)
+        .map_err(|e| DkgError::Crypto(format!("Refresh: failed to combine polynomials: {}", e)))?;
+
+    tracing::debug!(
+        session_id = session_id,
+        ring_key = %ring_pk_hex,
+        "Refresh: built staged RingShareBundle"
+    );
+
+    Ok(RingShareBundle {
+        share_bytes: Zeroizing::new(new_share_bytes),
+        public_polynomial: hex::encode(&new_poly_bytes),
+        last_pss: now_secs,
+    })
+}
+
 pub fn persist_ring_bundle<S: LocalStorage>(
     storage: &S,
     kind: &SessionKind,
@@ -470,51 +556,15 @@ pub fn persist_ring_bundle<S: LocalStorage>(
                 .map_err(|e| DkgError::Storage(format!("Failed to store share bundle: {}", e)))?;
         }
         SessionKind::Refresh { ring_pk_hex } => {
-            // PSS Refresh: load old bundle, add delta share + polynomial, write back.
-            let old_bundle =
-                RingShareBundle::load_by_ring_key(storage, ring_pk_hex).map_err(|e| {
-                    DkgError::Storage(format!("Refresh: failed to load old share bundle: {}", e))
-                })?;
-
-            let old_pri = old_bundle.pri_share().map_err(|e| {
-                DkgError::Deserialization(format!(
-                    "Refresh: failed to deserialize old share: {}",
-                    e
-                ))
-            })?;
-            let delta_pri = PriShare::<Fr>::from_bytes(final_share_bytes).map_err(|e| {
-                DkgError::Deserialization(format!(
-                    "Refresh: failed to deserialize delta share: {}",
-                    e
-                ))
-            })?;
-            let new_pri = PriShare {
-                i: old_pri.i,
-                v: old_pri.v + delta_pri.v,
-            };
-            let new_share_bytes = CryptoSerialize::to_bytes(&new_pri).map_err(|e| {
-                DkgError::Serialization(format!(
-                    "Refresh: failed to serialize combined share: {}",
-                    e
-                ))
-            })?;
-
-            let old_poly_bytes = hex::decode(&old_bundle.public_polynomial).map_err(|e| {
-                DkgError::Deserialization(format!(
-                    "Refresh: failed to decode old polynomial hex: {}",
-                    e
-                ))
-            })?;
-            let new_poly_bytes =
-                combine_pub_poly(&old_poly_bytes, pub_poly_bytes).map_err(|e| {
-                    DkgError::Crypto(format!("Refresh: failed to combine polynomials: {}", e))
-                })?;
-
-            let new_bundle = RingShareBundle {
-                share_bytes: Zeroizing::new(new_share_bytes),
-                public_polynomial: hex::encode(&new_poly_bytes),
-                last_pss: now_secs,
-            };
+            let new_bundle = build_refresh_ring_bundle(
+                storage,
+                ring_pk_hex,
+                final_share_bytes,
+                pub_poly_bytes,
+                now_secs,
+                session_id,
+                combine_pub_poly,
+            )?;
             new_bundle
                 .save_by_ring_key(storage, ring_pk_hex)
                 .map_err(|e| {
@@ -649,7 +699,8 @@ pub fn node_index_in(sorted_committee: &[String], our_node_part: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{BULLETIN_RING_NAMESPACE, PSS_GRACE_PERIOD_SECS};
+    use crate::constants::PSS_GRACE_PERIOD_SECS;
+    use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
     use crate::helpers::test_helpers::{cleanup_db, test_db_path, write_ring_to_bulletin};
     use crate::ring_state::{RingIndexEntry, RingShareBundle};
     use bulletin::dummy::DummyBulletin;
@@ -673,6 +724,45 @@ mod tests {
             last_pss: secs,
         };
         bundle.save_by_ring_key(storage, ring_pk).unwrap();
+    }
+
+    fn dkg_token(policy_id: Option<&str>) -> BearerToken<DkgClaims> {
+        BearerToken {
+            issuer_id: "issuer".to_string(),
+            issued_time: 0,
+            expiration_time: 1,
+            not_before: None,
+            claims: DkgClaims {
+                threshold: 1,
+                peer_ids: vec!["peer-a".to_string()],
+                pss_interval: None,
+                policy_id: policy_id.map(str::to_string),
+                namespace: BULLETIN_RING_NAMESPACE.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn test_validate_dkg_claims_policy_id_compares_empty_string_directly() {
+        let peer_ids = vec!["peer-a".to_string()];
+        let token = dkg_token(Some(""));
+
+        assert!(validate_dkg_claims(
+            &token,
+            1,
+            &peer_ids,
+            None,
+            Some(""),
+            BULLETIN_RING_NAMESPACE
+        )
+        .is_ok());
+
+        let result = validate_dkg_claims(&token, 1, &peer_ids, None, None, BULLETIN_RING_NAMESPACE);
+        assert!(
+            matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("Token policy_id")),
+            "Expected Unauthorized for empty token policy_id vs absent request policy_id, got: {:?}",
+            result
+        );
     }
 
     #[tokio::test]
@@ -710,6 +800,7 @@ mod tests {
                 serde_json::to_vec(&vec![RingIndexEntry {
                     ring_pk_str: "pk".to_string(),
                     bulletin_post_id: post_id,
+                    bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 }])
                 .unwrap(),
             )

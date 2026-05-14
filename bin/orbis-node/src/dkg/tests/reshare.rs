@@ -1,4 +1,3 @@
-use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::dkg::{
     coordinator::DkgCoordinator,
     helpers::derive_reshare_session_id,
@@ -6,6 +5,7 @@ use crate::dkg::{
 };
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::helpers::extract_node_part;
+use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default,
     create_test_app_state_with_bulletin, get_test_ring_post, setup_three_node_network,
@@ -66,6 +66,8 @@ fn reshare_session_init(
             bulletin_post_id: String::new(),
         },
         pss_interval: None,
+        policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     }
 }
 
@@ -157,7 +159,6 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
     let db_path = test_db_path(db_name);
     let app_state = Arc::new(create_test_app_state_default(db_name).await);
 
-    use crate::constants::BULLETIN_RING_NAMESPACE;
     use local_storage::r#trait::LocalStorageKeys;
 
     let sender_hex = "aabbccdd";
@@ -170,6 +171,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
         threshold: 2,
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
@@ -192,6 +194,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
     ring_index.push(RingIndexEntry {
         ring_pk_str: session_ring_pk.to_string(),
         bulletin_post_id: post_id,
+        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     });
     app_state
         .local_storage
@@ -466,7 +469,6 @@ async fn write_ring_with_announced_reshare(
     announced_new_peer_ids: Option<Vec<String>>,
     announced_new_threshold: Option<u32>,
 ) {
-    use crate::constants::BULLETIN_RING_NAMESPACE;
     use crate::ring_state::RingIndexEntry;
     use local_storage::r#trait::LocalStorageKeys;
 
@@ -478,6 +480,7 @@ async fn write_ring_with_announced_reshare(
         threshold: 2,
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
@@ -499,6 +502,7 @@ async fn write_ring_with_announced_reshare(
     ring_index.push(RingIndexEntry {
         ring_pk_str: ring_pk.to_string(),
         bulletin_post_id: post_id,
+        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     });
     app_state
         .local_storage
@@ -747,7 +751,6 @@ async fn post_ring_for_validation(
     new_peer_ids: Option<Vec<String>>,
     new_threshold: Option<u32>,
 ) {
-    use crate::constants::BULLETIN_RING_NAMESPACE;
     use crate::ring_state::RingIndexEntry;
     use local_storage::r#trait::LocalStorageKeys;
 
@@ -759,6 +762,7 @@ async fn post_ring_for_validation(
         threshold,
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
@@ -780,6 +784,7 @@ async fn post_ring_for_validation(
     ring_index.push(RingIndexEntry {
         ring_pk_str: ring_pk.to_string(),
         bulletin_post_id: post_id,
+        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     });
     app_state
         .local_storage
@@ -820,6 +825,7 @@ async fn test_validate_reshare_accepts_new_peer_ids_fallback_to_current() {
         &[sender_hex.to_string()], // matches fallback = peer_ids
         1,
         "",
+        BULLETIN_RING_NAMESPACE,
         &app_state.local_storage,
         &app_state.bulletin,
     )
@@ -863,6 +869,7 @@ async fn test_validate_reshare_accepts_new_threshold_fallback_to_current() {
         &[new_peer.to_string()],
         1, // matches fallback = current threshold
         "",
+        BULLETIN_RING_NAMESPACE,
         &app_state.local_storage,
         &app_state.bulletin,
     )
@@ -905,6 +912,7 @@ async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
         &["00112233".to_string()], // differs from fallback = ["aabbccdd"]
         1,
         "",
+        BULLETIN_RING_NAMESPACE,
         &app_state.local_storage,
         &app_state.bulletin,
     )
@@ -949,6 +957,7 @@ async fn test_validate_reshare_rejects_when_threshold_differs_from_fallback() {
         &[new_peer_1.to_string(), new_peer_2.to_string()],
         1, // differs from fallback = 2
         "",
+        BULLETIN_RING_NAMESPACE,
         &app_state.local_storage,
         &app_state.bulletin,
     )
@@ -1063,20 +1072,17 @@ async fn post_reshare_announcement(
         new_threshold: Some(new_threshold),
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
 
     bulletin
-        .post(
-            crate::constants::BULLETIN_RING_NAMESPACE.to_string(),
-            bytes.clone(),
-            None,
-        )
+        .post(BULLETIN_RING_NAMESPACE.to_string(), bytes.clone(), None)
         .await
         .expect("post reshare announcement to bulletin");
 
     let new_post_id = bulletin
-        .get_post_id(crate::constants::BULLETIN_RING_NAMESPACE, &bytes)
+        .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
         .expect("get reshare announcement post_id");
 
     // Point every old-committee node's RingIndex entry at the new post.
@@ -1168,6 +1174,8 @@ async fn run_reshare_ceremony(
             bulletin_post_id: bulletin_post_id.to_string(),
         },
         pss_interval: None,
+        policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Process own SessionInit — sets up session state and reshare_params.
@@ -1312,7 +1320,9 @@ async fn test_reshare_lower_threshold() {
     // Phase A: initial DKG (t=2, n=3).
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids, None).expect("JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .expect("JWT");
     alice_service
         .start_dkg(
             create_authenticated_request(
@@ -1320,6 +1330,8 @@ async fn test_reshare_lower_threshold() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
+                    policy_id: None,
+                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
             )
@@ -1416,7 +1428,9 @@ async fn test_reshare_one_member_rotated() {
     // Phase A: DKG with A, B, C (t=2).
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids, None).expect("JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .expect("JWT");
     alice_service
         .start_dkg(
             create_authenticated_request(
@@ -1424,6 +1438,8 @@ async fn test_reshare_one_member_rotated() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
+                    policy_id: None,
+                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
             )
@@ -1523,7 +1539,9 @@ async fn test_reshare_one_old_dealer_offline_completes() {
     // Phase A: DKG with A, B, C (t=2).
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids, None).expect("JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .expect("JWT");
     alice_service
         .start_dkg(
             create_authenticated_request(
@@ -1531,6 +1549,8 @@ async fn test_reshare_one_old_dealer_offline_completes() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
+                    policy_id: None,
+                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
             )
@@ -1637,7 +1657,9 @@ async fn test_reshare_expand_committee() {
     // Phase A: DKG with A, B, C (t=2).
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids, None).expect("JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .expect("JWT");
     alice_service
         .start_dkg(
             create_authenticated_request(
@@ -1645,6 +1667,8 @@ async fn test_reshare_expand_committee() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
+                    policy_id: None,
+                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
             )
@@ -1751,7 +1775,9 @@ async fn test_reshare_shrink_committee() {
     // Phase A: DKG with A, B, C (t=2).
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids, None).expect("JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .expect("JWT");
     alice_service
         .start_dkg(
             create_authenticated_request(
@@ -1759,6 +1785,8 @@ async fn test_reshare_shrink_committee() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
+                    policy_id: None,
+                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
             )
@@ -1854,7 +1882,9 @@ async fn test_reshare_full_rotation() {
     // Phase A: DKG with A, B, C (t=2).
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
-    let token = test_keys.create_dkg_jwt(2, &peer_ids, None).expect("JWT");
+    let token = test_keys
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .expect("JWT");
     alice_service
         .start_dkg(
             create_authenticated_request(
@@ -1862,6 +1892,8 @@ async fn test_reshare_full_rotation() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
+                    policy_id: None,
+                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
             )

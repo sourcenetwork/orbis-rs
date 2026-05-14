@@ -1,6 +1,6 @@
-use crate::constants::BULLETIN_RING_NAMESPACE;
 use crate::dkg::error::DkgError;
 use crate::helpers::helpers::extract_node_part;
+use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bulletin, test_db_path};
 use crate::ring_state::RingIndexEntry;
 use bulletin::{
@@ -56,6 +56,7 @@ async fn make_state_with_ring(
     let entry = RingIndexEntry {
         ring_pk_str: ring_payload.ring_pk.clone(),
         bulletin_post_id: post_id,
+        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
     let index_bytes = serde_json::to_vec(&vec![&entry]).expect("serialize RingIndex");
     app_state
@@ -149,6 +150,7 @@ async fn test_refresh_all_rings_bulletin_miss_does_not_propagate() {
     let ring_index = vec![RingIndexEntry {
         ring_pk_str: "nonexistent_ring".to_string(),
         bulletin_post_id: "nonexistent_ring_id".to_string(),
+        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     }];
     let index_bytes = serde_json::to_vec(&ring_index).expect("serialize ring index");
     app_state
@@ -187,6 +189,7 @@ async fn test_refresh_ring_rejects_non_member() {
         threshold: 1,
         pss_interval: Some(86400),
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
@@ -237,6 +240,7 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
         threshold: 1,
         pss_interval: Some(1),
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
@@ -297,6 +301,7 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     let entry = RingIndexEntry {
         ring_pk_str: ring_pk_str.to_string(),
         bulletin_post_id: post_id,
+        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
     app_state
         .local_storage
@@ -331,6 +336,7 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
         threshold: 1,
         pss_interval: Some(1),
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     let payload_bytes = serde_json::to_vec(&ring_payload).expect("serialize RingPayload");
@@ -351,6 +357,7 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
     let entry = RingIndexEntry {
         ring_pk_str: "expected_ring_pk".to_string(),
         bulletin_post_id: post_id,
+        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
     app_state
         .local_storage
@@ -414,6 +421,7 @@ async fn post_ring_and_seed_index(
     let entry = RingIndexEntry {
         ring_pk_str: ring_payload.ring_pk.clone(),
         bulletin_post_id: post_id,
+        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
     app_state
         .local_storage
@@ -444,6 +452,7 @@ async fn test_pss_ring_reshare_bypasses_interval() {
         threshold: 1,
         pss_interval: None, // no interval — refresh would skip silently
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
@@ -474,6 +483,7 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
         threshold: 1,
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
@@ -504,6 +514,7 @@ async fn test_pss_ring_refresh_skips_without_interval() {
         threshold: 1,
         pss_interval: None, // refresh requires pss_interval; without it, must skip
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
@@ -537,6 +548,7 @@ async fn test_refresh_ring_missing_from_bulletin() {
     let entry = RingIndexEntry {
         ring_pk_str: "ghost_ring".to_string(),
         bulletin_post_id: "ghost_ring".to_string(),
+        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
     let result = super::pss_ring(&Arc::new(app_state), &entry).await;
     assert!(

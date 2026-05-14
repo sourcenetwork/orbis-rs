@@ -3,7 +3,8 @@
 //! This module provides utility functions for setting up test environments.
 
 use crate::app_state::AppState;
-use crate::constants::BULLETIN_RING_NAMESPACE;
+
+pub const BULLETIN_RING_NAMESPACE: &str = "orbis";
 use crate::helpers::create_routers::{
     create_router_with_all_handlers, create_router_with_handlers,
 };
@@ -806,6 +807,7 @@ pub async fn write_ring_to_bulletin(
         threshold: 1,
         pss_interval,
         block_number_nonce: 0,
+        policy_id: None,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     bulletin
@@ -825,6 +827,7 @@ pub async fn write_ring_to_bulletin(
         ring_index.push(RingIndexEntry {
             ring_pk_str: ring_pk.to_string(),
             bulletin_post_id: post_id,
+            bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
         });
         storage
             .set(
