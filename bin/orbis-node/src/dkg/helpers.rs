@@ -469,6 +469,61 @@ pub fn validate_dkg_claims(
 ///   the old one; the ring public key is unchanged).
 ///
 /// `combine_pub_poly` encapsulates curve-specific polynomial combination (Refresh only).
+pub fn build_refresh_ring_bundle<S: LocalStorage>(
+    storage: &S,
+    ring_pk_hex: &str,
+    final_share_bytes: &[u8],
+    pub_poly_bytes: &[u8],
+    now_secs: u64,
+    session_id: u64,
+    combine_pub_poly: impl Fn(&[u8], &[u8]) -> std::result::Result<Vec<u8>, String>,
+) -> Result<RingShareBundle> {
+    // PSS Refresh: load old bundle, add delta share + polynomial, return the
+    // candidate bundle without writing it. The caller decides whether to stage
+    // or persist it.
+    let old_bundle = RingShareBundle::load_by_ring_key(storage, ring_pk_hex).map_err(|e| {
+        DkgError::Storage(format!("Refresh: failed to load old share bundle: {}", e))
+    })?;
+
+    let old_pri = old_bundle.pri_share().map_err(|e| {
+        DkgError::Deserialization(format!("Refresh: failed to deserialize old share: {}", e))
+    })?;
+    let delta_pri = PriShare::<Fr>::from_bytes(final_share_bytes).map_err(|e| {
+        DkgError::Deserialization(format!("Refresh: failed to deserialize delta share: {}", e))
+    })?;
+    let new_pri = PriShare {
+        i: old_pri.i,
+        v: old_pri.v + delta_pri.v,
+    };
+    let new_share_bytes = CryptoSerialize::to_bytes(&new_pri).map_err(|e| {
+        DkgError::Serialization(format!(
+            "Refresh: failed to serialize combined share: {}",
+            e
+        ))
+    })?;
+
+    let old_poly_bytes = hex::decode(&old_bundle.public_polynomial).map_err(|e| {
+        DkgError::Deserialization(format!(
+            "Refresh: failed to decode old polynomial hex: {}",
+            e
+        ))
+    })?;
+    let new_poly_bytes = combine_pub_poly(&old_poly_bytes, pub_poly_bytes)
+        .map_err(|e| DkgError::Crypto(format!("Refresh: failed to combine polynomials: {}", e)))?;
+
+    tracing::debug!(
+        session_id = session_id,
+        ring_key = %ring_pk_hex,
+        "Refresh: built staged RingShareBundle"
+    );
+
+    Ok(RingShareBundle {
+        share_bytes: Zeroizing::new(new_share_bytes),
+        public_polynomial: hex::encode(&new_poly_bytes),
+        last_pss: now_secs,
+    })
+}
+
 pub fn persist_ring_bundle<S: LocalStorage>(
     storage: &S,
     kind: &SessionKind,
@@ -494,51 +549,15 @@ pub fn persist_ring_bundle<S: LocalStorage>(
                 .map_err(|e| DkgError::Storage(format!("Failed to store share bundle: {}", e)))?;
         }
         SessionKind::Refresh { ring_pk_hex } => {
-            // PSS Refresh: load old bundle, add delta share + polynomial, write back.
-            let old_bundle =
-                RingShareBundle::load_by_ring_key(storage, ring_pk_hex).map_err(|e| {
-                    DkgError::Storage(format!("Refresh: failed to load old share bundle: {}", e))
-                })?;
-
-            let old_pri = old_bundle.pri_share().map_err(|e| {
-                DkgError::Deserialization(format!(
-                    "Refresh: failed to deserialize old share: {}",
-                    e
-                ))
-            })?;
-            let delta_pri = PriShare::<Fr>::from_bytes(final_share_bytes).map_err(|e| {
-                DkgError::Deserialization(format!(
-                    "Refresh: failed to deserialize delta share: {}",
-                    e
-                ))
-            })?;
-            let new_pri = PriShare {
-                i: old_pri.i,
-                v: old_pri.v + delta_pri.v,
-            };
-            let new_share_bytes = CryptoSerialize::to_bytes(&new_pri).map_err(|e| {
-                DkgError::Serialization(format!(
-                    "Refresh: failed to serialize combined share: {}",
-                    e
-                ))
-            })?;
-
-            let old_poly_bytes = hex::decode(&old_bundle.public_polynomial).map_err(|e| {
-                DkgError::Deserialization(format!(
-                    "Refresh: failed to decode old polynomial hex: {}",
-                    e
-                ))
-            })?;
-            let new_poly_bytes =
-                combine_pub_poly(&old_poly_bytes, pub_poly_bytes).map_err(|e| {
-                    DkgError::Crypto(format!("Refresh: failed to combine polynomials: {}", e))
-                })?;
-
-            let new_bundle = RingShareBundle {
-                share_bytes: Zeroizing::new(new_share_bytes),
-                public_polynomial: hex::encode(&new_poly_bytes),
-                last_pss: now_secs,
-            };
+            let new_bundle = build_refresh_ring_bundle(
+                storage,
+                ring_pk_hex,
+                final_share_bytes,
+                pub_poly_bytes,
+                now_secs,
+                session_id,
+                combine_pub_poly,
+            )?;
             new_bundle
                 .save_by_ring_key(storage, ring_pk_hex)
                 .map_err(|e| {

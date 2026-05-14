@@ -112,6 +112,7 @@ where
         DkgMessage::Share { .. } => "share",
         DkgMessage::ReshareShareAck { .. } => "reshare_share_ack",
         DkgMessage::ReshareParticipantSet { .. } => "reshare_participant_set",
+        DkgMessage::RefreshHealthCheckResult { .. } => "refresh_health_check_result",
         DkgMessage::Complaint { .. } => "complaint",
         DkgMessage::Error { .. } => "error",
     };

@@ -150,21 +150,80 @@ where
         .unwrap_or_default()
         .as_secs();
 
-    persist_ring_bundle(
-        &coord.app_state.local_storage,
-        &kind,
-        &final_share_bytes,
-        &pub_poly_bytes,
-        &aggregate_pk,
-        now_secs,
-        session_id,
-        |old, delta| D::combine_pub_poly_bytes(old, delta).map_err(|e| e.to_string()),
-    )?;
+    let mut ring_pk_bytes = CryptoSerialize::to_bytes(&aggregate_pk).map_err(|e| {
+        DkgError::Serialization(format!("Failed to serialize aggregate public key: {}", e))
+    })?;
 
-    tracing::debug!(
-        session_id = session_id,
-        "DKG Coordinator: Stored RingShareBundle (share + polynomial) atomically"
-    );
+    let refresh_candidate = if matches!(kind, SessionKind::Refresh { .. }) {
+        let staged_bundle = build_refresh_ring_bundle(
+            &coord.app_state.local_storage,
+            &storage_key,
+            &final_share_bytes,
+            &pub_poly_bytes,
+            now_secs,
+            session_id,
+            |old, delta| D::combine_pub_poly_bytes(old, delta).map_err(|e| e.to_string()),
+        )?;
+        let staged_pub_poly_bytes = hex::decode(&staged_bundle.public_polynomial).map_err(|e| {
+            DkgError::Deserialization(format!(
+                "Refresh: failed to decode staged public polynomial: {}",
+                e
+            ))
+        })?;
+        let staged_pub_poly = <D::PubPoly>::from_bytes(&staged_pub_poly_bytes).map_err(|e| {
+            DkgError::Deserialization(format!(
+                "Refresh: failed to deserialize staged public polynomial: {}",
+                e
+            ))
+        })?;
+        ring_pk_bytes = CryptoSerialize::to_bytes(&staged_pub_poly.eval(0)).map_err(|e| {
+            DkgError::Serialization(format!(
+                "Refresh: failed to serialize staged aggregate public key: {}",
+                e
+            ))
+        })?;
+        let peer_ids = coord
+            .app_state
+            .dkg_session_state
+            .get_peer_ids(&session_id)
+            .await
+            .unwrap_or_default();
+        let candidate = RefreshHealthCheckCandidate {
+            ring_key: storage_key.clone(),
+            ring_pk_hex: hex::encode(&ring_pk_bytes),
+            bundle: staged_bundle,
+            peer_ids,
+            threshold,
+        };
+        coord
+            .app_state
+            .dkg_session_state
+            .set_refresh_health_check_candidate(&session_id, candidate.clone())
+            .await;
+        tracing::info!(
+            session_id = session_id,
+            ring_key = %storage_key,
+            "Refresh: staged RingShareBundle pending health-check result"
+        );
+        Some(candidate)
+    } else {
+        persist_ring_bundle(
+            &coord.app_state.local_storage,
+            &kind,
+            &final_share_bytes,
+            &pub_poly_bytes,
+            &aggregate_pk,
+            now_secs,
+            session_id,
+            |old, delta| D::combine_pub_poly_bytes(old, delta).map_err(|e| e.to_string()),
+        )?;
+
+        tracing::debug!(
+            session_id = session_id,
+            "DKG Coordinator: Stored RingShareBundle (share + polynomial) atomically"
+        );
+        None
+    };
 
     // For Reshare: write a RingIndexEntry so the PSS scheduler can discover this ring.
     // Receiver and DealerReceiver nodes use the bulletin_post_id carried in the SessionInit
@@ -232,12 +291,40 @@ where
         }
     }
 
+    tracing::info!(
+        aggregate_pk = ?aggregate_pk,
+        ring_key_hex = hex::encode(&ring_pk_bytes),
+        node_id = node_id,
+        "Phase 4: DKG complete! Final share computed"
+    );
+
+    if let Some(candidate) = refresh_candidate {
+        if node_id == 1 {
+            if let Err(e) =
+                refresh_health_check::run_selector(coord, session_id, &ring_pk_bytes, &candidate)
+                    .await
+            {
+                tracing::warn!(
+                    session_id = session_id,
+                    error = %e,
+                    "Refresh health check selector failed"
+                );
+            }
+        } else {
+            tracing::info!(
+                session_id = session_id,
+                "Refresh: waiting for node 1 health-check result before promoting staged bundle"
+            );
+        }
+        return Ok(());
+    }
+
     // Clear the in-progress ceremony flag now that Phase 4 has succeeded.
     // For Reshare non-Dealers the bulletin update still happens below (node 1
     // must sign and post), so defer the unmark until after that completes.
     // Error paths are handled by check_and_trigger_phase4 → remove_session.
     if let Some(ring_key) = kind.ring_key() {
-        if !matches!(kind, SessionKind::Reshare { .. }) {
+        if matches!(kind, SessionKind::Fresh) {
             coord
                 .app_state
                 .dkg_session_state
@@ -245,17 +332,6 @@ where
                 .await;
         }
     }
-
-    let ring_pk_bytes = CryptoSerialize::to_bytes(&aggregate_pk).map_err(|e| {
-        DkgError::Serialization(format!("Failed to serialize aggregate public key: {}", e))
-    })?;
-
-    tracing::info!(
-        aggregate_pk = ?aggregate_pk,
-        ring_key_hex = hex::encode(&ring_pk_bytes),
-        node_id = node_id,
-        "Phase 4: DKG complete! Final share computed"
-    );
 
     // Node 1 of the OLD committee posts the RingPayload for fresh DKG.
     if node_id == 1 && matches!(kind, SessionKind::Fresh) {
