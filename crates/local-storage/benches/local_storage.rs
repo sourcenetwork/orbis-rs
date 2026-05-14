@@ -11,11 +11,9 @@
 //! for every call.
 
 #[cfg(not(any(feature = "redb", feature = "memory")))]
-compile_error!(
-    "local-storage benches require either the `redb` or `memory` feature to be enabled"
-);
+compile_error!("local-storage benches require either the `redb` or `memory` feature to be enabled");
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use serde::{Deserialize, Serialize};
 use std::hint::black_box;
@@ -184,14 +182,17 @@ fn bench_storage_get_encrypted(c: &mut Criterion) {
         });
     });
     g.throughput(Throughput::Bytes(index_bytes_len as u64));
-    g.bench_function(format!("ring_index_{}_entries", MAX_LOCAL_RINGS_PER_NODE), |b| {
-        b.iter(|| {
-            let v = storage
-                .get_encrypted(black_box(LocalStorageKeys::RingIndex))
-                .unwrap();
-            black_box(v);
-        });
-    });
+    g.bench_function(
+        format!("ring_index_{}_entries", MAX_LOCAL_RINGS_PER_NODE),
+        |b| {
+            b.iter(|| {
+                let v = storage
+                    .get_encrypted(black_box(LocalStorageKeys::RingIndex))
+                    .unwrap();
+                black_box(v);
+            });
+        },
+    );
     g.finish();
 }
 
@@ -261,7 +262,10 @@ fn print_backend_banner() {
     // One-time backend identity print so output is unambiguous when running
     // the same suite under different feature flags.
     type S = <ActiveBackend as BenchBackend>::Storage;
-    eprintln!("local-storage bench backend: {}", <S as LocalStorage>::name());
+    eprintln!(
+        "local-storage bench backend: {}",
+        <S as LocalStorage>::name()
+    );
 }
 
 fn benches_group(c: &mut Criterion) {
