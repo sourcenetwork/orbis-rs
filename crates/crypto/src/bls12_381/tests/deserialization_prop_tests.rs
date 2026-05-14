@@ -123,9 +123,9 @@ fn malicious_length_prefixes_are_rejected_before_allocation() {
 
 #[test]
 fn primitive_lengths_are_exact() {
-    assert!(Fr::from_bytes(&vec![0u8; FR_COMPRESSED_SIZE + 1]).is_err());
-    assert!(G1Affine::from_bytes(&vec![0u8; G1_COMPRESSED_SIZE + 1]).is_err());
-    assert!(G2Point::from_bytes(&vec![0u8; G2_COMPRESSED_SIZE + 1]).is_err());
+    assert!(Fr::from_bytes(&[0u8; FR_COMPRESSED_SIZE + 1]).is_err());
+    assert!(G1Affine::from_bytes(&[0u8; G1_COMPRESSED_SIZE + 1]).is_err());
+    assert!(G2Point::from_bytes(&[0u8; G2_COMPRESSED_SIZE + 1]).is_err());
 }
 
 #[test]
