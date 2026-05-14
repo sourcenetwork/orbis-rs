@@ -215,8 +215,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let namespace = "docker_test_namespace".to_string();
     let tier = Some("tier".to_string());
     let timestamp = Some(100u64);
-    let valid_window_start = Some(50u64);
-    let valid_window_end = Some(150u64);
     let salt = Some("salt".to_string());
     let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
 
@@ -471,8 +469,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         namespace.clone(),
         None,
         None,
-        None,
-        None,
         false,
     )
     .await;
@@ -495,8 +491,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         namespace.clone(),
         Some(derivation.clone()),
         salt.clone(),
-        valid_window_start,
-        valid_window_end,
         false,
     )
     .await;
@@ -517,8 +511,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         namespace.clone(),
         Some(derivation.clone()),
         salt.clone(),
-        valid_window_start,
-        valid_window_end,
         false,
     )
     .await;
@@ -531,30 +523,11 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         err
     );
 
-    // testing timestamp out of bounds failure
-    let pre_result_derived_failed_timestamp = cli_tool::do_pre(
-        endpoint.clone(),
-        ring_pk_hex.clone(),
-        reader_pk_hex.clone(),
-        Some(reader_sk_hex.clone()),
-        object_id_derived.clone(),
-        Some(did_pk_string.clone()),
-        namespace.clone(),
-        Some(derivation),
-        salt.clone(),
-        valid_window_start,
-        valid_window_start,
-        false,
-    )
-    .await;
-
-    let err = pre_result_derived_failed_timestamp.unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("Access denied: policy check failed"),
-        "Expected timestamp out-of-bounds failure, got: {}",
-        err
-    );
+    // NOTE: The "client-supplied timestamp out of bounds" test that previously
+    // lived here has been removed alongside `StartPreRequest.valid_window` —
+    // see issue #80. The same coverage is provided server-side by
+    // `crates/authz/src/sourcehub/tests.rs::test_valid_window_out_of_range`
+    // against the `ValidWindow` path that ACP will populate.
 
     // Test idempotency: store the same prepared secret again
     // This should succeed and return the same object_id (no duplicate post)
@@ -673,8 +646,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         namespace.clone(),
         derivation_id.clone(),
         Some(sign_did_pk.clone()),
-        None,
-        None,
     )
     .await;
 
@@ -713,8 +684,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         namespace.clone(),
         derivation_id.clone(),
         Some("unauthorized_did_key".to_string()),
-        None,
-        None,
     )
     .await;
 
@@ -894,8 +863,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         namespace.clone(),
         derivation_id.clone(),
         Some(sign_did_pk.clone()),
-        None,
-        None,
     )
     .await;
 
@@ -924,8 +891,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         namespace.clone(),
         derivation_id.clone(),
         Some(sign_did_pk.clone()),
-        None,
-        None,
     )
     .await;
 
@@ -1007,8 +972,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         object_id_post_refresh.clone(),
         Some(did_pk_string.clone()),
         namespace.clone(),
-        None,
-        None,
         None,
         None,
         false,
@@ -1149,8 +1112,6 @@ async fn do_sign_expect_success(
     namespace: String,
     derivation_id: String,
     reader_did_pk: Option<String>,
-    valid_window_start: Option<u64>,
-    valid_window_end: Option<u64>,
 ) -> cli_tool::SignResult {
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut attempt = 1usize;
@@ -1162,8 +1123,6 @@ async fn do_sign_expect_success(
             namespace.clone(),
             derivation_id.clone(),
             reader_did_pk.clone(),
-            valid_window_start,
-            valid_window_end,
         )
         .await
         {
@@ -1198,8 +1157,6 @@ async fn do_pre_expect_success(
     namespace: String,
     derivation: Option<Vec<u8>>,
     salt: Option<String>,
-    valid_window_start: Option<u64>,
-    valid_window_end: Option<u64>,
     xnc_only: bool,
 ) -> Vec<u8> {
     let deadline = Instant::now() + Duration::from_secs(90);
@@ -1216,8 +1173,6 @@ async fn do_pre_expect_success(
             namespace.clone(),
             derivation.clone(),
             salt.clone(),
-            valid_window_start,
-            valid_window_end,
             xnc_only,
         )
         .await

@@ -958,7 +958,6 @@ async fn test_start_pre_fails_missing_auth_header() {
         object_id: "".to_string(),
         derivation: None,
         salt: None,
-        valid_window: None,
     };
 
     // Create request WITHOUT authentication header
@@ -1000,7 +999,6 @@ async fn test_start_pre_fails_malformed_jwt() {
         object_id: "".to_string(),
         derivation: None,
         salt: None,
-        valid_window: None,
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -1059,7 +1057,6 @@ async fn test_start_pre_fails_wrong_signature() {
         object_id: "".to_string(),
         derivation: None,
         salt: None,
-        valid_window: None,
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();

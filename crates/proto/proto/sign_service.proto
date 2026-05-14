@@ -6,11 +6,6 @@ service SignService {
   rpc StartSign(StartSignRequest) returns (StartSignResponse);
 }
 
-message TimestampRange {
-  uint64 start = 1;
-  uint64 end = 2;
-}
-
 message StartSignRequest {
   // Raw bytes to sign
   bytes message = 1;
@@ -18,8 +13,6 @@ message StartSignRequest {
   string namespace = 2;
   // Object ID of the KeyDerivation entry on the bulletin
   string derivation_id = 3;
-  // Optional timestamp range for validity window
-  optional TimestampRange valid_window = 4;
 }
 
 message StartSignResponse {

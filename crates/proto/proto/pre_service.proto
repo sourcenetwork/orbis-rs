@@ -6,11 +6,6 @@ service PreService {
   rpc StartPre(StartPreRequest) returns (StartPreResponse);
 }
 
-message TimestampRange {
-  uint64 start = 1;
-  uint64 end = 2;
-}
-
 message StartPreRequest {
   // reader public key
   bytes rdr_pk = 1;
@@ -22,9 +17,6 @@ message StartPreRequest {
   optional bytes derivation = 4;
   // Optional salt for proof
   optional string salt = 5;
-  // Optional timestamp range for validity window
-  // TODO: Insecure test code meant to be moved to acp eventually (not in authn either)
-  optional TimestampRange valid_window = 6;
 }
 
 message StartPreResponse {

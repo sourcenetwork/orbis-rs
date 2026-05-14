@@ -368,8 +368,6 @@ async fn test_pre_one_node_down_succeeds() {
         user_namespace.clone(),
         None,
         None,
-        None,
-        None,
         false,
     )
     .await
@@ -492,8 +490,6 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
             object_id.clone(),
             Some(did.clone()),
             user_namespace.clone(),
-            None,
-            None,
             None,
             None,
             false,

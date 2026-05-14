@@ -74,14 +74,6 @@ pub enum SubCommands {
         #[clap(long)]
         salt: Option<String>,
 
-        /// Start of the validity window (Unix timestamp, inclusive). Requires --valid-window-end.
-        #[clap(long)]
-        valid_window_start: Option<u64>,
-
-        /// End of the validity window (Unix timestamp, inclusive). Requires --valid-window-start.
-        #[clap(long)]
-        valid_window_end: Option<u64>,
-
         /// Print only the re-encrypted commitment (xnc_cmt) without decrypting.
         #[clap(long)]
         xnc_only: bool,
@@ -375,12 +367,6 @@ pub enum SubCommands {
         /// A private key to generate a reader DID for JWT
         #[clap(long)]
         reader_did_pk: Option<String>,
-        /// Start of the validity window (Unix timestamp, inclusive). Requires --valid-window-end.
-        #[clap(long)]
-        valid_window_start: Option<u64>,
-        /// End of the validity window (Unix timestamp, inclusive). Requires --valid-window-start.
-        #[clap(long)]
-        valid_window_end: Option<u64>,
     },
 }
 
@@ -406,20 +392,10 @@ async fn main() -> Result<()> {
             namespace,
             derivation,
             salt,
-            valid_window_start,
-            valid_window_end,
             xnc_only,
         } => {
             if !xnc_only && reader_sk.is_none() {
                 anyhow::bail!("--reader-sk is required unless --xnc-only is set");
-            }
-            match (valid_window_start, valid_window_end) {
-                (Some(_), None) | (None, Some(_)) => {
-                    anyhow::bail!(
-                        "--valid-window-start and --valid-window-end must both be provided"
-                    );
-                }
-                _ => {}
             }
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
@@ -433,8 +409,6 @@ async fn main() -> Result<()> {
                 namespace,
                 derivation_bytes,
                 salt,
-                valid_window_start,
-                valid_window_end,
                 xnc_only,
             )
             .await?;
@@ -651,17 +625,7 @@ async fn main() -> Result<()> {
             namespace,
             derivation_id,
             reader_did_pk,
-            valid_window_start,
-            valid_window_end,
         } => {
-            match (valid_window_start, valid_window_end) {
-                (Some(_), None) | (None, Some(_)) => {
-                    anyhow::bail!(
-                        "--valid-window-start and --valid-window-end must both be provided"
-                    );
-                }
-                _ => {}
-            }
             let message_bytes = hex::decode(&message)
                 .map_err(|e| anyhow::anyhow!("Failed to decode message hex: {}", e))?;
             do_sign(
@@ -670,8 +634,6 @@ async fn main() -> Result<()> {
                 namespace,
                 derivation_id,
                 reader_did_pk,
-                valid_window_start,
-                valid_window_end,
             )
             .await?;
         }

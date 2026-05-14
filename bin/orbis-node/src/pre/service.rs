@@ -82,13 +82,13 @@ where
             .map_err(PreError::Unauthorized)?;
 
         let req = request.into_inner();
-        let valid_window = req.valid_window.map(|w| ValidWindow {
-            start: w.start,
-            end: w.end,
-        });
 
         let (document_payload, ring_payload) =
             fetch_bulletin_payloads(&*self.state.bulletin, &req.namespace, &req.object_id).await?;
+
+        // ACP will populate the validity window server-side in a future change;
+        // until then no client-supplied window is honoured.
+        let valid_window: Option<ValidWindow> = None;
 
         check_policy_access(
             &*self.state.authz,

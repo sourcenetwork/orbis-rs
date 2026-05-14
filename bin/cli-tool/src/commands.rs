@@ -358,8 +358,6 @@ pub async fn do_pre(
     namespace: String,
     derivation: Option<Vec<u8>>,
     salt: Option<String>,
-    valid_window_start: Option<u64>,
-    valid_window_end: Option<u64>,
     xnc_only: bool,
 ) -> Result<Vec<u8>> {
     println!("Starting PRE session:");
@@ -393,18 +391,12 @@ pub async fn do_pre(
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
-    let valid_window = match (valid_window_start, valid_window_end) {
-        (Some(start), Some(end)) => Some(proto::pre_service::TimestampRange { start, end }),
-        _ => None,
-    };
-
     let request = proto::pre_service::StartPreRequest {
         rdr_pk: reader_pk_bytes.clone(),
         object_id: object_id.clone(),
         namespace: namespace.clone(),
         derivation: derivation.clone(),
         salt: salt.clone(),
-        valid_window,
     };
 
     // JWT work use determinitic key_pair for now
@@ -1078,8 +1070,6 @@ pub async fn do_sign(
     namespace: String,
     derivation_id: String,
     reader_did_pk: Option<String>,
-    valid_window_start: Option<u64>,
-    valid_window_end: Option<u64>,
 ) -> Result<SignResult> {
     println!("Starting Sign session:");
     println!("  Endpoint: {}", endpoint);
@@ -1092,16 +1082,10 @@ pub async fn do_sign(
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
-    let valid_window = match (valid_window_start, valid_window_end) {
-        (Some(start), Some(end)) => Some(proto::sign_service::TimestampRange { start, end }),
-        _ => None,
-    };
-
     let request = proto::sign_service::StartSignRequest {
         message: message.clone(),
         namespace: namespace.clone(),
         derivation_id: derivation_id.clone(),
-        valid_window,
     };
 
     let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());

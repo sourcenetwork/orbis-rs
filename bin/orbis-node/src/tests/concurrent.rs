@@ -561,8 +561,6 @@ async fn test_concurrent_pre_requests() {
             user_namespace.clone(),
             None,
             None,
-            None,
-            None,
             false,
         ),
         cli_tool::do_pre(
@@ -575,8 +573,6 @@ async fn test_concurrent_pre_requests() {
             user_namespace.clone(),
             None,
             None,
-            None,
-            None,
             false,
         ),
         cli_tool::do_pre(
@@ -587,8 +583,6 @@ async fn test_concurrent_pre_requests() {
             object_id.clone(),
             Some(did.clone()),
             user_namespace.clone(),
-            None,
-            None,
             None,
             None,
             false,

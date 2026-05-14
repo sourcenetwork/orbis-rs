@@ -100,15 +100,14 @@ where
             Some(&req.message),
         )?;
 
-        let valid_window = req.valid_window.map(|w| ValidWindow {
-            start: w.start,
-            end: w.end,
-        });
-
         // Fetch ring and key derivation from bulletin (IO) ---
         let (key_derivation, ring_payload) =
             fetch_bulletin_payloads(&*self.state.bulletin, &req.namespace, &req.derivation_id)
                 .await?;
+
+        // ACP will populate the validity window server-side in a future change;
+        // until then no client-supplied window is honoured.
+        let valid_window: Option<ValidWindow> = None;
 
         // Authorize: check on-chain policy access (IO) ---
         check_policy_access(

@@ -1747,7 +1747,6 @@ async fn test_sign_service_rejects_oversized_message() {
         namespace: "test-ns".to_string(),
         derivation_id: "test-derivation".to_string(),
         message: oversized_message,
-        valid_window: None,
     });
 
     let result = service.start_sign(request).await;
