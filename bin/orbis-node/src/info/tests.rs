@@ -1,5 +1,7 @@
 use crate::helpers::launch::create_and_store_node_key;
-use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_default, test_db_path};
+use crate::helpers::test_helpers::{
+    cleanup_db, create_test_app_state_default, test_db_path, BULLETIN_RING_NAMESPACE,
+};
 use crate::info::InfoServiceImpl;
 use crate::ring_state::RingIndexEntry;
 use common::blockchain::ChainConfigBuilder;
@@ -71,10 +73,12 @@ async fn test_get_node_info_reports_managed_ring_count_from_ring_index() {
         RingIndexEntry {
             ring_pk_str: "ring-key-1".to_string(),
             bulletin_post_id: "post-1".to_string(),
+            bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
         },
         RingIndexEntry {
             ring_pk_str: "ring-key-2".to_string(),
             bulletin_post_id: "post-2".to_string(),
+            bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
         },
     ];
     app_state

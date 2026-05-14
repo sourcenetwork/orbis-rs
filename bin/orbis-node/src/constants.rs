@@ -256,13 +256,6 @@ pub const SECRET_KEY_ENV_VAR: &str = "ORBIS_SECRET_KEY";
 // Bulletin Configuration Constants
 // ============================================================================
 
-/// Namespace for ring information on the bulletin board
-///
-/// Ring payloads (public key, peer IDs, threshold, public polynomial) are
-/// posted to this namespace after DKG completion. This namespace must be
-/// registered before use.
-pub const BULLETIN_RING_NAMESPACE: &str = "orbis";
-
 /// The minimum amount a node can have in chain balance to start the node
 pub const MIN_NODE_BALANCE: u64 = 1_000_000u64;
 
@@ -310,6 +303,12 @@ pub const RESHARE_SIGNATURE_MAX_ATTEMPTS: usize = 6;
 
 /// Delay between reshare threshold signature collection retries.
 pub const RESHARE_SIGNATURE_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+/// Maximum number of attempts for the post-refresh diagnostic threshold signature.
+pub const REFRESH_HEALTH_CHECK_MAX_ATTEMPTS: usize = 6;
+
+/// Delay between post-refresh diagnostic threshold signature retries.
+pub const REFRESH_HEALTH_CHECK_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 /// How often a non-node-1 reshare member polls the bulletin waiting for the
 /// node-1 bulletin update to land before releasing its PSS claim.

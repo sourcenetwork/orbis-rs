@@ -49,16 +49,8 @@ pub async fn do_dkg(
     threshold: u32,
     peer_ids: Vec<String>,
     pss_interval: Option<u64>,
-) -> Result<DkgResult> {
-    do_dkg_with_policy(endpoint, threshold, peer_ids, pss_interval, None).await
-}
-
-pub async fn do_dkg_with_policy(
-    endpoint: String,
-    threshold: u32,
-    peer_ids: Vec<String>,
-    pss_interval: Option<u64>,
     policy_id: Option<String>,
+    namespace: String,
 ) -> Result<DkgResult> {
     // Total nodes = peers + the node we're connecting to
     let total_nodes = peer_ids.len() as u32;
@@ -78,6 +70,7 @@ pub async fn do_dkg_with_policy(
     if let Some(policy_id) = &policy_id {
         println!("  Policy ID: {}", policy_id);
     }
+    println!("  Namespace: {}", namespace);
     println!();
 
     println!("Connecting to {}...", endpoint);
@@ -91,12 +84,13 @@ pub async fn do_dkg_with_policy(
         peer_ids: peer_ids.clone(),
         pss_interval,
         policy_id: policy_id.clone(),
+        namespace: namespace.clone(),
     };
 
     // JWT work
     let jwt_signer = JwtSigner::new();
     let token = jwt_signer
-        .create_dkg_jwt_with_policy(threshold, &peer_ids, pss_interval, policy_id)
+        .create_dkg_jwt(threshold, &peer_ids, pss_interval, policy_id, &namespace)
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token)
         .map_err(|e| anyhow!("Failed to create_dkg_jwt: {}", e))?;
@@ -1122,7 +1116,7 @@ pub async fn post_key_derivation(
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
     let ring_post = ring_bulletin
-        .read("orbis".to_string(), ring_id.clone())
+        .read(namespace.to_string(), ring_id.clone())
         .await
         .map_err(|e| anyhow!("Failed to read ring post '{}': {}", ring_id, e))?;
     let ring_payload: RingPayload = serde_json::from_slice(&ring_post.payload)

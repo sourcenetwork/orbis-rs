@@ -1,4 +1,4 @@
-use crate::constants::BULLETIN_RING_NAMESPACE;
+use crate::helpers::helpers::ring_namespace_for_post_id;
 use crate::pre::{
     error::{PreError, Result},
     messages::PreMessage,
@@ -10,15 +10,18 @@ use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, DocumentPayload, RingPayload};
 use crypto::r#trait::{EncryptionProof, Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
+use local_storage::r#trait::LocalStorage;
 use network::PeerId;
 use std::sync::Arc;
 
 /// Fetches and deserializes the document and ring payloads from the bulletin.
 ///
 /// Reads the document by `namespace`/`object_id`, then follows the embedded
-/// `ring_id` to load the corresponding ring payload.
+/// `ring_id` to load the corresponding ring payload. The ring's bulletin namespace
+/// is resolved from the local `RingIndex` by matching `bulletin_post_id == ring_id`.
 pub async fn fetch_bulletin_payloads(
     bulletin: &(dyn Bulletin + Send + Sync),
+    local_storage: &impl LocalStorage,
     namespace: &str,
     object_id: &str,
 ) -> Result<(DocumentPayload, RingPayload)> {
@@ -32,11 +35,11 @@ pub async fn fetch_bulletin_payloads(
             PreError::Deserialization(format!("Failed to parse document payload: {}", e))
         })?;
 
+    let ring_namespace = ring_namespace_for_post_id(local_storage, &document_payload.ring_id)
+        .map_err(PreError::Storage)?;
+
     let ring_info = bulletin
-        .read(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            document_payload.ring_id.clone(),
-        )
+        .read(ring_namespace, document_payload.ring_id.clone())
         .await
         .map_err(|e| {
             PreError::Storage(format!(

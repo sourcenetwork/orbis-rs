@@ -5,6 +5,7 @@ use crate::dkg::{
     session_state::{CreateSessionOutcome, DkgMessageType, DkgPhase, SessionStateManager},
 };
 use crate::helpers::helpers::extract_node_part;
+use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
     get_test_ring_post, setup_three_node_network, test_db_path, TestKeyPair,
@@ -36,12 +37,13 @@ async fn test_start_dkg_empty_participants() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(0, &peer_ids, None)
+        .create_dkg_jwt(0, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token).unwrap();
 
@@ -84,12 +86,19 @@ async fn test_three_nodes_connect() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: policy_id.clone(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt_with_policy(2, &peer_ids, None, policy_id.clone())
+        .create_dkg_jwt(
+            2,
+            &peer_ids,
+            None,
+            policy_id.clone(),
+            BULLETIN_RING_NAMESPACE,
+        )
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with peer IDs...");
@@ -149,12 +158,13 @@ async fn test_start_dkg_fails_on_connection_failure() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create authenticated request (even with invalid peer_ids, JWT should match request)
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with invalid peer IDs...");
@@ -220,12 +230,19 @@ async fn test_start_dkg_succeeds_on_all_connections() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: policy_id.clone(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt_with_policy(2, &peer_ids, None, policy_id.clone())
+        .create_dkg_jwt(
+            2,
+            &peer_ids,
+            None,
+            policy_id.clone(),
+            BULLETIN_RING_NAMESPACE,
+        )
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with valid peer IDs...");
@@ -364,6 +381,7 @@ async fn test_start_dkg_fails_missing_auth_header() {
         peer_ids,
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create request WITHOUT authentication header
@@ -404,6 +422,7 @@ async fn test_start_dkg_fails_malformed_jwt() {
         peer_ids,
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -437,7 +456,7 @@ async fn test_start_dkg_fails_wrong_signature() {
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
     let valid_token = key_pair_1
-        .create_dkg_jwt(2, &peer_ids, None)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     // Tamper with the signature by changing a character
@@ -459,6 +478,7 @@ async fn test_start_dkg_fails_wrong_signature() {
         peer_ids,
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
@@ -511,6 +531,7 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
         kind: SessionKind::Fresh,
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Try to handle the message - should fail due to invalid JWT
@@ -562,7 +583,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
 
     // Create JWT with threshold=3, but SessionInit will have threshold=2
     let mismatched_token = test_keys
-        .create_dkg_jwt(3, &peer_ids, None) // Wrong threshold!
+        .create_dkg_jwt(3, &peer_ids, None, None, BULLETIN_RING_NAMESPACE) // Wrong threshold!
         .expect("Failed to create JWT");
 
     // Create a SessionInit message with threshold=2 (doesn't match JWT's threshold=3)
@@ -580,6 +601,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
         kind: SessionKind::Fresh,
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Try to handle the message - should fail due to claim mismatch
@@ -622,7 +644,7 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
     ];
 
     let mismatched_token = test_keys
-        .create_dkg_jwt(2, &jwt_peer_ids, None)
+        .create_dkg_jwt(2, &jwt_peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     // SessionInit has different peer_ids than the JWT
@@ -646,6 +668,7 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
         kind: SessionKind::Fresh,
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Try to handle the message - should fail due to peer_ids mismatch

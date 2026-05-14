@@ -42,6 +42,8 @@ use std::{
     },
 };
 use tokio::{sync::oneshot, task::JoinHandle};
+use tonic_web::GrpcWebLayer;
+use tower_http::cors::CorsLayer;
 // Concrete crypto implementations
 use constants::MIN_NODE_BALANCE;
 use crypto::{DkgImpl, PreImpl, SignImpl};
@@ -242,6 +244,9 @@ pub fn start_bootstrap_info_server(
 
     let task = tokio::spawn(async move {
         tonic::transport::Server::builder()
+            .accept_http1(true)
+            .layer(CorsLayer::permissive())
+            .layer(GrpcWebLayer::new())
             .add_service(InfoServiceServer::new(info_service))
             .serve_with_incoming_shutdown(incoming, async {
                 let _ = shutdown_rx.await;
@@ -386,6 +391,9 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
 
     // Start gRPC server
     let grpc_server = tonic::transport::Server::builder()
+        .accept_http1(true)
+        .layer(CorsLayer::permissive())
+        .layer(GrpcWebLayer::new())
         .add_service(DkgServiceServer::new(dkg_service))
         .add_service(PreServiceServer::new(pre_service))
         .add_service(InfoServiceServer::new(info_service))

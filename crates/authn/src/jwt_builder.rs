@@ -157,7 +157,8 @@ impl JwtSigner {
     /// * `threshold` - The threshold value for DKG
     /// * `peer_ids` - List of peer IDs
     /// * `pss_interval` - Optional seconds between automatic PSS refresh ceremonies
-    ///
+    /// * `policy_id` - Optional policy that externally governs ring updates
+    /// * `namespace` - Namespace of the post
     /// # Returns
     /// The signed JWT string valid for 1 hour
     pub fn create_dkg_jwt(
@@ -165,32 +166,15 @@ impl JwtSigner {
         threshold: u32,
         peer_ids: &[String],
         pss_interval: Option<u64>,
-    ) -> Result<String> {
-        self.create_dkg_jwt_with_policy(threshold, peer_ids, pss_interval, None)
-    }
-
-    /// Create a JWT with DKG claims and an optional governing policy.
-    ///
-    /// # Arguments
-    /// * `threshold` - The threshold value for DKG
-    /// * `peer_ids` - List of peer IDs
-    /// * `pss_interval` - Optional seconds between automatic PSS refresh ceremonies
-    /// * `policy_id` - Optional policy that externally governs ring updates
-    ///
-    /// # Returns
-    /// The signed JWT string valid for 1 hour
-    pub fn create_dkg_jwt_with_policy(
-        &self,
-        threshold: u32,
-        peer_ids: &[String],
-        pss_interval: Option<u64>,
         policy_id: Option<String>,
+        namespace: &str,
     ) -> Result<String> {
         let claims = DkgClaims {
             threshold,
             peer_ids: peer_ids.to_vec(),
             pss_interval,
             policy_id,
+            namespace: namespace.to_string(),
         };
         self.sign(claims, TOKEN_TTL)
     }
@@ -399,18 +383,6 @@ mod tests {
             private_key_info.private_key,
             expected_private_key.as_slice()
         );
-    }
-
-    #[test]
-    fn test_create_dkg_jwt() {
-        let signer = JwtSigner::new();
-        let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
-        let token = signer.create_dkg_jwt(2, &peer_ids, None);
-        assert!(token.is_ok());
-
-        // Token should have 3 parts (header.payload.signature)
-        let token_str = token.unwrap();
-        assert_eq!(token_str.split('.').count(), 3);
     }
 
     #[test]

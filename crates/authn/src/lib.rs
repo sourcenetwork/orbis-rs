@@ -76,6 +76,9 @@ pub struct DkgClaims {
     /// Optional policy that externally governs ring updates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_id: Option<String>,
+    /// Bulletin namespace for this ring. Empty string means use the default namespace.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub namespace: String,
 }
 
 /// Claims for StoreSecret endpoints

@@ -14,6 +14,7 @@ use crate::constants::{
 use crate::dkg::error::DkgError;
 use crate::dkg::messages::SessionKind;
 use crate::metrics;
+use crate::ring_state::RingShareBundle;
 use crypto::r#trait::{Dkg, DkgMode};
 use network::Connection;
 use std::collections::{HashMap, HashSet};
@@ -77,6 +78,7 @@ pub enum DkgMessageType {
     Share,
     ReshareShareAck,
     ReshareParticipantSet,
+    RefreshHealthCheckResult,
     Complaint,
     SessionInit,
     Error,
@@ -102,6 +104,19 @@ pub struct ReshareSignatureReadyKey {
     pub bulletin_post_id: String,
     pub current_payload_sha256: String,
     pub updated_payload_sha256: String,
+}
+
+/// Locally staged refresh output awaiting the post-refresh health-check result.
+///
+/// The active `RingShareBundle` is not overwritten until a valid diagnostic
+/// threshold signature is distributed by node 1 and verified locally.
+#[derive(Clone, Debug)]
+pub struct RefreshHealthCheckCandidate {
+    pub ring_key: String,
+    pub ring_pk_hex: String,
+    pub bundle: RingShareBundle,
+    pub peer_ids: Vec<String>,
+    pub threshold: usize,
 }
 
 /// Reshare-specific parameters stored in session state during an active reshare ceremony.
@@ -222,8 +237,13 @@ pub struct DkgSessionState<D: Dkg> {
     /// Optional policy that externally governs ring updates.
     /// Stored here during fresh DKG so Phase 4 can write it into `RingPayload`.
     pub policy_id: Option<String>,
+    /// Bulletin namespace for this ring's payload.
+    /// Stored here during the session so Phase 4 can write it into `RingIndexEntry`.
+    pub namespace: String,
     /// Extra parameters required only for Reshare sessions.  `None` for Fresh and Refresh.
     pub reshare_params: Option<ReshareParams<D::ShareValue>>,
+    /// Staged Refresh bundle. Promoted only after the health-check signature is verified.
+    pub refresh_health_check_candidate: Option<RefreshHealthCheckCandidate>,
     /// Per-peer QUIC streams for this session.
     ///
     /// All DKG messages to the same peer within a session travel on the same stream,
@@ -264,7 +284,9 @@ impl<D: Dkg> DkgSessionState<D> {
             kind: SessionKind::Fresh,
             pss_interval: None,
             policy_id: None,
+            namespace: String::new(),
             reshare_params: None,
+            refresh_health_check_candidate: None,
             peer_streams: HashMap::new(),
             peer_send_locks: HashMap::new(),
         }
@@ -773,11 +795,50 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
+    /// Stage a refresh bundle while waiting for the post-refresh health-check result.
+    pub async fn set_refresh_health_check_candidate(
+        &self,
+        session_id: &u64,
+        candidate: RefreshHealthCheckCandidate,
+    ) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.refresh_health_check_candidate = Some(candidate);
+        }
+    }
+
+    /// Load the staged refresh bundle, if this session still has one.
+    pub async fn refresh_health_check_candidate(
+        &self,
+        session_id: &u64,
+    ) -> Option<RefreshHealthCheckCandidate> {
+        let states = self.states.read().await;
+        states
+            .get(session_id)
+            .and_then(|state| state.refresh_health_check_candidate.clone())
+    }
+
+    /// Discard any staged refresh bundle for this session.
+    pub async fn clear_refresh_health_check_candidate(&self, session_id: &u64) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.refresh_health_check_candidate = None;
+        }
+    }
+
     /// Store the PSS refresh interval for this session so Phase 4 can persist it.
     pub async fn set_pss_interval(&self, session_id: &u64, interval: Option<u64>) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.pss_interval = interval;
+        }
+    }
+
+    /// Store the bulletin namespace for this session so Phase 4 can persist it in `RingIndexEntry`.
+    pub async fn set_namespace(&self, session_id: &u64, namespace: String) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.namespace = namespace;
         }
     }
 

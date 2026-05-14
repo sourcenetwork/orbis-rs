@@ -78,7 +78,10 @@ where
             &req.peer_ids,
             req.pss_interval,
             req.policy_id.as_deref(),
+            &req.namespace,
         )?;
+
+        let namespace = req.namespace.clone();
 
         tracing::info!(
             threshold = req.threshold,
@@ -197,6 +200,12 @@ where
             .set_pss_interval(&session_id, pss_interval)
             .await;
 
+        // Store namespace so Phase 4 includes it in the RingIndexEntry.
+        self.state
+            .dkg_session_state
+            .set_namespace(&session_id, namespace.clone())
+            .await;
+
         // Store node_id to peer_id mappings for efficient routing
         // We'll do this after sending SessionInit, but for now the coordinator will handle it
         // when it processes the message (for consistency)
@@ -265,6 +274,7 @@ where
                 kind: SessionKind::Fresh,
                 pss_interval,
                 policy_id: policy_id.clone(),
+                namespace: namespace.clone(),
             };
 
             // Send SessionInit to all peers (they will create their sessions and start Phase 1).

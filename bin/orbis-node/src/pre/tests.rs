@@ -5,7 +5,7 @@
 
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_ring_post,
-    setup_three_node_network_with_pre, test_db_path, TestKeyPair,
+    setup_three_node_network_with_pre, test_db_path, TestKeyPair, BULLETIN_RING_NAMESPACE,
 };
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::pre::service::PreServiceImpl;
@@ -128,12 +128,13 @@ async fn test_dkg_then_pre_end_to_end() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     println!("Node1 sending StartDkgRequest...");
@@ -388,12 +389,13 @@ async fn test_pre_with_large_secret() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -527,12 +529,13 @@ async fn test_pre_fails_with_wrong_key() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -668,12 +671,13 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -817,11 +821,12 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -959,7 +964,7 @@ async fn test_start_pre_fails_missing_auth_header() {
 
     let request = StartPreRequest {
         rdr_pk: b"def456".to_vec(),
-        namespace: "".to_string(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         object_id: "".to_string(),
         derivation: None,
         salt: None,
@@ -1001,7 +1006,7 @@ async fn test_start_pre_fails_malformed_jwt() {
 
     let request = StartPreRequest {
         rdr_pk: b"def456".to_vec(),
-        namespace: "".to_string(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         object_id: "".to_string(),
         derivation: None,
         salt: None,
@@ -1060,7 +1065,7 @@ async fn test_start_pre_fails_wrong_signature() {
 
     let request = StartPreRequest {
         rdr_pk: b"def456".to_vec(),
-        namespace: "".to_string(),
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         object_id: "".to_string(),
         derivation: None,
         salt: None,
@@ -1113,11 +1118,12 @@ async fn test_pre_fails_with_wrong_derivation() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -1296,11 +1302,12 @@ async fn test_pre_fails_with_bad_proof() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     let result = node1_service

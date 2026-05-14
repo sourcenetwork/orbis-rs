@@ -92,9 +92,13 @@ where
             &ctx.salt,
         )?;
 
-        let (document_payload, ring_payload) =
-            fetch_bulletin_payloads(&*self.app_state.bulletin, &ctx.namespace, &ctx.object_id)
-                .await?;
+        let (document_payload, ring_payload) = fetch_bulletin_payloads(
+            &*self.app_state.bulletin,
+            &self.app_state.local_storage,
+            &ctx.namespace,
+            &ctx.object_id,
+        )
+        .await?;
 
         // Note: We do NOT validate from_node_id here because the reencrypt request initiator
         // may not be in the ring (external requesters use node_id=0).
