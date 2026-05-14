@@ -128,6 +128,12 @@ pub enum SubCommands {
     GenerateReaderKey,
     /// Add a policy to the chain
     AddPolicyToChain,
+    /// Add a ring governance policy and register its bulletin namespace object
+    AddRingGovernancePolicy {
+        /// Bulletin namespace governed by the policy
+        #[clap(long, default_value = "orbis")]
+        namespace: String,
+    },
     /// Register object to the chain
     RegisterObjectToChain {
         /// Policy to add object to
@@ -485,6 +491,10 @@ async fn main() -> Result<()> {
         }
         SubCommands::AddPolicyToChain => {
             let policy_id = add_policy_to_chain().await?;
+            println!("POLICY_ID={}", policy_id);
+        }
+        SubCommands::AddRingGovernancePolicy { namespace } => {
+            let policy_id = add_ring_governance_policy(&namespace).await?;
             println!("POLICY_ID={}", policy_id);
         }
         SubCommands::RegisterObjectToChain {
