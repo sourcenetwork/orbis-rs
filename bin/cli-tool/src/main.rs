@@ -407,7 +407,7 @@ async fn main() -> Result<()> {
             threshold,
             peer_ids,
             policy_id,
-            namespace
+            namespace,
         } => {
             do_dkg(endpoint, threshold, peer_ids, None, policy_id, namespace).await?;
         }
