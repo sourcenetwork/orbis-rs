@@ -313,7 +313,7 @@ where
         new_peer_ids.sort();
     }
     let init_params = maybe_reshare_params;
-    let init_policy_id = policy_id.filter(|s| !s.is_empty());
+    let init_policy_id = policy_id;
 
     // If session doesn't exist, create it.
     // Idempotent: treat "session already exists" from a concurrent handler as success.

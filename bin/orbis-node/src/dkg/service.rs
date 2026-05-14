@@ -69,7 +69,7 @@ where
             .map_err(DkgError::Unauthorized)?;
         // TODO: use token.issuer_id as AuthZ check
         let req = request.into_inner();
-        let policy_id = req.policy_id.clone().filter(|s| !s.is_empty());
+        let policy_id = req.policy_id.clone();
 
         // 2. Authorize: Validate JWT claims match request fields (compare raw, pre-normalization)
         validate_dkg_claims(
