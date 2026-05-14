@@ -30,7 +30,6 @@ memory = []
 [[bench]]
 name = "local_storage"
 harness = false
-required-features = ["redb"]
 
 [lints]
 workspace = true
