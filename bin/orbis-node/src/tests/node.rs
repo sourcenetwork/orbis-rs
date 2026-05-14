@@ -313,6 +313,7 @@ async fn test_bootstrap_info_server_exposes_only_info() {
             threshold: 1,
             peer_ids: vec![],
             pss_interval: None,
+            policy_id: None,
             namespace: BULLETIN_RING_NAMESPACE.to_string(),
         })
         .await
@@ -349,6 +350,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             threshold: 1,
             peer_ids: vec![],
             pss_interval: None,
+            policy_id: None,
             namespace: BULLETIN_RING_NAMESPACE.to_string(),
         })
         .await
@@ -415,6 +417,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             threshold: 1,
             peer_ids: vec![],
             pss_interval: None,
+            policy_id: None,
             namespace: BULLETIN_RING_NAMESPACE.to_string(),
         })
         .await

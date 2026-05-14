@@ -63,13 +63,14 @@ async fn test_dkg_followed_by_pss_refresh() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("create JWT");
     let tonic_req = create_authenticated_request(
         StartDkgRequest {
             threshold: 2,
             peer_ids: peer_ids.clone(),
             pss_interval: None,
+            policy_id: None,
             namespace: BULLETIN_RING_NAMESPACE.to_string(),
         },
         &token,
@@ -239,6 +240,7 @@ async fn test_dkg_followed_by_pss_refresh() {
             ring_pk_hex: key_string.clone(),
         },
         pss_interval: None,
+        policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
     for peer_id_str in &peer_ids {
@@ -570,6 +572,7 @@ fn refresh_session_init(ring_pk: &str, sender_hex: &str) -> DkgMessage {
             ring_pk_hex: ring_pk.to_string(),
         },
         pss_interval: None,
+        policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     }
 }

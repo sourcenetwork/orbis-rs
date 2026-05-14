@@ -76,6 +76,7 @@ fn test_resolve_jwt_did_with_dkg_claims() {
             peer_ids: vec![],
             threshold: 2,
             pss_interval: None,
+            policy_id: None,
             namespace: "test_namespace".to_string(),
         },
     };

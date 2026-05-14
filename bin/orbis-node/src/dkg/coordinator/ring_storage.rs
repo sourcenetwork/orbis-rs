@@ -120,6 +120,7 @@ pub(in crate::dkg::coordinator) async fn post_fresh_ring_payload<D>(
     ring_pk_bytes: &[u8],
     threshold: usize,
     pss_interval: Option<u64>,
+    policy_id: Option<String>,
     bulletin_namespace: &str,
 ) -> Result<()>
 where
@@ -139,6 +140,7 @@ where
         new_threshold: None,
         threshold: threshold as u32,
         pss_interval,
+        policy_id,
         // setting to 0 is fine since 0 can act as the first nonce, subsequent nonces set on update
         block_number_nonce: 0,
     };
@@ -174,6 +176,7 @@ pub(in crate::dkg::coordinator) fn fresh_ring_index_post_id<D>(
     peer_ids: Vec<String>,
     threshold: usize,
     pss_interval: Option<u64>,
+    policy_id: Option<String>,
     bulletin_namespace: &str,
 ) -> Result<String>
 where
@@ -195,6 +198,7 @@ where
         new_threshold: None,
         threshold: threshold as u32,
         pss_interval,
+        policy_id,
         block_number_nonce: 0,
     };
     let ring_payload_bytes: Vec<u8> = ring_payload_local.try_into().map_err(|e| {

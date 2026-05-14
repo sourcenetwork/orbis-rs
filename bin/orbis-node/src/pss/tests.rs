@@ -189,6 +189,7 @@ async fn test_refresh_ring_rejects_non_member() {
         threshold: 1,
         pss_interval: Some(86400),
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
@@ -239,6 +240,7 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
         threshold: 1,
         pss_interval: Some(1),
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
@@ -334,6 +336,7 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
         threshold: 1,
         pss_interval: Some(1),
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     let payload_bytes = serde_json::to_vec(&ring_payload).expect("serialize RingPayload");
@@ -449,6 +452,7 @@ async fn test_pss_ring_reshare_bypasses_interval() {
         threshold: 1,
         pss_interval: None, // no interval — refresh would skip silently
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
@@ -479,6 +483,7 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
         threshold: 1,
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
@@ -509,6 +514,7 @@ async fn test_pss_ring_refresh_skips_without_interval() {
         threshold: 1,
         pss_interval: None, // refresh requires pss_interval; without it, must skip
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;

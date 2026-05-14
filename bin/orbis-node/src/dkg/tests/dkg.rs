@@ -36,13 +36,14 @@ async fn test_start_dkg_empty_participants() {
         threshold: 0,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
+        policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(0, &peer_ids, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(0, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token).unwrap();
 
@@ -73,6 +74,7 @@ async fn test_three_nodes_connect() {
 
     // Get all peer IDs (including Alice) for participation
     let peer_ids = network.get_all_peer_ids();
+    let policy_id = Some("dkg-policy-1".to_string());
     println!("Peer IDs for connection: {:?}", peer_ids);
 
     // Create Alice's service (clone app_state to avoid move)
@@ -83,13 +85,20 @@ async fn test_three_nodes_connect() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
+        policy_id: policy_id.clone(),
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(
+            2,
+            &peer_ids,
+            None,
+            policy_id.clone(),
+            BULLETIN_RING_NAMESPACE,
+        )
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with peer IDs...");
@@ -148,13 +157,14 @@ async fn test_start_dkg_fails_on_connection_failure() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
+        policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create authenticated request (even with invalid peer_ids, JWT should match request)
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with invalid peer IDs...");
@@ -208,6 +218,7 @@ async fn test_start_dkg_succeeds_on_all_connections() {
 
     // Get all peer IDs (including Alice) for participation
     let peer_ids = network.get_all_peer_ids();
+    let policy_id = Some("dkg-policy-1".to_string());
     println!("Peer IDs for connection: {:?}", peer_ids);
 
     // Create Alice's service
@@ -218,13 +229,20 @@ async fn test_start_dkg_succeeds_on_all_connections() {
         threshold: 2,
         peer_ids: peer_ids.clone(),
         pss_interval: None,
+        policy_id: policy_id.clone(),
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(
+            2,
+            &peer_ids,
+            None,
+            policy_id.clone(),
+            BULLETIN_RING_NAMESPACE,
+        )
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with valid peer IDs...");
@@ -278,6 +296,7 @@ async fn test_start_dkg_succeeds_on_all_connections() {
 
             // Parse RingPayload from bulletin post
             let ring_payload: RingPayload = post.try_into().expect("parse RingPayload");
+            assert_eq!(ring_payload.policy_id, policy_id);
             println!("Ring public key from bulletin: {}", &ring_payload.ring_pk);
 
             // Deserialize the public key to get the key string for local storage lookup
@@ -361,6 +380,7 @@ async fn test_start_dkg_fails_missing_auth_header() {
         threshold: 2,
         peer_ids,
         pss_interval: None,
+        policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
@@ -401,6 +421,7 @@ async fn test_start_dkg_fails_malformed_jwt() {
         threshold: 2,
         peer_ids,
         pss_interval: None,
+        policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
@@ -435,7 +456,7 @@ async fn test_start_dkg_fails_wrong_signature() {
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
     let valid_token = key_pair_1
-        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     // Tamper with the signature by changing a character
@@ -456,6 +477,7 @@ async fn test_start_dkg_fails_wrong_signature() {
         threshold: 2,
         peer_ids,
         pss_interval: None,
+        policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
@@ -508,6 +530,7 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
         token_string: "not-a-valid-jwt-token".to_string(), // Invalid JWT
         kind: SessionKind::Fresh,
         pss_interval: None,
+        policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
@@ -560,7 +583,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
 
     // Create JWT with threshold=3, but SessionInit will have threshold=2
     let mismatched_token = test_keys
-        .create_dkg_jwt(3, &peer_ids, None, BULLETIN_RING_NAMESPACE) // Wrong threshold!
+        .create_dkg_jwt(3, &peer_ids, None, None, BULLETIN_RING_NAMESPACE) // Wrong threshold!
         .expect("Failed to create JWT");
 
     // Create a SessionInit message with threshold=2 (doesn't match JWT's threshold=3)
@@ -577,6 +600,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
         token_string: mismatched_token,
         kind: SessionKind::Fresh,
         pss_interval: None,
+        policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
@@ -620,7 +644,7 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
     ];
 
     let mismatched_token = test_keys
-        .create_dkg_jwt(2, &jwt_peer_ids, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(2, &jwt_peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("Failed to create JWT");
 
     // SessionInit has different peer_ids than the JWT
@@ -643,6 +667,7 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
         token_string: mismatched_token,
         kind: SessionKind::Fresh,
         pss_interval: None,
+        policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 

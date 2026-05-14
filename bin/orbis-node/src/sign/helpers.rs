@@ -794,6 +794,7 @@ mod ring_reshare_update_tests {
             threshold: 2,
             pss_interval: Some(30),
             block_number_nonce,
+            policy_id: None,
         };
         let updated_payload = RingPayload {
             ring_pk: ring_pk_hex.clone(),
@@ -803,6 +804,7 @@ mod ring_reshare_update_tests {
             threshold: final_threshold,
             pss_interval: Some(30),
             block_number_nonce,
+            policy_id: None,
         };
 
         let current_payload_bytes: Vec<u8> = current_payload

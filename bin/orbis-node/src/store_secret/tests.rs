@@ -60,6 +60,7 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         threshold: 1,
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     // Serialize and set in bulletin
@@ -455,6 +456,7 @@ async fn test_store_secret_idempotent() {
         threshold: 1,
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
 
     // Compute the ring_id (deterministic hash of the ring payload)

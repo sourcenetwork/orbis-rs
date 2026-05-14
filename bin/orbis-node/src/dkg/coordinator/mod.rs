@@ -201,6 +201,7 @@ where
             token_string,
             kind,
             pss_interval,
+            policy_id,
             namespace,
             ..
         } = &message
@@ -215,6 +216,7 @@ where
                 token_string,
                 kind,
                 *pss_interval,
+                policy_id.clone(),
                 namespace.clone(),
                 sender_peer_id,
             )

@@ -34,6 +34,7 @@ where
     let (
         kind,
         pss_interval,
+        policy_id,
         bulletin_namespace,
         dkg_role,
         reshare_new_peer_ids,
@@ -45,6 +46,7 @@ where
             (
                 state.kind.clone(),
                 state.pss_interval,
+                state.policy_id.clone(),
                 state.namespace.clone(),
                 state.node.role(),
                 state
@@ -272,6 +274,7 @@ where
             peer_ids,
             threshold,
             pss_interval,
+            policy_id.clone(),
             &bulletin_namespace,
         )?;
         if let Err(e) = ring_storage::add_ring_index_entry(
@@ -341,6 +344,7 @@ where
             &ring_pk_bytes,
             threshold,
             pss_interval,
+            policy_id,
             &bulletin_namespace,
         )
         .await?;

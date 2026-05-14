@@ -244,6 +244,7 @@ async fn setup_ring(
         threshold,
         peer_ids,
         None,
+        None,
         BULLETIN_RING_NAMESPACE.to_string(),
     )
     .await
@@ -739,6 +740,7 @@ async fn test_dkg_fails_when_node_unreachable() {
         endpoint.to_string(),
         2,
         peer_ids,
+        None,
         None,
         BULLETIN_RING_NAMESPACE.to_string(),
     )

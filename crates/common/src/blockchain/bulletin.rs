@@ -48,15 +48,17 @@ impl MsgCreatePost {
     }
 }
 
-/// Update an existing post in a namespace while preserving its ID.
+/// Update a ring post in a namespace via ACP authorization.
 /// Proto field numbers match sourcehub/bulletin/tx.proto:
 /// - 1: creator (string)
 /// - 2: namespace (string)
 /// - 3: post_id (string)
-/// - 4: payload (bytes)
-/// - 5: artifact (string)
+/// - 4: artifact (string)
+/// - 5: new_peer_ids (repeated string)
+/// - 6: new_threshold (optional uint32)
+/// - 7: pss_interval (optional uint64)
 #[derive(Clone, Message)]
-pub struct MsgUpdatePost {
+pub struct MsgUpdateRingPostByAcp {
     /// Creator/updater's address
     #[prost(string, tag = "1")]
     pub creator: String,
@@ -66,45 +68,54 @@ pub struct MsgUpdatePost {
     /// Existing post identifier to update
     #[prost(string, tag = "3")]
     pub post_id: String,
-    /// New post payload data
-    #[prost(bytes = "vec", tag = "4")]
-    pub payload: Vec<u8>,
     /// Artifact for finding/tracking update (optional)
-    #[prost(string, tag = "5")]
+    #[prost(string, tag = "4")]
     pub artifact: String,
+    /// New peer IDs to reshare into
+    #[prost(string, repeated, tag = "5")]
+    pub new_peer_ids: Vec<String>,
+    /// New threshold for the reshare committee
+    #[prost(uint32, optional, tag = "6")]
+    pub new_threshold: Option<u32>,
+    /// Seconds between automatic PSS refresh ceremonies
+    #[prost(uint64, optional, tag = "7")]
+    pub pss_interval: Option<u64>,
 }
 
-impl MsgUpdatePost {
-    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgUpdatePost";
+impl MsgUpdateRingPostByAcp {
+    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgUpdateRingPostByAcp";
 
-    /// Create a post update message.
     pub fn new(
         creator: &str,
         namespace: &str,
         post_id: &str,
-        payload: Vec<u8>,
         artifact: Option<String>,
+        new_peer_ids: Vec<String>,
+        new_threshold: Option<u32>,
+        pss_interval: Option<u64>,
     ) -> Self {
         Self {
             creator: creator.to_string(),
             namespace: namespace.to_string(),
             post_id: post_id.to_string(),
-            payload,
             artifact: artifact.unwrap_or_default(),
+            new_peer_ids,
+            new_threshold,
+            pss_interval,
         }
     }
 }
 
-/// Update an existing post by threshold signature while preserving its ID.
+/// Finalize a ring reshare by threshold signature.
 /// Proto field numbers match sourcehub/bulletin/tx.proto:
 /// - 1: creator (string)
 /// - 2: namespace (string)
 /// - 3: post_id (string)
-/// - 5: artifact (string)
-/// - 6: signature_scheme (string)
-/// - 7: signature (bytes)
+/// - 4: artifact (string)
+/// - 5: signature_scheme (string)
+/// - 6: signature (bytes)
 #[derive(Clone, Message)]
-pub struct MsgUpdatePostByThresholdSignature {
+pub struct MsgUpdateRingPostByThresholdSignature {
     /// Creator/updater's address
     #[prost(string, tag = "1")]
     pub creator: String,
@@ -191,10 +202,9 @@ pub fn ring_reshare_finalize_sign_bytes_from_hashes(
     .encode_to_vec())
 }
 
-impl MsgUpdatePostByThresholdSignature {
-    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgUpdatePostByThresholdSignature";
+impl MsgUpdateRingPostByThresholdSignature {
+    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgUpdateRingPostByThresholdSignature";
 
-    /// Create a threshold-signature post update message.
     pub fn new(
         creator: &str,
         namespace: &str,
@@ -606,30 +616,40 @@ impl SourceHubClient {
         .await
     }
 
-    /// Update an existing post while preserving its post ID.
-    pub async fn bulletin_update_post(
+    /// Update a ring post via ACP authorization.
+    pub async fn bulletin_update_ring_post_by_acp(
         &self,
         namespace: &str,
         post_id: &str,
-        payload: Vec<u8>,
         artifact: Option<String>,
+        new_peer_ids: Vec<String>,
+        new_threshold: Option<u32>,
+        pss_interval: Option<u64>,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
 
-        let msg = MsgUpdatePost::new(&signer.address(), namespace, post_id, payload, artifact);
+        let msg = MsgUpdateRingPostByAcp::new(
+            &signer.address(),
+            namespace,
+            post_id,
+            artifact,
+            new_peer_ids,
+            new_threshold,
+            pss_interval,
+        );
 
         self.broadcast_proto_msg_with_gas(
-            MsgUpdatePost::TYPE_URL,
+            MsgUpdateRingPostByAcp::TYPE_URL,
             &msg,
             self.config().gas_multiplier,
         )
         .await
     }
 
-    /// Update an existing post using a threshold signature.
-    pub async fn bulletin_update_post_by_threshold_signature(
+    /// Finalize a ring reshare using a threshold signature.
+    pub async fn bulletin_update_ring_post_by_threshold_signature(
         &self,
         namespace: &str,
         post_id: &str,
@@ -641,7 +661,7 @@ impl SourceHubClient {
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
 
-        let msg = MsgUpdatePostByThresholdSignature::new(
+        let msg = MsgUpdateRingPostByThresholdSignature::new(
             &signer.address(),
             namespace,
             post_id,
@@ -651,7 +671,7 @@ impl SourceHubClient {
         );
 
         self.broadcast_proto_msg_with_gas(
-            MsgUpdatePostByThresholdSignature::TYPE_URL,
+            MsgUpdateRingPostByThresholdSignature::TYPE_URL,
             &msg,
             self.config().gas_multiplier,
         )

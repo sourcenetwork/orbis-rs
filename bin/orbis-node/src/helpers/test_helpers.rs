@@ -807,6 +807,7 @@ pub async fn write_ring_to_bulletin(
         threshold: 1,
         pss_interval,
         block_number_nonce: 0,
+        policy_id: None,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     bulletin

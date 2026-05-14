@@ -404,6 +404,7 @@ pub fn validate_dkg_claims(
     threshold: u32,
     peer_ids: &[String],
     pss_interval: Option<u64>,
+    policy_id: Option<&str>,
     namespace: &str,
 ) -> Result<()> {
     // Validate threshold matches
@@ -443,6 +444,12 @@ pub fn validate_dkg_claims(
         )));
     }
 
+    if token.claims.policy_id.as_deref() != policy_id {
+        return Err(DkgError::Unauthorized(format!(
+            "Token policy_id ({:?}) does not match request policy_id ({:?})",
+            token.claims.policy_id, policy_id
+        )));
+    }
     // Validate namespace: must be non-empty and match the JWT claim.
     if namespace.is_empty() {
         return Err(DkgError::Unauthorized(
@@ -717,6 +724,45 @@ mod tests {
             last_pss: secs,
         };
         bundle.save_by_ring_key(storage, ring_pk).unwrap();
+    }
+
+    fn dkg_token(policy_id: Option<&str>) -> BearerToken<DkgClaims> {
+        BearerToken {
+            issuer_id: "issuer".to_string(),
+            issued_time: 0,
+            expiration_time: 1,
+            not_before: None,
+            claims: DkgClaims {
+                threshold: 1,
+                peer_ids: vec!["peer-a".to_string()],
+                pss_interval: None,
+                policy_id: policy_id.map(str::to_string),
+                namespace: BULLETIN_RING_NAMESPACE.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn test_validate_dkg_claims_policy_id_compares_empty_string_directly() {
+        let peer_ids = vec!["peer-a".to_string()];
+        let token = dkg_token(Some(""));
+
+        assert!(validate_dkg_claims(
+            &token,
+            1,
+            &peer_ids,
+            None,
+            Some(""),
+            BULLETIN_RING_NAMESPACE
+        )
+        .is_ok());
+
+        let result = validate_dkg_claims(&token, 1, &peer_ids, None, None, BULLETIN_RING_NAMESPACE);
+        assert!(
+            matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("Token policy_id")),
+            "Expected Unauthorized for empty token policy_id vs absent request policy_id, got: {:?}",
+            result
+        );
     }
 
     #[tokio::test]

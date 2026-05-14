@@ -234,6 +234,9 @@ pub struct DkgSessionState<D: Dkg> {
     /// Seconds between automatic PSS refresh ceremonies for this ring.
     /// Stored here during the session so Phase 4 can write it into `RingPayload`.
     pub pss_interval: Option<u64>,
+    /// Optional policy that externally governs ring updates.
+    /// Stored here during fresh DKG so Phase 4 can write it into `RingPayload`.
+    pub policy_id: Option<String>,
     /// Bulletin namespace for this ring's payload.
     /// Stored here during the session so Phase 4 can write it into `RingIndexEntry`.
     pub namespace: String,
@@ -280,6 +283,7 @@ impl<D: Dkg> DkgSessionState<D> {
             processing_messages: std::collections::HashSet::new(),
             kind: SessionKind::Fresh,
             pss_interval: None,
+            policy_id: None,
             namespace: String::new(),
             reshare_params: None,
             refresh_health_check_candidate: None,

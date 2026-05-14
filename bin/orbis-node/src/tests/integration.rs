@@ -135,6 +135,14 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             .await
             .expect("WebSocket event subscription");
 
+    // Create the ring governance ACP policy before DKG so it can be embedded in the ring
+    // payload. The bulletin keeper checks `update_post` permission on this policy when
+    // UpdateRingPostByAcp is called. Registering the namespace object makes the signer the
+    // `owner`, which grants `update_post` via the policy's permission expression.
+    let ring_policy_id = cli_tool::add_ring_governance_policy(BULLETIN_RING_NAMESPACE)
+        .await
+        .expect("create ring governance policy");
+
     println!(
         "Starting DKG with threshold {} and {} peers...",
         threshold,
@@ -147,6 +155,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         threshold,
         peer_ids.clone(),
         Some(1),
+        Some(ring_policy_id),
         namespace.clone(),
     )
     .await;
@@ -790,21 +799,12 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     )
     .await;
 
-    let reshare_announcement = RingPayload {
-        ring_pk: ring_pk_hex.clone(),
-        peer_ids: dkg_ring_payload.peer_ids.clone(),
-        threshold: dkg_ring_payload.threshold,
-        new_peer_ids: Some(reshare_peer_ids.clone()),
-        new_threshold: Some(reshare_threshold),
-        pss_interval: dkg_ring_payload.pss_interval,
-        block_number_nonce: dkg_ring_payload.block_number_nonce,
-    };
-    let reshare_announcement_bytes =
-        serde_json::to_vec(&reshare_announcement).expect("serialize reshare announcement");
-    cli_tool::update_bulletin_post(
+    cli_tool::update_ring_post_by_acp(
         ring_namespace.clone(),
         ring_id.clone(),
-        reshare_announcement_bytes,
+        reshare_peer_ids.clone(),
+        Some(reshare_threshold),
+        dkg_ring_payload.pss_interval,
     )
     .await
     .expect("update ring bulletin post with reshare announcement");

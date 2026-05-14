@@ -66,6 +66,7 @@ fn reshare_session_init(
             bulletin_post_id: String::new(),
         },
         pss_interval: None,
+        policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     }
 }
@@ -170,6 +171,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
         threshold: 2,
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
@@ -478,6 +480,7 @@ async fn write_ring_with_announced_reshare(
         threshold: 2,
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
@@ -759,6 +762,7 @@ async fn post_ring_for_validation(
         threshold,
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
@@ -1068,6 +1072,7 @@ async fn post_reshare_announcement(
         new_threshold: Some(new_threshold),
         pss_interval: None,
         block_number_nonce: 0,
+        policy_id: None,
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
 
@@ -1169,6 +1174,7 @@ async fn run_reshare_ceremony(
             bulletin_post_id: bulletin_post_id.to_string(),
         },
         pss_interval: None,
+        policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
     };
 
@@ -1315,7 +1321,7 @@ async fn test_reshare_lower_threshold() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("JWT");
     alice_service
         .start_dkg(
@@ -1324,6 +1330,7 @@ async fn test_reshare_lower_threshold() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
+                    policy_id: None,
                     namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
@@ -1422,7 +1429,7 @@ async fn test_reshare_one_member_rotated() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("JWT");
     alice_service
         .start_dkg(
@@ -1431,6 +1438,7 @@ async fn test_reshare_one_member_rotated() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
+                    policy_id: None,
                     namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
@@ -1532,7 +1540,7 @@ async fn test_reshare_one_old_dealer_offline_completes() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("JWT");
     alice_service
         .start_dkg(
@@ -1541,6 +1549,7 @@ async fn test_reshare_one_old_dealer_offline_completes() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
+                    policy_id: None,
                     namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
@@ -1649,7 +1658,7 @@ async fn test_reshare_expand_committee() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("JWT");
     alice_service
         .start_dkg(
@@ -1658,6 +1667,7 @@ async fn test_reshare_expand_committee() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
+                    policy_id: None,
                     namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
@@ -1766,7 +1776,7 @@ async fn test_reshare_shrink_committee() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("JWT");
     alice_service
         .start_dkg(
@@ -1775,6 +1785,7 @@ async fn test_reshare_shrink_committee() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
+                    policy_id: None,
                     namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
@@ -1872,7 +1883,7 @@ async fn test_reshare_full_rotation() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
         .expect("JWT");
     alice_service
         .start_dkg(
@@ -1881,6 +1892,7 @@ async fn test_reshare_full_rotation() {
                     threshold: 2,
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
+                    policy_id: None,
                     namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 },
                 &token,
