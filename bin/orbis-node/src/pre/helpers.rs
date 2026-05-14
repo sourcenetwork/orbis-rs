@@ -59,13 +59,19 @@ pub async fn check_policy_access(
     issuer_id: &str,
     valid_window: Option<ValidWindow>,
 ) -> Result<()> {
+    // authz invariant (crates/authz/src/sourcehub/mod.rs:86-100): timestamp and
+    // valid_window must both be Some or both None. Mirrors what Sign already does
+    // at sign/helpers.rs:441 — only forward the bulletin timestamp when a window
+    // is being enforced. Until ACP populates the window server-side (issue #80),
+    // no window is set, so the timestamp is informational and must be elided here.
+    let timestamp = valid_window.as_ref().and(document_payload.timestamp);
     let permission = AccessCheckRequest::new(
         document_payload.policy_id.clone(),
         document_payload.resource.clone(),
         object_id.to_string(),
         document_payload.permission.clone(),
         document_payload.tier.clone(),
-        document_payload.timestamp,
+        timestamp,
         valid_window,
     )
     .to_bytes()
