@@ -1,4 +1,4 @@
-use super::common::PubPoly;
+use super::common::{PubPoly, ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
 use crate::{
     error::{CryptoError, Result},
     r#trait::{
@@ -280,6 +280,13 @@ impl ThresholdDealer for ThresholdDealerNode {
         }
 
         // Deserialize proof components
+        if proof.shared_point.len() != ELEMENT_COMPRESSED_SIZE {
+            return Err(CryptoError::ElGamalError(format!(
+                "Invalid shared_point length: expected {}, got {}",
+                ELEMENT_COMPRESSED_SIZE,
+                proof.shared_point.len()
+            )));
+        }
         let shared_point =
             Element::deserialize_compressed(&proof.shared_point[..]).map_err(|e| {
                 CryptoError::ElGamalError(format!("Failed to deserialize shared_point: {:?}", e))
@@ -292,9 +299,23 @@ impl ThresholdDealer for ThresholdDealerNode {
             ));
         }
 
+        if proof.challenge.len() != FR_COMPRESSED_SIZE {
+            return Err(CryptoError::ElGamalError(format!(
+                "Invalid challenge length: expected {}, got {}",
+                FR_COMPRESSED_SIZE,
+                proof.challenge.len()
+            )));
+        }
         let challenge = Fr::deserialize_compressed(&proof.challenge[..]).map_err(|e| {
             CryptoError::ElGamalError(format!("Failed to deserialize challenge: {:?}", e))
         })?;
+        if proof.response.len() != FR_COMPRESSED_SIZE {
+            return Err(CryptoError::ElGamalError(format!(
+                "Invalid response length: expected {}, got {}",
+                FR_COMPRESSED_SIZE,
+                proof.response.len()
+            )));
+        }
         let response = Fr::deserialize_compressed(&proof.response[..]).map_err(|e| {
             CryptoError::ElGamalError(format!("Failed to deserialize response: {:?}", e))
         })?;
@@ -469,6 +490,13 @@ impl ThresholdDealerNode {
 
     /// Decompress a point from bytes and validate it's a valid curve point
     fn decompress_point(bytes: &[u8]) -> Result<Element> {
+        if bytes.len() != ELEMENT_COMPRESSED_SIZE {
+            return Err(CryptoError::ElGamalError(format!(
+                "Invalid point length: expected {}, got {}",
+                ELEMENT_COMPRESSED_SIZE,
+                bytes.len()
+            )));
+        }
         let point = Element::deserialize_compressed(bytes).map_err(|e| {
             CryptoError::ElGamalError(format!("failed to decompress point: {:?}", e))
         })?;

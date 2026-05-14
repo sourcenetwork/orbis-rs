@@ -60,6 +60,7 @@ pub const THRESHOLD_SIGNATURE_SCHEME: &str = "decaf377_frost";
 pub use r#trait::{CryptoDeserialize, CryptoSerialize};
 
 #[cfg(any(test, feature = "test-helpers"))]
+#[path = "test_helpers/test_helper.rs"]
 pub mod test_helper;
 
 #[cfg(test)]
@@ -73,3 +74,7 @@ mod sign_tests;
 
 #[cfg(test)]
 mod lifecycle_tests;
+
+#[cfg(test)]
+#[path = "test_helpers/deserialization_prop_tests_helpers.rs"]
+pub(crate) mod deserialization_prop_tests_helpers;

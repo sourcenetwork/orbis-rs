@@ -98,6 +98,11 @@ impl CryptoSerialize for G2Point {
 
 impl CryptoDeserialize for G2Point {
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != G2_COMPRESSED_SIZE {
+            return Err(CryptoError::SerializationError(
+                ark_serialize::SerializationError::InvalidData,
+            ));
+        }
         let point =
             G2Affine::deserialize_compressed(bytes).map_err(CryptoError::SerializationError)?;
         Ok(Self(point))
@@ -122,6 +127,11 @@ impl CryptoSerialize for Fr {
 
 impl CryptoDeserialize for Fr {
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != FR_COMPRESSED_SIZE {
+            return Err(CryptoError::SerializationError(
+                ark_serialize::SerializationError::InvalidData,
+            ));
+        }
         Ok(Fr::deserialize_compressed(bytes)?)
     }
 }
@@ -140,6 +150,11 @@ impl CryptoSerialize for G1Affine {
 
 impl CryptoDeserialize for G1Affine {
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != G1_COMPRESSED_SIZE {
+            return Err(CryptoError::SerializationError(
+                ark_serialize::SerializationError::InvalidData,
+            ));
+        }
         Ok(G1Affine::deserialize_compressed(bytes)?)
     }
 }
@@ -270,6 +285,13 @@ impl CryptoDeserialize for PubPoly {
                 bytes.len()
             )));
         }
+        if bytes.len() != expected_len {
+            return Err(CryptoError::DKGError(format!(
+                "PubPoly bytes length mismatch: expected {}, got {}",
+                expected_len,
+                bytes.len()
+            )));
+        }
 
         let mut commits = Vec::with_capacity(num_commits);
         for i in 0..num_commits {
@@ -320,6 +342,13 @@ impl CryptoDeserialize for PolynomialCommitment {
         if bytes.len() < expected_len {
             return Err(CryptoError::DKGError(format!(
                 "PolynomialCommitment bytes too short: expected {}, got {}",
+                expected_len,
+                bytes.len()
+            )));
+        }
+        if bytes.len() != expected_len {
+            return Err(CryptoError::DKGError(format!(
+                "PolynomialCommitment bytes length mismatch: expected {}, got {}",
                 expected_len,
                 bytes.len()
             )));
