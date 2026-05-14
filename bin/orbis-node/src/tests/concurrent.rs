@@ -362,6 +362,7 @@ async fn setup_ring(
         threshold,
         peer_ids,
         None,
+        None,
         BULLETIN_RING_NAMESPACE.to_string(),
     )
     .await
@@ -433,12 +434,14 @@ async fn test_two_simultaneous_dkg_sessions() {
             threshold,
             peer_ids.clone(),
             None,
+            None,
             BULLETIN_RING_NAMESPACE.to_string()
         ),
         cli_tool::do_dkg(
             endpoint.clone(),
             threshold,
             peer_ids.clone(),
+            None,
             None,
             BULLETIN_RING_NAMESPACE.to_string()
         ),
@@ -804,6 +807,7 @@ async fn test_dkg_non_participant_initiator_completes() {
         net.non_participant.grpc_endpoint.clone(),
         threshold,
         peer_ids,
+        None,
         None,
         BULLETIN_RING_NAMESPACE.to_string(),
     )
