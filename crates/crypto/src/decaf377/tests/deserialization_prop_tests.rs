@@ -133,7 +133,7 @@ fn malicious_length_prefixes_are_rejected_before_allocation() {
 #[test]
 fn primitive_lengths_are_exact() {
     assert!(Fr::from_bytes(&[0u8; FR_COMPRESSED_SIZE + 1]).is_err());
-    assert!(Element::from_bytes(&vec![0u8; ELEMENT_COMPRESSED_SIZE + 1]).is_err());
+    assert!(Element::from_bytes(&[0u8; ELEMENT_COMPRESSED_SIZE + 1]).is_err());
 }
 
 #[test]
