@@ -1,5 +1,5 @@
 use super::PreCoordinator;
-use crate::constants::{MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
+use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
 use crate::pre::error::{PreError, Result};
 use crate::pre::helpers::{
     check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
@@ -79,6 +79,7 @@ where
             current_time,
             MAX_TOKEN_LIFETIME_SECS,
             MAX_JWT_BYTES,
+            JWT_CLOCK_SKEW_LEEWAY_SECS,
         )
         .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 

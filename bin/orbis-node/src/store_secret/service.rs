@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::constants::{MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
+use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
 use crate::helpers::helpers::{ring_namespace_for_post_id, RingConfig};
 use crate::metrics;
 use crate::ring_state::RingPolyState;
@@ -83,6 +83,7 @@ where
             current_time,
             MAX_TOKEN_LIFETIME_SECS,
             MAX_JWT_BYTES,
+            JWT_CLOCK_SKEW_LEEWAY_SECS,
         )
         .map_err(|e| StoreSecretError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 
