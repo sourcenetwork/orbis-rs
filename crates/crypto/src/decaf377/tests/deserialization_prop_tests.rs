@@ -6,9 +6,10 @@ use crate::decaf377::sign::{FrostNonceCommitment, FrostSigningState, SchnorrSign
 use crate::deserialization_prop_tests_helpers::{
     assert_canonical_from_bytes, assert_value_roundtrips, byte_vec, small_byte_vec, PROPTEST_CASES,
 };
+use crate::helpers::reject_non_canonical;
 use crate::r#trait::{
-    CryptoDeserialize, DistKeyShare, DistributedShare, EncryptionProof, PriShare, PubShare,
-    ReencryptReply, ThresholdDealer,
+    CryptoDeserialize, CryptoSerialize, DistKeyShare, DistributedShare, EncryptionProof, PriShare,
+    PubShare, ReencryptReply, ThresholdDealer,
 };
 use ::decaf377::{Element, Fr};
 use proptest::prelude::*;
@@ -134,6 +135,55 @@ fn malicious_length_prefixes_are_rejected_before_allocation() {
 fn primitive_lengths_are_exact() {
     assert!(Fr::from_bytes(&[0u8; FR_COMPRESSED_SIZE + 1]).is_err());
     assert!(Element::from_bytes(&[0u8; ELEMENT_COMPRESSED_SIZE + 1]).is_err());
+}
+
+// For decaf377, ark_ff validates Fr < r and decaf377's decoder validates Element
+// encodings bijectively, so there are no byte sequences that pass
+// deserialize_compressed but re-serialize to different bytes.  reject_non_canonical
+// is therefore purely defensive for these types.  The two tests below pin its
+// core mismatch-detection behavior (ensuring it never silently becomes a no-op),
+// and the two pipeline tests cover the nearest analog to "non-canonical": byte
+// sequences the decoder explicitly rejects via the same code paths.
+#[test]
+fn reject_non_canonical_detects_fr_byte_mismatch() {
+    let fr_one = scalar(1);
+    let fr_zero_bytes = scalar(0).to_bytes().unwrap();
+    assert!(
+        reject_non_canonical(&fr_one, &fr_zero_bytes).is_err(),
+        "reject_non_canonical must Err when the value re-serializes to bytes different from the supplied slice"
+    );
+}
+
+#[test]
+fn reject_non_canonical_detects_element_byte_mismatch() {
+    let gen = element(1);
+    let identity_bytes = Element::default().to_bytes().unwrap();
+    assert!(
+        reject_non_canonical(&gen, &identity_bytes).is_err(),
+        "reject_non_canonical must Err when the value re-serializes to bytes different from the supplied slice"
+    );
+}
+
+#[test]
+fn fr_out_of_range_bytes_rejected() {
+    // Any 32-byte sequence whose value >= r is invalid. The decaf377 scalar
+    // field modulus r starts with 0x12 in the high byte (little-endian byte 31),
+    // so setting byte 31 to 0xff produces a value far above r.
+    let mut bytes = [0u8; FR_COMPRESSED_SIZE];
+    bytes[FR_COMPRESSED_SIZE - 1] = 0xff;
+    assert!(Fr::from_bytes(&bytes).is_err());
+}
+
+#[test]
+fn element_with_high_bits_set_rejected() {
+    // decaf377's decoder explicitly rejects encodings where the top 3 bits of
+    // byte 31 are non-zero (bits 253-255 must be zero for all valid encodings).
+    // Setting bit 7 of byte 31 (bit 255) is the closest analog to a
+    // "non-canonical" element encoding — the underlying field value is in
+    // range but the decoder rejects it before reaching the curve arithmetic.
+    let mut bytes = [0u8; ELEMENT_COMPRESSED_SIZE];
+    bytes[ELEMENT_COMPRESSED_SIZE - 1] = 0x80; // bit 255 set
+    assert!(Element::from_bytes(&bytes).is_err());
 }
 
 #[test]
