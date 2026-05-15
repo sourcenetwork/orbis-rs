@@ -115,8 +115,7 @@ impl CryptoDeserialize for G2Point {
                 ark_serialize::SerializationError::InvalidData,
             ));
         }
-        let point =
-            G2Affine::deserialize_compressed(bytes).map_err(CryptoError::SerializationError)?;
+        let point = G2Affine::deserialize_compressed(bytes)?;
         reject_non_canonical(&point, bytes)?;
         Ok(Self(point))
     }
