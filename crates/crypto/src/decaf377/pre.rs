@@ -2,8 +2,8 @@ use super::common::{PubPoly, ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
 use crate::{
     error::{CryptoError, Result},
     r#trait::{
-        DistKeyShare, EncryptionProof, PubPoly as PubPolyTrait, PubShare, ReencryptReply, Secret,
-        ThresholdDealer,
+        CryptoDeserialize, DistKeyShare, EncryptionProof, PubPoly as PubPolyTrait, PubShare,
+        ReencryptReply, Secret, ThresholdDealer,
     },
 };
 use aes_gcm::{
@@ -11,7 +11,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use ark_ff::{BigInteger, One, PrimeField, Zero};
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_serialize::CanonicalSerialize;
 use ark_std::{collections::HashSet, vec::Vec};
 use decaf377::{Element, Fq, Fr};
 use hkdf::Hkdf;
@@ -287,10 +287,9 @@ impl ThresholdDealer for ThresholdDealerNode {
                 proof.shared_point.len()
             )));
         }
-        let shared_point =
-            Element::deserialize_compressed(&proof.shared_point[..]).map_err(|e| {
-                CryptoError::ElGamalError(format!("Failed to deserialize shared_point: {:?}", e))
-            })?;
+        let shared_point = Element::from_bytes(&proof.shared_point[..]).map_err(|e| {
+            CryptoError::ElGamalError(format!("Failed to deserialize shared_point: {:?}", e))
+        })?;
 
         // Validate shared_point is not the identity element
         if shared_point == Element::default() {
@@ -306,7 +305,7 @@ impl ThresholdDealer for ThresholdDealerNode {
                 proof.challenge.len()
             )));
         }
-        let challenge = Fr::deserialize_compressed(&proof.challenge[..]).map_err(|e| {
+        let challenge = Fr::from_bytes(&proof.challenge[..]).map_err(|e| {
             CryptoError::ElGamalError(format!("Failed to deserialize challenge: {:?}", e))
         })?;
         if proof.response.len() != FR_COMPRESSED_SIZE {
@@ -316,7 +315,7 @@ impl ThresholdDealer for ThresholdDealerNode {
                 proof.response.len()
             )));
         }
-        let response = Fr::deserialize_compressed(&proof.response[..]).map_err(|e| {
+        let response = Fr::from_bytes(&proof.response[..]).map_err(|e| {
             CryptoError::ElGamalError(format!("Failed to deserialize response: {:?}", e))
         })?;
 
@@ -497,7 +496,7 @@ impl ThresholdDealerNode {
                 bytes.len()
             )));
         }
-        let point = Element::deserialize_compressed(bytes).map_err(|e| {
+        let point = Element::from_bytes(bytes).map_err(|e| {
             CryptoError::ElGamalError(format!("failed to decompress point: {:?}", e))
         })?;
 

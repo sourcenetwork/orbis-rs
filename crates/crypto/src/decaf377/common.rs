@@ -17,6 +17,18 @@ pub const ELEMENT_COMPRESSED_SIZE: usize = 32;
 /// Size of a compressed Fr scalar in bytes (decaf377)
 pub const FR_COMPRESSED_SIZE: usize = 32;
 
+fn reject_non_canonical<T: CanonicalSerialize>(value: &T, bytes: &[u8]) -> Result<()> {
+    let mut canonical = Vec::with_capacity(bytes.len());
+    value.serialize_compressed(&mut canonical)?;
+    if canonical == bytes {
+        Ok(())
+    } else {
+        Err(CryptoError::SerializationError(
+            ark_serialize::SerializationError::InvalidData,
+        ))
+    }
+}
+
 // ============================================================================
 // CryptoSerialize/CryptoDeserialize implementations for decaf377 types
 // ============================================================================
@@ -40,7 +52,9 @@ impl CryptoDeserialize for Fr {
                 ark_serialize::SerializationError::InvalidData,
             ));
         }
-        Ok(Fr::deserialize_compressed(bytes)?)
+        let scalar = Fr::deserialize_compressed(bytes)?;
+        reject_non_canonical(&scalar, bytes)?;
+        Ok(scalar)
     }
 }
 
@@ -63,7 +77,9 @@ impl CryptoDeserialize for Element {
                 ark_serialize::SerializationError::InvalidData,
             ));
         }
-        Ok(Element::deserialize_compressed(bytes)?)
+        let element = Element::deserialize_compressed(bytes)?;
+        reject_non_canonical(&element, bytes)?;
+        Ok(element)
     }
 }
 
@@ -206,7 +222,7 @@ impl CryptoDeserialize for PubPoly {
         for i in 0..num_commits {
             let start = 4 + i * ELEMENT_COMPRESSED_SIZE;
             let end = start + ELEMENT_COMPRESSED_SIZE;
-            let commit = Element::deserialize_compressed(&bytes[start..end])?;
+            let commit = Element::from_bytes(&bytes[start..end])?;
             commits.push(commit);
         }
 
@@ -265,7 +281,7 @@ impl CryptoDeserialize for PolynomialCommitment {
         for i in 0..num_coefficients {
             let start = 4 + i * ELEMENT_COMPRESSED_SIZE;
             let end = start + ELEMENT_COMPRESSED_SIZE;
-            let coeff = Element::deserialize_compressed(&bytes[start..end])?;
+            let coeff = Element::from_bytes(&bytes[start..end])?;
             coefficients.push(coeff);
         }
 

@@ -7,8 +7,8 @@ use crate::deserialization_prop_tests_helpers::{
     assert_canonical_from_bytes, assert_value_roundtrips, byte_vec, small_byte_vec, PROPTEST_CASES,
 };
 use crate::r#trait::{
-    CryptoDeserialize, DistKeyShare, DistributedShare, EncryptionProof, PriShare, PubShare,
-    ReencryptReply, ThresholdDealer,
+    CryptoDeserialize, CryptoSerialize, DistKeyShare, DistributedShare, EncryptionProof, PriShare,
+    PubShare, ReencryptReply, ThresholdDealer,
 };
 use ark_bls12_381::{Fr, G1Affine, G1Projective, G2Projective};
 use ark_ec::Group;
@@ -126,6 +126,27 @@ fn primitive_lengths_are_exact() {
     assert!(Fr::from_bytes(&[0u8; FR_COMPRESSED_SIZE + 1]).is_err());
     assert!(G1Affine::from_bytes(&[0u8; G1_COMPRESSED_SIZE + 1]).is_err());
     assert!(G2Point::from_bytes(&[0u8; G2_COMPRESSED_SIZE + 1]).is_err());
+}
+
+#[test]
+fn non_canonical_identity_encodings_are_rejected() {
+    let mut canonical_g1_identity = vec![0u8; G1_COMPRESSED_SIZE];
+    canonical_g1_identity[0] = 0xc0;
+    let g1_identity = G1Affine::from_bytes(&canonical_g1_identity).unwrap();
+    assert_eq!(g1_identity.to_bytes().unwrap(), canonical_g1_identity);
+
+    let mut non_canonical_g1_identity = canonical_g1_identity;
+    non_canonical_g1_identity[G1_COMPRESSED_SIZE - 1] = 1;
+    assert!(G1Affine::from_bytes(&non_canonical_g1_identity).is_err());
+
+    let mut canonical_g2_identity = vec![0u8; G2_COMPRESSED_SIZE];
+    canonical_g2_identity[0] = 0xc0;
+    let g2_identity = G2Point::from_bytes(&canonical_g2_identity).unwrap();
+    assert_eq!(g2_identity.to_bytes().unwrap(), canonical_g2_identity);
+
+    let mut non_canonical_g2_identity = canonical_g2_identity;
+    non_canonical_g2_identity[G2_COMPRESSED_SIZE - 1] = 1;
+    assert!(G2Point::from_bytes(&non_canonical_g2_identity).is_err());
 }
 
 #[test]
