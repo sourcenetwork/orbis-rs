@@ -30,7 +30,6 @@ proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(PROPTEST_CASES))]
 
     #[test]
-    #[ignore]
     fn arbitrary_bytes_are_canonical_or_rejected(bytes in byte_vec()) {
         assert_canonical_from_bytes::<Fr>(&bytes)?;
         assert_canonical_from_bytes::<G1Affine>(&bytes)?;
