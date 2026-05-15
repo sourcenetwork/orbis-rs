@@ -15,6 +15,13 @@ use std::time::Duration;
 /// long-lived credentials from being issued and then leaked. Set to 24 hours.
 pub const MAX_TOKEN_LIFETIME_SECS: u64 = 24 * 60 * 60;
 
+/// Allowed clock skew for JWT time claim validation (seconds).
+///
+/// Tokens are signed by clients and validated independently by each node, so
+/// real deployments must tolerate small wall-clock differences across hosts or
+/// containers. This mirrors the previous jwt-simple default leeway of 16 minutes.
+pub const JWT_CLOCK_SKEW_LEEWAY_SECS: u64 = 16 * 60;
+
 /// Maximum allowed byte length for a bearer token string.
 ///
 /// Large request payloads are bound via digest claims rather than embedded in full,

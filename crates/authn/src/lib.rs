@@ -117,23 +117,30 @@ pub struct StoreSecretClaims {
 /// # Type Parameters
 /// * `T` - The custom claims type. Use `()` for no custom claims, `PreClaims` for PRE endpoints, etc.
 ///
+/// `clock_skew_leeway_secs` is applied to wall-clock comparisons for `exp`, `iat`,
+/// and `nbf`, but it does not expand the token's maximum allowed lifetime.
+///
 /// # Examples
 /// ```ignore
 /// // For PRE endpoint with rdr_pk claim
-/// let token: BearerToken<PreClaims> = resolve_jwt_did(token_str, current_time, max_lifetime)?;
+/// let token: BearerToken<PreClaims> =
+///     resolve_jwt_did(token_str, current_time, max_lifetime, max_jwt_bytes, clock_skew)?;
 /// assert_eq!(token.claims.rdr_pk, request.rdr_pk);
 ///
 /// // For DKG endpoint with no custom claims
-/// let token: BearerToken<DkgClaims> = resolve_jwt_did(token_str, current_time, max_lifetime)?;
+/// let token: BearerToken<DkgClaims> =
+///     resolve_jwt_did(token_str, current_time, max_lifetime, max_jwt_bytes, clock_skew)?;
 ///
 /// // Or simply use unit type for basic auth
-/// let token: BearerToken<()> = resolve_jwt_did(token_str, current_time, max_lifetime)?;
+/// let token: BearerToken<()> =
+///     resolve_jwt_did(token_str, current_time, max_lifetime, max_jwt_bytes, clock_skew)?;
 /// ```
 pub fn resolve_jwt_did<T>(
     token_str: &str,
     current_time: u64,
     max_token_lifetime_secs: u64,
     max_jwt_bytes: usize,
+    clock_skew_leeway_secs: u64,
 ) -> Result<BearerToken<T>>
 where
     T: DeserializeOwned + Debug,
@@ -190,12 +197,16 @@ where
     let bearer_token = verified.claims;
 
     // Check expiration
-    if current_time >= bearer_token.expiration_time {
+    if current_time
+        >= bearer_token
+            .expiration_time
+            .saturating_add(clock_skew_leeway_secs)
+    {
         return Err(AuthNError::JwtError("Token has expired".to_string()));
     }
 
     // Check issued time is not in the future
-    if bearer_token.issued_time > current_time {
+    if bearer_token.issued_time > current_time.saturating_add(clock_skew_leeway_secs) {
         return Err(AuthNError::JwtError(
             "Token issued in the future".to_string(),
         ));
@@ -203,7 +214,7 @@ where
 
     // Check not-before claim (nbf): token must not be used before this time
     if let Some(nbf) = bearer_token.not_before {
-        if current_time < nbf {
+        if current_time.saturating_add(clock_skew_leeway_secs) < nbf {
             return Err(AuthNError::JwtError(
                 "Token not yet valid (nbf)".to_string(),
             ));

@@ -193,6 +193,7 @@ where
                 current_time,
                 MAX_TOKEN_LIFETIME_SECS,
                 MAX_JWT_BYTES,
+                JWT_CLOCK_SKEW_LEEWAY_SECS,
             )
             .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
             validate_dkg_claims(
