@@ -147,7 +147,7 @@ fn primitive_lengths_are_exact() {
 #[test]
 fn reject_non_canonical_detects_fr_byte_mismatch() {
     let fr_one = scalar(1);
-    let fr_zero_bytes = scalar(0).to_bytes().unwrap();
+    let fr_zero_bytes = scalar(0).to_bytes();
     assert!(
         reject_non_canonical(&fr_one, &fr_zero_bytes).is_err(),
         "reject_non_canonical must Err when the value re-serializes to bytes different from the supplied slice"
