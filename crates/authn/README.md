@@ -52,8 +52,17 @@ let req = create_authenticated_request(my_body, &jwt_string)?;
 // Server: read and verify
 let token_str = extract_bearer_token(&request)?;
 let bearer: authn::BearerToken<PreClaims> =
-    resolve_jwt_did(token_str, current_unix_secs, max_lifetime_secs)?;
+    resolve_jwt_did(
+        token_str,
+        current_unix_secs,
+        max_lifetime_secs,
+        max_jwt_bytes,
+        clock_skew_leeway_secs,
+    )?;
 ```
+
+Pass `0` for strict wall-clock validation, or an explicit leeway in seconds to
+tolerate host/container clock skew.
 
 ## Errors
 

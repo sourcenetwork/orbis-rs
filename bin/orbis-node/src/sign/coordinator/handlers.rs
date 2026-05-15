@@ -1,5 +1,7 @@
 use super::SignCoordinator;
-use crate::constants::{MAX_JWT_BYTES, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS};
+use crate::constants::{
+    JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
+};
 use crate::ring_state::RingShareBundle;
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
@@ -104,6 +106,7 @@ where
                     current_time,
                     MAX_TOKEN_LIFETIME_SECS,
                     MAX_JWT_BYTES,
+                    JWT_CLOCK_SKEW_LEEWAY_SECS,
                 )
                 .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
                 validate_sign_claims(&token, namespace, derivation_id, None)?;
@@ -271,6 +274,7 @@ where
                     current_time,
                     MAX_TOKEN_LIFETIME_SECS,
                     MAX_JWT_BYTES,
+                    JWT_CLOCK_SKEW_LEEWAY_SECS,
                 )
                 .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 

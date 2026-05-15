@@ -3437,11 +3437,13 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "bincode",
+ "criterion",
  "project-root",
  "rand 0.9.4",
  "rand_core 0.6.4",
  "redb",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "zeroize",
 ]
