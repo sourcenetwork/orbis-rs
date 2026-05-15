@@ -1,5 +1,5 @@
-use crate::error::Result;
-
+use crate::error::{CryptoError, Result};
+use ark_serialize::CanonicalSerialize;
 /// Generate a random keypair (secret key scalar, public key point).
 ///
 /// Uses OsRng for cryptographic randomness.
@@ -29,4 +29,22 @@ pub fn generate_keypair() -> Result<(crate::ScalarField, crate::GroupAffine)> {
     let sk = ::decaf377::Fr::rand(&mut rng);
     let pk = ::decaf377::Element::GENERATOR * sk;
     Ok((sk, pk))
+}
+
+/// Rejects non-canonical encodings by round-tripping through serialization.
+///
+/// arkworks' `deserialize_compressed` accepts some non-canonical byte strings
+/// (e.g. identity points with trailing garbage). This check re-serializes the
+/// decoded value and compares it to the original bytes, rejecting anything that
+/// doesn't round-trip exactly.
+pub(crate) fn reject_non_canonical<T: CanonicalSerialize>(value: &T, bytes: &[u8]) -> Result<()> {
+    let mut canonical = Vec::with_capacity(bytes.len());
+    value.serialize_compressed(&mut canonical)?;
+    if canonical == bytes {
+        Ok(())
+    } else {
+        Err(CryptoError::SerializationError(
+            ark_serialize::SerializationError::InvalidData,
+        ))
+    }
 }

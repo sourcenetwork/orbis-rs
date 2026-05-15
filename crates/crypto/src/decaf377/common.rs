@@ -1,4 +1,5 @@
 use crate::error::{CryptoError, Result};
+use crate::helpers::reject_non_canonical;
 use crate::r#trait::{
     CryptoDeserialize, CryptoSerialize, PolynomialCommitment as PolynomialCommitmentTrait,
     PubPoly as PubPolyTrait,
@@ -16,18 +17,6 @@ pub const ELEMENT_COMPRESSED_SIZE: usize = 32;
 
 /// Size of a compressed Fr scalar in bytes (decaf377)
 pub const FR_COMPRESSED_SIZE: usize = 32;
-
-fn reject_non_canonical<T: CanonicalSerialize>(value: &T, bytes: &[u8]) -> Result<()> {
-    let mut canonical = Vec::with_capacity(bytes.len());
-    value.serialize_compressed(&mut canonical)?;
-    if canonical == bytes {
-        Ok(())
-    } else {
-        Err(CryptoError::SerializationError(
-            ark_serialize::SerializationError::InvalidData,
-        ))
-    }
-}
 
 // ============================================================================
 // CryptoSerialize/CryptoDeserialize implementations for decaf377 types
