@@ -3,7 +3,7 @@ use crate::constants::MAX_LOCAL_RINGS_PER_NODE;
 use crate::dkg::error::{DkgError, Result};
 use crate::metrics;
 use crate::ring_state::RingIndexEntry;
-use bulletin::r#trait::{BulletinKind, RingPayload};
+use bulletin::r#trait::RingPayload;
 use crypto::r#trait::Dkg;
 use crypto::{CryptoSerialize, GroupAffine as G1Affine};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -114,6 +114,11 @@ where
     ensure_local_ring_capacity(&ring_index, storage_key)
 }
 
+/// Post the fresh ring payload to the bulletin and return the chain-assigned ring_id.
+///
+/// Uses [`Bulletin::post_ring`] which, for `SourceHubBulletin`, decodes the ring_id
+/// directly from the `MsgCreateRingResponse` ABCI data rather than recomputing it
+/// locally — guaranteeing that the stored `bulletin_post_id` matches the chain's ID.
 pub(in crate::dkg::coordinator) async fn post_fresh_ring_payload<D>(
     coord: &DkgCoordinator<D>,
     session_id: u64,
@@ -122,7 +127,7 @@ pub(in crate::dkg::coordinator) async fn post_fresh_ring_payload<D>(
     pss_interval: Option<u64>,
     policy_id: Option<String>,
     bulletin_namespace: &str,
-) -> Result<()>
+) -> Result<String>
 where
     D: Dkg + Clone + 'static,
 {
@@ -150,12 +155,11 @@ where
         .try_into()
         .map_err(|e| DkgError::Serialization(format!("Failed to serialize RingPayload: {}", e)))?;
 
-    coord
+    let ring_id = coord
         .app_state
         .bulletin
-        .post(
+        .post_ring(
             bulletin_namespace.to_string(),
-            BulletinKind::Ring,
             payload_bytes,
             Some(session_id.to_string()),
         )
@@ -164,11 +168,12 @@ where
 
     tracing::info!(
         ring_pk = %ring_payload.ring_pk,
+        ring_id = %ring_id,
         namespace = bulletin_namespace,
         "DKG Coordinator: Successfully posted RingPayload to bulletin"
     );
 
-    Ok(())
+    Ok(ring_id)
 }
 
 pub(in crate::dkg::coordinator) fn fresh_ring_index_post_id<D>(
@@ -192,27 +197,17 @@ where
             ))
         })?;
 
-    let ring_payload_local = RingPayload {
-        ring_pk: ring_pk_hex_for_payload,
-        peer_ids,
-        new_peer_ids: None,
-        new_threshold: None,
-        threshold: threshold as u32,
-        pss_interval,
-        policy_id,
-        block_number_nonce: 0,
-    };
-    let ring_payload_bytes: Vec<u8> = ring_payload_local.try_into().map_err(|e| {
-        DkgError::Serialization(format!(
-            "Failed to serialize RingPayload for local cache: {}",
-            e
-        ))
-    })?;
-
     app_state
         .bulletin
-        .get_post_id(bulletin_namespace, &ring_payload_bytes)
-        .map_err(|e| DkgError::Serialization(format!("Failed to compute bulletin post_id: {}", e)))
+        .get_ring_id(
+            bulletin_namespace,
+            &ring_pk_hex_for_payload,
+            &peer_ids,
+            threshold as u32,
+            pss_interval,
+            policy_id.as_deref().unwrap_or(""),
+        )
+        .map_err(|e| DkgError::Serialization(format!("Failed to compute ring_id: {}", e)))
 }
 
 fn remove_ring_index_entry(storage: &impl LocalStorage, ring_key: &str) -> Result<()> {

@@ -9,6 +9,7 @@ use bulletin::r#trait::{Bulletin, BulletinKind, KeyDerivation, RingPayload};
 use bulletin::sourcehub::SourceHubBulletin;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
+    orbis::namespace_id,
     ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::r#trait::{Secret, ThresholdDealer, ThresholdSigner};
@@ -586,10 +587,10 @@ pub fn do_generate_reader_key() -> Result<()> {
     Ok(())
 }
 
-/// Ring governance policy. Uses SourceHub bulletin's ACP model:
-/// - resource `namespace`, object = "bulletin/<namespace>", permission `update_post`.
+/// Ring governance policy. Uses SourceHub x/orbis ACP model:
+/// - resource `namespace`, object = "orbis/<namespace>", permission `update_ring`.
 /// - `owner` is reserved and automatically injected by acp_core's DiscretionaryTransformer
-///   into every permission expression (`update_post = collaborator` → `owner + collaborator`).
+///   into every permission expression (`update_ring = collaborator` → `owner + collaborator`).
 /// - `RegisterObject` sets the signer as `owner`, so no explicit collaborator setup is needed.
 const RING_GOVERNANCE_POLICY_YAML: &str = r#"
 name: ring-governance-policy
@@ -600,7 +601,7 @@ resources:
         types:
           - actor
     permissions:
-      - name: update_post
+      - name: update_ring
         expr: collaborator
 "#;
 
@@ -659,9 +660,9 @@ pub async fn add_policy_to_chain() -> Result<String> {
     Ok(policy_id)
 }
 
-/// Creates a ring governance ACP policy and registers the bulletin ring namespace
+/// Creates a ring governance ACP policy and registers the typed Orbis ring namespace
 /// as an object within it. The signer (TEST_ACCOUNT_HEX_KEY) becomes the object
-/// `owner`, which grants `update_post` permission for `UpdateRingPostByAcp`.
+/// `owner`, which grants `update_ring` permission for `MsgUpdateRingByAcp`.
 ///
 /// Returns the ring governance `policy_id`.
 pub async fn add_ring_governance_policy(bulletin_namespace: &str) -> Result<String> {
@@ -699,9 +700,9 @@ pub async fn add_ring_governance_policy(bulletin_namespace: &str) -> Result<Stri
         .ok_or_else(|| anyhow!("Newly created ring governance policy ID not found in list"))?;
     println!("[ACP] ring governance policy_id: {}", policy_id);
 
-    // The bulletin keeper uses namespaceId = "bulletin/" + namespace.
-    // Registering this object makes the signer the `owner`, granting `update_post`.
-    let namespace_object_id = format!("bulletin/{}", bulletin_namespace);
+    // The Orbis keeper normalizes namespace input to "orbis/<namespace>" and
+    // checks update_ring on that namespace object during MsgUpdateRingByAcp.
+    let namespace_object_id = namespace_id(bulletin_namespace);
     let result = client
         .acp_register_object(
             &policy_id,
@@ -931,8 +932,7 @@ pub async fn create_bulletin_post(
 }
 
 pub async fn update_ring_post_by_acp(
-    namespace: String,
-    id: String,
+    ring_id: String,
     new_peer_ids: Vec<String>,
     new_threshold: Option<u32>,
     pss_interval: Option<u64>,
@@ -945,26 +945,19 @@ pub async fn update_ring_post_by_acp(
         .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
 
     let result = client
-        .bulletin_update_ring_post_by_acp(
-            &namespace,
-            &id,
-            None,
-            new_peer_ids,
-            new_threshold,
-            pss_interval,
-        )
+        .orbis_update_ring_by_acp(&ring_id, None, new_peer_ids, new_threshold, pss_interval)
         .await
-        .map_err(|e| anyhow!("Failed to update ring post: {}", e))?;
+        .map_err(|e| anyhow!("Failed to update ring: {}", e))?;
 
     if result.code != 0 {
         return Err(anyhow!(
-            "Failed to update ring post: code {} {}",
+            "Failed to update ring: code {} {}",
             result.code,
             result.log
         ));
     }
 
-    println!("Updated ring post with ID: {}", id);
+    println!("Updated ring with ID: {}", ring_id);
     Ok(())
 }
 

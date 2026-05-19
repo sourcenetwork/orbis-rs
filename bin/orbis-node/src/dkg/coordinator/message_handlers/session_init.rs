@@ -36,16 +36,9 @@ where
                 sender_peer_hex = %sender_hex,
                 "DKG Coordinator: Refresh SessionInit received - pre-validation"
             );
-            validate_refresh_session_init(
+            let ring_payload = validate_refresh_session_init(
                 ring_pk_hex,
                 &sender_hex,
-                &coord.app_state.local_storage,
-                &coord.app_state.bulletin,
-            )
-            .await?;
-
-            let ring_payload = load_refresh_ring_payload(
-                ring_pk_hex,
                 &coord.app_state.local_storage,
                 &coord.app_state.bulletin,
             )
@@ -149,29 +142,24 @@ where
                 )));
             }
 
-            if let Ok(bundle) =
-                RingShareBundle::load_by_ring_key(&coord.app_state.local_storage, ring_pk_hex)
-            {
-                let authoritative_new_peer_ids = ring_payload
-                    .new_peer_ids
-                    .clone()
-                    .unwrap_or_else(|| ring_payload.peer_ids.clone());
-                let authoritative_new_threshold =
-                    ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
-                let expected_session_id = derive_reshare_session_id(
-                    ring_pk_hex,
-                    reshare_bulletin_post_id,
-                    &ring_payload.peer_ids,
-                    &authoritative_new_peer_ids,
-                    authoritative_new_threshold,
-                    &bundle.public_polynomial,
-                );
-                if session_id != expected_session_id {
-                    return Err(DkgError::Unauthorized(format!(
-                        "Reshare session_id mismatch for ring {}: expected {}, got {}",
-                        ring_pk_hex, expected_session_id, session_id
-                    )));
-                }
+            let authoritative_new_peer_ids = ring_payload
+                .new_peer_ids
+                .clone()
+                .unwrap_or_else(|| ring_payload.peer_ids.clone());
+            let authoritative_new_threshold =
+                ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
+            let expected_session_id = derive_reshare_session_id(
+                ring_pk_hex,
+                reshare_bulletin_post_id,
+                &ring_payload.peer_ids,
+                &authoritative_new_peer_ids,
+                authoritative_new_threshold,
+            );
+            if session_id != expected_session_id {
+                return Err(DkgError::Unauthorized(format!(
+                    "Reshare session_id mismatch for ring {}: expected {}, got {}",
+                    ring_pk_hex, expected_session_id, session_id
+                )));
             }
 
             tracing::info!(

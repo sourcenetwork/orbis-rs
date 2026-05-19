@@ -4,7 +4,7 @@ use crate::constants::{
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
     build_reshare_params, derive_refresh_session_id, derive_reshare_session_id,
-    load_refresh_ring_payload, load_reshare_ring_payload, serialize_commitment_coefficients,
+    load_reshare_ring_payload, serialize_commitment_coefficients,
     session_not_found, validate_dkg_claims, validate_refresh_session_init,
     validate_reshare_session_init,
 };

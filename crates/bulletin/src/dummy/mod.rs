@@ -1,8 +1,11 @@
 use crate::{
     error::{BulletinError, Result},
-    r#trait::{Bulletin, BulletinKind, BulletinPost, RingPayload},
+    r#trait::{Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, RingPayload},
 };
 use async_trait::async_trait;
+use common::blockchain::orbis::{
+    generate_document_id, generate_key_derivation_id, generate_ring_id,
+};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -26,8 +29,8 @@ impl Bulletin for DummyBulletin {
         payload: Vec<u8>,
         _artifact: Option<String>,
     ) -> Result<()> {
-        // Generate deterministic ID from namespace + payload, matching SourceHubBulletin.
-        let id = Self::compute_post_id(&namespace, &payload);
+        let id = Self::typed_post_id(&namespace, &payload)
+            .unwrap_or_else(|| Self::compute_post_id(&namespace, &payload));
 
         let post = BulletinPost {
             id: id.clone(),
@@ -81,7 +84,8 @@ impl Bulletin for DummyBulletin {
     }
 
     fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String> {
-        Ok(Self::compute_post_id(namespace, payload))
+        Ok(Self::typed_post_id(namespace, payload)
+            .unwrap_or_else(|| Self::compute_post_id(namespace, payload)))
     }
 
     fn get_ring_id(
@@ -135,7 +139,6 @@ impl Bulletin for DummyBulletin {
         let new_threshold = payload.new_threshold.take().unwrap_or(payload.threshold);
         payload.peer_ids = new_peer_ids;
         payload.threshold = new_threshold;
-        payload.block_number_nonce = payload.block_number_nonce.saturating_add(1);
         let finalized_bytes =
             serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))?;
         Ok(Sha256::digest(&finalized_bytes).into())
@@ -172,6 +175,43 @@ impl DummyBulletin {
         hasher.update(format!("bulletin/{}", namespace).as_bytes());
         hasher.update(payload);
         hex::encode(hasher.finalize())
+    }
+
+    fn typed_post_id(namespace: &str, payload: &[u8]) -> Option<String> {
+        if let Ok(doc) = serde_json::from_slice::<DocumentPayload>(payload) {
+            return Some(generate_document_id(
+                namespace,
+                &doc.ring_id,
+                &doc.document,
+                &doc.proof,
+                &doc.policy_id,
+                &doc.resource,
+                &doc.permission,
+                doc.tier.as_deref(),
+                doc.timestamp,
+            ));
+        }
+        if let Ok(kd) = serde_json::from_slice::<KeyDerivation>(payload) {
+            return Some(generate_key_derivation_id(
+                namespace,
+                &kd.ring_id,
+                &kd.derivation,
+                &kd.policy_id,
+                &kd.resource,
+                &kd.permission,
+            ));
+        }
+        if let Ok(ring) = serde_json::from_slice::<RingPayload>(payload) {
+            return Some(generate_ring_id(
+                namespace,
+                &ring.ring_pk,
+                &ring.peer_ids,
+                ring.threshold,
+                ring.pss_interval,
+                ring.policy_id.as_deref().unwrap_or(""),
+            ));
+        }
+        None
     }
 
     /// Get all posts in a given namespace (for testing)

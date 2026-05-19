@@ -186,12 +186,9 @@ pub enum SubCommands {
         #[clap(long)]
         payload: String,
     },
-    /// Update a ring post via ACP authorization
+    /// Update a ring via ACP authorization
     UpdateRingPostByAcp {
-        /// Namespace containing the post
-        #[clap(long)]
-        namespace: String,
-        /// ID of the post to update
+        /// Ring ID to update
         #[clap(long)]
         id: String,
         /// New peer IDs for reshare (comma-separated)
@@ -529,14 +526,12 @@ async fn main() -> Result<()> {
             create_bulletin_post(namespace, BulletinKind::Ring, payload_bytes).await?;
         }
         SubCommands::UpdateRingPostByAcp {
-            namespace,
             id,
             new_peer_ids,
             new_threshold,
             pss_interval,
         } => {
-            update_ring_post_by_acp(namespace, id, new_peer_ids, new_threshold, pss_interval)
-                .await?;
+            update_ring_post_by_acp(id, new_peer_ids, new_threshold, pss_interval).await?;
         }
         SubCommands::Fund { address } => {
             fund(address, ChainConfig::local()).await?;

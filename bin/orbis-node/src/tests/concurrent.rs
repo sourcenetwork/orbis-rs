@@ -465,22 +465,16 @@ async fn test_two_simultaneous_dkg_sessions() {
     let ev1 = ev1.expect("timed out waiting for DKG 1 completion event");
     let ev2 = ev2.expect("timed out waiting for DKG 2 completion event");
 
-    assert!(
-        !ev1.post_id.is_empty(),
-        "DKG 1 must produce a ring bulletin post"
-    );
-    assert!(
-        !ev2.post_id.is_empty(),
-        "DKG 2 must produce a ring bulletin post"
-    );
+    assert!(!ev1.ring_id.is_empty(), "DKG 1 must produce a ring ID");
+    assert!(!ev2.ring_id.is_empty(), "DKG 2 must produce a ring ID");
     assert_ne!(
-        ev1.post_id, ev2.post_id,
-        "each DKG must produce a distinct bulletin post (no session state leakage)"
+        ev1.ring_id, ev2.ring_id,
+        "each DKG must produce a distinct ring ID (no session state leakage)"
     );
 
     println!(
-        "Both DKGs completed successfully:\n  ring1 post_id={}\n  ring2 post_id={}",
-        ev1.post_id, ev2.post_id,
+        "Both DKGs completed successfully:\n  ring1 ring_id={}\n  ring2 ring_id={}",
+        ev1.ring_id, ev2.ring_id,
     );
 }
 

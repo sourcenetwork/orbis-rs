@@ -90,7 +90,6 @@ pub fn derive_reshare_session_id(
     old_peer_ids: &[String],
     new_peer_ids: &[String],
     new_threshold: u32,
-    public_polynomial_hex: &str,
 ) -> u64 {
     let mut hasher = Sha256::new();
     hasher.update(PSS_SESSION_ID_DOMAIN);
@@ -100,7 +99,6 @@ pub fn derive_reshare_session_id(
     hash_sorted_peer_ids(&mut hasher, b"old_peer_ids", old_peer_ids);
     hash_sorted_peer_ids(&mut hasher, b"new_peer_ids", new_peer_ids);
     hash_labeled_bytes(&mut hasher, b"new_threshold", &new_threshold.to_le_bytes());
-    hash_labeled_str(&mut hasher, b"public_polynomial", public_polynomial_hex);
     let digest = hasher.finalize();
     u64::from_le_bytes(digest[..8].try_into().expect("digest prefix"))
 }
@@ -340,7 +338,7 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
     sender_hex: &str,
     local_storage: &S,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
-) -> Result<()> {
+) -> Result<RingPayload> {
     // 1. Look up the bulletin post_id for this ring from the local RingIndex.
     let ring_index: Vec<RingIndexEntry> = local_storage
         .get(LocalStorageKeys::RingIndex)
@@ -407,7 +405,7 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
         }
     }
 
-    Ok(())
+    Ok(ring_payload)
 }
 
 /// Validates JWT claims against the DKG request.
@@ -777,6 +775,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_derive_reshare_session_id_uses_chain_transition_only() {
+        let old_peer_ids = vec!["peer-c".to_string(), "peer-a".to_string()];
+        let new_peer_ids = vec!["peer-b".to_string(), "peer-a".to_string()];
+
+        let id_1 = derive_reshare_session_id("ring-pk", "ring-id", &old_peer_ids, &new_peer_ids, 2);
+        let id_2 = derive_reshare_session_id("ring-pk", "ring-id", &old_peer_ids, &new_peer_ids, 2);
+        assert_eq!(
+            id_1, id_2,
+            "reshare session ID should be stable across nodes that see the same ring update"
+        );
+
+        let changed =
+            derive_reshare_session_id("ring-pk", "ring-id", &old_peer_ids, &new_peer_ids, 1);
+        assert_ne!(
+            id_1, changed,
+            "reshare session ID should still change when the announced transition changes"
+        );
+    }
+
     #[tokio::test]
     async fn test_unknown_ring() {
         let (storage, db_path) = make_storage("helpers_unknown_ring");
@@ -800,7 +818,12 @@ mod tests {
         // Post garbage bytes to the bulletin and point RingIndex at them.
         let garbage = b"not valid json".to_vec();
         bulletin
-            .post(BULLETIN_RING_NAMESPACE.to_string(), BulletinKind::Ring, garbage.clone(), None)
+            .post(
+                BULLETIN_RING_NAMESPACE.to_string(),
+                BulletinKind::Ring,
+                garbage.clone(),
+                None,
+            )
             .await
             .unwrap();
         let post_id = bulletin

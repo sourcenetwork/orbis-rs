@@ -158,8 +158,7 @@ where
                     ))
                 })?;
 
-        // 5. Compute object_id before posting (deterministic hash).
-        // get_post_id adds the "bulletin/" prefix internally.
+        // 5. Compute object_id before posting (deterministic typed Orbis hash).
         let object_id = self
             .state
             .bulletin

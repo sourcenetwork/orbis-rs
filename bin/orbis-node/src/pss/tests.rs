@@ -291,7 +291,12 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     let garbage = b"not valid json".to_vec();
     app_state
         .bulletin
-        .post(BULLETIN_RING_NAMESPACE.to_string(), BulletinKind::Ring, garbage.clone(), None)
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            BulletinKind::Ring,
+            garbage.clone(),
+            None,
+        )
         .await
         .expect("post garbage");
     let post_id = app_state

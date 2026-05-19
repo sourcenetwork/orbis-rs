@@ -4,7 +4,9 @@ use crate::{
 };
 use async_trait::async_trait;
 use common::blockchain::{
-    orbis::{self, generate_ring_id, ring_state_hash},
+    orbis::{
+        self, generate_document_id, generate_key_derivation_id, generate_ring_id, ring_state_hash,
+    },
     ChainConfigBuilder, SourceHubClient, TxSigner,
 };
 use sha2::{Digest, Sha256};
@@ -12,7 +14,8 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 mod tests;
 
-const DEFAULT_THRESHOLD_SIGNATURE_SCHEME: &str = "bls12-381-g2-pop";
+const DEFAULT_THRESHOLD_SIGNATURE_SCHEME: &str = "bls12_381_g1_pk_g2_sig_nul";
+const DECAF377_FROST_THRESHOLD_SIGNATURE_SCHEME: &str = "decaf377_frost";
 const RESHARE_THRESHOLD_SIGNATURE_ARTIFACT_PREFIX: &str = "reshare-threshold-signature";
 
 pub struct SourceHubBulletin {
@@ -25,6 +28,31 @@ impl Bulletin for SourceHubBulletin {
         Ok(())
     }
 
+    async fn post_ring(
+        &self,
+        namespace: String,
+        payload: Vec<u8>,
+        artifact: Option<String>,
+    ) -> Result<String> {
+        let ring: RingPayload = serde_json::from_slice(&payload)
+            .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        let (result, ring_id) = self
+            .chain_client
+            .orbis_create_ring_get_id(
+                &namespace,
+                &ring.ring_pk,
+                ring.peer_ids,
+                ring.threshold,
+                ring.pss_interval,
+                ring.policy_id.as_deref().unwrap_or(""),
+                artifact,
+            )
+            .await
+            .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+        check_result(result, "create ring")?;
+        Ok(ring_id)
+    }
+
     async fn post(
         &self,
         namespace: String,
@@ -34,22 +62,8 @@ impl Bulletin for SourceHubBulletin {
     ) -> Result<()> {
         match kind {
             BulletinKind::Ring => {
-                let ring: RingPayload = serde_json::from_slice(&payload)
-                    .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-                let result = self
-                    .chain_client
-                    .orbis_create_ring(
-                        &namespace,
-                        &ring.ring_pk,
-                        ring.peer_ids,
-                        ring.threshold,
-                        ring.pss_interval,
-                        ring.policy_id.as_deref().unwrap_or(""),
-                        artifact,
-                    )
-                    .await
-                    .map_err(|e| BulletinError::ChainError(e.to_string()))?;
-                check_result(result, "create ring")
+                self.post_ring(namespace, payload, artifact).await?;
+                Ok(())
             }
             BulletinKind::Document => {
                 let doc: DocumentPayload = serde_json::from_slice(&payload)
@@ -139,6 +153,40 @@ impl Bulletin for SourceHubBulletin {
     }
 
     fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String> {
+        if let Ok(doc) = serde_json::from_slice::<DocumentPayload>(payload) {
+            return Ok(generate_document_id(
+                namespace,
+                &doc.ring_id,
+                &doc.document,
+                &doc.proof,
+                &doc.policy_id,
+                &doc.resource,
+                &doc.permission,
+                doc.tier.as_deref(),
+                doc.timestamp,
+            ));
+        }
+        if let Ok(kd) = serde_json::from_slice::<KeyDerivation>(payload) {
+            return Ok(generate_key_derivation_id(
+                namespace,
+                &kd.ring_id,
+                &kd.derivation,
+                &kd.policy_id,
+                &kd.resource,
+                &kd.permission,
+            ));
+        }
+        if let Ok(ring) = serde_json::from_slice::<RingPayload>(payload) {
+            return Ok(generate_ring_id(
+                namespace,
+                &ring.ring_pk,
+                &ring.peer_ids,
+                ring.threshold,
+                ring.pss_interval,
+                ring.policy_id.as_deref().unwrap_or(""),
+            ));
+        }
+
         let mut hasher = Sha256::new();
         hasher.update(namespace.as_bytes());
         hasher.update(payload);
@@ -201,7 +249,6 @@ impl Bulletin for SourceHubBulletin {
             new_peer_ids: vec![],
             new_threshold: 0,
             has_new_threshold: false,
-            block_number_nonce: ring.block_number_nonce.saturating_add(1),
             ..ring
         };
         Ok(ring_state_hash(&finalized))
@@ -421,7 +468,12 @@ fn parse_threshold_signature_artifact(artifact: &Option<String>) -> Result<(Stri
     } else {
         signature_scheme.trim()
     };
-    if signature_scheme != DEFAULT_THRESHOLD_SIGNATURE_SCHEME {
+
+    let signature_scheme = signature_scheme.to_ascii_lowercase();
+    if !matches!(
+        signature_scheme.as_str(),
+        DEFAULT_THRESHOLD_SIGNATURE_SCHEME | DECAF377_FROST_THRESHOLD_SIGNATURE_SCHEME
+    ) {
         return Err(BulletinError::ParseError(format!(
             "unsupported threshold signature scheme: {signature_scheme}"
         )));
@@ -442,7 +494,7 @@ fn parse_threshold_signature_artifact(artifact: &Option<String>) -> Result<(Stri
         ));
     }
 
-    Ok((signature_scheme.to_string(), signature))
+    Ok((signature_scheme, signature))
 }
 
 fn check_result(result: common::blockchain::BroadcastResult, op: &str) -> Result<()> {

@@ -494,11 +494,6 @@ where
         Err(e) => return Err(e),
     };
 
-    let bundle =
-        RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str).map_err(|e| {
-            DkgError::Storage(format!("PSS: failed to load current ring bundle: {}", e))
-        })?;
-
     // sorted_new is already sorted inside reshare_params.new_peer_ids.
     let sorted_new = reshare_params.new_peer_ids.clone();
 
@@ -525,7 +520,6 @@ where
         old_peer_ids,
         &sorted_new,
         new_threshold,
-        &bundle.public_polynomial,
     );
     let total_old = old_peer_ids.len();
 

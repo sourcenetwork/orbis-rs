@@ -255,28 +255,46 @@ where
         }
     }
 
-    // For fresh DKG: cache the RingPayload locally and append a RingIndexEntry so the
-    // PSS scheduler can discover this ring.
+    // For fresh DKG: post the RingPayload to the bulletin (node 1 only) and write a
+    // RingIndexEntry on all nodes so the PSS scheduler can discover this ring.
+    //
+    // Node 1 posts first so the chain-assigned ring_id can be read from the tx
+    // response; all other nodes compute the ring_id locally via generate_ring_id.
     //
     // For Refresh: bulletin entry is unchanged; polynomial updated in RingShareBundle above.
     // For Reshare: bulletin is updated below by new-committee node 1.
     if is_fresh {
-        let peer_ids = coord
-            .app_state
-            .dkg_session_state
-            .get_peer_ids(&session_id)
-            .await
-            .unwrap_or_default();
+        let bulletin_post_id = if node_id == 1 {
+            // Post to the chain and get the authoritative ring_id from the response.
+            ring_storage::post_fresh_ring_payload(
+                coord,
+                session_id,
+                &ring_pk_bytes,
+                threshold,
+                pss_interval,
+                policy_id.clone(),
+                &bulletin_namespace,
+            )
+            .await?
+        } else {
+            // Nodes 2 and 3: compute the ring_id locally.
+            let peer_ids = coord
+                .app_state
+                .dkg_session_state
+                .get_peer_ids(&session_id)
+                .await
+                .unwrap_or_default();
+            ring_storage::fresh_ring_index_post_id(
+                &coord.app_state,
+                &aggregate_pk,
+                peer_ids,
+                threshold,
+                pss_interval,
+                policy_id.clone(),
+                &bulletin_namespace,
+            )?
+        };
 
-        let bulletin_post_id = ring_storage::fresh_ring_index_post_id(
-            &coord.app_state,
-            &aggregate_pk,
-            peer_ids,
-            threshold,
-            pss_interval,
-            policy_id.clone(),
-            &bulletin_namespace,
-        )?;
         if let Err(e) = ring_storage::add_ring_index_entry(
             &coord.app_state,
             &storage_key,
@@ -334,20 +352,6 @@ where
                 .unmark_ring_pss(ring_key)
                 .await;
         }
-    }
-
-    // Node 1 of the OLD committee posts the RingPayload for fresh DKG.
-    if node_id == 1 && matches!(kind, SessionKind::Fresh) {
-        ring_storage::post_fresh_ring_payload(
-            coord,
-            session_id,
-            &ring_pk_bytes,
-            threshold,
-            pss_interval,
-            policy_id,
-            &bulletin_namespace,
-        )
-        .await?;
     }
 
     // For Reshare: node 1 of the NEW committee posts the updated RingPayload with the

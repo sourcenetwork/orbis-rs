@@ -26,6 +26,7 @@ struct PreparedReshareUpdate {
     sorted_new_peer_ids: Vec<String>,
     new_committee_size: usize,
     ring_id: String,
+    sign_namespace: String,
     current_ring_sha256: String,
     finalized_ring_sha256: String,
     block_number_nonce: u64,
@@ -112,7 +113,7 @@ where
         domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
         session_id,
         chain_id: prepared.chain_id,
-        namespace: bulletin_namespace.clone(),
+        namespace: prepared.sign_namespace.clone(),
         ring_pk: hex::encode(ring_pk_bytes),
         ring_id: prepared.ring_id.clone(),
         current_ring_sha256: prepared.current_ring_sha256,
@@ -186,7 +187,7 @@ where
     tracing::info!(
         ring_pk = %ring_pk_hex,
         ring_id = %prepared.ring_id,
-        namespace = %bulletin_namespace,
+        namespace = %prepared.sign_namespace,
         new_threshold = new_threshold,
         new_committee_size = prepared.new_committee_size,
         signature_len = sign_response.signature.len(),
@@ -238,6 +239,7 @@ where
                 e
             ))
         })?;
+    let sign_namespace = current_post.namespace.clone();
     let current_ring_payload: RingPayload =
         serde_json::from_slice(&current_post.payload).map_err(|e| {
             DkgError::Deserialization(format!(
@@ -309,6 +311,7 @@ where
         sorted_new_peer_ids,
         new_committee_size,
         ring_id: ring_id.to_string(),
+        sign_namespace,
         current_ring_sha256,
         finalized_ring_sha256,
         block_number_nonce: current_ring_payload.block_number_nonce,

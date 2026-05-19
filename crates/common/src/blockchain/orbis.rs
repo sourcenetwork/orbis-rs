@@ -10,6 +10,7 @@ use prost::Message;
 use super::bulletin::{PageRequest, PageResponse};
 
 pub const RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN: &str = "orbis-ring-reshare-finalize";
+pub const NAMESPACE_ID_PREFIX: &str = "orbis/";
 
 // ============================================================================
 // Domain Types (on-chain state)
@@ -470,6 +471,15 @@ pub fn ring_state_hash(ring: &Ring) -> [u8; 32] {
 // Ring ID generation (mirrors SourceHub's GenerateRingID)
 // ============================================================================
 
+/// Add SourceHub's Orbis namespace prefix unless the caller already supplied it.
+pub fn namespace_id(namespace: &str) -> String {
+    if namespace.starts_with(NAMESPACE_ID_PREFIX) {
+        namespace.to_string()
+    } else {
+        format!("{NAMESPACE_ID_PREFIX}{namespace}")
+    }
+}
+
 /// Compute the deterministic ring ID matching SourceHub's on-chain `GenerateRingID`.
 ///
 /// Encoding: each string is 4-byte big-endian length + UTF-8 bytes; string slices
@@ -483,10 +493,11 @@ pub fn generate_ring_id(
     pss_interval: Option<u64>,
     policy_id: &str,
 ) -> String {
+    let namespace = namespace_id(namespace);
     let mut h = Sha256::new();
 
     write_string(&mut h, "orbis/ring/v1");
-    write_string(&mut h, namespace);
+    write_string(&mut h, &namespace);
     write_string(&mut h, ring_pk);
     write_string_slice(&mut h, peer_ids);
     h.update(threshold.to_be_bytes());
@@ -496,9 +507,71 @@ pub fn generate_ring_id(
     hex::encode(h.finalize())
 }
 
+/// Compute the deterministic document ID matching SourceHub's on-chain `GenerateDocumentID`.
+pub fn generate_document_id(
+    namespace: &str,
+    ring_id: &str,
+    document: &str,
+    proof: &str,
+    policy_id: &str,
+    resource: &str,
+    permission: &str,
+    tier: Option<&str>,
+    timestamp: Option<u64>,
+) -> String {
+    let namespace = namespace_id(namespace);
+    let mut h = Sha256::new();
+
+    write_string(&mut h, "orbis/document/v1");
+    write_string(&mut h, &namespace);
+    write_string(&mut h, ring_id);
+    write_string(&mut h, document);
+    write_string(&mut h, proof);
+    write_string(&mut h, policy_id);
+    write_string(&mut h, resource);
+    write_string(&mut h, permission);
+    write_optional_string(&mut h, tier);
+    write_optional_u64(&mut h, timestamp);
+
+    hex::encode(h.finalize())
+}
+
+/// Compute the deterministic key derivation ID matching SourceHub's on-chain `GenerateKeyDerivationID`.
+pub fn generate_key_derivation_id(
+    namespace: &str,
+    ring_id: &str,
+    derivation: &str,
+    policy_id: &str,
+    resource: &str,
+    permission: &str,
+) -> String {
+    let namespace = namespace_id(namespace);
+    let mut h = Sha256::new();
+
+    write_string(&mut h, "orbis/key_derivation/v1");
+    write_string(&mut h, &namespace);
+    write_string(&mut h, ring_id);
+    write_string(&mut h, derivation);
+    write_string(&mut h, policy_id);
+    write_string(&mut h, resource);
+    write_string(&mut h, permission);
+
+    hex::encode(h.finalize())
+}
+
 fn write_string(h: &mut Sha256, s: &str) {
     h.update((s.len() as u32).to_be_bytes());
     h.update(s.as_bytes());
+}
+
+fn write_optional_string(h: &mut Sha256, value: Option<&str>) {
+    match value {
+        None => h.update([0u8]),
+        Some(v) => {
+            h.update([1u8]);
+            write_string(h, v);
+        }
+    }
 }
 
 fn write_string_slice(h: &mut Sha256, slice: &[String]) {
@@ -516,6 +589,61 @@ fn write_optional_u64(h: &mut Sha256, value: Option<u64>) {
             h.update(v.to_be_bytes());
         }
     }
+}
+
+// ============================================================================
+// Cosmos SDK ABCI response decoding
+// ============================================================================
+
+/// Minimal representation of google.protobuf.Any for decoding TxMsgData.
+#[derive(Clone, prost::Message)]
+struct AnyProto {
+    #[prost(string, tag = "1")]
+    pub type_url: String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub value: Vec<u8>,
+}
+
+/// Cosmos SDK TxMsgData: wrapper around per-message ABCI responses.
+/// Field 2 (msg_responses) is the modern SDK 0.46+ format.
+/// Field 1 (data) is the legacy format; each entry's value bytes are
+/// the raw-encoded response message.
+#[derive(Clone, prost::Message)]
+struct TxMsgData {
+    #[prost(message, repeated, tag = "2")]
+    pub msg_responses: Vec<AnyProto>,
+}
+
+/// Extract `MsgCreateRingResponse.ring_id` from a broadcast result.
+///
+/// Tries the modern Cosmos SDK format (TxMsgData.msg_responses) first,
+/// then falls back to interpreting the raw data as `MsgCreateRingResponse`
+/// directly. Returns `None` if decoding fails or the ring_id is empty.
+pub fn decode_create_ring_id(data: Option<&Vec<u8>>) -> Option<String> {
+    let bytes = data?;
+    if bytes.is_empty() {
+        return None;
+    }
+
+    // Try modern Cosmos SDK 0.46+ format: TxMsgData.msg_responses[0].value
+    if let Ok(tx_data) = TxMsgData::decode(bytes.as_slice()) {
+        for any in &tx_data.msg_responses {
+            if let Ok(resp) = MsgCreateRingResponse::decode(any.value.as_slice()) {
+                if !resp.ring_id.is_empty() {
+                    return Some(resp.ring_id);
+                }
+            }
+        }
+    }
+
+    // Fallback: try decoding the bytes directly as MsgCreateRingResponse
+    if let Ok(resp) = MsgCreateRingResponse::decode(bytes.as_slice()) {
+        if !resp.ring_id.is_empty() {
+            return Some(resp.ring_id);
+        }
+    }
+
+    None
 }
 
 // ============================================================================
@@ -554,6 +682,51 @@ impl SourceHubClient {
             self.config().gas_multiplier,
         )
         .await
+    }
+
+    /// Create a ring and return the chain-assigned ring_id alongside the broadcast result.
+    ///
+    /// The ring_id is decoded from `MsgCreateRingResponse` in the ABCI response data.
+    /// If decoding fails, falls back to `generate_ring_id` computed locally.
+    pub async fn orbis_create_ring_get_id(
+        &self,
+        namespace: &str,
+        ring_pk: &str,
+        peer_ids: Vec<String>,
+        threshold: u32,
+        pss_interval: Option<u64>,
+        policy_id: &str,
+        artifact: Option<String>,
+    ) -> Result<(BroadcastResult, String)> {
+        let peer_ids_clone = peer_ids.clone();
+        let result = self
+            .orbis_create_ring(
+                namespace,
+                ring_pk,
+                peer_ids,
+                threshold,
+                pss_interval,
+                policy_id,
+                artifact,
+            )
+            .await?;
+
+        let ring_id = decode_create_ring_id(result.data.as_ref()).unwrap_or_else(|| {
+            eprintln!(
+                "orbis_create_ring_get_id: could not decode ring_id from response; \
+                 falling back to generate_ring_id"
+            );
+            generate_ring_id(
+                namespace,
+                ring_pk,
+                &peer_ids_clone,
+                threshold,
+                pss_interval,
+                policy_id,
+            )
+        });
+
+        Ok((result, ring_id))
     }
 
     pub async fn orbis_store_document(
@@ -620,6 +793,33 @@ impl SourceHubClient {
         };
         self.broadcast_proto_msg_with_gas(
             MsgStoreKeyDerivation::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    pub async fn orbis_update_ring_by_acp(
+        &self,
+        ring_id: &str,
+        artifact: Option<String>,
+        new_peer_ids: Vec<String>,
+        new_threshold: Option<u32>,
+        pss_interval: Option<u64>,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgUpdateRingByAcp::new(
+            &signer.address(),
+            ring_id,
+            artifact,
+            new_peer_ids,
+            new_threshold,
+            pss_interval,
+        );
+        self.broadcast_proto_msg_with_gas(
+            MsgUpdateRingByAcp::TYPE_URL,
             &msg,
             self.config().gas_multiplier,
         )

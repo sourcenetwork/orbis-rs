@@ -165,6 +165,31 @@ pub trait Bulletin {
         payload: Vec<u8>,
         artifact: Option<String>,
     ) -> Result<()>;
+    /// Post a ring payload and return the chain-assigned ring_id.
+    ///
+    /// The default implementation calls [`post`] and then computes the ring_id
+    /// locally with [`get_ring_id`]. Backends that can extract the ring_id from
+    /// the chain response (e.g. `SourceHubBulletin`) should override this method
+    /// to return the authoritative chain-assigned ID instead of a local computation.
+    async fn post_ring(
+        &self,
+        namespace: String,
+        payload: Vec<u8>,
+        artifact: Option<String>,
+    ) -> Result<String> {
+        let ring: RingPayload = serde_json::from_slice(&payload)
+            .map_err(|e| BulletinError::ParseError(format!("post_ring: bad payload: {}", e)))?;
+        self.post(namespace.clone(), BulletinKind::Ring, payload, artifact)
+            .await?;
+        self.get_ring_id(
+            &namespace,
+            &ring.ring_pk,
+            &ring.peer_ids,
+            ring.threshold,
+            ring.pss_interval,
+            ring.policy_id.as_deref().unwrap_or(""),
+        )
+    }
     /// Finalize an existing message update in the bulletin namespace while preserving its ID.
     async fn update(&self, namespace: String, id: String, artifact: Option<String>) -> Result<()>;
     /// Read a message from the bulletin namespace
