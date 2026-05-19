@@ -20,7 +20,7 @@ use crate::r#trait::{
     ThresholdSigner,
 };
 use ark_ff::{One, Zero};
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_serialize::CanonicalSerialize;
 use decaf377::{Element, Fr};
 use rand_core::OsRng;
 use sha2::{Digest, Sha256};
@@ -69,8 +69,8 @@ impl CryptoDeserialize for SchnorrSignature {
         if bytes.len() != expected {
             return Err(CryptoError::InvalidSignature);
         }
-        let r_point = Element::deserialize_compressed(&bytes[..ELEMENT_COMPRESSED_SIZE])?;
-        let z = Fr::deserialize_compressed(&bytes[ELEMENT_COMPRESSED_SIZE..expected])?;
+        let r_point = Element::from_bytes(&bytes[..ELEMENT_COMPRESSED_SIZE])?;
+        let z = Fr::from_bytes(&bytes[ELEMENT_COMPRESSED_SIZE..expected])?;
         Ok(Self { r_point, z })
     }
 }
@@ -101,8 +101,8 @@ impl CryptoDeserialize for FrostNonceCommitment {
         if bytes.len() != expected {
             return Err(CryptoError::InvalidSignatureShare);
         }
-        let hiding = Element::deserialize_compressed(&bytes[..ELEMENT_COMPRESSED_SIZE])?;
-        let binding = Element::deserialize_compressed(&bytes[ELEMENT_COMPRESSED_SIZE..expected])?;
+        let hiding = Element::from_bytes(&bytes[..ELEMENT_COMPRESSED_SIZE])?;
+        let binding = Element::from_bytes(&bytes[ELEMENT_COMPRESSED_SIZE..expected])?;
         Ok(Self { hiding, binding })
     }
 }
@@ -140,8 +140,8 @@ impl CryptoDeserialize for FrostSigningState {
                 .try_into()
                 .map_err(|_| CryptoError::InvalidSignatureShare)?,
         );
-        let hiding_nonce = Fr::deserialize_compressed(&bytes[4..4 + FR_COMPRESSED_SIZE])?;
-        let binding_nonce = Fr::deserialize_compressed(&bytes[4 + FR_COMPRESSED_SIZE..expected])?;
+        let hiding_nonce = Fr::from_bytes(&bytes[4..4 + FR_COMPRESSED_SIZE])?;
+        let binding_nonce = Fr::from_bytes(&bytes[4 + FR_COMPRESSED_SIZE..expected])?;
         Ok(Self {
             hiding_nonce,
             binding_nonce,
