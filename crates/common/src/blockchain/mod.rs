@@ -14,6 +14,7 @@ mod client;
 mod config;
 mod error;
 pub mod events;
+pub mod orbis;
 mod signer;
 
 pub use client::{AccountInfo, BroadcastResult, SourceHubClient};
