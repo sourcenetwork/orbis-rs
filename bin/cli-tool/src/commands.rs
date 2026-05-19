@@ -5,7 +5,7 @@
 
 use anyhow::{anyhow, Result};
 use authn::{create_authenticated_request, JwtSigner};
-use bulletin::r#trait::{Bulletin, KeyDerivation, RingPayload};
+use bulletin::r#trait::{Bulletin, BulletinKind, KeyDerivation, RingPayload};
 use bulletin::sourcehub::SourceHubBulletin;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
@@ -905,7 +905,11 @@ pub async fn add_bulletin_collaborator(
     Ok(())
 }
 
-pub async fn create_bulletin_post(namespace: String, payload: Vec<u8>) -> Result<String> {
+pub async fn create_bulletin_post(
+    namespace: String,
+    kind: BulletinKind,
+    payload: Vec<u8>,
+) -> Result<String> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
@@ -918,7 +922,7 @@ pub async fn create_bulletin_post(namespace: String, payload: Vec<u8>) -> Result
         .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
 
     bulletin
-        .post(namespace, payload, None)
+        .post(namespace, kind, payload, None)
         .await
         .map_err(|e| anyhow!("Failed to create post: {}", e))?;
 
@@ -965,13 +969,17 @@ pub async fn update_ring_post_by_acp(
 }
 
 /// Read a bulletin post by namespace and ID
-pub async fn read_bulletin_post(namespace: String, id: String) -> Result<Vec<u8>> {
+pub async fn read_bulletin_post(
+    namespace: String,
+    id: String,
+    kind: BulletinKind,
+) -> Result<Vec<u8>> {
     let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
     let post = bulletin
-        .read(namespace, id)
+        .read(namespace, id, kind)
         .await
         .map_err(|e| anyhow!("Failed to read bulletin post: {}", e))?;
 
@@ -1116,7 +1124,7 @@ pub async fn post_key_derivation(
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
     let ring_post = ring_bulletin
-        .read(namespace.to_string(), ring_id.clone())
+        .read(namespace.to_string(), ring_id.clone(), BulletinKind::Ring)
         .await
         .map_err(|e| anyhow!("Failed to read ring post '{}': {}", ring_id, e))?;
     let ring_payload: RingPayload = serde_json::from_slice(&ring_post.payload)
@@ -1160,7 +1168,12 @@ pub async fn post_key_derivation(
         .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
 
     bulletin
-        .post(namespace.clone(), payload, None)
+        .post(
+            namespace.clone(),
+            BulletinKind::KeyDerivation,
+            payload,
+            None,
+        )
         .await
         .map_err(|e| anyhow!("Failed to post KeyDerivation: {}", e))?;
 

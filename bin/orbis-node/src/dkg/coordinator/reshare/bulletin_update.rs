@@ -1,11 +1,10 @@
 use std::future::Future;
 use std::time::Duration;
 
-use bulletin::r#trait::RingPayload;
+use bulletin::r#trait::{BulletinKind, RingPayload};
 use crypto::r#trait::{DistKeyShare, DkgRole, PubShare, ThresholdSigner};
 use crypto::THRESHOLD_SIGNATURE_SCHEME;
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint};
-use sha2::{Digest, Sha256};
 
 use crate::constants::{RESHARE_SIGNATURE_MAX_ATTEMPTS, RESHARE_SIGNATURE_RETRY_DELAY};
 use crate::dkg::error::{DkgError, Result};
@@ -26,9 +25,9 @@ use super::super::DkgCoordinator;
 struct PreparedReshareUpdate {
     sorted_new_peer_ids: Vec<String>,
     new_committee_size: usize,
-    bulletin_post_id: String,
-    current_payload_sha256: String,
-    finalized_payload_sha256: String,
+    ring_id: String,
+    current_ring_sha256: String,
+    finalized_ring_sha256: String,
     block_number_nonce: u64,
     chain_id: String,
 }
@@ -115,17 +114,18 @@ where
         chain_id: prepared.chain_id,
         namespace: bulletin_namespace.clone(),
         ring_pk: hex::encode(ring_pk_bytes),
-        bulletin_post_id: prepared.bulletin_post_id.clone(),
-        current_payload_sha256: prepared.current_payload_sha256,
-        finalized_payload_sha256: prepared.finalized_payload_sha256,
+        ring_id: prepared.ring_id.clone(),
+        current_ring_sha256: prepared.current_ring_sha256,
+        finalized_ring_sha256: prepared.finalized_ring_sha256,
         block_number_nonce: prepared.block_number_nonce,
     };
-    let message_to_sign = ring_reshare_update_message(&statement).map_err(|e| {
-        DkgError::Serialization(format!(
-            "Reshare: failed to serialize ring update statement: {}",
-            e
-        ))
-    })?;
+    let message_to_sign = ring_reshare_update_message(&*coord.app_state.bulletin, &statement)
+        .map_err(|e| {
+            DkgError::Serialization(format!(
+                "Reshare: failed to serialize ring update statement: {}",
+                e
+            ))
+        })?;
     let sign_coordinator = SignCoordinator::<D, SignImpl>::new(coord.app_state.clone());
     let ring_config = RingConfig {
         ring_pk_bytes: ring_pk_bytes.to_vec(),
@@ -174,7 +174,7 @@ where
         .bulletin
         .update(
             bulletin_namespace.clone(),
-            prepared.bulletin_post_id.clone(),
+            prepared.ring_id.clone(),
             Some(format!(
                 "reshare-threshold-signature:{}:{}:{}",
                 session_id, THRESHOLD_SIGNATURE_SCHEME, sign_response.signature
@@ -185,7 +185,7 @@ where
 
     tracing::info!(
         ring_pk = %ring_pk_hex,
-        post_id = %prepared.bulletin_post_id,
+        ring_id = %prepared.ring_id,
         namespace = %bulletin_namespace,
         new_threshold = new_threshold,
         new_committee_size = prepared.new_committee_size,
@@ -212,8 +212,8 @@ where
         .map(|peers| peers.to_vec())
         .unwrap_or_else(|| new_peer_ids.to_vec());
     let new_committee_size = sorted_new_peer_ids.len();
-    let bulletin_post_id = reshare_bulletin_post_id.ok_or_else(|| {
-        DkgError::Bulletin("Reshare: missing bulletin post id for updated RingPayload".to_string())
+    let ring_id = reshare_bulletin_post_id.ok_or_else(|| {
+        DkgError::Bulletin("Reshare: missing ring id for updated RingPayload".to_string())
     })?;
     let bulletin_namespace = coord
         .app_state
@@ -230,7 +230,7 @@ where
     let current_post = coord
         .app_state
         .bulletin
-        .read(bulletin_namespace, bulletin_post_id.to_string())
+        .read(bulletin_namespace, ring_id.to_string(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             DkgError::Bulletin(format!(
@@ -245,14 +245,13 @@ where
                 e
             ))
         })?;
-    let mut finalized_ring_payload = current_ring_payload.clone();
-    let payload_new_peer_ids = finalized_ring_payload
+    let payload_new_peer_ids = current_ring_payload
         .new_peer_ids
-        .take()
-        .unwrap_or_else(|| current_ring_payload.peer_ids.clone());
-    let payload_new_threshold = finalized_ring_payload
+        .as_deref()
+        .unwrap_or(&current_ring_payload.peer_ids)
+        .to_vec();
+    let payload_new_threshold = current_ring_payload
         .new_threshold
-        .take()
         .unwrap_or(current_ring_payload.threshold);
     if payload_new_peer_ids != sorted_new_peer_ids {
         return Err(DkgError::ProtocolError(format!(
@@ -266,16 +265,32 @@ where
             payload_new_threshold, new_threshold
         )));
     }
-    finalized_ring_payload.peer_ids = payload_new_peer_ids;
-    finalized_ring_payload.threshold = payload_new_threshold;
-    let payload_bytes: Vec<u8> = finalized_ring_payload.try_into().map_err(|e| {
-        DkgError::Serialization(format!(
-            "Reshare: failed to serialize finalized RingPayload: {}",
-            e
-        ))
-    })?;
-    let current_payload_sha256 = hex::encode(Sha256::digest(&current_post.payload));
-    let finalized_payload_sha256 = hex::encode(Sha256::digest(&payload_bytes));
+    let current_ring_sha256 = hex::encode(
+        coord
+            .app_state
+            .bulletin
+            .ring_canonical_hash(ring_id)
+            .await
+            .map_err(|e| {
+                DkgError::Bulletin(format!(
+                    "Reshare: failed to compute ring canonical hash: {}",
+                    e
+                ))
+            })?,
+    );
+    let finalized_ring_sha256 = hex::encode(
+        coord
+            .app_state
+            .bulletin
+            .ring_finalized_canonical_hash(ring_id)
+            .await
+            .map_err(|e| {
+                DkgError::Bulletin(format!(
+                    "Reshare: failed to compute ring finalized canonical hash: {}",
+                    e
+                ))
+            })?,
+    );
     let chain_id = coord.app_state.bulletin.chain_id();
 
     coord
@@ -284,18 +299,18 @@ where
         .mark_reshare_signature_ready(ReshareSignatureReadyKey {
             ring_key: storage_key.to_string(),
             session_id,
-            bulletin_post_id: bulletin_post_id.to_string(),
-            current_payload_sha256: current_payload_sha256.clone(),
-            updated_payload_sha256: finalized_payload_sha256.clone(),
+            ring_id: ring_id.to_string(),
+            current_ring_sha256: current_ring_sha256.clone(),
+            finalized_ring_sha256: finalized_ring_sha256.clone(),
         })
         .await;
 
     Ok(PreparedReshareUpdate {
         sorted_new_peer_ids,
         new_committee_size,
-        bulletin_post_id: bulletin_post_id.to_string(),
-        current_payload_sha256,
-        finalized_payload_sha256,
+        ring_id: ring_id.to_string(),
+        current_ring_sha256,
+        finalized_ring_sha256,
         block_number_nonce: current_ring_payload.block_number_nonce,
         chain_id,
     })

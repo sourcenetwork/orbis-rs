@@ -5,7 +5,7 @@ use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bullet
 use crate::ring_state::RingIndexEntry;
 use bulletin::{
     dummy::DummyBulletin,
-    r#trait::{Bulletin, RingPayload},
+    r#trait::{Bulletin, BulletinKind, RingPayload},
 };
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
@@ -42,6 +42,7 @@ async fn make_state_with_ring(
         .bulletin
         .post(
             BULLETIN_RING_NAMESPACE.to_string(),
+            BulletinKind::Ring,
             payload_bytes.clone(),
             None,
         )
@@ -290,7 +291,7 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     let garbage = b"not valid json".to_vec();
     app_state
         .bulletin
-        .post(BULLETIN_RING_NAMESPACE.to_string(), garbage.clone(), None)
+        .post(BULLETIN_RING_NAMESPACE.to_string(), BulletinKind::Ring, garbage.clone(), None)
         .await
         .expect("post garbage");
     let post_id = app_state
@@ -344,6 +345,7 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
         .bulletin
         .post(
             BULLETIN_RING_NAMESPACE.to_string(),
+            BulletinKind::Ring,
             payload_bytes.clone(),
             None,
         )
@@ -409,6 +411,7 @@ async fn post_ring_and_seed_index(
         .bulletin
         .post(
             BULLETIN_RING_NAMESPACE.to_string(),
+            BulletinKind::Ring,
             payload_bytes.clone(),
             None,
         )

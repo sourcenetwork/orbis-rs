@@ -101,9 +101,9 @@ pub enum MessageProcessingClaim {
 pub struct ReshareSignatureReadyKey {
     pub ring_key: String,
     pub session_id: u64,
-    pub bulletin_post_id: String,
-    pub current_payload_sha256: String,
-    pub updated_payload_sha256: String,
+    pub ring_id: String,
+    pub current_ring_sha256: String,
+    pub finalized_ring_sha256: String,
 }
 
 /// Locally staged refresh output awaiting the post-refresh health-check result.
@@ -1191,9 +1191,9 @@ mod tests {
         let ready_key = ReshareSignatureReadyKey {
             ring_key: "ring".to_string(),
             session_id: 7,
-            bulletin_post_id: "post".to_string(),
-            current_payload_sha256: "current".to_string(),
-            updated_payload_sha256: "updated".to_string(),
+            ring_id: "post".to_string(),
+            current_ring_sha256: "current".to_string(),
+            finalized_ring_sha256: "updated".to_string(),
         };
 
         mgr.create_session(7, make_node(1), 3, |_| {}).await;

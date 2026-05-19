@@ -1,5 +1,6 @@
 pub mod error;
 pub mod r#trait;
+pub use r#trait::BulletinKind;
 
 #[cfg(feature = "sourcehub")]
 pub mod sourcehub;

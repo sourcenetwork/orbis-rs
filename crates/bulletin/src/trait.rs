@@ -1,6 +1,14 @@
 use crate::error::{BulletinError, Result};
 use async_trait::async_trait;
+use common::blockchain::orbis;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BulletinKind {
+    Ring,
+    Document,
+    KeyDerivation,
+}
 
 /// Struct for posting to the Bulletin
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
@@ -153,14 +161,56 @@ pub trait Bulletin {
     async fn post(
         &self,
         namespace: String,
+        kind: BulletinKind,
         payload: Vec<u8>,
         artifact: Option<String>,
     ) -> Result<()>;
     /// Finalize an existing message update in the bulletin namespace while preserving its ID.
     async fn update(&self, namespace: String, id: String, artifact: Option<String>) -> Result<()>;
     /// Read a message from the bulletin namespace
-    async fn read(&self, namespace: String, id: String) -> Result<BulletinPost>;
+    async fn read(&self, namespace: String, id: String, kind: BulletinKind)
+        -> Result<BulletinPost>;
     /// Chain ID used when building chain-bound signing statements.
     fn chain_id(&self) -> String;
+    /// Compute a deterministic post ID from namespace and raw payload bytes.
     fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String>;
+    /// Compute the deterministic ring ID from ring creation parameters.
+    fn get_ring_id(
+        &self,
+        namespace: &str,
+        ring_pk: &str,
+        peer_ids: &[String],
+        threshold: u32,
+        pss_interval: Option<u64>,
+        policy_id: &str,
+    ) -> Result<String>;
+    /// Return the canonical hash of the current ring state used in reshare sign docs.
+    /// Each bulletin backend defines what "canonical" means for its storage representation.
+    async fn ring_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]>;
+    /// Return the canonical hash of the ring state after reshare finalization:
+    /// new_peer_ids → peer_ids, new_threshold applied, block_number_nonce incremented.
+    async fn ring_finalized_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]>;
+    /// Serialize the canonical sign bytes for a ring reshare finalization sign doc.
+    /// The default implementation uses SourceHub-compatible proto encoding.
+    fn ring_reshare_finalize_sign_bytes(
+        &self,
+        chain_id: &str,
+        namespace: &str,
+        ring_id: &str,
+        ring_pk: &str,
+        current_ring_sha256: Vec<u8>,
+        finalized_ring_sha256: Vec<u8>,
+        block_number_nonce: u64,
+    ) -> Result<Vec<u8>> {
+        orbis::ring_reshare_finalize_sign_bytes(
+            chain_id,
+            namespace,
+            ring_id,
+            ring_pk,
+            current_ring_sha256,
+            finalized_ring_sha256,
+            block_number_nonce,
+        )
+        .map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
 }

@@ -7,7 +7,7 @@ use crate::pre::{
 use authn::{BearerToken, PreClaims};
 use authz::r#trait::Authz;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
-use bulletin::r#trait::{Bulletin, DocumentPayload, RingPayload};
+use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
 use crypto::r#trait::{EncryptionProof, Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
 use local_storage::r#trait::LocalStorage;
@@ -26,7 +26,11 @@ pub async fn fetch_bulletin_payloads(
     object_id: &str,
 ) -> Result<(DocumentPayload, RingPayload)> {
     let object_info = bulletin
-        .read(namespace.to_string(), object_id.to_string())
+        .read(
+            namespace.to_string(),
+            object_id.to_string(),
+            BulletinKind::Document,
+        )
         .await
         .map_err(|e| PreError::Storage(format!("Failed to read object '{}': {}", object_id, e)))?;
 
@@ -39,7 +43,11 @@ pub async fn fetch_bulletin_payloads(
         .map_err(PreError::Storage)?;
 
     let ring_info = bulletin
-        .read(ring_namespace, document_payload.ring_id.clone())
+        .read(
+            ring_namespace,
+            document_payload.ring_id.clone(),
+            BulletinKind::Ring,
+        )
         .await
         .map_err(|e| {
             PreError::Storage(format!(

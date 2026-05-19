@@ -1,6 +1,6 @@
 use crate::{
     error::{BulletinError, Result},
-    r#trait::{Bulletin, BulletinPost, RingPayload},
+    r#trait::{Bulletin, BulletinKind, BulletinPost, RingPayload},
 };
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
@@ -22,6 +22,7 @@ impl Bulletin for DummyBulletin {
     async fn post(
         &self,
         namespace: String,
+        _kind: BulletinKind,
         payload: Vec<u8>,
         _artifact: Option<String>,
     ) -> Result<()> {
@@ -62,7 +63,12 @@ impl Bulletin for DummyBulletin {
         Ok(())
     }
 
-    async fn read(&self, namespace: String, id: String) -> Result<BulletinPost> {
+    async fn read(
+        &self,
+        namespace: String,
+        id: String,
+        _kind: BulletinKind,
+    ) -> Result<BulletinPost> {
         let posts = self.posts.lock().unwrap();
         posts
             .get(&(namespace.clone(), id.clone()))
@@ -77,6 +83,71 @@ impl Bulletin for DummyBulletin {
     fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String> {
         Ok(Self::compute_post_id(namespace, payload))
     }
+
+    fn get_ring_id(
+        &self,
+        namespace: &str,
+        ring_pk: &str,
+        peer_ids: &[String],
+        threshold: u32,
+        pss_interval: Option<u64>,
+        policy_id: &str,
+    ) -> Result<String> {
+        Ok(common::blockchain::orbis::generate_ring_id(
+            namespace,
+            ring_pk,
+            peer_ids,
+            threshold,
+            pss_interval,
+            policy_id,
+        ))
+    }
+
+    async fn ring_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]> {
+        let posts = self.posts.lock().unwrap();
+        let post =
+            posts
+                .values()
+                .find(|p| p.id == ring_id)
+                .ok_or_else(|| BulletinError::NotFound {
+                    namespace: String::new(),
+                    id: ring_id.to_string(),
+                })?;
+        Ok(Sha256::digest(&post.payload).into())
+    }
+
+    async fn ring_finalized_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]> {
+        let posts = self.posts.lock().unwrap();
+        let post =
+            posts
+                .values()
+                .find(|p| p.id == ring_id)
+                .ok_or_else(|| BulletinError::NotFound {
+                    namespace: String::new(),
+                    id: ring_id.to_string(),
+                })?;
+        let mut payload: RingPayload = serde_json::from_slice(&post.payload)
+            .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        let new_peer_ids = payload
+            .new_peer_ids
+            .take()
+            .unwrap_or_else(|| payload.peer_ids.clone());
+        let new_threshold = payload.new_threshold.take().unwrap_or(payload.threshold);
+        payload.peer_ids = new_peer_ids;
+        payload.threshold = new_threshold;
+        payload.block_number_nonce = payload.block_number_nonce.saturating_add(1);
+        let finalized_bytes =
+            serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        Ok(Sha256::digest(&finalized_bytes).into())
+    }
+}
+
+impl Default for DummyBulletin {
+    fn default() -> Self {
+        DummyBulletin {
+            posts: Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 impl DummyBulletin {
@@ -84,9 +155,7 @@ impl DummyBulletin {
         "bulletin/dummy".to_string()
     }
     pub async fn new() -> Result<Self> {
-        Ok(DummyBulletin {
-            posts: Mutex::new(HashMap::new()),
-        })
+        Ok(DummyBulletin::default())
     }
 
     /// Set a post directly (for test setup)

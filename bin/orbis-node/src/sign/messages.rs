@@ -5,7 +5,7 @@
 
 use authz::sourcehub::ValidWindow;
 use bulletin::r#trait::KeyDerivation;
-use common::blockchain::bulletin::RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN;
+use common::blockchain::orbis::RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN;
 use serde::{Deserialize, Serialize};
 
 /// Domain separator for signed ring reshare bulletin updates.
@@ -43,12 +43,12 @@ pub struct RingReshareUpdateStatement {
     pub namespace: String,
     /// Hex-encoded ring public key. Reshare preserves this key.
     pub ring_pk: String,
-    /// Existing bulletin post ID being updated in place.
-    pub bulletin_post_id: String,
-    /// SHA-256 hex of the current bulletin payload before the update.
-    pub current_payload_sha256: String,
-    /// SHA-256 hex of the SourceHub-derived finalized bulletin payload.
-    pub finalized_payload_sha256: String,
+    /// Ring ID of the ring being updated.
+    pub ring_id: String,
+    /// SHA-256 hex of the current ring state (proto-encoded for SourceHub).
+    pub current_ring_sha256: String,
+    /// SHA-256 hex of the finalized ring state after reshare.
+    pub finalized_ring_sha256: String,
     /// Current payload block-number nonce used for replay protection.
     pub block_number_nonce: u64,
 }

@@ -196,7 +196,9 @@ where
         let context_key = match &context {
             SignContext::Bulletin => "bulletin".to_string(),
             SignContext::Policy(ctx) => ctx.derivation_id.clone(),
-            SignContext::RingReshareUpdate(ctx) => ring_reshare_update_context_key(&ctx.statement)?,
+            SignContext::RingReshareUpdate(ctx) => {
+                ring_reshare_update_context_key(&*self.app_state.bulletin, &ctx.statement)?
+            }
             SignContext::RefreshHealthCheck(ctx) => {
                 refresh_health_check_context_key(&ctx.statement)?
             }
@@ -373,7 +375,7 @@ where
                 SignContext::Bulletin => "bulletin".to_string(),
                 SignContext::Policy(ctx) => ctx.derivation_id.clone(),
                 SignContext::RingReshareUpdate(ctx) => {
-                    ring_reshare_update_context_key(&ctx.statement)?
+                    ring_reshare_update_context_key(&*self.app_state.bulletin, &ctx.statement)?
                 }
                 SignContext::RefreshHealthCheck(ctx) => {
                     refresh_health_check_context_key(&ctx.statement)?

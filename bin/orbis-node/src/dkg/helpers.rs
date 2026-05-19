@@ -5,7 +5,7 @@ use crate::dkg::session_state::ReshareParams;
 use crate::helpers::helpers::extract_node_part;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::{BearerToken, DkgClaims};
-use bulletin::r#trait::{Bulletin, RingPayload};
+use bulletin::r#trait::{Bulletin, BulletinKind, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, DkgRole, PriShare};
 use crypto::{CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -160,7 +160,11 @@ async fn load_ring_payload_by_post_id(
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<RingPayload> {
     let bulletin_post = bulletin
-        .read(namespace.to_string(), post_id.to_string())
+        .read(
+            namespace.to_string(),
+            post_id.to_string(),
+            BulletinKind::Ring,
+        )
         .await
         .map_err(|e| {
             DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
@@ -246,7 +250,11 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         .unwrap_or(namespace);
 
     let bulletin_post = bulletin
-        .read(resolved_namespace.to_string(), resolved_post_id.to_string())
+        .read(
+            resolved_namespace.to_string(),
+            resolved_post_id.to_string(),
+            BulletinKind::Ring,
+        )
         .await
         .map_err(|e| {
             DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
@@ -347,7 +355,11 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
 
     // Fetch the canonical RingPayload from the bulletin — it is the source of truth.
     let bulletin_post = bulletin
-        .read(entry.bulletin_namespace.clone(), post_id.to_string())
+        .read(
+            entry.bulletin_namespace.clone(),
+            post_id.to_string(),
+            BulletinKind::Ring,
+        )
         .await
         .map_err(|e| {
             DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
@@ -788,7 +800,7 @@ mod tests {
         // Post garbage bytes to the bulletin and point RingIndex at them.
         let garbage = b"not valid json".to_vec();
         bulletin
-            .post(BULLETIN_RING_NAMESPACE.to_string(), garbage.clone(), None)
+            .post(BULLETIN_RING_NAMESPACE.to_string(), BulletinKind::Ring, garbage.clone(), None)
             .await
             .unwrap();
         let post_id = bulletin

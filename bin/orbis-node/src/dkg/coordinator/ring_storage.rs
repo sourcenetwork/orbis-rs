@@ -3,7 +3,7 @@ use crate::constants::MAX_LOCAL_RINGS_PER_NODE;
 use crate::dkg::error::{DkgError, Result};
 use crate::metrics;
 use crate::ring_state::RingIndexEntry;
-use bulletin::r#trait::RingPayload;
+use bulletin::r#trait::{BulletinKind, RingPayload};
 use crypto::r#trait::Dkg;
 use crypto::{CryptoSerialize, GroupAffine as G1Affine};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -155,6 +155,7 @@ where
         .bulletin
         .post(
             bulletin_namespace.to_string(),
+            BulletinKind::Ring,
             payload_bytes,
             Some(session_id.to_string()),
         )

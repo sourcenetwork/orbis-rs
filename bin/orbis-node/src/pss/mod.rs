@@ -40,7 +40,7 @@ use crate::dkg::session_state::RingPssClaimOutcome;
 use crate::helpers::helpers::{extract_node_part, validate_all_peer_ids};
 use crate::metrics;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
-use bulletin::r#trait::RingPayload;
+use bulletin::r#trait::{BulletinKind, RingPayload};
 use crypto::r#trait::{Dkg, DkgRole};
 use crypto::{GroupAffine, PolynomialCommitmentImpl, PubPolyImpl, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -133,7 +133,11 @@ where
 
     let bulletin_post = app_state
         .bulletin
-        .read(entry.bulletin_namespace.clone(), post_id.to_string())
+        .read(
+            entry.bulletin_namespace.clone(),
+            post_id.to_string(),
+            BulletinKind::Ring,
+        )
         .await
         .map_err(|e| {
             DkgError::Storage(format!(

@@ -1,6 +1,7 @@
 mod commands;
 
 use anyhow::Result;
+use bulletin::r#trait::BulletinKind;
 use clap::{Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_policy_to_chain, add_ring_governance_policy,
@@ -525,7 +526,7 @@ async fn main() -> Result<()> {
         }
         SubCommands::CreateBulletinPost { namespace, payload } => {
             let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
-            create_bulletin_post(namespace, payload_bytes).await?;
+            create_bulletin_post(namespace, BulletinKind::Ring, payload_bytes).await?;
         }
         SubCommands::UpdateRingPostByAcp {
             namespace,
@@ -541,7 +542,7 @@ async fn main() -> Result<()> {
             fund(address, ChainConfig::local()).await?;
         }
         SubCommands::ReadBulletinPost { namespace, id } => {
-            read_bulletin_post(namespace, id).await?;
+            read_bulletin_post(namespace, id, BulletinKind::Ring).await?;
         }
         SubCommands::ListBulletinPost { namespace } => {
             list_bulletin_posts(namespace).await?;

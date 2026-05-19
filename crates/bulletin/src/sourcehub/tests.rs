@@ -1,5 +1,5 @@
 use super::SourceHubBulletin;
-use crate::r#trait::{Bulletin, DocumentPayload, RingPayload};
+use crate::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
 use common::{
     blockchain::{ChainConfig, ChainConfigBuilder, TxSigner, TEST_ACCOUNT_HEX_KEY},
     SourceHubTestContainer,
@@ -71,7 +71,7 @@ async fn test_bulletin_document() {
     bulletin.register(namespace.to_string()).await.unwrap();
 
     bulletin
-        .post(namespace.to_string(), serialized_payload.clone(), None)
+        .post(namespace.to_string(), BulletinKind::Document, serialized_payload.clone(), None)
         .await
         .unwrap();
 
@@ -79,7 +79,10 @@ async fn test_bulletin_document() {
         .get_post_id(namespace, &serialized_payload)
         .unwrap();
 
-    let created_post = bulletin.read(namespace.to_string(), post_id).await.unwrap();
+    let created_post = bulletin
+        .read(namespace.to_string(), post_id, BulletinKind::Document)
+        .await
+        .unwrap();
     println!("Created post ID: {}", created_post.id);
 
     assert_eq!(
@@ -112,7 +115,7 @@ async fn test_bulletin_ring() {
     bulletin.register(namespace.to_string()).await.unwrap();
 
     bulletin
-        .post(namespace.to_string(), serialized_payload.clone(), None)
+        .post(namespace.to_string(), BulletinKind::Ring, serialized_payload.clone(), None)
         .await
         .unwrap();
 
@@ -120,7 +123,10 @@ async fn test_bulletin_ring() {
         .get_post_id(namespace, &serialized_payload)
         .unwrap();
 
-    let created_post = bulletin.read(namespace.to_string(), post_id).await.unwrap();
+    let created_post = bulletin
+        .read(namespace.to_string(), post_id, BulletinKind::Ring)
+        .await
+        .unwrap();
     println!("Created post ID: {}", created_post.id);
 
     assert_eq!(

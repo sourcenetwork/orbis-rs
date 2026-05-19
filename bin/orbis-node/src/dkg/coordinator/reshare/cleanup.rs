@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use bulletin::r#trait::RingPayload;
+use bulletin::r#trait::{BulletinKind, RingPayload};
 use crypto::r#trait::Dkg;
 
 use crate::app_state::AppState;
@@ -51,7 +51,11 @@ async fn wait_for_reshare_bulletin_finalized<D>(
             }
             match app_state
                 .bulletin
-                .read(bulletin_namespace.clone(), post_id.clone())
+                .read(
+                    bulletin_namespace.clone(),
+                    post_id.clone(),
+                    BulletinKind::Ring,
+                )
                 .await
             {
                 Ok(post) => {

@@ -18,7 +18,7 @@ use crate::sign::service::SignServiceImpl;
 use crate::DkgServiceImpl;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::dummy::DummyBulletin;
-use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, KeyDerivation, RingPayload};
+use bulletin::r#trait::{Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, ThresholdSigner};
 use crypto::{DkgImpl, SignImpl};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
@@ -276,7 +276,7 @@ async fn create_test_document_and_post(
 
     // Post to bulletin
     bulletin
-        .post(namespace.to_string(), payload_bytes.clone(), None)
+        .post(namespace.to_string(), BulletinKind::Document, payload_bytes.clone(), None)
         .await
         .expect("post to bulletin");
 
@@ -925,7 +925,7 @@ async fn test_sign_fails_tampered_payload() {
         .alice
         .app_state
         .bulletin
-        .post(namespace.to_string(), original_payload.clone(), None)
+        .post(namespace.to_string(), BulletinKind::Document, original_payload.clone(), None)
         .await
         .expect("post to bulletin");
 
@@ -1071,7 +1071,7 @@ async fn test_sign_fails_invalid_ring_id() {
         .alice
         .app_state
         .bulletin
-        .post(namespace.to_string(), payload_bytes.clone(), None)
+        .post(namespace.to_string(), BulletinKind::Document, payload_bytes.clone(), None)
         .await
         .expect("post to bulletin");
 
