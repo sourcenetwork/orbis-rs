@@ -349,11 +349,12 @@ impl SourceHubBulletin {
         }
 
         // Transfer to self to register account on-chain (registers public key)
-        let _result = client
+        let result = client
             .chain_client
             .transfer(&address, 1u64, &denom)
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+        check_result(result, "register account self-transfer")?;
 
         Ok(client)
     }

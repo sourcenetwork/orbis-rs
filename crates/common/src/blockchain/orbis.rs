@@ -681,7 +681,6 @@ impl SourceHubClient {
         policy_id: &str,
         artifact: Option<String>,
     ) -> Result<(BroadcastResult, String)> {
-        let peer_ids_clone = peer_ids.clone();
         let result = self
             .orbis_create_ring(
                 namespace,
@@ -694,20 +693,19 @@ impl SourceHubClient {
             )
             .await?;
 
-        let ring_id = decode_create_ring_id(result.data.as_ref()).unwrap_or_else(|| {
-            eprintln!(
-                "orbis_create_ring_get_id: could not decode ring_id from response; \
-                 falling back to generate_ring_id"
-            );
-            generate_ring_id(
-                namespace,
-                ring_pk,
-                &peer_ids_clone,
-                threshold,
-                pss_interval,
-                policy_id,
-            )
-        });
+        if result.code != 0 {
+            return Err(BlockchainError::TxFailed {
+                code: result.code,
+                log: result.log.clone(),
+            });
+        }
+
+        let ring_id = decode_create_ring_id(result.data.as_ref()).ok_or_else(|| {
+            BlockchainError::Serialization(format!(
+                "Failed to decode ring_id from create ring response for tx {}",
+                result.tx_hash
+            ))
+        })?;
 
         Ok((result, ring_id))
     }
