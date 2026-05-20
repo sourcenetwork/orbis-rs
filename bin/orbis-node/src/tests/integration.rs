@@ -71,26 +71,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("Node 3 P2P address: {}", node3_info.p2p_address);
     let namespace = BULLETIN_RING_NAMESPACE.to_string();
 
-    // Register the namespace and add collaborators
-    // cli_tool::register_bulletin_namespace(namespace.clone())
-    //     .await
-    //     .expect("Failed to register namespace");
-    // cli_tool::add_bulletin_collaborator(namespace.clone(), node1_info.public_address.clone())
-    //     .await
-    //     .expect("add_bulletin_collaborator");
-    // cli_tool::add_bulletin_collaborator(namespace.clone(), node2_info.public_address.clone())
-    //     .await
-    //     .expect("add_bulletin_collaborator");
-    // cli_tool::add_bulletin_collaborator(namespace.clone(), node3_info.public_address.clone())
-    //     .await
-    //     .expect("add_bulletin_collaborator");
-    // let test_account_address = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
-    //     .expect("test account signer")
-    //     .address();
-    // cli_tool::add_bulletin_collaborator(namespace.clone(), test_account_address)
-    //     .await
-    //     .expect("add test account as bulletin collaborator");
-
     // Transform P2P addresses for inter-container communication
     // The addresses from nodes will be like "peer_id@0.0.0.0:port"
     // We need to replace 0.0.0.0 with the container name for Docker networking
@@ -228,15 +208,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let valid_window_end = Some(150u64);
     let salt = Some("salt".to_string());
     let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
-
-    // register_bulletin_namespace / add_bulletin_collaborator are OLD sourcehub.bulletin module
-    // calls that are no longer needed with the orbis module (ACP handles access control).
-    // cli_tool::register_bulletin_namespace(namespace.clone())
-    //     .await
-    //     .expect("Failed to register namespace");
-    // cli_tool::add_bulletin_collaborator(namespace.clone(), node1_info.public_address.clone())
-    //     .await
-    //     .expect("add node as collaborator on user namespace");
 
     // ====================================================================
     // Create objects: MANUAL vs SERVICE
