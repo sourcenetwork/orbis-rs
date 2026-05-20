@@ -165,7 +165,13 @@ pub trait Bulletin {
         artifact: Option<String>,
     ) -> Result<()>;
     /// Finalize an existing message update in the bulletin namespace while preserving its ID.
-    async fn update(&self, namespace: String, id: String, artifact: Option<String>) -> Result<()>;
+    async fn update(
+        &self,
+        namespace: String,
+        id: String,
+        signature_scheme: String,
+        signature: Vec<u8>,
+    ) -> Result<()>;
     /// Read a message from the bulletin namespace
     async fn read(&self, namespace: String, id: String, kind: BulletinKind)
         -> Result<BulletinPost>;

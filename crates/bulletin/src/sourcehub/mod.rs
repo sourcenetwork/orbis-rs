@@ -14,10 +14,6 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 mod tests;
 
-const DEFAULT_THRESHOLD_SIGNATURE_SCHEME: &str = "bls12_381_g1_pk_g2_sig_nul";
-const DECAF377_FROST_THRESHOLD_SIGNATURE_SCHEME: &str = "decaf377_frost";
-const RESHARE_THRESHOLD_SIGNATURE_ARTIFACT_PREFIX: &str = "reshare-threshold-signature";
-
 pub struct SourceHubBulletin {
     pub chain_client: SourceHubClient,
 }
@@ -69,7 +65,6 @@ impl Bulletin for SourceHubBulletin {
                         &doc.permission,
                         doc.tier,
                         doc.timestamp,
-                        artifact,
                     )
                     .await
                     .map_err(|e| BulletinError::ChainError(e.to_string()))?;
@@ -87,7 +82,6 @@ impl Bulletin for SourceHubBulletin {
                         &kd.policy_id,
                         &kd.resource,
                         &kd.permission,
-                        artifact,
                     )
                     .await
                     .map_err(|e| BulletinError::ChainError(e.to_string()))?;
@@ -96,11 +90,16 @@ impl Bulletin for SourceHubBulletin {
         }
     }
 
-    async fn update(&self, _namespace: String, id: String, artifact: Option<String>) -> Result<()> {
-        let (signature_scheme, signature) = parse_threshold_signature_artifact(&artifact)?;
+    async fn update(
+        &self,
+        _namespace: String,
+        id: String,
+        signature_scheme: String,
+        signature: Vec<u8>,
+    ) -> Result<()> {
         let result = self
             .chain_client
-            .orbis_finalize_ring_reshare(&id, artifact, &signature_scheme, signature)
+            .orbis_finalize_ring_reshare(&id, &signature_scheme, signature)
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?;
         check_result(result, "finalize ring reshare")
@@ -271,13 +270,6 @@ impl SourceHubBulletin {
         "bulletin/sourcehub".to_string()
     }
 
-    #[cfg(test)]
-    pub(crate) fn parse_threshold_signature_artifact(
-        artifact: &Option<String>,
-    ) -> Result<(String, Vec<u8>)> {
-        parse_threshold_signature_artifact(artifact)
-    }
-
     pub async fn new(chain_config_builder: ChainConfigBuilder) -> Result<Self> {
         Ok(SourceHubBulletin {
             chain_client: SourceHubClient::new(chain_config_builder.build())
@@ -443,69 +435,6 @@ fn key_derivation_to_bulletin_post(kd: orbis::KeyDerivation) -> Result<BulletinP
         payload: serde_json::to_vec(&payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?,
     })
-}
-
-// ============================================================================
-// Artifact parsing
-// ============================================================================
-
-fn parse_threshold_signature_artifact(artifact: &Option<String>) -> Result<(String, Vec<u8>)> {
-    let artifact = artifact.as_deref().ok_or_else(|| {
-        BulletinError::ParseError(
-            "threshold-signature update requires a signature artifact".to_string(),
-        )
-    })?;
-
-    let rest = artifact
-        .strip_prefix(&format!("{RESHARE_THRESHOLD_SIGNATURE_ARTIFACT_PREFIX}:"))
-        .ok_or_else(|| {
-            BulletinError::ParseError(format!(
-                "invalid threshold-signature artifact prefix: {artifact}"
-            ))
-        })?;
-
-    let (signature_scheme, signature_hex) = match rest.split(':').collect::<Vec<_>>().as_slice() {
-        [_, signature_hex] => (DEFAULT_THRESHOLD_SIGNATURE_SCHEME, *signature_hex),
-        [_, signature_scheme, signature_hex] => (*signature_scheme, *signature_hex),
-        _ => {
-            return Err(BulletinError::ParseError(format!(
-                "invalid threshold-signature artifact format: {artifact}"
-            )));
-        }
-    };
-
-    let signature_scheme = if signature_scheme.trim().is_empty() {
-        DEFAULT_THRESHOLD_SIGNATURE_SCHEME
-    } else {
-        signature_scheme.trim()
-    };
-
-    let signature_scheme = signature_scheme.to_ascii_lowercase();
-    if !matches!(
-        signature_scheme.as_str(),
-        DEFAULT_THRESHOLD_SIGNATURE_SCHEME | DECAF377_FROST_THRESHOLD_SIGNATURE_SCHEME
-    ) {
-        return Err(BulletinError::ParseError(format!(
-            "unsupported threshold signature scheme: {signature_scheme}"
-        )));
-    }
-
-    let signature_hex = signature_hex
-        .trim()
-        .strip_prefix("0x")
-        .or_else(|| signature_hex.trim().strip_prefix("0X"))
-        .unwrap_or(signature_hex.trim());
-
-    let signature = hex::decode(signature_hex)
-        .map_err(|e| BulletinError::ParseError(format!("invalid threshold signature hex: {e}")))?;
-
-    if signature.is_empty() {
-        return Err(BulletinError::ParseError(
-            "threshold signature cannot be empty".to_string(),
-        ));
-    }
-
-    Ok((signature_scheme, signature))
 }
 
 fn check_result(result: common::blockchain::BroadcastResult, op: &str) -> Result<()> {

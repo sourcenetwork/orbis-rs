@@ -44,7 +44,13 @@ impl Bulletin for DummyBulletin {
         Ok(())
     }
 
-    async fn update(&self, namespace: String, id: String, _artifact: Option<String>) -> Result<()> {
+    async fn update(
+        &self,
+        namespace: String,
+        id: String,
+        _signature_scheme: String,
+        _signature: Vec<u8>,
+    ) -> Result<()> {
         let mut posts = self.posts.lock().unwrap();
         let post = posts
             .get_mut(&(namespace.clone(), id.clone()))

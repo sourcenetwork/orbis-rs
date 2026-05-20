@@ -170,16 +170,20 @@ where
         ));
     }
 
+    let signature_bytes = hex::decode(&sign_response.signature).map_err(|e| {
+        DkgError::Crypto(format!(
+            "Reshare: failed to decode threshold signature hex: {}",
+            e
+        ))
+    })?;
     coord
         .app_state
         .bulletin
         .update(
             bulletin_namespace.clone(),
             prepared.ring_id.clone(),
-            Some(format!(
-                "reshare-threshold-signature:{}:{}:{}",
-                session_id, THRESHOLD_SIGNATURE_SCHEME, sign_response.signature
-            )),
+            THRESHOLD_SIGNATURE_SCHEME.to_string(),
+            signature_bytes,
         )
         .await
         .map_err(|e| DkgError::Bulletin(format!("Reshare: failed to update RingPayload: {}", e)))?;

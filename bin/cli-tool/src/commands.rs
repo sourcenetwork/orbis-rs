@@ -945,7 +945,7 @@ pub async fn update_ring_post_by_acp(
         .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
 
     let result = client
-        .orbis_update_ring_by_acp(&ring_id, None, new_peer_ids, new_threshold, pss_interval)
+        .orbis_update_ring_by_acp(&ring_id, new_peer_ids, new_threshold, pss_interval)
         .await
         .map_err(|e| anyhow!("Failed to update ring: {}", e))?;
 

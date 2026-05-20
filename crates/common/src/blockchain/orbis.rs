@@ -164,17 +164,15 @@ pub struct MsgUpdateRingByAcp {
     pub creator: String,
     #[prost(string, tag = "2")]
     pub ring_id: String,
-    #[prost(string, tag = "3")]
-    pub artifact: String,
-    #[prost(string, repeated, tag = "4")]
+    #[prost(string, repeated, tag = "3")]
     pub new_peer_ids: Vec<String>,
-    #[prost(uint32, tag = "5")]
+    #[prost(uint32, tag = "4")]
     pub new_threshold: u32,
-    #[prost(bool, tag = "6")]
+    #[prost(bool, tag = "5")]
     pub has_new_threshold: bool,
-    #[prost(uint64, tag = "7")]
+    #[prost(uint64, tag = "6")]
     pub pss_interval: u64,
-    #[prost(bool, tag = "8")]
+    #[prost(bool, tag = "7")]
     pub has_pss_interval: bool,
 }
 
@@ -184,7 +182,6 @@ impl MsgUpdateRingByAcp {
     pub fn new(
         creator: &str,
         ring_id: &str,
-        artifact: Option<String>,
         new_peer_ids: Vec<String>,
         new_threshold: Option<u32>,
         pss_interval: Option<u64>,
@@ -192,7 +189,6 @@ impl MsgUpdateRingByAcp {
         Self {
             creator: creator.to_string(),
             ring_id: ring_id.to_string(),
-            artifact: artifact.unwrap_or_default(),
             new_peer_ids,
             new_threshold: new_threshold.unwrap_or(0),
             has_new_threshold: new_threshold.is_some(),
@@ -209,10 +205,8 @@ pub struct MsgFinalizeRingReshareByThresholdSignature {
     #[prost(string, tag = "2")]
     pub ring_id: String,
     #[prost(string, tag = "3")]
-    pub artifact: String,
-    #[prost(string, tag = "4")]
     pub signature_scheme: String,
-    #[prost(bytes = "vec", tag = "5")]
+    #[prost(bytes = "vec", tag = "4")]
     pub signature: Vec<u8>,
 }
 
@@ -220,17 +214,10 @@ impl MsgFinalizeRingReshareByThresholdSignature {
     pub const TYPE_URL: &'static str =
         "/sourcehub.orbis.MsgFinalizeRingReshareByThresholdSignature";
 
-    pub fn new(
-        creator: &str,
-        ring_id: &str,
-        artifact: Option<String>,
-        signature_scheme: &str,
-        signature: Vec<u8>,
-    ) -> Self {
+    pub fn new(creator: &str, ring_id: &str, signature_scheme: &str, signature: Vec<u8>) -> Self {
         Self {
             creator: creator.to_string(),
             ring_id: ring_id.to_string(),
-            artifact: artifact.unwrap_or_default(),
             signature_scheme: signature_scheme.to_string(),
             signature,
         }
@@ -263,8 +250,6 @@ pub struct MsgStoreDocument {
     pub timestamp: u64,
     #[prost(bool, tag = "12")]
     pub has_timestamp: bool,
-    #[prost(string, tag = "13")]
-    pub artifact: String,
 }
 
 impl MsgStoreDocument {
@@ -293,8 +278,6 @@ pub struct MsgStoreKeyDerivation {
     pub resource: String,
     #[prost(string, tag = "7")]
     pub permission: String,
-    #[prost(string, tag = "8")]
-    pub artifact: String,
 }
 
 impl MsgStoreKeyDerivation {
@@ -740,7 +723,6 @@ impl SourceHubClient {
         permission: &str,
         tier: Option<String>,
         timestamp: Option<u64>,
-        artifact: Option<String>,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
@@ -758,7 +740,6 @@ impl SourceHubClient {
             has_tier: tier.is_some(),
             timestamp: timestamp.unwrap_or(0),
             has_timestamp: timestamp.is_some(),
-            artifact: artifact.unwrap_or_default(),
         };
         self.broadcast_proto_msg_with_gas(
             MsgStoreDocument::TYPE_URL,
@@ -776,7 +757,6 @@ impl SourceHubClient {
         policy_id: &str,
         resource: &str,
         permission: &str,
-        artifact: Option<String>,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
@@ -789,7 +769,6 @@ impl SourceHubClient {
             policy_id: policy_id.to_string(),
             resource: resource.to_string(),
             permission: permission.to_string(),
-            artifact: artifact.unwrap_or_default(),
         };
         self.broadcast_proto_msg_with_gas(
             MsgStoreKeyDerivation::TYPE_URL,
@@ -802,7 +781,6 @@ impl SourceHubClient {
     pub async fn orbis_update_ring_by_acp(
         &self,
         ring_id: &str,
-        artifact: Option<String>,
         new_peer_ids: Vec<String>,
         new_threshold: Option<u32>,
         pss_interval: Option<u64>,
@@ -813,7 +791,6 @@ impl SourceHubClient {
         let msg = MsgUpdateRingByAcp::new(
             &signer.address(),
             ring_id,
-            artifact,
             new_peer_ids,
             new_threshold,
             pss_interval,
@@ -829,7 +806,6 @@ impl SourceHubClient {
     pub async fn orbis_finalize_ring_reshare(
         &self,
         ring_id: &str,
-        artifact: Option<String>,
         signature_scheme: &str,
         signature: Vec<u8>,
     ) -> Result<BroadcastResult> {
@@ -839,7 +815,6 @@ impl SourceHubClient {
         let msg = MsgFinalizeRingReshareByThresholdSignature::new(
             &signer.address(),
             ring_id,
-            artifact,
             signature_scheme,
             signature,
         );
@@ -928,5 +903,38 @@ impl SourceHubClient {
                 ))
             })?;
         Ok(response.key_derivation)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::Message;
+
+    use super::{MsgFinalizeRingReshareByThresholdSignature, MsgUpdateRingByAcp};
+
+    #[test]
+    fn update_ring_by_acp_wire_fields_match_sourcehub_proto() {
+        let msg = MsgUpdateRingByAcp::new(
+            "c",
+            "r",
+            vec!["p1".to_string(), "p2".to_string()],
+            Some(2),
+            Some(10),
+        );
+
+        assert_eq!(
+            hex::encode(msg.encode_to_vec()),
+            "0a01631201721a0270311a02703220022801300a3801"
+        );
+    }
+
+    #[test]
+    fn finalize_ring_reshare_wire_fields_match_sourcehub_proto() {
+        let msg = MsgFinalizeRingReshareByThresholdSignature::new("c", "r", "s", vec![1, 2]);
+
+        assert_eq!(
+            hex::encode(msg.encode_to_vec()),
+            "0a01631201721a017322020102"
+        );
     }
 }

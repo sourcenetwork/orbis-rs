@@ -1,4 +1,4 @@
-use super::{SourceHubBulletin, DEFAULT_THRESHOLD_SIGNATURE_SCHEME};
+use super::SourceHubBulletin;
 use crate::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
 use common::{
     blockchain::{ChainConfig, ChainConfigBuilder, TxSigner, TEST_ACCOUNT_HEX_KEY},
@@ -21,53 +21,6 @@ fn test_ring_payload() -> RingPayload {
 #[test]
 fn test_name() {
     assert_eq!(SourceHubBulletin::name(), "bulletin/sourcehub");
-}
-
-#[test]
-fn test_parse_threshold_signature_artifact() {
-    let artifact = Some("reshare-threshold-signature:42:0x0102ff".to_string());
-    let (scheme, signature) =
-        SourceHubBulletin::parse_threshold_signature_artifact(&artifact).unwrap();
-    assert_eq!(scheme, DEFAULT_THRESHOLD_SIGNATURE_SCHEME);
-    assert_eq!(signature, vec![0x01, 0x02, 0xff]);
-
-    let artifact = Some(format!(
-        "reshare-threshold-signature:42:{}:0102ff",
-        DEFAULT_THRESHOLD_SIGNATURE_SCHEME
-    ));
-    let (scheme, signature) =
-        SourceHubBulletin::parse_threshold_signature_artifact(&artifact).unwrap();
-    assert_eq!(scheme, DEFAULT_THRESHOLD_SIGNATURE_SCHEME);
-    assert_eq!(signature, vec![0x01, 0x02, 0xff]);
-
-    let artifact = Some("reshare-threshold-signature:42:decaf377_frost:0102ff".to_string());
-    let (scheme, signature) =
-        SourceHubBulletin::parse_threshold_signature_artifact(&artifact).unwrap();
-    assert_eq!(scheme, "decaf377_frost");
-    assert_eq!(signature, vec![0x01, 0x02, 0xff]);
-}
-
-#[test]
-fn test_parse_threshold_signature_artifact_rejects_invalid_inputs() {
-    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&None).is_err());
-
-    let artifact = Some("0102ff".to_string());
-    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&artifact).is_err());
-
-    let artifact = Some("wrong-prefix:42:0102ff".to_string());
-    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&artifact).is_err());
-
-    let artifact = Some("reshare-threshold-signature:42:not-hex".to_string());
-    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&artifact).is_err());
-
-    let artifact = Some("reshare-threshold-signature:42:abc".to_string());
-    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&artifact).is_err());
-
-    let artifact = Some("reshare-threshold-signature:42:unsupported:0102ff".to_string());
-    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&artifact).is_err());
-
-    let artifact = Some("reshare-threshold-signature:42:".to_string());
-    assert!(SourceHubBulletin::parse_threshold_signature_artifact(&artifact).is_err());
 }
 
 #[tokio::test]
