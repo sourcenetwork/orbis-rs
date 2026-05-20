@@ -243,7 +243,7 @@ where
                 e
             ))
         })?;
-    let sign_namespace = current_post.namespace.clone();
+
     let current_ring_payload: RingPayload =
         serde_json::from_slice(&current_post.payload).map_err(|e| {
             DkgError::Deserialization(format!(
@@ -315,7 +315,7 @@ where
         sorted_new_peer_ids,
         new_committee_size,
         ring_id: ring_id.to_string(),
-        sign_namespace,
+        sign_namespace: current_post.namespace,
         current_ring_sha256,
         finalized_ring_sha256,
         block_number_nonce: current_ring_payload.block_number_nonce,

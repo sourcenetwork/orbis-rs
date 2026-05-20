@@ -265,7 +265,7 @@ where
     // For Reshare: bulletin is updated below by new-committee node 1.
     if is_fresh {
         let bulletin_post_id = if node_id == 1 {
-            // Post to the chain and get the authoritative ring_id from the response.
+            // Post to the chain
             ring_storage::post_fresh_ring_payload(
                 coord,
                 session_id,
