@@ -3,7 +3,7 @@ use crate::constants::MAX_LOCAL_RINGS_PER_NODE;
 use crate::dkg::error::{DkgError, Result};
 use crate::metrics;
 use crate::ring_state::RingIndexEntry;
-use bulletin::r#trait::RingPayload;
+use bulletin::r#trait::{BulletinKind, RingPayload};
 use crypto::r#trait::Dkg;
 use crypto::{CryptoSerialize, GroupAffine as G1Affine};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -114,11 +114,7 @@ where
     ensure_local_ring_capacity(&ring_index, storage_key)
 }
 
-/// Post the fresh ring payload to the bulletin and return the chain-assigned ring_id.
-///
-/// Uses [`Bulletin::post_ring`] which, for `SourceHubBulletin`, decodes the ring_id
-/// directly from the `MsgCreateRingResponse` ABCI data rather than recomputing it
-/// locally — guaranteeing that the stored `bulletin_post_id` matches the chain's ID.
+/// Post the fresh ring payload to the bulletin and return the ring_id.
 pub(in crate::dkg::coordinator) async fn post_fresh_ring_payload<D>(
     coord: &DkgCoordinator<D>,
     session_id: u64,
@@ -155,16 +151,30 @@ where
         .try_into()
         .map_err(|e| DkgError::Serialization(format!("Failed to serialize RingPayload: {}", e)))?;
 
-    let ring_id = coord
+    coord
         .app_state
         .bulletin
-        .post_ring(
+        .post(
             bulletin_namespace.to_string(),
+            BulletinKind::Ring,
             payload_bytes,
             Some(session_id.to_string()),
         )
         .await
         .map_err(|e| DkgError::Bulletin(format!("Failed to post RingPayload: {}", e)))?;
+
+    let ring_id = coord
+        .app_state
+        .bulletin
+        .get_ring_id(
+            bulletin_namespace,
+            &ring_payload.ring_pk,
+            &ring_payload.peer_ids,
+            ring_payload.threshold,
+            ring_payload.pss_interval,
+            ring_payload.policy_id.as_deref().unwrap_or(""),
+        )
+        .map_err(|e| DkgError::Bulletin(format!("Failed to compute ring_id: {}", e)))?;
 
     tracing::info!(
         ring_pk = %ring_payload.ring_pk,

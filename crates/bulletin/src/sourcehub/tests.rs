@@ -85,10 +85,25 @@ async fn test_bulletin_document() {
 
     let namespace = "test_namespace";
     let ring_payload = test_ring_payload();
-    let ring_payload_bytes: Vec<u8> = ring_payload.try_into().unwrap();
-    let ring_id = bulletin
-        .post_ring(namespace.to_string(), ring_payload_bytes, None)
+    let ring_payload_bytes: Vec<u8> = ring_payload.clone().try_into().unwrap();
+    bulletin
+        .post(
+            namespace.to_string(),
+            BulletinKind::Ring,
+            ring_payload_bytes,
+            None,
+        )
         .await
+        .unwrap();
+    let ring_id = bulletin
+        .get_ring_id(
+            namespace,
+            &ring_payload.ring_pk,
+            &ring_payload.peer_ids,
+            ring_payload.threshold,
+            ring_payload.pss_interval,
+            ring_payload.policy_id.as_deref().unwrap_or(""),
+        )
         .unwrap();
 
     let payload = DocumentPayload {
@@ -153,9 +168,24 @@ async fn test_bulletin_ring() {
 
     bulletin.register(namespace.to_string()).await.unwrap();
 
-    let ring_id = bulletin
-        .post_ring(namespace.to_string(), serialized_payload.clone(), None)
+    bulletin
+        .post(
+            namespace.to_string(),
+            BulletinKind::Ring,
+            serialized_payload.clone(),
+            None,
+        )
         .await
+        .unwrap();
+    let ring_id = bulletin
+        .get_ring_id(
+            namespace,
+            &payload.ring_pk,
+            &payload.peer_ids,
+            payload.threshold,
+            payload.pss_interval,
+            payload.policy_id.as_deref().unwrap_or(""),
+        )
         .unwrap();
 
     let created_post = bulletin

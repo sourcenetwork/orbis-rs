@@ -1,6 +1,5 @@
 use crate::error::{BulletinError, Result};
 use async_trait::async_trait;
-use common::blockchain::orbis;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,31 +164,6 @@ pub trait Bulletin {
         payload: Vec<u8>,
         artifact: Option<String>,
     ) -> Result<()>;
-    /// Post a ring payload and return the chain-assigned ring_id.
-    ///
-    /// The default implementation calls [`post`] and then computes the ring_id
-    /// locally with [`get_ring_id`]. Backends that can extract the ring_id from
-    /// the chain response (e.g. `SourceHubBulletin`) should override this method
-    /// to return the authoritative chain-assigned ID instead of a local computation.
-    async fn post_ring(
-        &self,
-        namespace: String,
-        payload: Vec<u8>,
-        artifact: Option<String>,
-    ) -> Result<String> {
-        let ring: RingPayload = serde_json::from_slice(&payload)
-            .map_err(|e| BulletinError::ParseError(format!("post_ring: bad payload: {}", e)))?;
-        self.post(namespace.clone(), BulletinKind::Ring, payload, artifact)
-            .await?;
-        self.get_ring_id(
-            &namespace,
-            &ring.ring_pk,
-            &ring.peer_ids,
-            ring.threshold,
-            ring.pss_interval,
-            ring.policy_id.as_deref().unwrap_or(""),
-        )
-    }
     /// Finalize an existing message update in the bulletin namespace while preserving its ID.
     async fn update(&self, namespace: String, id: String, artifact: Option<String>) -> Result<()>;
     /// Read a message from the bulletin namespace
@@ -216,7 +190,6 @@ pub trait Bulletin {
     /// new_peer_ids → peer_ids, new_threshold applied, block_number_nonce incremented.
     async fn ring_finalized_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]>;
     /// Serialize the canonical sign bytes for a ring reshare finalization sign doc.
-    /// The default implementation uses SourceHub-compatible proto encoding.
     fn ring_reshare_finalize_sign_bytes(
         &self,
         chain_id: &str,
@@ -226,16 +199,5 @@ pub trait Bulletin {
         current_ring_sha256: Vec<u8>,
         finalized_ring_sha256: Vec<u8>,
         block_number_nonce: u64,
-    ) -> Result<Vec<u8>> {
-        orbis::ring_reshare_finalize_sign_bytes(
-            chain_id,
-            namespace,
-            ring_id,
-            ring_pk,
-            current_ring_sha256,
-            finalized_ring_sha256,
-            block_number_nonce,
-        )
-        .map_err(|e| BulletinError::ParseError(e.to_string()))
-    }
+    ) -> Result<Vec<u8>>;
 }

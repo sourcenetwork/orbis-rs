@@ -28,31 +28,6 @@ impl Bulletin for SourceHubBulletin {
         Ok(())
     }
 
-    async fn post_ring(
-        &self,
-        namespace: String,
-        payload: Vec<u8>,
-        artifact: Option<String>,
-    ) -> Result<String> {
-        let ring: RingPayload = serde_json::from_slice(&payload)
-            .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-        let (result, ring_id) = self
-            .chain_client
-            .orbis_create_ring_get_id(
-                &namespace,
-                &ring.ring_pk,
-                ring.peer_ids,
-                ring.threshold,
-                ring.pss_interval,
-                ring.policy_id.as_deref().unwrap_or(""),
-                artifact,
-            )
-            .await
-            .map_err(|e| BulletinError::ChainError(e.to_string()))?;
-        check_result(result, "create ring")?;
-        Ok(ring_id)
-    }
-
     async fn post(
         &self,
         namespace: String,
@@ -62,8 +37,22 @@ impl Bulletin for SourceHubBulletin {
     ) -> Result<()> {
         match kind {
             BulletinKind::Ring => {
-                self.post_ring(namespace, payload, artifact).await?;
-                Ok(())
+                let ring: RingPayload = serde_json::from_slice(&payload)
+                    .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+                let (result, _) = self
+                    .chain_client
+                    .orbis_create_ring_get_id(
+                        &namespace,
+                        &ring.ring_pk,
+                        ring.peer_ids,
+                        ring.threshold,
+                        ring.pss_interval,
+                        ring.policy_id.as_deref().unwrap_or(""),
+                        artifact,
+                    )
+                    .await
+                    .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+                check_result(result, "create ring")
             }
             BulletinKind::Document => {
                 let doc: DocumentPayload = serde_json::from_slice(&payload)
@@ -223,6 +212,28 @@ impl Bulletin for SourceHubBulletin {
                 id: ring_id.to_string(),
             })?;
         Ok(ring_state_hash(&ring))
+    }
+
+    fn ring_reshare_finalize_sign_bytes(
+        &self,
+        chain_id: &str,
+        namespace: &str,
+        ring_id: &str,
+        ring_pk: &str,
+        current_ring_sha256: Vec<u8>,
+        finalized_ring_sha256: Vec<u8>,
+        block_number_nonce: u64,
+    ) -> Result<Vec<u8>> {
+        orbis::ring_reshare_finalize_sign_bytes(
+            chain_id,
+            namespace,
+            ring_id,
+            ring_pk,
+            current_ring_sha256,
+            finalized_ring_sha256,
+            block_number_nonce,
+        )
+        .map_err(|e| BulletinError::ParseError(e.to_string()))
     }
 
     async fn ring_finalized_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]> {

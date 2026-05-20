@@ -5,6 +5,7 @@ use crate::{
 use async_trait::async_trait;
 use common::blockchain::orbis::{
     generate_document_id, generate_key_derivation_id, generate_ring_id,
+    ring_reshare_finalize_sign_bytes as orbis_ring_reshare_finalize_sign_bytes,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -118,6 +119,28 @@ impl Bulletin for DummyBulletin {
                     id: ring_id.to_string(),
                 })?;
         Ok(Sha256::digest(&post.payload).into())
+    }
+
+    fn ring_reshare_finalize_sign_bytes(
+        &self,
+        chain_id: &str,
+        namespace: &str,
+        ring_id: &str,
+        ring_pk: &str,
+        current_ring_sha256: Vec<u8>,
+        finalized_ring_sha256: Vec<u8>,
+        block_number_nonce: u64,
+    ) -> Result<Vec<u8>> {
+        orbis_ring_reshare_finalize_sign_bytes(
+            chain_id,
+            namespace,
+            ring_id,
+            ring_pk,
+            current_ring_sha256,
+            finalized_ring_sha256,
+            block_number_nonce,
+        )
+        .map_err(|e| BulletinError::ParseError(e.to_string()))
     }
 
     async fn ring_finalized_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]> {
