@@ -480,7 +480,7 @@ impl SourceHubClient {
             )));
         }
 
-        Ok(response.value)
+        Ok(decode_abci_data(response.value))
     }
 
     /// Get the latest block height.

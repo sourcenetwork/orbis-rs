@@ -837,17 +837,20 @@ pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let client = SourceHubClient::with_signer(ChainConfig::local(), signer)
         .await
-        .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create chain client with signer: {}", e))?;
 
-    if let Err(e) = bulletin.register(namespace.clone()).await {
-        let msg = e.to_string();
-        if msg.contains("already exists") || msg.contains("namespace already exists") {
-            println!("Bulletin namespace already exists: {}", namespace);
-            return Ok(());
+    match client.bulletin_register_namespace(&namespace).await {
+        Ok(_) => {}
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("already exists") || msg.contains("namespace already exists") {
+                println!("Bulletin namespace already exists: {}", namespace);
+                return Ok(());
+            }
+            return Err(anyhow!("Failed to register namespace: {}", e));
         }
-        return Err(anyhow!("Failed to register namespace: {}", e));
     }
 
     println!("Registered bulletin namespace: {}", namespace);
