@@ -33,17 +33,13 @@ pub struct Ring {
     pub threshold: u32,
     #[prost(string, repeated, tag = "7")]
     pub new_peer_ids: Vec<String>,
-    #[prost(uint32, tag = "8")]
-    pub new_threshold: u32,
-    #[prost(bool, tag = "9")]
-    pub has_new_threshold: bool,
+    #[prost(uint32, optional, tag = "8")]
+    pub new_threshold: Option<u32>,
+    #[prost(uint64, optional, tag = "9")]
+    pub pss_interval: Option<u64>,
     #[prost(uint64, tag = "10")]
-    pub pss_interval: u64,
-    #[prost(bool, tag = "11")]
-    pub has_pss_interval: bool,
-    #[prost(uint64, tag = "12")]
     pub block_number_nonce: u64,
-    #[prost(string, tag = "13")]
+    #[prost(string, tag = "11")]
     pub policy_id: String,
 }
 
@@ -68,14 +64,10 @@ pub struct Document {
     pub resource: String,
     #[prost(string, tag = "9")]
     pub permission: String,
-    #[prost(string, tag = "10")]
-    pub tier: String,
-    #[prost(bool, tag = "11")]
-    pub has_tier: bool,
-    #[prost(uint64, tag = "12")]
-    pub timestamp: u64,
-    #[prost(bool, tag = "13")]
-    pub has_timestamp: bool,
+    #[prost(string, optional, tag = "10")]
+    pub tier: Option<String>,
+    #[prost(uint64, optional, tag = "11")]
+    pub timestamp: Option<u64>,
 }
 
 /// Key derivation state stored in x/orbis.
@@ -115,13 +107,11 @@ pub struct MsgCreateRing {
     pub peer_ids: Vec<String>,
     #[prost(uint32, tag = "5")]
     pub threshold: u32,
-    #[prost(uint64, tag = "6")]
-    pub pss_interval: u64,
-    #[prost(bool, tag = "7")]
-    pub has_pss_interval: bool,
-    #[prost(string, tag = "8")]
+    #[prost(uint64, optional, tag = "6")]
+    pub pss_interval: Option<u64>,
+    #[prost(string, tag = "7")]
     pub policy_id: String,
-    #[prost(string, tag = "9")]
+    #[prost(string, tag = "8")]
     pub artifact: String,
 }
 
@@ -144,8 +134,7 @@ impl MsgCreateRing {
             ring_pk: ring_pk.to_string(),
             peer_ids,
             threshold,
-            pss_interval: pss_interval.unwrap_or(0),
-            has_pss_interval: pss_interval.is_some(),
+            pss_interval,
             policy_id: policy_id.to_string(),
             artifact: artifact.unwrap_or_default(),
         }
@@ -166,14 +155,10 @@ pub struct MsgUpdateRingByAcp {
     pub ring_id: String,
     #[prost(string, repeated, tag = "3")]
     pub new_peer_ids: Vec<String>,
-    #[prost(uint32, tag = "4")]
-    pub new_threshold: u32,
-    #[prost(bool, tag = "5")]
-    pub has_new_threshold: bool,
-    #[prost(uint64, tag = "6")]
-    pub pss_interval: u64,
-    #[prost(bool, tag = "7")]
-    pub has_pss_interval: bool,
+    #[prost(uint32, optional, tag = "4")]
+    pub new_threshold: Option<u32>,
+    #[prost(uint64, optional, tag = "5")]
+    pub pss_interval: Option<u64>,
 }
 
 impl MsgUpdateRingByAcp {
@@ -190,10 +175,8 @@ impl MsgUpdateRingByAcp {
             creator: creator.to_string(),
             ring_id: ring_id.to_string(),
             new_peer_ids,
-            new_threshold: new_threshold.unwrap_or(0),
-            has_new_threshold: new_threshold.is_some(),
-            pss_interval: pss_interval.unwrap_or(0),
-            has_pss_interval: pss_interval.is_some(),
+            new_threshold,
+            pss_interval,
         }
     }
 }
@@ -242,14 +225,10 @@ pub struct MsgStoreDocument {
     pub resource: String,
     #[prost(string, tag = "8")]
     pub permission: String,
-    #[prost(string, tag = "9")]
-    pub tier: String,
-    #[prost(bool, tag = "10")]
-    pub has_tier: bool,
-    #[prost(uint64, tag = "11")]
-    pub timestamp: u64,
-    #[prost(bool, tag = "12")]
-    pub has_timestamp: bool,
+    #[prost(string, optional, tag = "9")]
+    pub tier: Option<String>,
+    #[prost(uint64, optional, tag = "10")]
+    pub timestamp: Option<u64>,
 }
 
 impl MsgStoreDocument {
@@ -734,10 +713,8 @@ impl SourceHubClient {
             policy_id: policy_id.to_string(),
             resource: resource.to_string(),
             permission: permission.to_string(),
-            tier: tier.clone().unwrap_or_default(),
-            has_tier: tier.is_some(),
-            timestamp: timestamp.unwrap_or(0),
-            has_timestamp: timestamp.is_some(),
+            tier,
+            timestamp,
         };
         self.broadcast_proto_msg_with_gas(
             MsgStoreDocument::TYPE_URL,
@@ -922,7 +899,7 @@ mod tests {
 
         assert_eq!(
             hex::encode(msg.encode_to_vec()),
-            "0a01631201721a0270311a02703220022801300a3801"
+            "0a01631201721a0270311a0270322002280a"
         );
     }
 

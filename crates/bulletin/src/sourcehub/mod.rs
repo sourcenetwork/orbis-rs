@@ -251,14 +251,9 @@ impl Bulletin for SourceHubBulletin {
             } else {
                 ring.new_peer_ids.clone()
             },
-            threshold: if ring.has_new_threshold {
-                ring.new_threshold
-            } else {
-                ring.threshold
-            },
+            threshold: ring.new_threshold.unwrap_or(ring.threshold),
             new_peer_ids: vec![],
-            new_threshold: 0,
-            has_new_threshold: false,
+            new_threshold: None,
             ..ring
         };
         Ok(ring_state_hash(&finalized))
@@ -373,17 +368,9 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
         } else {
             Some(ring.new_peer_ids)
         },
-        new_threshold: if ring.has_new_threshold {
-            Some(ring.new_threshold)
-        } else {
-            None
-        },
+        new_threshold: ring.new_threshold,
         threshold: ring.threshold,
-        pss_interval: if ring.has_pss_interval {
-            Some(ring.pss_interval)
-        } else {
-            None
-        },
+        pss_interval: ring.pss_interval,
         block_number_nonce: ring.block_number_nonce,
         policy_id: if ring.policy_id.is_empty() {
             None
@@ -407,12 +394,8 @@ fn document_to_bulletin_post(doc: orbis::Document) -> Result<BulletinPost> {
         policy_id: doc.policy_id,
         resource: doc.resource,
         permission: doc.permission,
-        tier: if doc.has_tier { Some(doc.tier) } else { None },
-        timestamp: if doc.has_timestamp {
-            Some(doc.timestamp)
-        } else {
-            None
-        },
+        tier: doc.tier,
+        timestamp: doc.timestamp,
     };
     Ok(BulletinPost {
         id: doc.id,

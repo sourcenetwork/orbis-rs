@@ -56,6 +56,21 @@ pub struct BroadcastResult {
     pub data: Option<Vec<u8>>,
 }
 
+/// Decode ABCI response data bytes.
+///
+/// tendermint-rpc 0.40 with newer CometBFT versions hands back the raw base64
+/// string bytes rather than the decoded binary. Try base64 decoding first; if
+/// the bytes are not valid base64 (i.e. they already are binary proto), return
+/// them unchanged.
+fn decode_abci_data(raw: Vec<u8>) -> Vec<u8> {
+    if raw.iter().all(|b| b.is_ascii()) {
+        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&raw) {
+            return decoded;
+        }
+    }
+    raw
+}
+
 /// Client for interacting with SourceHub.
 pub struct SourceHubClient {
     config: ChainConfig,
@@ -357,7 +372,7 @@ impl SourceHubClient {
             height: Some(response.height.value()),
             code,
             log: response.tx_result.log.to_string(),
-            data: Some(response.tx_result.data.to_vec()),
+            data: Some(decode_abci_data(response.tx_result.data.to_vec())),
         })
     }
 
@@ -370,7 +385,7 @@ impl SourceHubClient {
             height: None,
             code: response.code.value(),
             log: response.log.to_string(),
-            data: Some(response.data.to_vec()),
+            data: Some(decode_abci_data(response.data.to_vec())),
         })
     }
 
@@ -391,7 +406,7 @@ impl SourceHubClient {
             height: None,
             code,
             log: response.log.to_string(),
-            data: Some(response.data.to_vec()),
+            data: Some(decode_abci_data(response.data.to_vec())),
         })
     }
 
@@ -419,7 +434,7 @@ impl SourceHubClient {
                         height: Some(response.height.value()),
                         code,
                         log: response.tx_result.log.to_string(),
-                        data: Some(response.tx_result.data.to_vec()),
+                        data: Some(decode_abci_data(response.tx_result.data.to_vec())),
                     });
                 }
                 Err(_) => {
