@@ -114,7 +114,7 @@ pub enum DkgMessage {
         /// Session kind: Fresh, Refresh, or Reshare.
         kind: SessionKind,
         /// Seconds between automatic PSS refresh ceremonies for this ring.
-        /// `None` means automatic refresh is disabled.
+        /// `None` means automatic refresh is disabled; `Some(0)` is present and immediate.
         #[serde(skip_serializing_if = "Option::is_none")]
         pss_interval: Option<u64>,
         /// Optional policy that externally governs ring updates.

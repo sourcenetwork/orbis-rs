@@ -82,7 +82,7 @@ Every decoded `DkgMessage` goes to `DkgCoordinator::handle_message`.
 
 1. Classify the message for metrics and dedup.
 2. Handle `SessionInit` first, because it can create the session.
-3. For other messages, wait only briefly for the session to appear.
+3. For other messages, wait for a bounded grace period for the session to appear.
 4. Validate the authenticated peer against the claimed node ID.
 5. Atomically claim the message as in-flight to suppress concurrent duplicates.
 6. Dispatch to the per-message handler.

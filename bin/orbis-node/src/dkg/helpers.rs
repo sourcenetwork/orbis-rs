@@ -329,7 +329,8 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
 /// 1. The ring is known (an entry with `ring_pk_str == ring_pk_hex` exists in `RingIndex`).
 /// 2. The sender's peer ID is a current member of that ring (from the bulletin RingPayload).
 /// 3. Enough time has elapsed since the last refresh (`ring_payload.pss_interval`).
-///    If `pss_interval` is `None` the time check is skipped (any time is acceptable).
+///    If `pss_interval` is `None` the time check is skipped (any time is acceptable);
+///    `Some(0)` is present and therefore requires an existing ring timestamp.
 ///
 /// The caller is responsible for the atomic in-progress flag
 /// (`try_mark_ring_pss`) after this returns `Ok`.
@@ -380,28 +381,26 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
     // 3. Verify enough time has elapsed since the last refresh/DKG.
     //    Only enforced when the ring has a `pss_interval` set.
     if let Some(pss_interval_secs) = ring_payload.pss_interval {
-        if pss_interval_secs > 0 {
-            let now_secs = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
-                .as_secs();
-            // `ring_pk_hex` is aggregate_pk.to_string() — same key the bundle is stored under.
-            // A missing bundle means the ring hasn't completed DKG yet.
-            let last_refresh_secs = RingShareBundle::load_by_ring_key(local_storage, ring_pk_hex)
-                .map(|b| b.last_pss)
-                .map_err(|_| {
-                    DkgError::Unauthorized(
-                        "Ring has no refresh timestamp; cannot accept refresh".to_string(),
-                    )
-                })?;
-            let elapsed = now_secs.saturating_sub(last_refresh_secs);
-            if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
-                return Err(DkgError::Unauthorized(format!(
-                    "Refresh too soon: {}s elapsed, minimum is {}s",
-                    elapsed,
-                    pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)
-                )));
-            }
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
+            .as_secs();
+        // `ring_pk_hex` is aggregate_pk.to_string() — same key the bundle is stored under.
+        // A missing bundle means the ring hasn't completed DKG yet.
+        let last_refresh_secs = RingShareBundle::load_by_ring_key(local_storage, ring_pk_hex)
+            .map(|b| b.last_pss)
+            .map_err(|_| {
+                DkgError::Unauthorized(
+                    "Ring has no refresh timestamp; cannot accept refresh".to_string(),
+                )
+            })?;
+        let elapsed = now_secs.saturating_sub(last_refresh_secs);
+        if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
+            return Err(DkgError::Unauthorized(format!(
+                "Refresh too soon: {}s elapsed, minimum is {}s",
+                elapsed,
+                pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)
+            )));
         }
     }
 
@@ -445,9 +444,9 @@ pub fn validate_dkg_claims(
         ));
     }
 
-    // Validate pss_interval matches. Normalize both sides: 0 and None both mean "disabled".
-    let normalize = |v: Option<u64>| v.filter(|&x| x > 0);
-    if normalize(token.claims.pss_interval) != normalize(pss_interval) {
+    // Validate pss_interval matches. Presence is significant: None and Some(0)
+    // are distinct because SourceHub proto3 optional fields preserve that shape.
+    if token.claims.pss_interval != pss_interval {
         return Err(DkgError::Unauthorized(format!(
             "Token pss_interval ({:?}) does not match request pss_interval ({:?})",
             token.claims.pss_interval, pss_interval
@@ -776,6 +775,25 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_dkg_claims_distinguishes_absent_and_zero_pss_interval() {
+        let peer_ids = vec!["peer-a".to_string()];
+        let mut token = dkg_token(None);
+        token.claims.pss_interval = Some(0);
+
+        assert!(
+            validate_dkg_claims(&token, 1, &peer_ids, Some(0), None, BULLETIN_RING_NAMESPACE)
+                .is_ok()
+        );
+
+        let result = validate_dkg_claims(&token, 1, &peer_ids, None, None, BULLETIN_RING_NAMESPACE);
+        assert!(
+            matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("Token pss_interval")),
+            "Expected Unauthorized for present-zero token pss_interval vs absent request, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn test_derive_reshare_session_id_uses_chain_transition_only() {
         let old_peer_ids = vec!["peer-c".to_string(), "peer-a".to_string()];
         let new_peer_ids = vec!["peer-b".to_string(), "peer-a".to_string()];
@@ -985,6 +1003,38 @@ mod tests {
         assert!(
             result.is_ok(),
             "Expected Ok when pss_interval is None (no time check), got: {:?}",
+            result
+        );
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn test_zero_pss_interval_requires_existing_timestamp() {
+        let (storage, db_path) = make_storage("helpers_zero_interval");
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let ring_pk = "ring_pk_zero_interval";
+        write_ring_to_bulletin(
+            &storage,
+            &bulletin,
+            ring_pk,
+            vec!["aabbccdd".to_string()],
+            Some(0),
+        )
+        .await;
+
+        let missing = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, &bulletin).await;
+        assert!(
+            matches!(missing, Err(DkgError::Unauthorized(_))),
+            "Expected missing timestamp to be rejected when pss_interval is Some(0), got: {:?}",
+            missing
+        );
+
+        write_last_refresh(&storage, ring_pk, 0);
+        let result = validate_refresh_session_init(ring_pk, "aabbccdd", &storage, &bulletin).await;
+        assert!(
+            result.is_ok(),
+            "Expected Some(0) to be accepted once the ring has a timestamp, got: {:?}",
             result
         );
         cleanup_db(&db_path);

@@ -1,4 +1,6 @@
 use super::*;
+use crate::constants::{DKG_SESSION_WAIT_POLL_INTERVAL, DKG_SHARE_COMMITMENT_WAIT_TIMEOUT};
+use crypto::error::CryptoError;
 
 /// Handle a `DkgMessage::Share`.
 ///
@@ -96,16 +98,37 @@ where
         session_id,
     };
 
-    coord
-        .app_state
-        .dkg_session_state
-        .with_state_mut(&session_id, |state| {
-            state.node.receive_share(share).map_err(|e| {
-                DkgError::ShareVerificationFailed(format!("Failed to receive share: {}", e))
-            })
-        })
-        .await
-        .ok_or_else(|| session_not_found(session_id))??;
+    let wait_started = tokio::time::Instant::now();
+    loop {
+        let receive_result = coord
+            .app_state
+            .dkg_session_state
+            .with_state_mut(&session_id, |state| state.node.receive_share(share.clone()))
+            .await
+            .ok_or_else(|| session_not_found(session_id))?;
+
+        match receive_result {
+            Ok(()) => break,
+            Err(CryptoError::CommitmentMissing(missing_node_id))
+                if missing_node_id == from_node_id
+                    && wait_started.elapsed() < DKG_SHARE_COMMITMENT_WAIT_TIMEOUT =>
+            {
+                tracing::debug!(
+                    from_node_id = from_node_id,
+                    to_node_id = to_node_id,
+                    session_id = session_id,
+                    "DKG Coordinator: Share arrived before commitment; waiting to retry verification"
+                );
+                tokio::time::sleep(DKG_SESSION_WAIT_POLL_INTERVAL).await;
+            }
+            Err(e) => {
+                return Err(DkgError::ShareVerificationFailed(format!(
+                    "Failed to receive share: {}",
+                    e
+                )));
+            }
+        }
+    }
 
     tracing::debug!(
         from_node_id = from_node_id,

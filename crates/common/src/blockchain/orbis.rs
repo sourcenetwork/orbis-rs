@@ -885,7 +885,31 @@ impl SourceHubClient {
 mod tests {
     use prost::Message;
 
-    use super::{MsgFinalizeRingReshareByThresholdSignature, MsgUpdateRingByAcp};
+    use super::{MsgCreateRing, MsgFinalizeRingReshareByThresholdSignature, MsgUpdateRingByAcp};
+
+    #[test]
+    fn create_ring_preserves_present_zero_pss_interval_on_wire() {
+        let msg = MsgCreateRing::new(
+            "c",
+            "n",
+            "r",
+            vec!["p1".to_string()],
+            1,
+            Some(0),
+            "policy",
+            None,
+        );
+        let bytes = msg.encode_to_vec();
+
+        assert!(
+            bytes.windows(2).any(|window| window == [0x30, 0x00]),
+            "encoded MsgCreateRing should include optional field 6 with value 0: {}",
+            hex::encode(&bytes)
+        );
+
+        let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
+        assert_eq!(decoded.pss_interval, Some(0));
+    }
 
     #[test]
     fn update_ring_by_acp_wire_fields_match_sourcehub_proto() {

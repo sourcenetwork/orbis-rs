@@ -536,6 +536,36 @@ async fn test_pss_ring_refresh_skips_without_interval() {
     cleanup_db(&db_path);
 }
 
+/// `pss_interval = Some(0)` is a present interval and should be treated as
+/// immediately due, not skipped like `None`.
+#[tokio::test]
+async fn test_pss_ring_refresh_zero_interval_is_due() {
+    let db_name = "pss_refresh_zero_interval_due";
+    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        ring_pk: "pss_zero_interval_pk".to_string(),
+        peer_ids: vec![our_hex.clone()],
+        new_peer_ids: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: Some(0),
+        block_number_nonce: 0,
+        policy_id: None,
+    };
+
+    let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
+    let result = super::pss_ring(&Arc::new(app_state), &entry).await;
+
+    assert!(
+        matches!(result, Err(DkgError::Storage(_))),
+        "Expected Storage error: present zero interval should reach trigger_refresh and fail \
+         only because the test has no share bundle. Got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
 /// When the ring index lists a ring that has no bulletin entry at all,
 /// `pss_ring` should return a Storage error.
 #[tokio::test]

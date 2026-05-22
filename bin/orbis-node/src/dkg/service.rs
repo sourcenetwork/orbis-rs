@@ -190,8 +190,7 @@ where
             .set_peer_ids(&session_id, req.peer_ids.clone())
             .await;
 
-        // Normalize pss_interval: treat 0 as disabled (same as None).
-        let pss_interval = req.pss_interval.filter(|&v| v > 0);
+        let pss_interval = req.pss_interval;
 
         // Store pss_interval so Phase 4 includes it in the RingPayload written locally.
         // (Non-initiators receive it via SessionInit; the initiator does not.)
