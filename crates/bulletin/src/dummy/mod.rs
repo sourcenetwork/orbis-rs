@@ -26,12 +26,15 @@ impl Bulletin for DummyBulletin {
     async fn post(
         &self,
         namespace: String,
-        _kind: BulletinKind,
+        kind: BulletinKind,
         payload: Vec<u8>,
         _artifact: Option<String>,
     ) -> Result<()> {
-        let id = Self::typed_post_id(&namespace, &payload)
-            .unwrap_or_else(|| Self::compute_post_id(&namespace, &payload));
+        let id = match kind {
+            BulletinKind::NodeInfo => namespace.clone(),
+            _ => Self::typed_post_id(&namespace, &payload)
+                .unwrap_or_else(|| Self::compute_post_id(&namespace, &payload)),
+        };
 
         let post = BulletinPost {
             id: id.clone(),

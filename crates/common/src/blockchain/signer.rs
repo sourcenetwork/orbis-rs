@@ -86,6 +86,11 @@ impl TxSigner {
         self.account_id.to_string()
     }
 
+    /// Get the signer's compressed public key as hex.
+    pub fn public_key_hex(&self) -> String {
+        hex::encode(self.signing_key.public_key().to_bytes())
+    }
+
     /// Get the signer's account ID.
     pub fn account_id(&self) -> &AccountId {
         &self.account_id
@@ -212,6 +217,21 @@ mod tests {
         // Address should be bech32 encoded with the configured prefix
         assert!(address.starts_with("source1"));
         println!("Test address: {}", address);
+    }
+
+    #[test]
+    fn test_signer_public_key_hex_is_compressed_key() {
+        let hex_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let config = ChainConfig::local();
+
+        let signer = TxSigner::from_hex_key(hex_key, config).unwrap();
+        let public_key_hex = signer.public_key_hex();
+
+        assert_eq!(public_key_hex.len(), 66);
+        assert_eq!(
+            public_key_hex,
+            hex::encode(signer.signing_key.public_key().to_bytes())
+        );
     }
 
     #[test]

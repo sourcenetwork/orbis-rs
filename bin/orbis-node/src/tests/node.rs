@@ -4,7 +4,7 @@ use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::{
     dkg::service::DkgServiceImpl,
     helpers::{
-        launch::{create_and_store_node_key, derive_secret_key_bytes, LogLevel},
+        launch::{create_and_store_node_key, derive_secret_key_bytes, ensure_node_info, LogLevel},
         test_helpers::{cleanup_db, test_db_path},
     },
     info::InfoServiceImpl,
@@ -19,7 +19,7 @@ use crate::{
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::dummy::DummyBulletin;
-use bulletin::r#trait::Bulletin;
+use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo};
 use common::blockchain::ChainConfigBuilder;
 use crypto::{DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
@@ -83,6 +83,10 @@ async fn make_test_node_config(
             metrics_addr: None,
             loki_url: None,
             reshare_interval_secs: 0, // disabled in tests
+            node_controller_key: "test-controller-key".to_string(),
+            node_peer_id: None,
+            node_whitelisted_namespaces: vec![],
+            node_whitelisted_ring_ids: vec![],
         },
         network,
         local_storage: LocalStorageImpl::new(password, db_path.clone())
@@ -108,6 +112,30 @@ async fn make_bootstrap_identity(
         Arc::new(NetworkImpl::new().await.expect("Failed to create network"));
 
     (network, local_storage, db_path, signer.address())
+}
+
+fn node_info_test_args(
+    controller_key: &str,
+    node_peer_id: Option<String>,
+    namespaces: Vec<&str>,
+    ring_ids: Vec<&str>,
+) -> Args {
+    Args {
+        addr: "127.0.0.1:0".to_string(),
+        log_level: LogLevel::Info,
+        authz_grpc: None,
+        bulletin_grpc: None,
+        chain_rest: None,
+        chain_rpc: None,
+        denom: None,
+        metrics_addr: None,
+        loki_url: None,
+        reshare_interval_secs: 0,
+        node_controller_key: controller_key.to_string(),
+        node_peer_id,
+        node_whitelisted_namespaces: namespaces.into_iter().map(str::to_string).collect(),
+        node_whitelisted_ring_ids: ring_ids.into_iter().map(str::to_string).collect(),
+    }
 }
 
 fn spawn_full_test_grpc_server(
@@ -162,6 +190,153 @@ async fn send_http1_request(addr: SocketAddr, request: Vec<u8>) -> String {
         .expect("read test HTTP/1 response");
 
     String::from_utf8_lossy(&response).into_owned()
+}
+
+#[tokio::test]
+async fn test_ensure_node_info_creates_when_missing() {
+    let network = NetworkImpl::new().await.expect("create network");
+    let bulletin = DummyBulletin::new().await.expect("create bulletin");
+    let node_key = "node-key-create";
+    let args = node_info_test_args(
+        "controller-key",
+        None,
+        vec!["team-a", "orbis/team-b"],
+        vec!["ring-1"],
+    );
+
+    ensure_node_info(&bulletin, node_key, &network, &args)
+        .await
+        .expect("ensure node info");
+
+    let post = bulletin
+        .read(
+            node_key.to_string(),
+            node_key.to_string(),
+            BulletinKind::NodeInfo,
+        )
+        .await
+        .expect("read created node info");
+    let node_info = NodeInfo::try_from(post).expect("parse node info");
+    assert_eq!(
+        node_info.peer_id,
+        hex::encode(network.local_peer_id().as_bytes())
+    );
+    assert_eq!(node_info.controller_key, "controller-key");
+    assert_eq!(
+        node_info.whitelisted_namespaces,
+        vec!["orbis/team-a".to_string(), "orbis/team-b".to_string()]
+    );
+    assert_eq!(node_info.whitelisted_ring_ids, vec!["ring-1".to_string()]);
+}
+
+#[tokio::test]
+async fn test_ensure_node_info_keeps_existing_whitelists() {
+    let network = NetworkImpl::new().await.expect("create network");
+    let bulletin = DummyBulletin::new().await.expect("create bulletin");
+    let node_key = "node-key-existing";
+    let peer_id = hex::encode(network.local_peer_id().as_bytes());
+    let existing = NodeInfo {
+        peer_id,
+        controller_key: "controller-key".to_string(),
+        whitelisted_namespaces: vec!["orbis/existing".to_string()],
+        whitelisted_ring_ids: vec!["ring-existing".to_string()],
+    };
+    let payload: Vec<u8> = existing.clone().try_into().expect("serialize node info");
+    bulletin.set_post(
+        node_key.to_string(),
+        node_key.to_string(),
+        bulletin::r#trait::BulletinPost {
+            id: node_key.to_string(),
+            namespace: node_key.to_string(),
+            payload,
+        },
+    );
+    let args = node_info_test_args(
+        "controller-key",
+        None,
+        vec!["new-namespace"],
+        vec!["new-ring"],
+    );
+
+    ensure_node_info(&bulletin, node_key, &network, &args)
+        .await
+        .expect("ensure node info");
+
+    let post = bulletin
+        .read(
+            node_key.to_string(),
+            node_key.to_string(),
+            BulletinKind::NodeInfo,
+        )
+        .await
+        .expect("read existing node info");
+    let node_info = NodeInfo::try_from(post).expect("parse node info");
+    assert_eq!(
+        node_info.whitelisted_namespaces,
+        existing.whitelisted_namespaces
+    );
+    assert_eq!(
+        node_info.whitelisted_ring_ids,
+        existing.whitelisted_ring_ids
+    );
+}
+
+#[tokio::test]
+async fn test_ensure_node_info_fails_when_existing_peer_mismatches() {
+    let network = NetworkImpl::new().await.expect("create network");
+    let bulletin = DummyBulletin::new().await.expect("create bulletin");
+    let node_key = "node-key-peer-mismatch";
+    let existing = NodeInfo {
+        peer_id: "different-peer".to_string(),
+        controller_key: "controller-key".to_string(),
+        whitelisted_namespaces: vec![],
+        whitelisted_ring_ids: vec![],
+    };
+    let payload: Vec<u8> = existing.try_into().expect("serialize node info");
+    bulletin.set_post(
+        node_key.to_string(),
+        node_key.to_string(),
+        bulletin::r#trait::BulletinPost {
+            id: node_key.to_string(),
+            namespace: node_key.to_string(),
+            payload,
+        },
+    );
+    let args = node_info_test_args("controller-key", None, vec![], vec![]);
+
+    let err = ensure_node_info(&bulletin, node_key, &network, &args)
+        .await
+        .expect_err("peer mismatch should fail");
+    assert!(err.to_string().contains("peer_id"));
+}
+
+#[tokio::test]
+async fn test_ensure_node_info_fails_when_existing_controller_mismatches() {
+    let network = NetworkImpl::new().await.expect("create network");
+    let bulletin = DummyBulletin::new().await.expect("create bulletin");
+    let node_key = "node-key-controller-mismatch";
+    let existing = NodeInfo {
+        peer_id: hex::encode(network.local_peer_id().as_bytes()),
+        controller_key: "different-controller".to_string(),
+        whitelisted_namespaces: vec![],
+        whitelisted_ring_ids: vec![],
+    };
+    let payload: Vec<u8> = existing.try_into().expect("serialize node info");
+    bulletin.set_post(
+        node_key.to_string(),
+        node_key.to_string(),
+        bulletin::r#trait::BulletinPost {
+            id: node_key.to_string(),
+            namespace: node_key.to_string(),
+            payload,
+        },
+    );
+    let args = node_info_test_args("controller-key", None, vec![], vec![]);
+
+    let err = ensure_node_info(&bulletin, node_key, &network, &args)
+        .await
+        .expect_err("controller mismatch should fail");
+    assert!(err.to_string().contains("controller_key"));
 }
 
 #[tokio::test]
@@ -379,6 +554,10 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             metrics_addr: None,
             loki_url: None,
             reshare_interval_secs: 0,
+            node_controller_key: "test-controller-key".to_string(),
+            node_peer_id: None,
+            node_whitelisted_namespaces: vec![],
+            node_whitelisted_ring_ids: vec![],
         },
         network,
         local_storage,

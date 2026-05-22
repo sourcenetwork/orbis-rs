@@ -8,7 +8,7 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret1testsecret1
       - RUST_LOG=info
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317"]
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62", "--node-whitelisted-namespace", "orbis"]
     ports:
       - "50051:50051"
     networks:
@@ -23,7 +23,7 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret2testsecret2
       - RUST_LOG=info
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317"]
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62", "--node-whitelisted-namespace", "orbis"]
     ports:
       - "50052:50051"
     networks:
@@ -38,7 +38,7 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret3testsecret3
       - RUST_LOG=info
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317"]
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62", "--node-whitelisted-namespace", "orbis"]
     ports:
       - "50053:50051"
     networks:
@@ -46,7 +46,7 @@ services:
 
   sourcehub:
     build:
-      context: https://github.com/sourcenetwork/sourcehub.git#jesse/Orbis-module
+      context: https://github.com/sourcenetwork/sourcehub.git#jesse/add-node-info
     volumes:
       - sourcehub-data:/home/node/.sourcehub
     entrypoint: ["/bin/sh", "-c"]

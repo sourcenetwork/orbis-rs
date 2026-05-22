@@ -91,6 +91,19 @@ pub struct KeyDerivation {
     pub permission: String,
 }
 
+/// Node info stored in x/orbis.
+#[derive(Clone, Message)]
+pub struct NodeInfo {
+    #[prost(string, tag = "1")]
+    pub peer_id: String,
+    #[prost(string, tag = "2")]
+    pub controller_key: String,
+    #[prost(string, repeated, tag = "3")]
+    pub whitelisted_namespaces: Vec<String>,
+    #[prost(string, repeated, tag = "4")]
+    pub whitelisted_ring_ids: Vec<String>,
+}
+
 // ============================================================================
 // Transaction Message Types
 // ============================================================================
@@ -269,6 +282,27 @@ pub struct MsgStoreKeyDerivationResponse {
     pub key_derivation_id: String,
 }
 
+#[derive(Clone, Message)]
+pub struct MsgCreateNodeInfo {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub peer_id: String,
+    #[prost(string, tag = "3")]
+    pub controller_key: String,
+    #[prost(string, repeated, tag = "4")]
+    pub whitelisted_namespaces: Vec<String>,
+    #[prost(string, repeated, tag = "5")]
+    pub whitelisted_ring_ids: Vec<String>,
+}
+
+impl MsgCreateNodeInfo {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgCreateNodeInfo";
+}
+
+#[derive(Clone, Message)]
+pub struct MsgCreateNodeInfoResponse {}
+
 // ============================================================================
 // Query Request/Response Types
 // ============================================================================
@@ -359,6 +393,18 @@ pub struct QueryKeyDerivationsResponse {
     pub key_derivations: Vec<KeyDerivation>,
     #[prost(message, optional, tag = "2")]
     pub pagination: Option<PageResponse>,
+}
+
+#[derive(Clone, Message)]
+pub struct QueryNodeInfoRequest {
+    #[prost(string, tag = "1")]
+    pub node_key: String,
+}
+
+#[derive(Clone, Message)]
+pub struct QueryNodeInfoResponse {
+    #[prost(message, optional, tag = "1")]
+    pub node_info: Option<NodeInfo>,
 }
 
 // ============================================================================
@@ -753,6 +799,31 @@ impl SourceHubClient {
         .await
     }
 
+    pub async fn orbis_create_node_info(
+        &self,
+        peer_id: &str,
+        controller_key: &str,
+        whitelisted_namespaces: Vec<String>,
+        whitelisted_ring_ids: Vec<String>,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgCreateNodeInfo {
+            creator: signer.address(),
+            peer_id: peer_id.to_string(),
+            controller_key: controller_key.to_string(),
+            whitelisted_namespaces,
+            whitelisted_ring_ids,
+        };
+        self.broadcast_proto_msg_with_gas(
+            MsgCreateNodeInfo::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
     pub async fn orbis_update_ring_by_acp(
         &self,
         ring_id: &str,
@@ -878,6 +949,29 @@ impl SourceHubClient {
                 ))
             })?;
         Ok(response.key_derivation)
+    }
+
+    pub async fn orbis_read_node_info(&self, node_key: &str) -> Result<Option<NodeInfo>> {
+        let request = QueryNodeInfoRequest {
+            node_key: node_key.to_string(),
+        };
+        let response_bytes = match self
+            .abci_query(
+                "/sourcehub.orbis.Query/NodeInfo",
+                request.encode_to_vec(),
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(BlockchainError::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let response = QueryNodeInfoResponse::decode(response_bytes.as_slice()).map_err(|e| {
+            BlockchainError::Serialization(format!("Failed to decode node info response: {}", e))
+        })?;
+        Ok(response.node_info)
     }
 }
 

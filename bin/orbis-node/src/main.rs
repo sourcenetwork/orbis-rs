@@ -18,8 +18,8 @@ mod tests;
 use crate::dkg::service::DkgServiceImpl;
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
-    create_and_store_node_key, db_path, derive_secret_key_bytes, get_network_key_secret,
-    get_password, Args,
+    create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
+    get_network_key_secret, get_password, Args,
 };
 use crate::info::{BootstrapInfoServiceImpl, InfoServiceImpl};
 use crate::pre::service::PreServiceImpl;
@@ -173,6 +173,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let chain_config = bulletin_chain_config.clone().build();
         let signer = create_and_store_node_key(local_storage.clone(), chain_config)
             .map_err(|e| format!("Failed to create or store node key: {}", e))?;
+        let node_key = signer.public_key_hex();
 
         let grpc_addr: SocketAddr = args.addr.parse()?;
         let bootstrap_info_server =
@@ -208,6 +209,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     .await
                     .map_err(|e| format!("Failed to initialize bulletin: {}", e))?,
             );
+            ensure_node_info(bulletin.as_ref(), &node_key, network.as_ref(), &args)
+                .await
+                .map_err(|e| format!("Failed to ensure node info: {}", e))?;
             bootstrap_info_server.set_status(NodeStatus::Funded);
 
             let config = NodeConfig {

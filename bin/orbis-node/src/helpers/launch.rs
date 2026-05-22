@@ -2,12 +2,17 @@ use crate::constants::{
     PASSWORD_ENV_VAR, PASSWORD_FILE_NAME, SECRET_KEY_ENV_VAR, SECRET_KEY_FILE_NAME,
 };
 use crate::error::PasswordError;
+use bulletin::{
+    error::BulletinError,
+    r#trait::{Bulletin, BulletinKind, NodeInfo},
+};
 use clap::{Parser, ValueEnum};
 use common::blockchain::{ChainConfig, TxSigner};
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     LocalStorageImpl,
 };
+use network::Network;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::{env, fs};
@@ -48,6 +53,116 @@ pub struct Args {
     /// Set to 0 to disable automatic resharing. Defaults to 86400 (24 hours).
     #[arg(long, default_value_t = crate::constants::DEFAULT_RESHARE_INTERVAL_SECS)]
     pub reshare_interval_secs: u64,
+    /// Hex-encoded public key of the external controller allowed to update node info.
+    #[arg(long)]
+    pub node_controller_key: String,
+    /// Override the peer ID registered in node info. Defaults to this node's local iroh peer ID.
+    #[arg(long)]
+    pub node_peer_id: Option<String>,
+    /// Namespace this node initially allows. Ignored if node info already exists.
+    #[arg(long = "node-whitelisted-namespace")]
+    pub node_whitelisted_namespaces: Vec<String>,
+    /// Ring ID this node initially allows. Ignored if node info already exists.
+    #[arg(long = "node-whitelisted-ring-id")]
+    pub node_whitelisted_ring_ids: Vec<String>,
+}
+
+/// Ensure the node has a matching x/orbis NodeInfo record before serving traffic.
+pub async fn ensure_node_info(
+    bulletin: &(dyn Bulletin + Send + Sync),
+    node_key: &str,
+    network: &dyn Network,
+    args: &Args,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let controller_key = args.node_controller_key.trim();
+    if controller_key.is_empty() {
+        return Err("--node-controller-key is required to create or verify node info".into());
+    }
+
+    let derived_peer_id = hex::encode(network.local_peer_id().as_bytes());
+    let peer_id = args
+        .node_peer_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&derived_peer_id)
+        .to_string();
+
+    let existing = match bulletin
+        .read(
+            node_key.to_string(),
+            node_key.to_string(),
+            BulletinKind::NodeInfo,
+        )
+        .await
+    {
+        Ok(post) => Some(NodeInfo::try_from(post)?),
+        Err(BulletinError::NotFound { .. }) => None,
+        Err(err) => return Err(err.into()),
+    };
+
+    if let Some(existing) = existing {
+        if existing.peer_id != peer_id {
+            return Err(format!(
+                "existing node info for node_key {} has peer_id {}, expected {}",
+                node_key, existing.peer_id, peer_id
+            )
+            .into());
+        }
+        if existing.controller_key != controller_key {
+            return Err(format!(
+                "existing node info for node_key {} has controller_key {}, expected {}",
+                node_key, existing.controller_key, controller_key
+            )
+            .into());
+        }
+
+        if !args.node_whitelisted_namespaces.is_empty()
+            || !args.node_whitelisted_ring_ids.is_empty()
+        {
+            tracing::warn!(
+                node_key = %node_key,
+                namespace_count = args.node_whitelisted_namespaces.len(),
+                ring_id_count = args.node_whitelisted_ring_ids.len(),
+                "Existing node info found; ignoring startup whitelist flags because controller-owned updates must use UpdateNodeInfo"
+            );
+        }
+        tracing::info!(
+            node_key = %node_key,
+            peer_id = %peer_id,
+            "Existing node info matches local identity"
+        );
+        return Ok(());
+    }
+
+    let node_info = NodeInfo {
+        peer_id: peer_id.clone(),
+        controller_key: controller_key.to_string(),
+        whitelisted_namespaces: args
+            .node_whitelisted_namespaces
+            .iter()
+            .filter_map(|namespace| {
+                let namespace = namespace.trim();
+                (!namespace.is_empty()).then(|| common::blockchain::orbis::namespace_id(namespace))
+            })
+            .collect(),
+        whitelisted_ring_ids: args
+            .node_whitelisted_ring_ids
+            .iter()
+            .map(|ring_id| ring_id.trim().to_string())
+            .filter(|ring_id| !ring_id.is_empty())
+            .collect(),
+    };
+    let payload: Vec<u8> = node_info.try_into()?;
+    bulletin
+        .post(node_key.to_string(), BulletinKind::NodeInfo, payload, None)
+        .await?;
+    tracing::info!(
+        node_key = %node_key,
+        peer_id = %peer_id,
+        "Created node info"
+    );
+    Ok(())
 }
 
 // ============================================================================

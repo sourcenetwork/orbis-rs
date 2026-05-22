@@ -7,6 +7,7 @@ pub enum BulletinKind {
     Ring,
     Document,
     KeyDerivation,
+    NodeInfo,
 }
 
 /// Struct for posting to the Bulletin
@@ -88,6 +89,16 @@ pub struct KeyDerivation {
     pub permission: String,
 }
 
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+pub struct NodeInfo {
+    /// Network id of peers in ring
+    pub peer_id: String,
+    /// Key stored externally from node to control ring participants
+    pub controller_key: String,
+    pub whitelisted_namespaces: Vec<String>,
+    pub whitelisted_ring_ids: Vec<String>,
+}
+
 impl TryFrom<BulletinPost> for DocumentPayload {
     type Error = BulletinError;
 
@@ -148,6 +159,22 @@ impl TryFrom<KeyDerivation> for Vec<u8> {
     type Error = BulletinError;
 
     fn try_from(payload: KeyDerivation) -> Result<Self> {
+        serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<BulletinPost> for NodeInfo {
+    type Error = BulletinError;
+
+    fn try_from(post: BulletinPost) -> Result<Self> {
+        serde_json::from_slice(&post.payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<NodeInfo> for Vec<u8> {
+    type Error = BulletinError;
+
+    fn try_from(payload: NodeInfo) -> Result<Self> {
         serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))
     }
 }

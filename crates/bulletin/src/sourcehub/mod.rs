@@ -1,6 +1,8 @@
 use crate::{
     error::{BulletinError, Result},
-    r#trait::{Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, RingPayload},
+    r#trait::{
+        Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, NodeInfo, RingPayload,
+    },
 };
 use async_trait::async_trait;
 use common::blockchain::{
@@ -87,6 +89,21 @@ impl Bulletin for SourceHubBulletin {
                     .map_err(|e| BulletinError::ChainError(e.to_string()))?;
                 check_result(result, "store key derivation")
             }
+            BulletinKind::NodeInfo => {
+                let node_info: NodeInfo = serde_json::from_slice(&payload)
+                    .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+                let result = self
+                    .chain_client
+                    .orbis_create_node_info(
+                        &node_info.peer_id,
+                        &node_info.controller_key,
+                        node_info.whitelisted_namespaces,
+                        node_info.whitelisted_ring_ids,
+                    )
+                    .await
+                    .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+                check_result(result, "create node info")
+            }
         }
     }
 
@@ -133,6 +150,18 @@ impl Bulletin for SourceHubBulletin {
                 .map_err(|e| BulletinError::ChainError(e.to_string()))?
                 .ok_or(BulletinError::NotFound { namespace, id })
                 .and_then(key_derivation_to_bulletin_post),
+            BulletinKind::NodeInfo => {
+                let node_info = self
+                    .chain_client
+                    .orbis_read_node_info(&id)
+                    .await
+                    .map_err(|e| BulletinError::ChainError(e.to_string()))?
+                    .ok_or_else(|| BulletinError::NotFound {
+                        namespace: namespace.clone(),
+                        id: id.clone(),
+                    })?;
+                node_info_to_bulletin_post(node_info, &id, &namespace)
+            }
         }
     }
 
@@ -416,6 +445,25 @@ fn key_derivation_to_bulletin_post(kd: orbis::KeyDerivation) -> Result<BulletinP
     Ok(BulletinPost {
         id: kd.id,
         namespace: kd.namespace,
+        payload: serde_json::to_vec(&payload)
+            .map_err(|e| BulletinError::ParseError(e.to_string()))?,
+    })
+}
+
+fn node_info_to_bulletin_post(
+    node_info: orbis::NodeInfo,
+    node_key: &str,
+    namespace: &str,
+) -> Result<BulletinPost> {
+    let payload = NodeInfo {
+        peer_id: node_info.peer_id,
+        controller_key: node_info.controller_key,
+        whitelisted_namespaces: node_info.whitelisted_namespaces,
+        whitelisted_ring_ids: node_info.whitelisted_ring_ids,
+    };
+    Ok(BulletinPost {
+        id: node_key.to_string(),
+        namespace: namespace.to_string(),
         payload: serde_json::to_vec(&payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?,
     })
