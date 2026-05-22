@@ -1,6 +1,7 @@
 mod commands;
 
 use anyhow::Result;
+use bulletin::r#trait::BulletinKind;
 use clap::{Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_policy_to_chain, add_ring_governance_policy,
@@ -185,12 +186,9 @@ pub enum SubCommands {
         #[clap(long)]
         payload: String,
     },
-    /// Update a ring post via ACP authorization
+    /// Update a ring via ACP authorization
     UpdateRingPostByAcp {
-        /// Namespace containing the post
-        #[clap(long)]
-        namespace: String,
-        /// ID of the post to update
+        /// Ring ID to update
         #[clap(long)]
         id: String,
         /// New peer IDs for reshare (comma-separated)
@@ -525,23 +523,21 @@ async fn main() -> Result<()> {
         }
         SubCommands::CreateBulletinPost { namespace, payload } => {
             let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
-            create_bulletin_post(namespace, payload_bytes).await?;
+            create_bulletin_post(namespace, BulletinKind::Ring, payload_bytes).await?;
         }
         SubCommands::UpdateRingPostByAcp {
-            namespace,
             id,
             new_peer_ids,
             new_threshold,
             pss_interval,
         } => {
-            update_ring_post_by_acp(namespace, id, new_peer_ids, new_threshold, pss_interval)
-                .await?;
+            update_ring_post_by_acp(id, new_peer_ids, new_threshold, pss_interval).await?;
         }
         SubCommands::Fund { address } => {
             fund(address, ChainConfig::local()).await?;
         }
         SubCommands::ReadBulletinPost { namespace, id } => {
-            read_bulletin_post(namespace, id).await?;
+            read_bulletin_post(namespace, id, BulletinKind::Ring).await?;
         }
         SubCommands::ListBulletinPost { namespace } => {
             list_bulletin_posts(namespace).await?;

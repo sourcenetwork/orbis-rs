@@ -1,7 +1,7 @@
 services:
   sourcehub:
     build:
-      context: https://github.com/sourcenetwork/sourcehub.git#dev
+      context: https://github.com/sourcenetwork/sourcehub.git#jesse/Orbis-module
     entrypoint: ["/bin/sh", "-c"]
     container_name: sourcehub-integration-test
     command:

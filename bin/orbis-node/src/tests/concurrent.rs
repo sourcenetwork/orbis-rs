@@ -24,7 +24,7 @@ use crate::{
 };
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
-use bulletin::r#trait::{Bulletin, RingPayload};
+use bulletin::r#trait::{Bulletin, BulletinKind, RingPayload};
 use bulletin::BulletinImpl;
 use common::{
     blockchain::{events::BulletinEventSubscription, ChainConfigBuilder},
@@ -375,7 +375,8 @@ async fn setup_ring(
 
     let post_payload = cli_tool::read_bulletin_post(
         BULLETIN_RING_NAMESPACE.to_string(),
-        post_event.post_id.clone(),
+        post_event.ring_id.clone(),
+        BulletinKind::Ring,
     )
     .await
     .expect("read ring post");
@@ -383,7 +384,7 @@ async fn setup_ring(
     let ring_payload: RingPayload =
         serde_json::from_slice(&post_payload).expect("parse RingPayload");
 
-    (ring_payload.ring_pk, post_event.post_id)
+    (ring_payload.ring_pk, post_event.ring_id)
 }
 
 // =========================================================================
@@ -464,22 +465,16 @@ async fn test_two_simultaneous_dkg_sessions() {
     let ev1 = ev1.expect("timed out waiting for DKG 1 completion event");
     let ev2 = ev2.expect("timed out waiting for DKG 2 completion event");
 
-    assert!(
-        !ev1.post_id.is_empty(),
-        "DKG 1 must produce a ring bulletin post"
-    );
-    assert!(
-        !ev2.post_id.is_empty(),
-        "DKG 2 must produce a ring bulletin post"
-    );
+    assert!(!ev1.ring_id.is_empty(), "DKG 1 must produce a ring ID");
+    assert!(!ev2.ring_id.is_empty(), "DKG 2 must produce a ring ID");
     assert_ne!(
-        ev1.post_id, ev2.post_id,
-        "each DKG must produce a distinct bulletin post (no session state leakage)"
+        ev1.ring_id, ev2.ring_id,
+        "each DKG must produce a distinct ring ID (no session state leakage)"
     );
 
     println!(
-        "Both DKGs completed successfully:\n  ring1 post_id={}\n  ring2 post_id={}",
-        ev1.post_id, ev2.post_id,
+        "Both DKGs completed successfully:\n  ring1 ring_id={}\n  ring2 ring_id={}",
+        ev1.ring_id, ev2.ring_id,
     );
 }
 
@@ -820,13 +815,14 @@ async fn test_dkg_non_participant_initiator_completes() {
         .expect("timed out waiting for DKG completion (non-participant initiator)");
 
     assert!(
-        !post_event.post_id.is_empty(),
+        !post_event.ring_id.is_empty(),
         "DKG must produce a ring bulletin post"
     );
 
     let post_payload = cli_tool::read_bulletin_post(
         BULLETIN_RING_NAMESPACE.to_string(),
-        post_event.post_id.clone(),
+        post_event.ring_id.clone(),
+        BulletinKind::Ring,
     )
     .await
     .expect("read ring post");

@@ -14,7 +14,7 @@ use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::{
     dummy::DummyBulletin,
-    r#trait::{Bulletin, BulletinPost, RingPayload},
+    r#trait::{Bulletin, BulletinKind, BulletinPost, RingPayload},
     BulletinImpl,
 };
 use cli_tool;
@@ -811,7 +811,12 @@ pub async fn write_ring_to_bulletin(
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     bulletin
-        .post(BULLETIN_RING_NAMESPACE.to_string(), bytes.clone(), None)
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            BulletinKind::Ring,
+            bytes.clone(),
+            None,
+        )
         .await
         .unwrap();
     let post_id = bulletin

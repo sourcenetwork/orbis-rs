@@ -19,7 +19,7 @@ type EventStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub struct BulletinPostEvent {
     /// The event type that matched (for debugging)
     pub event_type: String,
-    pub post_id: String,
+    pub ring_id: String,
     pub namespace: String,
     pub creator_did: String,
     pub artifact: String,
@@ -197,7 +197,7 @@ fn find_artifact_event(
 
             return Some(BulletinPostEvent {
                 event_type: event_type.to_string(),
-                post_id: get_attr("post_id"),
+                ring_id: get_attr("ring_id"),
                 namespace: get_attr("namespace"),
                 creator_did: get_attr("creator_did"),
                 artifact: artifact.to_string(),

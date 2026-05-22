@@ -22,7 +22,8 @@
 //! Concurrent starters converge because they derive the same deterministic session ID
 //! from the ring's current public polynomial and the authoritative transition data.
 //!
-//! Rings with `pss_interval = None` are skipped for refresh (reshare is unaffected).
+//! Rings with `pss_interval = None` are skipped for refresh (reshare is unaffected);
+//! `Some(0)` is a present interval and is due immediately.
 
 #[cfg(test)]
 mod tests;
@@ -40,7 +41,7 @@ use crate::dkg::session_state::RingPssClaimOutcome;
 use crate::helpers::helpers::{extract_node_part, validate_all_peer_ids};
 use crate::metrics;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
-use bulletin::r#trait::RingPayload;
+use bulletin::r#trait::{BulletinKind, RingPayload};
 use crypto::r#trait::{Dkg, DkgRole};
 use crypto::{GroupAffine, PolynomialCommitmentImpl, PubPolyImpl, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -133,7 +134,11 @@ where
 
     let bulletin_post = app_state
         .bulletin
-        .read(entry.bulletin_namespace.clone(), post_id.to_string())
+        .read(
+            entry.bulletin_namespace.clone(),
+            post_id.to_string(),
+            BulletinKind::Ring,
+        )
         .await
         .map_err(|e| {
             DkgError::Storage(format!(
@@ -155,10 +160,10 @@ where
     // Reshare takes priority over refresh when the bulletin signals a committee transition.
     let is_reshare = ring_payload.new_peer_ids.is_some() || ring_payload.new_threshold.is_some();
 
-    // Refresh requires pss_interval to be set; reshare bypasses this check.
+    // Refresh requires pss_interval to be present; reshare bypasses this check.
     if !is_reshare {
         match ring_payload.pss_interval {
-            Some(v) if v > 0 => {}
+            Some(_) => {}
             _ => {
                 tracing::debug!(ring_pk_str = %ring_pk_str, "PSS: no pss_interval set, skipping");
                 return Ok(());
@@ -316,7 +321,18 @@ where
             threshold,
             total,
             DkgRole::Standard,
-            |_| {},
+            {
+                let ring_pk_str = ring_pk_str.clone();
+                let pss_interval = ring_payload.pss_interval;
+                let namespace = entry.bulletin_namespace.clone();
+                move |state| {
+                    state.kind = SessionKind::Refresh {
+                        ring_pk_hex: ring_pk_str,
+                    };
+                    state.pss_interval = pss_interval;
+                    state.namespace = namespace;
+                }
+            },
         )
         .await
     {
@@ -328,6 +344,10 @@ where
                 session_id = session_id,
                 "PSS: refresh session already exists locally, skipping duplicate start"
             );
+            app_state
+                .dkg_session_state
+                .unmark_ring_pss_if_matches(ring_pk_str, session_id)
+                .await;
             return Ok(());
         }
         Err(e) => {
@@ -347,24 +367,6 @@ where
     }
 
     metrics::record_refresh_session_started();
-
-    app_state
-        .dkg_session_state
-        .set_session_kind(
-            &session_id,
-            SessionKind::Refresh {
-                ring_pk_hex: ring_pk_str.clone(),
-            },
-        )
-        .await;
-    app_state
-        .dkg_session_state
-        .set_pss_interval(&session_id, ring_payload.pss_interval)
-        .await;
-    app_state
-        .dkg_session_state
-        .set_namespace(&session_id, entry.bulletin_namespace.clone())
-        .await;
 
     coordinator
         .set_peer_ids(&session_id, peer_ids.clone())
@@ -490,11 +492,6 @@ where
         Err(e) => return Err(e),
     };
 
-    let bundle =
-        RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str).map_err(|e| {
-            DkgError::Storage(format!("PSS: failed to load current ring bundle: {}", e))
-        })?;
-
     // sorted_new is already sorted inside reshare_params.new_peer_ids.
     let sorted_new = reshare_params.new_peer_ids.clone();
 
@@ -521,7 +518,6 @@ where
         old_peer_ids,
         &sorted_new,
         new_threshold,
-        &bundle.public_polynomial,
     );
     let total_old = old_peer_ids.len();
 
@@ -591,6 +587,10 @@ where
                 session_id = session_id,
                 "PSS: reshare session already exists locally, skipping duplicate start"
             );
+            app_state
+                .dkg_session_state
+                .unmark_ring_pss_if_matches(ring_pk_str, session_id)
+                .await;
             return Ok(());
         }
         Err(e) => {

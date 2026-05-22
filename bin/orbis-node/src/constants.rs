@@ -102,9 +102,17 @@ pub const DKG_SESSION_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Maximum grace period for a non-SessionInit message whose session has not
 /// appeared locally yet.
 ///
-/// This keeps the legitimate SessionInit/message ordering race covered without
-/// letting random-session messages occupy tasks for a full phase timeout.
-pub const DKG_UNKNOWN_SESSION_MESSAGE_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// PSS refresh/reshare sessions are deterministic, so several old-committee
+/// nodes can legitimately begin the same session at almost the same time. In
+/// Docker CI the receiver may spend more than a few seconds validating or
+/// creating the corresponding SessionInit while commitments and shares are
+/// already queued behind it. Keep this shorter than a phase timeout, but long
+/// enough that valid early messages are not dropped before the session appears.
+pub const DKG_UNKNOWN_SESSION_MESSAGE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum grace period for a share that arrives before the sender's commitment
+/// has been recorded locally.
+pub const DKG_SHARE_COMMITMENT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ============================================================================
 // PRE (Proxy Re-Encryption) Constants

@@ -5,10 +5,11 @@
 
 use anyhow::{anyhow, Result};
 use authn::{create_authenticated_request, JwtSigner};
-use bulletin::r#trait::{Bulletin, KeyDerivation, RingPayload};
+use bulletin::r#trait::{Bulletin, BulletinKind, KeyDerivation, RingPayload};
 use bulletin::sourcehub::SourceHubBulletin;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
+    orbis::namespace_id,
     ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::r#trait::{Secret, ThresholdDealer, ThresholdSigner};
@@ -586,10 +587,10 @@ pub fn do_generate_reader_key() -> Result<()> {
     Ok(())
 }
 
-/// Ring governance policy. Uses SourceHub bulletin's ACP model:
-/// - resource `namespace`, object = "bulletin/<namespace>", permission `update_post`.
+/// Ring governance policy. Uses SourceHub x/orbis ACP model:
+/// - resource `namespace`, object = "orbis/<namespace>", permission `update_ring`.
 /// - `owner` is reserved and automatically injected by acp_core's DiscretionaryTransformer
-///   into every permission expression (`update_post = collaborator` → `owner + collaborator`).
+///   into every permission expression (`update_ring = collaborator` → `owner + collaborator`).
 /// - `RegisterObject` sets the signer as `owner`, so no explicit collaborator setup is needed.
 const RING_GOVERNANCE_POLICY_YAML: &str = r#"
 name: ring-governance-policy
@@ -600,7 +601,7 @@ resources:
         types:
           - actor
     permissions:
-      - name: update_post
+      - name: update_ring
         expr: collaborator
 "#;
 
@@ -659,9 +660,9 @@ pub async fn add_policy_to_chain() -> Result<String> {
     Ok(policy_id)
 }
 
-/// Creates a ring governance ACP policy and registers the bulletin ring namespace
+/// Creates a ring governance ACP policy and registers the typed Orbis ring namespace
 /// as an object within it. The signer (TEST_ACCOUNT_HEX_KEY) becomes the object
-/// `owner`, which grants `update_post` permission for `UpdateRingPostByAcp`.
+/// `owner`, which grants `update_ring` permission for `MsgUpdateRingByAcp`.
 ///
 /// Returns the ring governance `policy_id`.
 pub async fn add_ring_governance_policy(bulletin_namespace: &str) -> Result<String> {
@@ -699,9 +700,9 @@ pub async fn add_ring_governance_policy(bulletin_namespace: &str) -> Result<Stri
         .ok_or_else(|| anyhow!("Newly created ring governance policy ID not found in list"))?;
     println!("[ACP] ring governance policy_id: {}", policy_id);
 
-    // The bulletin keeper uses namespaceId = "bulletin/" + namespace.
-    // Registering this object makes the signer the `owner`, granting `update_post`.
-    let namespace_object_id = format!("bulletin/{}", bulletin_namespace);
+    // The Orbis keeper normalizes namespace input to "orbis/<namespace>" and
+    // checks update_ring on that namespace object during MsgUpdateRingByAcp.
+    let namespace_object_id = namespace_id(bulletin_namespace);
     let result = client
         .acp_register_object(
             &policy_id,
@@ -836,17 +837,20 @@ pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let client = SourceHubClient::with_signer(ChainConfig::local(), signer)
         .await
-        .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create chain client with signer: {}", e))?;
 
-    if let Err(e) = bulletin.register(namespace.clone()).await {
-        let msg = e.to_string();
-        if msg.contains("already exists") || msg.contains("namespace already exists") {
-            println!("Bulletin namespace already exists: {}", namespace);
-            return Ok(());
+    match client.bulletin_register_namespace(&namespace).await {
+        Ok(_) => {}
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("already exists") || msg.contains("namespace already exists") {
+                println!("Bulletin namespace already exists: {}", namespace);
+                return Ok(());
+            }
+            return Err(anyhow!("Failed to register namespace: {}", e));
         }
-        return Err(anyhow!("Failed to register namespace: {}", e));
     }
 
     println!("Registered bulletin namespace: {}", namespace);
@@ -905,7 +909,11 @@ pub async fn add_bulletin_collaborator(
     Ok(())
 }
 
-pub async fn create_bulletin_post(namespace: String, payload: Vec<u8>) -> Result<String> {
+pub async fn create_bulletin_post(
+    namespace: String,
+    kind: BulletinKind,
+    payload: Vec<u8>,
+) -> Result<String> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
@@ -918,7 +926,7 @@ pub async fn create_bulletin_post(namespace: String, payload: Vec<u8>) -> Result
         .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
 
     bulletin
-        .post(namespace, payload, None)
+        .post(namespace, kind, payload, None)
         .await
         .map_err(|e| anyhow!("Failed to create post: {}", e))?;
 
@@ -927,8 +935,7 @@ pub async fn create_bulletin_post(namespace: String, payload: Vec<u8>) -> Result
 }
 
 pub async fn update_ring_post_by_acp(
-    namespace: String,
-    id: String,
+    ring_id: String,
     new_peer_ids: Vec<String>,
     new_threshold: Option<u32>,
     pss_interval: Option<u64>,
@@ -941,37 +948,34 @@ pub async fn update_ring_post_by_acp(
         .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
 
     let result = client
-        .bulletin_update_ring_post_by_acp(
-            &namespace,
-            &id,
-            None,
-            new_peer_ids,
-            new_threshold,
-            pss_interval,
-        )
+        .orbis_update_ring_by_acp(&ring_id, new_peer_ids, new_threshold, pss_interval)
         .await
-        .map_err(|e| anyhow!("Failed to update ring post: {}", e))?;
+        .map_err(|e| anyhow!("Failed to update ring: {}", e))?;
 
     if result.code != 0 {
         return Err(anyhow!(
-            "Failed to update ring post: code {} {}",
+            "Failed to update ring: code {} {}",
             result.code,
             result.log
         ));
     }
 
-    println!("Updated ring post with ID: {}", id);
+    println!("Updated ring with ID: {}", ring_id);
     Ok(())
 }
 
 /// Read a bulletin post by namespace and ID
-pub async fn read_bulletin_post(namespace: String, id: String) -> Result<Vec<u8>> {
+pub async fn read_bulletin_post(
+    namespace: String,
+    id: String,
+    kind: BulletinKind,
+) -> Result<Vec<u8>> {
     let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
     let post = bulletin
-        .read(namespace, id)
+        .read(namespace, id, kind)
         .await
         .map_err(|e| anyhow!("Failed to read bulletin post: {}", e))?;
 
@@ -1116,7 +1120,7 @@ pub async fn post_key_derivation(
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
     let ring_post = ring_bulletin
-        .read(namespace.to_string(), ring_id.clone())
+        .read(namespace.to_string(), ring_id.clone(), BulletinKind::Ring)
         .await
         .map_err(|e| anyhow!("Failed to read ring post '{}': {}", ring_id, e))?;
     let ring_payload: RingPayload = serde_json::from_slice(&ring_post.payload)
@@ -1160,7 +1164,12 @@ pub async fn post_key_derivation(
         .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
 
     bulletin
-        .post(namespace.clone(), payload, None)
+        .post(
+            namespace.clone(),
+            BulletinKind::KeyDerivation,
+            payload,
+            None,
+        )
         .await
         .map_err(|e| anyhow!("Failed to post KeyDerivation: {}", e))?;
 

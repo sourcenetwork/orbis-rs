@@ -1,6 +1,6 @@
 use crate::dkg::{
     coordinator::DkgCoordinator,
-    helpers::derive_refresh_session_id,
+    helpers::{derive_refresh_session_id, serialize_commitment_coefficients},
     messages::{DkgMessage, SessionKind},
 };
 use crate::helpers::helpers::extract_node_part;
@@ -12,7 +12,7 @@ use crate::helpers::test_helpers::{
 use crate::ring_state::RingPolyState;
 use crate::DkgServiceImpl;
 use bulletin::r#trait::RingPayload;
-use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole, PubPoly as PubPolyTrait};
+use crypto::r#trait::{CryptoDeserialize, Dkg, DkgMode, DkgRole, PubPoly as PubPolyTrait};
 use crypto::CryptoSerialize;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::PeerId;
@@ -367,29 +367,34 @@ async fn test_dkg_followed_by_pss_refresh() {
     }
 }
 
-/// Verify that receiving a Share before the sender's Phase 1 commitment has
-/// arrived returns `ShareVerificationFailed` — the persistent-stream design
-/// guarantees that in production this ordering cannot occur, but the error path
-/// is still correct and explicit.
+/// Verify that a Share arriving just before the sender's Phase 1 commitment is
+/// retried once the commitment lands.  This covers scheduler-driven PSS refreshes
+/// where independent peer streams can briefly reorder commitment/share delivery.
 #[tokio::test]
-async fn test_share_before_commitment_fails() {
-    let db_name = "test_share_before_commitment";
+async fn test_share_before_commitment_waits_for_commitment() {
+    let db_name = "test_share_before_commitment_waits";
     let db_path = test_db_path(db_name);
     let app_state = Arc::new(create_test_app_state_default(db_name).await);
     let coordinator = DkgCoordinator::new(app_state.clone());
 
     let session_id: u64 = 77_777;
     coordinator
-        .create_session(session_id, 1, 2, 2, DkgRole::Standard, |_| {})
+        .create_session(session_id, 1, 2, 3, DkgRole::Standard, |_| {})
         .await
         .expect("create session");
 
     let sender_hex = "deadbeef";
-    let all_peer_ids = vec!["aabbccdd".to_string(), sender_hex.to_string()];
+    let third_hex = "feedface";
+    let all_peer_ids = vec![
+        "aabbccdd".to_string(),
+        sender_hex.to_string(),
+        third_hex.to_string(),
+    ];
     coordinator.set_peer_ids(&session_id, all_peer_ids).await;
     let mut node_peer_map = std::collections::HashMap::new();
     node_peer_map.insert(1u32, "aabbccdd".to_string());
     node_peer_map.insert(2u32, sender_hex.to_string());
+    node_peer_map.insert(3u32, third_hex.to_string());
     app_state
         .dkg_session_state
         .set_node_peer_mappings(&session_id, node_peer_map)
@@ -400,24 +405,54 @@ async fn test_share_before_commitment_fails() {
         .await
         .expect("phase 1 with no peers");
 
-    // Deliver a share without the sender's commitment — should fail immediately.
+    let mut sender_node =
+        *DkgImpl::new(2, 2, 3, session_id, DkgRole::Standard).expect("create sender node");
+    sender_node
+        .generate_polynomial(DkgMode::Fresh)
+        .expect("sender polynomial");
+    let commitment = serialize_commitment_coefficients(&sender_node.commitment().coefficients)
+        .expect("serialize sender commitment");
+    let share = sender_node
+        .generate_shares()
+        .expect("sender shares")
+        .into_iter()
+        .find(|share| share.to_id == 1)
+        .expect("share for node 1");
+    let share_value = CryptoSerialize::to_bytes(&share.value).expect("serialize share");
+
     let share_msg = DkgMessage::Share {
         session_id,
         from_node_id: 2,
         to_node_id: 1,
-        share_value: vec![0u8; 32],
-        nonce: [0u8; 16],
+        share_value,
+        nonce: share.nonce,
+    };
+    let commitment_msg = DkgMessage::Commitment {
+        session_id,
+        from_node_id: 2,
+        commitment,
     };
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
 
-    let result = coordinator.handle_message(share_msg, &sender_peer_id).await;
+    let share_coordinator = DkgCoordinator::new(app_state.clone());
+    let share_sender = sender_peer_id.clone();
+    let share_task = tokio::spawn(async move {
+        share_coordinator
+            .handle_message(share_msg, &share_sender)
+            .await
+    });
+
+    sleep(Duration::from_millis(50)).await;
+    coordinator
+        .handle_message(commitment_msg, &sender_peer_id)
+        .await
+        .expect("commitment should be accepted");
+
+    let result = share_task.await.expect("share task join");
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::error::DkgError::ShareVerificationFailed(_))
-        ),
-        "Expected ShareVerificationFailed when commitment is absent, got: {:?}",
+        result.is_ok(),
+        "Expected share to verify after commitment arrives, got: {:?}",
         result
     );
 

@@ -7,7 +7,7 @@ use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::messages::SignContext;
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
-use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
+use bulletin::r#trait::{BulletinKind, BulletinPost, DocumentPayload, RingPayload};
 use crypto::r#trait::{Dkg, EncryptionProof, Secret};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
@@ -105,7 +105,7 @@ where
         let ring_info = self
             .state
             .bulletin
-            .read(ring_namespace, req.ring_id.clone())
+            .read(ring_namespace, req.ring_id.clone(), BulletinKind::Ring)
             .await
             .map_err(|e| {
                 StoreSecretError::Storage(format!("Failed to read ring '{}': {}", req.ring_id, e))
@@ -158,8 +158,7 @@ where
                     ))
                 })?;
 
-        // 5. Compute object_id before posting (deterministic hash).
-        // get_post_id adds the "bulletin/" prefix internally.
+        // 5. Compute object_id before posting (deterministic typed Orbis hash).
         let object_id = self
             .state
             .bulletin
@@ -171,7 +170,11 @@ where
         let post_exists = match self
             .state
             .bulletin
-            .read(req.namespace.clone(), object_id.clone())
+            .read(
+                req.namespace.clone(),
+                object_id.clone(),
+                BulletinKind::Document,
+            )
             .await
         {
             Ok(_) => true,
@@ -188,7 +191,12 @@ where
         if !post_exists {
             self.state
                 .bulletin
-                .post(req.namespace.clone(), payload_bytes.clone(), None)
+                .post(
+                    req.namespace.clone(),
+                    BulletinKind::Document,
+                    payload_bytes.clone(),
+                    None,
+                )
                 .await
                 .map_err(|e| {
                     StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e))

@@ -13,8 +13,9 @@ use crate::sign::{
 use authn::{BearerToken, SignClaims};
 use authz::r#trait::Authz;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
-use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, KeyDerivation, RingPayload};
-use common::blockchain::bulletin::ring_reshare_finalize_sign_bytes_from_hashes;
+use bulletin::r#trait::{
+    Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, RingPayload,
+};
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, ThresholdSigner};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::LocalStorage;
@@ -96,53 +97,39 @@ fn payload_ring_pk_matches(
         .unwrap_or(false)
 }
 
-fn finalized_ring_payload_bytes(current_payload: &RingPayload) -> Result<Vec<u8>> {
-    let mut finalized = current_payload.clone();
-    let new_peer_ids = finalized
-        .new_peer_ids
-        .take()
-        .unwrap_or_else(|| current_payload.peer_ids.clone());
-    let new_threshold = finalized
-        .new_threshold
-        .take()
-        .unwrap_or(current_payload.threshold);
-
-    finalized.peer_ids = new_peer_ids;
-    finalized.threshold = new_threshold;
-
-    serde_json::to_vec(&finalized).map_err(|e| {
-        SignError::Serialization(format!("Failed to serialize finalized ring payload: {e}"))
-    })
-}
-
 /// Serialize the canonical ring reshare update statement.
-pub fn ring_reshare_update_message(statement: &RingReshareUpdateStatement) -> Result<Vec<u8>> {
-    let current_payload_sha256 =
-        decode_sha256_hex("current_payload_sha256", &statement.current_payload_sha256)?;
-    let finalized_payload_sha256 = decode_sha256_hex(
-        "finalized_payload_sha256",
-        &statement.finalized_payload_sha256,
-    )?;
+pub fn ring_reshare_update_message(
+    bulletin: &(dyn Bulletin + Send + Sync),
+    statement: &RingReshareUpdateStatement,
+) -> Result<Vec<u8>> {
+    let current_ring_sha256 =
+        decode_sha256_hex("current_ring_sha256", &statement.current_ring_sha256)?;
+    let finalized_ring_sha256 =
+        decode_sha256_hex("finalized_ring_sha256", &statement.finalized_ring_sha256)?;
 
-    ring_reshare_finalize_sign_bytes_from_hashes(
-        &statement.chain_id,
-        &statement.namespace,
-        &statement.bulletin_post_id,
-        &statement.ring_pk,
-        current_payload_sha256,
-        finalized_payload_sha256,
-        statement.block_number_nonce,
-    )
-    .map_err(|e| {
-        SignError::Serialization(format!(
-            "Failed to serialize ring reshare finalize sign document: {e}"
-        ))
-    })
+    bulletin
+        .ring_reshare_finalize_sign_bytes(
+            &statement.chain_id,
+            &statement.namespace,
+            &statement.ring_id,
+            &statement.ring_pk,
+            current_ring_sha256,
+            finalized_ring_sha256,
+            statement.block_number_nonce,
+        )
+        .map_err(|e| {
+            SignError::Serialization(format!(
+                "Failed to serialize ring reshare finalize sign document: {e}"
+            ))
+        })
 }
 
 /// Context key used to bind FROST nonces to one exact reshare update statement.
-pub fn ring_reshare_update_context_key(statement: &RingReshareUpdateStatement) -> Result<String> {
-    let bytes = ring_reshare_update_message(statement)?;
+pub fn ring_reshare_update_context_key(
+    bulletin: &(dyn Bulletin + Send + Sync),
+    statement: &RingReshareUpdateStatement,
+) -> Result<String> {
+    let bytes = ring_reshare_update_message(bulletin, statement)?;
     Ok(format!("ring-reshare-update:{}", sha256_hex(&bytes)))
 }
 
@@ -229,7 +216,7 @@ pub async fn validate_ring_reshare_update_statement(
         ));
     }
 
-    let canonical_message = ring_reshare_update_message(statement)?;
+    let canonical_message = ring_reshare_update_message(bulletin, statement)?;
     if let Some(expected) = expected_message {
         if expected != canonical_message.as_slice() {
             return Err(SignError::Unauthorized(
@@ -238,9 +225,9 @@ pub async fn validate_ring_reshare_update_statement(
         }
     }
 
-    if statement.bulletin_post_id.is_empty() {
+    if statement.ring_id.is_empty() {
         return Err(SignError::InvalidInput(
-            "Ring reshare update bulletin_post_id cannot be empty".to_string(),
+            "Ring reshare update ring_id cannot be empty".to_string(),
         ));
     }
     let statement_storage_key = storage_key_from_ring_pk_hex(&statement.ring_pk)?;
@@ -248,21 +235,32 @@ pub async fn validate_ring_reshare_update_statement(
     let current_post = bulletin
         .read(
             statement.namespace.clone(),
-            statement.bulletin_post_id.clone(),
+            statement.ring_id.clone(),
+            BulletinKind::Ring,
         )
         .await
         .map_err(|e| {
             SignError::VerificationFailed(format!(
                 "Failed to read ring bulletin post '{}': {}",
-                statement.bulletin_post_id, e
+                statement.ring_id, e
             ))
         })?;
 
-    let current_hash = sha256_hex(&current_post.payload);
-    if current_hash != statement.current_payload_sha256 {
+    let current_ring_hash = hex::encode(
+        bulletin
+            .ring_canonical_hash(&statement.ring_id)
+            .await
+            .map_err(|e| {
+                SignError::VerificationFailed(format!(
+                    "Failed to compute ring canonical hash for '{}': {}",
+                    statement.ring_id, e
+                ))
+            })?,
+    );
+    if current_ring_hash != statement.current_ring_sha256 {
         return Err(SignError::VerificationFailed(format!(
-            "Ring reshare update current payload hash mismatch: expected {}, got {}",
-            statement.current_payload_sha256, current_hash
+            "Ring reshare update current ring hash mismatch: expected {}, got {}",
+            statement.current_ring_sha256, current_ring_hash
         )));
     }
 
@@ -276,12 +274,22 @@ pub async fn validate_ring_reshare_update_statement(
             statement.block_number_nonce, current_payload.block_number_nonce
         )));
     }
-    let finalized_payload_bytes = finalized_ring_payload_bytes(&current_payload)?;
-    let finalized_hash = sha256_hex(&finalized_payload_bytes);
-    if finalized_hash != statement.finalized_payload_sha256 {
+
+    let finalized_ring_hash = hex::encode(
+        bulletin
+            .ring_finalized_canonical_hash(&statement.ring_id)
+            .await
+            .map_err(|e| {
+                SignError::VerificationFailed(format!(
+                    "Failed to compute ring finalized canonical hash for '{}': {}",
+                    statement.ring_id, e
+                ))
+            })?,
+    );
+    if finalized_ring_hash != statement.finalized_ring_sha256 {
         return Err(SignError::VerificationFailed(format!(
-            "Ring reshare update finalized payload hash mismatch: expected {}, got {}",
-            statement.finalized_payload_sha256, finalized_hash
+            "Ring reshare update finalized ring hash mismatch: expected {}, got {}",
+            statement.finalized_ring_sha256, finalized_ring_hash
         )));
     }
 
@@ -294,31 +302,13 @@ pub async fn validate_ring_reshare_update_statement(
             "Ring reshare update statement ring_pk does not match current payload".to_string(),
         ));
     }
-    let finalized_payload: RingPayload =
-        serde_json::from_slice(&finalized_payload_bytes).map_err(|e| {
-            SignError::Deserialization(format!("Failed to parse finalized ring payload: {e}"))
-        })?;
-    if finalized_payload.peer_ids.is_empty() {
-        return Err(SignError::InvalidInput(
-            "Ring reshare update cannot produce an empty committee".to_string(),
-        ));
-    }
-    if finalized_payload.threshold == 0
-        || finalized_payload.threshold as usize > finalized_payload.peer_ids.len()
-    {
-        return Err(SignError::InvalidInput(format!(
-            "Ring reshare update threshold {} is invalid for committee size {}",
-            finalized_payload.threshold,
-            finalized_payload.peer_ids.len()
-        )));
-    }
 
     let ready_key = ReshareSignatureReadyKey {
         ring_key: statement_storage_key,
         session_id: statement.session_id,
-        bulletin_post_id: statement.bulletin_post_id.clone(),
-        current_payload_sha256: statement.current_payload_sha256.clone(),
-        updated_payload_sha256: statement.finalized_payload_sha256.clone(),
+        ring_id: statement.ring_id.clone(),
+        current_ring_sha256: statement.current_ring_sha256.clone(),
+        finalized_ring_sha256: statement.finalized_ring_sha256.clone(),
     };
     if !dkg_session_state
         .is_reshare_signature_ready(&ready_key)
@@ -616,7 +606,11 @@ pub async fn fetch_key_derivation(
     derivation_id: &str,
 ) -> Result<KeyDerivation> {
     let object_info = bulletin
-        .read(namespace.to_string(), derivation_id.to_string())
+        .read(
+            namespace.to_string(),
+            derivation_id.to_string(),
+            BulletinKind::KeyDerivation,
+        )
         .await
         .map_err(|e| {
             SignError::Storage(format!("Failed to read object '{}': {}", derivation_id, e))
@@ -637,7 +631,11 @@ pub async fn fetch_bulletin_payloads(
     derivation_id: &str,
 ) -> Result<(KeyDerivation, RingPayload)> {
     let object_info = bulletin
-        .read(namespace.to_string(), derivation_id.to_string())
+        .read(
+            namespace.to_string(),
+            derivation_id.to_string(),
+            BulletinKind::KeyDerivation,
+        )
         .await
         .map_err(|e| {
             SignError::Storage(format!("Failed to read object '{}': {}", derivation_id, e))
@@ -652,7 +650,11 @@ pub async fn fetch_bulletin_payloads(
         .map_err(SignError::Storage)?;
 
     let ring_info = bulletin
-        .read(ring_namespace, derivation_payload.ring_id.clone())
+        .read(
+            ring_namespace,
+            derivation_payload.ring_id.clone(),
+            BulletinKind::Ring,
+        )
         .await
         .map_err(|e| {
             SignError::Storage(format!(
@@ -680,7 +682,11 @@ pub async fn verify_message_and_get_info<D: Dkg>(
 
     // 2. Verify it exists on bulletin (read by namespace + id)
     let actual_post = bulletin
-        .read(post.namespace.clone(), post.id.clone())
+        .read(
+            post.namespace.clone(),
+            post.id.clone(),
+            BulletinKind::Document,
+        )
         .await
         .map_err(|e| {
             SignError::VerificationFailed(format!(
@@ -705,7 +711,11 @@ pub async fn verify_message_and_get_info<D: Dkg>(
     let ring_namespace = ring_namespace_for_post_id(local_storage, &doc_payload.ring_id)
         .map_err(SignError::Storage)?;
     let ring_info = bulletin
-        .read(ring_namespace, doc_payload.ring_id.clone())
+        .read(
+            ring_namespace,
+            doc_payload.ring_id.clone(),
+            BulletinKind::Ring,
+        )
         .await
         .map_err(|e| {
             SignError::VerificationFailed(format!(
@@ -815,32 +825,37 @@ mod ring_reshare_update_tests {
             .expect("serialize updated RingPayload");
         let bulletin = DummyBulletin::new().await.expect("dummy bulletin");
         bulletin
-            .post("orbis".to_string(), current_payload_bytes.clone(), None)
+            .post(
+                "orbis".to_string(),
+                BulletinKind::Ring,
+                current_payload_bytes.clone(),
+                None,
+            )
             .await
             .expect("post current payload");
-        let bulletin_post_id = bulletin
+        let ring_id = bulletin
             .get_post_id("orbis", &current_payload_bytes)
             .expect("post id");
         let session_id = 77;
-        let current_payload_sha256 = sha256_hex(&current_payload_bytes);
-        let finalized_payload_sha256 = sha256_hex(&updated_payload_bytes);
+        let current_ring_sha256 = sha256_hex(&current_payload_bytes);
+        let finalized_ring_sha256 = sha256_hex(&updated_payload_bytes);
         let statement = RingReshareUpdateStatement {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id,
             chain_id: bulletin.chain_id(),
             namespace: "orbis".to_string(),
             ring_pk: ring_pk_hex,
-            bulletin_post_id: bulletin_post_id.clone(),
-            current_payload_sha256: current_payload_sha256.clone(),
-            finalized_payload_sha256: finalized_payload_sha256.clone(),
+            ring_id: ring_id.clone(),
+            current_ring_sha256: current_ring_sha256.clone(),
+            finalized_ring_sha256: finalized_ring_sha256.clone(),
             block_number_nonce,
         };
         let ready_key = ReshareSignatureReadyKey {
             ring_key,
             session_id,
-            bulletin_post_id,
-            current_payload_sha256,
-            updated_payload_sha256: finalized_payload_sha256,
+            ring_id,
+            current_ring_sha256,
+            finalized_ring_sha256,
         };
 
         (
@@ -965,23 +980,24 @@ mod ring_reshare_update_tests {
 
     #[test]
     fn ring_reshare_update_message_matches_sourcehub_vector() {
+        let bulletin = bulletin::dummy::DummyBulletin::default();
         let statement = RingReshareUpdateStatement {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id: 77,
             chain_id: "sourcehub-test".to_string(),
             namespace: "orbis/rings/ring1".to_string(),
-            bulletin_post_id: "ring1-post".to_string(),
+            ring_id: "ring1-post".to_string(),
             ring_pk: "b2c05c1059dadae32a7092a4323977796c521fa5e241ee7fe34283b3595935b2b80fad135e3f91bf7307382017869c51".to_string(),
-            current_payload_sha256:
+            current_ring_sha256:
                 "b6684a86125e08eb7cba4298c336ea98ea674a62de3714e76bcd2135a7526b44"
                     .to_string(),
-            finalized_payload_sha256:
+            finalized_ring_sha256:
                 "11683bb4da93f949f0a1803cc062f1d7933d1fa2ec201f2ab6867058708df9c1"
                     .to_string(),
             block_number_nonce: 0,
         };
 
-        let sign_bytes = ring_reshare_update_message(&statement).expect("sign bytes");
+        let sign_bytes = ring_reshare_update_message(&bulletin, &statement).expect("sign bytes");
 
         assert_eq!(
             hex::encode(sign_bytes),
@@ -991,23 +1007,24 @@ mod ring_reshare_update_tests {
 
     #[test]
     fn ring_reshare_update_message_includes_nonzero_nonce() {
+        let bulletin = bulletin::dummy::DummyBulletin::default();
         let statement = RingReshareUpdateStatement {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id: 77,
             chain_id: "sourcehub-test".to_string(),
             namespace: "orbis/rings/ring1".to_string(),
-            bulletin_post_id: "ring1-post".to_string(),
+            ring_id: "ring1-post".to_string(),
             ring_pk: "b2c05c1059dadae32a7092a4323977796c521fa5e241ee7fe34283b3595935b2b80fad135e3f91bf7307382017869c51".to_string(),
-            current_payload_sha256:
+            current_ring_sha256:
                 "b6684a86125e08eb7cba4298c336ea98ea674a62de3714e76bcd2135a7526b44"
                     .to_string(),
-            finalized_payload_sha256:
+            finalized_ring_sha256:
                 "11683bb4da93f949f0a1803cc062f1d7933d1fa2ec201f2ab6867058708df9c1"
                     .to_string(),
             block_number_nonce: 7,
         };
 
-        let sign_bytes = ring_reshare_update_message(&statement).expect("sign bytes");
+        let sign_bytes = ring_reshare_update_message(&bulletin, &statement).expect("sign bytes");
 
         assert!(
             hex::encode(sign_bytes).ends_with("4007"),

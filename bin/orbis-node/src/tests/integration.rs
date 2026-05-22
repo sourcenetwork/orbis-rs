@@ -7,8 +7,7 @@
 //!   cargo test --features integration-test -- --nocapture
 
 use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
-use bulletin::r#trait::{BulletinPost, DocumentPayload, RingPayload};
-use common::blockchain::{ChainConfig, TxSigner, TEST_ACCOUNT_HEX_KEY};
+use bulletin::r#trait::{BulletinKind, BulletinPost, DocumentPayload, RingPayload};
 use common::IntegrationTestNetwork;
 use common::SOURCEHUB_RPC_URL;
 use crypto::helpers::generate_keypair;
@@ -72,26 +71,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("Node 3 P2P address: {}", node3_info.p2p_address);
     let namespace = BULLETIN_RING_NAMESPACE.to_string();
 
-    // Register the namespace and add collaborators
-    cli_tool::register_bulletin_namespace(namespace.clone())
-        .await
-        .expect("Failed to register namespace");
-    cli_tool::add_bulletin_collaborator(namespace.clone(), node1_info.public_address.clone())
-        .await
-        .expect("add_bulletin_collaborator");
-    cli_tool::add_bulletin_collaborator(namespace.clone(), node2_info.public_address.clone())
-        .await
-        .expect("add_bulletin_collaborator");
-    cli_tool::add_bulletin_collaborator(namespace.clone(), node3_info.public_address.clone())
-        .await
-        .expect("add_bulletin_collaborator");
-    let test_account_address = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
-        .expect("test account signer")
-        .address();
-    cli_tool::add_bulletin_collaborator(namespace.clone(), test_account_address)
-        .await
-        .expect("add test account as bulletin collaborator");
-
     // Transform P2P addresses for inter-container communication
     // The addresses from nodes will be like "peer_id@0.0.0.0:port"
     // We need to replace 0.0.0.0 with the container name for Docker networking
@@ -136,9 +115,9 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             .expect("WebSocket event subscription");
 
     // Create the ring governance ACP policy before DKG so it can be embedded in the ring
-    // payload. The bulletin keeper checks `update_post` permission on this policy when
-    // UpdateRingPostByAcp is called. Registering the namespace object makes the signer the
-    // `owner`, which grants `update_post` via the policy's permission expression.
+    // payload. The Orbis keeper checks `update_ring` permission on this policy when
+    // MsgUpdateRingByAcp is called. Registering the namespace object makes the signer the
+    // `owner`, which grants `update_ring` via the policy's permission expression.
     let ring_policy_id = cli_tool::add_ring_governance_policy(BULLETIN_RING_NAMESPACE)
         .await
         .expect("create ring governance policy");
@@ -179,15 +158,18 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         .expect("DKG completion event");
 
     // Read the post payload using the post_id from the event
-    let post_payload =
-        cli_tool::read_bulletin_post(ring_namespace.clone(), post_event.post_id.clone())
-            .await
-            .expect("read ring post by event post_id");
+    let post_payload = cli_tool::read_bulletin_post(
+        ring_namespace.clone(),
+        post_event.ring_id.clone(),
+        BulletinKind::Ring,
+    )
+    .await
+    .expect("read ring post by event post_id");
 
     let ring_payload: RingPayload =
         serde_json::from_slice(&post_payload).expect("parse RingPayload");
     let ring_pk_hex = ring_payload.ring_pk.clone();
-    let ring_id = post_event.post_id;
+    let ring_id = post_event.ring_id;
     let dkg_ring_payload = ring_payload.clone();
 
     // The bulletin event proves the DKG was posted, but the other nodes may
@@ -227,15 +209,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let salt = Some("salt".to_string());
     let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
 
-    cli_tool::register_bulletin_namespace(namespace.clone())
-        .await
-        .expect("Failed to register namespace");
-
-    // Add node1 as collaborator on the user namespace so it can post on user's behalf
-    cli_tool::add_bulletin_collaborator(namespace.clone(), node1_info.public_address.clone())
-        .await
-        .expect("add node as collaborator on user namespace");
-
     // ====================================================================
     // Create objects: MANUAL vs SERVICE
     // Both paths encrypt locally first, then post to bulletin
@@ -267,7 +240,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             timestamp,
         };
         let serialized: Vec<u8> = payload.try_into().expect("serialize payload");
-        cli_tool::create_bulletin_post(namespace.clone(), serialized)
+        cli_tool::create_bulletin_post(namespace.clone(), BulletinKind::Document, serialized)
             .await
             .expect("create_bulletin_post")
     };
@@ -369,12 +342,20 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     );
 
     // Read both from bulletin and compare metadata
-    let manual_bytes = cli_tool::read_bulletin_post(namespace.clone(), object_id_manual.clone())
-        .await
-        .expect("read manual post");
-    let service_bytes = cli_tool::read_bulletin_post(namespace.clone(), object_id_service.clone())
-        .await
-        .expect("read service post");
+    let manual_bytes = cli_tool::read_bulletin_post(
+        namespace.clone(),
+        object_id_manual.clone(),
+        BulletinKind::Document,
+    )
+    .await
+    .expect("read manual post");
+    let service_bytes = cli_tool::read_bulletin_post(
+        namespace.clone(),
+        object_id_service.clone(),
+        BulletinKind::Document,
+    )
+    .await
+    .expect("read service post");
 
     let manual: DocumentPayload = serde_json::from_slice(&manual_bytes).expect("parse manual");
     let service: DocumentPayload = serde_json::from_slice(&service_bytes).expect("parse service");
@@ -800,7 +781,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .await;
 
     cli_tool::update_ring_post_by_acp(
-        ring_namespace.clone(),
         ring_id.clone(),
         reshare_peer_ids.clone(),
         Some(reshare_threshold),
@@ -1069,9 +1049,13 @@ async fn wait_for_ring_state_on_all_nodes(
 }
 
 async fn read_ring_payload(namespace: &str, ring_id: &str) -> RingPayload {
-    let payload_bytes = cli_tool::read_bulletin_post(namespace.to_string(), ring_id.to_string())
-        .await
-        .expect("read ring payload from bulletin");
+    let payload_bytes = cli_tool::read_bulletin_post(
+        namespace.to_string(),
+        ring_id.to_string(),
+        BulletinKind::Ring,
+    )
+    .await
+    .expect("read ring payload from bulletin");
     serde_json::from_slice(&payload_bytes).expect("parse RingPayload")
 }
 
@@ -1089,32 +1073,37 @@ async fn wait_for_reshare_bulletin_completion(
     let expected_sorted = sorted_peer_ids(expected_peer_ids);
 
     loop {
-        let last_status =
-            match cli_tool::read_bulletin_post(namespace.to_string(), ring_id.to_string()).await {
-                Ok(payload_bytes) => match serde_json::from_slice::<RingPayload>(&payload_bytes) {
-                    Ok(payload) => {
-                        let actual_sorted = sorted_peer_ids(&payload.peer_ids);
-                        let complete = payload.ring_pk == ring_pk_hex
-                            && actual_sorted == expected_sorted
-                            && payload.threshold == expected_threshold
-                            && payload.new_peer_ids.is_none()
-                            && payload.new_threshold.is_none();
-                        let status = format!(
-                            "peer_count={} threshold={} new_peer_ids_set={} new_threshold={:?}",
-                            payload.peer_ids.len(),
-                            payload.threshold,
-                            payload.new_peer_ids.is_some(),
-                            payload.new_threshold
-                        );
-                        if complete {
-                            return payload;
-                        }
-                        status
+        let last_status = match cli_tool::read_bulletin_post(
+            namespace.to_string(),
+            ring_id.to_string(),
+            BulletinKind::Ring,
+        )
+        .await
+        {
+            Ok(payload_bytes) => match serde_json::from_slice::<RingPayload>(&payload_bytes) {
+                Ok(payload) => {
+                    let actual_sorted = sorted_peer_ids(&payload.peer_ids);
+                    let complete = payload.ring_pk == ring_pk_hex
+                        && actual_sorted == expected_sorted
+                        && payload.threshold == expected_threshold
+                        && payload.new_peer_ids.is_none()
+                        && payload.new_threshold.is_none();
+                    let status = format!(
+                        "peer_count={} threshold={} new_peer_ids_set={} new_threshold={:?}",
+                        payload.peer_ids.len(),
+                        payload.threshold,
+                        payload.new_peer_ids.is_some(),
+                        payload.new_threshold
+                    );
+                    if complete {
+                        return payload;
                     }
-                    Err(e) => format!("parse error: {}", e),
-                },
-                Err(e) => e.to_string(),
-            };
+                    status
+                }
+                Err(e) => format!("parse error: {}", e),
+            },
+            Err(e) => e.to_string(),
+        };
 
         let now = Instant::now();
         assert!(

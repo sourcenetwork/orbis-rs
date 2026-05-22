@@ -5,7 +5,7 @@ use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bullet
 use crate::ring_state::RingIndexEntry;
 use bulletin::{
     dummy::DummyBulletin,
-    r#trait::{Bulletin, RingPayload},
+    r#trait::{Bulletin, BulletinKind, RingPayload},
 };
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
@@ -42,6 +42,7 @@ async fn make_state_with_ring(
         .bulletin
         .post(
             BULLETIN_RING_NAMESPACE.to_string(),
+            BulletinKind::Ring,
             payload_bytes.clone(),
             None,
         )
@@ -290,7 +291,12 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     let garbage = b"not valid json".to_vec();
     app_state
         .bulletin
-        .post(BULLETIN_RING_NAMESPACE.to_string(), garbage.clone(), None)
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            BulletinKind::Ring,
+            garbage.clone(),
+            None,
+        )
         .await
         .expect("post garbage");
     let post_id = app_state
@@ -344,6 +350,7 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
         .bulletin
         .post(
             BULLETIN_RING_NAMESPACE.to_string(),
+            BulletinKind::Ring,
             payload_bytes.clone(),
             None,
         )
@@ -409,6 +416,7 @@ async fn post_ring_and_seed_index(
         .bulletin
         .post(
             BULLETIN_RING_NAMESPACE.to_string(),
+            BulletinKind::Ring,
             payload_bytes.clone(),
             None,
         )
@@ -523,6 +531,36 @@ async fn test_pss_ring_refresh_skips_without_interval() {
     assert!(
         result.is_ok(),
         "Expected Ok(()): refresh with no pss_interval must skip silently. Got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// `pss_interval = Some(0)` is a present interval and should be treated as
+/// immediately due, not skipped like `None`.
+#[tokio::test]
+async fn test_pss_ring_refresh_zero_interval_is_due() {
+    let db_name = "pss_refresh_zero_interval_due";
+    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        ring_pk: "pss_zero_interval_pk".to_string(),
+        peer_ids: vec![our_hex.clone()],
+        new_peer_ids: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: Some(0),
+        block_number_nonce: 0,
+        policy_id: None,
+    };
+
+    let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
+    let result = super::pss_ring(&Arc::new(app_state), &entry).await;
+
+    assert!(
+        matches!(result, Err(DkgError::Storage(_))),
+        "Expected Storage error: present zero interval should reach trigger_refresh and fail \
+         only because the test has no share bundle. Got: {:?}",
         result
     );
     cleanup_db(&db_path);

@@ -14,7 +14,7 @@ use crate::helpers::test_helpers::{
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use crate::DkgServiceImpl;
 use bulletin::dummy::DummyBulletin;
-use bulletin::r#trait::RingPayload;
+use bulletin::r#trait::{BulletinKind, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole, PubPoly as PubPolyTrait};
 use crypto::CryptoSerialize;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -176,7 +176,12 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
         .bulletin
-        .post(BULLETIN_RING_NAMESPACE.to_string(), bytes.clone(), None)
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            BulletinKind::Ring,
+            bytes.clone(),
+            None,
+        )
         .await
         .unwrap();
     let post_id = app_state
@@ -485,7 +490,12 @@ async fn write_ring_with_announced_reshare(
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
         .bulletin
-        .post(BULLETIN_RING_NAMESPACE.to_string(), bytes.clone(), None)
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            BulletinKind::Ring,
+            bytes.clone(),
+            None,
+        )
         .await
         .unwrap();
     let post_id = app_state
@@ -767,7 +777,12 @@ async fn post_ring_for_validation(
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
         .bulletin
-        .post(BULLETIN_RING_NAMESPACE.to_string(), bytes.clone(), None)
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            BulletinKind::Ring,
+            bytes.clone(),
+            None,
+        )
         .await
         .unwrap();
     let post_id = app_state
@@ -1077,7 +1092,12 @@ async fn post_reshare_announcement(
     let bytes = serde_json::to_vec(&payload).unwrap();
 
     bulletin
-        .post(BULLETIN_RING_NAMESPACE.to_string(), bytes.clone(), None)
+        .post(
+            BULLETIN_RING_NAMESPACE.to_string(),
+            BulletinKind::Ring,
+            bytes.clone(),
+            None,
+        )
         .await
         .expect("post reshare announcement to bulletin");
 
@@ -1130,16 +1150,12 @@ async fn run_reshare_ceremony(
     bulletin_post_id: &str,
     new_committee_states: &[&crate::app_state::AppState<DkgImpl>],
 ) {
-    let initiator_bundle =
-        RingShareBundle::load_by_ring_key(&initiator_state.local_storage, key_string)
-            .expect("load initiator bundle for reshare session id");
     let session_id = derive_reshare_session_id(
         key_string,
         bulletin_post_id,
         old_peer_ids,
         sorted_new_peer_ids,
         new_threshold,
-        &initiator_bundle.public_polynomial,
     );
 
     // Snapshot share bytes before reshare so we can detect when they change.
@@ -1244,6 +1260,7 @@ async fn run_reshare_ceremony(
             .read(
                 BULLETIN_RING_NAMESPACE.to_string(),
                 bulletin_post_id.to_string(),
+                BulletinKind::Ring,
             )
             .await
             .expect("read reshare bulletin post");
