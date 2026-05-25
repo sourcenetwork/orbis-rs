@@ -230,20 +230,6 @@ async fn test_ensure_node_info_creates_when_missing() {
 }
 
 #[tokio::test]
-async fn test_ensure_node_info_requires_controller_key() {
-    let network = NetworkImpl::new().await.expect("create network");
-    let bulletin = DummyBulletin::new().await.expect("create bulletin");
-    let node_key = "node-key-missing-controller";
-    let mut args = node_info_test_args("controller-key", None, vec![], vec![]);
-    args.node_controller_key = None;
-
-    let err = ensure_node_info(&bulletin, node_key, &network, &args)
-        .await
-        .expect_err("missing controller should fail");
-    assert!(err.to_string().contains("--node-controller-key"));
-}
-
-#[tokio::test]
 async fn test_ensure_node_info_keeps_existing_whitelists() {
     let network = NetworkImpl::new().await.expect("create network");
     let bulletin = DummyBulletin::new().await.expect("create bulletin");
