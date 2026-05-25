@@ -95,7 +95,9 @@ pub struct NodeInfo {
     pub peer_id: String,
     /// Key stored externally from node to control ring participants
     pub controller_key: String,
+    /// whitelisted namespaces that will complete DKG with
     pub whitelisted_namespaces: Vec<String>,
+    /// whitelisted ring_ids to complete DKG with
     pub whitelisted_ring_ids: Vec<String>,
 }
 
