@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
-use crate::dkg::helpers::validate_dkg_claims;
+use crate::dkg::helpers::{validate_dkg_claims, validate_fresh_dkg_node_authorization};
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
 use crate::helpers::helpers::{extract_node_part, is_self_peer_id, validate_all_peer_ids};
@@ -79,9 +79,11 @@ where
             req.pss_interval,
             req.policy_id.as_deref(),
             &req.namespace,
+            &req.ring_id,
         )?;
 
         let namespace = req.namespace.clone();
+        let ring_id = req.ring_id.clone();
 
         tracing::info!(
             threshold = req.threshold,
@@ -124,6 +126,21 @@ where
             .peer_ids
             .iter()
             .any(|pid| extract_node_part(pid) == our_peer_id_key);
+
+        if self_included {
+            validate_fresh_dkg_node_authorization(
+                &self.state.bulletin,
+                &self.state.node_key,
+                &our_peer_id_hex,
+                &namespace,
+                &ring_id,
+                req.threshold,
+                &req.peer_ids,
+                req.pss_interval,
+                policy_id.as_deref(),
+            )
+            .await?;
+        }
 
         // Use the peer_ids exactly as given - don't auto-add ourselves
         let all_peer_ids_for_assignments: Vec<String> = req.peer_ids.clone();
@@ -274,6 +291,7 @@ where
                 pss_interval,
                 policy_id: policy_id.clone(),
                 namespace: namespace.clone(),
+                ring_id: ring_id.clone(),
             };
 
             // Send SessionInit to all peers (they will create their sessions and start Phase 1).

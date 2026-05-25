@@ -20,6 +20,7 @@ pub(in crate::dkg::coordinator) async fn handle_session_init<D>(
     pss_interval: Option<u64>,
     policy_id: Option<String>,
     namespace: String,
+    ring_id: String,
     sender_peer_id: &PeerId,
 ) -> Result<Option<DkgMessage>>
 where
@@ -191,7 +192,21 @@ where
                 pss_interval,
                 policy_id.as_deref(),
                 &namespace,
+                &ring_id,
             )?;
+            let our_peer_id_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
+            validate_fresh_dkg_node_authorization(
+                &coord.app_state.bulletin,
+                &coord.app_state.node_key,
+                &our_peer_id_hex,
+                &namespace,
+                &ring_id,
+                threshold,
+                peer_ids,
+                pss_interval,
+                policy_id.as_deref(),
+            )
+            .await?;
             tracing::info!(
                 issuer = %token.issuer_id,
                 threshold = threshold,

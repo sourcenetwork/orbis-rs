@@ -5,7 +5,8 @@ use crate::dkg::session_state::ReshareParams;
 use crate::helpers::helpers::extract_node_part;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::{BearerToken, DkgClaims};
-use bulletin::r#trait::{Bulletin, BulletinKind, RingPayload};
+use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo, RingPayload};
+use common::blockchain::orbis::namespace_id;
 use crypto::r#trait::{CryptoDeserialize, DkgRole, PriShare};
 use crypto::{CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -415,6 +416,7 @@ pub fn validate_dkg_claims(
     pss_interval: Option<u64>,
     policy_id: Option<&str>,
     namespace: &str,
+    ring_id: &str,
 ) -> Result<()> {
     // Validate threshold matches
     if token.claims.threshold != threshold {
@@ -471,8 +473,154 @@ pub fn validate_dkg_claims(
             token.claims.namespace, namespace
         )));
     }
+    if ring_id.is_empty() {
+        return Err(DkgError::Unauthorized(
+            "ring_id must not be empty".to_string(),
+        ));
+    }
+    if token.claims.ring_id != ring_id {
+        return Err(DkgError::Unauthorized(format!(
+            "Token ring_id ({:?}) does not match request ring_id ({:?})",
+            token.claims.ring_id, ring_id
+        )));
+    }
 
     Ok(())
+}
+
+/// Validate that this node is authorized by its NodeInfo record to participate in a Fresh DKG.
+///
+/// Namespace authorization is sufficient by itself. When a node relies on a ring-scoped allowlist
+/// entry, the target ring must already exist as a blank placeholder so the authorization check is
+/// bound to the ring the caller intends to complete later.
+pub async fn validate_fresh_dkg_node_authorization(
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    node_key: &str,
+    local_peer_id_hex: &str,
+    namespace: &str,
+    ring_id: &str,
+    threshold: u32,
+    peer_ids: &[String],
+    pss_interval: Option<u64>,
+    policy_id: Option<&str>,
+) -> Result<()> {
+    if node_key.is_empty() {
+        return Err(DkgError::Unauthorized(
+            "Local node signing key is not configured".to_string(),
+        ));
+    }
+    if ring_id.is_empty() {
+        return Err(DkgError::Unauthorized(
+            "Fresh DKG ring_id must not be empty".to_string(),
+        ));
+    }
+
+    let node_info_post = bulletin
+        .read(
+            node_key.to_string(),
+            node_key.to_string(),
+            BulletinKind::NodeInfo,
+        )
+        .await
+        .map_err(|e| {
+            DkgError::Unauthorized(format!("NodeInfo for node {} not found: {}", node_key, e))
+        })?;
+    let node_info = NodeInfo::try_from(node_info_post).map_err(|e| {
+        DkgError::Unauthorized(format!(
+            "NodeInfo for node {} is malformed: {}",
+            node_key, e
+        ))
+    })?;
+
+    if node_info.peer_id != local_peer_id_hex {
+        return Err(DkgError::Unauthorized(format!(
+            "NodeInfo peer_id {} does not match local peer_id {}",
+            node_info.peer_id, local_peer_id_hex
+        )));
+    }
+
+    let canonical_namespace = namespace_id(namespace);
+    let namespace_allowed = node_info
+        .whitelisted_namespaces
+        .iter()
+        .any(|allowed| allowed == &canonical_namespace);
+    let ring_allowed = node_info
+        .whitelisted_ring_ids
+        .iter()
+        .any(|allowed| allowed == ring_id);
+    if namespace_allowed {
+        return Ok(());
+    }
+    if !ring_allowed {
+        return Err(DkgError::Unauthorized(format!(
+            "NodeInfo for node {} does not allow namespace {} or ring_id {}",
+            node_key, canonical_namespace, ring_id
+        )));
+    }
+
+    let ring_post = bulletin
+        .read(
+            namespace.to_string(),
+            ring_id.to_string(),
+            BulletinKind::Ring,
+        )
+        .await
+        .map_err(|e| {
+            DkgError::Unauthorized(format!(
+                "Fresh DKG target ring {} not found in namespace {}: {}",
+                ring_id, namespace, e
+            ))
+        })?;
+    let ring_payload = RingPayload::try_from(ring_post).map_err(|e| {
+        DkgError::Unauthorized(format!(
+            "Fresh DKG target ring {} has malformed payload: {}",
+            ring_id, e
+        ))
+    })?;
+
+    if !ring_payload.ring_pk.is_empty() {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh DKG target ring {} is not blank",
+            ring_id
+        )));
+    }
+    if !same_string_set(&ring_payload.peer_ids, peer_ids) {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh DKG target ring {} peer_ids do not match request",
+            ring_id
+        )));
+    }
+    if ring_payload.threshold != threshold {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh DKG target ring {} threshold {} does not match request threshold {}",
+            ring_id, ring_payload.threshold, threshold
+        )));
+    }
+    if ring_payload.pss_interval != pss_interval {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh DKG target ring {} pss_interval {:?} does not match request pss_interval {:?}",
+            ring_id, ring_payload.pss_interval, pss_interval
+        )));
+    }
+    if ring_payload.policy_id.as_deref() != policy_id {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh DKG target ring {} policy_id {:?} does not match request policy_id {:?}",
+            ring_id, ring_payload.policy_id, policy_id
+        )));
+    }
+
+    Ok(())
+}
+
+fn same_string_set(left: &[String], right: &[String]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut left_sorted: Vec<&str> = left.iter().map(String::as_str).collect();
+    let mut right_sorted: Vec<&str> = right.iter().map(String::as_str).collect();
+    left_sorted.sort_unstable();
+    right_sorted.sort_unstable();
+    left_sorted == right_sorted
 }
 
 /// Writes the `RingShareBundle` (share + polynomial) after a completed DKG, PSS refresh,
@@ -747,8 +895,321 @@ mod tests {
                 pss_interval: None,
                 policy_id: policy_id.map(str::to_string),
                 namespace: BULLETIN_RING_NAMESPACE.to_string(),
+                ring_id: "ring-1".to_string(),
             },
         }
+    }
+
+    async fn seed_node_info(
+        bulletin: &Arc<dyn Bulletin + Send + Sync>,
+        node_key: &str,
+        peer_id: &str,
+        namespaces: Vec<String>,
+        ring_ids: Vec<String>,
+    ) {
+        let node_info = NodeInfo {
+            peer_id: peer_id.to_string(),
+            controller_key: "controller".to_string(),
+            whitelisted_namespaces: namespaces,
+            whitelisted_ring_ids: ring_ids,
+        };
+        let payload: Vec<u8> = node_info.try_into().expect("serialize NodeInfo");
+        bulletin
+            .post(node_key.to_string(), BulletinKind::NodeInfo, payload, None)
+            .await
+            .expect("post NodeInfo");
+    }
+
+    async fn post_blank_ring(
+        bulletin: &Arc<dyn Bulletin + Send + Sync>,
+        namespace: &str,
+        peer_ids: Vec<String>,
+        threshold: u32,
+        pss_interval: Option<u64>,
+        policy_id: Option<String>,
+    ) -> String {
+        let payload = RingPayload {
+            ring_pk: String::new(),
+            peer_ids,
+            new_peer_ids: None,
+            new_threshold: None,
+            threshold,
+            pss_interval,
+            block_number_nonce: 0,
+            policy_id,
+        };
+        let bytes = serde_json::to_vec(&payload).expect("serialize RingPayload");
+        bulletin
+            .post(
+                namespace.to_string(),
+                BulletinKind::Ring,
+                bytes,
+                Some("test-session".to_string()),
+            )
+            .await
+            .expect("post blank ring");
+        bulletin
+            .get_ring_id(
+                namespace,
+                "",
+                &payload.peer_ids,
+                payload.threshold,
+                payload.pss_interval,
+                payload.policy_id.as_deref().unwrap_or(""),
+            )
+            .expect("compute blank ring id")
+    }
+
+    #[tokio::test]
+    async fn test_validate_fresh_dkg_node_authorization_allows_namespace() {
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let node_key = "node-key";
+        let local_peer_id = "peer-local";
+        seed_node_info(
+            &bulletin,
+            node_key,
+            local_peer_id,
+            vec![namespace_id(BULLETIN_RING_NAMESPACE)],
+            vec![],
+        )
+        .await;
+
+        let result = validate_fresh_dkg_node_authorization(
+            &bulletin,
+            node_key,
+            local_peer_id,
+            BULLETIN_RING_NAMESPACE,
+            "missing-ring-is-ok-for-namespace-allow",
+            1,
+            &["peer-a".to_string()],
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "expected namespace allow, got: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_fresh_dkg_node_authorization_allows_ring_id_with_blank_placeholder() {
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let node_key = "node-key";
+        let local_peer_id = "peer-local";
+        let peer_ids = vec!["peer-a".to_string()];
+        let ring_id = post_blank_ring(
+            &bulletin,
+            BULLETIN_RING_NAMESPACE,
+            peer_ids.clone(),
+            1,
+            Some(60),
+            Some("policy".to_string()),
+        )
+        .await;
+        seed_node_info(
+            &bulletin,
+            node_key,
+            local_peer_id,
+            vec![],
+            vec![ring_id.clone()],
+        )
+        .await;
+
+        let result = validate_fresh_dkg_node_authorization(
+            &bulletin,
+            node_key,
+            local_peer_id,
+            BULLETIN_RING_NAMESPACE,
+            &ring_id,
+            1,
+            &peer_ids,
+            Some(60),
+            Some("policy"),
+        )
+        .await;
+        assert!(result.is_ok(), "expected ring allow, got: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_validate_fresh_dkg_node_authorization_rejects_deny() {
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let node_key = "node-key";
+        let local_peer_id = "peer-local";
+        seed_node_info(
+            &bulletin,
+            node_key,
+            local_peer_id,
+            vec![namespace_id("other")],
+            vec!["other-ring".to_string()],
+        )
+        .await;
+
+        let result = validate_fresh_dkg_node_authorization(
+            &bulletin,
+            node_key,
+            local_peer_id,
+            BULLETIN_RING_NAMESPACE,
+            "ring-1",
+            1,
+            &["peer-a".to_string()],
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(result, Err(DkgError::Unauthorized(_))));
+    }
+
+    #[tokio::test]
+    async fn test_validate_fresh_dkg_node_authorization_rejects_missing_node_info() {
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+
+        let result = validate_fresh_dkg_node_authorization(
+            &bulletin,
+            "missing-node",
+            "peer-local",
+            BULLETIN_RING_NAMESPACE,
+            "ring-1",
+            1,
+            &["peer-a".to_string()],
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(result, Err(DkgError::Unauthorized(_))));
+    }
+
+    #[tokio::test]
+    async fn test_validate_fresh_dkg_node_authorization_rejects_malformed_node_info() {
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let node_key = "node-key";
+        bulletin
+            .post(
+                node_key.to_string(),
+                BulletinKind::NodeInfo,
+                b"not-json".to_vec(),
+                None,
+            )
+            .await
+            .expect("post malformed NodeInfo");
+
+        let result = validate_fresh_dkg_node_authorization(
+            &bulletin,
+            node_key,
+            "peer-local",
+            BULLETIN_RING_NAMESPACE,
+            "ring-1",
+            1,
+            &["peer-a".to_string()],
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(result, Err(DkgError::Unauthorized(_))));
+    }
+
+    #[tokio::test]
+    async fn test_validate_fresh_dkg_node_authorization_rejects_peer_id_mismatch() {
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let node_key = "node-key";
+        seed_node_info(
+            &bulletin,
+            node_key,
+            "different-peer",
+            vec![namespace_id(BULLETIN_RING_NAMESPACE)],
+            vec![],
+        )
+        .await;
+
+        let result = validate_fresh_dkg_node_authorization(
+            &bulletin,
+            node_key,
+            "peer-local",
+            BULLETIN_RING_NAMESPACE,
+            "ring-1",
+            1,
+            &["peer-a".to_string()],
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(result, Err(DkgError::Unauthorized(_))));
+    }
+
+    #[tokio::test]
+    async fn test_validate_fresh_dkg_node_authorization_rejects_missing_ring_placeholder() {
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let node_key = "node-key";
+        let local_peer_id = "peer-local";
+        seed_node_info(
+            &bulletin,
+            node_key,
+            local_peer_id,
+            vec![],
+            vec!["missing-ring".to_string()],
+        )
+        .await;
+
+        let result = validate_fresh_dkg_node_authorization(
+            &bulletin,
+            node_key,
+            local_peer_id,
+            BULLETIN_RING_NAMESPACE,
+            "missing-ring",
+            1,
+            &["peer-a".to_string()],
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(result, Err(DkgError::Unauthorized(_))));
+    }
+
+    #[tokio::test]
+    async fn test_validate_fresh_dkg_node_authorization_rejects_ring_payload_mismatch() {
+        let bulletin: Arc<dyn Bulletin + Send + Sync> =
+            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let node_key = "node-key";
+        let local_peer_id = "peer-local";
+        let ring_id = post_blank_ring(
+            &bulletin,
+            BULLETIN_RING_NAMESPACE,
+            vec!["peer-b".to_string()],
+            1,
+            None,
+            None,
+        )
+        .await;
+        seed_node_info(
+            &bulletin,
+            node_key,
+            local_peer_id,
+            vec![],
+            vec![ring_id.clone()],
+        )
+        .await;
+
+        let result = validate_fresh_dkg_node_authorization(
+            &bulletin,
+            node_key,
+            local_peer_id,
+            BULLETIN_RING_NAMESPACE,
+            &ring_id,
+            1,
+            &["peer-a".to_string()],
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(result, Err(DkgError::Unauthorized(_))));
     }
 
     #[test]
@@ -762,11 +1223,20 @@ mod tests {
             &peer_ids,
             None,
             Some(""),
-            BULLETIN_RING_NAMESPACE
+            BULLETIN_RING_NAMESPACE,
+            "ring-1"
         )
         .is_ok());
 
-        let result = validate_dkg_claims(&token, 1, &peer_ids, None, None, BULLETIN_RING_NAMESPACE);
+        let result = validate_dkg_claims(
+            &token,
+            1,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            "ring-1",
+        );
         assert!(
             matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("Token policy_id")),
             "Expected Unauthorized for empty token policy_id vs absent request policy_id, got: {:?}",
@@ -780,12 +1250,26 @@ mod tests {
         let mut token = dkg_token(None);
         token.claims.pss_interval = Some(0);
 
-        assert!(
-            validate_dkg_claims(&token, 1, &peer_ids, Some(0), None, BULLETIN_RING_NAMESPACE)
-                .is_ok()
-        );
+        assert!(validate_dkg_claims(
+            &token,
+            1,
+            &peer_ids,
+            Some(0),
+            None,
+            BULLETIN_RING_NAMESPACE,
+            "ring-1"
+        )
+        .is_ok());
 
-        let result = validate_dkg_claims(&token, 1, &peer_ids, None, None, BULLETIN_RING_NAMESPACE);
+        let result = validate_dkg_claims(
+            &token,
+            1,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            "ring-1",
+        );
         assert!(
             matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("Token pss_interval")),
             "Expected Unauthorized for present-zero token pss_interval vs absent request, got: {:?}",

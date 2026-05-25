@@ -79,6 +79,7 @@ fn test_resolve_jwt_did_with_dkg_claims() {
             pss_interval: None,
             policy_id: None,
             namespace: "test_namespace".to_string(),
+            ring_id: "ring-1".to_string(),
         },
     };
 

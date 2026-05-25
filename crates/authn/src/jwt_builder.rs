@@ -159,6 +159,7 @@ impl JwtSigner {
     /// * `pss_interval` - Optional seconds between automatic PSS refresh ceremonies
     /// * `policy_id` - Optional policy that externally governs ring updates
     /// * `namespace` - Namespace of the post
+    /// * `ring_id` - Pre-created blank ring entry targeted by this DKG
     /// # Returns
     /// The signed JWT string valid for 1 hour
     pub fn create_dkg_jwt(
@@ -168,6 +169,7 @@ impl JwtSigner {
         pss_interval: Option<u64>,
         policy_id: Option<String>,
         namespace: &str,
+        ring_id: &str,
     ) -> Result<String> {
         let claims = DkgClaims {
             threshold,
@@ -175,6 +177,7 @@ impl JwtSigner {
             pss_interval,
             policy_id,
             namespace: namespace.to_string(),
+            ring_id: ring_id.to_string(),
         };
         self.sign(claims, TOKEN_TTL)
     }

@@ -1,17 +1,19 @@
 use crate::constants::MAX_DKG_SESSIONS;
 use crate::dkg::{
     coordinator::DkgCoordinator,
+    error::DkgError,
     messages::{DkgMessage, SessionKind},
     session_state::{CreateSessionOutcome, DkgMessageType, DkgPhase, SessionStateManager},
 };
 use crate::helpers::helpers::extract_node_part;
-use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
     get_test_ring_post, setup_three_node_network, test_db_path, TestKeyPair,
 };
+use crate::helpers::test_helpers::{BULLETIN_RING_NAMESPACE, TEST_FRESH_DKG_RING_ID};
 use crate::DkgServiceImpl;
-use bulletin::r#trait::RingPayload;
+use bulletin::r#trait::{BulletinKind, NodeInfo, RingPayload};
+use common::blockchain::orbis::namespace_id;
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
@@ -38,12 +40,20 @@ async fn test_start_dkg_empty_participants() {
         pss_interval: None,
         policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(0, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(
+            0,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
+        )
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token).unwrap();
 
@@ -87,6 +97,7 @@ async fn test_three_nodes_connect() {
         pss_interval: None,
         policy_id: policy_id.clone(),
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create authenticated request
@@ -98,6 +109,7 @@ async fn test_three_nodes_connect() {
             None,
             policy_id.clone(),
             BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
 
@@ -159,12 +171,20 @@ async fn test_start_dkg_fails_on_connection_failure() {
         pss_interval: None,
         policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create authenticated request (even with invalid peer_ids, JWT should match request)
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(
+            2,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
+        )
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with invalid peer IDs...");
@@ -231,6 +251,7 @@ async fn test_start_dkg_succeeds_on_all_connections() {
         pss_interval: None,
         policy_id: policy_id.clone(),
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create authenticated request
@@ -242,6 +263,7 @@ async fn test_start_dkg_succeeds_on_all_connections() {
             None,
             policy_id.clone(),
             BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
 
@@ -382,6 +404,7 @@ async fn test_start_dkg_fails_missing_auth_header() {
         pss_interval: None,
         policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create request WITHOUT authentication header
@@ -423,6 +446,7 @@ async fn test_start_dkg_fails_malformed_jwt() {
         pss_interval: None,
         policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -456,7 +480,14 @@ async fn test_start_dkg_fails_wrong_signature() {
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
     let valid_token = key_pair_1
-        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(
+            2,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
+        )
         .expect("Failed to create JWT");
 
     // Tamper with the signature by changing a character
@@ -479,6 +510,7 @@ async fn test_start_dkg_fails_wrong_signature() {
         pss_interval: None,
         policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
@@ -510,7 +542,8 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
 
     // Create a node to receive the SessionInit
     let app_state = create_test_app_state_default(db_name).await;
-    let coordinator = DkgCoordinator::new(Arc::new(app_state));
+    let app_state = Arc::new(app_state);
+    let coordinator = DkgCoordinator::new(app_state.clone());
 
     // Create a SessionInit message with an invalid JWT token
     let session_init = DkgMessage::SessionInit {
@@ -532,6 +565,7 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
         pss_interval: None,
         policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Try to handle the message - should fail due to invalid JWT
@@ -571,7 +605,8 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
 
     // Create a node to receive the SessionInit
     let app_state = create_test_app_state_default(db_name).await;
-    let coordinator = DkgCoordinator::new(Arc::new(app_state));
+    let app_state = Arc::new(app_state);
+    let coordinator = DkgCoordinator::new(app_state.clone());
 
     // Create a valid JWT but with WRONG claims (threshold mismatch)
     let test_keys = TestKeyPair::new();
@@ -583,7 +618,14 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
 
     // Create JWT with threshold=3, but SessionInit will have threshold=2
     let mismatched_token = test_keys
-        .create_dkg_jwt(3, &peer_ids, None, None, BULLETIN_RING_NAMESPACE) // Wrong threshold!
+        .create_dkg_jwt(
+            3,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
+        ) // Wrong threshold!
         .expect("Failed to create JWT");
 
     // Create a SessionInit message with threshold=2 (doesn't match JWT's threshold=3)
@@ -602,6 +644,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
         pss_interval: None,
         policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Try to handle the message - should fail due to claim mismatch
@@ -644,7 +687,14 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
     ];
 
     let mismatched_token = test_keys
-        .create_dkg_jwt(2, &jwt_peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(
+            2,
+            &jwt_peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
+        )
         .expect("Failed to create JWT");
 
     // SessionInit has different peer_ids than the JWT
@@ -669,6 +719,7 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
         pss_interval: None,
         policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Try to handle the message - should fail due to peer_ids mismatch
@@ -693,6 +744,115 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
     );
 
     println!("SUCCESS! SessionInit with mismatched peer_ids was correctly rejected");
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
+    let db_name = "test_dkg_session_init_rejects_nodeinfo_deny";
+    let db_path = test_db_path(db_name);
+
+    let app_state = create_test_app_state_default(db_name).await;
+    let node_key = app_state.node_key.clone();
+    let local_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let denied_node_info = NodeInfo {
+        peer_id: local_peer_id_hex.clone(),
+        controller_key: "controller".to_string(),
+        whitelisted_namespaces: vec![namespace_id("other")],
+        whitelisted_ring_ids: vec![],
+    };
+    let payload: Vec<u8> = denied_node_info.try_into().expect("serialize NodeInfo");
+    app_state
+        .bulletin
+        .post(node_key.clone(), BulletinKind::NodeInfo, payload, None)
+        .await
+        .expect("override NodeInfo");
+
+    let app_state = Arc::new(app_state);
+    let coordinator = DkgCoordinator::new(app_state.clone());
+    let peer_ids = vec![local_peer_id_hex.clone()];
+    let token = TestKeyPair::new()
+        .create_dkg_jwt(
+            1,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
+        )
+        .expect("create JWT");
+    let session_init = DkgMessage::SessionInit {
+        session_id: 98765,
+        threshold: 1,
+        total_participants: 1,
+        peer_ids,
+        node_id_assignments: std::collections::HashMap::from([(local_peer_id_hex.clone(), 1)]),
+        token_string: token,
+        kind: SessionKind::Fresh,
+        pss_interval: None,
+        policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+    };
+
+    let sender_peer_id = network::PeerId::new(b"sender-peer".to_vec());
+    let result = coordinator
+        .handle_message(session_init, &sender_peer_id)
+        .await;
+    assert!(matches!(result, Err(DkgError::Unauthorized(_))));
+    assert!(
+        !app_state.dkg_session_state.session_exists(&98765).await,
+        "unauthorized SessionInit must not create session state"
+    );
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_start_dkg_rejects_self_participant_nodeinfo_deny() {
+    let db_name = "test_start_dkg_rejects_self_participant_nodeinfo_deny";
+    let db_path = test_db_path(db_name);
+
+    let app_state = create_test_app_state_default(db_name).await;
+    let node_key = app_state.node_key.clone();
+    let local_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let denied_node_info = NodeInfo {
+        peer_id: local_peer_id_hex.clone(),
+        controller_key: "controller".to_string(),
+        whitelisted_namespaces: vec![namespace_id("other")],
+        whitelisted_ring_ids: vec![],
+    };
+    let payload: Vec<u8> = denied_node_info.try_into().expect("serialize NodeInfo");
+    app_state
+        .bulletin
+        .post(node_key, BulletinKind::NodeInfo, payload, None)
+        .await
+        .expect("override NodeInfo");
+
+    let peer_ids = vec![local_peer_id_hex];
+    let token = TestKeyPair::new()
+        .create_dkg_jwt(
+            1,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
+        )
+        .expect("create JWT");
+    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let request = StartDkgRequest {
+        threshold: 1,
+        peer_ids,
+        pss_interval: None,
+        policy_id: None,
+        namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+    };
+    let result = service
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
+        .await;
+
+    assert!(result.is_err(), "start_dkg should reject unauthorized node");
     cleanup_db(&db_path);
 }
 

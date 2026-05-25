@@ -391,6 +391,7 @@ mod tests {
         (
             Arc::new(AppState::<DkgImpl>::new(
                 "127.0.0.1:0".to_string(),
+                "test-node-key".to_string(),
                 network,
                 local_storage,
                 authz,

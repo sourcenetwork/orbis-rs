@@ -6,7 +6,7 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
-use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
+use crate::helpers::test_helpers::{BULLETIN_RING_NAMESPACE, TEST_FRESH_DKG_RING_ID};
 use bulletin::r#trait::{BulletinKind, BulletinPost, DocumentPayload, RingPayload};
 use common::IntegrationTestNetwork;
 use common::SOURCEHUB_RPC_URL;
@@ -136,6 +136,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         Some(1),
         Some(ring_policy_id),
         namespace.clone(),
+        TEST_FRESH_DKG_RING_ID.to_string(),
     )
     .await;
     assert!(

@@ -399,6 +399,7 @@ where
         pss_interval: ring_payload.pss_interval,
         policy_id: None,
         namespace: entry.bulletin_namespace.clone(),
+        ring_id: String::new(),
     };
 
     for peer_id_str in peer_ids {
@@ -660,6 +661,7 @@ where
         pss_interval: ring_payload.pss_interval,
         policy_id: None,
         namespace: entry.bulletin_namespace.clone(),
+        ring_id: String::new(),
     };
 
     for peer_id_str in &union_peers {

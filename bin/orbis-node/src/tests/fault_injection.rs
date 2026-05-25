@@ -11,7 +11,7 @@
 //!     -- fault_injection --nocapture
 
 use crate::dkg::service::DkgServiceImpl;
-use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
+use crate::helpers::test_helpers::{BULLETIN_RING_NAMESPACE, TEST_FRESH_DKG_RING_ID};
 use crate::info::InfoServiceImpl;
 use crate::pre::service::PreServiceImpl;
 use crate::sign::service::SignServiceImpl;
@@ -131,6 +131,7 @@ async fn setup_fault_three_node_network(
             create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
                 .expect("create node signing key");
         let public_address = signer.address();
+        let node_key = signer.public_key_hex();
 
         cli_tool::fund(
             public_address.clone(),
@@ -190,6 +191,7 @@ async fn setup_fault_three_node_network(
                 node_whitelisted_namespaces: vec![],
                 node_whitelisted_ring_ids: vec![],
             },
+            node_key,
             network,
             local_storage,
             authz,
@@ -250,6 +252,7 @@ async fn setup_ring(
         None,
         None,
         BULLETIN_RING_NAMESPACE.to_string(),
+        TEST_FRESH_DKG_RING_ID.to_string(),
     )
     .await
     .expect("DKG initiation");
@@ -748,6 +751,7 @@ async fn test_dkg_fails_when_node_unreachable() {
         None,
         None,
         BULLETIN_RING_NAMESPACE.to_string(),
+        TEST_FRESH_DKG_RING_ID.to_string(),
     )
     .await;
 

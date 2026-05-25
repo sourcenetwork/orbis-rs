@@ -12,6 +12,7 @@ message StartDkgRequest {
   optional uint64 pss_interval = 4;  // Seconds between automatic PSS refresh ceremonies (absent = disabled; present 0 = immediate)
   optional string policy_id = 5;  // Optional policy that externally governs ring updates
   string namespace = 6;  // Bulletin namespace for this ring
+  string ring_id = 7;  // Pre-created blank ring entry targeted by this DKG
 }
 
 message StartDkgResponse {

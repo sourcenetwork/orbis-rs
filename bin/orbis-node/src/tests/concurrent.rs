@@ -7,7 +7,7 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
-use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
+use crate::helpers::test_helpers::{BULLETIN_RING_NAMESPACE, TEST_FRESH_DKG_RING_ID};
 use crate::{
     constants::MIN_NODE_BALANCE,
     dkg::service::DkgServiceImpl,
@@ -154,6 +154,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
             create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
                 .expect("create node signing key");
         let public_address = signer.address();
+        let node_key = signer.public_key_hex();
 
         cli_tool::fund(
             public_address.clone(),
@@ -210,6 +211,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
                 node_whitelisted_namespaces: vec![],
                 node_whitelisted_ring_ids: vec![],
             },
+            node_key,
             network,
             local_storage,
             authz,
@@ -256,6 +258,7 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
             create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
                 .expect("create node signing key");
         let public_address = signer.address();
+        let node_key = signer.public_key_hex();
 
         cli_tool::fund(
             public_address.clone(),
@@ -309,6 +312,7 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
                 node_whitelisted_namespaces: vec![],
                 node_whitelisted_ring_ids: vec![],
             },
+            node_key,
             network,
             local_storage,
             authz,
@@ -372,6 +376,7 @@ async fn setup_ring(
         None,
         None,
         BULLETIN_RING_NAMESPACE.to_string(),
+        TEST_FRESH_DKG_RING_ID.to_string(),
     )
     .await
     .expect("DKG initiation");
@@ -444,7 +449,8 @@ async fn test_two_simultaneous_dkg_sessions() {
             peer_ids.clone(),
             None,
             None,
-            BULLETIN_RING_NAMESPACE.to_string()
+            BULLETIN_RING_NAMESPACE.to_string(),
+            TEST_FRESH_DKG_RING_ID.to_string()
         ),
         cli_tool::do_dkg(
             endpoint.clone(),
@@ -452,7 +458,8 @@ async fn test_two_simultaneous_dkg_sessions() {
             peer_ids.clone(),
             None,
             None,
-            BULLETIN_RING_NAMESPACE.to_string()
+            BULLETIN_RING_NAMESPACE.to_string(),
+            TEST_FRESH_DKG_RING_ID.to_string()
         ),
     );
 
@@ -813,6 +820,7 @@ async fn test_dkg_non_participant_initiator_completes() {
         None,
         None,
         BULLETIN_RING_NAMESPACE.to_string(),
+        TEST_FRESH_DKG_RING_ID.to_string(),
     )
     .await
     .expect("DKG from non-participant initiator");

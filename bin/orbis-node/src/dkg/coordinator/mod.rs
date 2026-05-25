@@ -203,6 +203,7 @@ where
             pss_interval,
             policy_id,
             namespace,
+            ring_id,
             ..
         } = &message
         {
@@ -218,6 +219,7 @@ where
                 *pss_interval,
                 policy_id.clone(),
                 namespace.clone(),
+                ring_id.clone(),
                 sender_peer_id,
             )
             .await;

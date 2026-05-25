@@ -1,6 +1,6 @@
 //! Node initialization, configuration, and key management tests.
 
-use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
+use crate::helpers::test_helpers::{BULLETIN_RING_NAMESPACE, TEST_FRESH_DKG_RING_ID};
 use crate::{
     dkg::service::DkgServiceImpl,
     helpers::{
@@ -88,6 +88,7 @@ async fn make_test_node_config(
             node_whitelisted_namespaces: vec![],
             node_whitelisted_ring_ids: vec![],
         },
+        node_key: "test-node-key".to_string(),
         network,
         local_storage: LocalStorageImpl::new(password, db_path.clone())
             .expect("Failed to create local storage"),
@@ -490,6 +491,7 @@ async fn test_bootstrap_info_server_exposes_only_info() {
             pss_interval: None,
             policy_id: None,
             namespace: BULLETIN_RING_NAMESPACE.to_string(),
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
         })
         .await
         .expect_err("dkg should not be registered during bootstrap");
@@ -527,6 +529,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             pss_interval: None,
             policy_id: None,
             namespace: BULLETIN_RING_NAMESPACE.to_string(),
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
         })
         .await
         .expect_err("dkg should not be registered during bootstrap");
@@ -559,6 +562,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             node_whitelisted_namespaces: vec![],
             node_whitelisted_ring_ids: vec![],
         },
+        node_key: "test-node-key".to_string(),
         network,
         local_storage,
         authz,
@@ -598,6 +602,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             pss_interval: None,
             policy_id: None,
             namespace: BULLETIN_RING_NAMESPACE.to_string(),
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
         })
         .await
         .expect_err("unauthenticated dkg should fail after reaching the service");

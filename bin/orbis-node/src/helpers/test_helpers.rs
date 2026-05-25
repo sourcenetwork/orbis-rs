@@ -5,6 +5,7 @@
 use crate::app_state::AppState;
 
 pub const BULLETIN_RING_NAMESPACE: &str = "orbis";
+pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
 use crate::helpers::create_routers::{
     create_router_with_all_handlers, create_router_with_handlers,
 };
@@ -14,10 +15,11 @@ use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::{
     dummy::DummyBulletin,
-    r#trait::{Bulletin, BulletinKind, BulletinPost, RingPayload},
+    r#trait::{Bulletin, BulletinKind, BulletinPost, NodeInfo, RingPayload},
     BulletinImpl,
 };
 use cli_tool;
+use common::blockchain::orbis::namespace_id;
 use common::blockchain::ChainConfigBuilder;
 use hex;
 use local_storage::{
@@ -104,6 +106,26 @@ pub async fn create_test_app_state_with_bulletin(
     );
     let local_storage =
         LocalStorageImpl::new(None, test_db_path(db_name)).expect("Failed to create local storage");
+    let local_peer_id_hex = hex::encode(network.local_peer_id().as_bytes());
+    let node_key = format!("test-node-key-{}", local_peer_id_hex);
+    let node_info = NodeInfo {
+        peer_id: local_peer_id_hex,
+        controller_key: "test-controller-key".to_string(),
+        whitelisted_namespaces: vec![namespace_id(BULLETIN_RING_NAMESPACE)],
+        whitelisted_ring_ids: vec![TEST_FRESH_DKG_RING_ID.to_string()],
+    };
+    let node_info_payload: Vec<u8> = node_info
+        .try_into()
+        .expect("Failed to serialize test NodeInfo");
+    bulletin
+        .post(
+            node_key.clone(),
+            BulletinKind::NodeInfo,
+            node_info_payload,
+            None,
+        )
+        .await
+        .expect("Failed to seed test NodeInfo");
     let mut authz: Arc<dyn Authz> = Arc::new(
         AuthzImpl::new(ChainConfigBuilder::default())
             .await
@@ -119,7 +141,14 @@ pub async fn create_test_app_state_with_bulletin(
     }
 
     // Create AppState with the network (node_id is no longer needed - it's session-specific)
-    AppState::<DkgImpl>::new(bind_address, network, local_storage, authz, bulletin)
+    AppState::<DkgImpl>::new(
+        bind_address,
+        node_key,
+        network,
+        local_storage,
+        authz,
+        bulletin,
+    )
 }
 
 /// Create a test AppState with default values

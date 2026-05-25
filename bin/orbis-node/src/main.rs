@@ -59,6 +59,7 @@ use proto::store_secret_service::store_secret_service_server::StoreSecretService
 /// Configuration for running the node, allowing dependency injection for testing
 pub struct NodeConfig {
     pub args: Args,
+    pub node_key: String,
     pub network: Arc<dyn Network>,
     pub local_storage: LocalStorageImpl,
     pub authz: Arc<dyn Authz>,
@@ -216,6 +217,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
             let config = NodeConfig {
                 args,
+                node_key,
                 network,
                 local_storage,
                 authz,
@@ -327,6 +329,7 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
     // Create shared application state (needed for router)
     let app_state = AppState::<DkgImpl>::new(
         config.args.addr.clone(),
+        config.node_key.clone(),
         config.network.clone(),
         config.local_storage,
         config.authz,

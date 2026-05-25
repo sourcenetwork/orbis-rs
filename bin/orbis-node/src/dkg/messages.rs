@@ -122,6 +122,8 @@ pub enum DkgMessage {
         policy_id: Option<String>,
         /// Bulletin namespace this ring's payload lives under.
         namespace: String,
+        /// Pre-created blank ring entry targeted by this DKG.
+        ring_id: String,
     },
     /// Error message
     Error { session_id: u64, error: String },
@@ -162,6 +164,7 @@ mod tests {
             pss_interval: None,
             policy_id: None,
             namespace: "orbis".to_string(),
+            ring_id: "ring-1".to_string(),
         };
 
         let value = serde_json::to_value(&message).expect("serialize SessionInit");

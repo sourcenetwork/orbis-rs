@@ -79,6 +79,8 @@ pub struct DkgClaims {
     /// Bulletin namespace for this ring. Empty string means use the default namespace.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub namespace: String,
+    /// Pre-created blank ring entry targeted by this DKG.
+    pub ring_id: String,
 }
 
 /// Claims for StoreSecret endpoints

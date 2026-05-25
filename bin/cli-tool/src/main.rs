@@ -42,6 +42,10 @@ pub enum SubCommands {
         /// Bulletin namespace for this ring (default: orbis)
         #[clap(long, default_value = "orbis")]
         namespace: String,
+
+        /// Pre-created blank ring entry targeted by this DKG
+        #[clap(long)]
+        ring_id: String,
     },
 
     /// Start a Proxy Re-Encryption session
@@ -412,8 +416,12 @@ async fn main() -> Result<()> {
             peer_ids,
             policy_id,
             namespace,
+            ring_id,
         } => {
-            do_dkg(endpoint, threshold, peer_ids, None, policy_id, namespace).await?;
+            do_dkg(
+                endpoint, threshold, peer_ids, None, policy_id, namespace, ring_id,
+            )
+            .await?;
         }
         SubCommands::Pre {
             endpoint,

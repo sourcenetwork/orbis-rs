@@ -5,12 +5,12 @@ use crate::dkg::{
 };
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::helpers::extract_node_part;
-use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default,
     create_test_app_state_with_bulletin, get_test_ring_post, setup_three_node_network,
     test_db_path, write_ring_to_bulletin, TestKeyPair, TestNode,
 };
+use crate::helpers::test_helpers::{BULLETIN_RING_NAMESPACE, TEST_FRESH_DKG_RING_ID};
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use crate::DkgServiceImpl;
 use bulletin::dummy::DummyBulletin;
@@ -68,6 +68,7 @@ fn reshare_session_init(
         pss_interval: None,
         policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: String::new(),
     }
 }
 
@@ -1192,6 +1193,7 @@ async fn run_reshare_ceremony(
         pss_interval: None,
         policy_id: None,
         namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: String::new(),
     };
 
     // Process own SessionInit — sets up session state and reshare_params.
@@ -1338,7 +1340,14 @@ async fn test_reshare_lower_threshold() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(
+            2,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
+        )
         .expect("JWT");
     alice_service
         .start_dkg(
@@ -1349,6 +1358,7 @@ async fn test_reshare_lower_threshold() {
                     pss_interval: None,
                     policy_id: None,
                     namespace: BULLETIN_RING_NAMESPACE.to_string(),
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
             )
@@ -1446,7 +1456,14 @@ async fn test_reshare_one_member_rotated() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(
+            2,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
+        )
         .expect("JWT");
     alice_service
         .start_dkg(
@@ -1457,6 +1474,7 @@ async fn test_reshare_one_member_rotated() {
                     pss_interval: None,
                     policy_id: None,
                     namespace: BULLETIN_RING_NAMESPACE.to_string(),
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
             )
@@ -1557,7 +1575,14 @@ async fn test_reshare_one_old_dealer_offline_completes() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(
+            2,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
+        )
         .expect("JWT");
     alice_service
         .start_dkg(
@@ -1568,6 +1593,7 @@ async fn test_reshare_one_old_dealer_offline_completes() {
                     pss_interval: None,
                     policy_id: None,
                     namespace: BULLETIN_RING_NAMESPACE.to_string(),
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
             )
@@ -1675,7 +1701,14 @@ async fn test_reshare_expand_committee() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(
+            2,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
+        )
         .expect("JWT");
     alice_service
         .start_dkg(
@@ -1686,6 +1719,7 @@ async fn test_reshare_expand_committee() {
                     pss_interval: None,
                     policy_id: None,
                     namespace: BULLETIN_RING_NAMESPACE.to_string(),
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
             )
@@ -1793,7 +1827,14 @@ async fn test_reshare_shrink_committee() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(
+            2,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
+        )
         .expect("JWT");
     alice_service
         .start_dkg(
@@ -1804,6 +1845,7 @@ async fn test_reshare_shrink_committee() {
                     pss_interval: None,
                     policy_id: None,
                     namespace: BULLETIN_RING_NAMESPACE.to_string(),
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
             )
@@ -1900,7 +1942,14 @@ async fn test_reshare_full_rotation() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(
+            2,
+            &peer_ids,
+            None,
+            None,
+            BULLETIN_RING_NAMESPACE,
+            TEST_FRESH_DKG_RING_ID,
+        )
         .expect("JWT");
     alice_service
         .start_dkg(
@@ -1911,6 +1960,7 @@ async fn test_reshare_full_rotation() {
                     pss_interval: None,
                     policy_id: None,
                     namespace: BULLETIN_RING_NAMESPACE.to_string(),
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
             )
