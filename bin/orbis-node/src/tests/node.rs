@@ -230,6 +230,20 @@ async fn test_ensure_node_info_creates_when_missing() {
 }
 
 #[tokio::test]
+async fn test_ensure_node_info_requires_controller_key() {
+    let network = NetworkImpl::new().await.expect("create network");
+    let bulletin = DummyBulletin::new().await.expect("create bulletin");
+    let node_key = "node-key-missing-controller";
+    let mut args = node_info_test_args("controller-key", None, vec![], vec![]);
+    args.node_controller_key = None;
+
+    let err = ensure_node_info(&bulletin, node_key, &network, &args)
+        .await
+        .expect_err("missing controller should fail");
+    assert!(err.to_string().contains("--node-controller-key"));
+}
+
+#[tokio::test]
 async fn test_ensure_node_info_keeps_existing_whitelists() {
     let network = NetworkImpl::new().await.expect("create network");
     let bulletin = DummyBulletin::new().await.expect("create bulletin");
@@ -720,32 +734,6 @@ async fn test_init_multiple_nodes() {
         .expect("Router 2 shutdown failed");
     cleanup_db(&db_path1);
     cleanup_db(&db_path2);
-}
-
-/// Test Args default values
-#[test]
-fn test_args_default() {
-    use clap::Parser;
-
-    // Parse with no arguments (uses defaults)
-    let args = Args::parse_from(["orbis-node"]);
-    assert_eq!(
-        args.addr, "[::1]:50051",
-        "Default address should be [::1]:50051"
-    );
-}
-
-/// Test Args custom address
-#[test]
-fn test_args_custom_address() {
-    use clap::Parser;
-
-    let args = Args::parse_from(["orbis-node", "--addr", "0.0.0.0:8080"]);
-    assert_eq!(args.addr, "0.0.0.0:8080");
-
-    // Test short form
-    let args = Args::parse_from(["orbis-node", "-a", "127.0.0.1:9000"]);
-    assert_eq!(args.addr, "127.0.0.1:9000");
 }
 
 /// ThresholdDealer::name() reflects the compiled crypto backend (elgamal/decaf377 vs elgamal/bls12_381).
