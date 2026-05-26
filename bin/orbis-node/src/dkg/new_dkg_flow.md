@@ -183,6 +183,31 @@ operations such as storing secrets/documents, creating key derivations, and
 starting later ring updates.
 
 
+## Extra Policy_id information
+```
+name: orbis ring policy
+resources:
+- name: ring_policy
+  permissions:
+  - name: create_ring
+    expr: ring_creator
+  relations:
+  - name: ring_creator
+    types:
+    - actor
+- name: ring
+  permissions:
+  - name: update_ring
+    expr: operator
+  relations:
+  - name: operator
+    types:
+    - actor
+```
+
+The chain assumes a policy id spec that adheres to this to govern rings
+
+It also requires a policy to set its own policy_id as a document as a ring_policy
 
 
 ## New DKG Flow but I got AI to make it a dr seuss rhyme
