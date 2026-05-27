@@ -150,6 +150,10 @@ where
     let ring_payload: RingPayload = serde_json::from_slice(&bulletin_post.payload)
         .map_err(|e| DkgError::Deserialization(format!("PSS: bad ring payload: {}", e)))?;
 
+    if ring_payload.ring_pk.is_empty() {
+        return cleanup_pending_fresh_ring_if_due(app_state, entry, &ring_payload);
+    }
+
     if !ring_payload_matches_ring_key(ring_pk_str, &ring_payload.ring_pk) {
         return Err(DkgError::Storage(format!(
             "PSS: bulletin post ring_pk mismatch (expected={}, got={})",
@@ -214,10 +218,7 @@ where
 
     // Refresh: also check that enough time has elapsed since the last ceremony.
     let pss_interval_secs = ring_payload.pss_interval.unwrap(); // safe: checked above
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now_secs = current_unix_secs();
     let last_refresh_secs =
         RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str)
             .map(|b| b.last_pss)
@@ -242,6 +243,122 @@ where
         &node_id_to_peer_id,
     )
     .await
+}
+
+fn cleanup_pending_fresh_ring_if_due<D>(
+    app_state: &Arc<AppState<D>>,
+    entry: &RingIndexEntry,
+    ring_payload: &RingPayload,
+) -> Result<(), DkgError>
+where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = GroupAffine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    let post_id = &entry.bulletin_post_id;
+    let ring_pk_str = &entry.ring_pk_str;
+    let pss_interval_secs = match ring_payload.pss_interval {
+        Some(interval) => interval,
+        None => {
+            tracing::debug!(
+                ring_id = %post_id,
+                ring_pk_str = %ring_pk_str,
+                "PSS: pending fresh DKG ring has no pss_interval, skipping local cleanup"
+            );
+            return Ok(());
+        }
+    };
+
+    let bundle =
+        RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str).map_err(|e| {
+            DkgError::Storage(format!(
+                "PSS: failed to load pending fresh DKG bundle for cleanup: {}",
+                e
+            ))
+        })?;
+    let now_secs = current_unix_secs();
+    let elapsed_secs = now_secs.saturating_sub(bundle.last_pss);
+
+    if elapsed_secs < pss_interval_secs {
+        tracing::debug!(
+            ring_id = %post_id,
+            ring_pk_str = %ring_pk_str,
+            elapsed_secs = elapsed_secs,
+            pss_interval_secs = pss_interval_secs,
+            "PSS: pending fresh DKG cleanup not yet due"
+        );
+        return Ok(());
+    }
+
+    // TODO(sourcehub): consider adding a chain tx to expire/delete pending rings on-chain.
+    app_state
+        .local_storage
+        .delete(LocalStorageKeys::RingKey(ring_pk_str.clone()))
+        .map_err(|e| {
+            DkgError::Storage(format!(
+                "PSS: failed to delete expired pending fresh DKG bundle: {}",
+                e
+            ))
+        })?;
+    remove_ring_index_entry(&app_state.local_storage, entry)?;
+
+    tracing::warn!(
+        ring_id = %post_id,
+        ring_pk_str = %ring_pk_str,
+        elapsed_secs = elapsed_secs,
+        pss_interval_secs = pss_interval_secs,
+        "PSS: cleaned up expired pending fresh DKG ring locally"
+    );
+
+    Ok(())
+}
+
+fn remove_ring_index_entry(
+    storage: &impl LocalStorage,
+    entry: &RingIndexEntry,
+) -> Result<(), DkgError> {
+    let mut ring_index = read_ring_index(storage)?;
+    ring_index.retain(|candidate| {
+        candidate.ring_pk_str != entry.ring_pk_str
+            || candidate.bulletin_post_id != entry.bulletin_post_id
+    });
+    let bytes = serde_json::to_vec(&ring_index).map_err(|e| {
+        DkgError::Serialization(format!("PSS: failed to serialize RingIndex: {}", e))
+    })?;
+    storage
+        .set(LocalStorageKeys::RingIndex, bytes)
+        .map_err(|e| {
+            DkgError::Storage(format!(
+                "PSS: failed to write RingIndex after pending cleanup: {}",
+                e
+            ))
+        })
+}
+
+fn read_ring_index(storage: &impl LocalStorage) -> Result<Vec<RingIndexEntry>, DkgError> {
+    storage
+        .get(LocalStorageKeys::RingIndex)
+        .map_err(|e| DkgError::Storage(format!("PSS: failed to read RingIndex: {}", e)))?
+        .map(|bytes| {
+            serde_json::from_slice(&bytes).map_err(|e| {
+                DkgError::Storage(format!("PSS: failed to deserialize RingIndex: {}", e))
+            })
+        })
+        .transpose()
+        .map(|index| index.unwrap_or_default())
+}
+
+fn current_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Initiate a Refresh ceremony (same secret, new shares, same committee).

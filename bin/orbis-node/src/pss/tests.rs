@@ -1,14 +1,15 @@
 use crate::dkg::error::DkgError;
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bulletin, test_db_path};
-use crate::ring_state::RingIndexEntry;
+use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::{
     dummy::DummyBulletin,
     r#trait::{BulletinKind, NodeInfo, RingPayload},
 };
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
 
 use crypto::DkgImpl;
 
@@ -359,6 +360,148 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
     cleanup_db(&db_path);
 }
 
+#[tokio::test]
+async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
+    let db_name = "pss_pending_fresh_cleanup_elapsed";
+    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+    let local_ring_pk = "pending_fresh_elapsed_local_ring_pk";
+    let ring_payload = RingPayload {
+        ring_pk: String::new(),
+        peer_node_keys: vec![our_hex],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: Some(1),
+        block_number_nonce: 0,
+        policy_id: None,
+    };
+
+    let entry =
+        post_ring_and_seed_index_with_local_key(&app_state, &ring_payload, local_ring_pk).await;
+    save_dummy_ring_bundle(&app_state, local_ring_pk, 0);
+    assert!(
+        app_state
+            .local_storage
+            .contains(LocalStorageKeys::RingKey(local_ring_pk.to_string()))
+            .expect("check RingKey presence"),
+        "test setup should store local pending fresh DKG bundle"
+    );
+
+    let state_arc = Arc::new(app_state);
+    let result = super::pss_ring(&state_arc, &entry).await;
+
+    assert!(
+        result.is_ok(),
+        "pending fresh cleanup should succeed, got: {:?}",
+        result
+    );
+    assert!(
+        !state_arc
+            .local_storage
+            .contains(LocalStorageKeys::RingKey(local_ring_pk.to_string()))
+            .expect("check RingKey deletion"),
+        "expired pending fresh DKG bundle should be deleted"
+    );
+    assert!(
+        !ring_index_entries(&state_arc)
+            .iter()
+            .any(|candidate| candidate.ring_pk_str == local_ring_pk),
+        "expired pending fresh DKG RingIndex entry should be removed"
+    );
+
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_pending_fresh_dkg_before_interval_remains_indexed() {
+    let db_name = "pss_pending_fresh_cleanup_not_due";
+    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+    let local_ring_pk = "pending_fresh_not_due_local_ring_pk";
+    let ring_payload = RingPayload {
+        ring_pk: String::new(),
+        peer_node_keys: vec![our_hex],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: Some(86_400),
+        block_number_nonce: 0,
+        policy_id: None,
+    };
+
+    let entry =
+        post_ring_and_seed_index_with_local_key(&app_state, &ring_payload, local_ring_pk).await;
+    save_dummy_ring_bundle(&app_state, local_ring_pk, current_unix_secs());
+
+    let state_arc = Arc::new(app_state);
+    let result = super::pss_ring(&state_arc, &entry).await;
+
+    assert!(
+        result.is_ok(),
+        "pending fresh DKG before pss_interval should skip cleanup, got: {:?}",
+        result
+    );
+    assert!(
+        state_arc
+            .local_storage
+            .contains(LocalStorageKeys::RingKey(local_ring_pk.to_string()))
+            .expect("check RingKey presence"),
+        "not-yet-expired pending fresh DKG bundle should remain"
+    );
+    assert!(
+        ring_index_entries(&state_arc)
+            .iter()
+            .any(|candidate| candidate.ring_pk_str == local_ring_pk),
+        "not-yet-expired pending fresh DKG RingIndex entry should remain"
+    );
+
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_pending_fresh_dkg_without_interval_remains_indexed() {
+    let db_name = "pss_pending_fresh_cleanup_no_interval";
+    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+    let local_ring_pk = "pending_fresh_no_interval_local_ring_pk";
+    let ring_payload = RingPayload {
+        ring_pk: String::new(),
+        peer_node_keys: vec![our_hex],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: None,
+        block_number_nonce: 0,
+        policy_id: None,
+    };
+
+    let entry =
+        post_ring_and_seed_index_with_local_key(&app_state, &ring_payload, local_ring_pk).await;
+    save_dummy_ring_bundle(&app_state, local_ring_pk, 0);
+
+    let state_arc = Arc::new(app_state);
+    let result = super::pss_ring(&state_arc, &entry).await;
+
+    assert!(
+        result.is_ok(),
+        "pending fresh DKG without pss_interval should skip cleanup, got: {:?}",
+        result
+    );
+    assert!(
+        state_arc
+            .local_storage
+            .contains(LocalStorageKeys::RingKey(local_ring_pk.to_string()))
+            .expect("check RingKey presence"),
+        "pending fresh DKG bundle should remain when pss_interval is absent"
+    );
+    assert!(
+        ring_index_entries(&state_arc)
+            .iter()
+            .any(|candidate| candidate.ring_pk_str == local_ring_pk),
+        "pending fresh DKG RingIndex entry should remain when pss_interval is absent"
+    );
+
+    cleanup_db(&db_path);
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Dispatch tests — reshare vs refresh routing
 // ──────────────────────────────────────────────────────────────────────────────
@@ -397,6 +540,14 @@ async fn post_ring_and_seed_index(
     app_state: &crate::app_state::AppState<DkgImpl>,
     ring_payload: &RingPayload,
 ) -> RingIndexEntry {
+    post_ring_and_seed_index_with_local_key(app_state, ring_payload, &ring_payload.ring_pk).await
+}
+
+async fn post_ring_and_seed_index_with_local_key(
+    app_state: &crate::app_state::AppState<DkgImpl>,
+    ring_payload: &RingPayload,
+    local_ring_pk: &str,
+) -> RingIndexEntry {
     let payload_bytes = serde_json::to_vec(ring_payload).expect("serialize RingPayload");
     app_state
         .bulletin
@@ -408,7 +559,7 @@ async fn post_ring_and_seed_index(
         .get_post_id(&payload_bytes)
         .expect("compute post_id");
     let entry = RingIndexEntry {
-        ring_pk_str: ring_payload.ring_pk.clone(),
+        ring_pk_str: local_ring_pk.to_string(),
         bulletin_post_id: post_id,
     };
     app_state
@@ -419,6 +570,37 @@ async fn post_ring_and_seed_index(
         )
         .expect("write RingIndex");
     entry
+}
+
+fn save_dummy_ring_bundle(
+    app_state: &crate::app_state::AppState<DkgImpl>,
+    ring_pk: &str,
+    last_pss: u64,
+) {
+    let bundle = RingShareBundle {
+        share_bytes: Zeroizing::new(vec![1, 2, 3, 4]),
+        public_polynomial: "dummy-public-polynomial".to_string(),
+        last_pss,
+    };
+    bundle
+        .save_by_ring_key(&app_state.local_storage, ring_pk)
+        .expect("save dummy RingShareBundle");
+}
+
+fn ring_index_entries(app_state: &crate::app_state::AppState<DkgImpl>) -> Vec<RingIndexEntry> {
+    app_state
+        .local_storage
+        .get(LocalStorageKeys::RingIndex)
+        .expect("read RingIndex")
+        .map(|bytes| serde_json::from_slice(&bytes).expect("parse RingIndex"))
+        .unwrap_or_default()
+}
+
+fn current_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// When `new_peer_node_keys` is set, `pss_ring` must dispatch to `trigger_reshare`
