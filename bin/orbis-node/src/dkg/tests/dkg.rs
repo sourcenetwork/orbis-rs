@@ -12,6 +12,7 @@ use crate::helpers::test_helpers::{
     create_test_app_state_with_bulletin, get_test_ring_post, setup_three_node_network,
     test_db_path, TestKeyPair,
 };
+use crate::ring_state::RingIndexEntry;
 use crate::DkgServiceImpl;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{NodeInfo, RingPayload};
@@ -295,7 +296,7 @@ async fn test_start_dkg_succeeds_on_all_connections() {
                 .charlie
                 .app_state
                 .local_storage
-                .get_encrypted(LocalStorageKeys::RingKey(key_string));
+                .get_encrypted(LocalStorageKeys::RingKey(key_string.clone()));
 
             // Verify all shares exist (they should be different, so we don't compare them)
             assert!(
@@ -312,6 +313,34 @@ async fn test_start_dkg_succeeds_on_all_connections() {
             );
 
             println!("Success! All nodes stored their secret shares in local storage");
+
+            let nodes = [
+                ("Alice", &network.alice.app_state),
+                ("Bob", &network.bob.app_state),
+                ("Charlie", &network.charlie.app_state),
+            ];
+            for (name, state) in nodes {
+                let ring_index_bytes = state
+                    .local_storage
+                    .get(LocalStorageKeys::RingIndex)
+                    .expect("read RingIndex")
+                    .expect("RingIndex should exist");
+                let ring_index: Vec<RingIndexEntry> =
+                    serde_json::from_slice(&ring_index_bytes).expect("parse RingIndex");
+                assert!(
+                    ring_index.iter().any(|entry| {
+                        entry.ring_pk_str == key_string
+                            && entry.bulletin_post_id == TEST_FRESH_DKG_RING_ID
+                    }),
+                    "{name} should index the finalized ring by the original ring_id"
+                );
+            }
+
+            assert_eq!(
+                dummy_bulletin.finalization_count(TEST_FRESH_DKG_RING_ID),
+                3,
+                "each participant should submit a fresh FinalizeRing confirmation"
+            );
             break;
         }
 

@@ -31,21 +31,12 @@ where
         "DKG Coordinator: Starting Phase 4 completion"
     );
 
-    let (
-        kind,
-        pss_interval,
-        policy_id,
-        dkg_role,
-        reshare_new_peer_node_keys,
-        reshare_bulletin_post_id,
-    ) = coord
+    let (kind, dkg_role, reshare_new_peer_node_keys, reshare_bulletin_post_id) = coord
         .app_state
         .dkg_session_state
         .with_state(&session_id, |state| {
             (
                 state.kind.clone(),
-                state.pss_interval,
-                state.policy_id.clone(),
                 state.node.role(),
                 state
                     .reshare_params
@@ -255,38 +246,25 @@ where
         }
     }
 
-    // For fresh DKG: post the RingPayload to the bulletin (node 1 only) and write a
-    // RingIndexEntry on all nodes so the PSS scheduler can discover this ring.
-    //
-    // Node 1 posts first so the chain-assigned ring_id can be read from the tx
-    // response; all other nodes compute the ring_id locally via generate_ring_id.
-    //
+    // For fresh DKG: every participant confirms the pre-created ring on the bulletin
+    // and writes a RingIndexEntry so the PSS scheduler can discover this ring.
     // For Refresh: bulletin entry is unchanged; polynomial updated in RingShareBundle above.
     // For Reshare: bulletin is updated below by new-committee node 1.
     if is_fresh {
-        let bulletin_post_id = if node_id == 1 {
-            // Post to the chain
-            ring_storage::post_fresh_ring_payload(
-                coord,
-                session_id,
-                &ring_pk_bytes,
-                threshold,
-                pss_interval,
-                policy_id.clone(),
-            )
-            .await?
-        } else {
-            // Non-selector nodes use the pre-created ring_id carried through SessionInit.
-            coord
-                .app_state
-                .dkg_session_state
-                .get_ring_id(&session_id)
+        let bulletin_post_id =
+            match ring_storage::post_fresh_ring_finalization(coord, session_id, &ring_pk_bytes)
                 .await
-                .filter(|id| !id.is_empty())
-                .ok_or_else(|| {
-                    DkgError::Bulletin("Fresh DKG session is missing ring_id".to_string())
-                })?
-        };
+            {
+                Ok(post_id) => post_id,
+                Err(e) => {
+                    cleanup_new_ring_bundle_after_index_failure(
+                        &coord.app_state.local_storage,
+                        &storage_key,
+                        adds_new_local_ring,
+                    );
+                    return Err(e);
+                }
+            };
 
         if let Err(e) =
             ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, bulletin_post_id)

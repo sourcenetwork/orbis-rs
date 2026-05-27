@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BulletinKind {
     Ring,
+    Finalize,
     Document,
     KeyDerivation,
     NodeInfo,
@@ -71,6 +72,15 @@ pub struct RingPayload {
     /// If set, the ring is updated externally governed by this policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_id: Option<String>,
+}
+
+/// Payload for confirming a completed fresh DKG ring.
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+pub struct RingFinalizationPayload {
+    /// Id of the pending ring to finalize.
+    pub ring_id: String,
+    /// Aggregate public key computed by DKG participants.
+    pub ring_pk: String,
 }
 
 /// Payload for derivation information derivation_id => payload
@@ -148,6 +158,22 @@ impl TryFrom<RingPayload> for Vec<u8> {
     }
 }
 
+impl TryFrom<BulletinPost> for RingFinalizationPayload {
+    type Error = BulletinError;
+
+    fn try_from(post: BulletinPost) -> Result<Self> {
+        serde_json::from_slice(&post.payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<RingFinalizationPayload> for Vec<u8> {
+    type Error = BulletinError;
+
+    fn try_from(payload: RingFinalizationPayload) -> Result<Self> {
+        serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
 impl TryFrom<BulletinPost> for KeyDerivation {
     type Error = BulletinError;
 
@@ -185,6 +211,9 @@ pub trait Bulletin {
     /// Register a bulletin instance.
     async fn register(&self) -> Result<()>;
     /// Post a typed Orbis object.
+    ///
+    /// `BulletinKind::Ring` creates a pending ring. `BulletinKind::Finalize` confirms
+    /// fresh DKG finalization for an existing ring.
     async fn post(
         &self,
         kind: BulletinKind,

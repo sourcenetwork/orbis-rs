@@ -3,7 +3,7 @@ use crate::constants::MAX_LOCAL_RINGS_PER_NODE;
 use crate::dkg::error::{DkgError, Result};
 use crate::metrics;
 use crate::ring_state::RingIndexEntry;
-use bulletin::r#trait::{BulletinKind, RingPayload};
+use bulletin::r#trait::{BulletinKind, RingFinalizationPayload};
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
@@ -110,55 +110,15 @@ where
     ensure_local_ring_capacity(&ring_index, storage_key)
 }
 
-/// Post the fresh ring payload to the bulletin and return the ring_id.
-pub(in crate::dkg::coordinator) async fn post_fresh_ring_payload<D>(
+/// Confirm the completed fresh ring against the pre-created ring and return the ring_id.
+pub(in crate::dkg::coordinator) async fn post_fresh_ring_finalization<D>(
     coord: &DkgCoordinator<D>,
     session_id: u64,
     ring_pk_bytes: &[u8],
-    threshold: usize,
-    pss_interval: Option<u64>,
-    policy_id: Option<String>,
 ) -> Result<String>
 where
     D: Dkg + Clone + 'static,
 {
-    let peer_node_keys = coord
-        .app_state
-        .dkg_session_state
-        .get_peer_node_keys(&session_id)
-        .await
-        .ok_or(DkgError::Generic(
-            "Failed to get peer node keys".to_string(),
-        ))?;
-
-    let ring_payload = RingPayload {
-        ring_pk: hex::encode(ring_pk_bytes),
-        peer_node_keys,
-        new_peer_node_keys: None,
-        new_threshold: None,
-        threshold: threshold as u32,
-        pss_interval,
-        policy_id,
-        // setting to 0 is fine since 0 can act as the first nonce, subsequent nonces set on update
-        block_number_nonce: 0,
-    };
-
-    let payload_bytes: Vec<u8> = ring_payload
-        .clone()
-        .try_into()
-        .map_err(|e| DkgError::Serialization(format!("Failed to serialize RingPayload: {}", e)))?;
-
-    coord
-        .app_state
-        .bulletin
-        .post(
-            BulletinKind::Ring,
-            payload_bytes,
-            Some(session_id.to_string()),
-        )
-        .await
-        .map_err(|e| DkgError::Bulletin(format!("Failed to post RingPayload: {}", e)))?;
-
     let ring_id = coord
         .app_state
         .dkg_session_state
@@ -166,11 +126,30 @@ where
         .await
         .filter(|id| !id.is_empty())
         .ok_or_else(|| DkgError::Bulletin("Fresh DKG session is missing ring_id".to_string()))?;
+    let ring_pk = hex::encode(ring_pk_bytes);
+
+    let payload = RingFinalizationPayload {
+        ring_id: ring_id.clone(),
+        ring_pk: ring_pk.clone(),
+    };
+    let payload_bytes: Vec<u8> = payload.try_into().map_err(|e| {
+        DkgError::Serialization(format!(
+            "Failed to serialize fresh ring finalization payload: {}",
+            e
+        ))
+    })?;
+
+    coord
+        .app_state
+        .bulletin
+        .post(BulletinKind::Finalize, payload_bytes, None)
+        .await
+        .map_err(|e| DkgError::Bulletin(format!("Failed to finalize ring: {}", e)))?;
 
     tracing::info!(
-        ring_pk = %ring_payload.ring_pk,
+        ring_pk = %ring_pk,
         ring_id = %ring_id,
-        "DKG Coordinator: Successfully posted RingPayload to bulletin"
+        "DKG Coordinator: Successfully confirmed fresh DKG on bulletin"
     );
 
     Ok(ring_id)

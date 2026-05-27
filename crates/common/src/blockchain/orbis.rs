@@ -195,6 +195,31 @@ impl MsgUpdateRingByAcp {
 }
 
 #[derive(Clone, Message)]
+pub struct MsgFinalizeRing {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub ring_id: String,
+    #[prost(string, tag = "3")]
+    pub ring_pk: String,
+}
+
+impl MsgFinalizeRing {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgFinalizeRing";
+
+    pub fn new(creator: &str, ring_id: &str, ring_pk: &str) -> Self {
+        Self {
+            creator: creator.to_string(),
+            ring_id: ring_id.to_string(),
+            ring_pk: ring_pk.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgFinalizeRingResponse {}
+
+#[derive(Clone, Message)]
 pub struct MsgFinalizeRingReshareByThresholdSignature {
     #[prost(string, tag = "1")]
     pub creator: String,
@@ -804,6 +829,23 @@ impl SourceHubClient {
         .await
     }
 
+    pub async fn orbis_finalize_ring(
+        &self,
+        ring_id: &str,
+        ring_pk: &str,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgFinalizeRing::new(&signer.address(), ring_id, ring_pk);
+        self.broadcast_proto_msg_with_gas(
+            MsgFinalizeRing::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
     pub async fn orbis_finalize_ring_reshare(
         &self,
         ring_id: &str,
@@ -924,7 +966,10 @@ impl SourceHubClient {
 mod tests {
     use prost::Message;
 
-    use super::{MsgCreateRing, MsgFinalizeRingReshareByThresholdSignature, MsgUpdateRingByAcp};
+    use super::{
+        MsgCreateRing, MsgFinalizeRing, MsgFinalizeRingReshareByThresholdSignature,
+        MsgUpdateRingByAcp,
+    };
 
     #[test]
     fn create_ring_preserves_present_zero_pss_interval_on_wire() {
@@ -963,6 +1008,13 @@ mod tests {
             hex::encode(msg.encode_to_vec()),
             "0a01631201721a0270311a0270322002280a"
         );
+    }
+
+    #[test]
+    fn finalize_ring_wire_fields_match_sourcehub_proto() {
+        let msg = MsgFinalizeRing::new("c", "r", "pk");
+
+        assert_eq!(hex::encode(msg.encode_to_vec()), "0a01631201721a02706b");
     }
 
     #[test]

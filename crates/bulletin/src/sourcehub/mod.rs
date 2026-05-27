@@ -1,7 +1,8 @@
 use crate::{
     error::{BulletinError, Result},
     r#trait::{
-        Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, NodeInfo, RingPayload,
+        Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, NodeInfo,
+        RingFinalizationPayload, RingPayload,
     },
 };
 use async_trait::async_trait;
@@ -49,6 +50,16 @@ impl Bulletin for SourceHubBulletin {
                     .await
                     .map_err(|e| BulletinError::ChainError(e.to_string()))?;
                 check_result(result, "create ring")
+            }
+            BulletinKind::Finalize => {
+                let finalize: RingFinalizationPayload = serde_json::from_slice(&payload)
+                    .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+                let result = self
+                    .chain_client
+                    .orbis_finalize_ring(&finalize.ring_id, &finalize.ring_pk)
+                    .await
+                    .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+                check_result(result, "finalize ring")
             }
             BulletinKind::Document => {
                 let doc: DocumentPayload = serde_json::from_slice(&payload)
@@ -114,7 +125,7 @@ impl Bulletin for SourceHubBulletin {
 
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost> {
         match kind {
-            BulletinKind::Ring => self
+            BulletinKind::Ring | BulletinKind::Finalize => self
                 .chain_client
                 .orbis_read_ring(&id)
                 .await
@@ -181,6 +192,9 @@ impl Bulletin for SourceHubBulletin {
                 ring.policy_id.as_deref().unwrap_or(""),
                 None,
             ));
+        }
+        if let Ok(finalize) = serde_json::from_slice::<RingFinalizationPayload>(payload) {
+            return Ok(finalize.ring_id);
         }
 
         let mut hasher = Sha256::new();
