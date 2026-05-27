@@ -1,7 +1,9 @@
 use crate::app_state::AppState;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
-use crate::dkg::helpers::{validate_dkg_claims, validate_fresh_dkg_node_authorization};
+use crate::dkg::helpers::{
+    validate_dkg_claims, validate_fresh_dkg_node_authorization, validate_fresh_dkg_ring_payload,
+};
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
 use crate::helpers::helpers::{is_self_peer_id, validate_all_peer_ids};
@@ -95,38 +97,7 @@ where
                 ring_id, e
             ))
         })?;
-        if !ring_payload.ring_pk.is_empty() {
-            return Err(DkgError::Unauthorized(format!(
-                "Fresh DKG target ring {} is not pending",
-                ring_id
-            ))
-            .into());
-        }
-        if ring_payload.peer_node_keys.is_empty() {
-            return Err(DkgError::InvalidInput(format!(
-                "Fresh DKG target ring {} has no peer_node_keys",
-                ring_id
-            ))
-            .into());
-        }
-        if ring_payload.threshold == 0
-            || ring_payload.threshold as usize > ring_payload.peer_node_keys.len()
-        {
-            return Err(DkgError::InvalidInput(format!(
-                "Fresh DKG target ring {} has invalid threshold {} for {} participants",
-                ring_id,
-                ring_payload.threshold,
-                ring_payload.peer_node_keys.len()
-            ))
-            .into());
-        }
-        if ring_payload.policy_id.as_deref().unwrap_or("").is_empty() {
-            return Err(DkgError::InvalidInput(format!(
-                "Fresh DKG target ring {} has no policy_id",
-                ring_id
-            ))
-            .into());
-        }
+        validate_fresh_dkg_ring_payload(&ring_id, &ring_payload)?;
 
         let routes = resolve_node_routes(&self.state.bulletin, &ring_payload.peer_node_keys)
             .await
@@ -172,10 +143,7 @@ where
                 &self.state.node_key,
                 &our_peer_id_hex,
                 &ring_id,
-                threshold,
-                &ring_payload.peer_node_keys,
-                pss_interval,
-                policy_id.as_deref(),
+                &ring_payload,
             )
             .await?;
         }

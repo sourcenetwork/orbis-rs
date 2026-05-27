@@ -397,20 +397,103 @@ pub fn validate_dkg_claims(token: &BearerToken<DkgClaims>, ring_id: &str) -> Res
     Ok(())
 }
 
+/// Validates the structural state of a `RingPayload` for a fresh DKG:
+/// ring_pk is blank, peer list is non-empty, threshold is in range, policy_id is present.
+/// Call this with the already-fetched ring payload before starting a fresh DKG session.
+pub fn validate_fresh_dkg_ring_payload(ring_id: &str, ring_payload: &RingPayload) -> Result<()> {
+    if !ring_payload.ring_pk.is_empty() {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh DKG target ring {} is not pending",
+            ring_id
+        )));
+    }
+    if ring_payload.peer_node_keys.is_empty() {
+        return Err(DkgError::InvalidInput(format!(
+            "Fresh DKG target ring {} has no peer_node_keys",
+            ring_id
+        )));
+    }
+    if ring_payload.threshold == 0
+        || ring_payload.threshold as usize > ring_payload.peer_node_keys.len()
+    {
+        return Err(DkgError::InvalidInput(format!(
+            "Fresh DKG target ring {} has invalid threshold {} for {} participants",
+            ring_id,
+            ring_payload.threshold,
+            ring_payload.peer_node_keys.len()
+        )));
+    }
+    if ring_payload.policy_id.as_deref().unwrap_or("").is_empty() {
+        return Err(DkgError::InvalidInput(format!(
+            "Fresh DKG target ring {} has no policy_id",
+            ring_id
+        )));
+    }
+    Ok(())
+}
+
+/// Cross-validates the wire params from a Fresh `SessionInit` message against the
+/// authoritative `RingPayload` fetched from the bulletin.
+pub fn validate_fresh_session_init_params(
+    ring_id: &str,
+    peer_node_keys: &[String],
+    threshold: u32,
+    total_participants: u32,
+    pss_interval: Option<u64>,
+    policy_id: Option<&str>,
+    ring_payload: &RingPayload,
+) -> Result<()> {
+    let mut wire_sorted = peer_node_keys.to_vec();
+    wire_sorted.sort();
+    let mut auth_sorted = ring_payload.peer_node_keys.clone();
+    auth_sorted.sort();
+    if wire_sorted != auth_sorted {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh peer_node_keys do not match authoritative committee for ring {}",
+            ring_id
+        )));
+    }
+    if threshold != ring_payload.threshold {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh threshold {} does not match authoritative threshold {} for ring {}",
+            threshold, ring_payload.threshold, ring_id
+        )));
+    }
+    if total_participants as usize != ring_payload.peer_node_keys.len() {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh total_participants {} does not match authoritative committee size {} for ring {}",
+            total_participants,
+            ring_payload.peer_node_keys.len(),
+            ring_id
+        )));
+    }
+    if pss_interval != ring_payload.pss_interval {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh pss_interval {:?} does not match authoritative pss_interval {:?} for ring {}",
+            pss_interval, ring_payload.pss_interval, ring_id
+        )));
+    }
+    if policy_id != ring_payload.policy_id.as_deref() {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh policy_id {:?} does not match authoritative policy_id {:?} for ring {}",
+            policy_id, ring_payload.policy_id, ring_id
+        )));
+    }
+    Ok(())
+}
+
 /// Validate that this node is authorized by its NodeInfo record to participate in a Fresh DKG.
 ///
-/// Namespace authorization is sufficient by itself. When a node relies on a ring-scoped allowlist
-/// entry, the target ring must already exist as a blank placeholder so the authorization check is
-/// bound to the ring the caller intends to complete later.
+/// Checks NodeInfo membership and policy/ring allowlist against an already-fetched `ring_payload`.
+/// Callers are responsible for reading the ring from the bulletin and calling
+/// `validate_fresh_dkg_ring_payload` first. The `session_init` handler also cross-validates
+/// wire params against the ring payload before calling this.
 pub async fn validate_fresh_dkg_node_authorization(
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
     node_key: &str,
     local_peer_id_hex: &str,
     ring_id: &str,
-    threshold: u32,
-    peer_node_keys: &[String],
-    pss_interval: Option<u64>,
-    policy_id: Option<&str>,
+    ring_payload: &RingPayload,
 ) -> Result<()> {
     if node_key.is_empty() {
         return Err(DkgError::Unauthorized(
@@ -442,14 +525,18 @@ pub async fn validate_fresh_dkg_node_authorization(
             node_info.peer_id, local_peer_id_hex
         )));
     }
-    if !peer_node_keys.iter().any(|key| key == node_key) {
+    if !ring_payload
+        .peer_node_keys
+        .iter()
+        .any(|key| key == node_key)
+    {
         return Err(DkgError::Unauthorized(format!(
             "Local node_key {} is not a participant in ring {}",
             node_key, ring_id
         )));
     }
 
-    let policy_allowed = policy_id.is_some_and(|policy_id| {
+    let policy_allowed = ring_payload.policy_id.as_deref().is_some_and(|policy_id| {
         node_info
             .whitelisted_policy_ids
             .iter()
@@ -462,69 +549,11 @@ pub async fn validate_fresh_dkg_node_authorization(
     if !policy_allowed && !ring_allowed {
         return Err(DkgError::Unauthorized(format!(
             "NodeInfo for node {} does not allow policy_id {:?} or ring_id {}",
-            node_key, policy_id, ring_id
-        )));
-    }
-
-    let ring_post = bulletin
-        .read(ring_id.to_string(), BulletinKind::Ring)
-        .await
-        .map_err(|e| {
-            DkgError::Unauthorized(format!(
-                "Fresh DKG target ring {} not found: {}",
-                ring_id, e
-            ))
-        })?;
-    let ring_payload = RingPayload::try_from(ring_post).map_err(|e| {
-        DkgError::Unauthorized(format!(
-            "Fresh DKG target ring {} has malformed payload: {}",
-            ring_id, e
-        ))
-    })?;
-
-    if !ring_payload.ring_pk.is_empty() {
-        return Err(DkgError::Unauthorized(format!(
-            "Fresh DKG target ring {} is not blank",
-            ring_id
-        )));
-    }
-    if !same_string_set(&ring_payload.peer_node_keys, peer_node_keys) {
-        return Err(DkgError::Unauthorized(format!(
-            "Fresh DKG target ring {} peer_node_keys do not match session",
-            ring_id
-        )));
-    }
-    if ring_payload.threshold != threshold {
-        return Err(DkgError::Unauthorized(format!(
-            "Fresh DKG target ring {} threshold {} does not match request threshold {}",
-            ring_id, ring_payload.threshold, threshold
-        )));
-    }
-    if ring_payload.pss_interval != pss_interval {
-        return Err(DkgError::Unauthorized(format!(
-            "Fresh DKG target ring {} pss_interval {:?} does not match request pss_interval {:?}",
-            ring_id, ring_payload.pss_interval, pss_interval
-        )));
-    }
-    if ring_payload.policy_id.as_deref() != policy_id {
-        return Err(DkgError::Unauthorized(format!(
-            "Fresh DKG target ring {} policy_id {:?} does not match request policy_id {:?}",
-            ring_id, ring_payload.policy_id, policy_id
+            node_key, ring_payload.policy_id, ring_id
         )));
     }
 
     Ok(())
-}
-
-fn same_string_set(left: &[String], right: &[String]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut left_sorted: Vec<&str> = left.iter().map(String::as_str).collect();
-    let mut right_sorted: Vec<&str> = right.iter().map(String::as_str).collect();
-    left_sorted.sort_unstable();
-    right_sorted.sort_unstable();
-    left_sorted == right_sorted
 }
 
 /// Writes the `RingShareBundle` (share + polynomial) after a completed DKG, PSS refresh,
@@ -762,7 +791,7 @@ mod tests {
     use crate::helpers::test_helpers::{cleanup_db, test_db_path, write_ring_to_bulletin};
     use crate::ring_state::{RingIndexEntry, RingShareBundle};
     use bulletin::dummy::DummyBulletin;
-    use bulletin::r#trait::{Bulletin, BulletinPost};
+    use bulletin::r#trait::{Bulletin, BulletinPost, RingPayload};
     use crypto::r#trait::PriShare;
     use crypto::{CryptoSerialize, ScalarField as Fr};
     use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
@@ -847,21 +876,26 @@ mod tests {
             .expect("compute blank ring id")
     }
 
+    fn make_valid_ring_payload(node_key: &str) -> RingPayload {
+        RingPayload {
+            ring_pk: String::new(),
+            peer_node_keys: vec![node_key.to_string()],
+            new_peer_node_keys: None,
+            new_threshold: None,
+            threshold: 1,
+            pss_interval: None,
+            block_number_nonce: 0,
+            policy_id: Some("policy".to_string()),
+        }
+    }
+
     #[tokio::test]
     async fn test_validate_fresh_dkg_node_authorization_allows_policy_id() {
         let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let node_key = "node-key";
         let local_peer_id = "peer-local";
-        let peer_ids = vec!["peer-a".to_string()];
-        let ring_id = post_blank_ring(
-            &bulletin,
-            peer_ids.clone(),
-            1,
-            None,
-            Some("policy".to_string()),
-        )
-        .await;
+        let ring_payload = make_valid_ring_payload(node_key);
         seed_node_info(
             &dummy_bulletin,
             node_key,
@@ -875,11 +909,8 @@ mod tests {
             &bulletin,
             node_key,
             local_peer_id,
-            &ring_id,
-            1,
-            &peer_ids,
-            None,
-            Some("policy"),
+            "ring-1",
+            &ring_payload,
         )
         .await;
         assert!(result.is_ok(), "expected policy allow, got: {:?}", result);
@@ -891,21 +922,23 @@ mod tests {
         let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let node_key = "node-key";
         let local_peer_id = "peer-local";
-        let peer_ids = vec!["peer-a".to_string()];
-        let ring_id = post_blank_ring(
-            &bulletin,
-            peer_ids.clone(),
-            1,
-            Some(60),
-            Some("policy".to_string()),
-        )
-        .await;
+        let ring_id = "ring-1";
+        let ring_payload = RingPayload {
+            ring_pk: String::new(),
+            peer_node_keys: vec![node_key.to_string()],
+            new_peer_node_keys: None,
+            new_threshold: None,
+            threshold: 1,
+            pss_interval: Some(60),
+            block_number_nonce: 0,
+            policy_id: Some("policy".to_string()),
+        };
         seed_node_info(
             &dummy_bulletin,
             node_key,
             local_peer_id,
             vec![],
-            vec![ring_id.clone()],
+            vec![ring_id.to_string()],
         )
         .await;
 
@@ -913,11 +946,8 @@ mod tests {
             &bulletin,
             node_key,
             local_peer_id,
-            &ring_id,
-            1,
-            &peer_ids,
-            Some(60),
-            Some("policy"),
+            ring_id,
+            &ring_payload,
         )
         .await;
         assert!(result.is_ok(), "expected ring allow, got: {:?}", result);
@@ -929,6 +959,7 @@ mod tests {
         let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let node_key = "node-key";
         let local_peer_id = "peer-local";
+        let ring_payload = make_valid_ring_payload(node_key);
         seed_node_info(
             &dummy_bulletin,
             node_key,
@@ -938,15 +969,13 @@ mod tests {
         )
         .await;
 
+        // ring_id = "ring-1" is not in ["other-ring"], policy "policy" is not in ["other-policy"]
         let result = validate_fresh_dkg_node_authorization(
             &bulletin,
             node_key,
             local_peer_id,
             "ring-1",
-            1,
-            &["peer-a".to_string()],
-            None,
-            None,
+            &ring_payload,
         )
         .await;
         assert!(matches!(result, Err(DkgError::Unauthorized(_))));
@@ -956,16 +985,14 @@ mod tests {
     async fn test_validate_fresh_dkg_node_authorization_rejects_missing_node_info() {
         let bulletin: Arc<dyn Bulletin + Send + Sync> =
             Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let ring_payload = make_valid_ring_payload("missing-node");
 
         let result = validate_fresh_dkg_node_authorization(
             &bulletin,
             "missing-node",
             "peer-local",
             "ring-1",
-            1,
-            &["peer-a".to_string()],
-            None,
-            None,
+            &ring_payload,
         )
         .await;
         assert!(matches!(result, Err(DkgError::Unauthorized(_))));
@@ -983,16 +1010,14 @@ mod tests {
                 payload: b"not-json".to_vec(),
             },
         );
+        let ring_payload = make_valid_ring_payload(node_key);
 
         let result = validate_fresh_dkg_node_authorization(
             &bulletin,
             node_key,
             "peer-local",
             "ring-1",
-            1,
-            &["peer-a".to_string()],
-            None,
-            None,
+            &ring_payload,
         )
         .await;
         assert!(matches!(result, Err(DkgError::Unauthorized(_))));
@@ -1011,78 +1036,73 @@ mod tests {
             vec![],
         )
         .await;
+        let ring_payload = make_valid_ring_payload(node_key);
 
         let result = validate_fresh_dkg_node_authorization(
             &bulletin,
             node_key,
             "peer-local",
             "ring-1",
-            1,
-            &["peer-a".to_string()],
-            None,
-            None,
+            &ring_payload,
         )
         .await;
         assert!(matches!(result, Err(DkgError::Unauthorized(_))));
     }
 
-    #[tokio::test]
-    async fn test_validate_fresh_dkg_node_authorization_rejects_missing_ring_placeholder() {
-        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
-        let node_key = "node-key";
-        let local_peer_id = "peer-local";
-        seed_node_info(
-            &dummy_bulletin,
-            node_key,
-            local_peer_id,
-            vec![],
-            vec!["missing-ring".to_string()],
-        )
-        .await;
-
-        let result = validate_fresh_dkg_node_authorization(
-            &bulletin,
-            node_key,
-            local_peer_id,
-            "missing-ring",
-            1,
-            &["peer-a".to_string()],
-            None,
-            None,
-        )
-        .await;
-        assert!(matches!(result, Err(DkgError::Unauthorized(_))));
+    #[test]
+    fn test_validate_fresh_dkg_ring_payload_ok() {
+        let payload = make_valid_ring_payload("node-key");
+        assert!(validate_fresh_dkg_ring_payload("ring-1", &payload).is_ok());
     }
 
-    #[tokio::test]
-    async fn test_validate_fresh_dkg_node_authorization_rejects_ring_payload_mismatch() {
-        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
-        let node_key = "node-key";
-        let local_peer_id = "peer-local";
-        let ring_id = post_blank_ring(&bulletin, vec!["peer-b".to_string()], 1, None, None).await;
-        seed_node_info(
-            &dummy_bulletin,
-            node_key,
-            local_peer_id,
-            vec![],
-            vec![ring_id.clone()],
-        )
-        .await;
+    #[test]
+    fn test_validate_fresh_dkg_ring_payload_rejects_non_blank_ring() {
+        let mut payload = make_valid_ring_payload("node-key");
+        payload.ring_pk = "some-pk".to_string();
+        assert!(matches!(
+            validate_fresh_dkg_ring_payload("ring-1", &payload),
+            Err(DkgError::Unauthorized(_))
+        ));
+    }
 
-        let result = validate_fresh_dkg_node_authorization(
-            &bulletin,
-            node_key,
-            local_peer_id,
-            &ring_id,
-            1,
-            &["peer-a".to_string()],
-            None,
-            None,
-        )
-        .await;
-        assert!(matches!(result, Err(DkgError::Unauthorized(_))));
+    #[test]
+    fn test_validate_fresh_dkg_ring_payload_rejects_empty_committee() {
+        let mut payload = make_valid_ring_payload("node-key");
+        payload.peer_node_keys = vec![];
+        assert!(matches!(
+            validate_fresh_dkg_ring_payload("ring-1", &payload),
+            Err(DkgError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_fresh_dkg_ring_payload_rejects_zero_threshold() {
+        let mut payload = make_valid_ring_payload("node-key");
+        payload.threshold = 0;
+        assert!(matches!(
+            validate_fresh_dkg_ring_payload("ring-1", &payload),
+            Err(DkgError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_fresh_dkg_ring_payload_rejects_threshold_exceeds_n() {
+        let mut payload = make_valid_ring_payload("node-key");
+        payload.threshold = 3; // Only 1 node in committee
+        assert!(matches!(
+            validate_fresh_dkg_ring_payload("ring-1", &payload),
+            Err(DkgError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_fresh_dkg_ring_payload_rejects_missing_policy_id() {
+        let mut payload = make_valid_ring_payload("node-key");
+        payload.policy_id = None;
+        assert!(matches!(
+            validate_fresh_dkg_ring_payload("ring-1", &payload),
+            Err(DkgError::InvalidInput(_))
+        ));
     }
 
     #[test]

@@ -254,16 +254,43 @@ where
             )
             .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
             validate_dkg_claims(&token, &ring_id)?;
+
+            let ring_post = coord
+                .app_state
+                .bulletin
+                .read(ring_id.clone(), BulletinKind::Ring)
+                .await
+                .map_err(|e| {
+                    DkgError::Unauthorized(format!(
+                        "Fresh DKG target ring {} not found: {}",
+                        ring_id, e
+                    ))
+                })?;
+            let bulletin_ring_payload = RingPayload::try_from(ring_post).map_err(|e| {
+                DkgError::Unauthorized(format!(
+                    "Fresh DKG target ring {} has malformed payload: {}",
+                    ring_id, e
+                ))
+            })?;
+            validate_fresh_dkg_ring_payload(&ring_id, &bulletin_ring_payload)?;
+
+            validate_fresh_session_init_params(
+                &ring_id,
+                peer_node_keys,
+                threshold,
+                total_participants,
+                pss_interval,
+                policy_id.as_deref(),
+                &bulletin_ring_payload,
+            )?;
+
             let our_peer_id_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
             validate_fresh_dkg_node_authorization(
                 &coord.app_state.bulletin,
                 &coord.app_state.node_key,
                 &our_peer_id_hex,
                 &ring_id,
-                threshold,
-                peer_node_keys,
-                pss_interval,
-                policy_id.as_deref(),
+                &bulletin_ring_payload,
             )
             .await?;
             tracing::info!(
