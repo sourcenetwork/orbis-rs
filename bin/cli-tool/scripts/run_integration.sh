@@ -102,7 +102,6 @@ OUT="$($CLI_BIN store-secret \
   --secret "$SECRET" \
   --ring-pk-hex "$RING_PK" \
   --ring-id "$RING_ID" \
-  --namespace "$NAMESPACE" \
   --policy-id "$POLICY_ID" \
   --resource "$RESOURCE" \
   --permission "$PERMISSION" \
@@ -129,7 +128,6 @@ $CLI_BIN pre \
   --reader-pk "$READER_PK" \
   --reader-sk "$READER_SK" \
   --object-id "$OBJECT_ID" \
-  --namespace "$NAMESPACE" \
   --reader-did-pk "$READER_DID_PK"
 
 echo "=== Done ==="

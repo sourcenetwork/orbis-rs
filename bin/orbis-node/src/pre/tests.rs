@@ -5,8 +5,7 @@
 
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_ring_post,
-    setup_three_node_network_with_pre, test_db_path, TestKeyPair, BULLETIN_RING_NAMESPACE,
-    TEST_FRESH_DKG_RING_ID,
+    setup_three_node_network_with_pre, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
 };
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::pre::service::PreServiceImpl;
@@ -45,7 +44,6 @@ fn generate_test_policy_metadata() -> Vec<u8> {
 /// returning the computed object_id that can be used in PRE requests.
 fn setup_document_in_bulletin(
     dummy_bulletin: &DummyBulletin,
-    namespace: &str,
     secret_bytes: &[u8],
     proof: EncryptionProof,
 ) -> String {
@@ -71,16 +69,15 @@ fn setup_document_in_bulletin(
 
     // Compute the object_id using the same method as the bulletin
     let object_id = dummy_bulletin
-        .get_post_id(namespace, &document_payload_bytes)
+        .get_post_id(&document_payload_bytes)
         .expect("compute object_id");
 
     // Store the document in the bulletin
     let document_post = BulletinPost {
         id: object_id.clone(),
-        namespace: namespace.to_string(),
         payload: document_payload_bytes,
     };
-    dummy_bulletin.set_post(namespace.to_string(), object_id.clone(), document_post);
+    dummy_bulletin.set_post(object_id.clone(), document_post);
 
     object_id
 }
@@ -129,7 +126,6 @@ async fn test_dkg_then_pre_end_to_end() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -141,7 +137,6 @@ async fn test_dkg_then_pre_end_to_end() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -237,18 +232,16 @@ async fn test_dkg_then_pre_end_to_end() {
 
     println!("Sending PRE requests to peers: {:?}", pre_peer_ids);
 
-    let namespace = "namespace_test".to_string();
-
     // Store the document in the bulletin so receiving nodes can fetch secret info
     let dummy_bulletin = network
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(bob_pk_bytes.clone(), &namespace, &object_id, None, None)
+        .create_pre_jwt(bob_pk_bytes.clone(), &object_id, None, None)
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
@@ -272,7 +265,6 @@ async fn test_dkg_then_pre_end_to_end() {
                 rdr_pk_bytes: bob_pk_bytes.clone(),
                 object_id,
                 token_string: pre_token,
-                namespace,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -398,7 +390,6 @@ async fn test_pre_with_large_secret() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -410,7 +401,6 @@ async fn test_pre_with_large_secret() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -450,18 +440,17 @@ async fn test_pre_with_large_secret() {
     let pre_coordinator =
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
-    let namespace = "namespace_large_test".to_string();
 
     // Store the document in the bulletin
     let dummy_bulletin = network
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(bob_pk_bytes.clone(), &namespace, &object_id, None, None)
+        .create_pre_jwt(bob_pk_bytes.clone(), &object_id, None, None)
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
@@ -485,7 +474,6 @@ async fn test_pre_with_large_secret() {
                 rdr_pk_bytes: bob_pk_bytes,
                 object_id,
                 token_string: pre_token,
-                namespace,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -546,7 +534,6 @@ async fn test_pre_fails_with_wrong_key() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -558,7 +545,6 @@ async fn test_pre_fails_with_wrong_key() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -599,18 +585,16 @@ async fn test_pre_fails_with_wrong_key() {
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
 
-    let namespace = "namespace_wrong_key_test".to_string();
-
     // Store the document in the bulletin
     let dummy_bulletin = network
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(bob_pk_bytes.clone(), &namespace, &object_id, None, None)
+        .create_pre_jwt(bob_pk_bytes.clone(), &object_id, None, None)
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
@@ -634,7 +618,6 @@ async fn test_pre_fails_with_wrong_key() {
                 rdr_pk_bytes: bob_pk_bytes,
                 object_id,
                 token_string: pre_token,
-                namespace,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -696,7 +679,6 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -708,7 +690,6 @@ async fn test_pre_fails_with_invalid_jwt_token() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -746,14 +727,12 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
 
-    let namespace = "namespace_invalid_jwt_test".to_string();
-
     // Store the document in the bulletin
     let dummy_bulletin = network
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
 
     // Use a completely invalid JWT token
     let invalid_token = "not-a-valid-jwt-token".to_string();
@@ -779,7 +758,6 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 rdr_pk_bytes: bob_pk_bytes,
                 object_id,
                 token_string: invalid_token,
-                namespace,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -854,7 +832,6 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -865,7 +842,6 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -903,14 +879,12 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
 
-    let namespace = "namespace_mismatched_claims_test".to_string();
-
     // Store the document in the bulletin
     let dummy_bulletin = network
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
 
     // Create a valid JWT but with wrong rdr_pk claim
     let wrong_rdr_pk = vec![0u8; 32]; // Zero bytes - doesn't match bob_pk_bytes
@@ -918,7 +892,6 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     let mismatched_token = test_keys
         .create_pre_jwt(
             wrong_rdr_pk, // Wrong rdr_pk - doesn't match bob_pk_bytes
-            &namespace,
             &object_id,
             None,
             None,
@@ -946,7 +919,6 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 rdr_pk_bytes: bob_pk_bytes, // Actual rdr_pk doesn't match JWT claim
                 object_id,
                 token_string: mismatched_token,
-                namespace,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -1005,7 +977,6 @@ async fn test_start_pre_fails_missing_auth_header() {
 
     let request = StartPreRequest {
         rdr_pk: b"def456".to_vec(),
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         object_id: "".to_string(),
         derivation: None,
         salt: None,
@@ -1047,7 +1018,6 @@ async fn test_start_pre_fails_malformed_jwt() {
 
     let request = StartPreRequest {
         rdr_pk: b"def456".to_vec(),
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         object_id: "".to_string(),
         derivation: None,
         salt: None,
@@ -1082,12 +1052,11 @@ async fn test_start_pre_fails_wrong_signature() {
     let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
 
     let object_id = "object_id_test".to_string();
-    let namespace = "namespace_test".to_string();
 
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
     let valid_token = key_pair_1
-        .create_pre_jwt(b"def456".to_vec(), &namespace, &object_id, None, None)
+        .create_pre_jwt(b"def456".to_vec(), &object_id, None, None)
         .expect("Failed to create JWT");
 
     // Tamper with the signature by changing a character
@@ -1106,7 +1075,6 @@ async fn test_start_pre_fails_wrong_signature() {
 
     let request = StartPreRequest {
         rdr_pk: b"def456".to_vec(),
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         object_id: "".to_string(),
         derivation: None,
         salt: None,
@@ -1159,7 +1127,6 @@ async fn test_pre_fails_with_wrong_derivation() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -1170,7 +1137,6 @@ async fn test_pre_fails_with_wrong_derivation() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -1215,20 +1181,17 @@ async fn test_pre_fails_with_wrong_derivation() {
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
 
-    let namespace = "namespace_derivation_test".to_string();
-
     // Store the document in the bulletin
     let dummy_bulletin = network
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
 
     // Create PRE JWT token with CORRECT derivation
     let pre_token = test_keys
         .create_pre_jwt(
             bob_pk_bytes.clone(),
-            &namespace,
             &object_id,
             Some(correct_derivation.clone()),
             None,
@@ -1256,7 +1219,6 @@ async fn test_pre_fails_with_wrong_derivation() {
                 rdr_pk_bytes: bob_pk_bytes.clone(),
                 object_id: object_id.clone(),
                 token_string: pre_token,
-                namespace: namespace.clone(),
                 derivation: Some(correct_derivation.clone()),
                 salt: None,
                 valid_window: None,
@@ -1351,7 +1313,6 @@ async fn test_pre_fails_with_bad_proof() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -1362,7 +1323,6 @@ async fn test_pre_fails_with_bad_proof() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -1404,18 +1364,17 @@ async fn test_pre_fails_with_bad_proof() {
     let pre_coordinator =
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
     let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
-    let namespace = "namespace_bad_proof_test".to_string();
 
     // Store the document in the bulletin with the TAMPERED proof
     let dummy_bulletin = network
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &namespace, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
 
     // Create PRE JWT token
     let pre_token = test_keys
-        .create_pre_jwt(bob_pk_bytes.clone(), &namespace, &object_id, None, None)
+        .create_pre_jwt(bob_pk_bytes.clone(), &object_id, None, None)
         .expect("Failed to create PRE JWT");
 
     // Attempt re-encryption — should fail because proof verification fails on peer nodes
@@ -1439,7 +1398,6 @@ async fn test_pre_fails_with_bad_proof() {
                 rdr_pk_bytes: bob_pk_bytes,
                 object_id,
                 token_string: pre_token,
-                namespace,
                 derivation: None,
                 salt: None,
                 valid_window: None,

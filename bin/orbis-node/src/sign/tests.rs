@@ -7,8 +7,7 @@ use crate::constants::MAX_SIGN_MESSAGE_BYTES;
 use crate::helpers::helpers::RingConfig;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, get_test_ring_post,
-    setup_three_node_network_with_sign, test_db_path, TestKeyPair, BULLETIN_RING_NAMESPACE,
-    TEST_FRESH_DKG_RING_ID,
+    setup_three_node_network_with_sign, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
@@ -72,7 +71,6 @@ async fn test_dkg_then_sign_end_to_end() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -84,7 +82,6 @@ async fn test_dkg_then_sign_end_to_end() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -117,9 +114,8 @@ async fn test_dkg_then_sign_end_to_end() {
     // =========================================================================
     println!("\nStep 3: Creating document and posting to bulletin...");
 
-    let test_namespace = "test_sign_namespace";
     let message =
-        create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id, test_namespace)
+        create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id)
             .await;
 
     println!(
@@ -260,7 +256,6 @@ async fn wait_for_dkg_completion(
 async fn create_test_document_and_post(
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
     ring_id: &str,
-    namespace: &str,
 ) -> Vec<u8> {
     // Create a test DocumentPayload
     let doc_payload = DocumentPayload {
@@ -282,24 +277,18 @@ async fn create_test_document_and_post(
 
     // Compute the post ID
     let post_id = bulletin
-        .get_post_id(namespace, &payload_bytes)
+        .get_post_id(&payload_bytes)
         .expect("compute post_id");
 
     // Post to bulletin
     bulletin
-        .post(
-            namespace.to_string(),
-            BulletinKind::Document,
-            payload_bytes.clone(),
-            None,
-        )
+        .post(BulletinKind::Document, payload_bytes.clone(), None)
         .await
         .expect("post to bulletin");
 
     // Create the BulletinPost that was stored (this is what gets signed)
     let bulletin_post = BulletinPost {
         id: post_id,
-        namespace: namespace.to_string(),
         payload: payload_bytes,
     };
 
@@ -332,7 +321,6 @@ async fn test_sign_different_messages() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -343,7 +331,6 @@ async fn test_sign_different_messages() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -364,12 +351,10 @@ async fn test_sign_different_messages() {
         <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
 
     // Sign two different documents
-    let namespaces = ["test_namespace_1", "test_namespace_2"];
-
-    for (i, namespace) in namespaces.iter().enumerate() {
+    for i in 0..2 {
         // Create and post a document for each message
         let message =
-            create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id, namespace)
+            create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id)
                 .await;
 
         let sign_coordinator =
@@ -457,7 +442,6 @@ async fn test_sign_fails_wrong_message() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -468,7 +452,6 @@ async fn test_sign_fails_wrong_message() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -492,7 +475,6 @@ async fn test_sign_fails_wrong_message() {
     let original_message = create_test_document_and_post(
         &network.alice.app_state.bulletin,
         &ring_id,
-        "test_wrong_msg_namespace",
     )
     .await;
 
@@ -587,7 +569,6 @@ async fn test_sign_response_cleanup() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -598,7 +579,6 @@ async fn test_sign_response_cleanup() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -620,7 +600,6 @@ async fn test_sign_response_cleanup() {
     let message = create_test_document_and_post(
         &network.alice.app_state.bulletin,
         &ring_id,
-        "test_cleanup_namespace",
     )
     .await;
 
@@ -706,7 +685,6 @@ async fn test_sign_fails_invalid_bulletin_post() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -717,7 +695,6 @@ async fn test_sign_fails_invalid_bulletin_post() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -809,7 +786,6 @@ async fn test_sign_fails_post_not_on_bulletin() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -820,7 +796,6 @@ async fn test_sign_fails_post_not_on_bulletin() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -855,7 +830,6 @@ async fn test_sign_fails_post_not_on_bulletin() {
     // Create a fake BulletinPost that was never posted
     let fake_bulletin_post = BulletinPost {
         id: "fake_post_id_that_doesnt_exist".to_string(),
-        namespace: "fake_namespace".to_string(),
         payload: payload_bytes,
     };
 
@@ -934,7 +908,6 @@ async fn test_sign_fails_tampered_payload() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -945,7 +918,6 @@ async fn test_sign_fails_tampered_payload() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -964,7 +936,6 @@ async fn test_sign_fails_tampered_payload() {
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
     // First, create and post a legitimate document
-    let namespace = "test_tamper_namespace";
     let original_doc = DocumentPayload {
         ring_id: ring_id.clone(),
         document: "original_document".to_string(),
@@ -981,7 +952,7 @@ async fn test_sign_fails_tampered_payload() {
         .alice
         .app_state
         .bulletin
-        .get_post_id(namespace, &original_payload)
+        .get_post_id(&original_payload)
         .expect("get post_id");
 
     // Post the original document
@@ -989,12 +960,7 @@ async fn test_sign_fails_tampered_payload() {
         .alice
         .app_state
         .bulletin
-        .post(
-            namespace.to_string(),
-            BulletinKind::Document,
-            original_payload.clone(),
-            None,
-        )
+        .post(BulletinKind::Document, original_payload.clone(), None)
         .await
         .expect("post to bulletin");
 
@@ -1013,8 +979,7 @@ async fn test_sign_fails_tampered_payload() {
     let tampered_payload: Vec<u8> = tampered_doc.try_into().expect("serialize");
 
     let tampered_bulletin_post = BulletinPost {
-        id: post_id, // Same ID as the posted one
-        namespace: namespace.to_string(),
+        id: post_id,               // Same ID as the posted one
         payload: tampered_payload, // But different payload!
     };
 
@@ -1093,7 +1058,6 @@ async fn test_sign_fails_invalid_ring_id() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -1104,7 +1068,6 @@ async fn test_sign_fails_invalid_ring_id() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -1123,7 +1086,6 @@ async fn test_sign_fails_invalid_ring_id() {
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
     // Create a document with a fake ring_id that doesn't exist
-    let namespace = "test_invalid_ring_namespace";
     let doc_with_fake_ring = DocumentPayload {
         ring_id: "fake_ring_id_that_doesnt_exist_on_bulletin".to_string(),
         document: "test_document".to_string(),
@@ -1140,7 +1102,7 @@ async fn test_sign_fails_invalid_ring_id() {
         .alice
         .app_state
         .bulletin
-        .get_post_id(namespace, &payload_bytes)
+        .get_post_id(&payload_bytes)
         .expect("get post_id");
 
     // Post this document (it will be on bulletin, but ring_id is invalid)
@@ -1148,18 +1110,12 @@ async fn test_sign_fails_invalid_ring_id() {
         .alice
         .app_state
         .bulletin
-        .post(
-            namespace.to_string(),
-            BulletinKind::Document,
-            payload_bytes.clone(),
-            None,
-        )
+        .post(BulletinKind::Document, payload_bytes.clone(), None)
         .await
         .expect("post to bulletin");
 
     let bulletin_post = BulletinPost {
         id: post_id,
-        namespace: namespace.to_string(),
         payload: payload_bytes,
     };
 
@@ -1217,7 +1173,6 @@ async fn test_sign_fails_invalid_ring_id() {
 // Policy pathway tests (SignContext::Policy)
 // ============================================================================
 
-const POLICY_TEST_NAMESPACE: &str = "test-sign-policy-ns";
 const POLICY_TEST_DERIVATION_ID: &str = "test-key-derivation";
 const POLICY_TEST_DERIVATION: &str = "test-derivation-path";
 const POLICY_TEST_POLICY_ID: &str = "test-policy";
@@ -1240,14 +1195,9 @@ fn setup_key_derivation_in_bulletin(
     let payload = serde_json::to_vec(&key_derivation).expect("serialize KeyDerivation");
     let post = BulletinPost {
         id: POLICY_TEST_DERIVATION_ID.to_string(),
-        namespace: POLICY_TEST_NAMESPACE.to_string(),
         payload,
     };
-    dummy_bulletin.set_post(
-        POLICY_TEST_NAMESPACE.to_string(),
-        POLICY_TEST_DERIVATION_ID.to_string(),
-        post,
-    );
+    dummy_bulletin.set_post(POLICY_TEST_DERIVATION_ID.to_string(), post);
     key_derivation
 }
 
@@ -1277,7 +1227,6 @@ async fn test_dkg_then_sign_policy_end_to_end() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("create DKG JWT");
@@ -1289,7 +1238,6 @@ async fn test_dkg_then_sign_policy_end_to_end() {
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
                     policy_id: None,
-                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1321,7 +1269,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
 
     // Create valid sign JWT
     let sign_token = test_keys
-        .create_sign_jwt(POLICY_TEST_NAMESPACE, POLICY_TEST_DERIVATION_ID, &message)
+        .create_sign_jwt(POLICY_TEST_DERIVATION_ID, &message)
         .expect("create sign JWT");
 
     let sign_coordinator =
@@ -1353,7 +1301,6 @@ async fn test_dkg_then_sign_policy_end_to_end() {
             message.clone(),
             SignContext::Policy(Box::new(PolicyContext {
                 token_string: sign_token,
-                namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
@@ -1445,7 +1392,6 @@ async fn test_sign_policy_fails_invalid_jwt() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("create DKG JWT");
@@ -1457,7 +1403,6 @@ async fn test_sign_policy_fails_invalid_jwt() {
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
                     policy_id: None,
-                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1508,7 +1453,6 @@ async fn test_sign_policy_fails_invalid_jwt() {
             b"some message".to_vec(),
             SignContext::Policy(Box::new(PolicyContext {
                 token_string: "this.is.not.a.valid.jwt".to_string(),
-                namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
@@ -1525,130 +1469,6 @@ async fn test_sign_policy_fails_invalid_jwt() {
     );
 
     println!("SUCCESS! Policy signing correctly failed with invalid JWT");
-
-    network
-        .shutdown_routers()
-        .await
-        .expect("Failed to shutdown");
-    for path in &db_paths {
-        cleanup_db(path);
-    }
-}
-
-/// Policy signing should fail when the JWT namespace claim does not match the request.
-#[tokio::test]
-#[serial_test::serial]
-async fn test_sign_policy_fails_wrong_namespace() {
-    let db_name = "test_sign_policy_fails_wrong_namespace";
-    let db_paths = [
-        test_db_path(&format!("{}_1", db_name)),
-        test_db_path(&format!("{}_2", db_name)),
-        test_db_path(&format!("{}_3", db_name)),
-    ];
-
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
-    let peer_ids = network.get_all_peer_ids();
-
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
-    let test_keys = TestKeyPair::new();
-    let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            BULLETIN_RING_NAMESPACE,
-            TEST_FRESH_DKG_RING_ID,
-        )
-        .expect("create DKG JWT");
-    let result = node1_service
-        .start_dkg(
-            create_authenticated_request(
-                StartDkgRequest {
-                    threshold: 2,
-                    peer_ids: peer_ids.clone(),
-                    pss_interval: None,
-                    policy_id: None,
-                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
-                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
-                },
-                &token,
-            )
-            .unwrap(),
-        )
-        .await;
-    assert!(result.is_ok());
-
-    let (ring_payload, ring_id) = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
-
-    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
-
-    let dummy_bulletin = network
-        .dummy_bulletin
-        .as_ref()
-        .expect("requires DummyBulletin");
-    let key_derivation = setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
-
-    // JWT claims a different namespace than the request
-    let sign_token = test_keys
-        .create_sign_jwt(
-            "wrong-namespace",
-            POLICY_TEST_DERIVATION_ID,
-            b"test message",
-        )
-        .expect("create sign JWT");
-
-    let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
-
-    let sign_result = sign_coordinator
-        .initiate_signing(
-            format!(
-                "req-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis()
-            ),
-            RingConfig {
-                ring_pk_bytes,
-                peer_ids: peer_ids.clone(),
-                threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
-                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
-                    &network.alice.app_state.local_storage,
-                    &ring_payload.ring_pk,
-                )
-                .expect("load RingPolyState")
-                .public_polynomial,
-            },
-            b"some message".to_vec(),
-            SignContext::Policy(Box::new(PolicyContext {
-                token_string: sign_token,
-                namespace: POLICY_TEST_NAMESPACE.to_string(),
-                derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
-                valid_window: None,
-                key_derivation,
-            })),
-        )
-        .await;
-
-    assert!(
-        sign_result.is_err(),
-        "Should fail with mismatched namespace"
-    );
-    let err = sign_result.unwrap_err().to_string();
-    assert!(
-        err.contains("Insufficient") || err.contains("Timeout"),
-        "Error should indicate peers rejected the request: {}",
-        err
-    );
-
-    println!("SUCCESS! Policy signing correctly failed with wrong namespace claim");
 
     network
         .shutdown_routers()
@@ -1681,7 +1501,6 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("create DKG JWT");
@@ -1693,7 +1512,6 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
                     policy_id: None,
-                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1720,7 +1538,6 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
     // JWT claims a different derivation_id than the request
     let sign_token = test_keys
         .create_sign_jwt(
-            POLICY_TEST_NAMESPACE,
             "wrong-derivation-id",
             b"test message",
         )
@@ -1753,7 +1570,6 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
             b"some message".to_vec(),
             SignContext::Policy(Box::new(PolicyContext {
                 token_string: sign_token,
-                namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
@@ -1882,7 +1698,6 @@ async fn test_sign_service_rejects_oversized_message() {
 
     // No auth header — the size check must fire before JWT extraction.
     let request = tonic::Request::new(StartSignRequest {
-        namespace: "test-ns".to_string(),
         derivation_id: "test-derivation".to_string(),
         message: oversized_message,
         valid_window: None,
@@ -1929,7 +1744,6 @@ async fn test_sign_policy_fails_wrong_message_digest() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("create DKG JWT");
@@ -1941,7 +1755,6 @@ async fn test_sign_policy_fails_wrong_message_digest() {
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
                     policy_id: None,
-                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1969,7 +1782,6 @@ async fn test_sign_policy_fails_wrong_message_digest() {
     let original_message = b"original message".to_vec();
     let sign_token = test_keys
         .create_sign_jwt(
-            POLICY_TEST_NAMESPACE,
             POLICY_TEST_DERIVATION_ID,
             &original_message,
         )
@@ -2004,7 +1816,6 @@ async fn test_sign_policy_fails_wrong_message_digest() {
             different_message,
             SignContext::Policy(Box::new(PolicyContext {
                 token_string: sign_token,
-                namespace: POLICY_TEST_NAMESPACE.to_string(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,

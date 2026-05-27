@@ -91,9 +91,8 @@ where
         let mut refresh_candidate_bundle: Option<RingShareBundle> = None;
         let authoritative_ring_pk_hex = match &context {
             SignContext::Policy(ctx) => {
-                let (token_string, namespace, derivation_id, valid_window) = (
+                let (token_string, derivation_id, valid_window) = (
                     &ctx.token_string,
-                    &ctx.namespace,
                     &ctx.derivation_id,
                     &ctx.valid_window,
                 );
@@ -109,11 +108,10 @@ where
                     JWT_CLOCK_SKEW_LEEWAY_SECS,
                 )
                 .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-                validate_sign_claims(&token, namespace, derivation_id, None)?;
+                validate_sign_claims(&token, derivation_id, None)?;
                 let (key_derivation, ring_payload) = fetch_bulletin_payloads(
                     &*self.app_state.bulletin,
                     &self.app_state.local_storage,
-                    namespace,
                     derivation_id,
                 )
                 .await?;
@@ -260,9 +258,8 @@ where
                 (ring_pk_hex, None, None)
             }
             SignContext::Policy(ref ctx) => {
-                let (token_string, namespace, derivation_id, valid_window) = (
+                let (token_string, derivation_id, valid_window) = (
                     &ctx.token_string,
-                    &ctx.namespace,
                     &ctx.derivation_id,
                     &ctx.valid_window,
                 );
@@ -280,13 +277,12 @@ where
                 )
                 .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 
-                validate_sign_claims(&token, namespace, derivation_id, Some(&message))?;
+                validate_sign_claims(&token, derivation_id, Some(&message))?;
 
                 // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
                 let (key_derivation, ring_payload) = fetch_bulletin_payloads(
                     &*self.app_state.bulletin,
                     &self.app_state.local_storage,
-                    namespace,
                     derivation_id,
                 )
                 .await?;

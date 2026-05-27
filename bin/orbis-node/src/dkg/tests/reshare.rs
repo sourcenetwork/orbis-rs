@@ -10,7 +10,7 @@ use crate::helpers::test_helpers::{
     create_test_app_state_with_bulletin, get_test_ring_post, setup_three_node_network,
     test_db_path, write_ring_to_bulletin, TestKeyPair, TestNode,
 };
-use crate::helpers::test_helpers::{BULLETIN_RING_NAMESPACE, TEST_FRESH_DKG_RING_ID};
+use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use crate::DkgServiceImpl;
 use bulletin::dummy::DummyBulletin;
@@ -67,7 +67,6 @@ fn reshare_session_init(
         },
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: String::new(),
     }
 }
@@ -177,18 +176,10 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
         .bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            BulletinKind::Ring,
-            bytes.clone(),
-            None,
-        )
+        .post(BulletinKind::Ring, bytes.clone(), None)
         .await
         .unwrap();
-    let post_id = app_state
-        .bulletin
-        .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
-        .unwrap();
+    let post_id = app_state.bulletin.get_post_id(&bytes).unwrap();
 
     let mut ring_index: Vec<RingIndexEntry> = app_state
         .local_storage
@@ -200,7 +191,6 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
     ring_index.push(RingIndexEntry {
         ring_pk_str: session_ring_pk.to_string(),
         bulletin_post_id: post_id,
-        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     });
     app_state
         .local_storage
@@ -491,18 +481,10 @@ async fn write_ring_with_announced_reshare(
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
         .bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            BulletinKind::Ring,
-            bytes.clone(),
-            None,
-        )
+        .post(BulletinKind::Ring, bytes.clone(), None)
         .await
         .unwrap();
-    let post_id = app_state
-        .bulletin
-        .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
-        .unwrap();
+    let post_id = app_state.bulletin.get_post_id(&bytes).unwrap();
     let mut ring_index: Vec<RingIndexEntry> = app_state
         .local_storage
         .get(LocalStorageKeys::RingIndex)
@@ -513,7 +495,6 @@ async fn write_ring_with_announced_reshare(
     ring_index.push(RingIndexEntry {
         ring_pk_str: ring_pk.to_string(),
         bulletin_post_id: post_id,
-        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     });
     app_state
         .local_storage
@@ -778,18 +759,10 @@ async fn post_ring_for_validation(
     let bytes = serde_json::to_vec(&payload).unwrap();
     app_state
         .bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            BulletinKind::Ring,
-            bytes.clone(),
-            None,
-        )
+        .post(BulletinKind::Ring, bytes.clone(), None)
         .await
         .unwrap();
-    let post_id = app_state
-        .bulletin
-        .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
-        .unwrap();
+    let post_id = app_state.bulletin.get_post_id(&bytes).unwrap();
     let mut ring_index: Vec<RingIndexEntry> = app_state
         .local_storage
         .get(LocalStorageKeys::RingIndex)
@@ -800,7 +773,6 @@ async fn post_ring_for_validation(
     ring_index.push(RingIndexEntry {
         ring_pk_str: ring_pk.to_string(),
         bulletin_post_id: post_id,
-        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     });
     app_state
         .local_storage
@@ -841,7 +813,6 @@ async fn test_validate_reshare_accepts_new_peer_ids_fallback_to_current() {
         &[sender_hex.to_string()], // matches fallback = peer_ids
         1,
         "",
-        BULLETIN_RING_NAMESPACE,
         &app_state.local_storage,
         &app_state.bulletin,
     )
@@ -885,7 +856,6 @@ async fn test_validate_reshare_accepts_new_threshold_fallback_to_current() {
         &[new_peer.to_string()],
         1, // matches fallback = current threshold
         "",
-        BULLETIN_RING_NAMESPACE,
         &app_state.local_storage,
         &app_state.bulletin,
     )
@@ -928,7 +898,6 @@ async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
         &["00112233".to_string()], // differs from fallback = ["aabbccdd"]
         1,
         "",
-        BULLETIN_RING_NAMESPACE,
         &app_state.local_storage,
         &app_state.bulletin,
     )
@@ -973,7 +942,6 @@ async fn test_validate_reshare_rejects_when_threshold_differs_from_fallback() {
         &[new_peer_1.to_string(), new_peer_2.to_string()],
         1, // differs from fallback = 2
         "",
-        BULLETIN_RING_NAMESPACE,
         &app_state.local_storage,
         &app_state.bulletin,
     )
@@ -998,12 +966,10 @@ async fn test_validate_reshare_rejects_when_threshold_differs_from_fallback() {
 /// Create an additional test node that shares an existing `DummyBulletin`.
 /// Starts a DKG router on the node immediately.
 async fn create_extra_test_node(db_suffix: &str, bulletin: Arc<DummyBulletin>) -> TestNode {
-    use bulletin::r#trait::Bulletin as BulletinTrait;
-    let shared: Arc<dyn BulletinTrait + Send + Sync> = bulletin.clone();
     let state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
-        shared,
+        bulletin,
         db_suffix,
     )
     .await;
@@ -1093,17 +1059,12 @@ async fn post_reshare_announcement(
     let bytes = serde_json::to_vec(&payload).unwrap();
 
     bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            BulletinKind::Ring,
-            bytes.clone(),
-            None,
-        )
+        .post(BulletinKind::Ring, bytes.clone(), None)
         .await
         .expect("post reshare announcement to bulletin");
 
     let new_post_id = bulletin
-        .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
+        .get_post_id(&bytes)
         .expect("get reshare announcement post_id");
 
     // Point every old-committee node's RingIndex entry at the new post.
@@ -1192,7 +1153,6 @@ async fn run_reshare_ceremony(
         },
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: String::new(),
     };
 
@@ -1259,11 +1219,7 @@ async fn run_reshare_ceremony(
     loop {
         let post = initiator_state
             .bulletin
-            .read(
-                BULLETIN_RING_NAMESPACE.to_string(),
-                bulletin_post_id.to_string(),
-                BulletinKind::Ring,
-            )
+            .read(bulletin_post_id.to_string(), BulletinKind::Ring)
             .await
             .expect("read reshare bulletin post");
         let payload: RingPayload =
@@ -1345,7 +1301,6 @@ async fn test_reshare_lower_threshold() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("JWT");
@@ -1357,7 +1312,6 @@ async fn test_reshare_lower_threshold() {
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
                     policy_id: None,
-                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1461,7 +1415,6 @@ async fn test_reshare_one_member_rotated() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("JWT");
@@ -1473,7 +1426,6 @@ async fn test_reshare_one_member_rotated() {
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
                     policy_id: None,
-                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1580,7 +1532,6 @@ async fn test_reshare_one_old_dealer_offline_completes() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("JWT");
@@ -1592,7 +1543,6 @@ async fn test_reshare_one_old_dealer_offline_completes() {
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
                     policy_id: None,
-                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1706,7 +1656,6 @@ async fn test_reshare_expand_committee() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("JWT");
@@ -1718,7 +1667,6 @@ async fn test_reshare_expand_committee() {
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
                     policy_id: None,
-                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1832,7 +1780,6 @@ async fn test_reshare_shrink_committee() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("JWT");
@@ -1844,7 +1791,6 @@ async fn test_reshare_shrink_committee() {
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
                     policy_id: None,
-                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1947,7 +1893,6 @@ async fn test_reshare_full_rotation() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("JWT");
@@ -1959,7 +1904,6 @@ async fn test_reshare_full_rotation() {
                     peer_ids: peer_ids.clone(),
                     pss_interval: None,
                     policy_id: None,
-                    namespace: BULLETIN_RING_NAMESPACE.to_string(),
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,

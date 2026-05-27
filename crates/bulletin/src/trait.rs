@@ -14,7 +14,6 @@ pub enum BulletinKind {
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
 pub struct BulletinPost {
     pub id: String,
-    pub namespace: String,
     pub payload: Vec<u8>,
 }
 
@@ -95,8 +94,8 @@ pub struct NodeInfo {
     pub peer_id: String,
     /// Key stored externally from node to control ring participants
     pub controller_key: String,
-    /// whitelisted namespaces that will complete DKG with
-    pub whitelisted_namespaces: Vec<String>,
+    /// whitelisted policy IDs that will complete DKG with
+    pub whitelisted_policy_ids: Vec<String>,
     /// whitelisted ring_ids to complete DKG with
     pub whitelisted_ring_ids: Vec<String>,
 }
@@ -183,40 +182,31 @@ impl TryFrom<NodeInfo> for Vec<u8> {
 
 #[async_trait]
 pub trait Bulletin {
-    /// Register a bulletin instance
-    async fn register(&self, namespace: String) -> Result<()>;
-    /// Post a message to the bulletin namespace
+    /// Register a bulletin instance.
+    async fn register(&self) -> Result<()>;
+    /// Post a typed Orbis object.
     async fn post(
         &self,
-        namespace: String,
         kind: BulletinKind,
         payload: Vec<u8>,
         artifact: Option<String>,
     ) -> Result<()>;
-    /// Finalize an existing message update in the bulletin namespace while preserving its ID.
-    async fn update(
-        &self,
-        namespace: String,
-        id: String,
-        signature_scheme: String,
-        signature: Vec<u8>,
-    ) -> Result<()>;
-    /// Read a message from the bulletin namespace
-    async fn read(&self, namespace: String, id: String, kind: BulletinKind)
-        -> Result<BulletinPost>;
+    /// Finalize an existing typed Orbis object update while preserving its ID.
+    async fn update(&self, id: String, signature_scheme: String, signature: Vec<u8>) -> Result<()>;
+    /// Read a typed Orbis object.
+    async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost>;
     /// Chain ID used when building chain-bound signing statements.
     fn chain_id(&self) -> String;
-    /// Compute a deterministic post ID from namespace and raw payload bytes.
-    fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String>;
+    /// Compute a deterministic typed object ID from raw payload bytes.
+    fn get_post_id(&self, payload: &[u8]) -> Result<String>;
     /// Compute the deterministic ring ID from ring creation parameters.
     fn get_ring_id(
         &self,
-        namespace: &str,
-        ring_pk: &str,
         peer_ids: &[String],
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
+        nonce: Option<&str>,
     ) -> Result<String>;
     /// Return the canonical hash of the current ring state used in reshare sign docs.
     /// Each bulletin backend defines what "canonical" means for its storage representation.
@@ -228,7 +218,6 @@ pub trait Bulletin {
     fn ring_reshare_finalize_sign_bytes(
         &self,
         chain_id: &str,
-        namespace: &str,
         ring_id: &str,
         ring_pk: &str,
         current_ring_sha256: Vec<u8>,

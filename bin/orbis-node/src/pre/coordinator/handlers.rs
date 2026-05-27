@@ -88,7 +88,6 @@ where
             &token,
             &ctx.rdr_pk_bytes,
             &ctx.object_id,
-            &ctx.namespace,
             &ctx.derivation,
             &ctx.salt,
         )?;
@@ -96,7 +95,6 @@ where
         let (document_payload, ring_payload) = fetch_bulletin_payloads(
             &*self.app_state.bulletin,
             &self.app_state.local_storage,
-            &ctx.namespace,
             &ctx.object_id,
         )
         .await?;

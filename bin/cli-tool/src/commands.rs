@@ -9,7 +9,6 @@ use bulletin::r#trait::{Bulletin, BulletinKind, KeyDerivation, RingPayload};
 use bulletin::sourcehub::SourceHubBulletin;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
-    orbis::namespace_id,
     ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::r#trait::{Secret, ThresholdDealer, ThresholdSigner};
@@ -51,7 +50,6 @@ pub async fn do_dkg(
     peer_ids: Vec<String>,
     pss_interval: Option<u64>,
     policy_id: Option<String>,
-    namespace: String,
     ring_id: String,
 ) -> Result<DkgResult> {
     // Total nodes = peers + the node we're connecting to
@@ -72,7 +70,6 @@ pub async fn do_dkg(
     if let Some(policy_id) = &policy_id {
         println!("  Policy ID: {}", policy_id);
     }
-    println!("  Namespace: {}", namespace);
     println!("  Ring ID: {}", ring_id);
     println!();
 
@@ -87,21 +84,13 @@ pub async fn do_dkg(
         peer_ids: peer_ids.clone(),
         pss_interval,
         policy_id: policy_id.clone(),
-        namespace: namespace.clone(),
         ring_id: ring_id.clone(),
     };
 
     // JWT work
     let jwt_signer = JwtSigner::new();
     let token = jwt_signer
-        .create_dkg_jwt(
-            threshold,
-            &peer_ids,
-            pss_interval,
-            policy_id,
-            &namespace,
-            &ring_id,
-        )
+        .create_dkg_jwt(threshold, &peer_ids, pss_interval, policy_id, &ring_id)
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token)
         .map_err(|e| anyhow!("Failed to create_dkg_jwt: {}", e))?;
@@ -218,7 +207,6 @@ pub async fn store_prepared_secret(
     endpoint: String,
     prepared: &PreparedSecret,
     ring_id: String,
-    namespace: String,
     policy_id: String,
     resource: String,
     permission: String,
@@ -230,7 +218,6 @@ pub async fn store_prepared_secret(
     println!("Storing secret via StoreSecret service:");
     println!("  Endpoint: {}", endpoint);
     println!("  Ring ID: {}", ring_id);
-    println!("  Namespace: {}", namespace);
     println!();
 
     let mut client = StoreSecretServiceClient::connect(endpoint.clone())
@@ -241,7 +228,6 @@ pub async fn store_prepared_secret(
         encrypted_document: prepared.encrypted_document.clone(),
         enc_cmt: prepared.enc_cmt.clone(),
         ring_id: ring_id.clone(),
-        namespace: namespace.clone(),
         policy_id: policy_id.clone(),
         resource: resource.clone(),
         permission: permission.clone(),
@@ -263,7 +249,6 @@ pub async fn store_prepared_secret(
             &prepared.encrypted_document,
             prepared.enc_cmt.clone(),
             &ring_id,
-            &namespace,
             &policy_id,
             &resource,
             &permission,
@@ -320,7 +305,6 @@ pub async fn do_store_secret(
     secret: &[u8],       // Plaintext secret - encrypted locally before sending
     ring_pk_hex: String, // Ring public key (hex) - used for encryption
     ring_id: String,
-    namespace: String,
     policy_id: String,
     resource: String,
     permission: String,
@@ -346,7 +330,6 @@ pub async fn do_store_secret(
         endpoint,
         &prepared.clone(),
         ring_id,
-        namespace,
         policy_id,
         resource,
         permission,
@@ -374,7 +357,6 @@ pub async fn do_pre(
     reader_sk: Option<String>,
     object_id: String,
     reader_did_pk: Option<String>,
-    namespace: String,
     derivation: Option<Vec<u8>>,
     salt: Option<String>,
     valid_window_start: Option<u64>,
@@ -420,7 +402,6 @@ pub async fn do_pre(
     let request = proto::pre_service::StartPreRequest {
         rdr_pk: reader_pk_bytes.clone(),
         object_id: object_id.clone(),
-        namespace: namespace.clone(),
         derivation: derivation.clone(),
         salt: salt.clone(),
         valid_window,
@@ -434,7 +415,6 @@ pub async fn do_pre(
     let token = jwt_signer
         .create_pre_jwt(
             reader_pk_bytes.clone(),
-            &namespace,
             &object_id,
             derivation.clone(),
             salt.clone(),
@@ -710,9 +690,7 @@ pub async fn add_ring_governance_policy(bulletin_namespace: &str) -> Result<Stri
         .ok_or_else(|| anyhow!("Newly created ring governance policy ID not found in list"))?;
     println!("[ACP] ring governance policy_id: {}", policy_id);
 
-    // The Orbis keeper normalizes namespace input to "orbis/<namespace>" and
-    // checks update_ring on that namespace object during MsgUpdateRingByAcp.
-    let namespace_object_id = namespace_id(bulletin_namespace);
+    let namespace_object_id = bulletin_namespace.trim().to_string();
     let result = client
         .acp_register_object(
             &policy_id,
@@ -920,7 +898,6 @@ pub async fn add_bulletin_collaborator(
 }
 
 pub async fn create_bulletin_post(
-    namespace: String,
     kind: BulletinKind,
     payload: Vec<u8>,
 ) -> Result<String> {
@@ -932,11 +909,11 @@ pub async fn create_bulletin_post(
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
     let post_id = bulletin
-        .get_post_id(&namespace, &payload)
+        .get_post_id(&payload)
         .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
 
     bulletin
-        .post(namespace, kind, payload, None)
+        .post(kind, payload, None)
         .await
         .map_err(|e| anyhow!("Failed to create post: {}", e))?;
 
@@ -974,9 +951,8 @@ pub async fn update_ring_post_by_acp(
     Ok(())
 }
 
-/// Read a bulletin post by namespace and ID
+/// Read a bulletin post by ID
 pub async fn read_bulletin_post(
-    namespace: String,
     id: String,
     kind: BulletinKind,
 ) -> Result<Vec<u8>> {
@@ -985,7 +961,7 @@ pub async fn read_bulletin_post(
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
     let post = bulletin
-        .read(namespace, id, kind)
+        .read(id, kind)
         .await
         .map_err(|e| anyhow!("Failed to read bulletin post: {}", e))?;
 
@@ -1118,7 +1094,6 @@ pub async fn get_account_sequence(address: &str) -> Result<u64> {
 /// The caller must ensure the node's public address has been added as a
 /// collaborator on the namespace before posting.
 pub async fn post_key_derivation(
-    namespace: String,
     ring_id: String,
     derivation: String,
     policy_id: String,
@@ -1130,7 +1105,7 @@ pub async fn post_key_derivation(
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
     let ring_post = ring_bulletin
-        .read(namespace.to_string(), ring_id.clone(), BulletinKind::Ring)
+        .read(ring_id.clone(), BulletinKind::Ring)
         .await
         .map_err(|e| anyhow!("Failed to read ring post '{}': {}", ring_id, e))?;
     let ring_payload: RingPayload = serde_json::from_slice(&ring_post.payload)
@@ -1170,22 +1145,17 @@ pub async fn post_key_derivation(
         .map_err(|e| anyhow!("Failed to serialize KeyDerivation: {}", e))?;
 
     let post_id = bulletin
-        .get_post_id(&namespace, &payload)
+        .get_post_id(&payload)
         .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
 
     bulletin
-        .post(
-            namespace.clone(),
-            BulletinKind::KeyDerivation,
-            payload,
-            None,
-        )
+        .post(BulletinKind::KeyDerivation, payload, None)
         .await
         .map_err(|e| anyhow!("Failed to post KeyDerivation: {}", e))?;
 
     println!(
-        "Posted KeyDerivation to namespace '{}': derivation_id={} derived_pk={}",
-        namespace, post_id, derived_pk_hex
+        "Posted KeyDerivation: derivation_id={} derived_pk={}",
+        post_id, derived_pk_hex
     );
     Ok((post_id, derived_pk_hex))
 }
@@ -1201,13 +1171,12 @@ pub struct SignResult {
 
 /// Call `SignService.StartSign` with a JWT-authenticated request.
 ///
-/// `namespace` and `derivation_id` must match the `KeyDerivation` posted to
-/// the bulletin via `post_key_derivation`. The JWT is bound to both fields so
-/// the node can verify the caller is authorised to sign under that key derivation.
+/// `derivation_id` must match the `KeyDerivation` posted to the bulletin via
+/// `post_key_derivation`. The JWT is bound to it so the node can verify the
+/// caller is authorised to sign under that key derivation.
 pub async fn do_sign(
     endpoint: String,
     message: Vec<u8>,
-    namespace: String,
     derivation_id: String,
     reader_did_pk: Option<String>,
     valid_window_start: Option<u64>,
@@ -1215,7 +1184,6 @@ pub async fn do_sign(
 ) -> Result<SignResult> {
     println!("Starting Sign session:");
     println!("  Endpoint: {}", endpoint);
-    println!("  Namespace: {}", namespace);
     println!("  Derivation ID: {}", derivation_id);
     println!("  Message length: {} bytes", message.len());
     println!();
@@ -1231,7 +1199,6 @@ pub async fn do_sign(
 
     let request = proto::sign_service::StartSignRequest {
         message: message.clone(),
-        namespace: namespace.clone(),
         derivation_id: derivation_id.clone(),
         valid_window,
     };
@@ -1241,7 +1208,7 @@ pub async fn do_sign(
     let key_pair = generate::<DidEd25519KeyPair>(Some(&seed));
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer
-        .create_sign_jwt(&namespace, &derivation_id, &message)
+        .create_sign_jwt(&derivation_id, &message)
         .map_err(|e| anyhow!("Failed to create sign JWT: {}", e))?;
 
     let tonic_request = create_authenticated_request(request, &token)

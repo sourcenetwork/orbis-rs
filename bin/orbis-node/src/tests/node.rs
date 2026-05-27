@@ -1,10 +1,13 @@
 //! Node initialization, configuration, and key management tests.
 
-use crate::helpers::test_helpers::{BULLETIN_RING_NAMESPACE, TEST_FRESH_DKG_RING_ID};
+use crate::helpers::test_helpers::{TEST_FRESH_DKG_RING_ID};
 use crate::{
     dkg::service::DkgServiceImpl,
     helpers::{
-        launch::{create_and_store_node_key, derive_secret_key_bytes, ensure_node_info, LogLevel},
+        launch::{
+            build_node_info_from_args, create_and_store_node_key, derive_secret_key_bytes,
+            ensure_node_info, LogLevel,
+        },
         test_helpers::{cleanup_db, test_db_path},
     },
     info::InfoServiceImpl,
@@ -85,7 +88,7 @@ async fn make_test_node_config(
             reshare_interval_secs: 0, // disabled in tests
             node_controller_key: "test-controller-key".to_string(),
             node_peer_id: None,
-            node_whitelisted_namespaces: vec![],
+            node_whitelisted_policy_ids: vec![],
             node_whitelisted_ring_ids: vec![],
         },
         node_key: "test-node-key".to_string(),
@@ -118,7 +121,7 @@ async fn make_bootstrap_identity(
 fn node_info_test_args(
     controller_key: &str,
     node_peer_id: Option<String>,
-    namespaces: Vec<&str>,
+    policy_ids: Vec<&str>,
     ring_ids: Vec<&str>,
 ) -> Args {
     Args {
@@ -134,7 +137,7 @@ fn node_info_test_args(
         reshare_interval_secs: 0,
         node_controller_key: controller_key.to_string(),
         node_peer_id,
-        node_whitelisted_namespaces: namespaces.into_iter().map(str::to_string).collect(),
+        node_whitelisted_policy_ids: policy_ids.into_iter().map(str::to_string).collect(),
         node_whitelisted_ring_ids: ring_ids.into_iter().map(str::to_string).collect(),
     }
 }
@@ -193,41 +196,30 @@ async fn send_http1_request(addr: SocketAddr, request: Vec<u8>) -> String {
     String::from_utf8_lossy(&response).into_owned()
 }
 
-#[tokio::test]
-async fn test_ensure_node_info_creates_when_missing() {
-    let network = NetworkImpl::new().await.expect("create network");
-    let bulletin = DummyBulletin::new().await.expect("create bulletin");
-    let node_key = "node-key-create";
+#[test]
+fn test_build_node_info_from_args_stores_policy_ids_unchanged() {
     let args = node_info_test_args(
         "controller-key",
         None,
-        vec!["team-a", "orbis/team-b"],
-        vec!["ring-1"],
+        vec!["team-a", "orbis/team-b", " policy-c ", ""],
+        vec!["ring-1", " ring-2 ", ""],
     );
 
-    ensure_node_info(&bulletin, node_key, &network, &args)
-        .await
-        .expect("ensure node info");
-
-    let post = bulletin
-        .read(
-            node_key.to_string(),
-            node_key.to_string(),
-            BulletinKind::NodeInfo,
-        )
-        .await
-        .expect("read created node info");
-    let node_info = NodeInfo::try_from(post).expect("parse node info");
-    assert_eq!(
-        node_info.peer_id,
-        hex::encode(network.local_peer_id().as_bytes())
-    );
+    let node_info = build_node_info_from_args("peer-id".to_string(), "controller-key", &args);
+    assert_eq!(node_info.peer_id, "peer-id");
     assert_eq!(node_info.controller_key, "controller-key");
     assert_eq!(
-        node_info.whitelisted_namespaces,
-        vec!["orbis/team-a".to_string(), "orbis/team-b".to_string()]
+        node_info.whitelisted_policy_ids,
+        vec![
+            "team-a".to_string(),
+            "orbis/team-b".to_string(),
+            "policy-c".to_string()
+        ]
     );
-    assert_eq!(node_info.whitelisted_ring_ids, vec!["ring-1".to_string()]);
+    assert_eq!(
+        node_info.whitelisted_ring_ids,
+        vec!["ring-1".to_string(), "ring-2".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -239,42 +231,26 @@ async fn test_ensure_node_info_keeps_existing_whitelists() {
     let existing = NodeInfo {
         peer_id,
         controller_key: "controller-key".to_string(),
-        whitelisted_namespaces: vec!["orbis/existing".to_string()],
+        whitelisted_policy_ids: vec!["existing-policy".to_string()],
         whitelisted_ring_ids: vec!["ring-existing".to_string()],
     };
-    let payload: Vec<u8> = existing.clone().try_into().expect("serialize node info");
-    bulletin.set_post(
-        node_key.to_string(),
-        node_key.to_string(),
-        bulletin::r#trait::BulletinPost {
-            id: node_key.to_string(),
-            namespace: node_key.to_string(),
-            payload,
-        },
-    );
-    let args = node_info_test_args(
-        "controller-key",
-        None,
-        vec!["new-namespace"],
-        vec!["new-ring"],
-    );
+    bulletin
+        .set_node_info(node_key.to_string(), existing.clone())
+        .expect("seed node info");
+    let args = node_info_test_args("controller-key", None, vec!["new-policy"], vec!["new-ring"]);
 
     ensure_node_info(&bulletin, node_key, &network, &args)
         .await
         .expect("ensure node info");
 
     let post = bulletin
-        .read(
-            node_key.to_string(),
-            node_key.to_string(),
-            BulletinKind::NodeInfo,
-        )
+        .read(node_key.to_string(), BulletinKind::NodeInfo)
         .await
         .expect("read existing node info");
     let node_info = NodeInfo::try_from(post).expect("parse node info");
     assert_eq!(
-        node_info.whitelisted_namespaces,
-        existing.whitelisted_namespaces
+        node_info.whitelisted_policy_ids,
+        existing.whitelisted_policy_ids
     );
     assert_eq!(
         node_info.whitelisted_ring_ids,
@@ -290,19 +266,12 @@ async fn test_ensure_node_info_fails_when_existing_peer_mismatches() {
     let existing = NodeInfo {
         peer_id: "different-peer".to_string(),
         controller_key: "controller-key".to_string(),
-        whitelisted_namespaces: vec![],
+        whitelisted_policy_ids: vec![],
         whitelisted_ring_ids: vec![],
     };
-    let payload: Vec<u8> = existing.try_into().expect("serialize node info");
-    bulletin.set_post(
-        node_key.to_string(),
-        node_key.to_string(),
-        bulletin::r#trait::BulletinPost {
-            id: node_key.to_string(),
-            namespace: node_key.to_string(),
-            payload,
-        },
-    );
+    bulletin
+        .set_node_info(node_key.to_string(), existing)
+        .expect("seed node info");
     let args = node_info_test_args("controller-key", None, vec![], vec![]);
 
     let err = ensure_node_info(&bulletin, node_key, &network, &args)
@@ -319,19 +288,12 @@ async fn test_ensure_node_info_fails_when_existing_controller_mismatches() {
     let existing = NodeInfo {
         peer_id: hex::encode(network.local_peer_id().as_bytes()),
         controller_key: "different-controller".to_string(),
-        whitelisted_namespaces: vec![],
+        whitelisted_policy_ids: vec![],
         whitelisted_ring_ids: vec![],
     };
-    let payload: Vec<u8> = existing.try_into().expect("serialize node info");
-    bulletin.set_post(
-        node_key.to_string(),
-        node_key.to_string(),
-        bulletin::r#trait::BulletinPost {
-            id: node_key.to_string(),
-            namespace: node_key.to_string(),
-            payload,
-        },
-    );
+    bulletin
+        .set_node_info(node_key.to_string(), existing)
+        .expect("seed node info");
     let args = node_info_test_args("controller-key", None, vec![], vec![]);
 
     let err = ensure_node_info(&bulletin, node_key, &network, &args)
@@ -490,7 +452,6 @@ async fn test_bootstrap_info_server_exposes_only_info() {
             peer_ids: vec![],
             pss_interval: None,
             policy_id: None,
-            namespace: BULLETIN_RING_NAMESPACE.to_string(),
             ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
         })
         .await
@@ -528,7 +489,6 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             peer_ids: vec![],
             pss_interval: None,
             policy_id: None,
-            namespace: BULLETIN_RING_NAMESPACE.to_string(),
             ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
         })
         .await
@@ -559,7 +519,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             reshare_interval_secs: 0,
             node_controller_key: "test-controller-key".to_string(),
             node_peer_id: None,
-            node_whitelisted_namespaces: vec![],
+            node_whitelisted_policy_ids: vec![],
             node_whitelisted_ring_ids: vec![],
         },
         node_key: "test-node-key".to_string(),
@@ -601,7 +561,6 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             peer_ids: vec![],
             pss_interval: None,
             policy_id: None,
-            namespace: BULLETIN_RING_NAMESPACE.to_string(),
             ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
         })
         .await

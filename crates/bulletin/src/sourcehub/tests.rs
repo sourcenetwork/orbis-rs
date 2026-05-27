@@ -7,13 +7,14 @@ use common::{
 
 fn test_ring_payload() -> RingPayload {
     RingPayload {
-        ring_pk: "test-ring-pk".to_string(),
+        ring_pk: String::new(),
         peer_ids: vec![
             "peer-1".to_string(),
             "peer-2".to_string(),
             "peer-3".to_string(),
         ],
         threshold: 2,
+        policy_id: Some("policy-id".to_string()),
         ..Default::default()
     }
 }
@@ -36,26 +37,19 @@ async fn test_bulletin_document() {
         .await
         .unwrap();
 
-    let namespace = "test_namespace";
     let ring_payload = test_ring_payload();
     let ring_payload_bytes: Vec<u8> = ring_payload.clone().try_into().unwrap();
     bulletin
-        .post(
-            namespace.to_string(),
-            BulletinKind::Ring,
-            ring_payload_bytes,
-            None,
-        )
+        .post(BulletinKind::Ring, ring_payload_bytes, None)
         .await
         .unwrap();
     let ring_id = bulletin
         .get_ring_id(
-            namespace,
-            &ring_payload.ring_pk,
             &ring_payload.peer_ids,
             ring_payload.threshold,
             ring_payload.pss_interval,
             ring_payload.policy_id.as_deref().unwrap_or(""),
+            None,
         )
         .unwrap();
 
@@ -70,24 +64,17 @@ async fn test_bulletin_document() {
     };
     let serialized_payload: Vec<u8> = payload.clone().try_into().unwrap();
 
-    bulletin.register(namespace.to_string()).await.unwrap();
+    bulletin.register().await.unwrap();
 
     bulletin
-        .post(
-            namespace.to_string(),
-            BulletinKind::Document,
-            serialized_payload.clone(),
-            None,
-        )
+        .post(BulletinKind::Document, serialized_payload.clone(), None)
         .await
         .unwrap();
 
-    let post_id = bulletin
-        .get_post_id(namespace, &serialized_payload)
-        .unwrap();
+    let post_id = bulletin.get_post_id(&serialized_payload).unwrap();
 
     let created_post = bulletin
-        .read(namespace.to_string(), post_id, BulletinKind::Document)
+        .read(post_id, BulletinKind::Document)
         .await
         .unwrap();
     println!("Created post ID: {}", created_post.id);
@@ -115,34 +102,27 @@ async fn test_bulletin_ring() {
         .await
         .unwrap();
 
-    let namespace = "test_namespace";
     let payload = test_ring_payload();
     let serialized_payload: Vec<u8> = payload.clone().try_into().unwrap();
 
-    bulletin.register(namespace.to_string()).await.unwrap();
+    bulletin.register().await.unwrap();
 
     bulletin
-        .post(
-            namespace.to_string(),
-            BulletinKind::Ring,
-            serialized_payload.clone(),
-            None,
-        )
+        .post(BulletinKind::Ring, serialized_payload.clone(), None)
         .await
         .unwrap();
     let ring_id = bulletin
         .get_ring_id(
-            namespace,
-            &payload.ring_pk,
             &payload.peer_ids,
             payload.threshold,
             payload.pss_interval,
             payload.policy_id.as_deref().unwrap_or(""),
+            None,
         )
         .unwrap();
 
     let created_post = bulletin
-        .read(namespace.to_string(), ring_id.clone(), BulletinKind::Ring)
+        .read(ring_id.clone(), BulletinKind::Ring)
         .await
         .unwrap();
     println!("Created post ID: {}", created_post.id);

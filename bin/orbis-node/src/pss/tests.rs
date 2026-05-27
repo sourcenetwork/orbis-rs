@@ -1,11 +1,10 @@
 use crate::dkg::error::DkgError;
 use crate::helpers::helpers::extract_node_part;
-use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bulletin, test_db_path};
 use crate::ring_state::RingIndexEntry;
 use bulletin::{
     dummy::DummyBulletin,
-    r#trait::{Bulletin, BulletinKind, RingPayload},
+    r#trait::{BulletinKind, RingPayload},
 };
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
@@ -25,8 +24,7 @@ async fn make_state_with_ring(
     db_name: &str,
     ring_payload: &RingPayload,
 ) -> (crate::app_state::AppState<DkgImpl>, RingIndexEntry, String) {
-    let bulletin: Arc<dyn Bulletin + Send + Sync> =
-        Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
@@ -40,24 +38,19 @@ async fn make_state_with_ring(
     let payload_bytes = serde_json::to_vec(ring_payload).expect("serialize RingPayload");
     app_state
         .bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            BulletinKind::Ring,
-            payload_bytes.clone(),
-            None,
-        )
+        .post(BulletinKind::Ring, payload_bytes.clone(), None)
         .await
         .expect("post RingPayload to bulletin");
     let post_id = app_state
         .bulletin
-        .get_post_id(BULLETIN_RING_NAMESPACE, &payload_bytes)
+        .get_post_id(&payload_bytes)
         .expect("compute post_id");
 
     // Seed RingIndex with the entry.
     let entry = RingIndexEntry {
         ring_pk_str: ring_payload.ring_pk.clone(),
         bulletin_post_id: post_id,
-        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
+
     };
     let index_bytes = serde_json::to_vec(&vec![&entry]).expect("serialize RingIndex");
     app_state
@@ -78,8 +71,7 @@ async fn test_scheduler_zero_interval_is_noop() {
     let db_name = "pss_noop_scheduler";
     let db_path = test_db_path(db_name);
 
-    let bulletin: Arc<dyn Bulletin + Send + Sync> =
-        Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
     let app_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
@@ -112,8 +104,7 @@ async fn test_refresh_all_rings_empty_index() {
     let db_name = "pss_empty_index";
     let db_path = test_db_path(db_name);
 
-    let bulletin: Arc<dyn Bulletin + Send + Sync> =
-        Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
     let app_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
@@ -137,8 +128,7 @@ async fn test_refresh_all_rings_bulletin_miss_does_not_propagate() {
     let db_name = "pss_bulletin_miss";
     let db_path = test_db_path(db_name);
 
-    let bulletin: Arc<dyn Bulletin + Send + Sync> =
-        Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
     let app_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
@@ -151,7 +141,7 @@ async fn test_refresh_all_rings_bulletin_miss_does_not_propagate() {
     let ring_index = vec![RingIndexEntry {
         ring_pk_str: "nonexistent_ring".to_string(),
         bulletin_post_id: "nonexistent_ring_id".to_string(),
-        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
+
     }];
     let index_bytes = serde_json::to_vec(&ring_index).expect("serialize ring index");
     app_state
@@ -277,8 +267,7 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     let ring_pk_str = "test_ring_bad_payload";
     let db_path = test_db_path(db_name);
 
-    let bulletin: Arc<dyn Bulletin + Send + Sync> =
-        Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
     let app_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
@@ -291,23 +280,18 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     let garbage = b"not valid json".to_vec();
     app_state
         .bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            BulletinKind::Ring,
-            garbage.clone(),
-            None,
-        )
+        .post(BulletinKind::Ring, garbage.clone(), None)
         .await
         .expect("post garbage");
     let post_id = app_state
         .bulletin
-        .get_post_id(BULLETIN_RING_NAMESPACE, &garbage)
+        .get_post_id(&garbage)
         .expect("compute post_id");
 
     let entry = RingIndexEntry {
         ring_pk_str: ring_pk_str.to_string(),
         bulletin_post_id: post_id,
-        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
+
     };
     app_state
         .local_storage
@@ -348,23 +332,18 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
     let payload_bytes = serde_json::to_vec(&ring_payload).expect("serialize RingPayload");
     app_state
         .bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            BulletinKind::Ring,
-            payload_bytes.clone(),
-            None,
-        )
+        .post(BulletinKind::Ring, payload_bytes.clone(), None)
         .await
         .expect("post RingPayload");
     let post_id = app_state
         .bulletin
-        .get_post_id(BULLETIN_RING_NAMESPACE, &payload_bytes)
+        .get_post_id(&payload_bytes)
         .expect("compute post_id");
 
     let entry = RingIndexEntry {
         ring_pk_str: "expected_ring_pk".to_string(),
         bulletin_post_id: post_id,
-        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
+
     };
     app_state
         .local_storage
@@ -393,8 +372,7 @@ async fn make_initiator_state(
     db_name: &str,
 ) -> (crate::app_state::AppState<DkgImpl>, String, String) {
     let db_path = test_db_path(db_name);
-    let bulletin: Arc<dyn Bulletin + Send + Sync> =
-        Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
     let app_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
@@ -414,22 +392,17 @@ async fn post_ring_and_seed_index(
     let payload_bytes = serde_json::to_vec(ring_payload).expect("serialize RingPayload");
     app_state
         .bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            BulletinKind::Ring,
-            payload_bytes.clone(),
-            None,
-        )
+        .post(BulletinKind::Ring, payload_bytes.clone(), None)
         .await
         .expect("post RingPayload");
     let post_id = app_state
         .bulletin
-        .get_post_id(BULLETIN_RING_NAMESPACE, &payload_bytes)
+        .get_post_id(&payload_bytes)
         .expect("compute post_id");
     let entry = RingIndexEntry {
         ring_pk_str: ring_payload.ring_pk.clone(),
         bulletin_post_id: post_id,
-        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
+
     };
     app_state
         .local_storage
@@ -573,8 +546,7 @@ async fn test_refresh_ring_missing_from_bulletin() {
     let db_name = "pss_missing_ring";
     let db_path = test_db_path(db_name);
 
-    let bulletin: Arc<dyn Bulletin + Send + Sync> =
-        Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
     let app_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
@@ -586,7 +558,7 @@ async fn test_refresh_ring_missing_from_bulletin() {
     let entry = RingIndexEntry {
         ring_pk_str: "ghost_ring".to_string(),
         bulletin_post_id: "ghost_ring".to_string(),
-        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
+
     };
     let result = super::pss_ring(&Arc::new(app_state), &entry).await;
     assert!(

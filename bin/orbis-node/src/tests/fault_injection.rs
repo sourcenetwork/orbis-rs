@@ -188,7 +188,7 @@ async fn setup_fault_three_node_network(
                 reshare_interval_secs: 0,
                 node_controller_key: "test-controller-key".to_string(),
                 node_peer_id: None,
-                node_whitelisted_namespaces: vec![],
+                node_whitelisted_policy_ids: vec![],
                 node_whitelisted_ring_ids: vec![],
             },
             node_key,
@@ -251,7 +251,6 @@ async fn setup_ring(
         peer_ids,
         None,
         None,
-        BULLETIN_RING_NAMESPACE.to_string(),
         TEST_FRESH_DKG_RING_ID.to_string(),
     )
     .await
@@ -263,7 +262,6 @@ async fn setup_ring(
         .expect("DKG completion event");
 
     let post_payload = cli_tool::read_bulletin_post(
-        BULLETIN_RING_NAMESPACE.to_string(),
         post_event.ring_id.clone(),
         BulletinKind::Ring,
     )
@@ -334,7 +332,6 @@ async fn test_pre_one_node_down_succeeds() {
         endpoint.clone(),
         &prepared,
         ring_id.clone(),
-        user_namespace.clone(),
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
@@ -379,7 +376,6 @@ async fn test_pre_one_node_down_succeeds() {
         Some(reader_sk_hex.clone()),
         object_id.clone(),
         Some(did.clone()),
-        user_namespace.clone(),
         None,
         None,
         None,
@@ -456,7 +452,6 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
         endpoint.clone(),
         &prepared,
         ring_id.clone(),
-        user_namespace.clone(),
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
@@ -505,7 +500,6 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
             Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
-            user_namespace.clone(),
             None,
             None,
             None,
@@ -589,7 +583,6 @@ async fn test_sign_one_node_down_succeeds() {
         endpoint.clone(),
         &prepared,
         ring_id.clone(),
-        user_namespace.clone(),
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
@@ -680,7 +673,6 @@ async fn test_sign_below_threshold_nodes_down_fails_fast() {
             endpoint.clone(),
             &prepared,
             ring_id.clone(),
-            user_namespace.clone(),
             policy_id.clone(),
             resource.clone(),
             permission.clone(),
@@ -750,7 +742,6 @@ async fn test_dkg_fails_when_node_unreachable() {
         peer_ids,
         None,
         None,
-        BULLETIN_RING_NAMESPACE.to_string(),
         TEST_FRESH_DKG_RING_ID.to_string(),
     )
     .await;

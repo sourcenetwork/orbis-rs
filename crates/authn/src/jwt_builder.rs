@@ -158,7 +158,6 @@ impl JwtSigner {
     /// * `peer_ids` - List of peer IDs
     /// * `pss_interval` - Optional seconds between automatic PSS refresh ceremonies
     /// * `policy_id` - Optional policy that externally governs ring updates
-    /// * `namespace` - Namespace of the post
     /// * `ring_id` - Pre-created blank ring entry targeted by this DKG
     /// # Returns
     /// The signed JWT string valid for 1 hour
@@ -168,7 +167,6 @@ impl JwtSigner {
         peer_ids: &[String],
         pss_interval: Option<u64>,
         policy_id: Option<String>,
-        namespace: &str,
         ring_id: &str,
     ) -> Result<String> {
         let claims = DkgClaims {
@@ -176,7 +174,6 @@ impl JwtSigner {
             peer_ids: peer_ids.to_vec(),
             pss_interval,
             policy_id,
-            namespace: namespace.to_string(),
             ring_id: ring_id.to_string(),
         };
         self.sign(claims, TOKEN_TTL)
@@ -187,7 +184,6 @@ impl JwtSigner {
     /// # Arguments
     /// * `rdr_pk` - Reader's public key
     /// * `object_id` - secret id
-    /// * `peer_ids` - List of peer IDs (will be joined with commas)
     /// * `derivation` - Optional derivation path
     /// * `salt` - Optional salt for proof
     ///
@@ -196,7 +192,6 @@ impl JwtSigner {
     pub fn create_pre_jwt(
         &self,
         rdr_pk: Vec<u8>,
-        namespace: &str,
         object_id: &str,
         derivation: Option<Vec<u8>>,
         salt: Option<String>,
@@ -204,7 +199,6 @@ impl JwtSigner {
         let claims = PreClaims {
             rdr_pk,
             object_id: object_id.to_string(),
-            namespace: namespace.to_string(),
             derivation,
             salt,
         };
@@ -214,7 +208,6 @@ impl JwtSigner {
     /// Create a JWT with Sign (threshold signing) claims.
     ///
     /// # Arguments
-    /// * `namespace` - Namespace of the key derivation entry on the bulletin
     /// * `derivation_id` - Object ID of the key derivation entry
     /// * `message` - Bytes to sign; stored as SHA-256 digest in the claim
     ///
@@ -222,12 +215,10 @@ impl JwtSigner {
     /// The signed JWT string valid for 1 hour
     pub fn create_sign_jwt(
         &self,
-        namespace: &str,
         derivation_id: &str,
         message: &[u8],
     ) -> Result<String> {
         let claims = SignClaims {
-            namespace: namespace.to_string(),
             derivation_id: derivation_id.to_string(),
             message_sha256: Sha256::digest(message).to_vec(),
         };
@@ -240,7 +231,6 @@ impl JwtSigner {
     /// * `encrypted_document` - The encrypted document bytes; stored as SHA-256 digest in the claim
     /// * `enc_cmt` - The encryption commitment (hex-encoded G1 point)
     /// * `ring_id` - The ring ID to use for encryption
-    /// * `namespace` - The namespace for storing the document
     /// * `policy_id` - Policy ID for access control
     /// * `resource` - Resource type for the policy
     /// * `permission` - Permission required for the policy
@@ -258,7 +248,6 @@ impl JwtSigner {
         encrypted_document: &[u8],
         enc_cmt: Vec<u8>,
         ring_id: &str,
-        namespace: &str,
         policy_id: &str,
         resource: &str,
         permission: &str,
@@ -273,7 +262,6 @@ impl JwtSigner {
             encrypted_document_sha256: Sha256::digest(encrypted_document).to_vec(),
             enc_cmt,
             ring_id: ring_id.to_string(),
-            namespace: namespace.to_string(),
             policy_id: policy_id.to_string(),
             resource: resource.to_string(),
             permission: permission.to_string(),
@@ -393,7 +381,6 @@ mod tests {
         let signer = JwtSigner::new();
         let token = signer.create_pre_jwt(
             b"rdr_pk_value".to_vec(),
-            "namespace",
             "object_id",
             None,
             None,
@@ -408,7 +395,6 @@ mod tests {
             b"encrypted_doc",
             b"enc_cmt_bytes".to_vec(),
             "ring_id_value",
-            "namespace",
             "policy_id",
             "resource",
             "permission",

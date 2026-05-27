@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
-use crate::helpers::helpers::{ring_namespace_for_post_id, RingConfig};
+use crate::helpers::helpers::RingConfig;
 use crate::metrics;
 use crate::ring_state::RingPolyState;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
@@ -94,18 +94,15 @@ where
 
         tracing::info!(
             ring_id = %req.ring_id,
-            namespace = %req.namespace,
             issuer = %token.issuer_id,
             "Authenticated StoreSecret request"
         );
 
         // Get ring public_key from bulletin
-        let ring_namespace = ring_namespace_for_post_id(&self.state.local_storage, &req.ring_id)
-            .map_err(StoreSecretError::Storage)?;
         let ring_info = self
             .state
             .bulletin
-            .read(ring_namespace, req.ring_id.clone(), BulletinKind::Ring)
+            .read(req.ring_id.clone(), BulletinKind::Ring)
             .await
             .map_err(|e| {
                 StoreSecretError::Storage(format!("Failed to read ring '{}': {}", req.ring_id, e))
@@ -162,7 +159,7 @@ where
         let object_id = self
             .state
             .bulletin
-            .get_post_id(&req.namespace, &payload_bytes)
+            .get_post_id(&payload_bytes)
             .map_err(|e| StoreSecretError::Storage(format!("Failed to compute post ID: {}", e)))?;
 
         // 6. Post to bulletin (only if it doesn't already exist)
@@ -170,11 +167,7 @@ where
         let post_exists = match self
             .state
             .bulletin
-            .read(
-                req.namespace.clone(),
-                object_id.clone(),
-                BulletinKind::Document,
-            )
+            .read(object_id.clone(), BulletinKind::Document)
             .await
         {
             Ok(_) => true,
@@ -191,12 +184,7 @@ where
         if !post_exists {
             self.state
                 .bulletin
-                .post(
-                    req.namespace.clone(),
-                    BulletinKind::Document,
-                    payload_bytes.clone(),
-                    None,
-                )
+                .post(BulletinKind::Document, payload_bytes.clone(), None)
                 .await
                 .map_err(|e| {
                     StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e))
@@ -204,7 +192,6 @@ where
         } else {
             tracing::debug!(
                 object_id = %object_id,
-                namespace = %req.namespace,
                 "Post already exists on bulletin, skipping post"
             );
         }
@@ -214,7 +201,6 @@ where
         tracing::info!(
             object_id = %object_id,
             ring_id = %req.ring_id,
-            namespace = %req.namespace,
             owner = %token.issuer_id,
             "Successfully stored encrypted secret"
         );
@@ -225,7 +211,6 @@ where
             // Construct the BulletinPost that was stored
             let bulletin_post = BulletinPost {
                 id: object_id.clone(),
-                namespace: req.namespace.clone(),
                 payload: payload_bytes.clone(),
             };
 
@@ -339,13 +324,6 @@ fn validate_store_secret_claims(
         return Err(StoreSecretError::Unauthorized(format!(
             "Token ring_id '{}' does not match request ring_id '{}'",
             token.claims.ring_id, req.ring_id
-        )));
-    }
-
-    if token.claims.namespace != req.namespace {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token namespace '{}' does not match request namespace '{}'",
-            token.claims.namespace, req.namespace
         )));
     }
 

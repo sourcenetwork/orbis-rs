@@ -14,8 +14,6 @@ pub struct RingIndexEntry {
     pub ring_pk_str: String,
     /// Content-hash post_id of this ring's `RingPayload` on the bulletin.
     pub bulletin_post_id: String,
-    /// Bulletin namespace this ring's payload lives under.
-    pub bulletin_namespace: String,
 }
 
 /// Combined share + polynomial bundle stored as a single encrypted write under

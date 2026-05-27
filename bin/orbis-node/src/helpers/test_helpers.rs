@@ -19,7 +19,6 @@ use bulletin::{
     BulletinImpl,
 };
 use cli_tool;
-use common::blockchain::orbis::namespace_id;
 use common::blockchain::ChainConfigBuilder;
 use hex;
 use local_storage::{
@@ -66,20 +65,28 @@ pub async fn create_test_app_state(
     dummy_bulletin: bool,
     db_name: &str,
 ) -> AppState<DkgImpl> {
-    let bulletin: Arc<dyn Bulletin + Send + Sync> = if dummy_bulletin {
-        Arc::new(
+    if dummy_bulletin {
+        let bulletin = Arc::new(
             DummyBulletin::new()
                 .await
                 .expect("Failed to initialize dummy bulletin"),
-        )
+        );
+        create_test_app_state_with_bulletin(bind_address, dummy_authz, bulletin, db_name).await
     } else {
-        Arc::new(
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
             BulletinImpl::new(ChainConfigBuilder::default())
                 .await
                 .expect("Failed to initialize bulletin"),
+        );
+        create_test_app_state_with_bulletin_inner(
+            bind_address,
+            dummy_authz,
+            bulletin,
+            None,
+            db_name,
         )
-    };
-    create_test_app_state_with_bulletin(bind_address, dummy_authz, bulletin, db_name).await
+        .await
+    }
 }
 
 /// Create a test AppState with a shared bulletin instance
@@ -88,7 +95,25 @@ pub async fn create_test_app_state(
 pub async fn create_test_app_state_with_bulletin(
     bind_address: Option<String>,
     dummy_authz: bool,
+    bulletin: Arc<DummyBulletin>,
+    db_name: &str,
+) -> AppState<DkgImpl> {
+    let bulletin_trait: Arc<dyn Bulletin + Send + Sync> = bulletin.clone();
+    create_test_app_state_with_bulletin_inner(
+        bind_address,
+        dummy_authz,
+        bulletin_trait,
+        Some(bulletin),
+        db_name,
+    )
+    .await
+}
+
+async fn create_test_app_state_with_bulletin_inner(
+    bind_address: Option<String>,
+    dummy_authz: bool,
     bulletin: Arc<dyn Bulletin + Send + Sync>,
+    dummy_bulletin: Option<Arc<DummyBulletin>>,
     db_name: &str,
 ) -> AppState<DkgImpl> {
     let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
@@ -111,21 +136,22 @@ pub async fn create_test_app_state_with_bulletin(
     let node_info = NodeInfo {
         peer_id: local_peer_id_hex,
         controller_key: "test-controller-key".to_string(),
-        whitelisted_namespaces: vec![namespace_id(BULLETIN_RING_NAMESPACE)],
+        whitelisted_policy_ids: vec!["test-policy".to_string()],
         whitelisted_ring_ids: vec![TEST_FRESH_DKG_RING_ID.to_string()],
     };
-    let node_info_payload: Vec<u8> = node_info
-        .try_into()
-        .expect("Failed to serialize test NodeInfo");
-    bulletin
-        .post(
-            node_key.clone(),
-            BulletinKind::NodeInfo,
-            node_info_payload,
-            None,
-        )
-        .await
-        .expect("Failed to seed test NodeInfo");
+    if let Some(dummy_bulletin) = dummy_bulletin {
+        dummy_bulletin
+            .set_node_info(node_key.clone(), node_info)
+            .expect("Failed to seed test NodeInfo");
+    } else {
+        let node_info_payload: Vec<u8> = node_info
+            .try_into()
+            .expect("Failed to serialize test NodeInfo");
+        bulletin
+            .post(BulletinKind::NodeInfo, node_info_payload, None)
+            .await
+            .expect("Failed to seed test NodeInfo");
+    }
     let mut authz: Arc<dyn Authz> = Arc::new(
         AuthzImpl::new(ChainConfigBuilder::default())
             .await
@@ -289,27 +315,25 @@ pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> Thr
             .await
             .expect("Failed to initialize shared dummy bulletin"),
     );
-    let shared_bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
-
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
     let alice_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
-        shared_bulletin.clone(),
+        dummy_bulletin.clone(),
         &format!("{}_1", db_name),
     )
     .await;
     let bob_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
-        shared_bulletin.clone(),
+        dummy_bulletin.clone(),
         &format!("{}_2", db_name),
     )
     .await;
     let charlie_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
-        shared_bulletin,
+        dummy_bulletin.clone(),
         &format!("{}_3", db_name),
     )
     .await;
@@ -484,24 +508,27 @@ pub async fn setup_three_node_network_with_pre(
     };
 
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
-    let alice_state = create_test_app_state_with_bulletin(
+    let alice_state = create_test_app_state_with_bulletin_inner(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
+        dummy_bulletin_arc.clone(),
         &format!("{}_1", db_name),
     )
     .await;
-    let bob_state = create_test_app_state_with_bulletin(
+    let bob_state = create_test_app_state_with_bulletin_inner(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
+        dummy_bulletin_arc.clone(),
         &format!("{}_2", db_name),
     )
     .await;
-    let charlie_state = create_test_app_state_with_bulletin(
+    let charlie_state = create_test_app_state_with_bulletin_inner(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin,
+        dummy_bulletin_arc.clone(),
         &format!("{}_3", db_name),
     )
     .await;
@@ -671,24 +698,27 @@ pub async fn setup_three_node_network_with_sign(
     };
 
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
-    let alice_state = create_test_app_state_with_bulletin(
+    let alice_state = create_test_app_state_with_bulletin_inner(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
+        dummy_bulletin_arc.clone(),
         &format!("{}_1", db_name),
     )
     .await;
-    let bob_state = create_test_app_state_with_bulletin(
+    let bob_state = create_test_app_state_with_bulletin_inner(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
+        dummy_bulletin_arc.clone(),
         &format!("{}_2", db_name),
     )
     .await;
-    let charlie_state = create_test_app_state_with_bulletin(
+    let charlie_state = create_test_app_state_with_bulletin_inner(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin,
+        dummy_bulletin_arc.clone(),
         &format!("{}_3", db_name),
     )
     .await;
@@ -840,17 +870,10 @@ pub async fn write_ring_to_bulletin(
     };
     let bytes = serde_json::to_vec(&payload).unwrap();
     bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            BulletinKind::Ring,
-            bytes.clone(),
-            None,
-        )
+        .post(BulletinKind::Ring, bytes.clone(), None)
         .await
         .unwrap();
-    let post_id = bulletin
-        .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
-        .unwrap();
+    let post_id = bulletin.get_post_id(&bytes).unwrap();
     let mut ring_index: Vec<RingIndexEntry> = storage
         .get(LocalStorageKeys::RingIndex)
         .ok()
@@ -861,7 +884,6 @@ pub async fn write_ring_to_bulletin(
         ring_index.push(RingIndexEntry {
             ring_pk_str: ring_pk.to_string(),
             bulletin_post_id: post_id,
-            bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
         });
         storage
             .set(
@@ -886,9 +908,9 @@ pub fn cleanup_db(path: &str) {
 }
 
 /// Get bulletin ring info for tests using the DummyBulletin directly
-/// Returns the first post in the BULLETIN_RING_NAMESPACE, or a default empty post if none found
+/// Returns the first dummy bulletin post, or a default empty post if none found.
 pub fn get_test_ring_post(dummy_bulletin: &DummyBulletin) -> BulletinPost {
-    let posts = dummy_bulletin.get_posts_by_namespace(BULLETIN_RING_NAMESPACE);
+    let posts = dummy_bulletin.get_posts();
     posts.into_iter().next().unwrap_or_default()
 }
 

@@ -19,7 +19,6 @@ pub(in crate::dkg::coordinator) async fn handle_session_init<D>(
     kind: &SessionKind,
     pss_interval: Option<u64>,
     policy_id: Option<String>,
-    namespace: String,
     ring_id: String,
     sender_peer_id: &PeerId,
 ) -> Result<Option<DkgMessage>>
@@ -107,7 +106,6 @@ where
                 reshare_new_peer_ids,
                 *reshare_new_threshold,
                 reshare_bulletin_post_id,
-                &namespace,
                 &coord.app_state.local_storage,
                 &coord.app_state.bulletin,
             )
@@ -116,7 +114,6 @@ where
             let ring_payload = load_reshare_ring_payload(
                 ring_pk_hex,
                 reshare_bulletin_post_id,
-                &namespace,
                 &coord.app_state.local_storage,
                 &coord.app_state.bulletin,
             )
@@ -191,7 +188,6 @@ where
                 peer_ids,
                 pss_interval,
                 policy_id.as_deref(),
-                &namespace,
                 &ring_id,
             )?;
             let our_peer_id_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
@@ -199,7 +195,6 @@ where
                 &coord.app_state.bulletin,
                 &coord.app_state.node_key,
                 &our_peer_id_hex,
-                &namespace,
                 &ring_id,
                 threshold,
                 peer_ids,
@@ -388,12 +383,6 @@ where
             .app_state
             .dkg_session_state
             .set_pss_interval(&session_id, pss_interval)
-            .await;
-
-        coord
-            .app_state
-            .dkg_session_state
-            .set_namespace(&session_id, namespace.clone())
             .await;
     }
 

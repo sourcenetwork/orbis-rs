@@ -5,7 +5,6 @@ use crate::metrics;
 use crate::ring_state::RingIndexEntry;
 use bulletin::r#trait::{BulletinKind, RingPayload};
 use crypto::r#trait::Dkg;
-use crypto::{CryptoSerialize, GroupAffine as G1Affine};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
 
@@ -67,7 +66,6 @@ pub(in crate::dkg::coordinator) async fn add_ring_index_entry<D>(
     app_state: &Arc<AppState<D>>,
     storage_key: &str,
     bulletin_post_id: String,
-    bulletin_namespace: String,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
@@ -76,11 +74,10 @@ where
 
     let mut ring_index = read_ring_index(&app_state.local_storage, "RingIndex")?;
 
-    // Upsert: update bulletin_post_id and bulletin_namespace on an existing entry
-    // (e.g. DealerReceiver after reshare), or push a new one for first-time entries.
+    // Upsert: update bulletin_post_id on an existing entry (e.g. DealerReceiver after reshare),
+    // or push a new one for first-time entries.
     if let Some(entry) = ring_index.iter_mut().find(|e| e.ring_pk_str == storage_key) {
         entry.bulletin_post_id = bulletin_post_id;
-        entry.bulletin_namespace = bulletin_namespace;
     } else {
         ensure_local_ring_capacity(&ring_index, storage_key)?;
         // This push is where the node's managed-ring count increases:
@@ -88,7 +85,6 @@ where
         ring_index.push(RingIndexEntry {
             ring_pk_str: storage_key.to_string(),
             bulletin_post_id,
-            bulletin_namespace,
         });
     }
 
@@ -122,7 +118,6 @@ pub(in crate::dkg::coordinator) async fn post_fresh_ring_payload<D>(
     threshold: usize,
     pss_interval: Option<u64>,
     policy_id: Option<String>,
-    bulletin_namespace: &str,
 ) -> Result<String>
 where
     D: Dkg + Clone + 'static,
@@ -155,7 +150,6 @@ where
         .app_state
         .bulletin
         .post(
-            bulletin_namespace.to_string(),
             BulletinKind::Ring,
             payload_bytes,
             Some(session_id.to_string()),
@@ -167,19 +161,17 @@ where
         .app_state
         .bulletin
         .get_ring_id(
-            bulletin_namespace,
-            &ring_payload.ring_pk,
             &ring_payload.peer_ids,
             ring_payload.threshold,
             ring_payload.pss_interval,
             ring_payload.policy_id.as_deref().unwrap_or(""),
+            None,
         )
         .map_err(|e| DkgError::Bulletin(format!("Failed to compute ring_id: {}", e)))?;
 
     tracing::info!(
         ring_pk = %ring_payload.ring_pk,
         ring_id = %ring_id,
-        namespace = bulletin_namespace,
         "DKG Coordinator: Successfully posted RingPayload to bulletin"
     );
 
@@ -188,34 +180,22 @@ where
 
 pub(in crate::dkg::coordinator) fn fresh_ring_index_post_id<D>(
     app_state: &AppState<D>,
-    aggregate_pk: &G1Affine,
     peer_ids: Vec<String>,
     threshold: usize,
     pss_interval: Option<u64>,
     policy_id: Option<String>,
-    bulletin_namespace: &str,
 ) -> Result<String>
 where
     D: Dkg + Clone + 'static,
 {
-    let ring_pk_hex_for_payload = CryptoSerialize::to_bytes(aggregate_pk)
-        .map(|b| hex::encode(&b))
-        .map_err(|e| {
-            DkgError::Serialization(format!(
-                "Failed to serialize aggregate_pk for RingPayload: {}",
-                e
-            ))
-        })?;
-
     app_state
         .bulletin
         .get_ring_id(
-            bulletin_namespace,
-            &ring_pk_hex_for_payload,
             &peer_ids,
             threshold as u32,
             pss_interval,
             policy_id.as_deref().unwrap_or(""),
+            None,
         )
         .map_err(|e| DkgError::Serialization(format!("Failed to compute ring_id: {}", e)))
 }

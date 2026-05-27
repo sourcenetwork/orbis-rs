@@ -3,7 +3,6 @@
 //! This module contains tests for the StoreSecret service.
 //! Tests verify authentication, validation, and error handling.
 
-use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default,
     create_test_app_state_with_bulletin, test_db_path, TestKeyPair,
@@ -25,7 +24,6 @@ use tonic::Request;
 const TEST_ENCRYPTED_DOC: &str = "{}";
 const TEST_ENC_CMT: &str = "00";
 const TEST_RING_ID: &str = "test-ring";
-const TEST_NAMESPACE: &str = "test-namespace";
 const TEST_POLICY_ID: &str = "test-policy";
 const TEST_RESOURCE: &str = "test-resource";
 const TEST_PERMISSION: &str = "test-permission";
@@ -67,23 +65,17 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
     let payload_bytes: Vec<u8> = ring_payload.try_into().expect("serialize RingPayload");
     let post = BulletinPost {
         id: TEST_RING_ID.to_string(),
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         payload: payload_bytes,
     };
-    bulletin.set_post(
-        BULLETIN_RING_NAMESPACE.to_string(),
-        TEST_RING_ID.to_string(),
-        post,
-    );
+    bulletin.set_post(TEST_RING_ID.to_string(), post);
 
     let app_state =
         create_test_app_state_with_bulletin(None, true, Arc::new(bulletin), db_name).await;
 
-    // Write RingIndexEntry so service can resolve the ring's namespace from local storage.
+    // Write RingIndexEntry so service can resolve the ring from local storage.
     let ring_index = vec![RingIndexEntry {
         ring_pk_str: TEST_RING_ID.to_string(),
         bulletin_post_id: TEST_RING_ID.to_string(),
-        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     }];
     app_state
         .local_storage
@@ -103,7 +95,6 @@ fn create_dummy_request() -> StoreSecretRequest {
         encrypted_document: TEST_ENCRYPTED_DOC.as_bytes().to_vec(),
         enc_cmt: TEST_ENC_CMT.as_bytes().to_vec(),
         ring_id: TEST_RING_ID.to_string(),
-        namespace: TEST_NAMESPACE.to_string(),
         policy_id: TEST_POLICY_ID.to_string(),
         resource: TEST_RESOURCE.to_string(),
         permission: TEST_PERMISSION.to_string(),
@@ -123,7 +114,6 @@ fn create_test_jwt(test_keys: &TestKeyPair) -> String {
             TEST_ENCRYPTED_DOC.as_bytes(),
             TEST_ENC_CMT.as_bytes().to_vec(),
             TEST_RING_ID,
-            TEST_NAMESPACE,
             TEST_POLICY_ID,
             TEST_RESOURCE,
             TEST_PERMISSION,
@@ -216,7 +206,6 @@ async fn test_store_secret_fails_claims_mismatch() {
             TEST_ENCRYPTED_DOC.as_bytes(),
             TEST_ENC_CMT.as_bytes().to_vec(),
             "jwt-ring-id", // Different ring_id in JWT
-            TEST_NAMESPACE,
             TEST_POLICY_ID,
             TEST_RESOURCE,
             TEST_PERMISSION,
@@ -256,61 +245,6 @@ async fn test_store_secret_fails_claims_mismatch() {
     cleanup_db(&db_path);
 }
 
-/// Test that StoreSecret fails when namespace in JWT claims doesn't match request
-#[tokio::test]
-async fn test_store_secret_fails_namespace_mismatch() {
-    let db_name = "test_store_secret_fails_namespace_mismatch";
-    let db_path = test_db_path(db_name);
-    let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
-
-    // Create JWT with one namespace but request with different namespace
-    let test_keys = TestKeyPair::new();
-    let token = test_keys
-        .create_store_secret_jwt(
-            TEST_ENCRYPTED_DOC.as_bytes(),
-            TEST_ENC_CMT.as_bytes().to_vec(),
-            TEST_RING_ID,
-            "jwt-namespace", // Different namespace in JWT
-            TEST_POLICY_ID,
-            TEST_RESOURCE,
-            TEST_PERMISSION,
-            TEST_SHARED_POINT.into(),
-            TEST_CHALLENGE.into(),
-            TEST_RESPONSE.into(),
-            false,
-            None,
-            None,
-        )
-        .expect("Failed to create JWT");
-
-    // Request uses TEST_NAMESPACE which doesn't match "jwt-namespace"
-    let request = create_dummy_request();
-
-    let tonic_request = create_authenticated_request(request, &token).unwrap();
-
-    let result = service.store_secret(tonic_request).await;
-
-    assert!(
-        result.is_err(),
-        "store_secret should fail when namespace doesn't match JWT claim"
-    );
-
-    let status = result.unwrap_err();
-    assert_eq!(
-        status.code(),
-        tonic::Code::Unauthenticated,
-        "Error code should be Unauthenticated for namespace mismatch"
-    );
-
-    assert!(
-        status.message().contains("namespace"),
-        "Error message should mention namespace mismatch: {}",
-        status.message()
-    );
-    cleanup_db(&db_path);
-}
-
 /// Test that StoreSecret fails with invalid encrypted document (validation error)
 #[tokio::test]
 async fn test_store_secret_fails_invalid_encrypted_document() {
@@ -329,7 +263,6 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
             invalid_encrypted_doc,
             TEST_ENC_CMT.as_bytes().to_vec(),
             TEST_RING_ID,
-            TEST_NAMESPACE,
             TEST_POLICY_ID,
             TEST_RESOURCE,
             TEST_PERMISSION,
@@ -347,7 +280,6 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         encrypted_document: invalid_encrypted_doc.to_vec(),
         enc_cmt: TEST_ENC_CMT.as_bytes().to_vec(),
         ring_id: TEST_RING_ID.to_string(),
-        namespace: TEST_NAMESPACE.to_string(),
         policy_id: TEST_POLICY_ID.to_string(),
         resource: TEST_RESOURCE.to_string(),
         permission: TEST_PERMISSION.to_string(),
@@ -465,30 +397,24 @@ async fn test_store_secret_idempotent() {
         .try_into()
         .expect("serialize RingPayload");
     let ring_id = bulletin
-        .get_post_id(BULLETIN_RING_NAMESPACE, &ring_payload_bytes)
+        .get_post_id(&ring_payload_bytes)
         .expect("compute ring_id");
 
     // Set ring in bulletin
     let ring_post = BulletinPost {
         id: ring_id.clone(),
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         payload: ring_payload_bytes,
     };
-    bulletin.set_post(
-        BULLETIN_RING_NAMESPACE.to_string(),
-        ring_id.clone(),
-        ring_post,
-    );
+    bulletin.set_post(ring_id.clone(), ring_post);
 
     // Create app state with this bulletin
     let app_state =
         create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
 
-    // Write RingIndexEntry so service can resolve the ring's namespace.
+    // Write RingIndexEntry so service can resolve the ring.
     let ring_index = vec![RingIndexEntry {
         ring_pk_str: ring_id.clone(),
         bulletin_post_id: ring_id.clone(),
-        bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
     }];
     app_state
         .local_storage
@@ -502,7 +428,6 @@ async fn test_store_secret_idempotent() {
 
     // Generate valid encryption proof using ThresholdDealerNode
     let plaintext = b"test secret data";
-    let namespace = "test_idempotent_namespace";
     let policy_id = "test_policy";
     let resource = "test_resource";
     let permission = "read";
@@ -525,7 +450,6 @@ async fn test_store_secret_idempotent() {
             &encrypted_doc,
             enc_cmt_bytes.clone(),
             &ring_id,
-            namespace,
             policy_id,
             resource,
             permission,
@@ -542,7 +466,6 @@ async fn test_store_secret_idempotent() {
         encrypted_document: encrypted_doc.clone(),
         enc_cmt: enc_cmt_bytes.clone(),
         ring_id: ring_id.clone(),
-        namespace: namespace.to_string(),
         policy_id: policy_id.to_string(),
         resource: resource.to_string(),
         permission: permission.to_string(),
@@ -566,12 +489,12 @@ async fn test_store_secret_idempotent() {
     let object_id = response1.object_id.clone();
     println!("First store succeeded with object_id: {}", object_id);
 
-    // Check bulletin has 1 post in the namespace (plus the ring post in orbis namespace)
-    let posts_after_first = bulletin.get_posts_by_namespace(namespace);
+    // Check bulletin has the ring and one stored document.
+    let posts_after_first = bulletin.get_posts();
     assert_eq!(
         posts_after_first.len(),
-        1,
-        "Should have exactly 1 post after first store"
+        2,
+        "Should have exactly 2 posts after first store"
     );
 
     // Second store with same data - should also succeed (idempotent)
@@ -579,7 +502,6 @@ async fn test_store_secret_idempotent() {
         encrypted_document: encrypted_doc.clone(),
         enc_cmt: enc_cmt_bytes.clone(),
         ring_id: ring_id.clone(),
-        namespace: namespace.to_string(),
         policy_id: policy_id.to_string(),
         resource: resource.to_string(),
         permission: permission.to_string(),
@@ -610,12 +532,12 @@ async fn test_store_secret_idempotent() {
         "Both stores should return the same object_id"
     );
 
-    // Check bulletin still has only 1 post (didn't create duplicate)
-    let posts_after_second = bulletin.get_posts_by_namespace(namespace);
+    // Check bulletin still has only the ring and one document (didn't create duplicate)
+    let posts_after_second = bulletin.get_posts();
     assert_eq!(
         posts_after_second.len(),
-        1,
-        "Should still have exactly 1 post after second store (no duplicate)"
+        2,
+        "Should still have exactly 2 posts after second store (no duplicate)"
     );
 
     println!("SUCCESS! StoreSecret is idempotent - second call didn't create duplicate post");

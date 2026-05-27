@@ -18,8 +18,6 @@ pub const REFRESH_HEALTH_CHECK_DOMAIN: &str = "orbis-pss-refresh-healthcheck-v1"
 pub struct PolicyContext {
     /// Raw JWT string issued by the caller
     pub token_string: String,
-    /// Namespace of the key derivation object on the bulletin
-    pub namespace: String,
     /// Object ID of the key derivation entry
     pub derivation_id: String,
     /// Optional valid window for time-bounded authz checks
@@ -39,8 +37,6 @@ pub struct RingReshareUpdateStatement {
     pub session_id: u64,
     /// SourceHub chain ID that will verify the signature.
     pub chain_id: String,
-    /// Bulletin namespace containing the ring payload post.
-    pub namespace: String,
     /// Hex-encoded ring public key. Reshare preserves this key.
     pub ring_pk: String,
     /// Ring ID of the ring being updated.

@@ -1,6 +1,8 @@
 use crate::{
     error::{BulletinError, Result},
-    r#trait::{Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, RingPayload},
+    r#trait::{
+        Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, NodeInfo, RingPayload,
+    },
 };
 use async_trait::async_trait;
 use common::blockchain::orbis::{
@@ -13,51 +15,50 @@ use std::sync::Mutex;
 
 #[derive(Debug)]
 pub struct DummyBulletin {
-    /// Storage for posts: (namespace, id) -> BulletinPost
-    posts: Mutex<HashMap<(String, String), BulletinPost>>,
+    /// Storage for typed Orbis objects by object ID.
+    posts: Mutex<HashMap<String, BulletinPost>>,
 }
 
 #[async_trait]
 impl Bulletin for DummyBulletin {
-    async fn register(&self, _namespace: String) -> Result<()> {
+    async fn register(&self) -> Result<()> {
         Ok(())
     }
 
     async fn post(
         &self,
-        namespace: String,
         kind: BulletinKind,
         payload: Vec<u8>,
         _artifact: Option<String>,
     ) -> Result<()> {
         let id = match kind {
-            BulletinKind::NodeInfo => namespace.clone(),
-            _ => Self::typed_post_id(&namespace, &payload)
-                .unwrap_or_else(|| Self::compute_post_id(&namespace, &payload)),
+            BulletinKind::NodeInfo => {
+                return Err(BulletinError::ParseError(
+                    "DummyBulletin cannot derive a NodeInfo id; use set_node_info for test setup"
+                        .to_string(),
+                ))
+            }
+            _ => Self::typed_post_id(&payload).unwrap_or_else(|| Self::compute_post_id(&payload)),
         };
 
         let post = BulletinPost {
             id: id.clone(),
-            namespace: namespace.clone(),
             payload,
         };
 
         let mut posts = self.posts.lock().unwrap();
-        posts.insert((namespace, id), post);
+        posts.insert(id, post);
         Ok(())
     }
 
     async fn update(
         &self,
-        namespace: String,
         id: String,
         _signature_scheme: String,
         _signature: Vec<u8>,
     ) -> Result<()> {
         let mut posts = self.posts.lock().unwrap();
-        let post = posts
-            .get_mut(&(namespace.clone(), id.clone()))
-            .ok_or(BulletinError::NotFound { namespace, id })?;
+        let post = posts.get_mut(&id).ok_or(BulletinError::NotFound { id })?;
         let mut payload: RingPayload = serde_json::from_slice(&post.payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?;
         let new_peer_ids = payload.new_peer_ids.take().ok_or_else(|| {
@@ -76,64 +77,50 @@ impl Bulletin for DummyBulletin {
         Ok(())
     }
 
-    async fn read(
-        &self,
-        namespace: String,
-        id: String,
-        _kind: BulletinKind,
-    ) -> Result<BulletinPost> {
+    async fn read(&self, id: String, _kind: BulletinKind) -> Result<BulletinPost> {
         let posts = self.posts.lock().unwrap();
         posts
-            .get(&(namespace.clone(), id.clone()))
+            .get(&id)
             .cloned()
-            .ok_or(BulletinError::NotFound { namespace, id })
+            .ok_or(BulletinError::NotFound { id })
     }
 
     fn chain_id(&self) -> String {
         "sourcehub-localnet".to_string()
     }
 
-    fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String> {
-        Ok(Self::typed_post_id(namespace, payload)
-            .unwrap_or_else(|| Self::compute_post_id(namespace, payload)))
+    fn get_post_id(&self, payload: &[u8]) -> Result<String> {
+        Ok(Self::typed_post_id(payload).unwrap_or_else(|| Self::compute_post_id(payload)))
     }
 
     fn get_ring_id(
         &self,
-        namespace: &str,
-        ring_pk: &str,
         peer_ids: &[String],
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
+        nonce: Option<&str>,
     ) -> Result<String> {
         Ok(common::blockchain::orbis::generate_ring_id(
-            namespace,
-            ring_pk,
             peer_ids,
             threshold,
             pss_interval,
             policy_id,
+            nonce,
         ))
     }
 
     async fn ring_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]> {
         let posts = self.posts.lock().unwrap();
-        let post =
-            posts
-                .values()
-                .find(|p| p.id == ring_id)
-                .ok_or_else(|| BulletinError::NotFound {
-                    namespace: String::new(),
-                    id: ring_id.to_string(),
-                })?;
+        let post = posts.get(ring_id).ok_or_else(|| BulletinError::NotFound {
+            id: ring_id.to_string(),
+        })?;
         Ok(Sha256::digest(&post.payload).into())
     }
 
     fn ring_reshare_finalize_sign_bytes(
         &self,
         chain_id: &str,
-        namespace: &str,
         ring_id: &str,
         ring_pk: &str,
         current_ring_sha256: Vec<u8>,
@@ -142,7 +129,6 @@ impl Bulletin for DummyBulletin {
     ) -> Result<Vec<u8>> {
         orbis_ring_reshare_finalize_sign_bytes(
             chain_id,
-            namespace,
             ring_id,
             ring_pk,
             current_ring_sha256,
@@ -154,14 +140,9 @@ impl Bulletin for DummyBulletin {
 
     async fn ring_finalized_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]> {
         let posts = self.posts.lock().unwrap();
-        let post =
-            posts
-                .values()
-                .find(|p| p.id == ring_id)
-                .ok_or_else(|| BulletinError::NotFound {
-                    namespace: String::new(),
-                    id: ring_id.to_string(),
-                })?;
+        let post = posts.get(ring_id).ok_or_else(|| BulletinError::NotFound {
+            id: ring_id.to_string(),
+        })?;
         let mut payload: RingPayload = serde_json::from_slice(&post.payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?;
         let new_peer_ids = payload
@@ -194,25 +175,34 @@ impl DummyBulletin {
     }
 
     /// Set a post directly (for test setup)
-    pub fn set_post(&self, namespace: String, id: String, post: BulletinPost) {
+    pub fn set_post(&self, id: String, post: BulletinPost) {
         let mut posts = self.posts.lock().unwrap();
-        posts.insert((namespace, id), post);
+        posts.insert(id, post);
     }
 
-    /// Compute deterministic post ID from namespace and payload.
-    /// Mirrors SourceHub's on-chain behavior: the chain stores posts under
-    /// "bulletin/{namespace}", so the hash is SHA256("bulletin/{namespace}" || payload).
-    fn compute_post_id(namespace: &str, payload: &[u8]) -> String {
+    /// Set a node info record directly for test setup.
+    pub fn set_node_info(&self, node_key: String, node_info: NodeInfo) -> Result<()> {
+        let payload: Vec<u8> = node_info.try_into()?;
+        self.set_post(
+            node_key.clone(),
+            BulletinPost {
+                id: node_key,
+                payload,
+            },
+        );
+        Ok(())
+    }
+
+    /// Compute deterministic post ID from raw payload bytes for non-typed test payloads.
+    fn compute_post_id(payload: &[u8]) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(format!("bulletin/{}", namespace).as_bytes());
         hasher.update(payload);
         hex::encode(hasher.finalize())
     }
 
-    fn typed_post_id(namespace: &str, payload: &[u8]) -> Option<String> {
+    fn typed_post_id(payload: &[u8]) -> Option<String> {
         if let Ok(doc) = serde_json::from_slice::<DocumentPayload>(payload) {
             return Some(generate_document_id(
-                namespace,
                 &doc.ring_id,
                 &doc.document,
                 &doc.proof,
@@ -225,7 +215,6 @@ impl DummyBulletin {
         }
         if let Ok(kd) = serde_json::from_slice::<KeyDerivation>(payload) {
             return Some(generate_key_derivation_id(
-                namespace,
                 &kd.ring_id,
                 &kd.derivation,
                 &kd.policy_id,
@@ -235,24 +224,19 @@ impl DummyBulletin {
         }
         if let Ok(ring) = serde_json::from_slice::<RingPayload>(payload) {
             return Some(generate_ring_id(
-                namespace,
-                &ring.ring_pk,
                 &ring.peer_ids,
                 ring.threshold,
                 ring.pss_interval,
                 ring.policy_id.as_deref().unwrap_or(""),
+                None,
             ));
         }
         None
     }
 
-    /// Get all posts in a given namespace (for testing)
-    pub fn get_posts_by_namespace(&self, namespace: &str) -> Vec<BulletinPost> {
+    /// Get all posts (for testing).
+    pub fn get_posts(&self) -> Vec<BulletinPost> {
         let posts = self.posts.lock().unwrap();
-        posts
-            .iter()
-            .filter(|((ns, _), _)| ns == namespace)
-            .map(|(_, post)| post.clone())
-            .collect()
+        posts.values().cloned().collect()
     }
 }

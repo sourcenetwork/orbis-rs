@@ -14,12 +14,10 @@ message TimestampRange {
 message StartSignRequest {
   // Raw bytes to sign
   bytes message = 1;
-  // Namespace of the KeyDerivation entry on the bulletin
-  string namespace = 2;
   // Object ID of the KeyDerivation entry on the bulletin
-  string derivation_id = 3;
+  string derivation_id = 2;
   // Optional timestamp range for validity window
-  optional TimestampRange valid_window = 4;
+  optional TimestampRange valid_window = 3;
 }
 
 message StartSignResponse {

@@ -208,7 +208,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
                 reshare_interval_secs: 0,
                 node_controller_key: "test-controller-key".to_string(),
                 node_peer_id: None,
-                node_whitelisted_namespaces: vec![],
+                node_whitelisted_policy_ids: vec![],
                 node_whitelisted_ring_ids: vec![],
             },
             node_key,
@@ -309,7 +309,7 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
                 reshare_interval_secs: 0,
                 node_controller_key: "test-controller-key".to_string(),
                 node_peer_id: None,
-                node_whitelisted_namespaces: vec![],
+                node_whitelisted_policy_ids: vec![],
                 node_whitelisted_ring_ids: vec![],
             },
             node_key,
@@ -375,7 +375,6 @@ async fn setup_ring(
         peer_ids,
         None,
         None,
-        BULLETIN_RING_NAMESPACE.to_string(),
         TEST_FRESH_DKG_RING_ID.to_string(),
     )
     .await
@@ -387,7 +386,6 @@ async fn setup_ring(
         .expect("DKG completion event");
 
     let post_payload = cli_tool::read_bulletin_post(
-        BULLETIN_RING_NAMESPACE.to_string(),
         post_event.ring_id.clone(),
         BulletinKind::Ring,
     )
@@ -449,7 +447,6 @@ async fn test_two_simultaneous_dkg_sessions() {
             peer_ids.clone(),
             None,
             None,
-            BULLETIN_RING_NAMESPACE.to_string(),
             TEST_FRESH_DKG_RING_ID.to_string()
         ),
         cli_tool::do_dkg(
@@ -458,7 +455,6 @@ async fn test_two_simultaneous_dkg_sessions() {
             peer_ids.clone(),
             None,
             None,
-            BULLETIN_RING_NAMESPACE.to_string(),
             TEST_FRESH_DKG_RING_ID.to_string()
         ),
     );
@@ -546,7 +542,6 @@ async fn test_concurrent_pre_requests() {
         endpoint.clone(),
         &prepared,
         ring_id.clone(),
-        user_namespace.clone(),
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
@@ -590,7 +585,6 @@ async fn test_concurrent_pre_requests() {
             Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
-            user_namespace.clone(),
             None,
             None,
             None,
@@ -604,7 +598,6 @@ async fn test_concurrent_pre_requests() {
             Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
-            user_namespace.clone(),
             None,
             None,
             None,
@@ -618,7 +611,6 @@ async fn test_concurrent_pre_requests() {
             Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
-            user_namespace.clone(),
             None,
             None,
             None,
@@ -700,7 +692,6 @@ async fn test_concurrent_sign_requests() {
             endpoint.clone(),
             &preps[0],
             ring_id.clone(),
-            user_namespace.clone(),
             policy_id.clone(),
             resource.clone(),
             permission.clone(),
@@ -713,7 +704,6 @@ async fn test_concurrent_sign_requests() {
             endpoint.clone(),
             &preps[1],
             ring_id.clone(),
-            user_namespace.clone(),
             policy_id.clone(),
             resource.clone(),
             permission.clone(),
@@ -726,7 +716,6 @@ async fn test_concurrent_sign_requests() {
             endpoint.clone(),
             &preps[2],
             ring_id.clone(),
-            user_namespace.clone(),
             policy_id.clone(),
             resource.clone(),
             permission.clone(),
@@ -819,7 +808,6 @@ async fn test_dkg_non_participant_initiator_completes() {
         peer_ids,
         None,
         None,
-        BULLETIN_RING_NAMESPACE.to_string(),
         TEST_FRESH_DKG_RING_ID.to_string(),
     )
     .await
@@ -836,7 +824,6 @@ async fn test_dkg_non_participant_initiator_completes() {
     );
 
     let post_payload = cli_tool::read_bulletin_post(
-        BULLETIN_RING_NAMESPACE.to_string(),
         post_event.ring_id.clone(),
         BulletinKind::Ring,
     )

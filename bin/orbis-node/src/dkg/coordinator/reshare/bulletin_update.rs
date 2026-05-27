@@ -26,7 +26,6 @@ struct PreparedReshareUpdate {
     sorted_new_peer_ids: Vec<String>,
     new_committee_size: usize,
     ring_id: String,
-    sign_namespace: String,
     current_ring_sha256: String,
     finalized_ring_sha256: String,
     block_number_nonce: u64,
@@ -97,23 +96,10 @@ where
         ));
     };
 
-    let bulletin_namespace = coord
-        .app_state
-        .dkg_session_state
-        .with_state(&session_id, |state| state.namespace.clone())
-        .await
-        .ok_or_else(|| {
-            DkgError::SessionNotFound(format!(
-                "Reshare: session {} not found when reading namespace for bulletin update",
-                session_id
-            ))
-        })?;
-
     let statement = RingReshareUpdateStatement {
         domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
         session_id,
         chain_id: prepared.chain_id,
-        namespace: prepared.sign_namespace.clone(),
         ring_pk: hex::encode(ring_pk_bytes),
         ring_id: prepared.ring_id.clone(),
         current_ring_sha256: prepared.current_ring_sha256,
@@ -180,7 +166,6 @@ where
         .app_state
         .bulletin
         .update(
-            bulletin_namespace.clone(),
             prepared.ring_id.clone(),
             THRESHOLD_SIGNATURE_SCHEME.to_string(),
             signature_bytes,
@@ -191,7 +176,6 @@ where
     tracing::info!(
         ring_pk = %ring_pk_hex,
         ring_id = %prepared.ring_id,
-        namespace = %prepared.sign_namespace,
         new_threshold = new_threshold,
         new_committee_size = prepared.new_committee_size,
         signature_len = sign_response.signature.len(),
@@ -220,22 +204,11 @@ where
     let ring_id = reshare_bulletin_post_id.ok_or_else(|| {
         DkgError::Bulletin("Reshare: missing ring id for updated RingPayload".to_string())
     })?;
-    let bulletin_namespace = coord
-        .app_state
-        .dkg_session_state
-        .with_state(&session_id, |state| state.namespace.clone())
-        .await
-        .ok_or_else(|| {
-            DkgError::SessionNotFound(format!(
-                "Reshare: session {} not found when reading namespace for bulletin read",
-                session_id
-            ))
-        })?;
 
     let current_post = coord
         .app_state
         .bulletin
-        .read(bulletin_namespace, ring_id.to_string(), BulletinKind::Ring)
+        .read(ring_id.to_string(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             DkgError::Bulletin(format!(
@@ -315,7 +288,6 @@ where
         sorted_new_peer_ids,
         new_committee_size,
         ring_id: ring_id.to_string(),
-        sign_namespace: current_post.namespace,
         current_ring_sha256,
         finalized_ring_sha256,
         block_number_nonce: current_ring_payload.block_number_nonce,

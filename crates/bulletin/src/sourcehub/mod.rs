@@ -22,13 +22,12 @@ pub struct SourceHubBulletin {
 
 #[async_trait]
 impl Bulletin for SourceHubBulletin {
-    async fn register(&self, _namespace: String) -> Result<()> {
+    async fn register(&self) -> Result<()> {
         Ok(())
     }
 
     async fn post(
         &self,
-        namespace: String,
         kind: BulletinKind,
         payload: Vec<u8>,
         artifact: Option<String>,
@@ -40,13 +39,12 @@ impl Bulletin for SourceHubBulletin {
                 let (result, _) = self
                     .chain_client
                     .orbis_create_ring_get_id(
-                        &namespace,
-                        &ring.ring_pk,
                         ring.peer_ids,
                         ring.threshold,
                         ring.pss_interval,
                         ring.policy_id.as_deref().unwrap_or(""),
                         artifact,
+                        None,
                     )
                     .await
                     .map_err(|e| BulletinError::ChainError(e.to_string()))?;
@@ -58,7 +56,6 @@ impl Bulletin for SourceHubBulletin {
                 let result = self
                     .chain_client
                     .orbis_store_document(
-                        &namespace,
                         &doc.ring_id,
                         &doc.document,
                         &doc.proof,
@@ -78,7 +75,6 @@ impl Bulletin for SourceHubBulletin {
                 let result = self
                     .chain_client
                     .orbis_store_key_derivation(
-                        &namespace,
                         &kd.ring_id,
                         &kd.derivation,
                         &kd.policy_id,
@@ -97,7 +93,7 @@ impl Bulletin for SourceHubBulletin {
                     .orbis_create_node_info(
                         &node_info.peer_id,
                         &node_info.controller_key,
-                        node_info.whitelisted_namespaces,
+                        node_info.whitelisted_policy_ids,
                         node_info.whitelisted_ring_ids,
                     )
                     .await
@@ -107,13 +103,7 @@ impl Bulletin for SourceHubBulletin {
         }
     }
 
-    async fn update(
-        &self,
-        _namespace: String,
-        id: String,
-        signature_scheme: String,
-        signature: Vec<u8>,
-    ) -> Result<()> {
+    async fn update(&self, id: String, signature_scheme: String, signature: Vec<u8>) -> Result<()> {
         let result = self
             .chain_client
             .orbis_finalize_ring_reshare(&id, &signature_scheme, signature)
@@ -122,33 +112,28 @@ impl Bulletin for SourceHubBulletin {
         check_result(result, "finalize ring reshare")
     }
 
-    async fn read(
-        &self,
-        namespace: String,
-        id: String,
-        kind: BulletinKind,
-    ) -> Result<BulletinPost> {
+    async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost> {
         match kind {
             BulletinKind::Ring => self
                 .chain_client
                 .orbis_read_ring(&id)
                 .await
                 .map_err(|e| BulletinError::ChainError(e.to_string()))?
-                .ok_or(BulletinError::NotFound { namespace, id })
+                .ok_or(BulletinError::NotFound { id })
                 .and_then(ring_to_bulletin_post),
             BulletinKind::Document => self
                 .chain_client
-                .orbis_read_document(&namespace, &id)
+                .orbis_read_document(&id)
                 .await
                 .map_err(|e| BulletinError::ChainError(e.to_string()))?
-                .ok_or(BulletinError::NotFound { namespace, id })
+                .ok_or(BulletinError::NotFound { id })
                 .and_then(document_to_bulletin_post),
             BulletinKind::KeyDerivation => self
                 .chain_client
-                .orbis_read_key_derivation(&namespace, &id)
+                .orbis_read_key_derivation(&id)
                 .await
                 .map_err(|e| BulletinError::ChainError(e.to_string()))?
-                .ok_or(BulletinError::NotFound { namespace, id })
+                .ok_or(BulletinError::NotFound { id })
                 .and_then(key_derivation_to_bulletin_post),
             BulletinKind::NodeInfo => {
                 let node_info = self
@@ -156,11 +141,8 @@ impl Bulletin for SourceHubBulletin {
                     .orbis_read_node_info(&id)
                     .await
                     .map_err(|e| BulletinError::ChainError(e.to_string()))?
-                    .ok_or_else(|| BulletinError::NotFound {
-                        namespace: namespace.clone(),
-                        id: id.clone(),
-                    })?;
-                node_info_to_bulletin_post(node_info, &id, &namespace)
+                    .ok_or_else(|| BulletinError::NotFound { id: id.clone() })?;
+                node_info_to_bulletin_post(node_info, &id)
             }
         }
     }
@@ -169,10 +151,9 @@ impl Bulletin for SourceHubBulletin {
         self.chain_client.config().chain_id.clone()
     }
 
-    fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String> {
+    fn get_post_id(&self, payload: &[u8]) -> Result<String> {
         if let Ok(doc) = serde_json::from_slice::<DocumentPayload>(payload) {
             return Ok(generate_document_id(
-                namespace,
                 &doc.ring_id,
                 &doc.document,
                 &doc.proof,
@@ -185,7 +166,6 @@ impl Bulletin for SourceHubBulletin {
         }
         if let Ok(kd) = serde_json::from_slice::<KeyDerivation>(payload) {
             return Ok(generate_key_derivation_id(
-                namespace,
                 &kd.ring_id,
                 &kd.derivation,
                 &kd.policy_id,
@@ -195,37 +175,33 @@ impl Bulletin for SourceHubBulletin {
         }
         if let Ok(ring) = serde_json::from_slice::<RingPayload>(payload) {
             return Ok(generate_ring_id(
-                namespace,
-                &ring.ring_pk,
                 &ring.peer_ids,
                 ring.threshold,
                 ring.pss_interval,
                 ring.policy_id.as_deref().unwrap_or(""),
+                None,
             ));
         }
 
         let mut hasher = Sha256::new();
-        hasher.update(namespace.as_bytes());
         hasher.update(payload);
         Ok(hex::encode(hasher.finalize()))
     }
 
     fn get_ring_id(
         &self,
-        namespace: &str,
-        ring_pk: &str,
         peer_ids: &[String],
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
+        nonce: Option<&str>,
     ) -> Result<String> {
         Ok(generate_ring_id(
-            namespace,
-            ring_pk,
             peer_ids,
             threshold,
             pss_interval,
             policy_id,
+            nonce,
         ))
     }
 
@@ -236,7 +212,6 @@ impl Bulletin for SourceHubBulletin {
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?
             .ok_or_else(|| BulletinError::NotFound {
-                namespace: String::new(),
                 id: ring_id.to_string(),
             })?;
         Ok(ring_state_hash(&ring))
@@ -245,7 +220,6 @@ impl Bulletin for SourceHubBulletin {
     fn ring_reshare_finalize_sign_bytes(
         &self,
         chain_id: &str,
-        namespace: &str,
         ring_id: &str,
         ring_pk: &str,
         current_ring_sha256: Vec<u8>,
@@ -254,7 +228,6 @@ impl Bulletin for SourceHubBulletin {
     ) -> Result<Vec<u8>> {
         orbis::ring_reshare_finalize_sign_bytes(
             chain_id,
-            namespace,
             ring_id,
             ring_pk,
             current_ring_sha256,
@@ -271,7 +244,6 @@ impl Bulletin for SourceHubBulletin {
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?
             .ok_or_else(|| BulletinError::NotFound {
-                namespace: String::new(),
                 id: ring_id.to_string(),
             })?;
         let finalized = orbis::Ring {
@@ -409,7 +381,6 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
     };
     Ok(BulletinPost {
         id: ring.id,
-        namespace: ring.namespace,
         payload: serde_json::to_vec(&payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?,
     })
@@ -428,7 +399,6 @@ fn document_to_bulletin_post(doc: orbis::Document) -> Result<BulletinPost> {
     };
     Ok(BulletinPost {
         id: doc.id,
-        namespace: doc.namespace,
         payload: serde_json::to_vec(&payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?,
     })
@@ -444,26 +414,20 @@ fn key_derivation_to_bulletin_post(kd: orbis::KeyDerivation) -> Result<BulletinP
     };
     Ok(BulletinPost {
         id: kd.id,
-        namespace: kd.namespace,
         payload: serde_json::to_vec(&payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?,
     })
 }
 
-fn node_info_to_bulletin_post(
-    node_info: orbis::NodeInfo,
-    node_key: &str,
-    namespace: &str,
-) -> Result<BulletinPost> {
+fn node_info_to_bulletin_post(node_info: orbis::NodeInfo, node_key: &str) -> Result<BulletinPost> {
     let payload = NodeInfo {
         peer_id: node_info.peer_id,
         controller_key: node_info.controller_key,
-        whitelisted_namespaces: node_info.whitelisted_namespaces,
+        whitelisted_policy_ids: node_info.whitelisted_policy_ids,
         whitelisted_ring_ids: node_info.whitelisted_ring_ids,
     };
     Ok(BulletinPost {
         id: node_key.to_string(),
-        namespace: namespace.to_string(),
         payload: serde_json::to_vec(&payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?,
     })

@@ -35,7 +35,6 @@ where
         kind,
         pss_interval,
         policy_id,
-        bulletin_namespace,
         dkg_role,
         reshare_new_peer_ids,
         reshare_bulletin_post_id,
@@ -47,7 +46,6 @@ where
                 state.kind.clone(),
                 state.pss_interval,
                 state.policy_id.clone(),
-                state.namespace.clone(),
                 state.node.role(),
                 state
                     .reshare_params
@@ -236,7 +234,6 @@ where
                 &coord.app_state,
                 &storage_key,
                 post_id.clone(),
-                bulletin_namespace.clone(),
             )
             .await
             {
@@ -273,7 +270,6 @@ where
                 threshold,
                 pss_interval,
                 policy_id.clone(),
-                &bulletin_namespace,
             )
             .await?
         } else {
@@ -286,12 +282,10 @@ where
                 .unwrap_or_default();
             ring_storage::fresh_ring_index_post_id(
                 &coord.app_state,
-                &aggregate_pk,
                 peer_ids,
                 threshold,
                 pss_interval,
                 policy_id.clone(),
-                &bulletin_namespace,
             )?
         };
 
@@ -299,7 +293,6 @@ where
             &coord.app_state,
             &storage_key,
             bulletin_post_id,
-            bulletin_namespace.clone(),
         )
         .await
         {
@@ -389,7 +382,6 @@ where
             ring_key,
             session_id,
             bulletin_post_id,
-            bulletin_namespace.clone(),
         );
         return Ok(());
     }

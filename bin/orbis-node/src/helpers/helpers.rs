@@ -4,11 +4,10 @@
 use crate::constants::{EXPECTED_HEX_NODE_ID_LENGTH, MAX_PEER_ID_LENGTH};
 use crate::dkg::session_state::SessionStateManager;
 use crate::error::PeerIdValidationError;
-use crate::ring_state::RingIndexEntry;
 use crate::ring_state::RingShareBundle;
 use crypto::r#trait::{CryptoDeserialize, Dkg};
 use crypto::GroupAffine as G1Affine;
-use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use local_storage::r#trait::LocalStorage;
 use network::{Network, PeerId};
 use sha2::{Digest, Sha256};
 use std::collections::hash_map::DefaultHasher;
@@ -371,30 +370,6 @@ where
         let poly = decode_pub_poly_hex::<D>(&ring.public_polynomial_hex)?;
         Ok((poly, None))
     }
-}
-
-/// Look up the bulletin namespace for a ring by its `bulletin_post_id`.
-///
-/// Returns `Err(message)` if the ring index cannot be read or deserialized,
-/// and `Err(message)` if no entry matches `post_id`. Callers map the error
-/// string to their own error type via `.map_err(MyError::Storage)?`.
-pub fn ring_namespace_for_post_id(
-    local_storage: &impl LocalStorage,
-    post_id: &str,
-) -> Result<String, String> {
-    let raw = local_storage
-        .get(LocalStorageKeys::RingIndex)
-        .map_err(|e| format!("Failed to read ring index: {}", e))?;
-    let ring_index: Vec<RingIndexEntry> = match raw {
-        None => vec![],
-        Some(b) => serde_json::from_slice(&b)
-            .map_err(|e| format!("Failed to deserialize ring index: {}", e))?,
-    };
-    ring_index
-        .iter()
-        .find(|e| e.bulletin_post_id == post_id)
-        .map(|e| e.bulletin_namespace.clone())
-        .ok_or_else(|| format!("Ring '{}' not found in local ring index", post_id))
 }
 
 fn decode_pub_poly_hex<D: Dkg>(hex_str: &str) -> Result<D::PubPoly, String> {

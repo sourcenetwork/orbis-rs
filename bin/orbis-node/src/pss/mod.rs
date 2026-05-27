@@ -134,11 +134,7 @@ where
 
     let bulletin_post = app_state
         .bulletin
-        .read(
-            entry.bulletin_namespace.clone(),
-            post_id.to_string(),
-            BulletinKind::Ring,
-        )
+        .read(post_id.to_string(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             DkgError::Storage(format!(
@@ -324,13 +320,11 @@ where
             {
                 let ring_pk_str = ring_pk_str.clone();
                 let pss_interval = ring_payload.pss_interval;
-                let namespace = entry.bulletin_namespace.clone();
                 move |state| {
                     state.kind = SessionKind::Refresh {
                         ring_pk_hex: ring_pk_str,
                     };
                     state.pss_interval = pss_interval;
-                    state.namespace = namespace;
                 }
             },
         )
@@ -398,7 +392,6 @@ where
         },
         pss_interval: ring_payload.pss_interval,
         policy_id: None,
-        namespace: entry.bulletin_namespace.clone(),
         ring_id: String::new(),
     };
 
@@ -616,10 +609,6 @@ where
         .dkg_session_state
         .set_pss_interval(&session_id, ring_payload.pss_interval)
         .await;
-    app_state
-        .dkg_session_state
-        .set_namespace(&session_id, entry.bulletin_namespace.clone())
-        .await;
 
     coordinator
         .set_peer_ids(&session_id, sorted_new.clone())
@@ -660,7 +649,6 @@ where
         kind,
         pss_interval: ring_payload.pss_interval,
         policy_id: None,
-        namespace: entry.bulletin_namespace.clone(),
         ring_id: String::new(),
     };
 

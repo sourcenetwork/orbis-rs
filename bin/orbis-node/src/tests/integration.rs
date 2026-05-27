@@ -69,7 +69,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("Node 1 P2P address: {}", node1_info.p2p_address);
     println!("Node 2 P2P address: {}", node2_info.p2p_address);
     println!("Node 3 P2P address: {}", node3_info.p2p_address);
-    let namespace = BULLETIN_RING_NAMESPACE.to_string();
 
     // Transform P2P addresses for inter-container communication
     // The addresses from nodes will be like "peer_id@0.0.0.0:port"
@@ -100,8 +99,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         IntegrationTestNetwork::NODE2_GRPC.to_string(),
         IntegrationTestNetwork::NODE3_GRPC.to_string(),
     ];
-
-    let ring_namespace = namespace.clone();
 
     // Step 1: Run DKG via CLI to get a ring public key
     //
@@ -135,7 +132,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         peer_ids.clone(),
         Some(1),
         Some(ring_policy_id),
-        namespace.clone(),
         TEST_FRESH_DKG_RING_ID.to_string(),
     )
     .await;
@@ -160,7 +156,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
 
     // Read the post payload using the post_id from the event
     let post_payload = cli_tool::read_bulletin_post(
-        ring_namespace.clone(),
         post_event.ring_id.clone(),
         BulletinKind::Ring,
     )
@@ -170,7 +165,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let ring_payload: RingPayload =
         serde_json::from_slice(&post_payload).expect("parse RingPayload");
     let ring_pk_hex = ring_payload.ring_pk.clone();
-    let ring_id = post_event.ring_id;
+    let ring_id = post_event.ring_id.clone();
     let dkg_ring_payload = ring_payload.clone();
 
     // The bulletin event proves the DKG was posted, but the other nodes may
@@ -241,7 +236,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             timestamp,
         };
         let serialized: Vec<u8> = payload.try_into().expect("serialize payload");
-        cli_tool::create_bulletin_post(namespace.clone(), BulletinKind::Document, serialized)
+        cli_tool::create_bulletin_post(BulletinKind::Document, serialized)
             .await
             .expect("create_bulletin_post")
     };
@@ -289,7 +284,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         endpoint.clone(),
         &prepared_secret,
         ring_id.clone(),
-        namespace.clone(),
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
@@ -308,7 +302,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         endpoint.clone(),
         &prepared_secret_derived.clone(),
         ring_id.clone(),
-        namespace.clone(),
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
@@ -344,14 +337,12 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
 
     // Read both from bulletin and compare metadata
     let manual_bytes = cli_tool::read_bulletin_post(
-        namespace.clone(),
         object_id_manual.clone(),
         BulletinKind::Document,
     )
     .await
     .expect("read manual post");
     let service_bytes = cli_tool::read_bulletin_post(
-        namespace.clone(),
         object_id_service.clone(),
         BulletinKind::Document,
     )
@@ -362,7 +353,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let service: DocumentPayload = serde_json::from_slice(&service_bytes).expect("parse service");
     let bulletin_post = BulletinPost {
         id: object_id_service.clone(),
-        namespace: namespace.clone(),
         payload: service_bytes.clone(),
     };
 
@@ -457,7 +447,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         Some(reader_sk_hex.clone()),
         object_id_service.clone(),
         Some(did_pk_string.clone()),
-        namespace.clone(),
         None,
         None,
         None,
@@ -481,7 +470,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         Some(reader_sk_hex.clone()),
         object_id_derived.clone(),
         Some(did_pk_string.clone()),
-        namespace.clone(),
         Some(derivation.clone()),
         salt.clone(),
         valid_window_start,
@@ -503,7 +491,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         Some(reader_sk_hex.clone()),
         object_id_derived.clone(),
         Some("bad_key".to_string().clone()),
-        namespace.clone(),
         Some(derivation.clone()),
         salt.clone(),
         valid_window_start,
@@ -528,7 +515,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         Some(reader_sk_hex.clone()),
         object_id_derived.clone(),
         Some(did_pk_string.clone()),
-        namespace.clone(),
         Some(derivation),
         salt.clone(),
         valid_window_start,
@@ -563,7 +549,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         endpoint.clone(),
         &prepared_secret, // Same prepared data as first call
         ring_id.clone(),
-        namespace.clone(),
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
@@ -621,7 +606,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
 
     // Post a KeyDerivation to the bulletin (fetches ring PK automatically via ring_id)
     let (derivation_id, derived_pk_hex) = cli_tool::post_key_derivation(
-        namespace.clone(),
         ring_id.clone(),
         sign_derivation.clone(),
         policy_id.clone(),
@@ -659,7 +643,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         "initial policy Sign",
         endpoint.clone(),
         sign_message.to_vec(),
-        namespace.clone(),
         derivation_id.clone(),
         Some(sign_did_pk.clone()),
         None,
@@ -699,7 +682,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let sign_no_access = cli_tool::do_sign(
         endpoint.clone(),
         sign_message.to_vec(),
-        namespace.clone(),
         derivation_id.clone(),
         Some("unauthorized_did_key".to_string()),
         None,
@@ -790,7 +772,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .await
     .expect("update ring bulletin post with reshare announcement");
 
-    let announced_payload = read_ring_payload(&ring_namespace, &ring_id).await;
+    let announced_payload = read_ring_payload(&ring_id).await;
     let announced_new_peer_ids = announced_payload
         .new_peer_ids
         .as_ref()
@@ -812,7 +794,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     );
 
     let reshared_payload = wait_for_reshare_bulletin_completion(
-        &ring_namespace,
         &ring_id,
         &ring_pk_hex,
         &reshare_peer_ids,
@@ -870,7 +851,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         "post-reshare policy Sign",
         endpoint.clone(),
         sign_message.to_vec(),
-        namespace.clone(),
         derivation_id.clone(),
         Some(sign_did_pk.clone()),
         None,
@@ -900,7 +880,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         "post-refresh policy Sign",
         endpoint.clone(),
         sign_message.to_vec(),
-        namespace.clone(),
         derivation_id.clone(),
         Some(sign_did_pk.clone()),
         None,
@@ -946,7 +925,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         endpoint.clone(),
         &prepared_post_refresh,
         ring_id.clone(),
-        namespace.clone(),
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
@@ -985,7 +963,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         Some(reader_sk_hex.clone()),
         object_id_post_refresh.clone(),
         Some(did_pk_string.clone()),
-        namespace.clone(),
         None,
         None,
         None,
@@ -1049,9 +1026,8 @@ async fn wait_for_ring_state_on_all_nodes(
     }
 }
 
-async fn read_ring_payload(namespace: &str, ring_id: &str) -> RingPayload {
+async fn read_ring_payload(ring_id: &str) -> RingPayload {
     let payload_bytes = cli_tool::read_bulletin_post(
-        namespace.to_string(),
         ring_id.to_string(),
         BulletinKind::Ring,
     )
@@ -1061,7 +1037,6 @@ async fn read_ring_payload(namespace: &str, ring_id: &str) -> RingPayload {
 }
 
 async fn wait_for_reshare_bulletin_completion(
-    namespace: &str,
     ring_id: &str,
     ring_pk_hex: &str,
     expected_peer_ids: &[String],
@@ -1075,7 +1050,6 @@ async fn wait_for_reshare_bulletin_completion(
 
     loop {
         let last_status = match cli_tool::read_bulletin_post(
-            namespace.to_string(),
             ring_id.to_string(),
             BulletinKind::Ring,
         )
@@ -1134,7 +1108,6 @@ async fn do_sign_expect_success(
     context: &str,
     endpoint: String,
     message: Vec<u8>,
-    namespace: String,
     derivation_id: String,
     reader_did_pk: Option<String>,
     valid_window_start: Option<u64>,
@@ -1147,7 +1120,6 @@ async fn do_sign_expect_success(
         match cli_tool::do_sign(
             endpoint.clone(),
             message.clone(),
-            namespace.clone(),
             derivation_id.clone(),
             reader_did_pk.clone(),
             valid_window_start,
@@ -1183,7 +1155,6 @@ async fn do_pre_expect_success(
     reader_sk: Option<String>,
     object_id: String,
     reader_did_pk: Option<String>,
-    namespace: String,
     derivation: Option<Vec<u8>>,
     salt: Option<String>,
     valid_window_start: Option<u64>,
@@ -1201,7 +1172,6 @@ async fn do_pre_expect_success(
             reader_sk.clone(),
             object_id.clone(),
             reader_did_pk.clone(),
-            namespace.clone(),
             derivation.clone(),
             salt.clone(),
             valid_window_start,
@@ -1235,7 +1205,6 @@ async fn store_prepared_secret_expect_success(
     endpoint: String,
     prepared: &cli_tool::PreparedSecret,
     ring_id: String,
-    namespace: String,
     policy_id: String,
     resource: String,
     permission: String,
@@ -1252,7 +1221,6 @@ async fn store_prepared_secret_expect_success(
             endpoint.clone(),
             prepared,
             ring_id.clone(),
-            namespace.clone(),
             policy_id.clone(),
             resource.clone(),
             permission.clone(),

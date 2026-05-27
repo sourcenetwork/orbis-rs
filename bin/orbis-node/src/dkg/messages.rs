@@ -120,8 +120,6 @@ pub enum DkgMessage {
         /// Optional policy that externally governs ring updates.
         #[serde(skip_serializing_if = "Option::is_none")]
         policy_id: Option<String>,
-        /// Bulletin namespace this ring's payload lives under.
-        namespace: String,
         /// Pre-created blank ring entry targeted by this DKG.
         ring_id: String,
     },
@@ -163,7 +161,6 @@ mod tests {
             kind: SessionKind::Fresh,
             pss_interval: None,
             policy_id: None,
-            namespace: "orbis".to_string(),
             ring_id: "ring-1".to_string(),
         };
 

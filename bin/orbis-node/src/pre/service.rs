@@ -90,7 +90,6 @@ where
         let (document_payload, ring_payload) = fetch_bulletin_payloads(
             &*self.state.bulletin,
             &self.state.local_storage,
-            &req.namespace,
             &req.object_id,
         )
         .await?;
@@ -109,7 +108,6 @@ where
             &token,
             &req.rdr_pk,
             &req.object_id,
-            &req.namespace,
             &req.derivation,
             &req.salt,
         )?;
@@ -192,7 +190,6 @@ where
             rdr_pk_bytes: req.rdr_pk,
             object_id: req.object_id,
             token_string: token_str.to_string(),
-            namespace: req.namespace,
             derivation: req.derivation,
             salt: req.salt,
             valid_window,

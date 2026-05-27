@@ -39,9 +39,6 @@ pub enum SubCommands {
         /// Optional policy that externally governs ring updates
         #[clap(long)]
         policy_id: Option<String>,
-        /// Bulletin namespace for this ring (default: orbis)
-        #[clap(long, default_value = "orbis")]
-        namespace: String,
 
         /// Pre-created blank ring entry targeted by this DKG
         #[clap(long)]
@@ -70,10 +67,6 @@ pub enum SubCommands {
         /// Id of object
         #[clap(long)]
         object_id: String,
-
-        /// Id of object
-        #[clap(long)]
-        namespace: String,
 
         /// A private key to generate a reader did
         #[clap(long)]
@@ -183,9 +176,6 @@ pub enum SubCommands {
     },
     /// Create a post on the bulletin
     CreateBulletinPost {
-        /// Namespace to post to
-        #[clap(long)]
-        namespace: String,
         /// Payload as hex string
         #[clap(long)]
         payload: String,
@@ -213,10 +203,7 @@ pub enum SubCommands {
     },
     /// Read an item from a bulletin
     ReadBulletinPost {
-        /// Namespace to add collaborator to
-        #[clap(long)]
-        namespace: String,
-        /// Collaborator address to add
+        /// Post ID to read
         #[clap(long)]
         id: String,
     },
@@ -267,9 +254,6 @@ pub enum SubCommands {
         /// Ring id of ring to encrypt to
         #[clap(long)]
         ring_id: String,
-        /// Namespace of board to store secret to
-        #[clap(long)]
-        namespace: String,
         /// Policy to attach to secret
         #[clap(long)]
         policy_id: String,
@@ -306,9 +290,6 @@ pub enum SubCommands {
         /// Ring id of ring to encrypt to
         #[clap(long)]
         ring_id: String,
-        /// Namespace of board to store secret to
-        #[clap(long)]
-        namespace: String,
         /// Policy to attach to secret
         #[clap(long)]
         policy_id: String,
@@ -360,9 +341,6 @@ pub enum SubCommands {
     },
     /// Post a KeyDerivation to the bulletin (registers a sign key derivation config)
     PostKeyDerivation {
-        /// Bulletin namespace to post to
-        #[clap(long)]
-        namespace: String,
         /// Ring ID from DKG (used to fetch the ring public key from the bulletin)
         #[clap(long)]
         ring_id: String,
@@ -387,9 +365,6 @@ pub enum SubCommands {
         /// Message to sign (hex encoded)
         #[clap(long)]
         message: String,
-        /// Bulletin namespace that holds the KeyDerivation
-        #[clap(long)]
-        namespace: String,
         /// Derivation ID (post ID returned by post-key-derivation)
         #[clap(long)]
         derivation_id: String,
@@ -415,13 +390,10 @@ async fn main() -> Result<()> {
             threshold,
             peer_ids,
             policy_id,
-            namespace,
             ring_id,
         } => {
-            do_dkg(
-                endpoint, threshold, peer_ids, None, policy_id, namespace, ring_id,
-            )
-            .await?;
+            do_dkg(endpoint, threshold, peer_ids, None, policy_id, ring_id)
+                .await?;
         }
         SubCommands::Pre {
             endpoint,
@@ -430,7 +402,6 @@ async fn main() -> Result<()> {
             reader_sk,
             object_id,
             reader_did_pk,
-            namespace,
             derivation,
             salt,
             valid_window_start,
@@ -457,7 +428,6 @@ async fn main() -> Result<()> {
                 reader_sk,
                 object_id,
                 reader_did_pk,
-                namespace,
                 derivation_bytes,
                 salt,
                 valid_window_start,
@@ -529,9 +499,9 @@ async fn main() -> Result<()> {
         } => {
             add_bulletin_collaborator(namespace, collaborator).await?;
         }
-        SubCommands::CreateBulletinPost { namespace, payload } => {
+        SubCommands::CreateBulletinPost { payload } => {
             let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
-            create_bulletin_post(namespace, BulletinKind::Ring, payload_bytes).await?;
+            create_bulletin_post(BulletinKind::Ring, payload_bytes).await?;
         }
         SubCommands::UpdateRingPostByAcp {
             id,
@@ -544,8 +514,8 @@ async fn main() -> Result<()> {
         SubCommands::Fund { address } => {
             fund(address, ChainConfig::local()).await?;
         }
-        SubCommands::ReadBulletinPost { namespace, id } => {
-            read_bulletin_post(namespace, id, BulletinKind::Ring).await?;
+        SubCommands::ReadBulletinPost { id } => {
+            read_bulletin_post(id, BulletinKind::Ring).await?;
         }
         SubCommands::ListBulletinPost { namespace } => {
             list_bulletin_posts(namespace).await?;
@@ -583,7 +553,6 @@ async fn main() -> Result<()> {
             endpoint,
             prepared_json,
             ring_id,
-            namespace,
             policy_id,
             resource,
             permission,
@@ -598,7 +567,6 @@ async fn main() -> Result<()> {
                 endpoint,
                 &prepared,
                 ring_id,
-                namespace,
                 policy_id,
                 resource,
                 permission,
@@ -614,7 +582,6 @@ async fn main() -> Result<()> {
             secret,
             ring_pk_hex,
             ring_id,
-            namespace,
             policy_id,
             resource,
             permission,
@@ -632,7 +599,6 @@ async fn main() -> Result<()> {
                 secret.as_bytes(),
                 ring_pk_hex,
                 ring_id,
-                namespace,
                 policy_id,
                 resource,
                 permission,
@@ -662,24 +628,20 @@ async fn main() -> Result<()> {
             println!("RING_PK={}", ring_pk);
         }
         SubCommands::PostKeyDerivation {
-            namespace,
             ring_id,
             derivation,
             policy_id,
             resource,
             permission,
         } => {
-            let (derivation_id, derived_pk_hex) = post_key_derivation(
-                namespace, ring_id, derivation, policy_id, resource, permission,
-            )
-            .await?;
+            let (derivation_id, derived_pk_hex) =
+                post_key_derivation(ring_id, derivation, policy_id, resource, permission).await?;
             println!("DERIVATION_ID={}", derivation_id);
             println!("DERIVED_PK={}", derived_pk_hex);
         }
         SubCommands::Sign {
             endpoint,
             message,
-            namespace,
             derivation_id,
             reader_did_pk,
             valid_window_start,
@@ -698,7 +660,6 @@ async fn main() -> Result<()> {
             do_sign(
                 endpoint,
                 message_bytes,
-                namespace,
                 derivation_id,
                 reader_did_pk,
                 valid_window_start,

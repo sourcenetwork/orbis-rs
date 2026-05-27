@@ -1,6 +1,5 @@
 use crate::constants::{MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE};
 use crate::dkg::session_state::{ReshareSignatureReadyKey, SessionStateManager};
-use crate::helpers::helpers::ring_namespace_for_post_id;
 use crate::ring_state::{RingPolyState, RingShareBundle};
 use crate::sign::{
     error::{Result, SignError},
@@ -110,7 +109,6 @@ pub fn ring_reshare_update_message(
     bulletin
         .ring_reshare_finalize_sign_bytes(
             &statement.chain_id,
-            &statement.namespace,
             &statement.ring_id,
             &statement.ring_pk,
             current_ring_sha256,
@@ -210,12 +208,6 @@ pub async fn validate_ring_reshare_update_statement(
             bulletin.chain_id()
         )));
     }
-    if statement.namespace.is_empty() {
-        return Err(SignError::InvalidInput(
-            "Ring reshare update namespace cannot be empty".to_string(),
-        ));
-    }
-
     let canonical_message = ring_reshare_update_message(bulletin, statement)?;
     if let Some(expected) = expected_message {
         if expected != canonical_message.as_slice() {
@@ -233,11 +225,7 @@ pub async fn validate_ring_reshare_update_statement(
     let statement_storage_key = storage_key_from_ring_pk_hex(&statement.ring_pk)?;
 
     let current_post = bulletin
-        .read(
-            statement.namespace.clone(),
-            statement.ring_id.clone(),
-            BulletinKind::Ring,
-        )
+        .read(statement.ring_id.clone(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             SignError::VerificationFailed(format!(
@@ -523,17 +511,9 @@ pub fn deserialize_commitments<S: ThresholdSigner>(
 /// itself is fetched from the bulletin and is not client-supplied.
 pub fn validate_sign_claims(
     token: &BearerToken<SignClaims>,
-    namespace: &str,
     derivation_id: &str,
     message: Option<&Vec<u8>>,
 ) -> Result<()> {
-    if token.claims.namespace != namespace {
-        return Err(SignError::Unauthorized(format!(
-            "Token namespace '{}' does not match request namespace '{}'",
-            token.claims.namespace, namespace
-        )));
-    }
-
     if token.claims.derivation_id != derivation_id {
         return Err(SignError::Unauthorized(format!(
             "Token derivation_id '{}' does not match request derivation_id '{}'",
@@ -602,15 +582,10 @@ pub async fn check_policy_access(
 /// Use this when the `RingPayload` is not needed, to avoid a second round trip.
 pub async fn fetch_key_derivation(
     bulletin: &(dyn Bulletin + Send + Sync),
-    namespace: &str,
     derivation_id: &str,
 ) -> Result<KeyDerivation> {
     let object_info = bulletin
-        .read(
-            namespace.to_string(),
-            derivation_id.to_string(),
-            BulletinKind::KeyDerivation,
-        )
+        .read(derivation_id.to_string(), BulletinKind::KeyDerivation)
         .await
         .map_err(|e| {
             SignError::Storage(format!("Failed to read object '{}': {}", derivation_id, e))
@@ -621,21 +596,13 @@ pub async fn fetch_key_derivation(
 }
 
 /// Fetches and deserializes the key derivation and ring payloads from the bulletin.
-///
-/// Reads the key by `namespace`/`object_id`, then follows the embedded
-/// `ring_id` to load the corresponding ring payload.
 pub async fn fetch_bulletin_payloads(
     bulletin: &(dyn Bulletin + Send + Sync),
-    local_storage: &impl LocalStorage,
-    namespace: &str,
+    _local_storage: &impl LocalStorage,
     derivation_id: &str,
 ) -> Result<(KeyDerivation, RingPayload)> {
     let object_info = bulletin
-        .read(
-            namespace.to_string(),
-            derivation_id.to_string(),
-            BulletinKind::KeyDerivation,
-        )
+        .read(derivation_id.to_string(), BulletinKind::KeyDerivation)
         .await
         .map_err(|e| {
             SignError::Storage(format!("Failed to read object '{}': {}", derivation_id, e))
@@ -646,15 +613,8 @@ pub async fn fetch_bulletin_payloads(
             SignError::Deserialization(format!("Failed to parse document payload: {}", e))
         })?;
 
-    let ring_namespace = ring_namespace_for_post_id(local_storage, &derivation_payload.ring_id)
-        .map_err(SignError::Storage)?;
-
     let ring_info = bulletin
-        .read(
-            ring_namespace,
-            derivation_payload.ring_id.clone(),
-            BulletinKind::Ring,
-        )
+        .read(derivation_payload.ring_id.clone(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             SignError::Storage(format!(
@@ -680,18 +640,14 @@ pub async fn verify_message_and_get_info<D: Dkg>(
         SignError::Deserialization(format!("Failed to deserialize BulletinPost: {}", e))
     })?;
 
-    // 2. Verify it exists on bulletin (read by namespace + id)
+    // 2. Verify it exists on bulletin by id.
     let actual_post = bulletin
-        .read(
-            post.namespace.clone(),
-            post.id.clone(),
-            BulletinKind::Document,
-        )
+        .read(post.id.clone(), BulletinKind::Document)
         .await
         .map_err(|e| {
             SignError::VerificationFailed(format!(
-                "Failed to read from bulletin (namespace={}, id={}): {}",
-                post.namespace, post.id, e
+                "Failed to read from bulletin (id={}): {}",
+                post.id, e
             ))
         })?;
 
@@ -708,14 +664,8 @@ pub async fn verify_message_and_get_info<D: Dkg>(
     })?;
 
     // 5. Look up ring info from bulletin
-    let ring_namespace = ring_namespace_for_post_id(local_storage, &doc_payload.ring_id)
-        .map_err(SignError::Storage)?;
     let ring_info = bulletin
-        .read(
-            ring_namespace,
-            doc_payload.ring_id.clone(),
-            BulletinKind::Ring,
-        )
+        .read(doc_payload.ring_id.clone(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             SignError::VerificationFailed(format!(
@@ -825,16 +775,11 @@ mod ring_reshare_update_tests {
             .expect("serialize updated RingPayload");
         let bulletin = DummyBulletin::new().await.expect("dummy bulletin");
         bulletin
-            .post(
-                "orbis".to_string(),
-                BulletinKind::Ring,
-                current_payload_bytes.clone(),
-                None,
-            )
+            .post(BulletinKind::Ring, current_payload_bytes.clone(), None)
             .await
             .expect("post current payload");
         let ring_id = bulletin
-            .get_post_id("orbis", &current_payload_bytes)
+            .get_post_id(&current_payload_bytes)
             .expect("post id");
         let session_id = 77;
         let current_ring_sha256 = sha256_hex(&current_payload_bytes);
@@ -843,7 +788,6 @@ mod ring_reshare_update_tests {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id,
             chain_id: bulletin.chain_id(),
-            namespace: "orbis".to_string(),
             ring_pk: ring_pk_hex,
             ring_id: ring_id.clone(),
             current_ring_sha256: current_ring_sha256.clone(),
@@ -910,28 +854,6 @@ mod ring_reshare_update_tests {
     }
 
     #[tokio::test]
-    async fn validate_rejects_empty_namespace() {
-        let (bulletin, state, mut statement, ready_key) = fixture(
-            Some(vec!["new-a".to_string(), "new-b".to_string()]),
-            Some(2),
-        )
-        .await;
-        state.mark_reshare_signature_ready(ready_key).await;
-        statement.namespace = String::new();
-
-        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
-            .await
-            .expect_err("empty namespace should be rejected");
-
-        match err {
-            SignError::InvalidInput(message) => {
-                assert!(message.contains("namespace"));
-            }
-            other => panic!("expected InvalidInput, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
     async fn validate_rejects_nonce_mismatch() {
         let (bulletin, state, mut statement, ready_key) = fixture(
             Some(vec!["new-a".to_string(), "new-b".to_string()]),
@@ -985,7 +907,6 @@ mod ring_reshare_update_tests {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id: 77,
             chain_id: "sourcehub-test".to_string(),
-            namespace: "orbis/rings/ring1".to_string(),
             ring_id: "ring1-post".to_string(),
             ring_pk: "b2c05c1059dadae32a7092a4323977796c521fa5e241ee7fe34283b3595935b2b80fad135e3f91bf7307382017869c51".to_string(),
             current_ring_sha256:
@@ -1001,7 +922,7 @@ mod ring_reshare_update_tests {
 
         assert_eq!(
             hex::encode(sign_bytes),
-            "0a1b6f726269732d72696e672d726573686172652d66696e616c697a65120e736f757263656875622d746573741a116f726269732f72696e67732f72696e6731220a72696e67312d706f73742a606232633035633130353964616461653332613730393261343332333937373739366335323166613565323431656537666533343238336233353935393335623262383066616431333565336639316266373330373338323031373836396335313220b6684a86125e08eb7cba4298c336ea98ea674a62de3714e76bcd2135a7526b443a2011683bb4da93f949f0a1803cc062f1d7933d1fa2ec201f2ab6867058708df9c1"
+            "0a1b6f726269732d72696e672d726573686172652d66696e616c697a65120e736f757263656875622d746573741a0a72696e67312d706f737422606232633035633130353964616461653332613730393261343332333937373739366335323166613565323431656537666533343238336233353935393335623262383066616431333565336639316266373330373338323031373836396335312a20b6684a86125e08eb7cba4298c336ea98ea674a62de3714e76bcd2135a7526b44322011683bb4da93f949f0a1803cc062f1d7933d1fa2ec201f2ab6867058708df9c1"
         );
     }
 
@@ -1012,7 +933,6 @@ mod ring_reshare_update_tests {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id: 77,
             chain_id: "sourcehub-test".to_string(),
-            namespace: "orbis/rings/ring1".to_string(),
             ring_id: "ring1-post".to_string(),
             ring_pk: "b2c05c1059dadae32a7092a4323977796c521fa5e241ee7fe34283b3595935b2b80fad135e3f91bf7307382017869c51".to_string(),
             current_ring_sha256:
@@ -1027,8 +947,8 @@ mod ring_reshare_update_tests {
         let sign_bytes = ring_reshare_update_message(&bulletin, &statement).expect("sign bytes");
 
         assert!(
-            hex::encode(sign_bytes).ends_with("4007"),
-            "field 8 should encode block_number_nonce"
+            hex::encode(sign_bytes).ends_with("3807"),
+            "field 7 should encode block_number_nonce"
         );
     }
 }

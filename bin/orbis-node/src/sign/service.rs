@@ -95,7 +95,6 @@ where
         // validate JWT claims match request fields (no IO) ---
         validate_sign_claims(
             &token,
-            &req.namespace,
             &req.derivation_id,
             Some(&req.message),
         )?;
@@ -109,7 +108,6 @@ where
         let (key_derivation, ring_payload) = fetch_bulletin_payloads(
             &*self.state.bulletin,
             &self.state.local_storage,
-            &req.namespace,
             &req.derivation_id,
         )
         .await?;
@@ -125,7 +123,6 @@ where
         .await?;
 
         tracing::info!(
-            namespace = %req.namespace,
             derivation_id = %req.derivation_id,
             ring_id = %key_derivation.ring_id,
             ring_pk = %ring_payload.ring_pk,
@@ -180,7 +177,6 @@ where
                 req.message,
                 SignContext::Policy(Box::new(PolicyContext {
                     token_string,
-                    namespace: req.namespace,
                     derivation_id: req.derivation_id,
                     valid_window,
                     key_derivation,

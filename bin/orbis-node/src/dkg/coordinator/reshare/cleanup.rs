@@ -12,19 +12,12 @@ pub(in crate::dkg::coordinator) fn spawn_bulletin_finalized_cleanup<D>(
     ring_key: Option<String>,
     session_id: u64,
     bulletin_post_id: Option<String>,
-    bulletin_namespace: String,
 ) where
     D: Dkg + Clone + Send + Sync + 'static,
 {
     tokio::spawn(async move {
-        wait_for_reshare_bulletin_finalized(
-            app_state,
-            ring_key,
-            session_id,
-            bulletin_post_id,
-            bulletin_namespace,
-        )
-        .await;
+        wait_for_reshare_bulletin_finalized(app_state, ring_key, session_id, bulletin_post_id)
+            .await;
     });
 }
 
@@ -35,7 +28,6 @@ async fn wait_for_reshare_bulletin_finalized<D>(
     ring_key: Option<String>,
     session_id: u64,
     bulletin_post_id: Option<String>,
-    bulletin_namespace: String,
 ) where
     D: Dkg + Clone + Send + Sync + 'static,
 {
@@ -51,11 +43,7 @@ async fn wait_for_reshare_bulletin_finalized<D>(
             }
             match app_state
                 .bulletin
-                .read(
-                    bulletin_namespace.clone(),
-                    post_id.clone(),
-                    BulletinKind::Ring,
-                )
+                .read(post_id.clone(), BulletinKind::Ring)
                 .await
             {
                 Ok(post) => {

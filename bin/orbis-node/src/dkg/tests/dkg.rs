@@ -8,12 +8,13 @@ use crate::dkg::{
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
-    get_test_ring_post, setup_three_node_network, test_db_path, TestKeyPair,
+    create_test_app_state_with_bulletin, get_test_ring_post, setup_three_node_network,
+    test_db_path, TestKeyPair,
 };
-use crate::helpers::test_helpers::{BULLETIN_RING_NAMESPACE, TEST_FRESH_DKG_RING_ID};
+use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::DkgServiceImpl;
-use bulletin::r#trait::{BulletinKind, NodeInfo, RingPayload};
-use common::blockchain::orbis::namespace_id;
+use bulletin::dummy::DummyBulletin;
+use bulletin::r#trait::{NodeInfo, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
@@ -39,7 +40,6 @@ async fn test_start_dkg_empty_participants() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -51,7 +51,6 @@ async fn test_start_dkg_empty_participants() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -96,7 +95,6 @@ async fn test_three_nodes_connect() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: policy_id.clone(),
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -108,7 +106,6 @@ async fn test_three_nodes_connect() {
             &peer_ids,
             None,
             policy_id.clone(),
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -170,7 +167,6 @@ async fn test_start_dkg_fails_on_connection_failure() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -182,7 +178,6 @@ async fn test_start_dkg_fails_on_connection_failure() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -250,7 +245,6 @@ async fn test_start_dkg_succeeds_on_all_connections() {
         peer_ids: peer_ids.clone(),
         pss_interval: None,
         policy_id: policy_id.clone(),
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -262,7 +256,6 @@ async fn test_start_dkg_succeeds_on_all_connections() {
             &peer_ids,
             None,
             policy_id.clone(),
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -403,7 +396,6 @@ async fn test_start_dkg_fails_missing_auth_header() {
         peer_ids,
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -445,7 +437,6 @@ async fn test_start_dkg_fails_malformed_jwt() {
         peer_ids,
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -485,7 +476,6 @@ async fn test_start_dkg_fails_wrong_signature() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -509,7 +499,6 @@ async fn test_start_dkg_fails_wrong_signature() {
         peer_ids,
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -564,7 +553,6 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
         kind: SessionKind::Fresh,
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -623,7 +611,6 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         ) // Wrong threshold!
         .expect("Failed to create JWT");
@@ -643,7 +630,6 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
         kind: SessionKind::Fresh,
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -692,7 +678,6 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
             &jwt_peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("Failed to create JWT");
@@ -718,7 +703,6 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
         kind: SessionKind::Fresh,
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -752,20 +736,19 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
     let db_name = "test_dkg_session_init_rejects_nodeinfo_deny";
     let db_path = test_db_path(db_name);
 
-    let app_state = create_test_app_state_default(db_name).await;
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let app_state =
+        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
     let node_key = app_state.node_key.clone();
     let local_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let denied_node_info = NodeInfo {
         peer_id: local_peer_id_hex.clone(),
         controller_key: "controller".to_string(),
-        whitelisted_namespaces: vec![namespace_id("other")],
+        whitelisted_policy_ids: vec!["other-policy".to_string()],
         whitelisted_ring_ids: vec![],
     };
-    let payload: Vec<u8> = denied_node_info.try_into().expect("serialize NodeInfo");
-    app_state
-        .bulletin
-        .post(node_key.clone(), BulletinKind::NodeInfo, payload, None)
-        .await
+    bulletin
+        .set_node_info(node_key.clone(), denied_node_info)
         .expect("override NodeInfo");
 
     let app_state = Arc::new(app_state);
@@ -777,7 +760,6 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("create JWT");
@@ -791,7 +773,6 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
         kind: SessionKind::Fresh,
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -812,20 +793,19 @@ async fn test_start_dkg_rejects_self_participant_nodeinfo_deny() {
     let db_name = "test_start_dkg_rejects_self_participant_nodeinfo_deny";
     let db_path = test_db_path(db_name);
 
-    let app_state = create_test_app_state_default(db_name).await;
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let app_state =
+        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
     let node_key = app_state.node_key.clone();
     let local_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let denied_node_info = NodeInfo {
         peer_id: local_peer_id_hex.clone(),
         controller_key: "controller".to_string(),
-        whitelisted_namespaces: vec![namespace_id("other")],
+        whitelisted_policy_ids: vec!["other-policy".to_string()],
         whitelisted_ring_ids: vec![],
     };
-    let payload: Vec<u8> = denied_node_info.try_into().expect("serialize NodeInfo");
-    app_state
-        .bulletin
-        .post(node_key, BulletinKind::NodeInfo, payload, None)
-        .await
+    bulletin
+        .set_node_info(node_key, denied_node_info)
         .expect("override NodeInfo");
 
     let peer_ids = vec![local_peer_id_hex];
@@ -835,7 +815,6 @@ async fn test_start_dkg_rejects_self_participant_nodeinfo_deny() {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             TEST_FRESH_DKG_RING_ID,
         )
         .expect("create JWT");
@@ -845,7 +824,6 @@ async fn test_start_dkg_rejects_self_participant_nodeinfo_deny() {
         peer_ids,
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
     let result = service

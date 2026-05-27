@@ -1,8 +1,8 @@
 # Bulletin crate
 
-A small async abstraction over a **namespace/key-value bulletin**: register namespaces, **post** opaque payloads, **read** posts by id, and compute **deterministic post ids** from `(namespace, payload)`.
+A small async abstraction over typed Orbis bulletin objects: **post** rings, node info, encrypted document handles, and key-derivation records; **read** objects by id; and compute deterministic object ids from typed payloads.
 
-Orbis uses this for shared metadata (rings, encrypted document handles, key-derivation records). The default backend is **SourceHub** on-chain bulletin storage; an in-memory **dummy** implementation ships for tests and local development.
+The default backend is SourceHub `x/orbis`; an in-memory **dummy** implementation ships for tests and local development.
 
 ## `Bulletin` trait
 
@@ -10,17 +10,19 @@ Defined in [`src/trait.rs`](src/trait.rs):
 
 | Method | Role |
 |--------|------|
-| `register(namespace)` | Create / claim a bulletin namespace (chain-specific). |
-| `post(namespace, payload, artifact)` | Store a post; id is implied by chain or local rules. |
-| `read(namespace, id)` | Load a `BulletinPost` (`id`, `namespace`, `payload`). |
-| `get_post_id(namespace, payload)` | Deterministic id for a payload under a namespace (must match on-chain rules for SourceHub). |
+| `register()` | Backend setup hook. SourceHub typed objects do not require namespace registration. |
+| `post(kind, payload, artifact)` | Store a typed object; SourceHub derives NodeInfo IDs from the transaction signer. |
+| `read(id, kind)` | Load a `BulletinPost` (`id`, `payload`). |
+| `get_post_id(payload)` | Deterministic id for a typed payload. |
+| `get_ring_id(peer_ids, threshold, pss_interval, policy_id, nonce)` | Deterministic SourceHub ring id helper. |
 
 Shared **value types** (JSON serde):
 
-- **`BulletinPost`** — `id`, `namespace`, raw **`payload`** bytes.
+- **`BulletinPost`** — `id`, raw **`payload`** bytes.
 - **`DocumentPayload`** — Encrypted document + Chaum–Pedersen proof fields + policy binding (`ring_id`, `policy_id`, `resource`, `permission`, optional tier/timestamp).
 **`RingPayload`** — Ring metadata: `ring_pk`, `peer_ids`, `threshold`, optional `pss_interval`, optional **`new_peer_ids`** / **`new_threshold`** for reshare coordination, and **`block_number_nonce`** used as anti-replay input to the reshare finalization sign doc.
 - **`KeyDerivation`** — Bulletin entry for signing/PRE derivation: `ring_id`, `derivation`, policy fields.
+- **`NodeInfo`** — Node registration: `peer_id`, `controller_key`, `whitelisted_policy_ids`, and `whitelisted_ring_ids`.
 
 `TryFrom` helpers convert between posts and these structs (JSON in `payload`).
 
@@ -43,10 +45,10 @@ cargo build -p bulletin --no-default-features --features dummy
 
 **`SourceHubBulletin`** wraps [`SourceHubClient`](../common) from the workspace `common` crate.
 
-- **`register`** — `bulletin_register_namespace`.
-- **`post`** — `bulletin_create_post` (optional `artifact`).
-- **`read`** — Reads posts stored under the chain prefix **`bulletin/{namespace}`** (the implementation prepends `bulletin/` when querying).
-- **`get_post_id` / `compute_post_id`** — SHA-256 over **`"bulletin/{namespace}"` as bytes concatenated with `payload`**, hex-encoded — matches on-chain id derivation.
+- **`register`** — no-op for typed SourceHub `x/orbis` objects.
+- **`post`** — routes to `CreateRing`, `StoreDocument`, `StoreKeyDerivation`, or `CreateNodeInfo`.
+- **`read`** — routes to typed `x/orbis` queries by object id.
+- **`get_post_id` / `get_ring_id`** — matches SourceHub typed id derivation helpers.
 
 Construction:
 
@@ -59,15 +61,15 @@ Integration tests in [`src/sourcehub/tests.rs`](src/sourcehub/tests.rs) may requ
 
 ## Dummy implementation
 
-**`DummyBulletin`** keeps posts in a process-local **`HashMap`**, keyed by `(namespace, id)`. Post ids use the **same** `compute_post_id` rule as SourceHub so tests can assert deterministic behavior.
+**`DummyBulletin`** keeps typed objects in a process-local **`HashMap`**, keyed by object id. Typed post ids use the same helper rules as SourceHub so tests can assert deterministic behavior.
 
-Extras for tests: **`set_post`**, **`get_posts_by_namespace`**.
+Extras for tests: **`set_post`**, **`set_node_info`**, **`get_posts`**. `DummyBulletin::post` rejects `NodeInfo` because the dummy backend has no signer to derive the node key.
 
 Diagnostics name: **`"bulletin/dummy"`**.
 
 ## Errors
 
-[`BulletinError`](src/error.rs): **`ChainError`**, **`ParseError`**, **`NotFound { namespace, id }`**.
+[`BulletinError`](src/error.rs): **`ChainError`**, **`ParseError`**, **`NotFound { id }`**.
 
 ## Dependencies (high level)
 
@@ -78,7 +80,7 @@ Diagnostics name: **`"bulletin/dummy"`**.
 
 ## Spec notes
 
-The repo includes a short intent doc [`bulletin_spec.md`](bulletin_spec.md): first implementation is SourceHub; other bulletin backends can be added if they honor the same contract expectations (namespaces, posts, deterministic ids where applicable). Filling out the spec is a TODO
+The repo includes a short intent doc [`bulletin_spec.md`](bulletin_spec.md): first implementation is SourceHub; other bulletin backends can be added if they honor the same typed-object contract expectations and deterministic ids where applicable. Filling out the spec is a TODO.
 
 ## Tests
 

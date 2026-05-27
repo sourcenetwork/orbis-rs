@@ -6,7 +6,6 @@ use crate::helpers::helpers::extract_node_part;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::{BearerToken, DkgClaims};
 use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo, RingPayload};
-use common::blockchain::orbis::namespace_id;
 use crypto::r#trait::{CryptoDeserialize, DkgRole, PriShare};
 use crypto::{CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -119,21 +118,14 @@ pub async fn load_refresh_ring_payload<S: LocalStorage>(
         .iter()
         .find(|e| e.ring_pk_str == ring_pk_hex)
         .ok_or_else(|| DkgError::Unauthorized(format!("Unknown ring: {}", ring_pk_hex)))?;
-    load_ring_payload_by_post_id(
-        ring_pk_hex,
-        &entry.bulletin_post_id,
-        &entry.bulletin_namespace,
-        bulletin,
-    )
-    .await
+    load_ring_payload_by_post_id(ring_pk_hex, &entry.bulletin_post_id, bulletin).await
 }
 
 /// Load the canonical reshare ring payload, falling back to the wire-provided bulletin
-/// post ID and namespace for pure receivers that do not yet have a local RingIndex entry.
+/// post ID for pure receivers that do not yet have a local RingIndex entry.
 pub async fn load_reshare_ring_payload<S: LocalStorage>(
     ring_pk_hex: &str,
     bulletin_post_id: &str,
-    namespace: &str,
     local_storage: &S,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<RingPayload> {
@@ -146,24 +138,16 @@ pub async fn load_reshare_ring_payload<S: LocalStorage>(
     let resolved_post_id = entry
         .map(|e| e.bulletin_post_id.as_str())
         .unwrap_or(bulletin_post_id);
-    let resolved_namespace = entry
-        .map(|e| e.bulletin_namespace.as_str())
-        .unwrap_or(namespace);
-    load_ring_payload_by_post_id(ring_pk_hex, resolved_post_id, resolved_namespace, bulletin).await
+    load_ring_payload_by_post_id(ring_pk_hex, resolved_post_id, bulletin).await
 }
 
 async fn load_ring_payload_by_post_id(
     ring_pk_hex: &str,
     post_id: &str,
-    namespace: &str,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<RingPayload> {
     let bulletin_post = bulletin
-        .read(
-            namespace.to_string(),
-            post_id.to_string(),
-            BulletinKind::Ring,
-        )
+        .read(post_id.to_string(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
@@ -214,7 +198,6 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
     proposed_new_peer_ids: &[String],
     proposed_new_threshold: u32,
     bulletin_post_id: &str,
-    namespace: &str,
     local_storage: &S,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<()> {
@@ -232,9 +215,9 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         )));
     }
 
-    // Look up the bulletin post ID and namespace from the local index.  Pure Receiver nodes
+    // Look up the bulletin post ID from the local index. Pure Receiver nodes
     // have no local entry for this ring (they were never members), so fall back to the
-    // post ID and namespace carried in the SessionInit message.
+    // post ID carried in the SessionInit message.
     let ring_index: Vec<RingIndexEntry> = local_storage
         .get(LocalStorageKeys::RingIndex)
         .map_err(|e| DkgError::Storage(format!("Failed to read RingIndex: {}", e)))?
@@ -244,16 +227,8 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
     let resolved_post_id = entry
         .map(|e| e.bulletin_post_id.as_str())
         .unwrap_or(bulletin_post_id);
-    let resolved_namespace = entry
-        .map(|e| e.bulletin_namespace.as_str())
-        .unwrap_or(namespace);
-
     let bulletin_post = bulletin
-        .read(
-            resolved_namespace.to_string(),
-            resolved_post_id.to_string(),
-            BulletinKind::Ring,
-        )
+        .read(resolved_post_id.to_string(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
@@ -355,11 +330,7 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
 
     // Fetch the canonical RingPayload from the bulletin — it is the source of truth.
     let bulletin_post = bulletin
-        .read(
-            entry.bulletin_namespace.clone(),
-            post_id.to_string(),
-            BulletinKind::Ring,
-        )
+        .read(post_id.to_string(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
@@ -415,7 +386,6 @@ pub fn validate_dkg_claims(
     peer_ids: &[String],
     pss_interval: Option<u64>,
     policy_id: Option<&str>,
-    namespace: &str,
     ring_id: &str,
 ) -> Result<()> {
     // Validate threshold matches
@@ -461,18 +431,6 @@ pub fn validate_dkg_claims(
             token.claims.policy_id, policy_id
         )));
     }
-    // Validate namespace: must be non-empty and match the JWT claim.
-    if namespace.is_empty() {
-        return Err(DkgError::Unauthorized(
-            "namespace must not be empty".to_string(),
-        ));
-    }
-    if token.claims.namespace != namespace {
-        return Err(DkgError::Unauthorized(format!(
-            "Token namespace ({:?}) does not match request namespace ({:?})",
-            token.claims.namespace, namespace
-        )));
-    }
     if ring_id.is_empty() {
         return Err(DkgError::Unauthorized(
             "ring_id must not be empty".to_string(),
@@ -497,7 +455,6 @@ pub async fn validate_fresh_dkg_node_authorization(
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
     node_key: &str,
     local_peer_id_hex: &str,
-    namespace: &str,
     ring_id: &str,
     threshold: u32,
     peer_ids: &[String],
@@ -516,11 +473,7 @@ pub async fn validate_fresh_dkg_node_authorization(
     }
 
     let node_info_post = bulletin
-        .read(
-            node_key.to_string(),
-            node_key.to_string(),
-            BulletinKind::NodeInfo,
-        )
+        .read(node_key.to_string(), BulletinKind::NodeInfo)
         .await
         .map_err(|e| {
             DkgError::Unauthorized(format!("NodeInfo for node {} not found: {}", node_key, e))
@@ -539,36 +492,30 @@ pub async fn validate_fresh_dkg_node_authorization(
         )));
     }
 
-    let canonical_namespace = namespace_id(namespace);
-    let namespace_allowed = node_info
-        .whitelisted_namespaces
-        .iter()
-        .any(|allowed| allowed == &canonical_namespace);
+    let policy_allowed = policy_id.is_some_and(|policy_id| {
+        node_info
+            .whitelisted_policy_ids
+            .iter()
+            .any(|allowed| allowed == policy_id)
+    });
     let ring_allowed = node_info
         .whitelisted_ring_ids
         .iter()
         .any(|allowed| allowed == ring_id);
-    if namespace_allowed {
-        return Ok(());
-    }
-    if !ring_allowed {
+    if !policy_allowed && !ring_allowed {
         return Err(DkgError::Unauthorized(format!(
-            "NodeInfo for node {} does not allow namespace {} or ring_id {}",
-            node_key, canonical_namespace, ring_id
+            "NodeInfo for node {} does not allow policy_id {:?} or ring_id {}",
+            node_key, policy_id, ring_id
         )));
     }
 
     let ring_post = bulletin
-        .read(
-            namespace.to_string(),
-            ring_id.to_string(),
-            BulletinKind::Ring,
-        )
+        .read(ring_id.to_string(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             DkgError::Unauthorized(format!(
-                "Fresh DKG target ring {} not found in namespace {}: {}",
-                ring_id, namespace, e
+                "Fresh DKG target ring {} not found: {}",
+                ring_id, e
             ))
         })?;
     let ring_payload = RingPayload::try_from(ring_post).map_err(|e| {
@@ -857,11 +804,10 @@ pub fn node_index_in(sorted_committee: &[String], our_node_part: &str) -> u32 {
 mod tests {
     use super::*;
     use crate::constants::PSS_GRACE_PERIOD_SECS;
-    use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
     use crate::helpers::test_helpers::{cleanup_db, test_db_path, write_ring_to_bulletin};
     use crate::ring_state::{RingIndexEntry, RingShareBundle};
     use bulletin::dummy::DummyBulletin;
-    use bulletin::r#trait::Bulletin;
+    use bulletin::r#trait::{Bulletin, BulletinPost};
     use crypto::r#trait::PriShare;
     use crypto::{CryptoSerialize, ScalarField as Fr};
     use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
@@ -894,35 +840,31 @@ mod tests {
                 peer_ids: vec!["peer-a".to_string()],
                 pss_interval: None,
                 policy_id: policy_id.map(str::to_string),
-                namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 ring_id: "ring-1".to_string(),
             },
         }
     }
 
     async fn seed_node_info(
-        bulletin: &Arc<dyn Bulletin + Send + Sync>,
+        bulletin: &DummyBulletin,
         node_key: &str,
         peer_id: &str,
-        namespaces: Vec<String>,
+        policy_ids: Vec<String>,
         ring_ids: Vec<String>,
     ) {
         let node_info = NodeInfo {
             peer_id: peer_id.to_string(),
             controller_key: "controller".to_string(),
-            whitelisted_namespaces: namespaces,
+            whitelisted_policy_ids: policy_ids,
             whitelisted_ring_ids: ring_ids,
         };
-        let payload: Vec<u8> = node_info.try_into().expect("serialize NodeInfo");
         bulletin
-            .post(node_key.to_string(), BulletinKind::NodeInfo, payload, None)
-            .await
+            .set_node_info(node_key.to_string(), node_info)
             .expect("post NodeInfo");
     }
 
     async fn post_blank_ring(
         bulletin: &Arc<dyn Bulletin + Send + Sync>,
-        namespace: &str,
         peer_ids: Vec<String>,
         threshold: u32,
         pss_interval: Option<u64>,
@@ -940,37 +882,40 @@ mod tests {
         };
         let bytes = serde_json::to_vec(&payload).expect("serialize RingPayload");
         bulletin
-            .post(
-                namespace.to_string(),
-                BulletinKind::Ring,
-                bytes,
-                Some("test-session".to_string()),
-            )
+            .post(BulletinKind::Ring, bytes, Some("test-session".to_string()))
             .await
             .expect("post blank ring");
         bulletin
             .get_ring_id(
-                namespace,
-                "",
                 &payload.peer_ids,
                 payload.threshold,
                 payload.pss_interval,
                 payload.policy_id.as_deref().unwrap_or(""),
+                None,
             )
             .expect("compute blank ring id")
     }
 
     #[tokio::test]
-    async fn test_validate_fresh_dkg_node_authorization_allows_namespace() {
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    async fn test_validate_fresh_dkg_node_authorization_allows_policy_id() {
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let node_key = "node-key";
         let local_peer_id = "peer-local";
-        seed_node_info(
+        let peer_ids = vec!["peer-a".to_string()];
+        let ring_id = post_blank_ring(
             &bulletin,
+            peer_ids.clone(),
+            1,
+            None,
+            Some("policy".to_string()),
+        )
+        .await;
+        seed_node_info(
+            &dummy_bulletin,
             node_key,
             local_peer_id,
-            vec![namespace_id(BULLETIN_RING_NAMESPACE)],
+            vec!["policy".to_string()],
             vec![],
         )
         .await;
@@ -979,31 +924,25 @@ mod tests {
             &bulletin,
             node_key,
             local_peer_id,
-            BULLETIN_RING_NAMESPACE,
-            "missing-ring-is-ok-for-namespace-allow",
+            &ring_id,
             1,
-            &["peer-a".to_string()],
+            &peer_ids,
             None,
-            None,
+            Some("policy"),
         )
         .await;
-        assert!(
-            result.is_ok(),
-            "expected namespace allow, got: {:?}",
-            result
-        );
+        assert!(result.is_ok(), "expected policy allow, got: {:?}", result);
     }
 
     #[tokio::test]
     async fn test_validate_fresh_dkg_node_authorization_allows_ring_id_with_blank_placeholder() {
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let node_key = "node-key";
         let local_peer_id = "peer-local";
         let peer_ids = vec!["peer-a".to_string()];
         let ring_id = post_blank_ring(
             &bulletin,
-            BULLETIN_RING_NAMESPACE,
             peer_ids.clone(),
             1,
             Some(60),
@@ -1011,7 +950,7 @@ mod tests {
         )
         .await;
         seed_node_info(
-            &bulletin,
+            &dummy_bulletin,
             node_key,
             local_peer_id,
             vec![],
@@ -1023,7 +962,6 @@ mod tests {
             &bulletin,
             node_key,
             local_peer_id,
-            BULLETIN_RING_NAMESPACE,
             &ring_id,
             1,
             &peer_ids,
@@ -1036,15 +974,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_fresh_dkg_node_authorization_rejects_deny() {
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let node_key = "node-key";
         let local_peer_id = "peer-local";
         seed_node_info(
-            &bulletin,
+            &dummy_bulletin,
             node_key,
             local_peer_id,
-            vec![namespace_id("other")],
+            vec!["other-policy".to_string()],
             vec!["other-ring".to_string()],
         )
         .await;
@@ -1053,7 +991,6 @@ mod tests {
             &bulletin,
             node_key,
             local_peer_id,
-            BULLETIN_RING_NAMESPACE,
             "ring-1",
             1,
             &["peer-a".to_string()],
@@ -1073,7 +1010,6 @@ mod tests {
             &bulletin,
             "missing-node",
             "peer-local",
-            BULLETIN_RING_NAMESPACE,
             "ring-1",
             1,
             &["peer-a".to_string()],
@@ -1086,24 +1022,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_fresh_dkg_node_authorization_rejects_malformed_node_info() {
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let node_key = "node-key";
-        bulletin
-            .post(
-                node_key.to_string(),
-                BulletinKind::NodeInfo,
-                b"not-json".to_vec(),
-                None,
-            )
-            .await
-            .expect("post malformed NodeInfo");
+        dummy_bulletin.set_post(
+            node_key.to_string(),
+            BulletinPost {
+                id: node_key.to_string(),
+                payload: b"not-json".to_vec(),
+            },
+        );
 
         let result = validate_fresh_dkg_node_authorization(
             &bulletin,
             node_key,
             "peer-local",
-            BULLETIN_RING_NAMESPACE,
             "ring-1",
             1,
             &["peer-a".to_string()],
@@ -1116,14 +1049,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_fresh_dkg_node_authorization_rejects_peer_id_mismatch() {
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let node_key = "node-key";
         seed_node_info(
-            &bulletin,
+            &dummy_bulletin,
             node_key,
             "different-peer",
-            vec![namespace_id(BULLETIN_RING_NAMESPACE)],
+            vec!["policy".to_string()],
             vec![],
         )
         .await;
@@ -1132,7 +1065,6 @@ mod tests {
             &bulletin,
             node_key,
             "peer-local",
-            BULLETIN_RING_NAMESPACE,
             "ring-1",
             1,
             &["peer-a".to_string()],
@@ -1145,12 +1077,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_fresh_dkg_node_authorization_rejects_missing_ring_placeholder() {
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let node_key = "node-key";
         let local_peer_id = "peer-local";
         seed_node_info(
-            &bulletin,
+            &dummy_bulletin,
             node_key,
             local_peer_id,
             vec![],
@@ -1162,7 +1094,6 @@ mod tests {
             &bulletin,
             node_key,
             local_peer_id,
-            BULLETIN_RING_NAMESPACE,
             "missing-ring",
             1,
             &["peer-a".to_string()],
@@ -1175,13 +1106,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_fresh_dkg_node_authorization_rejects_ring_payload_mismatch() {
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let node_key = "node-key";
         let local_peer_id = "peer-local";
         let ring_id = post_blank_ring(
             &bulletin,
-            BULLETIN_RING_NAMESPACE,
             vec!["peer-b".to_string()],
             1,
             None,
@@ -1189,7 +1119,7 @@ mod tests {
         )
         .await;
         seed_node_info(
-            &bulletin,
+            &dummy_bulletin,
             node_key,
             local_peer_id,
             vec![],
@@ -1201,7 +1131,6 @@ mod tests {
             &bulletin,
             node_key,
             local_peer_id,
-            BULLETIN_RING_NAMESPACE,
             &ring_id,
             1,
             &["peer-a".to_string()],
@@ -1223,7 +1152,6 @@ mod tests {
             &peer_ids,
             None,
             Some(""),
-            BULLETIN_RING_NAMESPACE,
             "ring-1"
         )
         .is_ok());
@@ -1234,7 +1162,6 @@ mod tests {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             "ring-1",
         );
         assert!(
@@ -1256,7 +1183,6 @@ mod tests {
             &peer_ids,
             Some(0),
             None,
-            BULLETIN_RING_NAMESPACE,
             "ring-1"
         )
         .is_ok());
@@ -1267,7 +1193,6 @@ mod tests {
             &peer_ids,
             None,
             None,
-            BULLETIN_RING_NAMESPACE,
             "ring-1",
         );
         assert!(
@@ -1320,24 +1245,16 @@ mod tests {
         // Post garbage bytes to the bulletin and point RingIndex at them.
         let garbage = b"not valid json".to_vec();
         bulletin
-            .post(
-                BULLETIN_RING_NAMESPACE.to_string(),
-                BulletinKind::Ring,
-                garbage.clone(),
-                None,
-            )
+            .post(BulletinKind::Ring, garbage.clone(), None)
             .await
             .unwrap();
-        let post_id = bulletin
-            .get_post_id(BULLETIN_RING_NAMESPACE, &garbage)
-            .unwrap();
+        let post_id = bulletin.get_post_id(&garbage).unwrap();
         storage
             .set(
                 LocalStorageKeys::RingIndex,
                 serde_json::to_vec(&vec![RingIndexEntry {
                     ring_pk_str: "pk".to_string(),
                     bulletin_post_id: post_id,
-                    bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
                 }])
                 .unwrap(),
             )
