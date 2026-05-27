@@ -25,11 +25,11 @@ pub struct Ring {
     #[prost(string, tag = "3")]
     pub ring_pk: String,
     #[prost(string, repeated, tag = "4")]
-    pub peer_ids: Vec<String>,
+    pub peer_node_keys: Vec<String>,
     #[prost(uint32, tag = "5")]
     pub threshold: u32,
     #[prost(string, repeated, tag = "6")]
-    pub new_peer_ids: Vec<String>,
+    pub new_peer_node_keys: Vec<String>,
     #[prost(uint32, optional, tag = "7")]
     pub new_threshold: Option<u32>,
     #[prost(uint64, optional, tag = "8")]
@@ -117,7 +117,7 @@ pub struct MsgCreateRing {
     #[prost(string, tag = "1")]
     pub creator: String,
     #[prost(string, repeated, tag = "2")]
-    pub peer_ids: Vec<String>,
+    pub peer_node_keys: Vec<String>,
     #[prost(uint32, tag = "3")]
     pub threshold: u32,
     #[prost(uint64, optional, tag = "4")]
@@ -135,7 +135,7 @@ impl MsgCreateRing {
 
     pub fn new(
         creator: &str,
-        peer_ids: Vec<String>,
+        peer_node_keys: Vec<String>,
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
@@ -144,7 +144,7 @@ impl MsgCreateRing {
     ) -> Self {
         Self {
             creator: creator.to_string(),
-            peer_ids,
+            peer_node_keys,
             threshold,
             pss_interval,
             policy_id: policy_id.to_string(),
@@ -167,7 +167,7 @@ pub struct MsgUpdateRingByAcp {
     #[prost(string, tag = "2")]
     pub ring_id: String,
     #[prost(string, repeated, tag = "3")]
-    pub new_peer_ids: Vec<String>,
+    pub new_peer_node_keys: Vec<String>,
     #[prost(uint32, optional, tag = "4")]
     pub new_threshold: Option<u32>,
     #[prost(uint64, optional, tag = "5")]
@@ -180,14 +180,14 @@ impl MsgUpdateRingByAcp {
     pub fn new(
         creator: &str,
         ring_id: &str,
-        new_peer_ids: Vec<String>,
+        new_peer_node_keys: Vec<String>,
         new_threshold: Option<u32>,
         pss_interval: Option<u64>,
     ) -> Self {
         Self {
             creator: creator.to_string(),
             ring_id: ring_id.to_string(),
-            new_peer_ids,
+            new_peer_node_keys,
             new_threshold,
             pss_interval,
         }
@@ -467,7 +467,7 @@ pub fn ring_state_hash(ring: &Ring) -> [u8; 32] {
 /// have a 4-byte big-endian count prefix; uint32 is 4-byte big-endian;
 /// optional uint64 is a 1-byte presence flag followed by 8-byte big-endian if present.
 pub fn generate_ring_id(
-    peer_ids: &[String],
+    peer_node_keys: &[String],
     threshold: u32,
     pss_interval: Option<u64>,
     policy_id: &str,
@@ -476,7 +476,7 @@ pub fn generate_ring_id(
     let mut h = Sha256::new();
 
     write_string(&mut h, "orbis/ring/v1");
-    write_string_slice(&mut h, peer_ids);
+    write_string_slice(&mut h, peer_node_keys);
     h.update(threshold.to_be_bytes());
     write_optional_u64(&mut h, pss_interval);
     write_string(&mut h, policy_id);
@@ -627,7 +627,7 @@ use crate::blockchain::{BroadcastResult, SourceHubClient};
 impl SourceHubClient {
     pub async fn orbis_create_ring(
         &self,
-        peer_ids: Vec<String>,
+        peer_node_keys: Vec<String>,
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
@@ -639,7 +639,7 @@ impl SourceHubClient {
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
         let msg = MsgCreateRing::new(
             &signer.address(),
-            peer_ids,
+            peer_node_keys,
             threshold,
             pss_interval,
             policy_id,
@@ -659,7 +659,7 @@ impl SourceHubClient {
     /// The ring_id is decoded from `MsgCreateRingResponse` in the ABCI response data.
     pub async fn orbis_create_ring_get_id(
         &self,
-        peer_ids: Vec<String>,
+        peer_node_keys: Vec<String>,
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
@@ -668,7 +668,7 @@ impl SourceHubClient {
     ) -> Result<(BroadcastResult, String)> {
         let result = self
             .orbis_create_ring(
-                peer_ids,
+                peer_node_keys,
                 threshold,
                 pss_interval,
                 policy_id,
@@ -782,7 +782,7 @@ impl SourceHubClient {
     pub async fn orbis_update_ring_by_acp(
         &self,
         ring_id: &str,
-        new_peer_ids: Vec<String>,
+        new_peer_node_keys: Vec<String>,
         new_threshold: Option<u32>,
         pss_interval: Option<u64>,
     ) -> Result<BroadcastResult> {
@@ -792,7 +792,7 @@ impl SourceHubClient {
         let msg = MsgUpdateRingByAcp::new(
             &signer.address(),
             ring_id,
-            new_peer_ids,
+            new_peer_node_keys,
             new_threshold,
             pss_interval,
         );

@@ -10,7 +10,7 @@ use crate::constants::{RESHARE_SIGNATURE_MAX_ATTEMPTS, RESHARE_SIGNATURE_RETRY_D
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::SessionKind;
 use crate::dkg::session_state::ReshareSignatureReadyKey;
-use crate::helpers::helpers::{extract_node_part, RingConfig};
+use crate::helpers::helpers::RingConfig;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::error::SignError;
 use crate::sign::helpers::ring_reshare_update_message;
@@ -23,7 +23,8 @@ use super::super::DkgCoordinator;
 
 #[derive(Clone)]
 struct PreparedReshareUpdate {
-    sorted_new_peer_ids: Vec<String>,
+    sorted_new_peer_node_keys: Vec<String>,
+    new_route_peer_ids: Vec<String>,
     new_committee_size: usize,
     ring_id: String,
     current_ring_sha256: String,
@@ -40,7 +41,7 @@ pub(in crate::dkg::coordinator) async fn update_bulletin_if_selector<D>(
     storage_key: &str,
     ring_pk_bytes: &[u8],
     pub_poly_bytes: &[u8],
-    reshare_new_peer_ids: Option<&[String]>,
+    reshare_new_peer_node_keys: Option<&[String]>,
     reshare_bulletin_post_id: Option<&str>,
 ) -> Result<()>
 where
@@ -58,7 +59,7 @@ where
 {
     let SessionKind::Reshare {
         ring_pk_hex,
-        new_peer_ids,
+        new_peer_node_keys,
         new_threshold,
         ..
     } = kind
@@ -74,17 +75,19 @@ where
                 coord,
                 session_id,
                 storage_key,
-                new_peer_ids,
+                new_peer_node_keys,
                 *new_threshold,
-                reshare_new_peer_ids,
+                reshare_new_peer_node_keys,
                 reshare_bulletin_post_id,
             )
             .await?,
         )
     };
 
-    let reshare_new_node_id =
-        reshare_new_node_id(coord, reshare_new_peer_ids.unwrap_or(new_peer_ids));
+    let reshare_new_node_id = reshare_new_node_id(
+        coord,
+        reshare_new_peer_node_keys.unwrap_or(new_peer_node_keys),
+    );
 
     if reshare_new_node_id != 1 {
         return Ok(());
@@ -116,7 +119,8 @@ where
     let sign_coordinator = SignCoordinator::<D, SignImpl>::new(coord.app_state.clone());
     let ring_config = RingConfig {
         ring_pk_bytes: ring_pk_bytes.to_vec(),
-        peer_ids: prepared.sorted_new_peer_ids,
+        peer_ids: prepared.new_route_peer_ids,
+        peer_node_keys: prepared.sorted_new_peer_node_keys,
         threshold: *new_threshold as usize,
         total_participants: prepared.new_committee_size,
         public_polynomial_hex: hex::encode(pub_poly_bytes),
@@ -189,18 +193,20 @@ async fn prepare_reshare_update<D>(
     coord: &DkgCoordinator<D>,
     session_id: u64,
     storage_key: &str,
-    new_peer_ids: &[String],
+    new_peer_node_keys: &[String],
     new_threshold: u32,
-    reshare_new_peer_ids: Option<&[String]>,
+    reshare_new_peer_node_keys: Option<&[String]>,
     reshare_bulletin_post_id: Option<&str>,
 ) -> Result<PreparedReshareUpdate>
 where
     D: CoordinatorDkg,
 {
-    let sorted_new_peer_ids = reshare_new_peer_ids
+    let sorted_new_peer_node_keys = reshare_new_peer_node_keys
         .map(|peers| peers.to_vec())
-        .unwrap_or_else(|| new_peer_ids.to_vec());
-    let new_committee_size = sorted_new_peer_ids.len();
+        .unwrap_or_else(|| new_peer_node_keys.to_vec());
+    let new_committee_size = sorted_new_peer_node_keys.len();
+    let new_route_peer_ids =
+        new_committee_peer_ids_from_session(coord, session_id, new_committee_size).await?;
     let ring_id = reshare_bulletin_post_id.ok_or_else(|| {
         DkgError::Bulletin("Reshare: missing ring id for updated RingPayload".to_string())
     })?;
@@ -224,18 +230,18 @@ where
                 e
             ))
         })?;
-    let payload_new_peer_ids = current_ring_payload
-        .new_peer_ids
+    let payload_new_peer_node_keys = current_ring_payload
+        .new_peer_node_keys
         .as_deref()
-        .unwrap_or(&current_ring_payload.peer_ids)
+        .unwrap_or(&current_ring_payload.peer_node_keys)
         .to_vec();
     let payload_new_threshold = current_ring_payload
         .new_threshold
         .unwrap_or(current_ring_payload.threshold);
-    if payload_new_peer_ids != sorted_new_peer_ids {
+    if payload_new_peer_node_keys != sorted_new_peer_node_keys {
         return Err(DkgError::ProtocolError(format!(
-            "Reshare: current RingPayload new_peer_ids {:?} do not match session new_peer_ids {:?}",
-            payload_new_peer_ids, sorted_new_peer_ids
+            "Reshare: current RingPayload new_peer_node_keys {:?} do not match session new_peer_node_keys {:?}",
+            payload_new_peer_node_keys, sorted_new_peer_node_keys
         )));
     }
     if payload_new_threshold != new_threshold {
@@ -285,7 +291,8 @@ where
         .await;
 
     Ok(PreparedReshareUpdate {
-        sorted_new_peer_ids,
+        sorted_new_peer_node_keys,
+        new_route_peer_ids,
         new_committee_size,
         ring_id: ring_id.to_string(),
         current_ring_sha256,
@@ -295,15 +302,45 @@ where
     })
 }
 
-fn reshare_new_node_id<D>(coord: &DkgCoordinator<D>, reshare_new_peer_ids: &[String]) -> u32
+async fn new_committee_peer_ids_from_session<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u64,
+    new_committee_size: usize,
+) -> Result<Vec<String>>
 where
     D: CoordinatorDkg,
 {
-    let our_peer_id_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
-    let our_node_part = extract_node_part(&our_peer_id_hex);
-    reshare_new_peer_ids
+    let peer_ids = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| {
+            (1..=new_committee_size as u32)
+                .filter_map(|node_id| state.reshare_new_node_id_to_peer_id.get(&node_id).cloned())
+                .collect::<Vec<_>>()
+        })
+        .await
+        .ok_or_else(|| {
+            DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
+        })?;
+
+    if peer_ids.len() != new_committee_size {
+        return Err(DkgError::ProtocolError(format!(
+            "Reshare: new committee routing map has {} entries, expected {}",
+            peer_ids.len(),
+            new_committee_size
+        )));
+    }
+
+    Ok(peer_ids)
+}
+
+fn reshare_new_node_id<D>(coord: &DkgCoordinator<D>, reshare_new_peer_node_keys: &[String]) -> u32
+where
+    D: CoordinatorDkg,
+{
+    reshare_new_peer_node_keys
         .iter()
-        .position(|p| extract_node_part(p) == our_node_part)
+        .position(|node_key| node_key == &coord.app_state.node_key)
         .map(|i| (i + 1) as u32)
         .unwrap_or(0)
 }

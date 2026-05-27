@@ -46,30 +46,14 @@ pub struct DkgResult {
 
 pub async fn do_dkg(
     endpoint: String,
-    threshold: u32,
-    peer_ids: Vec<String>,
-    pss_interval: Option<u64>,
-    policy_id: Option<String>,
+    _threshold: u32,
+    _peer_ids: Vec<String>,
+    _pss_interval: Option<u64>,
+    _policy_id: Option<String>,
     ring_id: String,
 ) -> Result<DkgResult> {
-    // Total nodes = peers + the node we're connecting to
-    let total_nodes = peer_ids.len() as u32;
-
-    if threshold > total_nodes {
-        return Err(anyhow!(
-            "Threshold ({}) cannot be greater than total nodes ({})",
-            threshold,
-            total_nodes
-        ));
-    }
-
     println!("Starting DKG session:");
     println!("  Endpoint: {}", endpoint);
-    println!("  Threshold: {}/{}", threshold, total_nodes);
-    println!("  Peer IDs: {:?}", peer_ids);
-    if let Some(policy_id) = &policy_id {
-        println!("  Policy ID: {}", policy_id);
-    }
     println!("  Ring ID: {}", ring_id);
     println!();
 
@@ -80,17 +64,13 @@ pub async fn do_dkg(
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
     let request = proto::dkg_service::StartDkgRequest {
-        threshold,
-        peer_ids: peer_ids.clone(),
-        pss_interval,
-        policy_id: policy_id.clone(),
         ring_id: ring_id.clone(),
     };
 
     // JWT work
     let jwt_signer = JwtSigner::new();
     let token = jwt_signer
-        .create_dkg_jwt(threshold, &peer_ids, pss_interval, policy_id, &ring_id)
+        .create_dkg_jwt(&ring_id)
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token)
         .map_err(|e| anyhow!("Failed to create_dkg_jwt: {}", e))?;
@@ -897,10 +877,7 @@ pub async fn add_bulletin_collaborator(
     Ok(())
 }
 
-pub async fn create_bulletin_post(
-    kind: BulletinKind,
-    payload: Vec<u8>,
-) -> Result<String> {
+pub async fn create_bulletin_post(kind: BulletinKind, payload: Vec<u8>) -> Result<String> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
@@ -952,10 +929,7 @@ pub async fn update_ring_post_by_acp(
 }
 
 /// Read a bulletin post by ID
-pub async fn read_bulletin_post(
-    id: String,
-    kind: BulletinKind,
-) -> Result<Vec<u8>> {
+pub async fn read_bulletin_post(id: String, kind: BulletinKind) -> Result<Vec<u8>> {
     let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;

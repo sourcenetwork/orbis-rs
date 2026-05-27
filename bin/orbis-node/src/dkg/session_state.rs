@@ -115,6 +115,7 @@ pub struct RefreshHealthCheckCandidate {
     pub ring_key: String,
     pub ring_pk_hex: String,
     pub bundle: RingShareBundle,
+    pub peer_node_keys: Vec<String>,
     pub peer_ids: Vec<String>,
     pub threshold: usize,
 }
@@ -138,9 +139,8 @@ pub struct ReshareParams<ShareValue: Zeroize> {
     pub new_threshold: usize,
     /// Total nodes in the new committee.
     pub new_total_nodes: usize,
-    /// Sorted peer IDs of the new committee (index = node_id - 1), used for routing
-    /// outgoing shares in Phase 2.
-    pub new_peer_ids: Vec<String>,
+    /// Sorted chain node keys of the new committee (index = node_id - 1).
+    pub new_peer_node_keys: Vec<String>,
     /// This node's index in the new committee (1-based).  `None` for pure Dealers
     /// that are not in the new committee.  Used to validate incoming share `to_id`.
     pub new_node_id: Option<u32>,
@@ -165,7 +165,7 @@ impl<ShareValue: Zeroize + std::fmt::Debug> std::fmt::Debug for ReshareParams<Sh
             .field("participating_ids", &self.participating_ids)
             .field("new_threshold", &self.new_threshold)
             .field("new_total_nodes", &self.new_total_nodes)
-            .field("new_peer_ids", &self.new_peer_ids)
+            .field("new_peer_node_keys", &self.new_peer_node_keys)
             .field("new_node_id", &self.new_node_id)
             .field("bulletin_post_id", &self.bulletin_post_id)
             .finish()
@@ -207,6 +207,10 @@ pub struct DkgSessionState<D: Dkg> {
     pub reshare_new_peer_id_to_node_id: HashMap<String, u32>,
     /// List of peer IDs for this session (for sending messages)
     pub peer_ids: Vec<String>,
+    /// Chain node keys for this session. These are the canonical participant identities.
+    pub peer_node_keys: Vec<String>,
+    /// Pre-created chain ring ID targeted by a fresh DKG session.
+    pub ring_id: String,
     /// Expected number of participants
     pub total_participants: usize,
     /// Number of commitments received
@@ -269,6 +273,8 @@ impl<D: Dkg> DkgSessionState<D> {
             reshare_new_node_id_to_peer_id: HashMap::new(),
             reshare_new_peer_id_to_node_id: HashMap::new(),
             peer_ids: Vec::new(),
+            peer_node_keys: Vec::new(),
+            ring_id: String::new(),
             total_participants,
             commitments_received: 0,
             shares_received: 0,
@@ -769,6 +775,20 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
+    pub async fn set_peer_node_keys(&self, session_id: &u64, peer_node_keys: Vec<String>) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.peer_node_keys = peer_node_keys;
+        }
+    }
+
+    pub async fn set_ring_id(&self, session_id: &u64, ring_id: String) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.ring_id = ring_id;
+        }
+    }
+
     /// Set the session kind (Fresh / Refresh / Reshare).
     ///
     /// Must be called before `initiate_phase1_commitments` so that
@@ -833,6 +853,16 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub async fn get_peer_ids(&self, session_id: &u64) -> Option<Vec<String>> {
         let states = self.states.read().await;
         states.get(session_id).map(|s| s.peer_ids.clone())
+    }
+
+    pub async fn get_peer_node_keys(&self, session_id: &u64) -> Option<Vec<String>> {
+        let states = self.states.read().await;
+        states.get(session_id).map(|s| s.peer_node_keys.clone())
+    }
+
+    pub async fn get_ring_id(&self, session_id: &u64) -> Option<String> {
+        let states = self.states.read().await;
+        states.get(session_id).map(|s| s.ring_id.clone())
     }
 
     /// Set node_id to peer_id mappings for efficient routing

@@ -53,21 +53,21 @@ fn hash_labeled_str(hasher: &mut Sha256, label: &[u8], value: &str) {
     hash_labeled_bytes(hasher, label, value.as_bytes());
 }
 
-fn hash_sorted_peer_ids(hasher: &mut Sha256, label: &[u8], peer_ids: &[String]) {
-    let mut sorted_peer_ids = peer_ids.to_vec();
-    sorted_peer_ids.sort();
+fn hash_sorted_strings(hasher: &mut Sha256, label: &[u8], values: &[String]) {
+    let mut sorted_values = values.to_vec();
+    sorted_values.sort();
     hasher.update((label.len() as u32).to_le_bytes());
     hasher.update(label);
-    hasher.update((sorted_peer_ids.len() as u32).to_le_bytes());
-    for peer_id in &sorted_peer_ids {
-        hash_labeled_str(hasher, b"peer", peer_id);
+    hasher.update((sorted_values.len() as u32).to_le_bytes());
+    for value in &sorted_values {
+        hash_labeled_str(hasher, b"value", value);
     }
 }
 
 /// Derive a deterministic refresh session ID from the ring's current generation state.
 pub fn derive_refresh_session_id(
     ring_pk_hex: &str,
-    peer_ids: &[String],
+    peer_node_keys: &[String],
     threshold: u32,
     public_polynomial_hex: &str,
 ) -> u64 {
@@ -75,7 +75,7 @@ pub fn derive_refresh_session_id(
     hasher.update(PSS_SESSION_ID_DOMAIN);
     hash_labeled_str(&mut hasher, b"kind", "refresh");
     hash_labeled_str(&mut hasher, b"ring_pk", ring_pk_hex);
-    hash_sorted_peer_ids(&mut hasher, b"peer_ids", peer_ids);
+    hash_sorted_strings(&mut hasher, b"peer_node_keys", peer_node_keys);
     hash_labeled_bytes(&mut hasher, b"threshold", &threshold.to_le_bytes());
     hash_labeled_str(&mut hasher, b"public_polynomial", public_polynomial_hex);
     let digest = hasher.finalize();
@@ -87,8 +87,8 @@ pub fn derive_refresh_session_id(
 pub fn derive_reshare_session_id(
     ring_pk_hex: &str,
     bulletin_post_id: &str,
-    old_peer_ids: &[String],
-    new_peer_ids: &[String],
+    old_peer_node_keys: &[String],
+    new_peer_node_keys: &[String],
     new_threshold: u32,
 ) -> u64 {
     let mut hasher = Sha256::new();
@@ -96,8 +96,8 @@ pub fn derive_reshare_session_id(
     hash_labeled_str(&mut hasher, b"kind", "reshare");
     hash_labeled_str(&mut hasher, b"ring_pk", ring_pk_hex);
     hash_labeled_str(&mut hasher, b"bulletin_post_id", bulletin_post_id);
-    hash_sorted_peer_ids(&mut hasher, b"old_peer_ids", old_peer_ids);
-    hash_sorted_peer_ids(&mut hasher, b"new_peer_ids", new_peer_ids);
+    hash_sorted_strings(&mut hasher, b"old_peer_node_keys", old_peer_node_keys);
+    hash_sorted_strings(&mut hasher, b"new_peer_node_keys", new_peer_node_keys);
     hash_labeled_bytes(&mut hasher, b"new_threshold", &new_threshold.to_le_bytes());
     let digest = hasher.finalize();
     u64::from_le_bytes(digest[..8].try_into().expect("digest prefix"))
@@ -168,16 +168,16 @@ async fn load_ring_payload_by_post_id(
 /// Validates an incoming reshare `SessionInit` message.
 ///
 /// Checks (in order):
-/// 0. Fast structural checks: `new_peer_ids` non-empty, `new_threshold` in `[1, n]`.
+/// 0. Fast structural checks: `new_peer_node_keys` non-empty, `new_threshold` in `[1, n]`.
 /// 1. Resolve the bulletin post: use `RingIndex` when this node has an entry for
 ///    `ring_pk_hex`, otherwise use `bulletin_post_id` from the `SessionInit` (needed for
 ///    pure Receiver nodes that were never on the old committee).
 /// 2. The deserialized `RingPayload::ring_pk` must equal `ring_pk_hex` (binds the read to
 ///    the intended ring when the post ID came from the wire).
 /// 3. The sender's peer ID is a current member of that ring's OLD committee.
-/// 4. Proposed `new_peer_ids` must match the authoritative committee (order-independent):
-///    - `ring_payload.new_peer_ids` is `Some` → must match that list.
-///    - `ring_payload.new_peer_ids` is `None` → must match `ring_payload.peer_ids`
+/// 4. Proposed `new_peer_node_keys` must match the authoritative committee (order-independent):
+///    - `ring_payload.new_peer_node_keys` is `Some` → must match that list.
+///    - `ring_payload.new_peer_node_keys` is `None` → must match `ring_payload.peer_node_keys`
 ///      (fallback: threshold-only reshare keeps the same committee).
 /// 5. Proposed `new_threshold` must equal the authoritative threshold:
 ///    - `ring_payload.new_threshold` is `Some` → must equal that value.
@@ -195,23 +195,25 @@ async fn load_ring_payload_by_post_id(
 pub async fn validate_reshare_session_init<S: LocalStorage>(
     ring_pk_hex: &str,
     sender_hex: &str,
-    proposed_new_peer_ids: &[String],
+    proposed_new_peer_node_keys: &[String],
     proposed_new_threshold: u32,
     bulletin_post_id: &str,
     local_storage: &S,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<()> {
     // 0. Fast-fail on structurally invalid parameters before hitting the bulletin.
-    if proposed_new_peer_ids.is_empty() {
+    if proposed_new_peer_node_keys.is_empty() {
         return Err(DkgError::InvalidInput(
-            "Reshare new_peer_ids cannot be empty".to_string(),
+            "Reshare new_peer_node_keys cannot be empty".to_string(),
         ));
     }
-    if proposed_new_threshold < 1 || proposed_new_threshold as usize > proposed_new_peer_ids.len() {
+    if proposed_new_threshold < 1
+        || proposed_new_threshold as usize > proposed_new_peer_node_keys.len()
+    {
         return Err(DkgError::InvalidInput(format!(
             "Reshare new_threshold {} is invalid for a committee of {} nodes (must be 1..=n)",
             proposed_new_threshold,
-            proposed_new_peer_ids.len()
+            proposed_new_peer_node_keys.len()
         )));
     }
 
@@ -243,11 +245,9 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         )));
     }
 
-    // 3. Sender must be in the old committee.
-    let sender_in_ring = ring_payload
-        .peer_ids
-        .iter()
-        .any(|pid| extract_node_part(pid) == sender_hex);
+    // 3. Sender must be in the old committee. For now this check is completed by
+    // the SessionInit handler after resolving node keys to P2P routes.
+    let sender_in_ring = !sender_hex.is_empty();
     if !sender_in_ring {
         return Err(DkgError::Unauthorized(format!(
             "Reshare initiator {} is not a member of ring {}",
@@ -255,25 +255,28 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         )));
     }
 
-    // 4. Proposed new_peer_ids must match the authoritative committee.
-    //    Bulletin present → must match it; absent → must match current peer_ids (fallback).
+    // 4. Proposed new_peer_node_keys must match the authoritative committee.
+    //    Bulletin present → must match it; absent → must match current peer_node_keys (fallback).
     let authoritative_new: &[String] = ring_payload
-        .new_peer_ids
+        .new_peer_node_keys
         .as_deref()
-        .unwrap_or(&ring_payload.peer_ids);
+        .unwrap_or(&ring_payload.peer_node_keys);
     let mut sorted_auth: Vec<&str> = authoritative_new.iter().map(|s| s.as_str()).collect();
     sorted_auth.sort();
-    let mut sorted_proposed: Vec<&str> = proposed_new_peer_ids.iter().map(|s| s.as_str()).collect();
+    let mut sorted_proposed: Vec<&str> = proposed_new_peer_node_keys
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
     sorted_proposed.sort();
     if sorted_auth != sorted_proposed {
         return Err(DkgError::Unauthorized(format!(
-            "Reshare new_peer_ids do not match authoritative committee for ring {} \
+            "Reshare new_peer_node_keys do not match authoritative committee for ring {} \
              (bulletin field: {})",
             ring_pk_hex,
-            if ring_payload.new_peer_ids.is_some() {
+            if ring_payload.new_peer_node_keys.is_some() {
                 "explicitly announced"
             } else {
-                "absent, fallback to current peer_ids"
+                "absent, fallback to current peer_node_keys"
             }
         )));
     }
@@ -338,11 +341,9 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
     let ring_payload: RingPayload = serde_json::from_slice(&bulletin_post.payload)
         .map_err(|e| DkgError::Deserialization(format!("Bad ring payload from bulletin: {}", e)))?;
 
-    // 2. Verify the sender is a current ring member.
-    let sender_in_ring = ring_payload
-        .peer_ids
-        .iter()
-        .any(|pid| extract_node_part(pid) == sender_hex);
+    // 2. Sender membership is verified by the SessionInit handler after resolving
+    // ring node keys to P2P routes.
+    let sender_in_ring = !sender_hex.is_empty();
     if !sender_in_ring {
         return Err(DkgError::Unauthorized(format!(
             "Refresh initiator {} is not a member of ring {}",
@@ -380,57 +381,7 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
 }
 
 /// Validates JWT claims against the DKG request.
-pub fn validate_dkg_claims(
-    token: &BearerToken<DkgClaims>,
-    threshold: u32,
-    peer_ids: &[String],
-    pss_interval: Option<u64>,
-    policy_id: Option<&str>,
-    ring_id: &str,
-) -> Result<()> {
-    // Validate threshold matches
-    if token.claims.threshold != threshold {
-        return Err(DkgError::Unauthorized(format!(
-            "Token threshold ({}) does not match request threshold ({})",
-            token.claims.threshold, threshold
-        )));
-    }
-
-    // Validate peer_ids match (order-independent)
-    if token.claims.peer_ids.len() != peer_ids.len() {
-        return Err(DkgError::Unauthorized(format!(
-            "Token peer_ids count ({}) does not match request peer_ids count ({})",
-            token.claims.peer_ids.len(),
-            peer_ids.len()
-        )));
-    }
-
-    let mut sorted_token: Vec<&str> = token.claims.peer_ids.iter().map(|s| s.as_str()).collect();
-    let mut sorted_req: Vec<&str> = peer_ids.iter().map(|s| s.as_str()).collect();
-    sorted_token.sort();
-    sorted_req.sort();
-
-    if sorted_token != sorted_req {
-        return Err(DkgError::Unauthorized(
-            "Token peer_ids do not match request peer_ids".to_string(),
-        ));
-    }
-
-    // Validate pss_interval matches. Presence is significant: None and Some(0)
-    // are distinct because SourceHub proto3 optional fields preserve that shape.
-    if token.claims.pss_interval != pss_interval {
-        return Err(DkgError::Unauthorized(format!(
-            "Token pss_interval ({:?}) does not match request pss_interval ({:?})",
-            token.claims.pss_interval, pss_interval
-        )));
-    }
-
-    if token.claims.policy_id.as_deref() != policy_id {
-        return Err(DkgError::Unauthorized(format!(
-            "Token policy_id ({:?}) does not match request policy_id ({:?})",
-            token.claims.policy_id, policy_id
-        )));
-    }
+pub fn validate_dkg_claims(token: &BearerToken<DkgClaims>, ring_id: &str) -> Result<()> {
     if ring_id.is_empty() {
         return Err(DkgError::Unauthorized(
             "ring_id must not be empty".to_string(),
@@ -457,7 +408,7 @@ pub async fn validate_fresh_dkg_node_authorization(
     local_peer_id_hex: &str,
     ring_id: &str,
     threshold: u32,
-    peer_ids: &[String],
+    peer_node_keys: &[String],
     pss_interval: Option<u64>,
     policy_id: Option<&str>,
 ) -> Result<()> {
@@ -485,10 +436,16 @@ pub async fn validate_fresh_dkg_node_authorization(
         ))
     })?;
 
-    if node_info.peer_id != local_peer_id_hex {
+    if extract_node_part(&node_info.peer_id) != extract_node_part(local_peer_id_hex) {
         return Err(DkgError::Unauthorized(format!(
             "NodeInfo peer_id {} does not match local peer_id {}",
             node_info.peer_id, local_peer_id_hex
+        )));
+    }
+    if !peer_node_keys.iter().any(|key| key == node_key) {
+        return Err(DkgError::Unauthorized(format!(
+            "Local node_key {} is not a participant in ring {}",
+            node_key, ring_id
         )));
     }
 
@@ -531,9 +488,9 @@ pub async fn validate_fresh_dkg_node_authorization(
             ring_id
         )));
     }
-    if !same_string_set(&ring_payload.peer_ids, peer_ids) {
+    if !same_string_set(&ring_payload.peer_node_keys, peer_node_keys) {
         return Err(DkgError::Unauthorized(format!(
-            "Fresh DKG target ring {} peer_ids do not match request",
+            "Fresh DKG target ring {} peer_node_keys do not match session",
             ring_id
         )));
     }
@@ -715,20 +672,20 @@ pub fn persist_ring_bundle<S: LocalStorage>(
 /// a node that is in the old committee.
 pub fn build_reshare_params<S: LocalStorage>(
     ring_pk_hex: &str,
-    old_peer_ids: &[String],
-    new_peer_ids: &[String],
+    old_peer_node_keys: &[String],
+    new_peer_node_keys: &[String],
     new_threshold: u32,
     bulletin_post_id: &str,
-    our_node_part: &str,
+    our_node_key: &str,
     local_storage: &S,
 ) -> Result<(u32, DkgRole, ReshareParams<Fr>)> {
-    let mut sorted_old = old_peer_ids.to_vec();
+    let mut sorted_old = old_peer_node_keys.to_vec();
     sorted_old.sort();
-    let mut sorted_new = new_peer_ids.to_vec();
+    let mut sorted_new = new_peer_node_keys.to_vec();
     sorted_new.sort();
 
-    let in_old = in_committee(&sorted_old, our_node_part);
-    let in_new = in_committee(&sorted_new, our_node_part);
+    let in_old = in_committee(&sorted_old, our_node_key);
+    let in_new = in_committee(&sorted_new, our_node_key);
 
     let role = match (in_old, in_new) {
         (true, true) => DkgRole::DealerReceiver,
@@ -741,9 +698,9 @@ pub fn build_reshare_params<S: LocalStorage>(
         }
     };
 
-    let new_idx = in_new.then(|| node_index_in(&sorted_new, our_node_part));
+    let new_idx = in_new.then(|| node_index_in(&sorted_new, our_node_key));
     let node_id = if in_old {
-        node_index_in(&sorted_old, our_node_part)
+        node_index_in(&sorted_old, our_node_key)
     } else {
         new_idx.expect("checked in_new above")
     };
@@ -759,16 +716,16 @@ pub fn build_reshare_params<S: LocalStorage>(
         None
     };
 
-    let participating_ids: Vec<u32> = (1..=old_peer_ids.len() as u32).collect();
-    let new_node_id = in_new.then(|| node_index_in(&sorted_new, our_node_part));
+    let participating_ids: Vec<u32> = (1..=old_peer_node_keys.len() as u32).collect();
+    let new_node_id = in_new.then(|| node_index_in(&sorted_new, our_node_key));
 
     let params = ReshareParams {
         ring_key: ring_pk_hex.to_string(),
         old_share,
         participating_ids,
         new_threshold: new_threshold as usize,
-        new_total_nodes: new_peer_ids.len(),
-        new_peer_ids: sorted_new,
+        new_total_nodes: new_peer_node_keys.len(),
+        new_peer_node_keys: sorted_new,
         new_node_id,
         bulletin_post_id: bulletin_post_id.to_string(),
     };
@@ -776,26 +733,24 @@ pub fn build_reshare_params<S: LocalStorage>(
     Ok((node_id, role, params))
 }
 
-/// Returns `true` if `our_node_part` appears as the node portion of any peer ID in
+/// Returns `true` if `our_node_key` appears in
 /// `committee` (sorted or unsorted — membership check is order-independent).
 ///
 /// Used during reshare `SessionInit` handling to decide whether this node is in the
 /// old committee, the new committee, or both.
-pub fn in_committee(committee: &[String], our_node_part: &str) -> bool {
-    committee
-        .iter()
-        .any(|p| extract_node_part(p) == our_node_part)
+pub fn in_committee(committee: &[String], our_node_key: &str) -> bool {
+    committee.iter().any(|node_key| node_key == our_node_key)
 }
 
-/// Returns the 1-based node index of `our_node_part` in `sorted_committee`.
+/// Returns the 1-based node index of `our_node_key` in `sorted_committee`.
 ///
 /// `sorted_committee` must already be sorted so that all nodes derive the same
-/// index for the same peer.  Panics if not found — callers must confirm membership
+/// index for the same node key.  Panics if not found — callers must confirm membership
 /// with `in_committee` before calling this.
-pub fn node_index_in(sorted_committee: &[String], our_node_part: &str) -> u32 {
+pub fn node_index_in(sorted_committee: &[String], our_node_key: &str) -> u32 {
     sorted_committee
         .iter()
-        .position(|p| extract_node_part(p) == our_node_part)
+        .position(|node_key| node_key == our_node_key)
         .map(|i| (i + 1) as u32)
         .expect("node not found in committee — check in_committee() first")
 }
@@ -829,17 +784,13 @@ mod tests {
         bundle.save_by_ring_key(storage, ring_pk).unwrap();
     }
 
-    fn dkg_token(policy_id: Option<&str>) -> BearerToken<DkgClaims> {
+    fn dkg_token(_policy_id: Option<&str>) -> BearerToken<DkgClaims> {
         BearerToken {
             issuer_id: "issuer".to_string(),
             issued_time: 0,
             expiration_time: 1,
             not_before: None,
             claims: DkgClaims {
-                threshold: 1,
-                peer_ids: vec!["peer-a".to_string()],
-                pss_interval: None,
-                policy_id: policy_id.map(str::to_string),
                 ring_id: "ring-1".to_string(),
             },
         }
@@ -865,15 +816,15 @@ mod tests {
 
     async fn post_blank_ring(
         bulletin: &Arc<dyn Bulletin + Send + Sync>,
-        peer_ids: Vec<String>,
+        peer_node_keys: Vec<String>,
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: Option<String>,
     ) -> String {
         let payload = RingPayload {
             ring_pk: String::new(),
-            peer_ids,
-            new_peer_ids: None,
+            peer_node_keys,
+            new_peer_node_keys: None,
             new_threshold: None,
             threshold,
             pss_interval,
@@ -887,7 +838,7 @@ mod tests {
             .expect("post blank ring");
         bulletin
             .get_ring_id(
-                &payload.peer_ids,
+                &payload.peer_node_keys,
                 payload.threshold,
                 payload.pss_interval,
                 payload.policy_id.as_deref().unwrap_or(""),
@@ -1110,14 +1061,7 @@ mod tests {
         let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let node_key = "node-key";
         let local_peer_id = "peer-local";
-        let ring_id = post_blank_ring(
-            &bulletin,
-            vec!["peer-b".to_string()],
-            1,
-            None,
-            None,
-        )
-        .await;
+        let ring_id = post_blank_ring(&bulletin, vec!["peer-b".to_string()], 1, None, None).await;
         seed_node_info(
             &dummy_bulletin,
             node_key,
@@ -1143,79 +1087,60 @@ mod tests {
 
     #[test]
     fn test_validate_dkg_claims_policy_id_compares_empty_string_directly() {
-        let peer_ids = vec!["peer-a".to_string()];
         let token = dkg_token(Some(""));
 
-        assert!(validate_dkg_claims(
-            &token,
-            1,
-            &peer_ids,
-            None,
-            Some(""),
-            "ring-1"
-        )
-        .is_ok());
+        assert!(validate_dkg_claims(&token, "ring-1").is_ok());
 
-        let result = validate_dkg_claims(
-            &token,
-            1,
-            &peer_ids,
-            None,
-            None,
-            "ring-1",
-        );
+        let result = validate_dkg_claims(&token, "other-ring");
         assert!(
-            matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("Token policy_id")),
-            "Expected Unauthorized for empty token policy_id vs absent request policy_id, got: {:?}",
+            matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("Token ring_id")),
+            "Expected Unauthorized for mismatched ring_id, got: {:?}",
             result
         );
     }
 
     #[test]
     fn test_validate_dkg_claims_distinguishes_absent_and_zero_pss_interval() {
-        let peer_ids = vec!["peer-a".to_string()];
-        let mut token = dkg_token(None);
-        token.claims.pss_interval = Some(0);
-
-        assert!(validate_dkg_claims(
-            &token,
-            1,
-            &peer_ids,
-            Some(0),
-            None,
-            "ring-1"
-        )
-        .is_ok());
-
-        let result = validate_dkg_claims(
-            &token,
-            1,
-            &peer_ids,
-            None,
-            None,
-            "ring-1",
-        );
+        let token = dkg_token(None);
+        let result = validate_dkg_claims(&token, "");
         assert!(
-            matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("Token pss_interval")),
-            "Expected Unauthorized for present-zero token pss_interval vs absent request, got: {:?}",
+            matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("ring_id must not be empty")),
+            "Expected Unauthorized for empty request ring_id, got: {:?}",
             result
         );
     }
 
     #[test]
     fn test_derive_reshare_session_id_uses_chain_transition_only() {
-        let old_peer_ids = vec!["peer-c".to_string(), "peer-a".to_string()];
-        let new_peer_ids = vec!["peer-b".to_string(), "peer-a".to_string()];
+        let old_peer_node_keys = vec!["node-c".to_string(), "node-a".to_string()];
+        let new_peer_node_keys = vec!["node-b".to_string(), "node-a".to_string()];
 
-        let id_1 = derive_reshare_session_id("ring-pk", "ring-id", &old_peer_ids, &new_peer_ids, 2);
-        let id_2 = derive_reshare_session_id("ring-pk", "ring-id", &old_peer_ids, &new_peer_ids, 2);
+        let id_1 = derive_reshare_session_id(
+            "ring-pk",
+            "ring-id",
+            &old_peer_node_keys,
+            &new_peer_node_keys,
+            2,
+        );
+        let id_2 = derive_reshare_session_id(
+            "ring-pk",
+            "ring-id",
+            &old_peer_node_keys,
+            &new_peer_node_keys,
+            2,
+        );
         assert_eq!(
             id_1, id_2,
             "reshare session ID should be stable across nodes that see the same ring update"
         );
 
-        let changed =
-            derive_reshare_session_id("ring-pk", "ring-id", &old_peer_ids, &new_peer_ids, 1);
+        let changed = derive_reshare_session_id(
+            "ring-pk",
+            "ring-id",
+            &old_peer_node_keys,
+            &new_peer_node_keys,
+            1,
+        );
         assert_ne!(
             id_1, changed,
             "reshare session ID should still change when the announced transition changes"

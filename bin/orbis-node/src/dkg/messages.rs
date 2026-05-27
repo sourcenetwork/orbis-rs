@@ -28,8 +28,8 @@ pub enum SessionKind {
     Reshare {
         /// Local-storage key of the ring being reshared (`aggregate_pk.to_string()`).
         ring_pk_hex: String,
-        /// Peer IDs of the new committee.
-        new_peer_ids: Vec<String>,
+        /// Chain node keys of the new committee.
+        new_peer_node_keys: Vec<String>,
         /// Threshold for the new committee.
         new_threshold: u32,
         /// Bulletin post ID of the current ring entry.  Sent by the Dealer (who has a
@@ -104,10 +104,12 @@ pub enum DkgMessage {
         threshold: u32,
         total_participants: u32,
         /// Peer IDs of the old (or only) committee — used for sender validation
-        /// and commitment/share tracking. For Reshare, new committee IDs are
-        /// carried inside `kind`.
+        /// and network routing. For Reshare, new committee route IDs are carried
+        /// in session state after resolving `new_peer_node_keys` through NodeInfo.
         peer_ids: Vec<String>,
-        /// peer_id_key → node_id assignments made by the initiator (old committee).
+        /// Chain node keys of the old (or only) committee.
+        peer_node_keys: Vec<String>,
+        /// node_key → node_id assignments made by the initiator (old committee).
         node_id_assignments: std::collections::HashMap<String, u32>,
         /// JWT token for authentication — empty for Refresh/Reshare sessions.
         token_string: String,
@@ -156,6 +158,7 @@ mod tests {
             threshold: 1,
             total_participants: 1,
             peer_ids: vec!["peer-a".to_string()],
+            peer_node_keys: vec!["node-a".to_string()],
             node_id_assignments: HashMap::new(),
             token_string: "token".to_string(),
             kind: SessionKind::Fresh,

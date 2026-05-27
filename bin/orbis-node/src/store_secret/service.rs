@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
 use crate::helpers::helpers::RingConfig;
+use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::metrics;
 use crate::ring_state::RingPolyState;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
@@ -224,7 +225,11 @@ where
             let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
             let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
                 .map_err(|e| StoreSecretError::Validation(format!("Invalid ring_pk hex: {}", e)))?;
-            let total_participants = ring_payload.peer_ids.len();
+            let routes = resolve_node_routes(&self.state.bulletin, &ring_payload.peer_node_keys)
+                .await
+                .map_err(StoreSecretError::Validation)?;
+            let peer_ids = peer_ids_from_routes(&routes);
+            let total_participants = peer_ids.len();
             let poly_state = RingPolyState::load_from_ring_pk_hex(
                 &self.state.local_storage,
                 &ring_payload.ring_pk,
@@ -234,7 +239,8 @@ where
             })?;
             let ring = RingConfig {
                 ring_pk_bytes,
-                peer_ids: ring_payload.peer_ids,
+                peer_ids,
+                peer_node_keys: ring_payload.peer_node_keys,
                 threshold: ring_payload.threshold as usize,
                 total_participants,
                 public_polynomial_hex: poly_state.public_polynomial,

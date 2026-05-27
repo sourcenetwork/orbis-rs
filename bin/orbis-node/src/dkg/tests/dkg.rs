@@ -6,12 +6,12 @@ use crate::dkg::{
     session_state::{CreateSessionOutcome, DkgMessageType, DkgPhase, SessionStateManager},
 };
 use crate::helpers::helpers::extract_node_part;
+use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
     create_test_app_state_with_bulletin, get_test_ring_post, setup_three_node_network,
     test_db_path, TestKeyPair,
 };
-use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::DkgServiceImpl;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{NodeInfo, RingPayload};
@@ -34,25 +34,14 @@ async fn test_start_dkg_empty_participants() {
     let app_state = create_test_app_state_default("test_start_dkg_empty_participants").await;
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
-    let peer_ids: Vec<String> = vec![]; // Empty - should result in error
     let request = StartDkgRequest {
-        threshold: 0,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            0,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token).unwrap();
 
@@ -83,7 +72,6 @@ async fn test_three_nodes_connect() {
 
     // Get all peer IDs (including Alice) for participation
     let peer_ids = network.get_all_peer_ids();
-    let policy_id = Some("dkg-policy-1".to_string());
     println!("Peer IDs for connection: {:?}", peer_ids);
 
     // Create Alice's service (clone app_state to avoid move)
@@ -91,23 +79,13 @@ async fn test_three_nodes_connect() {
 
     // Alice sends StartDkgRequest with Bob and Charlie's peer IDs
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: policy_id.clone(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            policy_id.clone(),
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with peer IDs...");
@@ -156,30 +134,15 @@ async fn test_start_dkg_fails_on_connection_failure() {
     // Create Alice's service
     let alice_service = DkgServiceImpl::<DkgImpl>::new(alice_state);
 
-    // Create a request with invalid peer IDs that fail validation
-    // Using obviously invalid peer IDs (not valid hex-encoded Ed25519 public keys)
-    let peer_ids = vec![
-        "invalid-peer-id-1".to_string(),
-        "invalid-peer-id-2".to_string(),
-    ];
+    // The ring fixture carries invalid routing data for this case.
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create authenticated request (even with invalid peer_ids, JWT should match request)
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with invalid peer IDs...");
@@ -233,7 +196,7 @@ async fn test_start_dkg_succeeds_on_all_connections() {
 
     // Get all peer IDs (including Alice) for participation
     let peer_ids = network.get_all_peer_ids();
-    let policy_id = Some("dkg-policy-1".to_string());
+    let policy_id = Some("test-policy".to_string());
     println!("Peer IDs for connection: {:?}", peer_ids);
 
     // Create Alice's service
@@ -241,23 +204,13 @@ async fn test_start_dkg_succeeds_on_all_connections() {
 
     // Alice sends StartDkgRequest with all peer IDs (including herself)
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: policy_id.clone(),
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            policy_id.clone(),
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     println!("Alice sending StartDkgRequest with valid peer IDs...");
@@ -390,12 +343,7 @@ async fn test_start_dkg_fails_missing_auth_header() {
     let app_state = create_test_app_state_default(db_name).await;
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
-    let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids,
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -431,12 +379,7 @@ async fn test_start_dkg_fails_malformed_jwt() {
     let app_state = create_test_app_state_default(db_name).await;
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
-    let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids,
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -466,18 +409,10 @@ async fn test_start_dkg_fails_wrong_signature() {
     let app_state = create_test_app_state_default(db_name).await;
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
 
-    let peer_ids = vec!["peer1".to_string(), "peer2".to_string()];
-
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
     let valid_token = key_pair_1
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     // Tamper with the signature by changing a character
@@ -495,10 +430,6 @@ async fn test_start_dkg_fails_wrong_signature() {
     let tampered_token = format!("{}.{}.{}", parts[0], parts[1], tampered_sig);
 
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids,
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
@@ -540,6 +471,11 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
         threshold: 2,
         total_participants: 3,
         peer_ids: vec![
+            "peer1".to_string(),
+            "peer2".to_string(),
+            "peer3".to_string(),
+        ],
+        peer_node_keys: vec![
             "peer1".to_string(),
             "peer2".to_string(),
             "peer3".to_string(),
@@ -603,16 +539,11 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
         "peer2".to_string(),
         "peer3".to_string(),
     ];
+    let peer_node_keys = peer_ids.clone();
 
     // Create JWT with threshold=3, but SessionInit will have threshold=2
     let mismatched_token = test_keys
-        .create_dkg_jwt(
-            3,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        ) // Wrong threshold!
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID) // Wrong threshold!
         .expect("Failed to create JWT");
 
     // Create a SessionInit message with threshold=2 (doesn't match JWT's threshold=3)
@@ -621,6 +552,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
         threshold: 2, // Doesn't match JWT claim of 3
         total_participants: 3,
         peer_ids: peer_ids.clone(),
+        peer_node_keys: peer_node_keys.clone(),
         node_id_assignments: std::collections::HashMap::from([
             ("peer1".to_string(), 1),
             ("peer2".to_string(), 2),
@@ -666,20 +598,8 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
 
     // Create a valid JWT with different peer_ids than what's in SessionInit
     let test_keys = TestKeyPair::new();
-    let jwt_peer_ids = vec![
-        "different_peer1".to_string(),
-        "different_peer2".to_string(),
-        "different_peer3".to_string(),
-    ];
-
     let mismatched_token = test_keys
-        .create_dkg_jwt(
-            2,
-            &jwt_peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     // SessionInit has different peer_ids than the JWT
@@ -693,7 +613,8 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
         session_id: 12345,
         threshold: 2,
         total_participants: 3,
-        peer_ids: session_peer_ids,
+        peer_ids: session_peer_ids.clone(),
+        peer_node_keys: session_peer_ids,
         node_id_assignments: std::collections::HashMap::from([
             ("peer1".to_string(), 1),
             ("peer2".to_string(), 2),
@@ -754,21 +675,17 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
     let app_state = Arc::new(app_state);
     let coordinator = DkgCoordinator::new(app_state.clone());
     let peer_ids = vec![local_peer_id_hex.clone()];
+    let peer_node_keys = vec![node_key.clone()];
     let token = TestKeyPair::new()
-        .create_dkg_jwt(
-            1,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("create JWT");
     let session_init = DkgMessage::SessionInit {
         session_id: 98765,
         threshold: 1,
         total_participants: 1,
         peer_ids,
-        node_id_assignments: std::collections::HashMap::from([(local_peer_id_hex.clone(), 1)]),
+        peer_node_keys,
+        node_id_assignments: std::collections::HashMap::from([(node_key, 1)]),
         token_string: token,
         kind: SessionKind::Fresh,
         pss_interval: None,
@@ -808,22 +725,11 @@ async fn test_start_dkg_rejects_self_participant_nodeinfo_deny() {
         .set_node_info(node_key, denied_node_info)
         .expect("override NodeInfo");
 
-    let peer_ids = vec![local_peer_id_hex];
     let token = TestKeyPair::new()
-        .create_dkg_jwt(
-            1,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("create JWT");
     let service = DkgServiceImpl::<DkgImpl>::new(app_state);
     let request = StartDkgRequest {
-        threshold: 1,
-        peer_ids,
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
     let result = service

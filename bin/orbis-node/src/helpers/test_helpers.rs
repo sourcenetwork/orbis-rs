@@ -279,6 +279,49 @@ impl ThreeNodeNetwork {
     }
 }
 
+fn seed_three_node_dummy_bulletin(
+    dummy_bulletin: &Arc<DummyBulletin>,
+    nodes: [(&AppState<DkgImpl>, &str); 3],
+) {
+    let peer_node_keys: Vec<String> = nodes
+        .iter()
+        .map(|(state, _)| state.node_key.clone())
+        .collect();
+
+    for (state, peer_id) in nodes {
+        dummy_bulletin
+            .set_node_info(
+                state.node_key.clone(),
+                NodeInfo {
+                    peer_id: peer_id.to_string(),
+                    controller_key: "test-controller-key".to_string(),
+                    whitelisted_policy_ids: vec!["test-policy".to_string()],
+                    whitelisted_ring_ids: vec![TEST_FRESH_DKG_RING_ID.to_string()],
+                },
+            )
+            .expect("seed routed NodeInfo");
+    }
+
+    let payload = RingPayload {
+        ring_pk: String::new(),
+        peer_node_keys,
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 2,
+        pss_interval: None,
+        block_number_nonce: 0,
+        policy_id: Some("test-policy".to_string()),
+    };
+    let payload_bytes = serde_json::to_vec(&payload).expect("serialize fresh DKG ring fixture");
+    dummy_bulletin.set_post(
+        TEST_FRESH_DKG_RING_ID.to_string(),
+        BulletinPost {
+            id: TEST_FRESH_DKG_RING_ID.to_string(),
+            payload: payload_bytes,
+        },
+    );
+}
+
 /// Set up a three-node test network
 ///
 /// This function creates three nodes (Alice, Bob, Charlie), initializes their networks,
@@ -396,6 +439,15 @@ pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> Thr
         "Charlie - Peer ID: {}, Address: {}",
         hex::encode(charlie_peer_id.as_bytes()),
         charlie_address
+    );
+
+    seed_three_node_dummy_bulletin(
+        &dummy_bulletin,
+        [
+            (&alice_state, &alice_peer_id_with_addr),
+            (&bob_state, &bob_peer_id_with_addr),
+            (&charlie_state, &charlie_peer_id_with_addr),
+        ],
     );
 
     // Optionally start routers for all nodes with the production protocol handlers.
@@ -593,6 +645,17 @@ pub async fn setup_three_node_network_with_pre(
         charlie_address
     );
 
+    if let Some(dummy_bulletin) = &dummy_bulletin_arc {
+        seed_three_node_dummy_bulletin(
+            dummy_bulletin,
+            [
+                (&alice_state, &alice_peer_id_with_addr),
+                (&bob_state, &bob_peer_id_with_addr),
+                (&charlie_state, &charlie_peer_id_with_addr),
+            ],
+        );
+    }
+
     // Start routers for all nodes with both DKG and PRE protocol handlers
     let alice_router = if start_routers {
         println!("Starting router for Alice with DKG and PRE handlers...");
@@ -782,6 +845,17 @@ pub async fn setup_three_node_network_with_sign(
         charlie_address
     );
 
+    if let Some(dummy_bulletin) = &dummy_bulletin_arc {
+        seed_three_node_dummy_bulletin(
+            dummy_bulletin,
+            [
+                (&alice_state, &alice_peer_id_with_addr),
+                (&bob_state, &bob_peer_id_with_addr),
+                (&charlie_state, &charlie_peer_id_with_addr),
+            ],
+        );
+    }
+
     // Start routers for all nodes with DKG, PRE, and Sign protocol handlers
     let alice_router = if start_routers {
         println!("Starting router for Alice with DKG, PRE, and Sign handlers...");
@@ -855,13 +929,13 @@ pub async fn write_ring_to_bulletin(
     storage: &impl LocalStorage,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
     ring_pk: &str,
-    peer_ids: Vec<String>,
+    peer_node_keys: Vec<String>,
     pss_interval: Option<u64>,
 ) {
     let payload = RingPayload {
         ring_pk: ring_pk.to_string(),
-        peer_ids,
-        new_peer_ids: None,
+        peer_node_keys,
+        new_peer_node_keys: None,
         new_threshold: None,
         threshold: 1,
         pss_interval,
@@ -911,7 +985,15 @@ pub fn cleanup_db(path: &str) {
 /// Returns the first dummy bulletin post, or a default empty post if none found.
 pub fn get_test_ring_post(dummy_bulletin: &DummyBulletin) -> BulletinPost {
     let posts = dummy_bulletin.get_posts();
-    posts.into_iter().next().unwrap_or_default()
+    posts
+        .iter()
+        .find(|post| {
+            serde_json::from_slice::<RingPayload>(&post.payload)
+                .map(|ring| !ring.ring_pk.is_empty())
+                .unwrap_or(false)
+        })
+        .cloned()
+        .unwrap_or_default()
 }
 
 async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {

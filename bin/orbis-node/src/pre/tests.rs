@@ -122,23 +122,13 @@ async fn test_dkg_then_pre_end_to_end() {
 
     // node1 sends StartDkgRequest to initiate the protocol
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     println!("Node1 sending StartDkgRequest...");
@@ -227,8 +217,9 @@ async fn test_dkg_then_pre_end_to_end() {
             .as_millis()
     );
 
-    // Get peer IDs for PRE (node2 and node3)
-    let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
+    // Use the full ring route list; the coordinator skips itself and keeps
+    // route order aligned with the ring's peer_node_keys.
+    let pre_peer_ids = peer_ids.clone();
 
     println!("Sending PRE requests to peers: {:?}", pre_peer_ids);
 
@@ -251,8 +242,9 @@ async fn test_dkg_then_pre_end_to_end() {
             RingConfig {
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: pre_peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -386,23 +378,13 @@ async fn test_pre_with_large_secret() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
 
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -439,7 +421,7 @@ async fn test_pre_with_large_secret() {
     // PRE
     let pre_coordinator =
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
-    let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
+    let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
     let dummy_bulletin = network
@@ -460,8 +442,9 @@ async fn test_pre_with_large_secret() {
             RingConfig {
                 ring_pk_bytes,
                 peer_ids: pre_peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -530,23 +513,13 @@ async fn test_pre_fails_with_wrong_key() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
 
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -583,7 +556,7 @@ async fn test_pre_fails_with_wrong_key() {
     // PRE to Bob's public key
     let pre_coordinator =
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
-    let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
+    let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
     let dummy_bulletin = network
@@ -604,8 +577,9 @@ async fn test_pre_fails_with_wrong_key() {
             RingConfig {
                 ring_pk_bytes,
                 peer_ids: pre_peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -675,23 +649,13 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
 
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -725,7 +689,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     // PRE with invalid token
     let pre_coordinator =
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
-    let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
+    let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
     let dummy_bulletin = network
@@ -744,8 +708,9 @@ async fn test_pre_fails_with_invalid_jwt_token() {
             RingConfig {
                 ring_pk_bytes,
                 peer_ids: pre_peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -828,22 +793,12 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
 
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -877,7 +832,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     // PRE with token that has WRONG claims (different rdr_pk)
     let pre_coordinator =
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
-    let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
+    let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
     let dummy_bulletin = network
@@ -905,8 +860,9 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             RingConfig {
                 ring_pk_bytes,
                 peer_ids: pre_peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -1123,22 +1079,12 @@ async fn test_pre_fails_with_wrong_derivation() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
 
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -1179,7 +1125,7 @@ async fn test_pre_fails_with_wrong_derivation() {
     // PRE with CORRECT derivation (re-encryption should work)
     let pre_coordinator =
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
-    let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
+    let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
     let dummy_bulletin = network
@@ -1205,8 +1151,9 @@ async fn test_pre_fails_with_wrong_derivation() {
             RingConfig {
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: pre_peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -1309,22 +1256,12 @@ async fn test_pre_fails_with_bad_proof() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
 
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -1363,7 +1300,7 @@ async fn test_pre_fails_with_bad_proof() {
     // PRE
     let pre_coordinator =
         PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
-    let pre_peer_ids = vec![network.bob.address.clone(), network.charlie.address.clone()];
+    let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin with the TAMPERED proof
     let dummy_bulletin = network
@@ -1384,8 +1321,9 @@ async fn test_pre_fails_with_bad_proof() {
             RingConfig {
                 ring_pk_bytes,
                 peer_ids: pre_peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,

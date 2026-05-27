@@ -73,10 +73,6 @@ fn test_resolve_jwt_did_with_dkg_claims() {
         expiration_time: 2000,
         not_before: None,
         claims: DkgClaims {
-            peer_ids: vec![],
-            threshold: 2,
-            pss_interval: None,
-            policy_id: None,
             ring_id: "ring-1".to_string(),
         },
     };

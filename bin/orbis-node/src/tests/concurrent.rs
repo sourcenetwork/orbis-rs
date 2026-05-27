@@ -385,12 +385,9 @@ async fn setup_ring(
         .await
         .expect("DKG completion event");
 
-    let post_payload = cli_tool::read_bulletin_post(
-        post_event.ring_id.clone(),
-        BulletinKind::Ring,
-    )
-    .await
-    .expect("read ring post");
+    let post_payload = cli_tool::read_bulletin_post(post_event.ring_id.clone(), BulletinKind::Ring)
+        .await
+        .expect("read ring post");
 
     let ring_payload: RingPayload =
         serde_json::from_slice(&post_payload).expect("parse RingPayload");
@@ -823,12 +820,9 @@ async fn test_dkg_non_participant_initiator_completes() {
         "DKG must produce a ring bulletin post"
     );
 
-    let post_payload = cli_tool::read_bulletin_post(
-        post_event.ring_id.clone(),
-        BulletinKind::Ring,
-    )
-    .await
-    .expect("read ring post");
+    let post_payload = cli_tool::read_bulletin_post(post_event.ring_id.clone(), BulletinKind::Ring)
+        .await
+        .expect("read ring post");
 
     let ring_payload: RingPayload =
         serde_json::from_slice(&post_payload).expect("parse RingPayload");

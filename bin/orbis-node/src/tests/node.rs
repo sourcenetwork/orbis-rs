@@ -1,6 +1,6 @@
 //! Node initialization, configuration, and key management tests.
 
-use crate::helpers::test_helpers::{TEST_FRESH_DKG_RING_ID};
+use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::{
     dkg::service::DkgServiceImpl,
     helpers::{
@@ -448,10 +448,6 @@ async fn test_bootstrap_info_server_exposes_only_info() {
         .expect("connect bootstrap endpoint as dkg client");
     let err = dkg_client
         .start_dkg(StartDkgRequest {
-            threshold: 1,
-            peer_ids: vec![],
-            pss_interval: None,
-            policy_id: None,
             ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
         })
         .await
@@ -485,10 +481,6 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
         .expect("connect bootstrap endpoint as dkg client");
     let bootstrap_err = bootstrap_dkg_client
         .start_dkg(StartDkgRequest {
-            threshold: 1,
-            peer_ids: vec![],
-            pss_interval: None,
-            policy_id: None,
             ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
         })
         .await
@@ -557,10 +549,6 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
         .expect("connect full endpoint as dkg client");
     let full_err = full_dkg_client
         .start_dkg(StartDkgRequest {
-            threshold: 1,
-            peer_ids: vec![],
-            pss_interval: None,
-            policy_id: None,
             ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
         })
         .await

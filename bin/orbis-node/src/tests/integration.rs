@@ -155,12 +155,9 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         .expect("DKG completion event");
 
     // Read the post payload using the post_id from the event
-    let post_payload = cli_tool::read_bulletin_post(
-        post_event.ring_id.clone(),
-        BulletinKind::Ring,
-    )
-    .await
-    .expect("read ring post by event post_id");
+    let post_payload = cli_tool::read_bulletin_post(post_event.ring_id.clone(), BulletinKind::Ring)
+        .await
+        .expect("read ring post by event post_id");
 
     let ring_payload: RingPayload =
         serde_json::from_slice(&post_payload).expect("parse RingPayload");
@@ -336,18 +333,14 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     );
 
     // Read both from bulletin and compare metadata
-    let manual_bytes = cli_tool::read_bulletin_post(
-        object_id_manual.clone(),
-        BulletinKind::Document,
-    )
-    .await
-    .expect("read manual post");
-    let service_bytes = cli_tool::read_bulletin_post(
-        object_id_service.clone(),
-        BulletinKind::Document,
-    )
-    .await
-    .expect("read service post");
+    let manual_bytes =
+        cli_tool::read_bulletin_post(object_id_manual.clone(), BulletinKind::Document)
+            .await
+            .expect("read manual post");
+    let service_bytes =
+        cli_tool::read_bulletin_post(object_id_service.clone(), BulletinKind::Document)
+            .await
+            .expect("read service post");
 
     let manual: DocumentPayload = serde_json::from_slice(&manual_bytes).expect("parse manual");
     let service: DocumentPayload = serde_json::from_slice(&service_bytes).expect("parse service");
@@ -742,15 +735,15 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // ====================================================================
     // Step 5: PSS Reshare — update the existing ring bulletin post with a
     // next committee.  SourceHub now supports in-place post updates, so the
-    // ring_id stays stable while the payload first announces new_peer_ids
-    // and then, after Phase 4, converges to peer_ids = new_peer_ids.
+    // ring_id stays stable while the payload first announces new_peer_node_keys
+    // and then, after Phase 4, converges to peer_ids = new_peer_node_keys.
     // ====================================================================
     println!("Announcing PSS reshare via bulletin update...");
 
     let reshare_peer_ids = vec![peer_ids[0].clone(), peer_ids[1].clone()];
     let reshare_threshold = 2u32;
     assert_ne!(
-        sorted_peer_ids(&dkg_ring_payload.peer_ids),
+        sorted_peer_ids(&dkg_ring_payload.peer_node_keys),
         sorted_peer_ids(&reshare_peer_ids),
         "Reshare test must change the committee"
     );
@@ -773,13 +766,13 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .expect("update ring bulletin post with reshare announcement");
 
     let announced_payload = read_ring_payload(&ring_id).await;
-    let announced_new_peer_ids = announced_payload
-        .new_peer_ids
+    let announced_new_peer_node_keys = announced_payload
+        .new_peer_node_keys
         .as_ref()
         .map(|ids| sorted_peer_ids(ids))
-        .expect("reshare announcement should set new_peer_ids");
+        .expect("reshare announcement should set new_peer_node_keys");
     assert_eq!(
-        announced_new_peer_ids,
+        announced_new_peer_node_keys,
         sorted_peer_ids(&reshare_peer_ids),
         "Reshare announcement should preserve the requested next committee"
     );
@@ -807,7 +800,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         "Reshare should preserve the ring public key"
     );
     assert_eq!(
-        sorted_peer_ids(&reshared_payload.peer_ids),
+        sorted_peer_ids(&reshared_payload.peer_node_keys),
         sorted_peer_ids(&reshare_peer_ids),
         "Reshare should make peer_ids equal the requested next committee"
     );
@@ -816,7 +809,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         "Reshare should update the ring threshold"
     );
     assert!(
-        reshared_payload.new_peer_ids.is_none() && reshared_payload.new_threshold.is_none(),
+        reshared_payload.new_peer_node_keys.is_none() && reshared_payload.new_threshold.is_none(),
         "Completed reshare should clear the announcement fields"
     );
 
@@ -843,7 +836,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!(
         "PSS reshare complete. ring_id={} is unchanged; committee size is now {}.",
         &ring_id[..16.min(ring_id.len())],
-        reshared_payload.peer_ids.len()
+        reshared_payload.peer_node_keys.len()
     );
 
     println!("Testing Sign after PSS reshare...");
@@ -1027,12 +1020,9 @@ async fn wait_for_ring_state_on_all_nodes(
 }
 
 async fn read_ring_payload(ring_id: &str) -> RingPayload {
-    let payload_bytes = cli_tool::read_bulletin_post(
-        ring_id.to_string(),
-        BulletinKind::Ring,
-    )
-    .await
-    .expect("read ring payload from bulletin");
+    let payload_bytes = cli_tool::read_bulletin_post(ring_id.to_string(), BulletinKind::Ring)
+        .await
+        .expect("read ring payload from bulletin");
     serde_json::from_slice(&payload_bytes).expect("parse RingPayload")
 }
 
@@ -1049,36 +1039,32 @@ async fn wait_for_reshare_bulletin_completion(
     let expected_sorted = sorted_peer_ids(expected_peer_ids);
 
     loop {
-        let last_status = match cli_tool::read_bulletin_post(
-            ring_id.to_string(),
-            BulletinKind::Ring,
-        )
-        .await
-        {
-            Ok(payload_bytes) => match serde_json::from_slice::<RingPayload>(&payload_bytes) {
-                Ok(payload) => {
-                    let actual_sorted = sorted_peer_ids(&payload.peer_ids);
-                    let complete = payload.ring_pk == ring_pk_hex
-                        && actual_sorted == expected_sorted
-                        && payload.threshold == expected_threshold
-                        && payload.new_peer_ids.is_none()
-                        && payload.new_threshold.is_none();
-                    let status = format!(
-                        "peer_count={} threshold={} new_peer_ids_set={} new_threshold={:?}",
-                        payload.peer_ids.len(),
+        let last_status =
+            match cli_tool::read_bulletin_post(ring_id.to_string(), BulletinKind::Ring).await {
+                Ok(payload_bytes) => match serde_json::from_slice::<RingPayload>(&payload_bytes) {
+                    Ok(payload) => {
+                        let actual_sorted = sorted_peer_ids(&payload.peer_node_keys);
+                        let complete = payload.ring_pk == ring_pk_hex
+                            && actual_sorted == expected_sorted
+                            && payload.threshold == expected_threshold
+                            && payload.new_peer_node_keys.is_none()
+                            && payload.new_threshold.is_none();
+                        let status = format!(
+                        "peer_count={} threshold={} new_peer_node_keys_set={} new_threshold={:?}",
+                        payload.peer_node_keys.len(),
                         payload.threshold,
-                        payload.new_peer_ids.is_some(),
+                        payload.new_peer_node_keys.is_some(),
                         payload.new_threshold
                     );
-                    if complete {
-                        return payload;
+                        if complete {
+                            return payload;
+                        }
+                        status
                     }
-                    status
-                }
-                Err(e) => format!("parse error: {}", e),
-            },
-            Err(e) => e.to_string(),
-        };
+                    Err(e) => format!("parse error: {}", e),
+                },
+                Err(e) => e.to_string(),
+            };
 
         let now = Instant::now();
         assert!(

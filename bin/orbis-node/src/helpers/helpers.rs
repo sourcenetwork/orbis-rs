@@ -236,15 +236,17 @@ pub fn is_self_peer_id(network: &Arc<dyn Network>, peer_id_str: &str) -> bool {
     our_peer_id_hex == peer_node_part
 }
 
-/// Determine node_id for a DKG session based on sorted peer_ids
+/// Determine node_id for a DKG session based on sorted participant identities.
 ///
 /// In a DKG session, node_id must be between 1 and total_nodes.
-/// This function sorts all peer_ids and returns the 1-indexed position
-/// of the given peer_id in that sorted list.
+/// This function sorts all identities and returns the 1-indexed position
+/// of the given identity in that sorted list. For current ring logic those
+/// identities are chain node keys; older route-oriented tests may still pass
+/// peer IDs, which are normalized by stripping any `@address` suffix.
 ///
 /// # Arguments
-/// * `our_peer_id` - Our own peer ID (hex-encoded, may include @address)
-/// * `all_peer_ids` - All peer IDs participating in the session (including ours)
+/// * `our_peer_id` - Our own identity or peer ID (peer IDs may include @address)
+/// * `all_peer_ids` - All identities participating in the session (including ours)
 ///
 /// # Returns
 /// The node_id (1-indexed) for this peer in the session, or None if peer_id not found
@@ -267,6 +269,18 @@ pub fn determine_session_node_id(our_peer_id: &str, all_peer_ids: &[String]) -> 
         .map(|idx| (idx + 1) as u32)
 }
 
+pub fn determine_ring_node_id_from_peer_id(peer_id: &str, ring: &RingConfig) -> Option<u32> {
+    let peer_node_part = extract_node_part(peer_id);
+    let node_key = ring
+        .peer_node_keys
+        .iter()
+        .zip(ring.peer_ids.iter())
+        .find(|(_, route_peer_id)| extract_node_part(route_peer_id) == peer_node_part)
+        .map(|(node_key, _)| node_key.as_str())?;
+
+    determine_session_node_id(node_key, &ring.peer_node_keys)
+}
+
 /// Ring configuration fetched from the bulletin.
 ///
 /// Groups the five bulletin-derived fields that always travel together through
@@ -278,6 +292,8 @@ pub struct RingConfig {
     pub ring_pk_bytes: Vec<u8>,
     /// Network addresses of all ring participants
     pub peer_ids: Vec<String>,
+    /// Chain node keys of all ring participants, in the same order as `peer_ids`.
+    pub peer_node_keys: Vec<String>,
     /// Minimum shares required to reconstruct
     pub threshold: usize,
     /// Total number of nodes in the ring

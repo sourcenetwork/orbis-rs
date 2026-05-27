@@ -35,9 +35,13 @@ where
                     "Reshare receiver is missing new_node_id while acking share".to_string(),
                 )
             })?;
-            let selector_peer_id = params.new_peer_ids.first().cloned().ok_or_else(|| {
-                DkgError::InvalidInput("Reshare new committee is empty".to_string())
-            })?;
+            let selector_peer_id = state
+                .reshare_new_node_id_to_peer_id
+                .get(&1)
+                .cloned()
+                .ok_or_else(|| {
+                    DkgError::InvalidInput("Reshare new committee is empty".to_string())
+                })?;
 
             state.reshare_valid_share_dealers.insert(dealer_id);
 
@@ -168,13 +172,23 @@ where
         .app_state
         .dkg_session_state
         .with_state_mut(&session_id, |state| {
-            let (new_peer_ids, local_new_node_id) = {
+            let (new_route_peer_ids, new_committee_size, local_new_node_id) = {
                 let params = state.reshare_params.as_ref().ok_or_else(|| {
                     DkgError::Generic(
                         "Reshare ack received for session without reshare_params".to_string(),
                     )
                 })?;
-                (params.new_peer_ids.clone(), params.new_node_id.unwrap_or(0))
+                let new_committee_size = params.new_peer_node_keys.len();
+                let new_route_peer_ids = (1..=new_committee_size as u32)
+                    .filter_map(|node_id| {
+                        state.reshare_new_node_id_to_peer_id.get(&node_id).cloned()
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    new_route_peer_ids,
+                    new_committee_size,
+                    params.new_node_id.unwrap_or(0),
+                )
             };
 
             if local_new_node_id != 1 {
@@ -182,11 +196,17 @@ where
                     "ReshareShareAck delivered to a non-selector node".to_string(),
                 ));
             }
-            if receiver_node_id == 0 || receiver_node_id as usize > new_peer_ids.len() {
+            if new_route_peer_ids.len() != new_committee_size {
+                return Err(DkgError::InvalidInput(format!(
+                    "Reshare new committee routing map has {} entries, expected {}",
+                    new_route_peer_ids.len(),
+                    new_committee_size
+                )));
+            }
+            if receiver_node_id == 0 || receiver_node_id as usize > new_committee_size {
                 return Err(DkgError::InvalidInput(format!(
                     "Invalid reshare receiver_node_id {} for new committee size {}",
-                    receiver_node_id,
-                    new_peer_ids.len()
+                    receiver_node_id, new_committee_size
                 )));
             }
             if dealer_id == 0 || dealer_id as usize > state.node.total_nodes() {
@@ -209,14 +229,14 @@ where
             let complete = state
                 .reshare_share_acks
                 .get(&dealer_id)
-                .map(|acks| acks.len() == new_peer_ids.len())
+                .map(|acks| acks.len() == new_committee_size)
                 .unwrap_or(false);
             if complete && !state.reshare_dealer_completion_order.contains(&dealer_id) {
                 state.reshare_dealer_completion_order.push(dealer_id);
             }
 
             if let Some(selected) = &state.reshare_selected_dealers {
-                return Ok(Some((selected.clone(), new_peer_ids, false)));
+                return Ok(Some((selected.clone(), new_route_peer_ids, false)));
             }
 
             if state.reshare_selected_dealers.is_none()
@@ -235,7 +255,7 @@ where
                         DkgError::Crypto(format!("Failed to select reshare participants: {}", e))
                     })?;
                 state.reshare_selected_dealers = Some(selected.clone());
-                return Ok(Some((selected, new_peer_ids, true)));
+                return Ok(Some((selected, new_route_peer_ids, true)));
             }
 
             Ok(None)
@@ -243,7 +263,7 @@ where
         .await
         .ok_or_else(|| session_not_found(session_id))??;
 
-    if let Some((selected_dealer_ids, new_peer_ids, newly_frozen)) = selection {
+    if let Some((selected_dealer_ids, new_route_peer_ids, newly_frozen)) = selection {
         if newly_frozen {
             tracing::info!(
                 session_id = session_id,
@@ -258,8 +278,13 @@ where
             );
         }
 
-        broadcast_reshare_participant_set(coord, session_id, &selected_dealer_ids, &new_peer_ids)
-            .await?;
+        broadcast_reshare_participant_set(
+            coord,
+            session_id,
+            &selected_dealer_ids,
+            &new_route_peer_ids,
+        )
+        .await?;
 
         phases::drive_event(
             coord,
@@ -277,14 +302,14 @@ async fn broadcast_reshare_participant_set<D>(
     coord: &DkgCoordinator<D>,
     session_id: u64,
     selected_dealer_ids: &[u32],
-    new_peer_ids: &[String],
+    new_route_peer_ids: &[String],
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
     let mut failures = Vec::new();
 
-    for peer_id in new_peer_ids {
+    for peer_id in new_route_peer_ids {
         if is_self_peer_id(&coord.app_state.network, peer_id) {
             continue;
         }

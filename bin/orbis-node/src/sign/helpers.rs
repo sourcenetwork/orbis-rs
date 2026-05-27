@@ -141,15 +141,15 @@ fn write_len_prefixed_bytes(out: &mut Vec<u8>, value: &[u8]) {
     out.extend_from_slice(value);
 }
 
-/// SHA-256 over a canonical sorted peer-id list.
-pub fn refresh_health_check_peer_ids_sha256(peer_ids: &[String]) -> String {
-    let mut sorted = peer_ids.to_vec();
+/// SHA-256 over a canonical sorted peer-node-key list.
+pub fn refresh_health_check_peer_node_keys_sha256(peer_node_keys: &[String]) -> String {
+    let mut sorted = peer_node_keys.to_vec();
     sorted.sort();
 
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&(sorted.len() as u32).to_le_bytes());
-    for peer_id in &sorted {
-        write_len_prefixed_str(&mut bytes, peer_id);
+    for peer_node_key in &sorted {
+        write_len_prefixed_str(&mut bytes, peer_node_key);
     }
 
     sha256_hex(&bytes)
@@ -361,14 +361,14 @@ pub async fn validate_refresh_health_check_statement<D: Dkg + 'static>(
             statement.threshold, candidate.threshold
         )));
     }
-    if candidate.peer_ids.len() != statement.total_participants as usize {
+    if candidate.peer_node_keys.len() != statement.total_participants as usize {
         return Err(SignError::Unauthorized(format!(
             "Refresh health-check committee size {} does not match staged committee size {}",
             statement.total_participants,
-            candidate.peer_ids.len()
+            candidate.peer_node_keys.len()
         )));
     }
-    let expected_peer_hash = refresh_health_check_peer_ids_sha256(&candidate.peer_ids);
+    let expected_peer_hash = refresh_health_check_peer_node_keys_sha256(&candidate.peer_node_keys);
     if expected_peer_hash != statement.peer_ids_sha256 {
         return Err(SignError::Unauthorized(
             "Refresh health-check peer set hash does not match staged candidate".to_string(),
@@ -729,7 +729,7 @@ mod ring_reshare_update_tests {
     use crypto::{CryptoSerialize, DkgImpl};
 
     async fn fixture(
-        new_peer_ids: Option<Vec<String>>,
+        new_peer_node_keys: Option<Vec<String>>,
         new_threshold: Option<u32>,
     ) -> (
         DummyBulletin,
@@ -741,15 +741,17 @@ mod ring_reshare_update_tests {
         let ring_pk_bytes = CryptoSerialize::to_bytes(&ring_pk).expect("serialize ring key");
         let ring_pk_hex = hex::encode(ring_pk_bytes);
         let ring_key = storage_key_from_ring_pk_hex(&ring_pk_hex).expect("storage key");
-        let old_peer_ids = vec!["old-a".to_string(), "old-b".to_string()];
-        let final_peer_ids = new_peer_ids.clone().unwrap_or_else(|| old_peer_ids.clone());
+        let old_peer_node_keys = vec!["old-a".to_string(), "old-b".to_string()];
+        let final_peer_node_keys = new_peer_node_keys
+            .clone()
+            .unwrap_or_else(|| old_peer_node_keys.clone());
         let final_threshold = new_threshold.unwrap_or(2);
         let block_number_nonce = 0;
 
         let current_payload = RingPayload {
             ring_pk: ring_pk_hex.clone(),
-            peer_ids: old_peer_ids,
-            new_peer_ids,
+            peer_node_keys: old_peer_node_keys,
+            new_peer_node_keys,
             new_threshold,
             threshold: 2,
             pss_interval: Some(30),
@@ -758,8 +760,8 @@ mod ring_reshare_update_tests {
         };
         let updated_payload = RingPayload {
             ring_pk: ring_pk_hex.clone(),
-            peer_ids: final_peer_ids,
-            new_peer_ids: None,
+            peer_node_keys: final_peer_node_keys,
+            new_peer_node_keys: None,
             new_threshold: None,
             threshold: final_threshold,
             pss_interval: Some(30),
@@ -978,6 +980,7 @@ mod refresh_health_check_tests {
             last_pss: 123,
         };
 
+        let peer_node_keys = vec!["node-b".to_string(), "node-a".to_string()];
         let peer_ids = vec!["peer-b".to_string(), "peer-a".to_string()];
         let session_id = 99;
         let node = DkgImpl::new(1, 2, 2, session_id, DkgRole::Standard).expect("create node");
@@ -989,6 +992,7 @@ mod refresh_health_check_tests {
                     ring_key,
                     ring_pk_hex: ring_pk_hex.clone(),
                     bundle,
+                    peer_node_keys: peer_node_keys.clone(),
                     peer_ids: peer_ids.clone(),
                     threshold: 2,
                 },
@@ -999,7 +1003,7 @@ mod refresh_health_check_tests {
             session_id,
             ring_pk: ring_pk_hex,
             public_polynomial_sha256: sha256_hex(&pub_poly_bytes),
-            peer_ids_sha256: refresh_health_check_peer_ids_sha256(&peer_ids),
+            peer_ids_sha256: refresh_health_check_peer_node_keys_sha256(&peer_node_keys),
             threshold: 2,
             total_participants: 2,
         };
@@ -1044,12 +1048,12 @@ mod refresh_health_check_tests {
 
     #[test]
     fn peer_hash_is_order_independent() {
-        let a = vec!["peer-b".to_string(), "peer-a".to_string()];
-        let b = vec!["peer-a".to_string(), "peer-b".to_string()];
+        let a = vec!["node-b".to_string(), "node-a".to_string()];
+        let b = vec!["node-a".to_string(), "node-b".to_string()];
 
         assert_eq!(
-            refresh_health_check_peer_ids_sha256(&a),
-            refresh_health_check_peer_ids_sha256(&b)
+            refresh_health_check_peer_node_keys_sha256(&a),
+            refresh_health_check_peer_node_keys_sha256(&b)
         );
     }
 }

@@ -48,15 +48,15 @@ pub struct RingPayload {
     /// committee — **nodes may still require this field** (e.g. orbis-node enforces a
     /// pre-announced committee for reshare).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub new_peer_ids: Option<Vec<String>>,
-    /// Threshold for the new committee announced by `new_peer_ids`.
+    pub new_peer_node_keys: Option<Vec<String>>,
+    /// Threshold for the new committee announced by `new_peer_node_keys`.
     /// Validated against `SessionKind::Reshare::new_threshold` when present.
     /// `None` means the bulletin does not constrain the new threshold — **nodes may still
     /// require this field** (e.g. orbis-node enforces a pre-announced threshold for reshare).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_threshold: Option<u32>,
     /// Network ids of peers in ring
-    pub peer_ids: Vec<String>,
+    pub peer_node_keys: Vec<String>,
     /// Threshold of ring
     pub threshold: u32,
     /// Seconds between automatic PSS refresh ceremonies.
@@ -202,7 +202,7 @@ pub trait Bulletin {
     /// Compute the deterministic ring ID from ring creation parameters.
     fn get_ring_id(
         &self,
-        peer_ids: &[String],
+        peer_node_keys: &[String],
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
@@ -212,7 +212,7 @@ pub trait Bulletin {
     /// Each bulletin backend defines what "canonical" means for its storage representation.
     async fn ring_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]>;
     /// Return the canonical hash of the ring state after reshare finalization:
-    /// new_peer_ids → peer_ids, new_threshold applied, block_number_nonce incremented.
+    /// new_peer_node_keys → peer_node_keys, new_threshold applied, block_number_nonce incremented.
     async fn ring_finalized_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]>;
     /// Serialize the canonical sign bytes for a ring reshare finalization sign doc.
     fn ring_reshare_finalize_sign_bytes(

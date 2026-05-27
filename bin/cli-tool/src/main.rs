@@ -392,8 +392,7 @@ async fn main() -> Result<()> {
             policy_id,
             ring_id,
         } => {
-            do_dkg(endpoint, threshold, peer_ids, None, policy_id, ring_id)
-                .await?;
+            do_dkg(endpoint, threshold, peer_ids, None, policy_id, ring_id).await?;
         }
         SubCommands::Pre {
             endpoint,

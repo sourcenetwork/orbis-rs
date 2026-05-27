@@ -7,11 +7,7 @@ service DkgService {
 }
 
 message StartDkgRequest {
-  uint32 threshold = 1;
-  repeated string peer_ids = 2;  // Iroh peer IDs that this node needs to connect to
-  optional uint64 pss_interval = 3;  // Seconds between automatic PSS refresh ceremonies (absent = disabled; present 0 = immediate)
-  optional string policy_id = 4;  // Optional policy that externally governs ring updates
-  string ring_id = 5;  // Pre-created blank ring entry targeted by this DKG
+  string ring_id = 1;  // Pre-created blank ring entry targeted by this DKG
 }
 
 message StartDkgResponse {

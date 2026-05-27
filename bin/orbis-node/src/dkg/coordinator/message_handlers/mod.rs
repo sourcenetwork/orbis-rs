@@ -10,7 +10,11 @@ use crate::dkg::helpers::{
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::dkg::session_state::RingPssClaimOutcome;
-use crate::helpers::helpers::{extract_node_part, is_self_peer_id};
+use crate::helpers::helpers::is_self_peer_id;
+use crate::helpers::node_routes::{
+    canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
+    node_key_for_peer, peer_ids_from_routes, resolve_node_routes,
+};
 use crate::ring_state::RingShareBundle;
 
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};

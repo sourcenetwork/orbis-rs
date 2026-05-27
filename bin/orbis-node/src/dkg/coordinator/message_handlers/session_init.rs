@@ -14,6 +14,7 @@ pub(in crate::dkg::coordinator) async fn handle_session_init<D>(
     threshold: u32,
     total_participants: u32,
     peer_ids: &[String],
+    peer_node_keys: &[String],
     node_id_assignments: &HashMap<String, u32>,
     token_string: &str,
     kind: &SessionKind,
@@ -27,6 +28,11 @@ where
 {
     let sender_hex = hex::encode(sender_peer_id.as_bytes());
     let mut pss_claim: Option<&str> = None;
+    let resolved_old_peer_ids: Option<Vec<String>>;
+    let resolved_old_node_id_to_peer_id: Option<HashMap<u32, String>>;
+    let mut resolved_new_route_peer_ids: Option<Vec<String>> = None;
+    let mut resolved_new_node_id_to_peer_id: Option<HashMap<u32, String>> = None;
+    let mut session_peer_node_keys = peer_node_keys.to_vec();
 
     match kind {
         SessionKind::Refresh { ring_pk_hex } => {
@@ -44,9 +50,9 @@ where
             )
             .await?;
 
-            if !peers::same_peer_set(peer_ids, &ring_payload.peer_ids) {
+            if !peers::same_peer_set(peer_node_keys, &ring_payload.peer_node_keys) {
                 return Err(DkgError::Unauthorized(format!(
-                    "Refresh peer_ids do not match authoritative committee for ring {}",
+                    "Refresh peer_node_keys do not match authoritative committee for ring {}",
                     ring_pk_hex
                 )));
             }
@@ -56,14 +62,39 @@ where
                     threshold, ring_payload.threshold, ring_pk_hex
                 )));
             }
-            if total_participants as usize != ring_payload.peer_ids.len() {
+            if total_participants as usize != ring_payload.peer_node_keys.len() {
                 return Err(DkgError::Unauthorized(format!(
                     "Refresh total_participants {} does not match authoritative committee size {} for ring {}",
                     total_participants,
-                    ring_payload.peer_ids.len(),
+                    ring_payload.peer_node_keys.len(),
                     ring_pk_hex
                 )));
             }
+
+            let routes =
+                resolve_node_routes(&coord.app_state.bulletin, &ring_payload.peer_node_keys)
+                    .await
+                    .map_err(DkgError::Unauthorized)?;
+            let route_peer_ids = peer_ids_from_routes(&routes);
+            if !peers::same_peer_set(peer_ids, &route_peer_ids) {
+                return Err(DkgError::Unauthorized(format!(
+                    "Refresh peer_ids do not match NodeInfo routes for ring {}",
+                    ring_pk_hex
+                )));
+            }
+            if node_key_for_peer(&routes, &sender_hex).is_none() {
+                return Err(DkgError::Unauthorized(format!(
+                    "Refresh initiator {} is not a member of ring {}",
+                    sender_hex, ring_pk_hex
+                )));
+            }
+            let route_assignments =
+                canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
+                    .map_err(DkgError::InvalidInput)?;
+            let route_map = node_id_to_peer_id_from_routes(&routes, &route_assignments)
+                .map_err(DkgError::InvalidInput)?;
+            resolved_old_peer_ids = Some(route_peer_ids);
+            resolved_old_node_id_to_peer_id = Some(route_map);
 
             let bundle =
                 RingShareBundle::load_by_ring_key(&coord.app_state.local_storage, ring_pk_hex)
@@ -75,7 +106,7 @@ where
                     })?;
             let expected_session_id = derive_refresh_session_id(
                 ring_pk_hex,
-                &ring_payload.peer_ids,
+                &ring_payload.peer_node_keys,
                 ring_payload.threshold,
                 &bundle.public_polynomial,
             );
@@ -90,7 +121,7 @@ where
         }
         SessionKind::Reshare {
             ring_pk_hex,
-            new_peer_ids: reshare_new_peer_ids,
+            new_peer_node_keys: reshare_new_peer_node_keys,
             new_threshold: reshare_new_threshold,
             bulletin_post_id: reshare_bulletin_post_id,
         } => {
@@ -103,7 +134,7 @@ where
             validate_reshare_session_init(
                 ring_pk_hex,
                 &sender_hex,
-                reshare_new_peer_ids,
+                reshare_new_peer_node_keys,
                 *reshare_new_threshold,
                 reshare_bulletin_post_id,
                 &coord.app_state.local_storage,
@@ -119,9 +150,9 @@ where
             )
             .await?;
 
-            if !peers::same_peer_set(peer_ids, &ring_payload.peer_ids) {
+            if !peers::same_peer_set(peer_node_keys, &ring_payload.peer_node_keys) {
                 return Err(DkgError::Unauthorized(format!(
-                    "Reshare old peer_ids do not match authoritative committee for ring {}",
+                    "Reshare old peer_node_keys do not match authoritative committee for ring {}",
                     ring_pk_hex
                 )));
             }
@@ -131,26 +162,26 @@ where
                     threshold, ring_payload.threshold, ring_pk_hex
                 )));
             }
-            if total_participants as usize != ring_payload.peer_ids.len() {
+            if total_participants as usize != ring_payload.peer_node_keys.len() {
                 return Err(DkgError::Unauthorized(format!(
                     "Reshare total_participants {} does not match authoritative committee size {} for ring {}",
                     total_participants,
-                    ring_payload.peer_ids.len(),
+                    ring_payload.peer_node_keys.len(),
                     ring_pk_hex
                 )));
             }
 
-            let authoritative_new_peer_ids = ring_payload
-                .new_peer_ids
+            let authoritative_new_peer_node_keys = ring_payload
+                .new_peer_node_keys
                 .clone()
-                .unwrap_or_else(|| ring_payload.peer_ids.clone());
+                .unwrap_or_else(|| ring_payload.peer_node_keys.clone());
             let authoritative_new_threshold =
                 ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
             let expected_session_id = derive_reshare_session_id(
                 ring_pk_hex,
                 reshare_bulletin_post_id,
-                &ring_payload.peer_ids,
-                &authoritative_new_peer_ids,
+                &ring_payload.peer_node_keys,
+                &authoritative_new_peer_node_keys,
                 authoritative_new_threshold,
             );
             if session_id != expected_session_id {
@@ -159,6 +190,46 @@ where
                     ring_pk_hex, expected_session_id, session_id
                 )));
             }
+
+            let old_routes =
+                resolve_node_routes(&coord.app_state.bulletin, &ring_payload.peer_node_keys)
+                    .await
+                    .map_err(DkgError::Unauthorized)?;
+            let old_route_peer_ids = peer_ids_from_routes(&old_routes);
+            if !peers::same_peer_set(peer_ids, &old_route_peer_ids) {
+                return Err(DkgError::Unauthorized(format!(
+                    "Reshare old peer_ids do not match NodeInfo routes for ring {}",
+                    ring_pk_hex
+                )));
+            }
+            if node_key_for_peer(&old_routes, &sender_hex).is_none() {
+                return Err(DkgError::Unauthorized(format!(
+                    "Reshare initiator {} is not a member of ring {}",
+                    sender_hex, ring_pk_hex
+                )));
+            }
+            let old_route_assignments =
+                canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
+                    .map_err(DkgError::InvalidInput)?;
+            let old_route_map = node_id_to_peer_id_from_routes(&old_routes, &old_route_assignments)
+                .map_err(DkgError::InvalidInput)?;
+
+            let new_routes =
+                resolve_node_routes(&coord.app_state.bulletin, reshare_new_peer_node_keys)
+                    .await
+                    .map_err(DkgError::Unauthorized)?;
+            let new_route_peer_ids = peer_ids_from_routes(&new_routes);
+            let new_route_assignments =
+                canonical_node_id_assignments_from_node_keys(reshare_new_peer_node_keys)
+                    .map_err(DkgError::InvalidInput)?;
+            let new_route_map = node_id_to_peer_id_from_routes(&new_routes, &new_route_assignments)
+                .map_err(DkgError::InvalidInput)?;
+
+            resolved_old_peer_ids = Some(old_route_peer_ids);
+            resolved_old_node_id_to_peer_id = Some(old_route_map);
+            resolved_new_route_peer_ids = Some(new_route_peer_ids);
+            resolved_new_node_id_to_peer_id = Some(new_route_map);
+            session_peer_node_keys = reshare_new_peer_node_keys.clone();
 
             tracing::info!(
                 session_id = session_id,
@@ -182,14 +253,7 @@ where
                 JWT_CLOCK_SKEW_LEEWAY_SECS,
             )
             .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-            validate_dkg_claims(
-                &token,
-                threshold,
-                peer_ids,
-                pss_interval,
-                policy_id.as_deref(),
-                &ring_id,
-            )?;
+            validate_dkg_claims(&token, &ring_id)?;
             let our_peer_id_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
             validate_fresh_dkg_node_authorization(
                 &coord.app_state.bulletin,
@@ -197,7 +261,7 @@ where
                 &our_peer_id_hex,
                 &ring_id,
                 threshold,
-                peer_ids,
+                peer_node_keys,
                 pss_interval,
                 policy_id.as_deref(),
             )
@@ -208,20 +272,34 @@ where
                 policy_id = ?policy_id,
                 "DKG Coordinator: SessionInit JWT validated successfully"
             );
+
+            let routes = resolve_node_routes(&coord.app_state.bulletin, peer_node_keys)
+                .await
+                .map_err(DkgError::Unauthorized)?;
+            let route_peer_ids = peer_ids_from_routes(&routes);
+            if !peers::same_peer_set(peer_ids, &route_peer_ids) {
+                return Err(DkgError::Unauthorized(format!(
+                    "Fresh peer_ids do not match NodeInfo routes for ring {}",
+                    ring_id
+                )));
+            }
+            let route_assignments = canonical_node_id_assignments_from_node_keys(peer_node_keys)
+                .map_err(DkgError::InvalidInput)?;
+            let route_map = node_id_to_peer_id_from_routes(&routes, &route_assignments)
+                .map_err(DkgError::InvalidInput)?;
+            resolved_old_peer_ids = Some(route_peer_ids);
+            resolved_old_node_id_to_peer_id = Some(route_map);
         }
     }
 
     let canonical_node_id_assignments =
-        peers::validate_node_id_assignments(peer_ids, node_id_assignments)?;
-
-    let our_peer_id_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
-    let our_node_part = extract_node_part(&our_peer_id_hex);
+        peers::validate_node_id_assignments(peer_node_keys, node_id_assignments)?;
 
     // For Reshare, determine role and node_id from committee membership rather than
     // looking up node_id_assignments (which only covers the old committee).
     let (assigned_node_id, dkg_role, maybe_reshare_params) = if let SessionKind::Reshare {
         ring_pk_hex,
-        new_peer_ids,
+        new_peer_node_keys,
         new_threshold,
         bulletin_post_id,
     } = kind
@@ -229,30 +307,25 @@ where
         // build_reshare_params errors if this node is not in either committee.
         let (node_id, role, params) = build_reshare_params(
             ring_pk_hex,
-            peer_ids,
-            new_peer_ids,
+            peer_node_keys,
+            new_peer_node_keys,
             *new_threshold,
             bulletin_post_id,
-            &our_node_part,
+            &coord.app_state.node_key,
             &coord.app_state.local_storage,
         )?;
 
         (node_id, role, Some(params))
     } else {
-        // Fresh / Refresh: look up our node_id from the locally verified canonical assignments.
-        let our_peer_id_key = our_peer_id_hex
-            .split('@')
-            .next()
-            .unwrap_or(&our_peer_id_hex)
-            .to_string();
+        // Fresh / Refresh: look up our node_id from the locally verified node-key assignments.
         let node_id = canonical_node_id_assignments
-            .get(&our_peer_id_key)
+            .get(&coord.app_state.node_key)
             .copied()
             .ok_or_else(|| {
                 DkgError::InvalidInput(format!(
                     "Could not find our node_id in SessionInit. \
-                         Our peer_id: {}, assignments: {:?}",
-                    our_peer_id_key,
+                         Our node_key: {}, assignments: {:?}",
+                    coord.app_state.node_key,
                     canonical_node_id_assignments.keys().collect::<Vec<_>>()
                 ))
             })?;
@@ -301,15 +374,15 @@ where
     // window where a Commitment could arrive and see kind=Fresh / reshare_params=None
     // on a Reshare session (which would cause expected_commitment_size() to return the
     // wrong threshold and reject the commitment permanently).
-    // Also sort new_peer_ids in the stored kind so downstream code
+    // Also sort new_peer_node_keys in the stored kind so downstream code
     // (bulletin post, union building) always uses a canonical ordered list.
     let mut init_kind = kind.clone();
     if let SessionKind::Reshare {
-        ref mut new_peer_ids,
+        ref mut new_peer_node_keys,
         ..
     } = init_kind
     {
-        new_peer_ids.sort();
+        new_peer_node_keys.sort();
     }
     let init_params = maybe_reshare_params;
     let init_policy_id = policy_id;
@@ -389,13 +462,31 @@ where
     // For Reshare: peer_ids in session state = new committee. Old dealers only need
     // to broadcast commitments and shares to receivers; they do not need commitments
     // from other old-only dealers.
-    let session_peer_ids = peers::session_peer_ids(kind, peer_ids);
+    let session_peer_ids = resolved_new_route_peer_ids
+        .clone()
+        .or_else(|| resolved_old_peer_ids.clone())
+        .unwrap_or_else(|| peers::session_peer_ids(kind, peer_ids));
     coord.set_peer_ids(&session_id, session_peer_ids).await;
+    coord
+        .app_state
+        .dkg_session_state
+        .set_peer_node_keys(&session_id, session_peer_node_keys)
+        .await;
+    coord
+        .app_state
+        .dkg_session_state
+        .set_ring_id(&session_id, ring_id.clone())
+        .await;
 
     // Store old committee node_id → peer_id mappings for sender validation
     // (peer_id_to_node_id uses old committee IDs for all session kinds).
-    let node_id_to_peer_id =
-        peers::old_committee_node_peer_mappings(peer_ids, &canonical_node_id_assignments);
+    let node_id_to_peer_id = resolved_old_node_id_to_peer_id.unwrap_or_else(|| {
+        peers::old_committee_node_peer_mappings(
+            peer_node_keys,
+            peer_ids,
+            &canonical_node_id_assignments,
+        )
+    });
     coord
         .app_state
         .dkg_session_state
@@ -403,19 +494,7 @@ where
         .await;
 
     if matches!(kind, SessionKind::Reshare { .. }) {
-        let new_peer_ids = coord
-            .app_state
-            .dkg_session_state
-            .with_state(&session_id, |state| {
-                state
-                    .reshare_params
-                    .as_ref()
-                    .map(|p| p.new_peer_ids.clone())
-                    .unwrap_or_default()
-            })
-            .await
-            .unwrap_or_default();
-        let new_node_id_to_peer_id = peers::node_peer_mappings(&new_peer_ids);
+        let new_node_id_to_peer_id = resolved_new_node_id_to_peer_id.unwrap_or_default();
         coord
             .app_state
             .dkg_session_state

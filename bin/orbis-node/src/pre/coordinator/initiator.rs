@@ -1,8 +1,8 @@
 use super::{PreCoordinator, PreResponse};
 use crate::constants::PRE_COLLECTION_TIMEOUT;
 use crate::helpers::helpers::{
-    determine_session_node_id, is_ring_reshare_in_progress, is_self_peer_id,
-    load_ring_pub_poly_and_bundle, RingConfig,
+    determine_ring_node_id_from_peer_id, determine_session_node_id, is_ring_reshare_in_progress,
+    is_self_peer_id, load_ring_pub_poly_and_bundle, RingConfig,
 };
 use crate::pre::error::{PreError, Result};
 use crate::pre::messages::{PreMessage, PreRequestContext, ReencryptRequest};
@@ -41,8 +41,7 @@ where
         ctx: PreRequestContext,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
-        let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
-        let node_id_opt = determine_session_node_id(&our_peer_id, &ring.peer_ids);
+        let node_id_opt = determine_session_node_id(&self.app_state.node_key, &ring.peer_node_keys);
 
         // self_in_list derived from node_id - guarantees consistency
         let self_in_list = node_id_opt.is_some();
@@ -241,9 +240,10 @@ where
                 // Note: Creating new coordinator is cheap (just holds Arc<AppState>)
                 set.spawn(async move {
                     let coordinator = PreCoordinator::<D, T>::new(app_state);
-                    coordinator
+                    let result = coordinator
                         .send_request_and_receive_response(&peer_id, request, &req_id)
-                        .await
+                        .await;
+                    (peer_id, result)
                 });
             }
         }
@@ -255,7 +255,16 @@ where
             match tokio::time::timeout(PRE_COLLECTION_TIMEOUT, async {
                 while let Some(res) = set.join_next().await {
                     match res {
-                        Ok(Ok(Some(response))) => {
+                        Ok((peer_id, Ok(Some(response)))) => {
+                            let Some(expected_node_id) =
+                                determine_ring_node_id_from_peer_id(&peer_id, &ring)
+                            else {
+                                tracing::error!(
+                                    peer_id = %peer_id,
+                                    "PRE Coordinator: accepted response from peer outside ring"
+                                );
+                                continue;
+                            };
                             if let Some(share) = Self::verify_peer_response(
                                 &dealer,
                                 response,
@@ -263,6 +272,7 @@ where
                                 &pub_poly,
                                 &enc_cmt,
                                 ctx.derivation.as_deref(),
+                                Some(expected_node_id),
                                 &mut seen_node_ids,
                             )? {
                                 verified_shares.push(share);
@@ -272,8 +282,8 @@ where
                                 }
                             }
                         }
-                        Ok(Ok(None)) => {}
-                        Ok(Err(e)) => {
+                        Ok((_, Ok(None))) => {}
+                        Ok((_, Err(e))) => {
                             tracing::warn!(
                                 request_id = %request_id,
                                 error = %e,
@@ -308,20 +318,30 @@ where
         let collected_responses = self
             .app_state
             .pre_response_state
-            .take_responses(&request_id)
+            .take_authenticated_responses(&request_id)
             .await
             .ok_or_else(|| {
                 PreError::Timeout(format!("No responses found for request {}", &request_id))
             })?;
 
         for response in collected_responses {
+            let Some(expected_node_id) =
+                determine_ring_node_id_from_peer_id(&response.sender_peer_hex, &ring)
+            else {
+                tracing::error!(
+                    sender_peer = %response.sender_peer_hex,
+                    "PRE Coordinator: stored response from peer outside ring"
+                );
+                continue;
+            };
             if let Some(share) = Self::verify_peer_response(
                 &dealer,
-                response,
+                response.message,
                 &rdr_pk,
                 &pub_poly,
                 &enc_cmt,
                 ctx.derivation.as_deref(),
+                Some(expected_node_id),
                 &mut seen_node_ids,
             )? {
                 verified_shares.push(share);

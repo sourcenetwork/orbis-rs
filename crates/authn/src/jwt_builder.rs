@@ -154,26 +154,11 @@ impl JwtSigner {
     /// Create a JWT with DKG claims.
     ///
     /// # Arguments
-    /// * `threshold` - The threshold value for DKG
-    /// * `peer_ids` - List of peer IDs
-    /// * `pss_interval` - Optional seconds between automatic PSS refresh ceremonies
-    /// * `policy_id` - Optional policy that externally governs ring updates
     /// * `ring_id` - Pre-created blank ring entry targeted by this DKG
     /// # Returns
     /// The signed JWT string valid for 1 hour
-    pub fn create_dkg_jwt(
-        &self,
-        threshold: u32,
-        peer_ids: &[String],
-        pss_interval: Option<u64>,
-        policy_id: Option<String>,
-        ring_id: &str,
-    ) -> Result<String> {
+    pub fn create_dkg_jwt(&self, ring_id: &str) -> Result<String> {
         let claims = DkgClaims {
-            threshold,
-            peer_ids: peer_ids.to_vec(),
-            pss_interval,
-            policy_id,
             ring_id: ring_id.to_string(),
         };
         self.sign(claims, TOKEN_TTL)
@@ -213,11 +198,7 @@ impl JwtSigner {
     ///
     /// # Returns
     /// The signed JWT string valid for 1 hour
-    pub fn create_sign_jwt(
-        &self,
-        derivation_id: &str,
-        message: &[u8],
-    ) -> Result<String> {
+    pub fn create_sign_jwt(&self, derivation_id: &str, message: &[u8]) -> Result<String> {
         let claims = SignClaims {
             derivation_id: derivation_id.to_string(),
             message_sha256: Sha256::digest(message).to_vec(),
@@ -379,12 +360,7 @@ mod tests {
     #[test]
     fn test_create_pre_jwt() {
         let signer = JwtSigner::new();
-        let token = signer.create_pre_jwt(
-            b"rdr_pk_value".to_vec(),
-            "object_id",
-            None,
-            None,
-        );
+        let token = signer.create_pre_jwt(b"rdr_pk_value".to_vec(), "object_id", None, None);
         assert!(token.is_ok());
     }
 

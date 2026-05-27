@@ -14,13 +14,13 @@ Defined in [`src/trait.rs`](src/trait.rs):
 | `post(kind, payload, artifact)` | Store a typed object; SourceHub derives NodeInfo IDs from the transaction signer. |
 | `read(id, kind)` | Load a `BulletinPost` (`id`, `payload`). |
 | `get_post_id(payload)` | Deterministic id for a typed payload. |
-| `get_ring_id(peer_ids, threshold, pss_interval, policy_id, nonce)` | Deterministic SourceHub ring id helper. |
+| `get_ring_id(peer_node_keys, threshold, pss_interval, policy_id, nonce)` | Deterministic SourceHub ring id helper. |
 
 Shared **value types** (JSON serde):
 
 - **`BulletinPost`** — `id`, raw **`payload`** bytes.
 - **`DocumentPayload`** — Encrypted document + Chaum–Pedersen proof fields + policy binding (`ring_id`, `policy_id`, `resource`, `permission`, optional tier/timestamp).
-**`RingPayload`** — Ring metadata: `ring_pk`, `peer_ids`, `threshold`, optional `pss_interval`, optional **`new_peer_ids`** / **`new_threshold`** for reshare coordination, and **`block_number_nonce`** used as anti-replay input to the reshare finalization sign doc.
+**`RingPayload`** — Ring metadata: `ring_pk`, `peer_node_keys`, `threshold`, optional `pss_interval`, optional **`new_peer_node_keys`** / **`new_threshold`** for reshare coordination, and **`block_number_nonce`** used as anti-replay input to the reshare finalization sign doc.
 - **`KeyDerivation`** — Bulletin entry for signing/PRE derivation: `ring_id`, `derivation`, policy fields.
 - **`NodeInfo`** — Node registration: `peer_id`, `controller_key`, `whitelisted_policy_ids`, and `whitelisted_ring_ids`.
 

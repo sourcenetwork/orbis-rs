@@ -4,9 +4,14 @@ use crate::dkg::error::DkgError;
 use crate::dkg::helpers::{validate_dkg_claims, validate_fresh_dkg_node_authorization};
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
-use crate::helpers::helpers::{extract_node_part, is_self_peer_id, validate_all_peer_ids};
+use crate::helpers::helpers::{is_self_peer_id, validate_all_peer_ids};
+use crate::helpers::node_routes::{
+    canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
+    peer_ids_from_routes, resolve_node_routes,
+};
 use crate::metrics;
 use authn::DkgClaims;
+use bulletin::r#trait::{BulletinKind, RingPayload};
 use network::DKG;
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
 use rand;
@@ -67,25 +72,79 @@ where
         // 1. Authenticate: Extract and validate JWT
         let (token_str, token) = extract_and_validate_jwt::<DkgClaims, _>(&request, current_time)
             .map_err(DkgError::Unauthorized)?;
-        // TODO: use token.issuer_id as AuthZ check
         let req = request.into_inner();
-        let policy_id = req.policy_id.clone();
 
-        // 2. Authorize: Validate JWT claims match request fields (compare raw, pre-normalization)
-        validate_dkg_claims(
-            &token,
-            req.threshold,
-            &req.peer_ids,
-            req.pss_interval,
-            req.policy_id.as_deref(),
-            &req.ring_id,
-        )?;
+        // 2. Authorize the request itself. Ring parameters are read from the bulletin.
+        validate_dkg_claims(&token, &req.ring_id)?;
 
         let ring_id = req.ring_id.clone();
+        let ring_post = self
+            .state
+            .bulletin
+            .read(ring_id.clone(), BulletinKind::Ring)
+            .await
+            .map_err(|e| {
+                DkgError::Unauthorized(format!(
+                    "Fresh DKG target ring {} not found: {}",
+                    ring_id, e
+                ))
+            })?;
+        let ring_payload = RingPayload::try_from(ring_post).map_err(|e| {
+            DkgError::Unauthorized(format!(
+                "Fresh DKG target ring {} has malformed payload: {}",
+                ring_id, e
+            ))
+        })?;
+        if !ring_payload.ring_pk.is_empty() {
+            return Err(DkgError::Unauthorized(format!(
+                "Fresh DKG target ring {} is not pending",
+                ring_id
+            ))
+            .into());
+        }
+        if ring_payload.peer_node_keys.is_empty() {
+            return Err(DkgError::InvalidInput(format!(
+                "Fresh DKG target ring {} has no peer_node_keys",
+                ring_id
+            ))
+            .into());
+        }
+        if ring_payload.threshold == 0
+            || ring_payload.threshold as usize > ring_payload.peer_node_keys.len()
+        {
+            return Err(DkgError::InvalidInput(format!(
+                "Fresh DKG target ring {} has invalid threshold {} for {} participants",
+                ring_id,
+                ring_payload.threshold,
+                ring_payload.peer_node_keys.len()
+            ))
+            .into());
+        }
+        if ring_payload.policy_id.as_deref().unwrap_or("").is_empty() {
+            return Err(DkgError::InvalidInput(format!(
+                "Fresh DKG target ring {} has no policy_id",
+                ring_id
+            ))
+            .into());
+        }
+
+        let routes = resolve_node_routes(&self.state.bulletin, &ring_payload.peer_node_keys)
+            .await
+            .map_err(DkgError::Unauthorized)?;
+        let peer_ids = peer_ids_from_routes(&routes);
+        let node_id_assignments =
+            canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
+                .map_err(DkgError::InvalidInput)?;
+        let node_id_to_peer_id = node_id_to_peer_id_from_routes(&routes, &node_id_assignments)
+            .map_err(DkgError::InvalidInput)?;
+        let threshold = ring_payload.threshold;
+        let pss_interval = ring_payload.pss_interval;
+        let policy_id = ring_payload.policy_id.clone();
 
         tracing::info!(
-            threshold = req.threshold,
-            peer_ids = ?req.peer_ids,
+            threshold = threshold,
+            peer_node_keys = ?ring_payload.peer_node_keys,
+            peer_ids = ?peer_ids,
             policy_id = ?policy_id,
             issuer = %token.issuer_id,
             "Authenticated StartDkg request"
@@ -99,31 +158,13 @@ where
         // Create DKG coordinator (AppState clone is cheap - contains Arc types internally)
         let coordinator = DkgCoordinator::new(Arc::new(self.state.clone()));
 
-        // Validate threshold and total_participants
-        if req.threshold as usize > req.peer_ids.len() {
-            return Err(DkgError::InvalidInput(format!(
-                "Threshold ({}) cannot be greater than total participants ({})",
-                req.threshold,
-                req.peer_ids.len()
-            ))
-            .into());
-        }
-
-        if req.peer_ids.is_empty() {
-            return Err(DkgError::InvalidInput("Not enough participants".to_string()).into());
-        }
-
-        // As the initiator, assign node_ids to all participants based on sorted peer list
-        // This ensures all nodes agree on who has which node_id
         let our_peer_id_hex = hex::encode(self.state.network.local_peer_id().as_bytes());
-        let our_peer_id_key = extract_node_part(&our_peer_id_hex);
 
-        // Check if we're included in the peer_ids list
-        // We only participate if explicitly included - otherwise we just coordinate
-        let self_included = req
-            .peer_ids
+        // We only participate if our chain node key is explicitly included.
+        let self_included = ring_payload
+            .peer_node_keys
             .iter()
-            .any(|pid| extract_node_part(pid) == our_peer_id_key);
+            .any(|node_key| node_key == &self.state.node_key);
 
         if self_included {
             validate_fresh_dkg_node_authorization(
@@ -131,39 +172,28 @@ where
                 &self.state.node_key,
                 &our_peer_id_hex,
                 &ring_id,
-                req.threshold,
-                &req.peer_ids,
-                req.pss_interval,
+                threshold,
+                &ring_payload.peer_node_keys,
+                pss_interval,
                 policy_id.as_deref(),
             )
             .await?;
         }
 
-        // Use the peer_ids exactly as given - don't auto-add ourselves
-        let all_peer_ids_for_assignments: Vec<String> = req.peer_ids.clone();
-
-        // Build node_id assignments: peer_id -> node_id (1-indexed based on sorted order)
-        let mut node_id_assignments = std::collections::HashMap::new();
-        let mut sorted_peer_ids = all_peer_ids_for_assignments.clone();
-        sorted_peer_ids.sort();
-
-        for (idx, peer_id) in sorted_peer_ids.iter().enumerate() {
-            let assigned_node_id = (idx + 1) as u32;
-            // Extract just the hex part (before @) for consistent lookup
-            let peer_id_key = extract_node_part(peer_id);
-            node_id_assignments.insert(peer_id_key, assigned_node_id);
-        }
-
         // Calculate actual total participants
-        let actual_total_participants = all_peer_ids_for_assignments.len();
+        let actual_total_participants = ring_payload.peer_node_keys.len();
 
         // Get our assigned node_id (only if we're participating)
         let our_assigned_node_id = if self_included {
-            Some(*node_id_assignments.get(&our_peer_id_key).ok_or_else(|| {
-                DkgError::InvalidInput(
-                    "Could not determine our node_id from assignments".to_string(),
-                )
-            })?)
+            Some(
+                *node_id_assignments
+                    .get(&self.state.node_key)
+                    .ok_or_else(|| {
+                        DkgError::InvalidInput(
+                            "Could not determine our node_id from assignments".to_string(),
+                        )
+                    })?,
+            )
         } else {
             None
         };
@@ -182,7 +212,7 @@ where
                 .create_session(
                     session_id,
                     node_id,
-                    req.threshold as usize,
+                    threshold as usize,
                     actual_total_participants,
                     crypto::r#trait::DkgRole::Standard,
                     {
@@ -201,10 +231,16 @@ where
 
         // Store peer IDs in session state for later use (needed for Phase 2)
         coordinator
-            .set_peer_ids(&session_id, req.peer_ids.clone())
+            .set_peer_ids(&session_id, peer_ids.clone())
             .await;
-
-        let pss_interval = req.pss_interval;
+        self.state
+            .dkg_session_state
+            .set_peer_node_keys(&session_id, ring_payload.peer_node_keys.clone())
+            .await;
+        self.state
+            .dkg_session_state
+            .set_ring_id(&session_id, ring_id.clone())
+            .await;
 
         // Store pss_interval so Phase 4 includes it in the RingPayload written locally.
         // (Non-initiators receive it via SessionInit; the initiator does not.)
@@ -220,9 +256,9 @@ where
         // Connect to peer nodes using iroh network
         // Peer IDs should be in iroh PublicKey format: either "node_id" or "node_id@ip:port"
         // where node_id is the iroh public key string representation
-        if !req.peer_ids.is_empty() {
+        if !peer_ids.is_empty() {
             // Validate all peer IDs before attempting connections
-            if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&req.peer_ids) {
+            if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&peer_ids) {
                 return Err(DkgError::InvalidInput(format!(
                     "Invalid peer ID '{}': {}",
                     invalid_peer_id, validation_error
@@ -234,7 +270,7 @@ where
             // Using get_or_connect (rather than a raw network.connect()) means the
             // connections are cached in the pool so the subsequent open_stream calls
             // in send_message_to_peer reuse them instead of opening duplicates.
-            for peer_id_str in &req.peer_ids {
+            for peer_id_str in &peer_ids {
                 if is_self_peer_id(&self.state.network, peer_id_str) {
                     continue;
                 }
@@ -251,21 +287,6 @@ where
             }
 
             // Send SessionInit message to all peers
-            // Include all peer_ids (including our own) so non-initiators know who to send messages to
-            // Use the deduplicated list we already built
-            let all_peer_ids = all_peer_ids_for_assignments.clone();
-
-            // Store node_id to peer_id mappings for the initiator (we don't receive our own SessionInit)
-            let mut node_id_to_peer_id = std::collections::HashMap::new();
-            for (peer_id_key, node_id) in &node_id_assignments {
-                // Find the full peer_id (with @address if present) from all_peer_ids
-                let full_peer_id = all_peer_ids
-                    .iter()
-                    .find(|pid| extract_node_part(pid) == *peer_id_key)
-                    .cloned()
-                    .unwrap_or_else(|| peer_id_key.clone());
-                node_id_to_peer_id.insert(*node_id, full_peer_id);
-            }
             self.state
                 .dkg_session_state
                 .set_node_peer_mappings(&session_id, node_id_to_peer_id)
@@ -273,9 +294,10 @@ where
 
             let session_init_msg = DkgMessage::SessionInit {
                 session_id,
-                threshold: req.threshold,
+                threshold,
                 total_participants: actual_total_participants as u32,
-                peer_ids: all_peer_ids.clone(), // Include all peer_ids (including our own) so receivers know all participants
+                peer_ids: peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 node_id_assignments: node_id_assignments.clone(), // Assignments made by initiator
                 token_string: token_str.clone(), // Pass JWT to peer nodes for authentication
                 kind: SessionKind::Fresh,
@@ -291,7 +313,10 @@ where
             // connections.  When we are a non-participating coordinator (no session
             // created) fall back to a fresh one-shot connection.
             let init_session_id = our_assigned_node_id.map(|_| session_id);
-            for peer_id_str in &req.peer_ids {
+            for peer_id_str in &peer_ids {
+                if is_self_peer_id(&self.state.network, peer_id_str) {
+                    continue;
+                }
                 if let Err(e) = coordinator
                     .send_message_to_peer(peer_id_str, session_init_msg.clone(), init_session_id)
                     .await
@@ -304,7 +329,7 @@ where
             // Initiate Phase 1 only if we're participating
             if self_included {
                 if let Err(e) = coordinator
-                    .initiate_phase1_commitments(session_id, &req.peer_ids)
+                    .initiate_phase1_commitments(session_id, &peer_ids)
                     .await
                 {
                     tracing::error!(error = %e, "Failed to initiate Phase 1");
@@ -322,7 +347,7 @@ where
             status: "started".to_string(),
             message: format!(
                 "DKG session started with threshold {} and {} participants",
-                req.threshold, actual_total_participants
+                threshold, actual_total_participants
             ),
             created_at,
         };

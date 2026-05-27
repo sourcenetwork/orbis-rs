@@ -36,7 +36,7 @@ where
         pss_interval,
         policy_id,
         dkg_role,
-        reshare_new_peer_ids,
+        reshare_new_peer_node_keys,
         reshare_bulletin_post_id,
     ) = coord
         .app_state
@@ -50,7 +50,7 @@ where
                 state
                     .reshare_params
                     .as_ref()
-                    .map(|p| p.new_peer_ids.clone()),
+                    .map(|p| p.new_peer_node_keys.clone()),
                 state
                     .reshare_params
                     .as_ref()
@@ -192,6 +192,12 @@ where
             ring_key: storage_key.clone(),
             ring_pk_hex: hex::encode(&ring_pk_bytes),
             bundle: staged_bundle,
+            peer_node_keys: coord
+                .app_state
+                .dkg_session_state
+                .get_peer_node_keys(&session_id)
+                .await
+                .unwrap_or_default(),
             peer_ids,
             threshold,
         };
@@ -230,12 +236,9 @@ where
     // (they had no prior index entry).  Dealers have already left and skip this entirely.
     if matches!(kind, SessionKind::Reshare { .. }) && dkg_role != DkgRole::Dealer {
         if let Some(post_id) = &reshare_bulletin_post_id {
-            if let Err(e) = ring_storage::add_ring_index_entry(
-                &coord.app_state,
-                &storage_key,
-                post_id.clone(),
-            )
-            .await
+            if let Err(e) =
+                ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, post_id.clone())
+                    .await
             {
                 cleanup_new_ring_bundle_after_index_failure(
                     &coord.app_state.local_storage,
@@ -273,28 +276,21 @@ where
             )
             .await?
         } else {
-            // Nodes 2 and 3: compute the ring_id locally.
-            let peer_ids = coord
+            // Non-selector nodes use the pre-created ring_id carried through SessionInit.
+            coord
                 .app_state
                 .dkg_session_state
-                .get_peer_ids(&session_id)
+                .get_ring_id(&session_id)
                 .await
-                .unwrap_or_default();
-            ring_storage::fresh_ring_index_post_id(
-                &coord.app_state,
-                peer_ids,
-                threshold,
-                pss_interval,
-                policy_id.clone(),
-            )?
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    DkgError::Bulletin("Fresh DKG session is missing ring_id".to_string())
+                })?
         };
 
-        if let Err(e) = ring_storage::add_ring_index_entry(
-            &coord.app_state,
-            &storage_key,
-            bulletin_post_id,
-        )
-        .await
+        if let Err(e) =
+            ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, bulletin_post_id)
+                .await
         {
             cleanup_new_ring_bundle_after_index_failure(
                 &coord.app_state.local_storage,
@@ -357,7 +353,7 @@ where
         &storage_key,
         &ring_pk_bytes,
         &pub_poly_bytes,
-        reshare_new_peer_ids.as_deref(),
+        reshare_new_peer_node_keys.as_deref(),
         reshare_bulletin_post_id.as_deref(),
     )
     .await?;
@@ -369,7 +365,7 @@ where
         .await;
 
     // All new-committee Reshare nodes defer cleanup to a background task that
-    // polls the bulletin until new_peer_ids is cleared, then releases the PSS
+    // polls the bulletin until new_peer_node_keys is cleared, then releases the PSS
     // claim and removes the session. Node 1 already posted the update so its
     // first poll succeeds immediately; non-node-1 nodes wait for node 1 to post.
     // This single path prevents the PSS scheduler from re-triggering a duplicate

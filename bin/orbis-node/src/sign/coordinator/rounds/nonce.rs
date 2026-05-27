@@ -1,5 +1,5 @@
 use crate::constants::SIGN_COLLECTION_TIMEOUT;
-use crate::helpers::helpers::{determine_session_node_id, is_self_peer_id, RingConfig};
+use crate::helpers::helpers::{determine_ring_node_id_from_peer_id, is_self_peer_id, RingConfig};
 use crate::sign::coordinator::SignCoordinator;
 use crate::sign::error::{Result, SignError};
 use crate::sign::messages::{NonceRequest, SignContext, SignMessage};
@@ -114,7 +114,7 @@ where
                     match res {
                         Ok(Ok(Some(response))) => {
                             let Some(expected_node_id) =
-                                determine_session_node_id(&response.sender_peer_hex, &ring.peer_ids)
+                                determine_ring_node_id_from_peer_id(&response.sender_peer_hex, ring)
                             else {
                                 tracing::error!(
                                     sender_peer = %response.sender_peer_hex,
@@ -180,7 +180,7 @@ where
 
         for response in nonce_responses {
             let Some(expected_node_id) =
-                determine_session_node_id(&response.sender_peer_hex, &ring.peer_ids)
+                determine_ring_node_id_from_peer_id(&response.sender_peer_hex, ring)
             else {
                 tracing::error!(
                     sender_peer = %response.sender_peer_hex,

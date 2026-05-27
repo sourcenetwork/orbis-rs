@@ -3,19 +3,19 @@
 //! Periodically checks every known ring and initiates a PSS ceremony when due.
 //!
 //! ## Refresh
-//! When the bulletin `RingPayload` has no `new_peer_ids` or `new_threshold`, a
+//! When the bulletin `RingPayload` has no `new_peer_node_keys` or `new_threshold`, a
 //! **refresh** ceremony runs once the ring's `pss_interval` has elapsed since the
 //! last ceremony.  Same secret, new shares, same committee (zero constant term).
 //!
 //! ## Reshare
-//! When the bulletin `RingPayload` carries `new_peer_ids` or `new_threshold` the ring
+//! When the bulletin `RingPayload` carries `new_peer_node_keys` or `new_threshold` the ring
 //! has been designated for committee rotation.  The scheduler bypasses the interval
 //! check and immediately initiates a **reshare** (`SessionKind::Reshare`).
 //! Fallback rules (agreed on construction):
-//! - `new_peer_ids` absent → use current `peer_ids` (same committee, threshold change only).
+//! - `new_peer_node_keys` absent → use current `peer_node_keys` (same committee, threshold change only).
 //! - `new_threshold` absent → use current `threshold` (committee change only).
 //!
-//! Phase 4 posts the updated `RingPayload` with `new_peer_ids = None` so subsequent
+//! Phase 4 posts the updated `RingPayload` with `new_peer_node_keys = None` so subsequent
 //! ticks revert to the normal refresh cadence.
 //!
 //! In both cases any current old-committee node may attempt to start the ceremony.
@@ -39,6 +39,10 @@ use crate::dkg::helpers::{
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::dkg::session_state::RingPssClaimOutcome;
 use crate::helpers::helpers::{extract_node_part, validate_all_peer_ids};
+use crate::helpers::node_routes::{
+    canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
+    peer_ids_from_routes, resolve_node_routes, NodeRoute,
+};
 use crate::metrics;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::r#trait::{BulletinKind, RingPayload};
@@ -154,7 +158,8 @@ where
     }
 
     // Reshare takes priority over refresh when the bulletin signals a committee transition.
-    let is_reshare = ring_payload.new_peer_ids.is_some() || ring_payload.new_threshold.is_some();
+    let is_reshare =
+        ring_payload.new_peer_node_keys.is_some() || ring_payload.new_threshold.is_some();
 
     // Refresh requires pss_interval to be present; reshare bypasses this check.
     if !is_reshare {
@@ -167,32 +172,44 @@ where
         }
     }
 
-    let our_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
-    let our_node_part = extract_node_part(&our_peer_id_hex);
-
-    if ring_payload.peer_ids.is_empty() {
+    if ring_payload.peer_node_keys.is_empty() {
         return Err(DkgError::InvalidInput(format!(
             "PSS: ring {} has an empty committee",
             ring_pk_str
         )));
     }
 
-    let mut sorted_peers = ring_payload.peer_ids.clone();
-    sorted_peers.sort();
-
     if !ring_payload
-        .peer_ids
+        .peer_node_keys
         .iter()
-        .any(|peer_id| extract_node_part(peer_id) == our_node_part)
+        .any(|node_key| node_key == &app_state.node_key)
     {
         return Err(DkgError::Unauthorized(format!(
             "PSS: local node {} is not a current member of ring {}",
-            our_node_part, ring_pk_str
+            app_state.node_key, ring_pk_str
         )));
     }
 
+    let routes = resolve_node_routes(&app_state.bulletin, &ring_payload.peer_node_keys)
+        .await
+        .map_err(DkgError::InvalidInput)?;
+    let peer_ids = peer_ids_from_routes(&routes);
+    let node_id_assignments =
+        canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
+            .map_err(DkgError::InvalidInput)?;
+    let node_id_to_peer_id = node_id_to_peer_id_from_routes(&routes, &node_id_assignments)
+        .map_err(DkgError::InvalidInput)?;
+
     if is_reshare {
-        return trigger_reshare(app_state, entry, &ring_payload).await;
+        return trigger_reshare(
+            app_state,
+            entry,
+            &ring_payload,
+            &routes,
+            &node_id_assignments,
+            &node_id_to_peer_id,
+        )
+        .await;
     }
 
     // Refresh: also check that enough time has elapsed since the last ceremony.
@@ -220,8 +237,9 @@ where
         app_state,
         entry,
         &ring_payload,
-        &sorted_peers,
-        &our_node_part,
+        &peer_ids,
+        &node_id_assignments,
+        &node_id_to_peer_id,
     )
     .await
 }
@@ -231,8 +249,9 @@ async fn trigger_refresh<D>(
     app_state: &Arc<AppState<D>>,
     entry: &RingIndexEntry,
     ring_payload: &RingPayload,
-    sorted_peers: &[String],
-    our_node_part: &str,
+    peer_ids: &[String],
+    node_id_assignments: &std::collections::HashMap<String, u32>,
+    node_id_to_peer_id: &std::collections::HashMap<u32, String>,
 ) -> Result<(), DkgError>
 where
     D: Dkg<
@@ -247,19 +266,13 @@ where
 {
     let post_id = &entry.bulletin_post_id;
     let ring_pk_str = &entry.ring_pk_str;
-    let peer_ids = &ring_payload.peer_ids;
     let threshold = ring_payload.threshold as usize;
-
-    // Build deterministic node_id assignments (sorted peer list → 1-indexed).
-    let mut node_id_assignments: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
-    for (idx, peer_id) in sorted_peers.iter().enumerate() {
-        node_id_assignments.insert(extract_node_part(peer_id), (idx + 1) as u32);
-    }
+    let our_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let our_node_part = extract_node_part(&our_peer_id_hex);
 
     let our_node_id = *node_id_assignments
-        .get(our_node_part)
-        .ok_or_else(|| DkgError::InvalidInput("PSS: our peer not in ring".to_string()))?;
+        .get(&app_state.node_key)
+        .ok_or_else(|| DkgError::InvalidInput("PSS: our node key not in ring".to_string()))?;
 
     let total = peer_ids.len();
 
@@ -276,7 +289,7 @@ where
         })?;
     let session_id = derive_refresh_session_id(
         ring_pk_str,
-        peer_ids,
+        &ring_payload.peer_node_keys,
         ring_payload.threshold,
         &bundle.public_polynomial,
     );
@@ -363,29 +376,28 @@ where
     metrics::record_refresh_session_started();
 
     coordinator
-        .set_peer_ids(&session_id, peer_ids.clone())
+        .set_peer_ids(&session_id, peer_ids.to_vec())
         .await;
-
-    let mut node_id_to_peer_id = std::collections::HashMap::new();
-    for (peer_key, node_id) in &node_id_assignments {
-        let full_peer_id = peer_ids
-            .iter()
-            .find(|pid| extract_node_part(pid) == *peer_key)
-            .cloned()
-            .unwrap_or_else(|| peer_key.clone());
-        node_id_to_peer_id.insert(*node_id, full_peer_id);
-    }
     app_state
         .dkg_session_state
-        .set_node_peer_mappings(&session_id, node_id_to_peer_id)
+        .set_peer_node_keys(&session_id, ring_payload.peer_node_keys.clone())
+        .await;
+    app_state
+        .dkg_session_state
+        .set_ring_id(&session_id, post_id.clone())
+        .await;
+    app_state
+        .dkg_session_state
+        .set_node_peer_mappings(&session_id, node_id_to_peer_id.clone())
         .await;
 
     let init_msg = DkgMessage::SessionInit {
         session_id,
         threshold: threshold as u32,
         total_participants: total as u32,
-        peer_ids: peer_ids.clone(),
-        node_id_assignments,
+        peer_ids: peer_ids.to_vec(),
+        peer_node_keys: ring_payload.peer_node_keys.clone(),
+        node_id_assignments: node_id_assignments.clone(),
         token_string: String::new(),
         kind: SessionKind::Refresh {
             ring_pk_hex: ring_pk_str.clone(),
@@ -439,13 +451,16 @@ where
 
 /// Initiate a Reshare ceremony (same secret, new shares, potentially different committee).
 ///
-/// Fires whenever the bulletin `RingPayload` has `new_peer_ids` or `new_threshold` set,
+/// Fires whenever the bulletin `RingPayload` has `new_peer_node_keys` or `new_threshold` set,
 /// bypassing the `pss_interval` timing gate.  Repeats on every scheduler tick until
 /// Phase 4 posts the updated payload clearing those fields.
 async fn trigger_reshare<D>(
     app_state: &Arc<AppState<D>>,
     entry: &RingIndexEntry,
     ring_payload: &RingPayload,
+    old_routes: &[NodeRoute],
+    old_node_id_assignments: &std::collections::HashMap<String, u32>,
+    old_node_id_to_peer_id: &std::collections::HashMap<u32, String>,
 ) -> Result<(), DkgError>
 where
     D: Dkg<
@@ -460,64 +475,62 @@ where
 {
     let post_id = &entry.bulletin_post_id;
     let ring_pk_str = &entry.ring_pk_str;
-    let old_peer_ids = &ring_payload.peer_ids;
+    let our_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let our_node_part = extract_node_part(&our_peer_id_hex);
+    let old_peer_node_keys = &ring_payload.peer_node_keys;
+    let old_peer_ids = peer_ids_from_routes(old_routes);
     let old_threshold = ring_payload.threshold as usize;
 
     // Fallbacks: absent field = keep current value.
-    let new_peer_ids: Vec<String> = ring_payload
-        .new_peer_ids
+    let new_peer_node_keys: Vec<String> = ring_payload
+        .new_peer_node_keys
         .clone()
-        .unwrap_or_else(|| old_peer_ids.clone());
+        .unwrap_or_else(|| old_peer_node_keys.clone());
+    let new_routes = resolve_node_routes(&app_state.bulletin, &new_peer_node_keys)
+        .await
+        .map_err(DkgError::InvalidInput)?;
+    let new_route_peer_ids = peer_ids_from_routes(&new_routes);
     let new_threshold: u32 = ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
-
-    let our_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
-    let our_node_part = extract_node_part(&our_peer_id_hex);
 
     let (our_node_id, dkg_role, reshare_params) = match build_reshare_params(
         ring_pk_str,
-        old_peer_ids,
-        &new_peer_ids,
+        old_peer_node_keys,
+        &new_peer_node_keys,
         new_threshold,
         post_id,
-        &our_node_part,
+        &app_state.node_key,
         &app_state.local_storage,
     ) {
         Ok(v) => v,
         Err(e) => return Err(e),
     };
 
-    // sorted_new is already sorted inside reshare_params.new_peer_ids.
-    let sorted_new = reshare_params.new_peer_ids.clone();
+    // sorted_new is already sorted inside reshare_params.new_peer_node_keys.
+    let sorted_new_peer_node_keys = reshare_params.new_peer_node_keys.clone();
 
     // Build union(old, new) — all peers that must receive SessionInit.
     let mut union_peers = old_peer_ids.clone();
-    for p in &sorted_new {
+    for p in &new_route_peer_ids {
         if !union_peers.contains(p) {
             union_peers.push(p.clone());
         }
     }
 
-    // node_id_assignments covers the OLD committee (1-based sorted index).
-    let mut sorted_old = old_peer_ids.clone();
-    sorted_old.sort();
-    let mut node_id_assignments: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
-    for (idx, peer_id) in sorted_old.iter().enumerate() {
-        node_id_assignments.insert(extract_node_part(peer_id), (idx + 1) as u32);
-    }
+    // node_id_assignments covers the OLD committee (1-based sorted node-key index).
+    let node_id_assignments = old_node_id_assignments.clone();
 
     let session_id = derive_reshare_session_id(
         ring_pk_str,
         post_id,
-        old_peer_ids,
-        &sorted_new,
+        old_peer_node_keys,
+        &sorted_new_peer_node_keys,
         new_threshold,
     );
-    let total_old = old_peer_ids.len();
+    let total_old = old_peer_node_keys.len();
 
     let kind = SessionKind::Reshare {
         ring_pk_hex: ring_pk_str.clone(),
-        new_peer_ids: sorted_new.clone(),
+        new_peer_node_keys: sorted_new_peer_node_keys.clone(),
         new_threshold,
         bulletin_post_id: post_id.clone(),
     };
@@ -611,29 +624,28 @@ where
         .await;
 
     coordinator
-        .set_peer_ids(&session_id, sorted_new.clone())
+        .set_peer_ids(&session_id, new_route_peer_ids.clone())
+        .await;
+    app_state
+        .dkg_session_state
+        .set_peer_node_keys(&session_id, new_peer_node_keys.clone())
+        .await;
+    app_state
+        .dkg_session_state
+        .set_ring_id(&session_id, post_id.clone())
         .await;
 
     // Store old-committee node_id → peer_id mappings for sender validation.
-    let mut node_id_to_peer_id = std::collections::HashMap::new();
-    for (peer_key, node_id) in &node_id_assignments {
-        let full_peer_id = old_peer_ids
-            .iter()
-            .find(|pid| extract_node_part(pid) == *peer_key)
-            .cloned()
-            .unwrap_or_else(|| peer_key.clone());
-        node_id_to_peer_id.insert(*node_id, full_peer_id);
-    }
     app_state
         .dkg_session_state
-        .set_node_peer_mappings(&session_id, node_id_to_peer_id)
+        .set_node_peer_mappings(&session_id, old_node_id_to_peer_id.clone())
         .await;
 
-    let new_node_id_to_peer_id = sorted_new
-        .iter()
-        .enumerate()
-        .map(|(idx, peer_id)| ((idx + 1) as u32, peer_id.clone()))
-        .collect();
+    let new_node_id_assignments = canonical_node_id_assignments_from_node_keys(&new_peer_node_keys)
+        .map_err(DkgError::InvalidInput)?;
+    let new_node_id_to_peer_id =
+        node_id_to_peer_id_from_routes(&new_routes, &new_node_id_assignments)
+            .map_err(DkgError::InvalidInput)?;
     app_state
         .dkg_session_state
         .set_reshare_new_peer_mappings(&session_id, new_node_id_to_peer_id)
@@ -644,6 +656,7 @@ where
         threshold: old_threshold as u32,
         total_participants: total_old as u32,
         peer_ids: old_peer_ids.clone(),
+        peer_node_keys: old_peer_node_keys.clone(),
         node_id_assignments,
         token_string: String::new(),
         kind,
@@ -669,7 +682,7 @@ where
     }
 
     if let Err(e) = coordinator
-        .initiate_phase1_commitments(session_id, &sorted_new)
+        .initiate_phase1_commitments(session_id, &new_route_peer_ids)
         .await
     {
         app_state

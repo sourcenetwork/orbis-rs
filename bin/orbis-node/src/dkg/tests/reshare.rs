@@ -5,16 +5,16 @@ use crate::dkg::{
 };
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::helpers::extract_node_part;
+use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default,
     create_test_app_state_with_bulletin, get_test_ring_post, setup_three_node_network,
     test_db_path, write_ring_to_bulletin, TestKeyPair, TestNode,
 };
-use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use crate::DkgServiceImpl;
 use bulletin::dummy::DummyBulletin;
-use bulletin::r#trait::{BulletinKind, RingPayload};
+use bulletin::r#trait::{BulletinKind, NodeInfo, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole, PubPoly as PubPolyTrait};
 use crypto::CryptoSerialize;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -40,28 +40,31 @@ use crypto::{DkgImpl, PreImpl, SignImpl};
 
 /// Build a minimal reshare `SessionInit` that the coordinator can inspect.
 ///
-/// `peer_ids` = old committee, `new_peer_ids` = new committee.
+/// Minimal validation tests reuse the same strings for route peer IDs and
+/// peer_node_keys because no real network routing occurs.
 fn reshare_session_init(
     ring_pk: &str,
-    peer_ids: Vec<String>,
-    new_peer_ids: Vec<String>,
+    peer_node_keys: Vec<String>,
+    new_peer_node_keys: Vec<String>,
     new_threshold: u32,
 ) -> DkgMessage {
     let mut node_id_assignments = std::collections::HashMap::new();
-    for (i, p) in peer_ids.iter().enumerate() {
+    for (i, p) in peer_node_keys.iter().enumerate() {
         node_id_assignments.insert(p.clone(), (i + 1) as u32);
     }
+    let peer_ids = peer_node_keys.clone();
     DkgMessage::SessionInit {
         // Arbitrary non-colliding session ID for reshare validation tests.
         session_id: 99_999_100,
         threshold: 1,
         total_participants: peer_ids.len() as u32,
-        peer_ids,
+        peer_ids: peer_ids.clone(),
+        peer_node_keys,
         node_id_assignments,
         token_string: String::new(),
         kind: SessionKind::Reshare {
             ring_pk_hex: ring_pk.to_string(),
-            new_peer_ids,
+            new_peer_node_keys,
             new_threshold,
             bulletin_post_id: String::new(),
         },
@@ -165,8 +168,8 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
     let session_ring_pk = "session_ring_hex";
     let payload = RingPayload {
         ring_pk: "payload_ring_pk_other".to_string(),
-        peer_ids: vec![sender_hex.to_string()],
-        new_peer_ids: Some(vec!["00112233".to_string()]),
+        peer_node_keys: vec![sender_hex.to_string()],
+        new_peer_node_keys: Some(vec!["00112233".to_string()]),
         new_threshold: Some(1),
         threshold: 2,
         pss_interval: None,
@@ -229,7 +232,7 @@ async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
 
     let ring_pk = "reshare_ring";
     // Ring contains "aabbccdd"; sender will be "deadbeef" (not a member).
-    // Bulletin must pre-announce new_peer_ids and new_threshold so checks 3 & 4
+    // Bulletin must pre-announce new_peer_node_keys and new_threshold so checks 3 & 4
     // pass and the test actually reaches check 2 (sender membership).
     write_ring_with_announced_reshare(
         &app_state,
@@ -272,7 +275,7 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
     // and reaches the try_mark_ring_pss check (the (false,false) guard fires before
     // the mark check, so the test node must be in at least one committee).
     let our_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
-    // Bulletin must pre-announce new_peer_ids and new_threshold (matching what the
+    // Bulletin must pre-announce new_peer_node_keys and new_threshold (matching what the
     // message will propose) so checks 3 & 4 pass and the test reaches the PSS flag check.
     write_ring_with_announced_reshare(
         &app_state,
@@ -343,7 +346,7 @@ async fn test_dealer_phase4_deletes_share_and_ring_index_entry() {
             &session_id,
             SessionKind::Reshare {
                 ring_pk_hex: ring_pk.to_string(),
-                new_peer_ids: vec!["00112233".to_string()],
+                new_peer_node_keys: vec!["00112233".to_string()],
                 new_threshold: 1,
                 bulletin_post_id: String::new(),
             },
@@ -413,7 +416,7 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
             &session_id,
             SessionKind::Reshare {
                 ring_pk_hex: ring_pk.to_string(),
-                new_peer_ids: vec!["00112233".to_string()],
+                new_peer_node_keys: vec!["00112233".to_string()],
                 new_threshold: 1,
                 bulletin_post_id: String::new(),
             },
@@ -452,17 +455,17 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
 //
 // These tests exercise the two new bulletin-anchor checks added to
 // `validate_reshare_session_init`:
-//   • proposed `new_peer_ids` must match `RingPayload::new_peer_ids` when set
+//   • proposed `new_peer_node_keys` must match `RingPayload::new_peer_node_keys` when set
 //   • proposed `new_threshold` must match `RingPayload::new_threshold` when set
 // =============================================================================
 
-/// Post a `RingPayload` with caller-supplied `new_peer_ids` / `new_threshold`
+/// Post a `RingPayload` with caller-supplied `new_peer_node_keys` / `new_threshold`
 /// and seed `RingIndex` so the coordinator can find the ring.
 async fn write_ring_with_announced_reshare(
     app_state: &crate::app_state::AppState<crypto::DkgImpl>,
     ring_pk: &str,
-    peer_ids: Vec<String>,
-    announced_new_peer_ids: Option<Vec<String>>,
+    peer_node_keys: Vec<String>,
+    announced_new_peer_node_keys: Option<Vec<String>>,
     announced_new_threshold: Option<u32>,
 ) {
     use crate::ring_state::RingIndexEntry;
@@ -470,8 +473,8 @@ async fn write_ring_with_announced_reshare(
 
     let payload = RingPayload {
         ring_pk: ring_pk.to_string(),
-        peer_ids,
-        new_peer_ids: announced_new_peer_ids,
+        peer_node_keys,
+        new_peer_node_keys: announced_new_peer_node_keys,
         new_threshold: announced_new_threshold,
         threshold: 2,
         pss_interval: None,
@@ -505,10 +508,10 @@ async fn write_ring_with_announced_reshare(
         .unwrap();
 }
 
-/// Reshare `SessionInit` whose `new_peer_ids` differs from the bulletin-announced
+/// Reshare `SessionInit` whose `new_peer_node_keys` differs from the bulletin-announced
 /// committee must be rejected with `Unauthorized`.
 #[tokio::test]
-async fn test_reshare_session_init_rejects_mismatched_new_peer_ids() {
+async fn test_reshare_session_init_rejects_mismatched_new_peer_node_keys() {
     let db_name = "test_reshare_rejects_mismatch_peers";
     let db_path = test_db_path(db_name);
     let app_state = Arc::new(create_test_app_state_default(db_name).await);
@@ -541,7 +544,7 @@ async fn test_reshare_session_init_rejects_mismatched_new_peer_ids() {
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
         matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
-        "Expected Unauthorized for mismatched new_peer_ids, got: {:?}",
+        "Expected Unauthorized for mismatched new_peer_node_keys, got: {:?}",
         result
     );
     cleanup_db(&db_path);
@@ -558,8 +561,8 @@ async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
 
-    // Bulletin pre-announces new_threshold = 2, with matching new_peer_ids.
-    // new_peer_ids must also be set (matching the proposal) so check 3 passes
+    // Bulletin pre-announces new_threshold = 2, with matching new_peer_node_keys.
+    // new_peer_node_keys must also be set (matching the proposal) so check 3 passes
     // and the test actually reaches check 4 (the threshold mismatch).
     write_ring_with_announced_reshare(
         &app_state,
@@ -595,8 +598,8 @@ async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
 //
 // These tests exercise the fast-fail checks added to validate_reshare_session_init
 // before the bulletin is consulted:
-//   • new_peer_ids must be non-empty
-//   • new_threshold must be in [1, len(new_peer_ids)]
+//   • new_peer_node_keys must be non-empty
+//   • new_threshold must be in [1, len(new_peer_node_keys)]
 // No bulletin entry is needed because the checks fire before the bulletin lookup.
 // =============================================================================
 
@@ -640,7 +643,7 @@ async fn test_reshare_session_init_rejects_no_bulletin_announcement() {
     cleanup_db(&db_path);
 }
 
-/// Reshare `SessionInit` with an empty `new_peer_ids` must be rejected with
+/// Reshare `SessionInit` with an empty `new_peer_node_keys` must be rejected with
 /// `InvalidInput` before any bulletin lookup occurs.
 #[tokio::test]
 async fn test_reshare_session_init_rejects_empty_new_committee() {
@@ -661,13 +664,13 @@ async fn test_reshare_session_init_rejects_empty_new_committee() {
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
         matches!(result, Err(crate::dkg::error::DkgError::InvalidInput(_))),
-        "Expected InvalidInput for empty new_peer_ids, got: {:?}",
+        "Expected InvalidInput for empty new_peer_node_keys, got: {:?}",
         result
     );
     cleanup_db(&db_path);
 }
 
-/// Reshare `SessionInit` with `new_threshold > len(new_peer_ids)` must be
+/// Reshare `SessionInit` with `new_threshold > len(new_peer_node_keys)` must be
 /// rejected with `InvalidInput` before any bulletin lookup occurs.
 #[tokio::test]
 async fn test_reshare_session_init_rejects_threshold_exceeds_committee_size() {
@@ -727,7 +730,7 @@ async fn test_reshare_session_init_rejects_zero_threshold() {
 //
 // When a bulletin field is absent the authoritative value falls back to the
 // current ring state rather than rejecting outright:
-//   • new_peer_ids absent → authoritative = ring_payload.peer_ids
+//   • new_peer_node_keys absent → authoritative = ring_payload.peer_node_keys
 //   • new_threshold absent → authoritative = ring_payload.threshold
 // The tests below call validate_reshare_session_init directly so that committee
 // membership of the receiving node is not a factor.
@@ -738,9 +741,9 @@ async fn test_reshare_session_init_rejects_zero_threshold() {
 async fn post_ring_for_validation(
     app_state: &crate::app_state::AppState<crypto::DkgImpl>,
     ring_pk: &str,
-    peer_ids: Vec<String>,
+    peer_node_keys: Vec<String>,
     threshold: u32,
-    new_peer_ids: Option<Vec<String>>,
+    new_peer_node_keys: Option<Vec<String>>,
     new_threshold: Option<u32>,
 ) {
     use crate::ring_state::RingIndexEntry;
@@ -748,8 +751,8 @@ async fn post_ring_for_validation(
 
     let payload = RingPayload {
         ring_pk: ring_pk.to_string(),
-        peer_ids,
-        new_peer_ids,
+        peer_node_keys,
+        new_peer_node_keys,
         new_threshold,
         threshold,
         pss_interval: None,
@@ -783,10 +786,10 @@ async fn post_ring_for_validation(
         .unwrap();
 }
 
-/// When `new_peer_ids` is absent and proposed committee equals current `peer_ids`,
+/// When `new_peer_node_keys` is absent and proposed committee equals current `peer_ids`,
 /// validation must succeed (fallback = keep current committee).
 #[tokio::test]
-async fn test_validate_reshare_accepts_new_peer_ids_fallback_to_current() {
+async fn test_validate_reshare_accepts_new_peer_node_keys_fallback_to_current() {
     use crate::dkg::helpers::validate_reshare_session_init;
 
     let db_name = "validate_reshare_fallback_accepts_peers";
@@ -796,7 +799,7 @@ async fn test_validate_reshare_accepts_new_peer_ids_fallback_to_current() {
     let ring_pk = "fallback_peers_ring";
     let sender_hex = "aabbccdd";
 
-    // Only new_threshold is announced; new_peer_ids absent → fallback = peer_ids.
+    // Only new_threshold is announced; new_peer_node_keys absent → fallback = peer_ids.
     post_ring_for_validation(
         &app_state,
         ring_pk,
@@ -839,7 +842,7 @@ async fn test_validate_reshare_accepts_new_threshold_fallback_to_current() {
     let sender_hex = "aabbccdd";
     let new_peer = "00112233";
 
-    // Only new_peer_ids is announced; new_threshold absent → fallback = threshold = 1.
+    // Only new_peer_node_keys is announced; new_threshold absent → fallback = threshold = 1.
     post_ring_for_validation(
         &app_state,
         ring_pk,
@@ -868,7 +871,7 @@ async fn test_validate_reshare_accepts_new_threshold_fallback_to_current() {
     cleanup_db(&db_path);
 }
 
-/// When `new_peer_ids` is absent and proposed committee differs from current `peer_ids`,
+/// When `new_peer_node_keys` is absent and proposed committee differs from current `peer_ids`,
 /// validation must reject — absent does not mean "accept any committee".
 #[tokio::test]
 async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
@@ -881,7 +884,7 @@ async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
     let ring_pk = "fallback_reject_peers_ring";
     let sender_hex = "aabbccdd";
 
-    // new_peer_ids absent → fallback = peer_ids = ["aabbccdd"].
+    // new_peer_node_keys absent → fallback = peer_ids = ["aabbccdd"].
     post_ring_for_validation(
         &app_state,
         ring_pk,
@@ -966,6 +969,7 @@ async fn test_validate_reshare_rejects_when_threshold_differs_from_fallback() {
 /// Create an additional test node that shares an existing `DummyBulletin`.
 /// Starts a DKG router on the node immediately.
 async fn create_extra_test_node(db_suffix: &str, bulletin: Arc<DummyBulletin>) -> TestNode {
+    let bulletin_for_seed = bulletin.clone();
     let state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
@@ -984,6 +988,17 @@ async fn create_extra_test_node(db_suffix: &str, bulletin: Arc<DummyBulletin>) -
         .map(|a| format!("{}", a))
         .unwrap_or_else(|| "127.0.0.1:0".to_string());
     let address_with_port = format!("{}@{}", address, socket_addr);
+    bulletin_for_seed
+        .set_node_info(
+            state.node_key.clone(),
+            NodeInfo {
+                peer_id: address_with_port.clone(),
+                controller_key: "test-controller-key".to_string(),
+                whitelisted_policy_ids: vec!["test-policy".to_string()],
+                whitelisted_ring_ids: vec![TEST_FRESH_DKG_RING_ID.to_string()],
+            },
+        )
+        .expect("seed extra node routed NodeInfo");
 
     let router = {
         let arc_state = Arc::new(state.clone());
@@ -1037,10 +1052,10 @@ async fn wait_for_dkg_complete_on_bulletin(bulletin: &DummyBulletin) -> (String,
 /// Returns the bulletin `post_id` of the announcement entry.
 async fn post_reshare_announcement(
     old_nodes: &[&crate::app_state::AppState<DkgImpl>],
-    old_peer_ids: &[String],
+    old_peer_node_keys: &[String],
     old_threshold: u32,
     key_string: &str,
-    sorted_new_peer_ids: &[String],
+    sorted_new_peer_node_keys: &[String],
     new_threshold: u32,
     bulletin: &DummyBulletin,
 ) -> String {
@@ -1048,9 +1063,9 @@ async fn post_reshare_announcement(
 
     let payload = RingPayload {
         ring_pk: key_string.to_string(),
-        peer_ids: old_peer_ids.to_vec(),
+        peer_node_keys: old_peer_node_keys.to_vec(),
         threshold: old_threshold,
-        new_peer_ids: Some(sorted_new_peer_ids.to_vec()),
+        new_peer_node_keys: Some(sorted_new_peer_node_keys.to_vec()),
         new_threshold: Some(new_threshold),
         pss_interval: None,
         block_number_nonce: 0,
@@ -1103,11 +1118,12 @@ async fn post_reshare_announcement(
 async fn run_reshare_ceremony(
     initiator_state: &crate::app_state::AppState<DkgImpl>,
     initiator_peer_id: &PeerId,
+    old_peer_node_keys: &[String],
     old_peer_ids: &[String],
     old_threshold: u32,
     union_peer_ids: &[String],
     key_string: &str,
-    sorted_new_peer_ids: &[String],
+    sorted_new_peer_node_keys: &[String],
     new_threshold: u32,
     bulletin_post_id: &str,
     new_committee_states: &[&crate::app_state::AppState<DkgImpl>],
@@ -1115,8 +1131,8 @@ async fn run_reshare_ceremony(
     let session_id = derive_reshare_session_id(
         key_string,
         bulletin_post_id,
-        old_peer_ids,
-        sorted_new_peer_ids,
+        old_peer_node_keys,
+        sorted_new_peer_node_keys,
         new_threshold,
     );
 
@@ -1131,11 +1147,11 @@ async fn run_reshare_ceremony(
         .collect();
 
     // Build deterministic old-committee node_id assignments.
-    let mut sorted_old = old_peer_ids.to_vec();
+    let mut sorted_old = old_peer_node_keys.to_vec();
     sorted_old.sort();
     let mut node_id_assignments = std::collections::HashMap::new();
-    for (idx, pid) in sorted_old.iter().enumerate() {
-        node_id_assignments.insert(extract_node_part(pid), (idx + 1) as u32);
+    for (idx, node_key) in sorted_old.iter().enumerate() {
+        node_id_assignments.insert(node_key.clone(), (idx + 1) as u32);
     }
 
     let init_msg = DkgMessage::SessionInit {
@@ -1143,11 +1159,12 @@ async fn run_reshare_ceremony(
         threshold: old_threshold,
         total_participants: old_peer_ids.len() as u32,
         peer_ids: old_peer_ids.to_vec(),
+        peer_node_keys: old_peer_node_keys.to_vec(),
         node_id_assignments,
         token_string: String::new(),
         kind: SessionKind::Reshare {
             ring_pk_hex: key_string.to_string(),
-            new_peer_ids: sorted_new_peer_ids.to_vec(),
+            new_peer_node_keys: sorted_new_peer_node_keys.to_vec(),
             new_threshold,
             bulletin_post_id: bulletin_post_id.to_string(),
         },
@@ -1182,8 +1199,13 @@ async fn run_reshare_ceremony(
     }
 
     // Start Phase 1 on the initiator (generates polynomial + broadcasts commitment).
+    let phase1_peer_ids = initiator_state
+        .dkg_session_state
+        .get_peer_ids(&session_id)
+        .await
+        .expect("reshare session peer routes");
     coordinator
-        .initiate_phase1_commitments(session_id, sorted_new_peer_ids)
+        .initiate_phase1_commitments(session_id, &phase1_peer_ids)
         .await
         .expect("initiate phase 1 commitments");
 
@@ -1225,12 +1247,12 @@ async fn run_reshare_ceremony(
         let payload: RingPayload =
             serde_json::from_slice(&post.payload).expect("parse reshare RingPayload");
 
-        let mut actual_peer_ids = payload.peer_ids.clone();
+        let mut actual_peer_ids = payload.peer_node_keys.clone();
         actual_peer_ids.sort();
-        let mut expected_peer_ids = sorted_new_peer_ids.to_vec();
+        let mut expected_peer_ids = sorted_new_peer_node_keys.to_vec();
         expected_peer_ids.sort();
 
-        if payload.new_peer_ids.is_none()
+        if payload.new_peer_node_keys.is_none()
             && payload.new_threshold.is_none()
             && actual_peer_ids == expected_peer_ids
             && payload.threshold == new_threshold
@@ -1290,28 +1312,23 @@ async fn test_reshare_lower_threshold() {
 
     let mut network = setup_three_node_network(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
+    let old_peer_node_keys = vec![
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        network.charlie.app_state.node_key.clone(),
+    ];
     let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap().clone();
 
     // Phase A: initial DKG (t=2, n=3).
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("JWT");
     alice_service
         .start_dkg(
             create_authenticated_request(
                 StartDkgRequest {
-                    threshold: 2,
-                    peer_ids: peer_ids.clone(),
-                    pss_interval: None,
-                    policy_id: None,
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1325,7 +1342,7 @@ async fn test_reshare_lower_threshold() {
     println!("DKG complete. key_string={}", key_string);
 
     // Phase B: reshare announcement — same committee, t=2→1.
-    let mut sorted_new = peer_ids.clone();
+    let mut sorted_new = old_peer_node_keys.clone();
     sorted_new.sort();
     let old_node_states: Vec<&crate::app_state::AppState<DkgImpl>> = vec![
         &network.alice.app_state,
@@ -1334,7 +1351,7 @@ async fn test_reshare_lower_threshold() {
     ];
     let announcement_post_id = post_reshare_announcement(
         &old_node_states,
-        &peer_ids,
+        &old_peer_node_keys,
         2,
         &key_string,
         &sorted_new,
@@ -1352,6 +1369,7 @@ async fn test_reshare_lower_threshold() {
     run_reshare_ceremony(
         &network.alice.app_state,
         &network.alice.peer_id,
+        &old_peer_node_keys,
         &peer_ids,
         2,
         &peer_ids,
@@ -1402,6 +1420,11 @@ async fn test_reshare_one_member_rotated() {
     let mut network = setup_three_node_network(true, db_name).await;
     let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap().clone();
     let peer_ids = network.get_all_peer_ids();
+    let old_peer_node_keys = vec![
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        network.charlie.app_state.node_key.clone(),
+    ];
 
     // Extra node D joins the new committee.
     let mut dave = create_extra_test_node(&format!("{}_4", db_name), dummy_bulletin.clone()).await;
@@ -1410,22 +1433,12 @@ async fn test_reshare_one_member_rotated() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("JWT");
     alice_service
         .start_dkg(
             create_authenticated_request(
                 StartDkgRequest {
-                    threshold: 2,
-                    peer_ids: peer_ids.clone(),
-                    pss_interval: None,
-                    policy_id: None,
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1440,9 +1453,9 @@ async fn test_reshare_one_member_rotated() {
 
     // Phase B: reshare to {A,B,D}, t=2.
     let mut sorted_new = vec![
-        network.alice.address.clone(),
-        network.bob.address.clone(),
-        dave.address.clone(),
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        dave.app_state.node_key.clone(),
     ];
     sorted_new.sort();
 
@@ -1453,7 +1466,7 @@ async fn test_reshare_one_member_rotated() {
     ];
     let announcement_post_id = post_reshare_announcement(
         &old_node_states,
-        &peer_ids,
+        &old_peer_node_keys,
         2,
         &key_string,
         &sorted_new,
@@ -1467,12 +1480,18 @@ async fn test_reshare_one_member_rotated() {
         &network.bob.app_state,
         &dave.app_state,
     ];
+    let mut union_peer_ids = peer_ids.clone();
+    if !union_peer_ids.contains(&dave.address) {
+        union_peer_ids.push(dave.address.clone());
+    }
+
     run_reshare_ceremony(
         &network.alice.app_state,
         &network.alice.peer_id,
+        &old_peer_node_keys,
         &peer_ids,
         2,
-        &sorted_new,
+        &union_peer_ids,
         &key_string,
         &sorted_new,
         2,
@@ -1521,28 +1540,23 @@ async fn test_reshare_one_old_dealer_offline_completes() {
     let mut network = setup_three_node_network(true, db_name).await;
     let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap().clone();
     let peer_ids = network.get_all_peer_ids();
+    let old_peer_node_keys = vec![
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        network.charlie.app_state.node_key.clone(),
+    ];
     let mut dave = create_extra_test_node(&format!("{}_4", db_name), dummy_bulletin.clone()).await;
 
     // Phase A: DKG with A, B, C (t=2).
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("JWT");
     alice_service
         .start_dkg(
             create_authenticated_request(
                 StartDkgRequest {
-                    threshold: 2,
-                    peer_ids: peer_ids.clone(),
-                    pss_interval: None,
-                    policy_id: None,
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1556,9 +1570,9 @@ async fn test_reshare_one_old_dealer_offline_completes() {
 
     // Phase B: reshare to {A,B,D}, t=2. C is leaving and will be offline.
     let mut sorted_new = vec![
-        network.alice.address.clone(),
-        network.bob.address.clone(),
-        dave.address.clone(),
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        dave.app_state.node_key.clone(),
     ];
     sorted_new.sort();
 
@@ -1569,7 +1583,7 @@ async fn test_reshare_one_old_dealer_offline_completes() {
     ];
     let announcement_post_id = post_reshare_announcement(
         &old_node_states,
-        &peer_ids,
+        &old_peer_node_keys,
         2,
         &key_string,
         &sorted_new,
@@ -1590,12 +1604,20 @@ async fn test_reshare_one_old_dealer_offline_completes() {
         &network.bob.app_state,
         &dave.app_state,
     ];
+    let mut union_peer_ids = vec![
+        network.alice.address.clone(),
+        network.bob.address.clone(),
+        dave.address.clone(),
+    ];
+    union_peer_ids.sort();
+
     run_reshare_ceremony(
         &network.alice.app_state,
         &network.alice.peer_id,
+        &old_peer_node_keys,
         &peer_ids,
         2,
-        &sorted_new,
+        &union_peer_ids,
         &key_string,
         &sorted_new,
         2,
@@ -1644,6 +1666,11 @@ async fn test_reshare_expand_committee() {
     let mut network = setup_three_node_network(true, db_name).await;
     let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap().clone();
     let peer_ids = network.get_all_peer_ids();
+    let old_peer_node_keys = vec![
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        network.charlie.app_state.node_key.clone(),
+    ];
 
     let mut dave = create_extra_test_node(&format!("{}_4", db_name), dummy_bulletin.clone()).await;
 
@@ -1651,22 +1678,12 @@ async fn test_reshare_expand_committee() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("JWT");
     alice_service
         .start_dkg(
             create_authenticated_request(
                 StartDkgRequest {
-                    threshold: 2,
-                    peer_ids: peer_ids.clone(),
-                    pss_interval: None,
-                    policy_id: None,
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1680,17 +1697,17 @@ async fn test_reshare_expand_committee() {
 
     // Phase B: reshare to {A,B,C,D}, t=3.
     let mut sorted_new = vec![
-        network.alice.address.clone(),
-        network.bob.address.clone(),
-        network.charlie.address.clone(),
-        dave.address.clone(),
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        network.charlie.app_state.node_key.clone(),
+        dave.app_state.node_key.clone(),
     ];
     sorted_new.sort();
 
     let mut union_peers = peer_ids.clone();
-    for p in &sorted_new {
+    for p in [&dave.address] {
         if !union_peers.contains(p) {
-            union_peers.push(p.clone());
+            union_peers.push((*p).clone());
         }
     }
 
@@ -1701,7 +1718,7 @@ async fn test_reshare_expand_committee() {
     ];
     let announcement_post_id = post_reshare_announcement(
         &old_node_states,
-        &peer_ids,
+        &old_peer_node_keys,
         2,
         &key_string,
         &sorted_new,
@@ -1719,6 +1736,7 @@ async fn test_reshare_expand_committee() {
     run_reshare_ceremony(
         &network.alice.app_state,
         &network.alice.peer_id,
+        &old_peer_node_keys,
         &peer_ids,
         2,
         &union_peers,
@@ -1770,27 +1788,22 @@ async fn test_reshare_shrink_committee() {
     let mut network = setup_three_node_network(true, db_name).await;
     let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap().clone();
     let peer_ids = network.get_all_peer_ids();
+    let old_peer_node_keys = vec![
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        network.charlie.app_state.node_key.clone(),
+    ];
 
     // Phase A: DKG with A, B, C (t=2).
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("JWT");
     alice_service
         .start_dkg(
             create_authenticated_request(
                 StartDkgRequest {
-                    threshold: 2,
-                    peer_ids: peer_ids.clone(),
-                    pss_interval: None,
-                    policy_id: None,
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1803,7 +1816,10 @@ async fn test_reshare_shrink_committee() {
         wait_for_dkg_complete_on_bulletin(&dummy_bulletin).await;
 
     // Phase B: reshare to {A,B}, t=1.
-    let mut sorted_new = vec![network.alice.address.clone(), network.bob.address.clone()];
+    let mut sorted_new = vec![
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+    ];
     sorted_new.sort();
 
     // New committee ⊆ old: union == old.
@@ -1814,7 +1830,7 @@ async fn test_reshare_shrink_committee() {
     ];
     let announcement_post_id = post_reshare_announcement(
         &old_node_states,
-        &peer_ids,
+        &old_peer_node_keys,
         2,
         &key_string,
         &sorted_new,
@@ -1828,6 +1844,7 @@ async fn test_reshare_shrink_committee() {
     run_reshare_ceremony(
         &network.alice.app_state,
         &network.alice.peer_id,
+        &old_peer_node_keys,
         &peer_ids,
         2,
         &peer_ids, // union == old (new ⊆ old)
@@ -1878,6 +1895,11 @@ async fn test_reshare_full_rotation() {
     let mut network = setup_three_node_network(true, db_name).await;
     let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap().clone();
     let peer_ids = network.get_all_peer_ids();
+    let old_peer_node_keys = vec![
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        network.charlie.app_state.node_key.clone(),
+    ];
 
     // Three extra Receiver nodes that will form the new committee.
     let mut dave = create_extra_test_node(&format!("{}_4", db_name), dummy_bulletin.clone()).await;
@@ -1888,22 +1910,12 @@ async fn test_reshare_full_rotation() {
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("JWT");
     alice_service
         .start_dkg(
             create_authenticated_request(
                 StartDkgRequest {
-                    threshold: 2,
-                    peer_ids: peer_ids.clone(),
-                    pss_interval: None,
-                    policy_id: None,
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1918,16 +1930,16 @@ async fn test_reshare_full_rotation() {
 
     // Phase B: reshare to {D,E,F}, t=2.
     let mut sorted_new = vec![
-        dave.address.clone(),
-        eve.address.clone(),
-        frank.address.clone(),
+        dave.app_state.node_key.clone(),
+        eve.app_state.node_key.clone(),
+        frank.app_state.node_key.clone(),
     ];
     sorted_new.sort();
 
     let mut union_peers = peer_ids.clone();
-    for p in &sorted_new {
+    for p in [&dave.address, &eve.address, &frank.address] {
         if !union_peers.contains(p) {
-            union_peers.push(p.clone());
+            union_peers.push((*p).clone());
         }
     }
 
@@ -1938,7 +1950,7 @@ async fn test_reshare_full_rotation() {
     ];
     let announcement_post_id = post_reshare_announcement(
         &old_node_states,
-        &peer_ids,
+        &old_peer_node_keys,
         2,
         &key_string,
         &sorted_new,
@@ -1952,6 +1964,7 @@ async fn test_reshare_full_rotation() {
     run_reshare_ceremony(
         &network.alice.app_state,
         &network.alice.peer_id,
+        &old_peer_node_keys,
         &peer_ids,
         2,
         &union_peers,

@@ -67,23 +67,13 @@ async fn test_dkg_then_sign_end_to_end() {
 
     // node1 sends StartDkgRequest to initiate the protocol
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     // Create authenticated request
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     println!("Node1 sending StartDkgRequest...");
@@ -114,9 +104,7 @@ async fn test_dkg_then_sign_end_to_end() {
     // =========================================================================
     println!("\nStep 3: Creating document and posting to bulletin...");
 
-    let message =
-        create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id)
-            .await;
+    let message = create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id).await;
 
     println!(
         "Document posted to bulletin, message length: {} bytes",
@@ -153,8 +141,9 @@ async fn test_dkg_then_sign_end_to_end() {
             RingConfig {
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: sign_peer_ids.clone(),
+                peer_node_keys: sign_peer_ids.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -317,22 +306,12 @@ async fn test_sign_different_messages() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
 
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -354,8 +333,7 @@ async fn test_sign_different_messages() {
     for i in 0..2 {
         // Create and post a document for each message
         let message =
-            create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id)
-                .await;
+            create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id).await;
 
         let sign_coordinator =
             SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
@@ -375,8 +353,9 @@ async fn test_sign_different_messages() {
                 RingConfig {
                     ring_pk_bytes: ring_pk_bytes.clone(),
                     peer_ids: peer_ids.clone(),
+                    peer_node_keys: ring_payload.peer_node_keys.clone(),
                     threshold: ring_payload.threshold as usize,
-                    total_participants: ring_payload.peer_ids.len(),
+                    total_participants: ring_payload.peer_node_keys.len(),
                     public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                         &network.alice.app_state.local_storage,
                         &ring_payload.ring_pk,
@@ -438,22 +417,12 @@ async fn test_sign_fails_wrong_message() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
 
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -472,11 +441,8 @@ async fn test_sign_fails_wrong_message() {
         <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
 
     // Create and post a document, then sign it
-    let original_message = create_test_document_and_post(
-        &network.alice.app_state.bulletin,
-        &ring_id,
-    )
-    .await;
+    let original_message =
+        create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id).await;
 
     let sign_coordinator =
         SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
@@ -495,8 +461,9 @@ async fn test_sign_fails_wrong_message() {
             RingConfig {
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -565,22 +532,12 @@ async fn test_sign_response_cleanup() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
 
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -597,11 +554,7 @@ async fn test_sign_response_cleanup() {
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
     // Create and post a document, then sign it
-    let message = create_test_document_and_post(
-        &network.alice.app_state.bulletin,
-        &ring_id,
-    )
-    .await;
+    let message = create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id).await;
 
     let sign_coordinator =
         SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
@@ -620,8 +573,9 @@ async fn test_sign_response_cleanup() {
             RingConfig {
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -681,22 +635,12 @@ async fn test_sign_fails_invalid_bulletin_post() {
     // Run DKG
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -732,8 +676,9 @@ async fn test_sign_fails_invalid_bulletin_post() {
             RingConfig {
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -782,22 +727,12 @@ async fn test_sign_fails_post_not_on_bulletin() {
     // Run DKG
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -854,8 +789,9 @@ async fn test_sign_fails_post_not_on_bulletin() {
             RingConfig {
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -904,22 +840,12 @@ async fn test_sign_fails_tampered_payload() {
     // Run DKG
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -1004,8 +930,9 @@ async fn test_sign_fails_tampered_payload() {
             RingConfig {
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -1054,22 +981,12 @@ async fn test_sign_fails_invalid_ring_id() {
     // Run DKG
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let request = StartDkgRequest {
-        threshold: 2,
-        peer_ids: peer_ids.clone(),
-        pss_interval: None,
-        policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("Failed to create JWT");
 
     let result = node1_service
@@ -1138,8 +1055,9 @@ async fn test_sign_fails_invalid_ring_id() {
             RingConfig {
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -1222,22 +1140,12 @@ async fn test_dkg_then_sign_policy_end_to_end() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
             create_authenticated_request(
                 StartDkgRequest {
-                    threshold: 2,
-                    peer_ids: peer_ids.clone(),
-                    pss_interval: None,
-                    policy_id: None,
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1289,8 +1197,9 @@ async fn test_dkg_then_sign_policy_end_to_end() {
             RingConfig {
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -1387,22 +1296,12 @@ async fn test_sign_policy_fails_invalid_jwt() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
             create_authenticated_request(
                 StartDkgRequest {
-                    threshold: 2,
-                    peer_ids: peer_ids.clone(),
-                    pss_interval: None,
-                    policy_id: None,
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1441,8 +1340,9 @@ async fn test_sign_policy_fails_invalid_jwt() {
             RingConfig {
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -1496,22 +1396,12 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
             create_authenticated_request(
                 StartDkgRequest {
-                    threshold: 2,
-                    peer_ids: peer_ids.clone(),
-                    pss_interval: None,
-                    policy_id: None,
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1537,10 +1427,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
 
     // JWT claims a different derivation_id than the request
     let sign_token = test_keys
-        .create_sign_jwt(
-            "wrong-derivation-id",
-            b"test message",
-        )
+        .create_sign_jwt("wrong-derivation-id", b"test message")
         .expect("create sign JWT");
 
     let sign_coordinator =
@@ -1558,8 +1445,9 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
             RingConfig {
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,
@@ -1739,22 +1627,12 @@ async fn test_sign_policy_fails_wrong_message_digest() {
     let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(
-            2,
-            &peer_ids,
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID,
-        )
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
             create_authenticated_request(
                 StartDkgRequest {
-                    threshold: 2,
-                    peer_ids: peer_ids.clone(),
-                    pss_interval: None,
-                    policy_id: None,
                     ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
                 },
                 &token,
@@ -1781,10 +1659,7 @@ async fn test_sign_policy_fails_wrong_message_digest() {
     // JWT is signed for "original message"
     let original_message = b"original message".to_vec();
     let sign_token = test_keys
-        .create_sign_jwt(
-            POLICY_TEST_DERIVATION_ID,
-            &original_message,
-        )
+        .create_sign_jwt(POLICY_TEST_DERIVATION_ID, &original_message)
         .expect("create sign JWT");
 
     let sign_coordinator =
@@ -1804,8 +1679,9 @@ async fn test_sign_policy_fails_wrong_message_digest() {
             RingConfig {
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
                 threshold: ring_payload.threshold as usize,
-                total_participants: ring_payload.peer_ids.len(),
+                total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
                     &network.alice.app_state.local_storage,
                     &ring_payload.ring_pk,

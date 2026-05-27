@@ -122,17 +122,19 @@ pub(in crate::dkg::coordinator) async fn post_fresh_ring_payload<D>(
 where
     D: Dkg + Clone + 'static,
 {
-    let peer_ids = coord
+    let peer_node_keys = coord
         .app_state
         .dkg_session_state
-        .get_peer_ids(&session_id)
+        .get_peer_node_keys(&session_id)
         .await
-        .ok_or(DkgError::Generic("Failed to get peer ids".to_string()))?;
+        .ok_or(DkgError::Generic(
+            "Failed to get peer node keys".to_string(),
+        ))?;
 
     let ring_payload = RingPayload {
         ring_pk: hex::encode(ring_pk_bytes),
-        peer_ids,
-        new_peer_ids: None,
+        peer_node_keys,
+        new_peer_node_keys: None,
         new_threshold: None,
         threshold: threshold as u32,
         pss_interval,
@@ -159,15 +161,11 @@ where
 
     let ring_id = coord
         .app_state
-        .bulletin
-        .get_ring_id(
-            &ring_payload.peer_ids,
-            ring_payload.threshold,
-            ring_payload.pss_interval,
-            ring_payload.policy_id.as_deref().unwrap_or(""),
-            None,
-        )
-        .map_err(|e| DkgError::Bulletin(format!("Failed to compute ring_id: {}", e)))?;
+        .dkg_session_state
+        .get_ring_id(&session_id)
+        .await
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| DkgError::Bulletin("Fresh DKG session is missing ring_id".to_string()))?;
 
     tracing::info!(
         ring_pk = %ring_payload.ring_pk,
@@ -176,28 +174,6 @@ where
     );
 
     Ok(ring_id)
-}
-
-pub(in crate::dkg::coordinator) fn fresh_ring_index_post_id<D>(
-    app_state: &AppState<D>,
-    peer_ids: Vec<String>,
-    threshold: usize,
-    pss_interval: Option<u64>,
-    policy_id: Option<String>,
-) -> Result<String>
-where
-    D: Dkg + Clone + 'static,
-{
-    app_state
-        .bulletin
-        .get_ring_id(
-            &peer_ids,
-            threshold as u32,
-            pss_interval,
-            policy_id.as_deref().unwrap_or(""),
-            None,
-        )
-        .map_err(|e| DkgError::Serialization(format!("Failed to compute ring_id: {}", e)))
 }
 
 fn remove_ring_index_entry(storage: &impl LocalStorage, ring_key: &str) -> Result<()> {

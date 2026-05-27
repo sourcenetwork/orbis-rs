@@ -27,6 +27,7 @@ where
         pub_poly: &D::PubPoly,
         enc_cmt: &D::PublicKey,
         derivation: Option<&[u8]>,
+        expected_node_id: Option<u32>,
         seen_node_ids: &mut HashSet<u32>,
     ) -> Result<Option<PubShare<D::PublicKey>>> {
         let PreMessage::ReencryptResponse {
@@ -42,6 +43,17 @@ where
 
         if seen_node_ids.contains(&from_node_id) {
             return Ok(None);
+        }
+
+        if let Some(expected_node_id) = expected_node_id {
+            if from_node_id != expected_node_id {
+                tracing::error!(
+                    from_node_id = from_node_id,
+                    expected_node_id = expected_node_id,
+                    "PRE Coordinator: authenticated peer claimed the wrong node_id"
+                );
+                return Ok(None);
+            }
         }
 
         let share_v = match <D::PublicKey>::from_bytes(&share_bytes[..]) {

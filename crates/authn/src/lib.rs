@@ -61,17 +61,6 @@ pub struct SignClaims {
 /// Claims for DKG endpoints
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct DkgClaims {
-    /// Threshold to be set
-    pub threshold: u32,
-    /// Peer Ids of nodes in ring
-    pub peer_ids: Vec<String>,
-    /// Seconds between automatic PSS refresh ceremonies.
-    /// `None` (or absent) means automatic refresh is disabled for this ring.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pss_interval: Option<u64>,
-    /// Optional policy that externally governs ring updates.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy_id: Option<String>,
     /// Pre-created blank ring entry targeted by this DKG.
     pub ring_id: String,
 }

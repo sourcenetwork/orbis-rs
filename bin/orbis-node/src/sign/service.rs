@@ -2,6 +2,7 @@ use crate::app_state::AppState;
 use crate::constants::MAX_SIGN_MESSAGE_BYTES;
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
 use crate::helpers::helpers::{validate_all_peer_ids, RingConfig};
+use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::metrics;
 use crate::ring_state::RingPolyState;
 use crate::sign::coordinator::SignCoordinator;
@@ -93,11 +94,7 @@ where
         let req = request.into_inner();
 
         // validate JWT claims match request fields (no IO) ---
-        validate_sign_claims(
-            &token,
-            &req.derivation_id,
-            Some(&req.message),
-        )?;
+        validate_sign_claims(&token, &req.derivation_id, Some(&req.message))?;
 
         let valid_window = req.valid_window.map(|w| ValidWindow {
             start: w.start,
@@ -126,19 +123,24 @@ where
             derivation_id = %req.derivation_id,
             ring_id = %key_derivation.ring_id,
             ring_pk = %ring_payload.ring_pk,
-            peer_ids = ?ring_payload.peer_ids,
+            peer_node_keys = ?ring_payload.peer_node_keys,
             issuer = %token.issuer_id,
             "Authenticated StartSign request"
         );
 
         // Validate peers before attempting any connections (no IO) ---
-        if ring_payload.peer_ids.is_empty() {
-            return Err(SignError::InvalidInput("No peer IDs found for ring".to_string()).into());
+        if ring_payload.peer_node_keys.is_empty() {
+            return Err(
+                SignError::InvalidInput("No peer node keys found for ring".to_string()).into(),
+            );
         }
 
-        if let Err((invalid_peer_id, validation_error)) =
-            validate_all_peer_ids(&ring_payload.peer_ids)
-        {
+        let routes = resolve_node_routes(&self.state.bulletin, &ring_payload.peer_node_keys)
+            .await
+            .map_err(SignError::InvalidInput)?;
+        let peer_ids = peer_ids_from_routes(&routes);
+
+        if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&peer_ids) {
             return Err(SignError::InvalidInput(format!(
                 "Invalid peer ID '{}': {}",
                 invalid_peer_id, validation_error
@@ -156,7 +158,7 @@ where
         // Initiate threshold signing (network protocol) ---
         metrics::record_sign_request_started();
         let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
-        let total_participants = ring_payload.peer_ids.len();
+        let total_participants = peer_ids.len();
         let poly_state =
             RingPolyState::load_from_ring_pk_hex(&self.state.local_storage, &ring_payload.ring_pk)
                 .map_err(|e| {
@@ -164,7 +166,8 @@ where
                 })?;
         let ring = RingConfig {
             ring_pk_bytes,
-            peer_ids: ring_payload.peer_ids,
+            peer_ids,
+            peer_node_keys: ring_payload.peer_node_keys,
             threshold: ring_payload.threshold as usize,
             total_participants,
             public_polynomial_hex: poly_state.public_polynomial,

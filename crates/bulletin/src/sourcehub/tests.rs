@@ -8,7 +8,7 @@ use common::{
 fn test_ring_payload() -> RingPayload {
     RingPayload {
         ring_pk: String::new(),
-        peer_ids: vec![
+        peer_node_keys: vec![
             "peer-1".to_string(),
             "peer-2".to_string(),
             "peer-3".to_string(),
@@ -45,7 +45,7 @@ async fn test_bulletin_document() {
         .unwrap();
     let ring_id = bulletin
         .get_ring_id(
-            &ring_payload.peer_ids,
+            &ring_payload.peer_node_keys,
             ring_payload.threshold,
             ring_payload.pss_interval,
             ring_payload.policy_id.as_deref().unwrap_or(""),
@@ -113,7 +113,7 @@ async fn test_bulletin_ring() {
         .unwrap();
     let ring_id = bulletin
         .get_ring_id(
-            &payload.peer_ids,
+            &payload.peer_node_keys,
             payload.threshold,
             payload.pss_interval,
             payload.policy_id.as_deref().unwrap_or(""),

@@ -39,7 +39,7 @@ impl Bulletin for SourceHubBulletin {
                 let (result, _) = self
                     .chain_client
                     .orbis_create_ring_get_id(
-                        ring.peer_ids,
+                        ring.peer_node_keys,
                         ring.threshold,
                         ring.pss_interval,
                         ring.policy_id.as_deref().unwrap_or(""),
@@ -175,7 +175,7 @@ impl Bulletin for SourceHubBulletin {
         }
         if let Ok(ring) = serde_json::from_slice::<RingPayload>(payload) {
             return Ok(generate_ring_id(
-                &ring.peer_ids,
+                &ring.peer_node_keys,
                 ring.threshold,
                 ring.pss_interval,
                 ring.policy_id.as_deref().unwrap_or(""),
@@ -190,14 +190,14 @@ impl Bulletin for SourceHubBulletin {
 
     fn get_ring_id(
         &self,
-        peer_ids: &[String],
+        peer_node_keys: &[String],
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
         nonce: Option<&str>,
     ) -> Result<String> {
         Ok(generate_ring_id(
-            peer_ids,
+            peer_node_keys,
             threshold,
             pss_interval,
             policy_id,
@@ -247,13 +247,13 @@ impl Bulletin for SourceHubBulletin {
                 id: ring_id.to_string(),
             })?;
         let finalized = orbis::Ring {
-            peer_ids: if ring.new_peer_ids.is_empty() {
-                ring.peer_ids.clone()
+            peer_node_keys: if ring.new_peer_node_keys.is_empty() {
+                ring.peer_node_keys.clone()
             } else {
-                ring.new_peer_ids.clone()
+                ring.new_peer_node_keys.clone()
             },
             threshold: ring.new_threshold.unwrap_or(ring.threshold),
-            new_peer_ids: vec![],
+            new_peer_node_keys: vec![],
             new_threshold: None,
             ..ring
         };
@@ -363,11 +363,11 @@ impl SourceHubBulletin {
 fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
     let payload = RingPayload {
         ring_pk: ring.ring_pk,
-        peer_ids: ring.peer_ids,
-        new_peer_ids: if ring.new_peer_ids.is_empty() {
+        peer_node_keys: ring.peer_node_keys,
+        new_peer_node_keys: if ring.new_peer_node_keys.is_empty() {
             None
         } else {
-            Some(ring.new_peer_ids)
+            Some(ring.new_peer_node_keys)
         },
         new_threshold: ring.new_threshold,
         threshold: ring.threshold,

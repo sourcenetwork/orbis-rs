@@ -48,7 +48,7 @@ async fn wait_for_reshare_bulletin_finalized<D>(
             {
                 Ok(post) => {
                     if let Ok(payload) = serde_json::from_slice::<RingPayload>(&post.payload) {
-                        if payload.new_peer_ids.is_none() && payload.new_threshold.is_none() {
+                        if payload.new_peer_node_keys.is_none() && payload.new_threshold.is_none() {
                             tracing::debug!(
                                 session_id = session_id,
                                 "Reshare: bulletin confirmed updated, releasing PSS claim"

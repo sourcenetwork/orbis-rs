@@ -8,7 +8,7 @@ pub(in crate::dkg::coordinator) async fn initiate_phase2_shares<D>(
 where
     D: CoordinatorDkg,
 {
-    let (shares, node_id, threshold, is_reshare, reshare_new_peer_ids) = coord
+    let (shares, node_id, threshold, is_reshare, reshare_new_node_id_to_peer_id) = coord
         .app_state
         .dkg_session_state
         .with_state_mut(&session_id, |state| {
@@ -38,7 +38,7 @@ where
             let reshare_peer_ids = state
                 .reshare_params
                 .as_ref()
-                .map(|p| p.new_peer_ids.clone());
+                .map(|_| state.reshare_new_node_id_to_peer_id.clone());
             Ok::<_, DkgError>((
                 shares,
                 state.node.node_id(),
@@ -77,7 +77,7 @@ where
     );
 
     // Send shares to peers.
-    // For Reshare: route using reshare_new_peer_ids (sorted new committee, index = to_id - 1).
+    // For Reshare: route using the resolved new-committee node_id -> peer_id map.
     // For Fresh/Refresh: use node_id_to_peer_id map, falling back to broadcast.
     let mut shares_sent = 0;
     let mut shares_skipped = 0;
@@ -86,10 +86,10 @@ where
         // Skip sending share to ourselves.
         // For DealerReceiver, their new-committee node_id may differ from old-committee
         // node_id — skip if to_id maps to our own new-committee peer_id.
-        let skip = if let Some(ref new_peers) = reshare_new_peer_ids {
+        let skip = if let Some(ref new_peers) = reshare_new_node_id_to_peer_id {
             // Reshare: to_id is a new-committee index; check if it points to self.
             new_peers
-                .get((share.to_id - 1) as usize)
+                .get(&share.to_id)
                 .map(|p| is_self_peer_id(&coord.app_state.network, p))
                 .unwrap_or(false)
         } else {
@@ -101,8 +101,8 @@ where
         }
 
         // For Reshare, route directly via sorted new committee list.
-        if let Some(ref new_peers) = reshare_new_peer_ids {
-            let Some(target_peer_id) = new_peers.get((share.to_id - 1) as usize) else {
+        if let Some(ref new_peers) = reshare_new_node_id_to_peer_id {
+            let Some(target_peer_id) = new_peers.get(&share.to_id) else {
                 tracing::error!(
                     to_node = share.to_id,
                     "Reshare: share to_id out of range for new committee"

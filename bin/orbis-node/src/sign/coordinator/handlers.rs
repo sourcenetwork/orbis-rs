@@ -91,11 +91,8 @@ where
         let mut refresh_candidate_bundle: Option<RingShareBundle> = None;
         let authoritative_ring_pk_hex = match &context {
             SignContext::Policy(ctx) => {
-                let (token_string, derivation_id, valid_window) = (
-                    &ctx.token_string,
-                    &ctx.derivation_id,
-                    &ctx.valid_window,
-                );
+                let (token_string, derivation_id, valid_window) =
+                    (&ctx.token_string, &ctx.derivation_id, &ctx.valid_window);
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
@@ -258,11 +255,8 @@ where
                 (ring_pk_hex, None, None)
             }
             SignContext::Policy(ref ctx) => {
-                let (token_string, derivation_id, valid_window) = (
-                    &ctx.token_string,
-                    &ctx.derivation_id,
-                    &ctx.valid_window,
-                );
+                let (token_string, derivation_id, valid_window) =
+                    (&ctx.token_string, &ctx.derivation_id, &ctx.valid_window);
                 // Always re-validate JWT (pure crypto, no IO)
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)

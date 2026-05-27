@@ -31,6 +31,28 @@ impl Bulletin for DummyBulletin {
         payload: Vec<u8>,
         _artifact: Option<String>,
     ) -> Result<()> {
+        if matches!(kind, BulletinKind::Ring) {
+            if let Ok(ring) = serde_json::from_slice::<RingPayload>(&payload) {
+                if !ring.ring_pk.is_empty() {
+                    let mut posts = self.posts.lock().unwrap();
+                    if let Some(existing) = posts.values_mut().find(|post| {
+                        serde_json::from_slice::<RingPayload>(&post.payload)
+                            .map(|existing_ring| {
+                                existing_ring.ring_pk.is_empty()
+                                    && existing_ring.peer_node_keys == ring.peer_node_keys
+                                    && existing_ring.threshold == ring.threshold
+                                    && existing_ring.pss_interval == ring.pss_interval
+                                    && existing_ring.policy_id == ring.policy_id
+                            })
+                            .unwrap_or(false)
+                    }) {
+                        existing.payload = payload;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         let id = match kind {
             BulletinKind::NodeInfo => {
                 return Err(BulletinError::ParseError(
@@ -61,15 +83,17 @@ impl Bulletin for DummyBulletin {
         let post = posts.get_mut(&id).ok_or(BulletinError::NotFound { id })?;
         let mut payload: RingPayload = serde_json::from_slice(&post.payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-        let new_peer_ids = payload.new_peer_ids.take().ok_or_else(|| {
-            BulletinError::ParseError("ring payload is missing new_peer_ids for update".to_string())
+        let new_peer_node_keys = payload.new_peer_node_keys.take().ok_or_else(|| {
+            BulletinError::ParseError(
+                "ring payload is missing new_peer_node_keys for update".to_string(),
+            )
         })?;
         let new_threshold = payload.new_threshold.take().ok_or_else(|| {
             BulletinError::ParseError(
                 "ring payload is missing new_threshold for update".to_string(),
             )
         })?;
-        payload.peer_ids = new_peer_ids;
+        payload.peer_node_keys = new_peer_node_keys;
         payload.threshold = new_threshold;
         payload.block_number_nonce = payload.block_number_nonce.saturating_add(1);
         post.payload =
@@ -95,14 +119,14 @@ impl Bulletin for DummyBulletin {
 
     fn get_ring_id(
         &self,
-        peer_ids: &[String],
+        peer_node_keys: &[String],
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
         nonce: Option<&str>,
     ) -> Result<String> {
         Ok(common::blockchain::orbis::generate_ring_id(
-            peer_ids,
+            peer_node_keys,
             threshold,
             pss_interval,
             policy_id,
@@ -145,12 +169,12 @@ impl Bulletin for DummyBulletin {
         })?;
         let mut payload: RingPayload = serde_json::from_slice(&post.payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-        let new_peer_ids = payload
-            .new_peer_ids
+        let new_peer_node_keys = payload
+            .new_peer_node_keys
             .take()
-            .unwrap_or_else(|| payload.peer_ids.clone());
+            .unwrap_or_else(|| payload.peer_node_keys.clone());
         let new_threshold = payload.new_threshold.take().unwrap_or(payload.threshold);
-        payload.peer_ids = new_peer_ids;
+        payload.peer_node_keys = new_peer_node_keys;
         payload.threshold = new_threshold;
         let finalized_bytes =
             serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))?;
@@ -224,7 +248,7 @@ impl DummyBulletin {
         }
         if let Ok(ring) = serde_json::from_slice::<RingPayload>(payload) {
             return Some(generate_ring_id(
-                &ring.peer_ids,
+                &ring.peer_node_keys,
                 ring.threshold,
                 ring.pss_interval,
                 ring.policy_id.as_deref().unwrap_or(""),

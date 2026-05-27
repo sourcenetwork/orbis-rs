@@ -15,7 +15,9 @@ use crate::helpers::helpers::RingConfig;
 use crate::metrics;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::error::SignError;
-use crate::sign::helpers::{refresh_health_check_message, refresh_health_check_peer_ids_sha256};
+use crate::sign::helpers::{
+    refresh_health_check_message, refresh_health_check_peer_node_keys_sha256,
+};
 use crate::sign::messages::{
     RefreshHealthCheckContext, RefreshHealthCheckStatement, SignContext,
     REFRESH_HEALTH_CHECK_DOMAIN,
@@ -77,7 +79,7 @@ where
         session_id,
         ring_pk: candidate.ring_pk_hex.clone(),
         public_polynomial_sha256,
-        peer_ids_sha256: refresh_health_check_peer_ids_sha256(&candidate.peer_ids),
+        peer_ids_sha256: refresh_health_check_peer_node_keys_sha256(&candidate.peer_node_keys),
         threshold: candidate.threshold as u32,
         total_participants: candidate.peer_ids.len() as u32,
     };
@@ -96,6 +98,7 @@ where
     let ring_config = RingConfig {
         ring_pk_bytes: ring_pk_bytes.to_vec(),
         peer_ids: candidate.peer_ids.clone(),
+        peer_node_keys: candidate.peer_node_keys.clone(),
         threshold: candidate.threshold,
         total_participants: candidate.peer_ids.len(),
         public_polynomial_hex: candidate.bundle.public_polynomial.clone(),
@@ -322,7 +325,8 @@ where
         || statement.ring_pk != candidate.ring_pk_hex
         || statement.threshold as usize != candidate.threshold
         || statement.total_participants as usize != candidate.peer_ids.len()
-        || statement.peer_ids_sha256 != refresh_health_check_peer_ids_sha256(&candidate.peer_ids)
+        || statement.peer_ids_sha256
+            != refresh_health_check_peer_node_keys_sha256(&candidate.peer_node_keys)
     {
         return Err(DkgError::Unauthorized(
             "Refresh health-check statement does not match staged candidate".to_string(),
@@ -566,6 +570,7 @@ mod tests {
                         public_polynomial: "staged-polynomial".to_string(),
                         last_pss: 20,
                     },
+                    peer_node_keys: vec!["node-1".to_string()],
                     peer_ids: vec!["peer-1".to_string()],
                     threshold: 1,
                 },
