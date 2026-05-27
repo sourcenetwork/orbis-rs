@@ -28,18 +28,6 @@ pub enum SubCommands {
         #[clap(short, long, default_value = "http://localhost:50051")]
         endpoint: String,
 
-        /// Number of nodes required to reconstruct (threshold)
-        #[clap(short, long)]
-        threshold: u32,
-
-        /// Peer IDs for P2P connections (required)
-        #[clap(long, required = true, num_args = 1..)]
-        peer_ids: Vec<String>,
-
-        /// Optional policy that externally governs ring updates
-        #[clap(long)]
-        policy_id: Option<String>,
-
         /// Pre-created blank ring entry targeted by this DKG
         #[clap(long)]
         ring_id: String,
@@ -385,14 +373,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        SubCommands::Dkg {
-            endpoint,
-            threshold,
-            peer_ids,
-            policy_id,
-            ring_id,
-        } => {
-            do_dkg(endpoint, threshold, peer_ids, None, policy_id, ring_id).await?;
+        SubCommands::Dkg { endpoint, ring_id } => {
+            do_dkg(endpoint, ring_id).await?;
         }
         SubCommands::Pre {
             endpoint,

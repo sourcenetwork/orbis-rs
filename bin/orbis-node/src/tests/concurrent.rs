@@ -369,16 +369,9 @@ async fn setup_ring(
         .await
         .expect("ring event subscription");
 
-    let dkg_result = cli_tool::do_dkg(
-        endpoint.to_string(),
-        threshold,
-        peer_ids,
-        None,
-        None,
-        TEST_FRESH_DKG_RING_ID.to_string(),
-    )
-    .await
-    .expect("DKG initiation");
+    let dkg_result = cli_tool::do_dkg(endpoint.to_string(), TEST_FRESH_DKG_RING_ID.to_string())
+        .await
+        .expect("DKG initiation");
 
     let post_event = sub
         .wait_for_artifact(&dkg_result.session_id, Duration::from_secs(90))
@@ -438,22 +431,8 @@ async fn test_two_simultaneous_dkg_sessions() {
 
     // Launch both DKG sessions concurrently from the same endpoint
     let (r1, r2) = tokio::join!(
-        cli_tool::do_dkg(
-            endpoint.clone(),
-            threshold,
-            peer_ids.clone(),
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID.to_string()
-        ),
-        cli_tool::do_dkg(
-            endpoint.clone(),
-            threshold,
-            peer_ids.clone(),
-            None,
-            None,
-            TEST_FRESH_DKG_RING_ID.to_string()
-        ),
+        cli_tool::do_dkg(endpoint.clone(), TEST_FRESH_DKG_RING_ID.to_string()),
+        cli_tool::do_dkg(endpoint.clone(), TEST_FRESH_DKG_RING_ID.to_string()),
     );
 
     let session1 = r1.expect("DKG 1 initiation failed").session_id;
@@ -801,10 +780,6 @@ async fn test_dkg_non_participant_initiator_completes() {
 
     let dkg_result = cli_tool::do_dkg(
         net.non_participant.grpc_endpoint.clone(),
-        threshold,
-        peer_ids,
-        None,
-        None,
         TEST_FRESH_DKG_RING_ID.to_string(),
     )
     .await

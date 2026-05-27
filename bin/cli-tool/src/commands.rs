@@ -44,14 +44,7 @@ pub struct DkgResult {
     pub message: String,
 }
 
-pub async fn do_dkg(
-    endpoint: String,
-    _threshold: u32,
-    _peer_ids: Vec<String>,
-    _pss_interval: Option<u64>,
-    _policy_id: Option<String>,
-    ring_id: String,
-) -> Result<DkgResult> {
+pub async fn do_dkg(endpoint: String, ring_id: String) -> Result<DkgResult> {
     println!("Starting DKG session:");
     println!("  Endpoint: {}", endpoint);
     println!("  Ring ID: {}", ring_id);
