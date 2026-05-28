@@ -215,8 +215,6 @@ impl TryFrom<NodeInfo> for Vec<u8> {
 
 #[async_trait]
 pub trait Bulletin {
-    /// Register a bulletin instance.
-    async fn register(&self) -> Result<()>;
     /// Post a typed Orbis object.
     async fn post(&self, kind: BulletinWriteKind, payload: Vec<u8>) -> Result<String>;
     /// Finalize an existing typed Orbis object update while preserving its ID.
@@ -225,12 +223,6 @@ pub trait Bulletin {
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost>;
     /// Chain ID used when building chain-bound signing statements.
     fn chain_id(&self) -> String;
-    /// Return the canonical hash of the current ring state used in reshare sign docs.
-    /// Each bulletin backend defines what "canonical" means for its storage representation.
-    async fn ring_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]>;
-    /// Return the canonical hash of the ring state after reshare finalization:
-    /// new_peer_node_keys → peer_node_keys, new_threshold applied, block_number_nonce incremented.
-    async fn ring_finalized_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]>;
     /// Serialize the canonical sign bytes for a ring reshare finalization sign doc.
     fn ring_reshare_finalize_sign_bytes(
         &self,

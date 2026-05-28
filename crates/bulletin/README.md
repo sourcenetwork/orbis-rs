@@ -10,7 +10,6 @@ Defined in [`src/trait.rs`](src/trait.rs):
 
 | Method | Role |
 |--------|------|
-| `register()` | Backend setup hook. SourceHub typed objects do not require namespace registration. |
 | `post(kind, payload)` | Store a typed write object and return its authoritative id. Write kinds are `Finalize`, `Document`, `KeyDerivation`, and `NodeInfo`. |
 | `read(id, kind)` | Load a `BulletinPost` (`id`, `payload`). |
 
@@ -44,7 +43,6 @@ cargo build -p bulletin --no-default-features --features dummy
 
 **`SourceHubBulletin`** wraps [`SourceHubClient`](../common) from the workspace `common` crate.
 
-- **`register`** — no-op for typed SourceHub `x/orbis` objects.
 - **`post`** — routes to fresh `FinalizeRing`, `StoreDocument`, `StoreKeyDerivation`, or `CreateNodeInfo`, returning the chain id for the written object.
 - **`read`** — routes to typed `x/orbis` queries by object id.
 - Ring creation is intentionally outside this abstraction; callers receive a `ring_id` from SourceHub `CreateRing` and pass that id through DKG.

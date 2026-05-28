@@ -13,7 +13,9 @@ use crate::dkg::session_state::ReshareSignatureReadyKey;
 use crate::helpers::helpers::RingConfig;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::error::SignError;
-use crate::sign::helpers::ring_reshare_update_message;
+use crate::sign::helpers::{
+    finalized_ring_payload_sha256_hex, ring_payload_sha256_hex, ring_reshare_update_message,
+};
 use crate::sign::messages::{
     RingReshareUpdateContext, RingReshareUpdateStatement, SignContext, RING_RESHARE_UPDATE_DOMAIN,
 };
@@ -250,32 +252,14 @@ where
             payload_new_threshold, new_threshold
         )));
     }
-    let current_ring_sha256 = hex::encode(
-        coord
-            .app_state
-            .bulletin
-            .ring_canonical_hash(ring_id)
-            .await
-            .map_err(|e| {
-                DkgError::Bulletin(format!(
-                    "Reshare: failed to compute ring canonical hash: {}",
-                    e
-                ))
-            })?,
-    );
-    let finalized_ring_sha256 = hex::encode(
-        coord
-            .app_state
-            .bulletin
-            .ring_finalized_canonical_hash(ring_id)
-            .await
-            .map_err(|e| {
-                DkgError::Bulletin(format!(
-                    "Reshare: failed to compute ring finalized canonical hash: {}",
-                    e
-                ))
-            })?,
-    );
+    let current_ring_sha256 = ring_payload_sha256_hex(&current_post.payload);
+    let finalized_ring_sha256 =
+        finalized_ring_payload_sha256_hex(&current_ring_payload).map_err(|e| {
+            DkgError::Serialization(format!(
+                "Reshare: failed to serialize finalized RingPayload before signing: {}",
+                e
+            ))
+        })?;
     let chain_id = coord.app_state.bulletin.chain_id();
 
     coord

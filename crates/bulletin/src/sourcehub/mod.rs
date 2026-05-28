@@ -7,7 +7,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use common::blockchain::{
-    orbis::{self, generate_document_id, generate_key_derivation_id, ring_state_hash},
+    orbis::{self, generate_document_id, generate_key_derivation_id},
     BlockchainError, ChainConfigBuilder, SourceHubClient, TxSigner,
 };
 
@@ -20,10 +20,6 @@ pub struct SourceHubBulletin {
 
 #[async_trait]
 impl Bulletin for SourceHubBulletin {
-    async fn register(&self) -> Result<()> {
-        Ok(())
-    }
-
     async fn post(&self, kind: BulletinWriteKind, payload: Vec<u8>) -> Result<String> {
         match kind {
             BulletinWriteKind::Finalize => {
@@ -177,41 +173,6 @@ impl Bulletin for SourceHubBulletin {
 
     fn chain_id(&self) -> String {
         self.chain_client.config().chain_id.clone()
-    }
-
-    async fn ring_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]> {
-        let ring = self
-            .chain_client
-            .orbis_read_ring(ring_id)
-            .await
-            .map_err(|e| BulletinError::ChainError(e.to_string()))?
-            .ok_or_else(|| BulletinError::NotFound {
-                id: ring_id.to_string(),
-            })?;
-        Ok(ring_state_hash(&ring))
-    }
-
-    async fn ring_finalized_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]> {
-        let ring = self
-            .chain_client
-            .orbis_read_ring(ring_id)
-            .await
-            .map_err(|e| BulletinError::ChainError(e.to_string()))?
-            .ok_or_else(|| BulletinError::NotFound {
-                id: ring_id.to_string(),
-            })?;
-        let finalized = orbis::Ring {
-            peer_node_keys: if ring.new_peer_node_keys.is_empty() {
-                ring.peer_node_keys.clone()
-            } else {
-                ring.new_peer_node_keys.clone()
-            },
-            threshold: ring.new_threshold.unwrap_or(ring.threshold),
-            new_peer_node_keys: vec![],
-            new_threshold: None,
-            ..ring
-        };
-        Ok(ring_state_hash(&finalized))
     }
 
     fn ring_reshare_finalize_sign_bytes(

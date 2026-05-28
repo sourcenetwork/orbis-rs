@@ -62,8 +62,6 @@ async fn test_bulletin_document() {
     };
     let serialized_payload: Vec<u8> = payload.clone().try_into().unwrap();
 
-    bulletin.register().await.unwrap();
-
     let post_id = bulletin
         .post(BulletinWriteKind::Document, serialized_payload.clone())
         .await
@@ -100,8 +98,6 @@ async fn test_bulletin_ring() {
 
     let payload = test_ring_payload();
     let serialized_payload: Vec<u8> = payload.clone().try_into().unwrap();
-
-    bulletin.register().await.unwrap();
 
     let (_, ring_id) = bulletin
         .chain_client

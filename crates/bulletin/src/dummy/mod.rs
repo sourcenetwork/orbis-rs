@@ -10,7 +10,6 @@ use common::blockchain::orbis::{
     generate_document_id, generate_key_derivation_id,
     ring_reshare_finalize_sign_bytes as orbis_ring_reshare_finalize_sign_bytes,
 };
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -24,10 +23,6 @@ pub struct DummyBulletin {
 
 #[async_trait]
 impl Bulletin for DummyBulletin {
-    async fn register(&self) -> Result<()> {
-        Ok(())
-    }
-
     async fn post(&self, kind: BulletinWriteKind, payload: Vec<u8>) -> Result<String> {
         let id =
             match kind {
@@ -94,14 +89,6 @@ impl Bulletin for DummyBulletin {
         "sourcehub-localnet".to_string()
     }
 
-    async fn ring_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]> {
-        let posts = self.posts.lock().unwrap();
-        let post = posts.get(ring_id).ok_or_else(|| BulletinError::NotFound {
-            id: ring_id.to_string(),
-        })?;
-        Ok(Sha256::digest(&post.payload).into())
-    }
-
     fn ring_reshare_finalize_sign_bytes(
         &self,
         chain_id: &str,
@@ -120,25 +107,6 @@ impl Bulletin for DummyBulletin {
             block_number_nonce,
         )
         .map_err(|e| BulletinError::ParseError(e.to_string()))
-    }
-
-    async fn ring_finalized_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]> {
-        let posts = self.posts.lock().unwrap();
-        let post = posts.get(ring_id).ok_or_else(|| BulletinError::NotFound {
-            id: ring_id.to_string(),
-        })?;
-        let mut payload: RingPayload = serde_json::from_slice(&post.payload)
-            .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-        let new_peer_node_keys = payload
-            .new_peer_node_keys
-            .take()
-            .unwrap_or_else(|| payload.peer_node_keys.clone());
-        let new_threshold = payload.new_threshold.take().unwrap_or(payload.threshold);
-        payload.peer_node_keys = new_peer_node_keys;
-        payload.threshold = new_threshold;
-        let finalized_bytes =
-            serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))?;
-        Ok(Sha256::digest(&finalized_bytes).into())
     }
 }
 
