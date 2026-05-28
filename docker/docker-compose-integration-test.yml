@@ -9,7 +9,7 @@
 services:
   sourcehub:
     build:
-      context: https://github.com/sourcenetwork/sourcehub.git#jesse/add-node-info
+      context: https://github.com/sourcenetwork/sourcehub.git#new-dkg-flow
     container_name: sourcehub-integration-test
     entrypoint: ["/bin/sh", "-c"]
     command:
