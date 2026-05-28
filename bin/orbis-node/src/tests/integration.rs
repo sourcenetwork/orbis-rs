@@ -113,14 +113,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             .await
             .expect("WebSocket event subscription");
 
-    // Create the ring governance ACP policy before DKG so it can be embedded in the ring
-    // payload. The Orbis keeper checks `update_ring` permission on this policy when
-    // MsgUpdateRingByAcp is called. Registering the namespace object makes the signer the
-    // `owner`, which grants `update_ring` via the policy's permission expression.
-    let _ring_policy_id = cli_tool::add_ring_governance_policy(BULLETIN_RING_NAMESPACE)
-        .await
-        .expect("create ring governance policy");
-
     println!(
         "Starting DKG with threshold {} and {} peers...",
         threshold,
