@@ -770,19 +770,17 @@ mod ring_reshare_update_tests {
         };
 
         let current_payload_bytes: Vec<u8> = current_payload
+            .clone()
             .try_into()
             .expect("serialize current RingPayload");
         let updated_payload_bytes: Vec<u8> = updated_payload
             .try_into()
             .expect("serialize updated RingPayload");
         let bulletin = DummyBulletin::new().await.expect("dummy bulletin");
+        let ring_id = "test-sign-reshare-ring".to_string();
         bulletin
-            .post(BulletinKind::Ring, current_payload_bytes.clone(), None)
-            .await
-            .expect("post current payload");
-        let ring_id = bulletin
-            .get_post_id(&current_payload_bytes)
-            .expect("post id");
+            .set_ring(ring_id.clone(), current_payload)
+            .expect("seed current payload");
         let session_id = 77;
         let current_ring_sha256 = sha256_hex(&current_payload_bytes);
         let finalized_ring_sha256 = sha256_hex(&updated_payload_bytes);

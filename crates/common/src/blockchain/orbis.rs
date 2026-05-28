@@ -617,6 +617,24 @@ struct TxMsgData {
 /// then falls back to interpreting the raw data as `MsgCreateRingResponse`
 /// directly. Returns `None` if decoding fails or the ring_id is empty.
 pub fn decode_create_ring_id(data: Option<&Vec<u8>>) -> Option<String> {
+    decode_tx_response_id::<MsgCreateRingResponse, _>(data, |resp| &resp.ring_id)
+}
+
+/// Extract `MsgStoreDocumentResponse.document_id` from a broadcast result.
+pub fn decode_store_document_id(data: Option<&Vec<u8>>) -> Option<String> {
+    decode_tx_response_id::<MsgStoreDocumentResponse, _>(data, |resp| &resp.document_id)
+}
+
+/// Extract `MsgStoreKeyDerivationResponse.key_derivation_id` from a broadcast result.
+pub fn decode_store_key_derivation_id(data: Option<&Vec<u8>>) -> Option<String> {
+    decode_tx_response_id::<MsgStoreKeyDerivationResponse, _>(data, |resp| &resp.key_derivation_id)
+}
+
+fn decode_tx_response_id<T, F>(data: Option<&Vec<u8>>, extract_id: F) -> Option<String>
+where
+    T: Message + Default,
+    F: Fn(&T) -> &str,
+{
     let bytes = data?;
     if bytes.is_empty() {
         return None;
@@ -625,18 +643,20 @@ pub fn decode_create_ring_id(data: Option<&Vec<u8>>) -> Option<String> {
     // Try modern Cosmos SDK 0.46+ format: TxMsgData.msg_responses[0].value
     if let Ok(tx_data) = TxMsgData::decode(bytes.as_slice()) {
         for any in &tx_data.msg_responses {
-            if let Ok(resp) = MsgCreateRingResponse::decode(any.value.as_slice()) {
-                if !resp.ring_id.is_empty() {
-                    return Some(resp.ring_id);
+            if let Ok(resp) = T::decode(any.value.as_slice()) {
+                let id = extract_id(&resp);
+                if !id.is_empty() {
+                    return Some(id.to_string());
                 }
             }
         }
     }
 
-    // Fallback: try decoding the bytes directly as MsgCreateRingResponse
-    if let Ok(resp) = MsgCreateRingResponse::decode(bytes.as_slice()) {
-        if !resp.ring_id.is_empty() {
-            return Some(resp.ring_id);
+    // Fallback: try decoding the bytes directly as the response message.
+    if let Ok(resp) = T::decode(bytes.as_slice()) {
+        let id = extract_id(&resp);
+        if !id.is_empty() {
+            return Some(id.to_string());
         }
     }
 
@@ -752,6 +772,41 @@ impl SourceHubClient {
         .await
     }
 
+    /// Store a document and return the chain-assigned document_id alongside the broadcast result.
+    pub async fn orbis_store_document_get_id(
+        &self,
+        ring_id: &str,
+        document: &str,
+        proof: &str,
+        policy_id: &str,
+        resource: &str,
+        permission: &str,
+        tier: Option<String>,
+        timestamp: Option<u64>,
+    ) -> Result<(BroadcastResult, String)> {
+        let result = self
+            .orbis_store_document(
+                ring_id, document, proof, policy_id, resource, permission, tier, timestamp,
+            )
+            .await?;
+
+        if result.code != 0 {
+            return Err(BlockchainError::TxFailed {
+                code: result.code,
+                log: result.log.clone(),
+            });
+        }
+
+        let document_id = decode_store_document_id(result.data.as_ref()).ok_or_else(|| {
+            BlockchainError::Serialization(format!(
+                "Failed to decode document_id from store document response for tx {}",
+                result.tx_hash
+            ))
+        })?;
+
+        Ok((result, document_id))
+    }
+
     pub async fn orbis_store_key_derivation(
         &self,
         ring_id: &str,
@@ -777,6 +832,37 @@ impl SourceHubClient {
             self.config().gas_multiplier,
         )
         .await
+    }
+
+    /// Store a key derivation and return the chain-assigned key_derivation_id alongside the broadcast result.
+    pub async fn orbis_store_key_derivation_get_id(
+        &self,
+        ring_id: &str,
+        derivation: &str,
+        policy_id: &str,
+        resource: &str,
+        permission: &str,
+    ) -> Result<(BroadcastResult, String)> {
+        let result = self
+            .orbis_store_key_derivation(ring_id, derivation, policy_id, resource, permission)
+            .await?;
+
+        if result.code != 0 {
+            return Err(BlockchainError::TxFailed {
+                code: result.code,
+                log: result.log.clone(),
+            });
+        }
+
+        let key_derivation_id =
+            decode_store_key_derivation_id(result.data.as_ref()).ok_or_else(|| {
+                BlockchainError::Serialization(format!(
+                    "Failed to decode key_derivation_id from store key derivation response for tx {}",
+                    result.tx_hash
+                ))
+            })?;
+
+        Ok((result, key_derivation_id))
     }
 
     pub async fn orbis_create_node_info(
@@ -967,8 +1053,9 @@ mod tests {
     use prost::Message;
 
     use super::{
-        MsgCreateRing, MsgFinalizeRing, MsgFinalizeRingReshareByThresholdSignature,
-        MsgUpdateRingByAcp,
+        decode_store_document_id, decode_store_key_derivation_id, MsgCreateRing, MsgFinalizeRing,
+        MsgFinalizeRingReshareByThresholdSignature, MsgStoreDocumentResponse,
+        MsgStoreKeyDerivationResponse, MsgUpdateRingByAcp,
     };
 
     #[test]
@@ -1024,6 +1111,32 @@ mod tests {
         assert_eq!(
             hex::encode(msg.encode_to_vec()),
             "0a01631201721a017322020102"
+        );
+    }
+
+    #[test]
+    fn decode_store_document_id_from_direct_response() {
+        let response = MsgStoreDocumentResponse {
+            document_id: "doc-id".to_string(),
+        };
+        let bytes = response.encode_to_vec();
+
+        assert_eq!(
+            decode_store_document_id(Some(&bytes)),
+            Some("doc-id".to_string())
+        );
+    }
+
+    #[test]
+    fn decode_store_key_derivation_id_from_direct_response() {
+        let response = MsgStoreKeyDerivationResponse {
+            key_derivation_id: "key-derivation-id".to_string(),
+        };
+        let bytes = response.encode_to_vec();
+
+        assert_eq!(
+            decode_store_key_derivation_id(Some(&bytes)),
+            Some("key-derivation-id".to_string())
         );
     }
 }

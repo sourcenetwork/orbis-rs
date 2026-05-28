@@ -19,7 +19,7 @@ use crate::DkgServiceImpl;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{
-    Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, RingPayload,
+    Bulletin, BulletinPost, BulletinWriteKind, DocumentPayload, KeyDerivation, RingPayload,
 };
 use crypto::r#trait::{CryptoDeserialize, Dkg, ThresholdSigner};
 use crypto::{DkgImpl, SignImpl};
@@ -264,14 +264,9 @@ async fn create_test_document_and_post(
         .try_into()
         .expect("serialize DocumentPayload");
 
-    // Compute the post ID
-    let post_id = bulletin
-        .get_post_id(&payload_bytes)
-        .expect("compute post_id");
-
     // Post to bulletin
-    bulletin
-        .post(BulletinKind::Document, payload_bytes.clone(), None)
+    let post_id = bulletin
+        .post(BulletinWriteKind::Document, payload_bytes.clone())
         .await
         .expect("post to bulletin");
 
@@ -874,19 +869,12 @@ async fn test_sign_fails_tampered_payload() {
     };
 
     let original_payload: Vec<u8> = original_doc.try_into().expect("serialize");
+    // Post the original document
     let post_id = network
         .alice
         .app_state
         .bulletin
-        .get_post_id(&original_payload)
-        .expect("get post_id");
-
-    // Post the original document
-    network
-        .alice
-        .app_state
-        .bulletin
-        .post(BulletinKind::Document, original_payload.clone(), None)
+        .post(BulletinWriteKind::Document, original_payload.clone())
         .await
         .expect("post to bulletin");
 
@@ -1015,19 +1003,12 @@ async fn test_sign_fails_invalid_ring_id() {
     };
 
     let payload_bytes: Vec<u8> = doc_with_fake_ring.try_into().expect("serialize");
+    // Post this document (it will be on bulletin, but ring_id is invalid)
     let post_id = network
         .alice
         .app_state
         .bulletin
-        .get_post_id(&payload_bytes)
-        .expect("get post_id");
-
-    // Post this document (it will be on bulletin, but ring_id is invalid)
-    network
-        .alice
-        .app_state
-        .bulletin
-        .post(BulletinKind::Document, payload_bytes.clone(), None)
+        .post(BulletinWriteKind::Document, payload_bytes.clone())
         .await
         .expect("post to bulletin");
 

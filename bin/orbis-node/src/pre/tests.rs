@@ -10,7 +10,7 @@ use crate::helpers::test_helpers::{
 use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::pre::service::PreServiceImpl;
 use crate::DkgServiceImpl;
-use bulletin::r#trait::{Bulletin, BulletinPost, DocumentPayload, RingPayload};
+use bulletin::r#trait::{Bulletin, BulletinWriteKind, DocumentPayload, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, EncryptionProof, ThresholdDealer};
 use crypto::{DkgImpl, PreImpl};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
@@ -42,7 +42,7 @@ fn generate_test_policy_metadata() -> Vec<u8> {
 ///
 /// This creates the document payload with the encrypted secret and stores it in the bulletin,
 /// returning the computed object_id that can be used in PRE requests.
-fn setup_document_in_bulletin(
+async fn setup_document_in_bulletin(
     dummy_bulletin: &DummyBulletin,
     secret_bytes: &[u8],
     proof: EncryptionProof,
@@ -67,19 +67,10 @@ fn setup_document_in_bulletin(
         .try_into()
         .expect("serialize DocumentPayload");
 
-    // Compute the object_id using the same method as the bulletin
-    let object_id = dummy_bulletin
-        .get_post_id(&document_payload_bytes)
-        .expect("compute object_id");
-
-    // Store the document in the bulletin
-    let document_post = BulletinPost {
-        id: object_id.clone(),
-        payload: document_payload_bytes,
-    };
-    dummy_bulletin.set_post(object_id.clone(), document_post);
-
-    object_id
+    dummy_bulletin
+        .post(BulletinWriteKind::Document, document_payload_bytes)
+        .await
+        .expect("store document")
 }
 
 /// End-to-end test: DKG → Alice encrypts → PRE to Bob → Bob decrypts
@@ -228,7 +219,7 @@ async fn test_dkg_then_pre_end_to_end() {
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
 
     // Create PRE JWT token
     let pre_token = test_keys
@@ -428,7 +419,7 @@ async fn test_pre_with_large_secret() {
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
 
     // Create PRE JWT token
     let pre_token = test_keys
@@ -563,7 +554,7 @@ async fn test_pre_fails_with_wrong_key() {
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
 
     // Create PRE JWT token
     let pre_token = test_keys
@@ -696,7 +687,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
 
     // Use a completely invalid JWT token
     let invalid_token = "not-a-valid-jwt-token".to_string();
@@ -839,7 +830,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
 
     // Create a valid JWT but with wrong rdr_pk claim
     let wrong_rdr_pk = vec![0u8; 32]; // Zero bytes - doesn't match bob_pk_bytes
@@ -1132,7 +1123,7 @@ async fn test_pre_fails_with_wrong_derivation() {
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
 
     // Create PRE JWT token with CORRECT derivation
     let pre_token = test_keys
@@ -1307,7 +1298,7 @@ async fn test_pre_fails_with_bad_proof() {
         .dummy_bulletin
         .as_ref()
         .expect("PRE tests require DummyBulletin");
-    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof);
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
 
     // Create PRE JWT token
     let pre_token = test_keys

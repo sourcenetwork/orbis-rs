@@ -15,7 +15,7 @@ use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::{
     dummy::DummyBulletin,
-    r#trait::{Bulletin, BulletinKind, BulletinPost, NodeInfo, RingPayload},
+    r#trait::{Bulletin, BulletinPost, BulletinWriteKind, NodeInfo, RingPayload},
     BulletinImpl,
 };
 use cli_tool;
@@ -148,7 +148,7 @@ async fn create_test_app_state_with_bulletin_inner(
             .try_into()
             .expect("Failed to serialize test NodeInfo");
         bulletin
-            .post(BulletinKind::NodeInfo, node_info_payload, None)
+            .post(BulletinWriteKind::NodeInfo, node_info_payload)
             .await
             .expect("Failed to seed test NodeInfo");
     }
@@ -312,14 +312,9 @@ fn seed_three_node_dummy_bulletin(
         block_number_nonce: 0,
         policy_id: Some("test-policy".to_string()),
     };
-    let payload_bytes = serde_json::to_vec(&payload).expect("serialize fresh DKG ring fixture");
-    dummy_bulletin.set_post(
-        TEST_FRESH_DKG_RING_ID.to_string(),
-        BulletinPost {
-            id: TEST_FRESH_DKG_RING_ID.to_string(),
-            payload: payload_bytes,
-        },
-    );
+    dummy_bulletin
+        .set_ring(TEST_FRESH_DKG_RING_ID.to_string(), payload)
+        .expect("seed fresh DKG ring fixture");
 }
 
 /// Set up a three-node test network
@@ -927,7 +922,7 @@ pub async fn setup_three_node_network_with_sign(
 /// Shared by all test modules that need to set up a ring for PSS / refresh validation tests.
 pub async fn write_ring_to_bulletin(
     storage: &impl LocalStorage,
-    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    bulletin: &DummyBulletin,
     ring_pk: &str,
     peer_node_keys: Vec<String>,
     pss_interval: Option<u64>,
@@ -942,12 +937,10 @@ pub async fn write_ring_to_bulletin(
         block_number_nonce: 0,
         policy_id: None,
     };
-    let bytes = serde_json::to_vec(&payload).unwrap();
+    let post_id = format!("test-ring-{ring_pk}");
     bulletin
-        .post(BulletinKind::Ring, bytes.clone(), None)
-        .await
-        .unwrap();
-    let post_id = bulletin.get_post_id(&bytes).unwrap();
+        .set_ring(post_id.clone(), payload)
+        .expect("seed ring fixture");
     let mut ring_index: Vec<RingIndexEntry> = storage
         .get(LocalStorageKeys::RingIndex)
         .ok()

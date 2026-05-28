@@ -5,7 +5,7 @@
 
 use anyhow::{anyhow, Result};
 use authn::{create_authenticated_request, JwtSigner};
-use bulletin::r#trait::{Bulletin, BulletinKind, KeyDerivation, RingPayload};
+use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation, RingPayload};
 use bulletin::sourcehub::SourceHubBulletin;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
@@ -870,7 +870,7 @@ pub async fn add_bulletin_collaborator(
     Ok(())
 }
 
-pub async fn create_bulletin_post(kind: BulletinKind, payload: Vec<u8>) -> Result<String> {
+pub async fn create_bulletin_post(kind: BulletinWriteKind, payload: Vec<u8>) -> Result<String> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
@@ -879,11 +879,7 @@ pub async fn create_bulletin_post(kind: BulletinKind, payload: Vec<u8>) -> Resul
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
     let post_id = bulletin
-        .get_post_id(&payload)
-        .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
-
-    bulletin
-        .post(kind, payload, None)
+        .post(kind, payload)
         .await
         .map_err(|e| anyhow!("Failed to create post: {}", e))?;
 
@@ -1112,11 +1108,7 @@ pub async fn post_key_derivation(
         .map_err(|e| anyhow!("Failed to serialize KeyDerivation: {}", e))?;
 
     let post_id = bulletin
-        .get_post_id(&payload)
-        .map_err(|e| anyhow!("Failed to generate post ID: {}", e))?;
-
-    bulletin
-        .post(BulletinKind::KeyDerivation, payload, None)
+        .post(BulletinWriteKind::KeyDerivation, payload)
         .await
         .map_err(|e| anyhow!("Failed to post KeyDerivation: {}", e))?;
 

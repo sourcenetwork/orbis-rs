@@ -162,12 +162,6 @@ pub enum SubCommands {
         #[clap(long)]
         collaborator: String,
     },
-    /// Create a post on the bulletin
-    CreateBulletinPost {
-        /// Payload as hex string
-        #[clap(long)]
-        payload: String,
-    },
     /// Update a ring via ACP authorization
     UpdateRingPostByAcp {
         /// Ring ID to update
@@ -479,10 +473,6 @@ async fn main() -> Result<()> {
             collaborator,
         } => {
             add_bulletin_collaborator(namespace, collaborator).await?;
-        }
-        SubCommands::CreateBulletinPost { payload } => {
-            let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
-            create_bulletin_post(BulletinKind::Ring, payload_bytes).await?;
         }
         SubCommands::UpdateRingPostByAcp {
             id,

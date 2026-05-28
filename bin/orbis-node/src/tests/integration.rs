@@ -7,7 +7,9 @@
 //!   cargo test --features integration-test -- --nocapture
 
 use crate::helpers::test_helpers::{BULLETIN_RING_NAMESPACE, TEST_FRESH_DKG_RING_ID};
-use bulletin::r#trait::{BulletinKind, BulletinPost, DocumentPayload, RingPayload};
+use bulletin::r#trait::{
+    BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, RingPayload,
+};
 use common::IntegrationTestNetwork;
 use common::SOURCEHUB_RPC_URL;
 use crypto::helpers::generate_keypair;
@@ -115,7 +117,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // payload. The Orbis keeper checks `update_ring` permission on this policy when
     // MsgUpdateRingByAcp is called. Registering the namespace object makes the signer the
     // `owner`, which grants `update_ring` via the policy's permission expression.
-    let ring_policy_id = cli_tool::add_ring_governance_policy(BULLETIN_RING_NAMESPACE)
+    let _ring_policy_id = cli_tool::add_ring_governance_policy(BULLETIN_RING_NAMESPACE)
         .await
         .expect("create ring governance policy");
 
@@ -225,7 +227,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             timestamp,
         };
         let serialized: Vec<u8> = payload.try_into().expect("serialize payload");
-        cli_tool::create_bulletin_post(BulletinKind::Document, serialized)
+        cli_tool::create_bulletin_post(BulletinWriteKind::Document, serialized)
             .await
             .expect("create_bulletin_post")
     };

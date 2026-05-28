@@ -843,39 +843,6 @@ mod tests {
             .expect("post NodeInfo");
     }
 
-    async fn post_blank_ring(
-        bulletin: &Arc<dyn Bulletin + Send + Sync>,
-        peer_node_keys: Vec<String>,
-        threshold: u32,
-        pss_interval: Option<u64>,
-        policy_id: Option<String>,
-    ) -> String {
-        let payload = RingPayload {
-            ring_pk: String::new(),
-            peer_node_keys,
-            new_peer_node_keys: None,
-            new_threshold: None,
-            threshold,
-            pss_interval,
-            block_number_nonce: 0,
-            policy_id,
-        };
-        let bytes = serde_json::to_vec(&payload).expect("serialize RingPayload");
-        bulletin
-            .post(BulletinKind::Ring, bytes, Some("test-session".to_string()))
-            .await
-            .expect("post blank ring");
-        bulletin
-            .get_ring_id(
-                &payload.peer_node_keys,
-                payload.threshold,
-                payload.pss_interval,
-                payload.policy_id.as_deref().unwrap_or(""),
-                None,
-            )
-            .expect("compute blank ring id")
-    }
-
     fn make_valid_ring_payload(node_key: &str) -> RingPayload {
         RingPayload {
             ring_pk: String::new(),
@@ -983,8 +950,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_fresh_dkg_node_authorization_rejects_missing_node_info() {
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let ring_payload = make_valid_ring_payload("missing-node");
 
         let result = validate_fresh_dkg_node_authorization(
@@ -1170,8 +1137,8 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_ring() {
         let (storage, db_path) = make_storage("helpers_unknown_ring");
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         // No RingIndex written — ring is unknown.
         let result = validate_refresh_session_init("some_pk", "sender", &storage, &bulletin).await;
         assert!(
@@ -1185,15 +1152,18 @@ mod tests {
     #[tokio::test]
     async fn test_corrupt_ring_payload() {
         let (storage, db_path) = make_storage("helpers_corrupt_payload");
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         // Post garbage bytes to the bulletin and point RingIndex at them.
         let garbage = b"not valid json".to_vec();
-        bulletin
-            .post(BulletinKind::Ring, garbage.clone(), None)
-            .await
-            .unwrap();
-        let post_id = bulletin.get_post_id(&garbage).unwrap();
+        let post_id = "test-garbage-ring".to_string();
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
+        dummy_bulletin.set_post(
+            post_id.clone(),
+            BulletinPost {
+                id: post_id.clone(),
+                payload: garbage,
+            },
+        );
         storage
             .set(
                 LocalStorageKeys::RingIndex,
@@ -1216,12 +1186,12 @@ mod tests {
     #[tokio::test]
     async fn test_sender_not_in_ring() {
         let (storage, db_path) = make_storage("helpers_sender_not_in_ring");
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let ring_pk = "ring_pk_abc";
         write_ring_to_bulletin(
             &storage,
-            &bulletin,
+            &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string(), "eeff0011".to_string()],
             None,
@@ -1241,12 +1211,12 @@ mod tests {
     async fn test_no_last_refresh_timestamp() {
         // When pss_interval is set, a missing bundle (no DKG yet) must be rejected.
         let (storage, db_path) = make_storage("helpers_no_timestamp");
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let ring_pk = "ring_pk_def";
         write_ring_to_bulletin(
             &storage,
-            &bulletin,
+            &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string()],
             Some(86400),
@@ -1272,12 +1242,12 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_too_soon() {
         let (storage, db_path) = make_storage("helpers_too_soon");
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let ring_pk = "ring_pk_ghi";
         write_ring_to_bulletin(
             &storage,
-            &bulletin,
+            &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string()],
             Some(86400),
@@ -1307,12 +1277,12 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_succeeds() {
         let (storage, db_path) = make_storage("helpers_success");
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let ring_pk = "ring_pk_jkl";
         write_ring_to_bulletin(
             &storage,
-            &bulletin,
+            &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string()],
             Some(86400),
@@ -1333,12 +1303,12 @@ mod tests {
     async fn test_no_pss_interval_skips_time_check() {
         // When pss_interval is None, time check is skipped — refresh always allowed.
         let (storage, db_path) = make_storage("helpers_no_interval");
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let ring_pk = "ring_pk_mno";
         write_ring_to_bulletin(
             &storage,
-            &bulletin,
+            &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string()],
             None,
@@ -1357,12 +1327,12 @@ mod tests {
     #[tokio::test]
     async fn test_zero_pss_interval_requires_existing_timestamp() {
         let (storage, db_path) = make_storage("helpers_zero_interval");
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let ring_pk = "ring_pk_zero_interval";
         write_ring_to_bulletin(
             &storage,
-            &bulletin,
+            &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string()],
             Some(0),
@@ -1391,13 +1361,13 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_within_grace_period_succeeds() {
         let (storage, db_path) = make_storage("helpers_within_grace");
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let ring_pk = "ring_pk_grace_ok";
         let pss_interval: u64 = 86400;
         write_ring_to_bulletin(
             &storage,
-            &bulletin,
+            &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string()],
             Some(pss_interval),
@@ -1424,13 +1394,13 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_outside_grace_period_rejected() {
         let (storage, db_path) = make_storage("helpers_outside_grace");
-        let bulletin: Arc<dyn Bulletin + Send + Sync> =
-            Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let ring_pk = "ring_pk_grace_fail";
         let pss_interval: u64 = 86400;
         write_ring_to_bulletin(
             &storage,
-            &bulletin,
+            &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string()],
             Some(pss_interval),

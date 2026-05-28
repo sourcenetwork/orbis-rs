@@ -4,7 +4,7 @@ use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bullet
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::{
     dummy::DummyBulletin,
-    r#trait::{BulletinKind, NodeInfo, RingPayload},
+    r#trait::{BulletinPost, NodeInfo, RingPayload},
 };
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
@@ -30,22 +30,15 @@ async fn make_state_with_ring(
     let app_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
-        bulletin,
+        bulletin.clone(),
         db_name,
     )
     .await;
 
-    // Post RingPayload to the bulletin and derive the post_id.
-    let payload_bytes = serde_json::to_vec(ring_payload).expect("serialize RingPayload");
-    app_state
-        .bulletin
-        .post(BulletinKind::Ring, payload_bytes.clone(), None)
-        .await
-        .expect("post RingPayload to bulletin");
-    let post_id = app_state
-        .bulletin
-        .get_post_id(&payload_bytes)
-        .expect("compute post_id");
+    let post_id = format!("test-pss-ring-{}", ring_payload.ring_pk);
+    bulletin
+        .set_ring(post_id.clone(), ring_payload.clone())
+        .expect("seed RingPayload");
 
     // Seed RingIndex with the entry.
     let entry = RingIndexEntry {
@@ -219,7 +212,7 @@ async fn test_refresh_ring_rejects_non_member() {
 #[tokio::test]
 async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
     let db_name = "pss_invalid_peer_no_wedge";
-    let (app_state, our_node_key, db_path) = make_initiator_state(db_name).await;
+    let (app_state, our_node_key, db_path, bulletin) = make_initiator_state(db_name).await;
 
     let ring_pk = "pss_invalid_peer_ring";
     let ring_payload = RingPayload {
@@ -233,7 +226,7 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
         policy_id: None,
     };
 
-    let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
     let state_arc = Arc::new(app_state);
 
     let result = super::pss_ring(&state_arc, &entry).await;
@@ -270,22 +263,21 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     let app_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
-        bulletin,
+        bulletin.clone(),
         db_name,
     )
     .await;
 
     // Post garbage bytes to the bulletin so deserialization of RingPayload fails.
     let garbage = b"not valid json".to_vec();
-    app_state
-        .bulletin
-        .post(BulletinKind::Ring, garbage.clone(), None)
-        .await
-        .expect("post garbage");
-    let post_id = app_state
-        .bulletin
-        .get_post_id(&garbage)
-        .expect("compute post_id");
+    let post_id = "test-bad-ring-payload".to_string();
+    bulletin.set_post(
+        post_id.clone(),
+        BulletinPost {
+            id: post_id.clone(),
+            payload: garbage,
+        },
+    );
 
     let entry = RingIndexEntry {
         ring_pk_str: ring_pk_str.to_string(),
@@ -314,7 +306,7 @@ async fn test_refresh_ring_bad_bulletin_payload() {
 #[tokio::test]
 async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
     let db_name = "pss_ring_pk_mismatch";
-    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
 
     let ring_payload = RingPayload {
         ring_pk: "bulletin_ring_pk".to_string(),
@@ -327,16 +319,10 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
         policy_id: None,
     };
 
-    let payload_bytes = serde_json::to_vec(&ring_payload).expect("serialize RingPayload");
-    app_state
-        .bulletin
-        .post(BulletinKind::Ring, payload_bytes.clone(), None)
-        .await
-        .expect("post RingPayload");
-    let post_id = app_state
-        .bulletin
-        .get_post_id(&payload_bytes)
-        .expect("compute post_id");
+    let post_id = "test-pss-ring-pk-mismatch".to_string();
+    bulletin
+        .set_ring(post_id.clone(), ring_payload)
+        .expect("seed RingPayload");
 
     let entry = RingIndexEntry {
         ring_pk_str: "expected_ring_pk".to_string(),
@@ -363,7 +349,7 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
 #[tokio::test]
 async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
     let db_name = "pss_pending_fresh_cleanup_elapsed";
-    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
     let local_ring_pk = "pending_fresh_elapsed_local_ring_pk";
     let ring_payload = RingPayload {
         ring_pk: String::new(),
@@ -376,8 +362,13 @@ async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
         policy_id: None,
     };
 
-    let entry =
-        post_ring_and_seed_index_with_local_key(&app_state, &ring_payload, local_ring_pk).await;
+    let entry = post_ring_and_seed_index_with_local_key(
+        &app_state,
+        &bulletin,
+        &ring_payload,
+        local_ring_pk,
+    )
+    .await;
     save_dummy_ring_bundle(&app_state, local_ring_pk, 0);
     assert!(
         app_state
@@ -415,7 +406,7 @@ async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
 #[tokio::test]
 async fn test_pending_fresh_dkg_before_interval_remains_indexed() {
     let db_name = "pss_pending_fresh_cleanup_not_due";
-    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
     let local_ring_pk = "pending_fresh_not_due_local_ring_pk";
     let ring_payload = RingPayload {
         ring_pk: String::new(),
@@ -428,8 +419,13 @@ async fn test_pending_fresh_dkg_before_interval_remains_indexed() {
         policy_id: None,
     };
 
-    let entry =
-        post_ring_and_seed_index_with_local_key(&app_state, &ring_payload, local_ring_pk).await;
+    let entry = post_ring_and_seed_index_with_local_key(
+        &app_state,
+        &bulletin,
+        &ring_payload,
+        local_ring_pk,
+    )
+    .await;
     save_dummy_ring_bundle(&app_state, local_ring_pk, current_unix_secs());
 
     let state_arc = Arc::new(app_state);
@@ -460,7 +456,7 @@ async fn test_pending_fresh_dkg_before_interval_remains_indexed() {
 #[tokio::test]
 async fn test_pending_fresh_dkg_without_interval_remains_indexed() {
     let db_name = "pss_pending_fresh_cleanup_no_interval";
-    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
     let local_ring_pk = "pending_fresh_no_interval_local_ring_pk";
     let ring_payload = RingPayload {
         ring_pk: String::new(),
@@ -473,8 +469,13 @@ async fn test_pending_fresh_dkg_without_interval_remains_indexed() {
         policy_id: None,
     };
 
-    let entry =
-        post_ring_and_seed_index_with_local_key(&app_state, &ring_payload, local_ring_pk).await;
+    let entry = post_ring_and_seed_index_with_local_key(
+        &app_state,
+        &bulletin,
+        &ring_payload,
+        local_ring_pk,
+    )
+    .await;
     save_dummy_ring_bundle(&app_state, local_ring_pk, 0);
 
     let state_arc = Arc::new(app_state);
@@ -509,7 +510,12 @@ async fn test_pending_fresh_dkg_without_interval_remains_indexed() {
 /// Set up an AppState with a routed NodeInfo and return (app_state, node_key, db_path).
 async fn make_initiator_state(
     db_name: &str,
-) -> (crate::app_state::AppState<DkgImpl>, String, String) {
+) -> (
+    crate::app_state::AppState<DkgImpl>,
+    String,
+    String,
+    Arc<DummyBulletin>,
+) {
     let db_path = test_db_path(db_name);
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
     let app_state = create_test_app_state_with_bulletin(
@@ -532,32 +538,34 @@ async fn make_initiator_state(
             },
         )
         .expect("seed self NodeInfo");
-    (app_state, node_key, db_path)
+    (app_state, node_key, db_path, bulletin)
 }
 
 /// Post a RingPayload to the bulletin and seed RingIndex.
 async fn post_ring_and_seed_index(
     app_state: &crate::app_state::AppState<DkgImpl>,
+    bulletin: &DummyBulletin,
     ring_payload: &RingPayload,
 ) -> RingIndexEntry {
-    post_ring_and_seed_index_with_local_key(app_state, ring_payload, &ring_payload.ring_pk).await
+    post_ring_and_seed_index_with_local_key(
+        app_state,
+        bulletin,
+        ring_payload,
+        &ring_payload.ring_pk,
+    )
+    .await
 }
 
 async fn post_ring_and_seed_index_with_local_key(
     app_state: &crate::app_state::AppState<DkgImpl>,
+    bulletin: &DummyBulletin,
     ring_payload: &RingPayload,
     local_ring_pk: &str,
 ) -> RingIndexEntry {
-    let payload_bytes = serde_json::to_vec(ring_payload).expect("serialize RingPayload");
-    app_state
-        .bulletin
-        .post(BulletinKind::Ring, payload_bytes.clone(), None)
-        .await
-        .expect("post RingPayload");
-    let post_id = app_state
-        .bulletin
-        .get_post_id(&payload_bytes)
-        .expect("compute post_id");
+    let post_id = format!("test-pss-ring-{local_ring_pk}");
+    bulletin
+        .set_ring(post_id.clone(), ring_payload.clone())
+        .expect("seed RingPayload");
     let entry = RingIndexEntry {
         ring_pk_str: local_ring_pk.to_string(),
         bulletin_post_id: post_id,
@@ -612,7 +620,7 @@ fn current_unix_secs() -> u64 {
 #[tokio::test]
 async fn test_pss_ring_reshare_bypasses_interval() {
     let db_name = "pss_reshare_bypasses_interval";
-    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
 
     let ring_payload = RingPayload {
         ring_pk: "pss_reshare_bypass_pk".to_string(),
@@ -625,7 +633,7 @@ async fn test_pss_ring_reshare_bypasses_interval() {
         policy_id: None,
     };
 
-    let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
     let result = super::pss_ring(&Arc::new(app_state), &entry).await;
 
     assert!(
@@ -643,7 +651,7 @@ async fn test_pss_ring_reshare_bypasses_interval() {
 #[tokio::test]
 async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
     let db_name = "pss_new_threshold_triggers_reshare";
-    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
 
     let ring_payload = RingPayload {
         ring_pk: "pss_new_threshold_pk".to_string(),
@@ -656,7 +664,7 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
         policy_id: None,
     };
 
-    let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
     let result = super::pss_ring(&Arc::new(app_state), &entry).await;
 
     assert!(
@@ -674,7 +682,7 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
 #[tokio::test]
 async fn test_pss_ring_refresh_skips_without_interval() {
     let db_name = "pss_refresh_skips_no_interval";
-    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
 
     let ring_payload = RingPayload {
         ring_pk: "pss_no_interval_pk".to_string(),
@@ -687,7 +695,7 @@ async fn test_pss_ring_refresh_skips_without_interval() {
         policy_id: None,
     };
 
-    let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
     let result = super::pss_ring(&Arc::new(app_state), &entry).await;
 
     assert!(
@@ -703,7 +711,7 @@ async fn test_pss_ring_refresh_skips_without_interval() {
 #[tokio::test]
 async fn test_pss_ring_refresh_zero_interval_is_due() {
     let db_name = "pss_refresh_zero_interval_due";
-    let (app_state, our_hex, db_path) = make_initiator_state(db_name).await;
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
 
     let ring_payload = RingPayload {
         ring_pk: "pss_zero_interval_pk".to_string(),
@@ -716,7 +724,7 @@ async fn test_pss_ring_refresh_zero_interval_is_due() {
         policy_id: None,
     };
 
-    let entry = post_ring_and_seed_index(&app_state, &ring_payload).await;
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
     let result = super::pss_ring(&Arc::new(app_state), &entry).await;
 
     assert!(

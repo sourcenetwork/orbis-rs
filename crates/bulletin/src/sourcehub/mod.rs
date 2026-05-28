@@ -1,18 +1,15 @@
 use crate::{
     error::{BulletinError, Result},
     r#trait::{
-        Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, NodeInfo,
-        RingFinalizationPayload, RingPayload,
+        Bulletin, BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, KeyDerivation,
+        NodeInfo, RingFinalizationPayload, RingPayload,
     },
 };
 use async_trait::async_trait;
 use common::blockchain::{
-    orbis::{
-        self, generate_document_id, generate_key_derivation_id, generate_ring_id, ring_state_hash,
-    },
-    ChainConfigBuilder, SourceHubClient, TxSigner,
+    orbis::{self, generate_document_id, generate_key_derivation_id, ring_state_hash},
+    BlockchainError, ChainConfigBuilder, SourceHubClient, TxSigner,
 };
-use sha2::{Digest, Sha256};
 
 #[cfg(test)]
 mod tests;
@@ -27,31 +24,9 @@ impl Bulletin for SourceHubBulletin {
         Ok(())
     }
 
-    async fn post(
-        &self,
-        kind: BulletinKind,
-        payload: Vec<u8>,
-        artifact: Option<String>,
-    ) -> Result<()> {
+    async fn post(&self, kind: BulletinWriteKind, payload: Vec<u8>) -> Result<String> {
         match kind {
-            BulletinKind::Ring => {
-                let ring: RingPayload = serde_json::from_slice(&payload)
-                    .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-                let (result, _) = self
-                    .chain_client
-                    .orbis_create_ring_get_id(
-                        ring.peer_node_keys,
-                        ring.threshold,
-                        ring.pss_interval,
-                        ring.policy_id.as_deref().unwrap_or(""),
-                        artifact,
-                        None,
-                    )
-                    .await
-                    .map_err(|e| BulletinError::ChainError(e.to_string()))?;
-                check_result(result, "create ring")
-            }
-            BulletinKind::Finalize => {
+            BulletinWriteKind::Finalize => {
                 let finalize: RingFinalizationPayload = serde_json::from_slice(&payload)
                     .map_err(|e| BulletinError::ParseError(e.to_string()))?;
                 let result = self
@@ -59,33 +34,51 @@ impl Bulletin for SourceHubBulletin {
                     .orbis_finalize_ring(&finalize.ring_id, &finalize.ring_pk)
                     .await
                     .map_err(|e| BulletinError::ChainError(e.to_string()))?;
-                check_result(result, "finalize ring")
+                check_result(result, "finalize ring")?;
+                Ok(finalize.ring_id)
             }
-            BulletinKind::Document => {
+            BulletinWriteKind::Document => {
                 let doc: DocumentPayload = serde_json::from_slice(&payload)
                     .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-                let result = self
+                let (result, document_id) = match self
                     .chain_client
-                    .orbis_store_document(
+                    .orbis_store_document_get_id(
                         &doc.ring_id,
                         &doc.document,
                         &doc.proof,
                         &doc.policy_id,
                         &doc.resource,
                         &doc.permission,
-                        doc.tier,
+                        doc.tier.clone(),
                         doc.timestamp,
                     )
                     .await
-                    .map_err(|e| BulletinError::ChainError(e.to_string()))?;
-                check_result(result, "store document")
+                {
+                    Ok(result) => result,
+                    Err(BlockchainError::TxFailed { log, .. }) if is_already_exists_log(&log) => {
+                        let document_id = generate_document_id(
+                            &doc.ring_id,
+                            &doc.document,
+                            &doc.proof,
+                            &doc.policy_id,
+                            &doc.resource,
+                            &doc.permission,
+                            doc.tier.as_deref(),
+                            doc.timestamp,
+                        );
+                        return Ok(document_id);
+                    }
+                    Err(e) => return Err(BulletinError::ChainError(e.to_string())),
+                };
+                check_result(result, "store document")?;
+                Ok(document_id)
             }
-            BulletinKind::KeyDerivation => {
+            BulletinWriteKind::KeyDerivation => {
                 let kd: KeyDerivation = serde_json::from_slice(&payload)
                     .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-                let result = self
+                let (result, key_derivation_id) = match self
                     .chain_client
-                    .orbis_store_key_derivation(
+                    .orbis_store_key_derivation_get_id(
                         &kd.ring_id,
                         &kd.derivation,
                         &kd.policy_id,
@@ -93,12 +86,35 @@ impl Bulletin for SourceHubBulletin {
                         &kd.permission,
                     )
                     .await
-                    .map_err(|e| BulletinError::ChainError(e.to_string()))?;
-                check_result(result, "store key derivation")
+                {
+                    Ok(result) => result,
+                    Err(BlockchainError::TxFailed { log, .. }) if is_already_exists_log(&log) => {
+                        let key_derivation_id = generate_key_derivation_id(
+                            &kd.ring_id,
+                            &kd.derivation,
+                            &kd.policy_id,
+                            &kd.resource,
+                            &kd.permission,
+                        );
+                        return Ok(key_derivation_id);
+                    }
+                    Err(e) => return Err(BulletinError::ChainError(e.to_string())),
+                };
+                check_result(result, "store key derivation")?;
+                Ok(key_derivation_id)
             }
-            BulletinKind::NodeInfo => {
+            BulletinWriteKind::NodeInfo => {
                 let node_info: NodeInfo = serde_json::from_slice(&payload)
                     .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+                let node_key = self
+                    .chain_client
+                    .signer()
+                    .ok_or_else(|| {
+                        BulletinError::ChainError(
+                            "No signer configured for node info creation".to_string(),
+                        )
+                    })?
+                    .public_key_hex();
                 let result = self
                     .chain_client
                     .orbis_create_node_info(
@@ -109,7 +125,8 @@ impl Bulletin for SourceHubBulletin {
                     )
                     .await
                     .map_err(|e| BulletinError::ChainError(e.to_string()))?;
-                check_result(result, "create node info")
+                check_result(result, "create node info")?;
+                Ok(node_key)
             }
         }
     }
@@ -125,7 +142,7 @@ impl Bulletin for SourceHubBulletin {
 
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost> {
         match kind {
-            BulletinKind::Ring | BulletinKind::Finalize => self
+            BulletinKind::Ring => self
                 .chain_client
                 .orbis_read_ring(&id)
                 .await
@@ -162,63 +179,6 @@ impl Bulletin for SourceHubBulletin {
         self.chain_client.config().chain_id.clone()
     }
 
-    fn get_post_id(&self, payload: &[u8]) -> Result<String> {
-        if let Ok(doc) = serde_json::from_slice::<DocumentPayload>(payload) {
-            return Ok(generate_document_id(
-                &doc.ring_id,
-                &doc.document,
-                &doc.proof,
-                &doc.policy_id,
-                &doc.resource,
-                &doc.permission,
-                doc.tier.as_deref(),
-                doc.timestamp,
-            ));
-        }
-        if let Ok(kd) = serde_json::from_slice::<KeyDerivation>(payload) {
-            return Ok(generate_key_derivation_id(
-                &kd.ring_id,
-                &kd.derivation,
-                &kd.policy_id,
-                &kd.resource,
-                &kd.permission,
-            ));
-        }
-        if let Ok(ring) = serde_json::from_slice::<RingPayload>(payload) {
-            return Ok(generate_ring_id(
-                &ring.peer_node_keys,
-                ring.threshold,
-                ring.pss_interval,
-                ring.policy_id.as_deref().unwrap_or(""),
-                None,
-            ));
-        }
-        if let Ok(finalize) = serde_json::from_slice::<RingFinalizationPayload>(payload) {
-            return Ok(finalize.ring_id);
-        }
-
-        let mut hasher = Sha256::new();
-        hasher.update(payload);
-        Ok(hex::encode(hasher.finalize()))
-    }
-
-    fn get_ring_id(
-        &self,
-        peer_node_keys: &[String],
-        threshold: u32,
-        pss_interval: Option<u64>,
-        policy_id: &str,
-        nonce: Option<&str>,
-    ) -> Result<String> {
-        Ok(generate_ring_id(
-            peer_node_keys,
-            threshold,
-            pss_interval,
-            policy_id,
-            nonce,
-        ))
-    }
-
     async fn ring_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]> {
         let ring = self
             .chain_client
@@ -229,26 +189,6 @@ impl Bulletin for SourceHubBulletin {
                 id: ring_id.to_string(),
             })?;
         Ok(ring_state_hash(&ring))
-    }
-
-    fn ring_reshare_finalize_sign_bytes(
-        &self,
-        chain_id: &str,
-        ring_id: &str,
-        ring_pk: &str,
-        current_ring_sha256: Vec<u8>,
-        finalized_ring_sha256: Vec<u8>,
-        block_number_nonce: u64,
-    ) -> Result<Vec<u8>> {
-        orbis::ring_reshare_finalize_sign_bytes(
-            chain_id,
-            ring_id,
-            ring_pk,
-            current_ring_sha256,
-            finalized_ring_sha256,
-            block_number_nonce,
-        )
-        .map_err(|e| BulletinError::ParseError(e.to_string()))
     }
 
     async fn ring_finalized_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]> {
@@ -272,6 +212,26 @@ impl Bulletin for SourceHubBulletin {
             ..ring
         };
         Ok(ring_state_hash(&finalized))
+    }
+
+    fn ring_reshare_finalize_sign_bytes(
+        &self,
+        chain_id: &str,
+        ring_id: &str,
+        ring_pk: &str,
+        current_ring_sha256: Vec<u8>,
+        finalized_ring_sha256: Vec<u8>,
+        block_number_nonce: u64,
+    ) -> Result<Vec<u8>> {
+        orbis::ring_reshare_finalize_sign_bytes(
+            chain_id,
+            ring_id,
+            ring_pk,
+            current_ring_sha256,
+            finalized_ring_sha256,
+            block_number_nonce,
+        )
+        .map_err(|e| BulletinError::ParseError(e.to_string()))
     }
 }
 
@@ -455,4 +415,8 @@ fn check_result(result: common::blockchain::BroadcastResult, op: &str) -> Result
         )));
     }
     Ok(())
+}
+
+fn is_already_exists_log(log: &str) -> bool {
+    log.to_ascii_lowercase().contains("already exists")
 }

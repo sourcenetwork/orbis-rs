@@ -1,5 +1,5 @@
 use super::SourceHubBulletin;
-use crate::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
+use crate::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, RingPayload};
 use common::{
     blockchain::{ChainConfig, ChainConfigBuilder, TxSigner, TEST_ACCOUNT_HEX_KEY},
     SourceHubTestContainer,
@@ -38,19 +38,17 @@ async fn test_bulletin_document() {
         .unwrap();
 
     let ring_payload = test_ring_payload();
-    let ring_payload_bytes: Vec<u8> = ring_payload.clone().try_into().unwrap();
-    bulletin
-        .post(BulletinKind::Ring, ring_payload_bytes, None)
-        .await
-        .unwrap();
-    let ring_id = bulletin
-        .get_ring_id(
-            &ring_payload.peer_node_keys,
+    let (_, ring_id) = bulletin
+        .chain_client
+        .orbis_create_ring_get_id(
+            ring_payload.peer_node_keys,
             ring_payload.threshold,
             ring_payload.pss_interval,
             ring_payload.policy_id.as_deref().unwrap_or(""),
             None,
+            Some("document-test".to_string()),
         )
+        .await
         .unwrap();
 
     let payload = DocumentPayload {
@@ -66,12 +64,10 @@ async fn test_bulletin_document() {
 
     bulletin.register().await.unwrap();
 
-    bulletin
-        .post(BulletinKind::Document, serialized_payload.clone(), None)
+    let post_id = bulletin
+        .post(BulletinWriteKind::Document, serialized_payload.clone())
         .await
         .unwrap();
-
-    let post_id = bulletin.get_post_id(&serialized_payload).unwrap();
 
     let created_post = bulletin
         .read(post_id, BulletinKind::Document)
@@ -107,18 +103,17 @@ async fn test_bulletin_ring() {
 
     bulletin.register().await.unwrap();
 
-    bulletin
-        .post(BulletinKind::Ring, serialized_payload.clone(), None)
-        .await
-        .unwrap();
-    let ring_id = bulletin
-        .get_ring_id(
-            &payload.peer_node_keys,
+    let (_, ring_id) = bulletin
+        .chain_client
+        .orbis_create_ring_get_id(
+            payload.peer_node_keys.clone(),
             payload.threshold,
             payload.pss_interval,
             payload.policy_id.as_deref().unwrap_or(""),
             None,
+            Some("ring-test".to_string()),
         )
+        .await
         .unwrap();
 
     let created_post = bulletin

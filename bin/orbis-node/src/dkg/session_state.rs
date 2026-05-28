@@ -860,7 +860,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states.get(session_id).map(|s| s.peer_node_keys.clone())
     }
 
-    pub async fn get_ring_id(&self, session_id: &u64) -> Option<String> {
+    pub async fn ring_id_for_session(&self, session_id: &u64) -> Option<String> {
         let states = self.states.read().await;
         states.get(session_id).map(|s| s.ring_id.clone())
     }

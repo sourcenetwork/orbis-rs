@@ -6,11 +6,13 @@ use crate::dkg::{
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
-    cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_ring_post,
-    setup_three_node_network, test_db_path, write_ring_to_bulletin, TestKeyPair,
+    cleanup_db, create_authenticated_request, create_test_app_state_default,
+    create_test_app_state_with_bulletin, get_test_ring_post, setup_three_node_network,
+    test_db_path, write_ring_to_bulletin, TestKeyPair,
 };
 use crate::ring_state::RingPolyState;
 use crate::DkgServiceImpl;
+use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgMode, DkgRole, PubPoly as PubPolyTrait};
 use crypto::CryptoSerialize;
@@ -635,13 +637,20 @@ fn refresh_session_init(ring_pk: &str, sender_hex: &str) -> DkgMessage {
 async fn test_refresh_rejected_sender_not_in_ring() {
     let db_name = "test_refresh_rejected_sender_not_in_ring";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     let ring_pk = "ring_pk";
     // Ring contains only "aabbccdd"; the sender will be "deadbeef".
     write_ring_to_bulletin(
         &app_state.local_storage,
-        &app_state.bulletin,
+        &dummy_bulletin,
         ring_pk,
         vec!["aabbccdd".to_string()],
         None, // membership check fires before time check
@@ -667,13 +676,20 @@ async fn test_refresh_rejected_sender_not_in_ring() {
 async fn test_refresh_rejected_too_soon() {
     let db_name = "test_refresh_rejected_too_soon";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     let ring_pk = "ring_pk";
     let sender_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     write_ring_to_bulletin(
         &app_state.local_storage,
-        &app_state.bulletin,
+        &dummy_bulletin,
         ring_pk,
         vec![sender_hex.to_string()],
         Some(86400), // 24h interval required
@@ -705,13 +721,20 @@ async fn test_refresh_rejected_too_soon() {
 async fn test_refresh_rejected_already_in_progress() {
     let db_name = "test_refresh_rejected_already_in_progress";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     let ring_pk = "ring_pk";
     let sender_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     write_ring_to_bulletin(
         &app_state.local_storage,
-        &app_state.bulletin,
+        &dummy_bulletin,
         ring_pk,
         vec![sender_hex.to_string()],
         None, // time check irrelevant; rejected by in-progress flag

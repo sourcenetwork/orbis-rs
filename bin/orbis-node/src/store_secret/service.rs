@@ -8,7 +8,9 @@ use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::messages::SignContext;
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
-use bulletin::r#trait::{BulletinKind, BulletinPost, DocumentPayload, RingPayload};
+use bulletin::r#trait::{
+    BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, RingPayload,
+};
 use crypto::r#trait::{Dkg, EncryptionProof, Secret};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
@@ -156,46 +158,13 @@ where
                     ))
                 })?;
 
-        // 5. Compute object_id before posting (deterministic typed Orbis hash).
+        // 5. Post to bulletin and use the authoritative object id returned by the backend.
         let object_id = self
             .state
             .bulletin
-            .get_post_id(&payload_bytes)
-            .map_err(|e| StoreSecretError::Storage(format!("Failed to compute post ID: {}", e)))?;
-
-        // 6. Post to bulletin (only if it doesn't already exist)
-        // Check if the post already exists (read returns NotFound error if not found)
-        let post_exists = match self
-            .state
-            .bulletin
-            .read(object_id.clone(), BulletinKind::Document)
+            .post(BulletinWriteKind::Document, payload_bytes.clone())
             .await
-        {
-            Ok(_) => true,
-            Err(bulletin::error::BulletinError::NotFound { .. }) => false,
-            Err(e) => {
-                return Err(StoreSecretError::Storage(format!(
-                    "Failed to check existing post: {}",
-                    e
-                ))
-                .into())
-            }
-        };
-
-        if !post_exists {
-            self.state
-                .bulletin
-                .post(BulletinKind::Document, payload_bytes.clone(), None)
-                .await
-                .map_err(|e| {
-                    StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e))
-                })?;
-        } else {
-            tracing::debug!(
-                object_id = %object_id,
-                "Post already exists on bulletin, skipping post"
-            );
-        }
+            .map_err(|e| StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e)))?;
 
         let created_at = current_time as i64;
 

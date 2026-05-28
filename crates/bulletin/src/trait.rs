@@ -5,6 +5,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BulletinKind {
     Ring,
+    Document,
+    KeyDerivation,
+    NodeInfo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BulletinWriteKind {
     Finalize,
     Document,
     KeyDerivation,
@@ -211,32 +218,13 @@ pub trait Bulletin {
     /// Register a bulletin instance.
     async fn register(&self) -> Result<()>;
     /// Post a typed Orbis object.
-    ///
-    /// `BulletinKind::Ring` creates a pending ring. `BulletinKind::Finalize` confirms
-    /// fresh DKG finalization for an existing ring.
-    async fn post(
-        &self,
-        kind: BulletinKind,
-        payload: Vec<u8>,
-        artifact: Option<String>,
-    ) -> Result<()>;
+    async fn post(&self, kind: BulletinWriteKind, payload: Vec<u8>) -> Result<String>;
     /// Finalize an existing typed Orbis object update while preserving its ID.
     async fn update(&self, id: String, signature_scheme: String, signature: Vec<u8>) -> Result<()>;
     /// Read a typed Orbis object.
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost>;
     /// Chain ID used when building chain-bound signing statements.
     fn chain_id(&self) -> String;
-    /// Compute a deterministic typed object ID from raw payload bytes.
-    fn get_post_id(&self, payload: &[u8]) -> Result<String>;
-    /// Compute the deterministic ring ID from ring creation parameters.
-    fn get_ring_id(
-        &self,
-        peer_node_keys: &[String],
-        threshold: u32,
-        pss_interval: Option<u64>,
-        policy_id: &str,
-        nonce: Option<&str>,
-    ) -> Result<String>;
     /// Return the canonical hash of the current ring state used in reshare sign docs.
     /// Each bulletin backend defines what "canonical" means for its storage representation.
     async fn ring_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]>;

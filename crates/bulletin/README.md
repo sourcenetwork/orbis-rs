@@ -1,6 +1,6 @@
 # Bulletin crate
 
-A small async abstraction over typed Orbis bulletin objects: **post** rings, node info, encrypted document handles, and key-derivation records; **read** objects by id; and compute deterministic object ids from typed payloads.
+A small async abstraction over typed Orbis bulletin objects: **read** rings by authoritative id, and **post** fresh ring finalizations, node info, encrypted document handles, and key-derivation records.
 
 The default backend is SourceHub `x/orbis`; an in-memory **dummy** implementation ships for tests and local development.
 
@@ -11,10 +11,8 @@ Defined in [`src/trait.rs`](src/trait.rs):
 | Method | Role |
 |--------|------|
 | `register()` | Backend setup hook. SourceHub typed objects do not require namespace registration. |
-| `post(kind, payload, artifact)` | Store a typed object; `Finalize` posts confirm completed fresh DKG for an existing ring. |
+| `post(kind, payload)` | Store a typed write object and return its authoritative id. Write kinds are `Finalize`, `Document`, `KeyDerivation`, and `NodeInfo`. |
 | `read(id, kind)` | Load a `BulletinPost` (`id`, `payload`). |
-| `get_post_id(payload)` | Deterministic id for a typed payload. |
-| `get_ring_id(peer_node_keys, threshold, pss_interval, policy_id, nonce)` | Deterministic SourceHub ring id helper. |
 
 Shared **value types** (JSON serde):
 
@@ -47,9 +45,9 @@ cargo build -p bulletin --no-default-features --features dummy
 **`SourceHubBulletin`** wraps [`SourceHubClient`](../common) from the workspace `common` crate.
 
 - **`register`** — no-op for typed SourceHub `x/orbis` objects.
-- **`post`** — routes to `CreateRing`, fresh `FinalizeRing`, `StoreDocument`, `StoreKeyDerivation`, or `CreateNodeInfo`.
+- **`post`** — routes to fresh `FinalizeRing`, `StoreDocument`, `StoreKeyDerivation`, or `CreateNodeInfo`, returning the chain id for the written object.
 - **`read`** — routes to typed `x/orbis` queries by object id.
-- **`get_post_id` / `get_ring_id`** — matches SourceHub typed id derivation helpers.
+- Ring creation is intentionally outside this abstraction; callers receive a `ring_id` from SourceHub `CreateRing` and pass that id through DKG.
 
 Construction:
 
@@ -62,9 +60,9 @@ Integration tests in [`src/sourcehub/tests.rs`](src/sourcehub/tests.rs) may requ
 
 ## Dummy implementation
 
-**`DummyBulletin`** keeps typed objects in a process-local **`HashMap`**, keyed by object id. Typed post ids use the same helper rules as SourceHub so tests can assert deterministic behavior.
+**`DummyBulletin`** keeps typed objects in a process-local **`HashMap`**, keyed by object id. Document and key-derivation writes return the same typed ids as SourceHub.
 
-Extras for tests: **`set_post`**, **`set_node_info`**, **`get_posts`**, and **`finalization_count`**. `DummyBulletin::post` rejects `NodeInfo` because the dummy backend has no signer to derive the node key.
+Extras for tests: **`set_post`**, **`set_ring`**, **`set_node_info`**, **`get_posts`**, and **`finalization_count`**. `DummyBulletin::post` rejects `NodeInfo` because the dummy backend has no signer to derive the node key.
 
 Diagnostics name: **`"bulletin/dummy"`**.
 
@@ -75,7 +73,7 @@ Diagnostics name: **`"bulletin/dummy"`**.
 ## Dependencies (high level)
 
 - **`async-trait`**, **`serde`** / **`serde_json`**
-- **`sha2`**, **`hex`** — deterministic post-id hashing
+- **`sha2`**, **`hex`** — canonical ring hash helpers
 - **`backoff`** — balance retries in `with_signer`
 - **`common`** — SourceHub chain client
 

@@ -1,13 +1,13 @@
 use crate::{
     error::{BulletinError, Result},
     r#trait::{
-        Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, NodeInfo,
-        RingFinalizationPayload, RingPayload,
+        Bulletin, BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, KeyDerivation,
+        NodeInfo, RingFinalizationPayload, RingPayload,
     },
 };
 use async_trait::async_trait;
 use common::blockchain::orbis::{
-    generate_document_id, generate_key_derivation_id, generate_ring_id,
+    generate_document_id, generate_key_derivation_id,
     ring_reshare_finalize_sign_bytes as orbis_ring_reshare_finalize_sign_bytes,
 };
 use sha2::{Digest, Sha256};
@@ -28,26 +28,21 @@ impl Bulletin for DummyBulletin {
         Ok(())
     }
 
-    async fn post(
-        &self,
-        kind: BulletinKind,
-        payload: Vec<u8>,
-        _artifact: Option<String>,
-    ) -> Result<()> {
-        let id = match kind {
-            BulletinKind::Finalize => {
-                let finalize: RingFinalizationPayload = serde_json::from_slice(&payload)
-                    .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-                return self.post_finalized_ring(finalize);
-            }
-            BulletinKind::NodeInfo => {
-                return Err(BulletinError::ParseError(
+    async fn post(&self, kind: BulletinWriteKind, payload: Vec<u8>) -> Result<String> {
+        let id =
+            match kind {
+                BulletinWriteKind::Finalize => {
+                    let finalize: RingFinalizationPayload = serde_json::from_slice(&payload)
+                        .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+                    return self.post_finalized_ring(finalize);
+                }
+                BulletinWriteKind::NodeInfo => return Err(BulletinError::ParseError(
                     "DummyBulletin cannot derive a NodeInfo id; use set_node_info for test setup"
                         .to_string(),
-                ))
-            }
-            _ => Self::typed_post_id(&payload).unwrap_or_else(|| Self::compute_post_id(&payload)),
-        };
+                )),
+                BulletinWriteKind::Document => Self::document_id(&payload)?,
+                BulletinWriteKind::KeyDerivation => Self::key_derivation_id(&payload)?,
+            };
 
         let post = BulletinPost {
             id: id.clone(),
@@ -55,8 +50,8 @@ impl Bulletin for DummyBulletin {
         };
 
         let mut posts = self.posts.lock().unwrap();
-        posts.insert(id, post);
-        Ok(())
+        posts.insert(id.clone(), post);
+        Ok(id)
     }
 
     async fn update(
@@ -97,27 +92,6 @@ impl Bulletin for DummyBulletin {
 
     fn chain_id(&self) -> String {
         "sourcehub-localnet".to_string()
-    }
-
-    fn get_post_id(&self, payload: &[u8]) -> Result<String> {
-        Ok(Self::typed_post_id(payload).unwrap_or_else(|| Self::compute_post_id(payload)))
-    }
-
-    fn get_ring_id(
-        &self,
-        peer_node_keys: &[String],
-        threshold: u32,
-        pss_interval: Option<u64>,
-        policy_id: &str,
-        nonce: Option<&str>,
-    ) -> Result<String> {
-        Ok(common::blockchain::orbis::generate_ring_id(
-            peer_node_keys,
-            threshold,
-            pss_interval,
-            policy_id,
-            nonce,
-        ))
     }
 
     async fn ring_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]> {
@@ -169,7 +143,7 @@ impl Bulletin for DummyBulletin {
 }
 
 impl DummyBulletin {
-    fn post_finalized_ring(&self, finalize: RingFinalizationPayload) -> Result<()> {
+    fn post_finalized_ring(&self, finalize: RingFinalizationPayload) -> Result<String> {
         let mut posts = self.posts.lock().unwrap();
         let post = posts
             .get_mut(&finalize.ring_id)
@@ -187,9 +161,9 @@ impl DummyBulletin {
                 .finalization_counts
                 .lock()
                 .unwrap()
-                .entry(finalize.ring_id)
+                .entry(finalize.ring_id.clone())
                 .or_default() += 1;
-            return Ok(());
+            return Ok(finalize.ring_id);
         }
 
         if payload.ring_pk == finalize.ring_pk {
@@ -197,9 +171,9 @@ impl DummyBulletin {
                 .finalization_counts
                 .lock()
                 .unwrap()
-                .entry(finalize.ring_id)
+                .entry(finalize.ring_id.clone())
                 .or_default() += 1;
-            return Ok(());
+            return Ok(finalize.ring_id);
         }
 
         Err(BulletinError::ParseError(format!(
@@ -245,50 +219,45 @@ impl DummyBulletin {
         Ok(())
     }
 
-    /// Compute deterministic post ID from raw payload bytes for non-typed test payloads.
-    fn compute_post_id(payload: &[u8]) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(payload);
-        hex::encode(hasher.finalize())
+    /// Set a ring record directly for test setup.
+    pub fn set_ring(&self, ring_id: String, ring_payload: RingPayload) -> Result<()> {
+        let payload: Vec<u8> = ring_payload.try_into()?;
+        self.set_post(
+            ring_id.clone(),
+            BulletinPost {
+                id: ring_id,
+                payload,
+            },
+        );
+        Ok(())
     }
 
-    fn typed_post_id(payload: &[u8]) -> Option<String> {
-        if let Ok(doc) = serde_json::from_slice::<DocumentPayload>(payload) {
-            return Some(generate_document_id(
-                &doc.ring_id,
-                &doc.document,
-                &doc.proof,
-                &doc.policy_id,
-                &doc.resource,
-                &doc.permission,
-                doc.tier.as_deref(),
-                doc.timestamp,
-            ));
-        }
-        if let Ok(kd) = serde_json::from_slice::<KeyDerivation>(payload) {
-            return Some(generate_key_derivation_id(
-                &kd.ring_id,
-                &kd.derivation,
-                &kd.policy_id,
-                &kd.resource,
-                &kd.permission,
-            ));
-        }
-        if let Ok(ring) = serde_json::from_slice::<RingPayload>(payload) {
-            return Some(generate_ring_id(
-                &ring.peer_node_keys,
-                ring.threshold,
-                ring.pss_interval,
-                ring.policy_id.as_deref().unwrap_or(""),
-                None,
-            ));
-        }
-        if let Ok(finalize) = serde_json::from_slice::<RingFinalizationPayload>(payload) {
-            return Some(finalize.ring_id);
-        }
-        None
+    fn document_id(payload: &[u8]) -> Result<String> {
+        let doc: DocumentPayload = serde_json::from_slice(payload)
+            .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        Ok(generate_document_id(
+            &doc.ring_id,
+            &doc.document,
+            &doc.proof,
+            &doc.policy_id,
+            &doc.resource,
+            &doc.permission,
+            doc.tier.as_deref(),
+            doc.timestamp,
+        ))
     }
 
+    fn key_derivation_id(payload: &[u8]) -> Result<String> {
+        let kd: KeyDerivation = serde_json::from_slice(payload)
+            .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        Ok(generate_key_derivation_id(
+            &kd.ring_id,
+            &kd.derivation,
+            &kd.policy_id,
+            &kd.resource,
+            &kd.permission,
+        ))
+    }
     /// Get all posts (for testing).
     pub fn get_posts(&self) -> Vec<BulletinPost> {
         let posts = self.posts.lock().unwrap();
@@ -318,23 +287,10 @@ mod tests {
             policy_id: Some("policy-a".to_string()),
             ..Default::default()
         };
-        let ring_id = bulletin
-            .get_ring_id(
-                &payload.peer_node_keys,
-                payload.threshold,
-                payload.pss_interval,
-                payload.policy_id.as_deref().unwrap_or(""),
-                None,
-            )
-            .expect("ring id");
-        let payload_bytes: Vec<u8> = payload.try_into().expect("serialize ring");
-        bulletin.set_post(
-            ring_id.clone(),
-            BulletinPost {
-                id: ring_id.clone(),
-                payload: payload_bytes,
-            },
-        );
+        let ring_id = "test-pending-ring".to_string();
+        bulletin
+            .set_ring(ring_id.clone(), payload)
+            .expect("seed pending ring");
         (bulletin, ring_id)
     }
 
@@ -342,14 +298,14 @@ mod tests {
         bulletin: &DummyBulletin,
         ring_id: &str,
         ring_pk: &str,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let payload = RingFinalizationPayload {
             ring_id: ring_id.to_string(),
             ring_pk: ring_pk.to_string(),
         };
         let payload_bytes: Vec<u8> = payload.try_into()?;
         bulletin
-            .post(BulletinKind::Finalize, payload_bytes, None)
+            .post(BulletinWriteKind::Finalize, payload_bytes)
             .await
     }
 

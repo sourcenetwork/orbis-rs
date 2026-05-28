@@ -4,7 +4,7 @@ use crate::constants::{
 use crate::error::PasswordError;
 use bulletin::{
     error::BulletinError,
-    r#trait::{Bulletin, BulletinKind, NodeInfo},
+    r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo},
 };
 use clap::{Parser, ValueEnum};
 use common::blockchain::{ChainConfig, TxSigner};
@@ -133,7 +133,7 @@ pub async fn ensure_node_info(
 
     let node_info = build_node_info_from_args(peer_id.clone(), controller_key, args);
     let payload: Vec<u8> = node_info.try_into()?;
-    bulletin.post(BulletinKind::NodeInfo, payload, None).await?;
+    bulletin.post(BulletinWriteKind::NodeInfo, payload).await?;
     tracing::info!(
         node_key = %node_key,
         peer_id = %peer_id,

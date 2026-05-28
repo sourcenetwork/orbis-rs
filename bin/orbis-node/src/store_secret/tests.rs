@@ -10,7 +10,7 @@ use crate::helpers::test_helpers::{
 use crate::ring_state::RingIndexEntry;
 use crate::store_secret::StoreSecretServiceImpl;
 use bulletin::dummy::DummyBulletin;
-use bulletin::r#trait::{Bulletin, BulletinPost, RingPayload};
+use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
 use crypto::{DkgImpl, PreImpl as ThresholdDealerNode, SignImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -61,13 +61,9 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         policy_id: None,
     };
 
-    // Serialize and set in bulletin
-    let payload_bytes: Vec<u8> = ring_payload.try_into().expect("serialize RingPayload");
-    let post = BulletinPost {
-        id: TEST_RING_ID.to_string(),
-        payload: payload_bytes,
-    };
-    bulletin.set_post(TEST_RING_ID.to_string(), post);
+    bulletin
+        .set_ring(TEST_RING_ID.to_string(), ring_payload)
+        .expect("seed ring");
 
     let app_state =
         create_test_app_state_with_bulletin(None, true, Arc::new(bulletin), db_name).await;
@@ -391,21 +387,10 @@ async fn test_store_secret_idempotent() {
         policy_id: None,
     };
 
-    // Compute the ring_id (deterministic hash of the ring payload)
-    let ring_payload_bytes: Vec<u8> = ring_payload
-        .clone()
-        .try_into()
-        .expect("serialize RingPayload");
-    let ring_id = bulletin
-        .get_post_id(&ring_payload_bytes)
-        .expect("compute ring_id");
-
-    // Set ring in bulletin
-    let ring_post = BulletinPost {
-        id: ring_id.clone(),
-        payload: ring_payload_bytes,
-    };
-    bulletin.set_post(ring_id.clone(), ring_post);
+    let ring_id = "test-store-secret-valid-ring".to_string();
+    bulletin
+        .set_ring(ring_id.clone(), ring_payload)
+        .expect("seed ring");
 
     // Create app state with this bulletin
     let app_state =

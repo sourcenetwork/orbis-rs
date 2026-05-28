@@ -7,9 +7,9 @@ use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
-    cleanup_db, create_authenticated_request, create_test_app_state_default,
-    create_test_app_state_with_bulletin, get_test_ring_post, setup_three_node_network,
-    test_db_path, write_ring_to_bulletin, TestKeyPair, TestNode,
+    cleanup_db, create_authenticated_request, create_test_app_state_with_bulletin,
+    get_test_ring_post, setup_three_node_network, test_db_path, write_ring_to_bulletin,
+    TestKeyPair, TestNode,
 };
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use crate::DkgServiceImpl;
@@ -132,7 +132,14 @@ async fn test_rings_pss_blocks_refresh_and_reshare_equally() {
 async fn test_reshare_session_init_rejects_unknown_ring() {
     let db_name = "test_reshare_rejects_unknown_ring";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
     let coordinator = DkgCoordinator::new(app_state);
 
     let sender_bytes = hex::decode("aabbccdd").unwrap();
@@ -160,7 +167,14 @@ async fn test_reshare_session_init_rejects_unknown_ring() {
 async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
     let db_name = "test_reshare_rejects_bulletin_ring_pk_mismatch";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     use local_storage::r#trait::LocalStorageKeys;
 
@@ -176,13 +190,10 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
         block_number_nonce: 0,
         policy_id: None,
     };
-    let bytes = serde_json::to_vec(&payload).unwrap();
-    app_state
-        .bulletin
-        .post(BulletinKind::Ring, bytes.clone(), None)
-        .await
-        .unwrap();
-    let post_id = app_state.bulletin.get_post_id(&bytes).unwrap();
+    let post_id = "test-mismatched-ring-pk".to_string();
+    dummy_bulletin
+        .set_ring(post_id.clone(), payload)
+        .expect("seed ring fixture");
 
     let mut ring_index: Vec<RingIndexEntry> = app_state
         .local_storage
@@ -228,7 +239,14 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
 async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
     let db_name = "test_reshare_rejects_sender_not_in_committee";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     let ring_pk = "reshare_ring";
     // Ring contains "aabbccdd"; sender will be "deadbeef" (not a member).
@@ -236,6 +254,7 @@ async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
     // pass and the test actually reaches check 2 (sender membership).
     write_ring_with_announced_reshare(
         &app_state,
+        &dummy_bulletin,
         ring_pk,
         vec!["aabbccdd".to_string()],
         Some(vec!["00112233".to_string()]),
@@ -267,7 +286,14 @@ async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
 async fn test_reshare_session_init_blocks_concurrent_ceremony() {
     let db_name = "test_reshare_blocks_concurrent";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
@@ -279,6 +305,7 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
     // message will propose) so checks 3 & 4 pass and the test reaches the PSS flag check.
     write_ring_with_announced_reshare(
         &app_state,
+        &dummy_bulletin,
         ring_pk,
         vec![sender_hex.to_string()],
         Some(vec![our_hex.clone()]),
@@ -316,7 +343,14 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
 async fn test_dealer_phase4_deletes_share_and_ring_index_entry() {
     let db_name = "test_dealer_phase4_deletes_share";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     let ring_pk = "dealer_phase4_ring";
     // Arbitrary non-colliding session ID for Dealer Phase 4 tests.
@@ -326,7 +360,7 @@ async fn test_dealer_phase4_deletes_share_and_ring_index_entry() {
     write_last_refresh(&app_state.local_storage, ring_pk, 0);
     write_ring_to_bulletin(
         &app_state.local_storage,
-        &app_state.bulletin,
+        &dummy_bulletin,
         ring_pk,
         vec!["aabbccdd".to_string()],
         None,
@@ -388,7 +422,14 @@ async fn test_dealer_phase4_deletes_share_and_ring_index_entry() {
 async fn test_dealer_phase4_unmarks_ring_pss() {
     let db_name = "test_dealer_phase4_unmarks_pss";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     let ring_pk = "dealer_phase4_pss_ring";
     // Arbitrary non-colliding session ID for Dealer Phase 4 PSS flag test.
@@ -397,7 +438,7 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
     write_last_refresh(&app_state.local_storage, ring_pk, 0);
     write_ring_to_bulletin(
         &app_state.local_storage,
-        &app_state.bulletin,
+        &dummy_bulletin,
         ring_pk,
         vec!["aabbccdd".to_string()],
         None,
@@ -463,6 +504,7 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
 /// and seed `RingIndex` so the coordinator can find the ring.
 async fn write_ring_with_announced_reshare(
     app_state: &crate::app_state::AppState<crypto::DkgImpl>,
+    bulletin: &DummyBulletin,
     ring_pk: &str,
     peer_node_keys: Vec<String>,
     announced_new_peer_node_keys: Option<Vec<String>>,
@@ -481,13 +523,10 @@ async fn write_ring_with_announced_reshare(
         block_number_nonce: 0,
         policy_id: None,
     };
-    let bytes = serde_json::to_vec(&payload).unwrap();
-    app_state
-        .bulletin
-        .post(BulletinKind::Ring, bytes.clone(), None)
-        .await
-        .unwrap();
-    let post_id = app_state.bulletin.get_post_id(&bytes).unwrap();
+    let post_id = format!("test-reshare-{ring_pk}");
+    bulletin
+        .set_ring(post_id.clone(), payload)
+        .expect("seed ring fixture");
     let mut ring_index: Vec<RingIndexEntry> = app_state
         .local_storage
         .get(LocalStorageKeys::RingIndex)
@@ -514,7 +553,14 @@ async fn write_ring_with_announced_reshare(
 async fn test_reshare_session_init_rejects_mismatched_new_peer_node_keys() {
     let db_name = "test_reshare_rejects_mismatch_peers";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
@@ -523,6 +569,7 @@ async fn test_reshare_session_init_rejects_mismatched_new_peer_node_keys() {
     // new_threshold must also be set so check 4 passes and the test reaches check 3.
     write_ring_with_announced_reshare(
         &app_state,
+        &dummy_bulletin,
         ring_pk,
         vec![sender_hex.to_string()],
         Some(vec!["11223344".to_string()]),
@@ -556,7 +603,14 @@ async fn test_reshare_session_init_rejects_mismatched_new_peer_node_keys() {
 async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
     let db_name = "test_reshare_rejects_mismatch_threshold";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
@@ -566,6 +620,7 @@ async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
     // and the test actually reaches check 4 (the threshold mismatch).
     write_ring_with_announced_reshare(
         &app_state,
+        &dummy_bulletin,
         ring_pk,
         vec![sender_hex.to_string()],
         Some(vec!["00112233".to_string()]),
@@ -610,13 +665,21 @@ async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
 async fn test_reshare_session_init_rejects_no_bulletin_announcement() {
     let db_name = "test_reshare_rejects_no_announcement";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
     // Bulletin has neither field; fallback committee = peer_ids = ["aabbccdd"].
     write_ring_with_announced_reshare(
         &app_state,
+        &dummy_bulletin,
         ring_pk,
         vec![sender_hex.to_string()],
         None,
@@ -649,7 +712,14 @@ async fn test_reshare_session_init_rejects_no_bulletin_announcement() {
 async fn test_reshare_session_init_rejects_empty_new_committee() {
     let db_name = "test_reshare_rejects_empty_committee";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
     let coordinator = DkgCoordinator::new(app_state);
 
     let sender_bytes = hex::decode("aabbccdd").unwrap();
@@ -676,7 +746,14 @@ async fn test_reshare_session_init_rejects_empty_new_committee() {
 async fn test_reshare_session_init_rejects_threshold_exceeds_committee_size() {
     let db_name = "test_reshare_rejects_threshold_too_high";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
     let coordinator = DkgCoordinator::new(app_state);
 
     let sender_bytes = hex::decode("aabbccdd").unwrap();
@@ -704,7 +781,14 @@ async fn test_reshare_session_init_rejects_threshold_exceeds_committee_size() {
 async fn test_reshare_session_init_rejects_zero_threshold() {
     let db_name = "test_reshare_rejects_zero_threshold";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
     let coordinator = DkgCoordinator::new(app_state);
 
     let sender_bytes = hex::decode("aabbccdd").unwrap();
@@ -740,6 +824,7 @@ async fn test_reshare_session_init_rejects_zero_threshold() {
 /// seeding RingIndex so validate_reshare_session_init can locate the ring.
 async fn post_ring_for_validation(
     app_state: &crate::app_state::AppState<crypto::DkgImpl>,
+    bulletin: &DummyBulletin,
     ring_pk: &str,
     peer_node_keys: Vec<String>,
     threshold: u32,
@@ -759,13 +844,10 @@ async fn post_ring_for_validation(
         block_number_nonce: 0,
         policy_id: None,
     };
-    let bytes = serde_json::to_vec(&payload).unwrap();
-    app_state
-        .bulletin
-        .post(BulletinKind::Ring, bytes.clone(), None)
-        .await
-        .unwrap();
-    let post_id = app_state.bulletin.get_post_id(&bytes).unwrap();
+    let post_id = format!("test-validation-{ring_pk}");
+    bulletin
+        .set_ring(post_id.clone(), payload)
+        .expect("seed ring fixture");
     let mut ring_index: Vec<RingIndexEntry> = app_state
         .local_storage
         .get(LocalStorageKeys::RingIndex)
@@ -794,7 +876,13 @@ async fn test_validate_reshare_accepts_new_peer_node_keys_fallback_to_current() 
 
     let db_name = "validate_reshare_fallback_accepts_peers";
     let db_path = test_db_path(db_name);
-    let app_state = create_test_app_state_default(db_name).await;
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state =
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await;
 
     let ring_pk = "fallback_peers_ring";
     let sender_hex = "aabbccdd";
@@ -802,6 +890,7 @@ async fn test_validate_reshare_accepts_new_peer_node_keys_fallback_to_current() 
     // Only new_threshold is announced; new_peer_node_keys absent → fallback = peer_ids.
     post_ring_for_validation(
         &app_state,
+        &dummy_bulletin,
         ring_pk,
         vec![sender_hex.to_string()],
         1,
@@ -836,7 +925,13 @@ async fn test_validate_reshare_accepts_new_threshold_fallback_to_current() {
 
     let db_name = "validate_reshare_fallback_accepts_threshold";
     let db_path = test_db_path(db_name);
-    let app_state = create_test_app_state_default(db_name).await;
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state =
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await;
 
     let ring_pk = "fallback_threshold_ring";
     let sender_hex = "aabbccdd";
@@ -845,6 +940,7 @@ async fn test_validate_reshare_accepts_new_threshold_fallback_to_current() {
     // Only new_peer_node_keys is announced; new_threshold absent → fallback = threshold = 1.
     post_ring_for_validation(
         &app_state,
+        &dummy_bulletin,
         ring_pk,
         vec![sender_hex.to_string()],
         1, // current threshold
@@ -879,7 +975,13 @@ async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
 
     let db_name = "validate_reshare_fallback_rejects_peers";
     let db_path = test_db_path(db_name);
-    let app_state = create_test_app_state_default(db_name).await;
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state =
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await;
 
     let ring_pk = "fallback_reject_peers_ring";
     let sender_hex = "aabbccdd";
@@ -887,6 +989,7 @@ async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
     // new_peer_node_keys absent → fallback = peer_ids = ["aabbccdd"].
     post_ring_for_validation(
         &app_state,
+        &dummy_bulletin,
         ring_pk,
         vec![sender_hex.to_string()],
         1,
@@ -921,7 +1024,13 @@ async fn test_validate_reshare_rejects_when_threshold_differs_from_fallback() {
 
     let db_name = "validate_reshare_fallback_rejects_threshold";
     let db_path = test_db_path(db_name);
-    let app_state = create_test_app_state_default(db_name).await;
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state =
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await;
 
     let ring_pk = "fallback_reject_threshold_ring";
     let sender_hex = "aabbccdd";
@@ -931,6 +1040,7 @@ async fn test_validate_reshare_rejects_when_threshold_differs_from_fallback() {
     // new_threshold absent → fallback = threshold = 2.
     post_ring_for_validation(
         &app_state,
+        &dummy_bulletin,
         ring_pk,
         vec![sender_hex.to_string()],
         2,                                                          // current threshold
@@ -1059,8 +1169,6 @@ async fn post_reshare_announcement(
     new_threshold: u32,
     bulletin: &DummyBulletin,
 ) -> String {
-    use bulletin::r#trait::Bulletin as BulletinTrait;
-
     let payload = RingPayload {
         ring_pk: key_string.to_string(),
         peer_node_keys: old_peer_node_keys.to_vec(),
@@ -1071,16 +1179,10 @@ async fn post_reshare_announcement(
         block_number_nonce: 0,
         policy_id: None,
     };
-    let bytes = serde_json::to_vec(&payload).unwrap();
-
     bulletin
-        .post(BulletinKind::Ring, bytes.clone(), None)
-        .await
-        .expect("post reshare announcement to bulletin");
-
-    let new_post_id = bulletin
-        .get_post_id(&bytes)
-        .expect("get reshare announcement post_id");
+        .set_ring(format!("test-reshare-announcement-{key_string}"), payload)
+        .expect("seed reshare announcement");
+    let new_post_id = format!("test-reshare-announcement-{key_string}");
 
     // Point every old-committee node's RingIndex entry at the new post.
     for state in old_nodes {

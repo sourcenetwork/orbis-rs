@@ -3,7 +3,7 @@ use crate::constants::MAX_LOCAL_RINGS_PER_NODE;
 use crate::dkg::error::{DkgError, Result};
 use crate::metrics;
 use crate::ring_state::RingIndexEntry;
-use bulletin::r#trait::{BulletinKind, RingFinalizationPayload};
+use bulletin::r#trait::{BulletinWriteKind, RingFinalizationPayload};
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
@@ -122,7 +122,7 @@ where
     let ring_id = coord
         .app_state
         .dkg_session_state
-        .get_ring_id(&session_id)
+        .ring_id_for_session(&session_id)
         .await
         .filter(|id| !id.is_empty())
         .ok_or_else(|| DkgError::Bulletin("Fresh DKG session is missing ring_id".to_string()))?;
@@ -142,7 +142,7 @@ where
     coord
         .app_state
         .bulletin
-        .post(BulletinKind::Finalize, payload_bytes, None)
+        .post(BulletinWriteKind::Finalize, payload_bytes)
         .await
         .map_err(|e| DkgError::Bulletin(format!("Failed to finalize ring: {}", e)))?;
 
