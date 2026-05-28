@@ -550,24 +550,6 @@ pub fn do_generate_reader_key() -> Result<()> {
     Ok(())
 }
 
-/// Ring governance policy. Uses SourceHub x/orbis ACP model:
-/// - resource `namespace`, object = "orbis/<namespace>", permission `update_ring`.
-/// - `owner` is reserved and automatically injected by acp_core's DiscretionaryTransformer
-///   into every permission expression (`update_ring = collaborator` → `owner + collaborator`).
-/// - `RegisterObject` sets the signer as `owner`, so no explicit collaborator setup is needed.
-const RING_GOVERNANCE_POLICY_YAML: &str = r#"
-name: ring-governance-policy
-resources:
-  - name: namespace
-    relations:
-      - name: collaborator
-        types:
-          - actor
-    permissions:
-      - name: update_ring
-        expr: collaborator
-"#;
-
 const TEST_POLICY_YAML: &str = r#"
 name: test-policy
 resources:
