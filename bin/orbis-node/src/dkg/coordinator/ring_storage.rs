@@ -110,26 +110,19 @@ where
     ensure_local_ring_capacity(&ring_index, storage_key)
 }
 
-/// Confirm the completed fresh ring against the pre-created ring and return the ring_id.
+/// Confirm the completed fresh ring against the pre-created ring on the bulletin.
 pub(in crate::dkg::coordinator) async fn post_fresh_ring_finalization<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    ring_id: &str,
     ring_pk_bytes: &[u8],
-) -> Result<String>
+) -> Result<()>
 where
     D: Dkg + Clone + 'static,
 {
-    let ring_id = coord
-        .app_state
-        .dkg_session_state
-        .ring_id_for_session(&session_id)
-        .await
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| DkgError::Bulletin("Fresh DKG session is missing ring_id".to_string()))?;
     let ring_pk = hex::encode(ring_pk_bytes);
 
     let payload = RingFinalizationPayload {
-        ring_id: ring_id.clone(),
+        ring_id: ring_id.to_string(),
         ring_pk: ring_pk.clone(),
     };
     let payload_bytes: Vec<u8> = payload.try_into().map_err(|e| {
@@ -152,7 +145,7 @@ where
         "DKG Coordinator: Successfully confirmed fresh DKG on bulletin"
     );
 
-    Ok(ring_id)
+    Ok(())
 }
 
 fn remove_ring_index_entry(storage: &impl LocalStorage, ring_key: &str) -> Result<()> {

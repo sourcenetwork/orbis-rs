@@ -246,34 +246,47 @@ where
         }
     }
 
-    // For fresh DKG: every participant confirms the pre-created ring on the bulletin
-    // and writes a RingIndexEntry so the PSS scheduler can discover this ring.
+    // For fresh DKG: write the RingIndexEntry first, then confirm on the bulletin.
+    // Writing the index before the chain post means that if the chain post fails,
+    // the node still has its share and index entry intact — the orphaned entry is
+    // harmless (PSS will reconcile it) and is far better than the inverse: having
+    // confirmed on-chain while the local state was cleaned up.
     // For Refresh: bulletin entry is unchanged; polynomial updated in RingShareBundle above.
     // For Reshare: bulletin is updated below by new-committee node 1.
     if is_fresh {
-        let bulletin_post_id =
-            match ring_storage::post_fresh_ring_finalization(coord, session_id, &ring_pk_bytes)
-                .await
-            {
-                Ok(post_id) => post_id,
-                Err(e) => {
-                    cleanup_new_ring_bundle_after_index_failure(
-                        &coord.app_state.local_storage,
-                        &storage_key,
-                        adds_new_local_ring,
-                    );
-                    return Err(e);
-                }
-            };
+        let ring_id = coord
+            .app_state
+            .dkg_session_state
+            .ring_id_for_session(&session_id)
+            .await
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                DkgError::Bulletin("Fresh DKG session is missing ring_id".to_string())
+            })?;
 
         if let Err(e) =
-            ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, bulletin_post_id)
+            ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, ring_id.clone())
                 .await
         {
             cleanup_new_ring_bundle_after_index_failure(
                 &coord.app_state.local_storage,
                 &storage_key,
                 adds_new_local_ring,
+            );
+            return Err(e);
+        }
+
+        if let Err(e) =
+            ring_storage::post_fresh_ring_finalization(coord, &ring_id, &ring_pk_bytes).await
+        {
+            tracing::error!(
+                ring_id = %ring_id,
+                ring_pk = %hex::encode(&ring_pk_bytes),
+                error = %e,
+                "Phase 4: FinalizeRing chain post failed after local state was written. \
+                 This node holds a valid share and index entry but has not confirmed \
+                 on-chain. The ring will remain pending until another participant \
+                 retries or operator intervention. Local state is preserved."
             );
             return Err(e);
         }
