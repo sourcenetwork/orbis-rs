@@ -124,9 +124,7 @@ pub struct MsgCreateRing {
     pub pss_interval: Option<u64>,
     #[prost(string, tag = "5")]
     pub policy_id: String,
-    #[prost(string, tag = "6")]
-    pub artifact: String,
-    #[prost(string, optional, tag = "7")]
+    #[prost(string, optional, tag = "6")]
     pub nonce: Option<String>,
 }
 
@@ -139,7 +137,6 @@ impl MsgCreateRing {
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
-        artifact: Option<String>,
         nonce: Option<String>,
     ) -> Self {
         Self {
@@ -148,7 +145,6 @@ impl MsgCreateRing {
             threshold,
             pss_interval,
             policy_id: policy_id.to_string(),
-            artifact: artifact.unwrap_or_default(),
             nonce,
         }
     }
@@ -691,7 +687,6 @@ impl SourceHubClient {
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
-        artifact: Option<String>,
         nonce: Option<String>,
     ) -> Result<BroadcastResult> {
         let signer = self
@@ -703,7 +698,6 @@ impl SourceHubClient {
             threshold,
             pss_interval,
             policy_id,
-            artifact,
             nonce,
         );
         self.broadcast_proto_msg_with_gas(
@@ -723,7 +717,6 @@ impl SourceHubClient {
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
-        artifact: Option<String>,
         nonce: Option<String>,
     ) -> Result<(BroadcastResult, String)> {
         let result = self
@@ -732,7 +725,6 @@ impl SourceHubClient {
                 threshold,
                 pss_interval,
                 policy_id,
-                artifact,
                 nonce,
             )
             .await?;
@@ -1107,7 +1099,6 @@ mod tests {
             1,
             Some(0),
             "policy",
-            None,
             None,
         );
         let bytes = msg.encode_to_vec();

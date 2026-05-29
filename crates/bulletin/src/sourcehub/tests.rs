@@ -101,7 +101,6 @@ async fn test_bulletin_document() {
             1,
             None,
             &policy_id,
-            None,
             Some("document-test".to_string()),
         )
         .await
@@ -187,7 +186,6 @@ async fn test_bulletin_ring() {
             threshold,
             None,
             &policy_id,
-            None,
             Some("ring-test".to_string()),
         )
         .await

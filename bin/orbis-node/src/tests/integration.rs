@@ -135,10 +135,13 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     }
 
     // Create ring on-chain and trigger DKG.
-    // pss_interval = 1s so the PSS scheduler (5s check interval in docker-compose) fires a
-    // refresh shortly after DKG completes.
+    // pss_interval = 5s so the PSS scheduler (5s check interval in docker-compose) fires a
+    // refresh shortly after DKG completes. Keep this above PSS_GRACE_PERIOD_SECS (10s) is
+    // intentional — the grace window means pss_interval < 10s always passes the time check
+    // immediately, so 5s gives the fresh-DKG index entry enough runway before
+    // cleanup_pending_fresh_ring_if_due can fire (it requires elapsed >= pss_interval).
     let ring_id =
-        create_ring_on_chain_with_pss(&node_keys, threshold, &policy_id, None, Some(1)).await;
+        create_ring_on_chain_with_pss(&node_keys, threshold, &policy_id, None, Some(5)).await;
 
     println!(
         "Starting DKG with threshold {} and ring {}...",
@@ -697,7 +700,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // Step 4: PSS Refresh — poll all nodes until their local polynomial has
     // changed from the per-node baseline captured after DKG.
     //
-    // The DKG was started with pss_interval=1s. The nodes run with
+    // The DKG was started with pss_interval=5s. The nodes run with
     // --reshare-interval-secs=5 (docker-compose), so the first scheduler
     // tick fires within 5s of DKG completion. The public polynomial is
     // stored locally on each node (not on the bulletin), so the ring_id is
