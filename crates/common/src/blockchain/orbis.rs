@@ -720,13 +720,7 @@ impl SourceHubClient {
         nonce: Option<String>,
     ) -> Result<(BroadcastResult, String)> {
         let result = self
-            .orbis_create_ring(
-                peer_node_keys,
-                threshold,
-                pss_interval,
-                policy_id,
-                nonce,
-            )
+            .orbis_create_ring(peer_node_keys, threshold, pss_interval, policy_id, nonce)
             .await?;
 
         if result.code != 0 {
@@ -1093,14 +1087,7 @@ mod tests {
 
     #[test]
     fn create_ring_preserves_present_zero_pss_interval_on_wire() {
-        let msg = MsgCreateRing::new(
-            "c",
-            vec!["p1".to_string()],
-            1,
-            Some(0),
-            "policy",
-            None,
-        );
+        let msg = MsgCreateRing::new("c", vec!["p1".to_string()], 1, Some(0), "policy", None);
         let bytes = msg.encode_to_vec();
 
         assert!(
