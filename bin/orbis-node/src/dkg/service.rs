@@ -7,7 +7,7 @@ use crate::dkg::helpers::{
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
-use crate::helpers::helpers::{is_self_peer_id, validate_all_peer_ids};
+use crate::helpers::helpers::is_self_peer_id;
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
     peer_ids_from_routes, resolve_node_routes,
@@ -250,15 +250,6 @@ where
         // Peer IDs should be in iroh PublicKey format: either "node_id" or "node_id@ip:port"
         // where node_id is the iroh public key string representation
         if !peer_ids.is_empty() {
-            // Validate all peer IDs before attempting connections
-            if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&peer_ids) {
-                return Err(DkgError::InvalidInput(format!(
-                    "Invalid peer ID '{}': {}",
-                    invalid_peer_id, validation_error
-                ))
-                .into());
-            }
-
             // Pre-warm the connection pool for all peers before starting the ceremony.
             // Using get_or_connect (rather than a raw network.connect()) means the
             // connections are cached in the pool so the subsequent open_stream calls

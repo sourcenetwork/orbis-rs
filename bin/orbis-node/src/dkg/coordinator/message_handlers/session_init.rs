@@ -44,7 +44,6 @@ where
             );
             let ring_payload = validate_refresh_session_init(
                 ring_pk_hex,
-                &sender_hex,
                 &coord.app_state.local_storage,
                 &coord.app_state.bulletin,
             )
