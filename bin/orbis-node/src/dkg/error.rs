@@ -106,6 +106,9 @@ impl From<DkgError> for tonic::Status {
                 tonic::Status::new(Code::InvalidArgument, error.to_string())
             }
             DkgError::SessionNotFound(_) => tonic::Status::new(Code::NotFound, error.to_string()),
+            DkgError::SessionAlreadyExists => {
+                tonic::Status::new(Code::AlreadyExists, error.to_string())
+            }
             DkgError::MaxSessionsReached | DkgError::MaxLocalRingsReached { .. } => {
                 tonic::Status::new(Code::ResourceExhausted, error.to_string())
             }

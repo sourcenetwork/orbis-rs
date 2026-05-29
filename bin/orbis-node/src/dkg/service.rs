@@ -2,7 +2,8 @@ use crate::app_state::AppState;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::helpers::{
-    validate_dkg_claims, validate_fresh_dkg_node_authorization, validate_fresh_dkg_ring_payload,
+    derive_fresh_dkg_session_id, validate_dkg_claims, validate_fresh_dkg_node_authorization,
+    validate_fresh_dkg_ring_payload,
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
@@ -16,7 +17,6 @@ use authn::DkgClaims;
 use bulletin::r#trait::{BulletinKind, RingPayload};
 use network::DKG;
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
-use rand;
 use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
@@ -123,8 +123,11 @@ where
 
         let created_at = current_time as i64;
 
-        // Generate random session id
-        let session_id: u64 = rand::random();
+        // Deterministic session_id derived from ring_id: two concurrent start_dkg calls
+        // for the same ring produce the same session_id, so the second hits
+        // SessionAlreadyExists and returns in_progress instead of launching a competing
+        // ceremony that would deadlock finalization.
+        let session_id: u64 = derive_fresh_dkg_session_id(&ring_id)?;
 
         // Create DKG coordinator (AppState clone is cheap - contains Arc types internally)
         let coordinator = DkgCoordinator::new(Arc::new(self.state.clone()));
@@ -173,9 +176,31 @@ where
             "DKG Service (Coordinator): Assigned node_ids"
         );
 
-        // Create DKG session only if we're participating
-        // Create a cleanup guard that will automatically clean up the session on error
+        // Create DKG session only if we're participating.
+        // Create a cleanup guard that will automatically clean up the session on error.
         let cleanup_guard = if let Some(node_id) = our_assigned_node_id {
+            // Session already exists → DKG is in progress for this ring. Return success
+            // immediately so the caller can poll wait_for_ring_finalized.
+            if self
+                .state
+                .dkg_session_state
+                .session_exists(&session_id)
+                .await
+            {
+                metrics::record_grpc_request(
+                    "dkg",
+                    "start_dkg",
+                    "ok",
+                    start.elapsed().as_secs_f64(),
+                );
+                return Ok(Response::new(StartDkgResponse {
+                    session_id: session_id.to_string(),
+                    status: "in_progress".to_string(),
+                    message: format!("DKG already in progress for ring {}", ring_id),
+                    created_at,
+                }));
+            }
+
             coordinator
                 .create_session(
                     session_id,

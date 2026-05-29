@@ -1236,7 +1236,8 @@ async fn run_reshare_ceremony(
         old_peer_node_keys,
         sorted_new_peer_node_keys,
         new_threshold,
-    );
+    )
+    .unwrap();
 
     // Snapshot share bytes before reshare so we can detect when they change.
     let pre_snapshots: Vec<Option<zeroize::Zeroizing<Vec<u8>>>> = new_committee_states

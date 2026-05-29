@@ -195,7 +195,8 @@ async fn test_dkg_followed_by_pss_refresh() {
         &peer_node_keys,
         2,
         &initiator_bundle.public_polynomial,
-    );
+    )
+    .unwrap();
     let coordinator = DkgCoordinator::new(Arc::new(initiator_state.clone()));
 
     coordinator
@@ -617,7 +618,7 @@ fn refresh_session_init(ring_pk: &str, sender_hex: &str) -> DkgMessage {
     let mut node_id_assignments = std::collections::HashMap::new();
     node_id_assignments.insert(sender_hex.to_string(), 1u32);
     DkgMessage::SessionInit {
-        session_id: derive_refresh_session_id(ring_pk, &peer_node_keys, 1, ""),
+        session_id: derive_refresh_session_id(ring_pk, &peer_node_keys, 1, "").unwrap(),
         threshold: 1,
         total_participants: 1,
         peer_ids: peer_ids.clone(),
@@ -743,7 +744,8 @@ async fn test_refresh_rejected_already_in_progress() {
     write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
 
     // Pre-mark the ring as already refreshing so the coordinator rejects the second attempt.
-    let expected_session_id = derive_refresh_session_id(ring_pk, &[sender_hex.to_string()], 1, "");
+    let expected_session_id =
+        derive_refresh_session_id(ring_pk, &[sender_hex.to_string()], 1, "").unwrap();
     assert_eq!(
         app_state
             .dkg_session_state

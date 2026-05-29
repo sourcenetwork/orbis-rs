@@ -109,7 +109,7 @@ where
                 &ring_payload.peer_node_keys,
                 ring_payload.threshold,
                 &bundle.public_polynomial,
-            );
+            )?;
             if session_id != expected_session_id {
                 return Err(DkgError::Unauthorized(format!(
                     "Refresh session_id mismatch for ring {}: expected {}, got {}",
@@ -183,7 +183,7 @@ where
                 &ring_payload.peer_node_keys,
                 &authoritative_new_peer_node_keys,
                 authoritative_new_threshold,
-            );
+            )?;
             if session_id != expected_session_id {
                 return Err(DkgError::Unauthorized(format!(
                     "Reshare session_id mismatch for ring {}: expected {}, got {}",

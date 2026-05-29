@@ -409,7 +409,7 @@ where
         &ring_payload.peer_node_keys,
         ring_payload.threshold,
         &bundle.public_polynomial,
-    );
+    )?;
 
     match app_state
         .dkg_session_state
@@ -642,7 +642,7 @@ where
         old_peer_node_keys,
         &sorted_new_peer_node_keys,
         new_threshold,
-    );
+    )?;
     let total_old = old_peer_node_keys.len();
 
     let kind = SessionKind::Reshare {
