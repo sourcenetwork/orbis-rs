@@ -462,6 +462,12 @@ async fn test_store_secret_idempotent() {
         timestamp: None,
     };
 
+    // Snapshot post count before any store_secret call. The bulletin already holds
+    // whatever the test setup and create_test_app_state_with_bulletin seeded (ring,
+    // NodeInfo, etc.). We assert relative to this baseline so the count stays correct
+    // regardless of what the helper seeds in future.
+    let posts_before = bulletin.get_posts().len();
+
     // First store - should succeed
     let tonic_request1 = create_authenticated_request(request1, &token).unwrap();
     let result1 = service.store_secret(tonic_request1).await;
@@ -474,12 +480,12 @@ async fn test_store_secret_idempotent() {
     let object_id = response1.object_id.clone();
     println!("First store succeeded with object_id: {}", object_id);
 
-    // Check bulletin has the ring and one stored document.
-    let posts_after_first = bulletin.get_posts();
+    // Exactly one new document post should have been added.
+    let posts_after_first = bulletin.get_posts().len();
     assert_eq!(
-        posts_after_first.len(),
-        2,
-        "Should have exactly 2 posts after first store"
+        posts_after_first,
+        posts_before + 1,
+        "Should have exactly one new post after first store"
     );
 
     // Second store with same data - should also succeed (idempotent)
@@ -517,12 +523,12 @@ async fn test_store_secret_idempotent() {
         "Both stores should return the same object_id"
     );
 
-    // Check bulletin still has only the ring and one document (didn't create duplicate)
-    let posts_after_second = bulletin.get_posts();
+    // No new post should have been created by the second store.
+    let posts_after_second = bulletin.get_posts().len();
     assert_eq!(
-        posts_after_second.len(),
-        2,
-        "Should still have exactly 2 posts after second store (no duplicate)"
+        posts_after_second,
+        posts_before + 1,
+        "Should still have exactly one new post after second store (no duplicate)"
     );
 
     println!("SUCCESS! StoreSecret is idempotent - second call didn't create duplicate post");

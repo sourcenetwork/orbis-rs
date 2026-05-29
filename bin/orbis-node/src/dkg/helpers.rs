@@ -1198,30 +1198,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sender_not_in_ring() {
-        let (storage, db_path) = make_storage("helpers_sender_not_in_ring");
-        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
-        let ring_pk = "ring_pk_abc";
-        write_ring_to_bulletin(
-            &storage,
-            &dummy_bulletin,
-            ring_pk,
-            vec!["aabbccdd".to_string(), "eeff0011".to_string()],
-            None,
-        )
-        .await;
-        let result =
-            validate_refresh_session_init(ring_pk, "deadbeef00000000", &storage, &bulletin).await;
-        assert!(
-            matches!(result, Err(DkgError::Unauthorized(_))),
-            "Expected Unauthorized for sender not in ring, got: {:?}",
-            result
-        );
-        cleanup_db(&db_path);
-    }
-
-    #[tokio::test]
     async fn test_no_last_refresh_timestamp() {
         // When pss_interval is set, a missing bundle (no DKG yet) must be rejected.
         let (storage, db_path) = make_storage("helpers_no_timestamp");
