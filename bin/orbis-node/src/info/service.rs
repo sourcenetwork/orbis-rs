@@ -83,11 +83,12 @@ fn get_node_info_response(
 
     let managed_ring_count = managed_ring_count(&local_storage)?;
 
-    // Get the signer address from local storage
+    // Get the signer address and node key from local storage
     let config = ChainConfigBuilder::default().build();
-    let public_address = get_node_signer(local_storage, config)
-        .map_err(|e| InfoError::InfoError(format!("Error getting public key: {}", e)))?
-        .address();
+    let signer = get_node_signer(local_storage, config)
+        .map_err(|e| InfoError::InfoError(format!("Error getting public key: {}", e)))?;
+    let public_address = signer.address();
+    let node_key = signer.public_key_hex();
 
     Ok(GetNodeInfoResponse {
         public_address,
@@ -95,6 +96,7 @@ fn get_node_info_response(
         p2p_address,
         status,
         managed_ring_count,
+        node_key,
     })
 }
 

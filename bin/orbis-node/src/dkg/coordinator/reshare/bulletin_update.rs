@@ -8,13 +8,15 @@ use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl
 
 use crate::constants::{RESHARE_SIGNATURE_MAX_ATTEMPTS, RESHARE_SIGNATURE_RETRY_DELAY};
 use crate::dkg::error::{DkgError, Result};
+use crate::dkg::helpers::{effective_new_peer_node_keys, peer_node_keys_match};
 use crate::dkg::messages::SessionKind;
 use crate::dkg::session_state::ReshareSignatureReadyKey;
 use crate::helpers::helpers::RingConfig;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::error::SignError;
 use crate::sign::helpers::{
-    finalized_ring_payload_sha256_hex, ring_payload_sha256_hex, ring_reshare_update_message,
+    finalized_ring_payload_reshare_sign_state_sha256_hex,
+    ring_payload_reshare_sign_state_sha256_hex, ring_reshare_update_message,
 };
 use crate::sign::messages::{
     RingReshareUpdateContext, RingReshareUpdateStatement, SignContext, RING_RESHARE_UPDATE_DOMAIN,
@@ -232,15 +234,11 @@ where
                 e
             ))
         })?;
-    let payload_new_peer_node_keys = current_ring_payload
-        .new_peer_node_keys
-        .as_deref()
-        .unwrap_or(&current_ring_payload.peer_node_keys)
-        .to_vec();
+    let payload_new_peer_node_keys = effective_new_peer_node_keys(&current_ring_payload);
     let payload_new_threshold = current_ring_payload
         .new_threshold
         .unwrap_or(current_ring_payload.threshold);
-    if payload_new_peer_node_keys != sorted_new_peer_node_keys {
+    if !peer_node_keys_match(payload_new_peer_node_keys, &sorted_new_peer_node_keys) {
         return Err(DkgError::ProtocolError(format!(
             "Reshare: current RingPayload new_peer_node_keys {:?} do not match session new_peer_node_keys {:?}",
             payload_new_peer_node_keys, sorted_new_peer_node_keys
@@ -252,14 +250,9 @@ where
             payload_new_threshold, new_threshold
         )));
     }
-    let current_ring_sha256 = ring_payload_sha256_hex(&current_post.payload);
+    let current_ring_sha256 = ring_payload_reshare_sign_state_sha256_hex(&current_ring_payload);
     let finalized_ring_sha256 =
-        finalized_ring_payload_sha256_hex(&current_ring_payload).map_err(|e| {
-            DkgError::Serialization(format!(
-                "Reshare: failed to serialize finalized RingPayload before signing: {}",
-                e
-            ))
-        })?;
+        finalized_ring_payload_reshare_sign_state_sha256_hex(&current_ring_payload);
     let chain_id = coord.app_state.bulletin.chain_id();
 
     coord

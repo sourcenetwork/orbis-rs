@@ -15,6 +15,7 @@ use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{
     Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, RingPayload,
 };
+use common::blockchain::orbis::{ring_reshare_sign_state_hash, RingReshareSignState};
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, ThresholdSigner};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::LocalStorage;
@@ -61,13 +62,28 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-pub(crate) fn ring_payload_sha256_hex(payload_bytes: &[u8]) -> String {
-    sha256_hex(payload_bytes)
+fn ring_reshare_sign_state_from_payload(payload: &RingPayload) -> RingReshareSignState {
+    RingReshareSignState {
+        ring_pk: payload.ring_pk.clone(),
+        peer_node_keys: payload.peer_node_keys.clone(),
+        threshold: payload.threshold,
+        new_peer_node_keys: payload.new_peer_node_keys.clone().unwrap_or_default(),
+        new_threshold: payload.new_threshold,
+        pss_interval: payload.pss_interval,
+        block_number_nonce: payload.block_number_nonce,
+        policy_id: payload.policy_id.clone().unwrap_or_default(),
+    }
 }
 
-pub(crate) fn finalized_ring_payload_sha256_hex(
+pub(crate) fn ring_payload_reshare_sign_state_sha256_hex(payload: &RingPayload) -> String {
+    hex::encode(ring_reshare_sign_state_hash(
+        &ring_reshare_sign_state_from_payload(payload),
+    ))
+}
+
+pub(crate) fn finalized_ring_payload_reshare_sign_state_sha256_hex(
     current_payload: &RingPayload,
-) -> std::result::Result<String, serde_json::Error> {
+) -> String {
     let mut finalized = current_payload.clone();
     finalized.peer_node_keys = finalized
         .new_peer_node_keys
@@ -77,8 +93,7 @@ pub(crate) fn finalized_ring_payload_sha256_hex(
         .new_threshold
         .take()
         .unwrap_or(finalized.threshold);
-    let finalized_bytes = serde_json::to_vec(&finalized)?;
-    Ok(sha256_hex(&finalized_bytes))
+    ring_payload_reshare_sign_state_sha256_hex(&finalized)
 }
 
 fn decode_sha256_hex(label: &str, value: &str) -> Result<Vec<u8>> {
@@ -254,7 +269,11 @@ pub async fn validate_ring_reshare_update_statement(
             ))
         })?;
 
-    let current_ring_hash = ring_payload_sha256_hex(&current_post.payload);
+    let current_payload: RingPayload =
+        serde_json::from_slice(&current_post.payload).map_err(|e| {
+            SignError::Deserialization(format!("Failed to parse current ring payload: {}", e))
+        })?;
+    let current_ring_hash = ring_payload_reshare_sign_state_sha256_hex(&current_payload);
     if current_ring_hash != statement.current_ring_sha256 {
         return Err(SignError::VerificationFailed(format!(
             "Ring reshare update current ring hash mismatch: expected {}, got {}",
@@ -262,10 +281,6 @@ pub async fn validate_ring_reshare_update_statement(
         )));
     }
 
-    let current_payload: RingPayload =
-        serde_json::from_slice(&current_post.payload).map_err(|e| {
-            SignError::Deserialization(format!("Failed to parse current ring payload: {}", e))
-        })?;
     if current_payload.block_number_nonce != statement.block_number_nonce {
         return Err(SignError::Unauthorized(format!(
             "Ring reshare update block_number_nonce {} does not match current payload nonce {}",
@@ -273,12 +288,8 @@ pub async fn validate_ring_reshare_update_statement(
         )));
     }
 
-    let finalized_ring_hash = finalized_ring_payload_sha256_hex(&current_payload).map_err(|e| {
-        SignError::Serialization(format!(
-            "Failed to serialize finalized ring payload for '{}': {}",
-            statement.ring_id, e
-        ))
-    })?;
+    let finalized_ring_hash =
+        finalized_ring_payload_reshare_sign_state_sha256_hex(&current_payload);
     if finalized_ring_hash != statement.finalized_ring_sha256 {
         return Err(SignError::VerificationFailed(format!(
             "Ring reshare update finalized ring hash mismatch: expected {}, got {}",
@@ -747,10 +758,6 @@ mod ring_reshare_update_tests {
         let ring_pk_hex = hex::encode(ring_pk_bytes);
         let ring_key = storage_key_from_ring_pk_hex(&ring_pk_hex).expect("storage key");
         let old_peer_node_keys = vec!["old-a".to_string(), "old-b".to_string()];
-        let final_peer_node_keys = new_peer_node_keys
-            .clone()
-            .unwrap_or_else(|| old_peer_node_keys.clone());
-        let final_threshold = new_threshold.unwrap_or(2);
         let block_number_nonce = 0;
 
         let current_payload = RingPayload {
@@ -763,34 +770,15 @@ mod ring_reshare_update_tests {
             block_number_nonce,
             policy_id: None,
         };
-        let updated_payload = RingPayload {
-            ring_pk: ring_pk_hex.clone(),
-            peer_node_keys: final_peer_node_keys,
-            new_peer_node_keys: None,
-            new_threshold: None,
-            threshold: final_threshold,
-            pss_interval: Some(30),
-            block_number_nonce,
-            policy_id: None,
-        };
-
-        let current_payload_bytes: Vec<u8> = current_payload
-            .clone()
-            .try_into()
-            .expect("serialize current RingPayload");
-        let updated_payload_bytes: Vec<u8> = updated_payload
-            .try_into()
-            .expect("serialize updated RingPayload");
         let bulletin = DummyBulletin::new().await.expect("dummy bulletin");
         let ring_id = "test-sign-reshare-ring".to_string();
         bulletin
             .set_ring(ring_id.clone(), current_payload.clone())
             .expect("seed current payload");
         let session_id = 77;
-        let current_ring_sha256 = ring_payload_sha256_hex(&current_payload_bytes);
+        let current_ring_sha256 = ring_payload_reshare_sign_state_sha256_hex(&current_payload);
         let finalized_ring_sha256 =
-            finalized_ring_payload_sha256_hex(&current_payload).expect("finalized payload hash");
-        assert_eq!(finalized_ring_sha256, sha256_hex(&updated_payload_bytes));
+            finalized_ring_payload_reshare_sign_state_sha256_hex(&current_payload);
         let statement = RingReshareUpdateStatement {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id,
@@ -818,16 +806,31 @@ mod ring_reshare_update_tests {
     }
 
     #[test]
-    fn ring_payload_hash_uses_exact_payload_bytes() {
-        let payload_bytes = br#"{"ring_pk":"pk","peer_node_keys":["b","a"]}"#;
+    fn ring_reshare_sign_state_hash_canonicalizes_participant_order() {
+        let payload = RingPayload {
+            ring_pk: "ring-pk".to_string(),
+            peer_node_keys: vec!["old-b".to_string(), "old-a".to_string()],
+            new_peer_node_keys: Some(vec!["new-b".to_string(), "new-a".to_string()]),
+            new_threshold: Some(1),
+            threshold: 2,
+            pss_interval: Some(30),
+            block_number_nonce: 9,
+            policy_id: Some("policy".to_string()),
+        };
+        let reordered = RingPayload {
+            peer_node_keys: vec!["old-a".to_string(), "old-b".to_string()],
+            new_peer_node_keys: Some(vec!["new-a".to_string(), "new-b".to_string()]),
+            ..payload.clone()
+        };
+
         assert_eq!(
-            ring_payload_sha256_hex(payload_bytes),
-            hex::encode(Sha256::digest(payload_bytes))
+            ring_payload_reshare_sign_state_sha256_hex(&payload),
+            ring_payload_reshare_sign_state_sha256_hex(&reordered)
         );
     }
 
     #[test]
-    fn finalized_ring_payload_hash_applies_and_clears_pending_reshare_fields() {
+    fn finalized_ring_sign_state_hash_applies_and_clears_pending_reshare_fields() {
         let current = RingPayload {
             ring_pk: "ring-pk".to_string(),
             peer_node_keys: vec!["old-a".to_string(), "old-b".to_string()],
@@ -838,21 +841,20 @@ mod ring_reshare_update_tests {
             block_number_nonce: 9,
             policy_id: Some("policy".to_string()),
         };
-        let expected = RingPayload {
+        let expected = RingReshareSignState {
             ring_pk: "ring-pk".to_string(),
             peer_node_keys: vec!["new-a".to_string(), "new-b".to_string()],
-            new_peer_node_keys: None,
-            new_threshold: None,
             threshold: 1,
+            new_peer_node_keys: vec![],
+            new_threshold: None,
             pss_interval: Some(30),
             block_number_nonce: 9,
-            policy_id: Some("policy".to_string()),
+            policy_id: "policy".to_string(),
         };
-        let expected_bytes = serde_json::to_vec(&expected).expect("serialize expected");
 
         assert_eq!(
-            finalized_ring_payload_sha256_hex(&current).expect("finalized hash"),
-            sha256_hex(&expected_bytes)
+            finalized_ring_payload_reshare_sign_state_sha256_hex(&current),
+            hex::encode(ring_reshare_sign_state_hash(&expected))
         );
     }
 

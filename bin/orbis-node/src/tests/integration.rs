@@ -6,12 +6,16 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
-use crate::helpers::test_helpers::{BULLETIN_RING_NAMESPACE, TEST_FRESH_DKG_RING_ID};
+use crate::helpers::test_helpers::{
+    create_orbis_ring_policy, create_ring_on_chain_with_pss, wait_for_ring_finalized,
+};
 use bulletin::r#trait::{
     BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, RingPayload,
 };
-use common::IntegrationTestNetwork;
-use common::SOURCEHUB_RPC_URL;
+use common::{
+    blockchain::{ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY},
+    IntegrationTestNetwork,
+};
 use crypto::helpers::generate_keypair;
 use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, PreImpl, SignImpl};
@@ -93,8 +97,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("  Node 2: {}", peer2_addr);
     println!("  Node 3: {}", peer3_addr);
 
-    let peer_ids = vec![peer1_addr, peer2_addr, peer3_addr];
-    let threshold = 2;
+    let threshold = 2u32;
     let endpoint = IntegrationTestNetwork::NODE1_GRPC.to_string();
     let node_endpoints = [
         IntegrationTestNetwork::NODE1_GRPC.to_string(),
@@ -102,54 +105,66 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         IntegrationTestNetwork::NODE3_GRPC.to_string(),
     ];
 
-    // Step 1: Run DKG via CLI to get a ring public key
-    //
-    // Subscribe to chain events BEFORE starting DKG to avoid race conditions.
-    // The DKG coordinator will post the ring payload to the bulletin with the
-    // session_id as the artifact, emitting an EventPostCreated event.
-    println!("Connecting to chain WebSocket for event subscription...");
-    let event_subscription =
-        common::blockchain::events::BulletinEventSubscription::connect(SOURCEHUB_RPC_URL)
-            .await
-            .expect("WebSocket event subscription");
+    // Collect on-chain node keys from each node's info endpoint
+    let node_keys = vec![
+        node1_info.node_key.clone(),
+        node2_info.node_key.clone(),
+        node3_info.node_key.clone(),
+    ];
 
-    println!(
-        "Starting DKG with threshold {} and {} peers...",
-        threshold,
-        peer_ids.len()
-    );
+    // Step 1: Set up ring governance policy and whitelist nodes
+    //
+    // The Docker nodes start with empty NodeInfo whitelists. We create a policy,
+    // then update each node's NodeInfo (via TEST_ACCOUNT_HEX_KEY which is the
+    // configured controller key) to allow DKG for rings under this policy.
+    let policy_id = create_orbis_ring_policy().await;
+
+    let controller_client = SourceHubClient::with_signer(
+        ChainConfig::local(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
+    for node_key in &node_keys {
+        controller_client
+            .orbis_update_node_info(node_key, vec![policy_id.clone()], vec![])
+            .await
+            .expect("update NodeInfo whitelist");
+    }
+
+    // Create ring on-chain and trigger DKG.
     // pss_interval = 1s so the PSS scheduler (5s check interval in docker-compose) fires a
     // refresh shortly after DKG completes.
-    let dkg_result = cli_tool::do_dkg(endpoint.clone(), TEST_FRESH_DKG_RING_ID.to_string()).await;
+    let ring_id =
+        create_ring_on_chain_with_pss(&node_keys, threshold, &policy_id, None, Some(1)).await;
+
+    println!(
+        "Starting DKG with threshold {} and ring {}...",
+        threshold,
+        &ring_id[..16.min(ring_id.len())]
+    );
+    let dkg_result = cli_tool::do_dkg(endpoint.clone(), ring_id.clone()).await;
     assert!(
         dkg_result.is_ok(),
         "DKG should succeed: {:?}",
         dkg_result.err()
     );
 
-    let dkg_result = dkg_result.unwrap();
-    let session_id = dkg_result.session_id.clone();
     println!(
-        "DKG initiated (session_id: {}), waiting for completion event...",
-        session_id
+        "DKG initiated (session_id: {}), waiting for ring finalization...",
+        dkg_result.unwrap().session_id
     );
 
-    // Wait for the event matching our session_id artifact
-    let post_event = event_subscription
-        .wait_for_artifact(&session_id, Duration::from_secs(60))
-        .await
-        .expect("DKG completion event");
+    let ring_pk_hex = wait_for_ring_finalized(&ring_id, Duration::from_secs(90)).await;
 
-    // Read the post payload using the post_id from the event
-    let post_payload = cli_tool::read_bulletin_post(post_event.ring_id.clone(), BulletinKind::Ring)
+    // Read the finalized ring payload for use in PSS/reshare assertions
+    let post_payload = cli_tool::read_bulletin_post(ring_id.clone(), BulletinKind::Ring)
         .await
-        .expect("read ring post by event post_id");
-
-    let ring_payload: RingPayload =
+        .expect("read ring from bulletin");
+    let dkg_ring_payload: RingPayload =
         serde_json::from_slice(&post_payload).expect("parse RingPayload");
-    let ring_pk_hex = ring_payload.ring_pk.clone();
-    let ring_id = post_event.ring_id.clone();
-    let dkg_ring_payload = ring_payload.clone();
 
     // The bulletin event proves the DKG was posted, but the other nodes may
     // still be finishing their local Phase 4 writes. Wait until every node can
@@ -726,7 +741,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // ====================================================================
     println!("Announcing PSS reshare via bulletin update...");
 
-    let reshare_peer_ids = vec![peer_ids[0].clone(), peer_ids[1].clone()];
+    let reshare_peer_ids = vec![node_keys[0].clone(), node_keys[1].clone()];
     let reshare_threshold = 2u32;
     assert_ne!(
         sorted_peer_ids(&dkg_ring_payload.peer_node_keys),

@@ -36,7 +36,7 @@ impl Bulletin for SourceHubBulletin {
             BulletinWriteKind::Document => {
                 let doc: DocumentPayload = serde_json::from_slice(&payload)
                     .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-                let (result, document_id) = match self
+                match self
                     .chain_client
                     .orbis_store_document_get_id(
                         &doc.ring_id,
@@ -50,29 +50,27 @@ impl Bulletin for SourceHubBulletin {
                     )
                     .await
                 {
-                    Ok(result) => result,
-                    Err(BlockchainError::TxFailed { log, .. }) if is_already_exists_log(&log) => {
-                        let document_id = generate_document_id(
-                            &doc.ring_id,
-                            &doc.document,
-                            &doc.proof,
-                            &doc.policy_id,
-                            &doc.resource,
-                            &doc.permission,
-                            doc.tier.as_deref(),
-                            doc.timestamp,
-                        );
-                        return Ok(document_id);
+                    Ok((result, document_id)) => {
+                        check_result(result, "store document")?;
+                        Ok(document_id)
                     }
-                    Err(e) => return Err(BulletinError::ChainError(e.to_string())),
-                };
-                check_result(result, "store document")?;
-                Ok(document_id)
+                    Err(e) if is_already_exists_error(&e) => Ok(generate_document_id(
+                        &doc.ring_id,
+                        &doc.document,
+                        &doc.proof,
+                        &doc.policy_id,
+                        &doc.resource,
+                        &doc.permission,
+                        doc.tier.as_deref(),
+                        doc.timestamp,
+                    )),
+                    Err(e) => Err(BulletinError::ChainError(e.to_string())),
+                }
             }
             BulletinWriteKind::KeyDerivation => {
                 let kd: KeyDerivation = serde_json::from_slice(&payload)
                     .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-                let (result, key_derivation_id) = match self
+                match self
                     .chain_client
                     .orbis_store_key_derivation_get_id(
                         &kd.ring_id,
@@ -83,21 +81,19 @@ impl Bulletin for SourceHubBulletin {
                     )
                     .await
                 {
-                    Ok(result) => result,
-                    Err(BlockchainError::TxFailed { log, .. }) if is_already_exists_log(&log) => {
-                        let key_derivation_id = generate_key_derivation_id(
-                            &kd.ring_id,
-                            &kd.derivation,
-                            &kd.policy_id,
-                            &kd.resource,
-                            &kd.permission,
-                        );
-                        return Ok(key_derivation_id);
+                    Ok((result, key_derivation_id)) => {
+                        check_result(result, "store key derivation")?;
+                        Ok(key_derivation_id)
                     }
-                    Err(e) => return Err(BulletinError::ChainError(e.to_string())),
-                };
-                check_result(result, "store key derivation")?;
-                Ok(key_derivation_id)
+                    Err(e) if is_already_exists_error(&e) => Ok(generate_key_derivation_id(
+                        &kd.ring_id,
+                        &kd.derivation,
+                        &kd.policy_id,
+                        &kd.resource,
+                        &kd.permission,
+                    )),
+                    Err(e) => Err(BulletinError::ChainError(e.to_string())),
+                }
             }
             BulletinWriteKind::NodeInfo => {
                 let node_info: NodeInfo = serde_json::from_slice(&payload)
@@ -380,4 +376,12 @@ fn check_result(result: common::blockchain::BroadcastResult, op: &str) -> Result
 
 fn is_already_exists_log(log: &str) -> bool {
     log.to_ascii_lowercase().contains("already exists")
+}
+
+fn is_already_exists_error(e: &BlockchainError) -> bool {
+    match e {
+        BlockchainError::TxFailed { log, .. } => is_already_exists_log(log),
+        BlockchainError::Signing(msg) => is_already_exists_log(msg),
+        _ => false,
+    }
 }

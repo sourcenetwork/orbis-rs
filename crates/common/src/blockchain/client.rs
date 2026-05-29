@@ -187,10 +187,14 @@ impl SourceHubClient {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        self.resync_nonce_inner(&signer).await
+    }
 
+    /// Resync nonce given an already-resolved signer reference. Used internally
+    /// when the signer is already in scope to avoid a second borrow.
+    async fn resync_nonce_inner(&self, signer: &TxSigner) -> Result<u64> {
         let account_info = self.get_account(&signer.address()).await?;
         signer.set_nonce(account_info.sequence);
-
         Ok(account_info.sequence)
     }
 
@@ -683,13 +687,14 @@ impl SourceHubClient {
         )?;
 
         // Simulate to get actual gas usage
-        // Note: We need to decrement nonce since simulation doesn't consume it
         let gas_used = match self.simulate_tx(&sim_tx_bytes).await {
             Ok(gas) => gas,
             Err(e) => {
-                // Simulation failed - this shouldn't consume the nonce
-                // But we already incremented it, so the next tx will use the right one
-                // The chain will reject this nonce if we try to use it again
+                // Resync the nonce from the chain — simulation failed before any tx was
+                // submitted, so the in-memory counter is ahead of reality. Resyncing
+                // handles both "document already exists" (chain still at N) and
+                // "sequence mismatch" (chain advanced to M while we held N).
+                let _ = self.resync_nonce_inner(&signer).await;
                 return Err(BlockchainError::Signing(format!(
                     "Gas simulation failed: {}",
                     e

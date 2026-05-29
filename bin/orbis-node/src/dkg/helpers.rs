@@ -257,18 +257,8 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
 
     // 4. Proposed new_peer_node_keys must match the authoritative committee.
     //    Bulletin present → must match it; absent → must match current peer_node_keys (fallback).
-    let authoritative_new: &[String] = ring_payload
-        .new_peer_node_keys
-        .as_deref()
-        .unwrap_or(&ring_payload.peer_node_keys);
-    let mut sorted_auth: Vec<&str> = authoritative_new.iter().map(|s| s.as_str()).collect();
-    sorted_auth.sort();
-    let mut sorted_proposed: Vec<&str> = proposed_new_peer_node_keys
-        .iter()
-        .map(|s| s.as_str())
-        .collect();
-    sorted_proposed.sort();
-    if sorted_auth != sorted_proposed {
+    let authoritative_new = effective_new_peer_node_keys(&ring_payload);
+    if !peer_node_keys_match(authoritative_new, proposed_new_peer_node_keys) {
         return Err(DkgError::Unauthorized(format!(
             "Reshare new_peer_node_keys do not match authoritative committee for ring {} \
              (bulletin field: {})",
@@ -782,6 +772,30 @@ pub fn node_index_in(sorted_committee: &[String], our_node_key: &str) -> u32 {
         .position(|node_key| node_key == our_node_key)
         .map(|i| (i + 1) as u32)
         .expect("node not found in committee — check in_committee() first")
+}
+
+/// Returns the effective new committee from a ring payload.
+///
+/// Uses `new_peer_node_keys` when present (a reshare has been announced),
+/// otherwise falls back to the current `peer_node_keys`.
+pub fn effective_new_peer_node_keys(ring_payload: &RingPayload) -> &[String] {
+    ring_payload
+        .new_peer_node_keys
+        .as_deref()
+        .unwrap_or(&ring_payload.peer_node_keys)
+}
+
+/// Returns `true` if two peer-node-key slices represent the same committee
+/// regardless of ordering.
+pub fn peer_node_keys_match(a: &[String], b: &[String]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut sa: Vec<&str> = a.iter().map(String::as_str).collect();
+    let mut sb: Vec<&str> = b.iter().map(String::as_str).collect();
+    sa.sort_unstable();
+    sb.sort_unstable();
+    sa == sb
 }
 
 #[cfg(test)]

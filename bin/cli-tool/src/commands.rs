@@ -856,27 +856,20 @@ pub async fn list_bulletin_posts(namespace: String) -> Result<Vec<Vec<u8>>> {
     Ok(posts.into_iter().map(|p| p.payload).collect())
 }
 
-/// Fetch the latest ring from the bulletin (e.g. after DKG).
-/// Returns (ring_id, ring_pk_hex). Uses namespace "orbis" by default.
-pub async fn get_latest_ring(namespace: Option<String>) -> Result<(String, String)> {
-    let namespace = namespace.as_deref().unwrap_or("orbis");
+/// Fetch a ring from the orbis module by ring_id.
+/// Returns (ring_id, ring_pk_hex).
+pub async fn get_latest_ring(ring_id: String) -> Result<(String, String)> {
     let client = SourceHubClient::new(ChainConfig::local())
         .await
         .map_err(|e| anyhow!("Failed to create client: {}", e))?;
 
-    let posts = client
-        .bulletin_list_posts(namespace)
+    let ring = client
+        .orbis_read_ring(&ring_id)
         .await
-        .map_err(|e| anyhow!("Failed to list bulletin posts: {}", e))?;
+        .map_err(|e| anyhow!("Failed to read ring {}: {}", ring_id, e))?
+        .ok_or_else(|| anyhow!("Ring {} not found", ring_id))?;
 
-    let post = posts
-        .last()
-        .ok_or_else(|| anyhow!("No posts in namespace {:?}; run DKG first", namespace))?;
-
-    let ring_payload: RingPayload = serde_json::from_slice(&post.payload)
-        .map_err(|e| anyhow!("Failed to parse ring payload: {}", e))?;
-
-    Ok((post.id.clone(), ring_payload.ring_pk))
+    Ok((ring_id, ring.ring_pk))
 }
 
 /// Result of querying node info
@@ -887,6 +880,8 @@ pub struct NodeInfoResult {
     pub p2p_address: String,
     pub status: proto::info_service::NodeStatus,
     pub managed_ring_count: u32,
+    /// Compressed secp256k1 pubkey hex — the node's on-chain key in x/orbis NodeInfo.
+    pub node_key: String,
 }
 
 pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
@@ -925,6 +920,7 @@ pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
         p2p_address: node_info.p2p_address,
         status,
         managed_ring_count: node_info.managed_ring_count,
+        node_key: node_info.node_key,
     })
 }
 

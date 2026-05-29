@@ -309,11 +309,11 @@ pub enum SubCommands {
         #[clap(long)]
         ring_pk_hex: String,
     },
-    /// Get latest ring from bulletin (after DKG). Prints RING_ID and RING_PK for sourcing in scripts.
+    /// Fetch a ring from the orbis module by ring_id. Prints RING_ID and RING_PK for sourcing in scripts.
     GetLatestRing {
-        /// Bulletin namespace for ring payloads [default: orbis]
+        /// Ring ID to look up
         #[clap(long)]
-        namespace: Option<String>,
+        ring_id: String,
     },
     /// Post a KeyDerivation to the bulletin (registers a sign key derivation config)
     PostKeyDerivation {
@@ -583,8 +583,8 @@ async fn main() -> Result<()> {
             println!("PUBLIC_POLYNOMIAL={}", poly);
             println!("LAST_PSS={}", last_pss);
         }
-        SubCommands::GetLatestRing { namespace } => {
-            let (ring_id, ring_pk) = get_latest_ring(namespace).await?;
+        SubCommands::GetLatestRing { ring_id } => {
+            let (ring_id, ring_pk) = get_latest_ring(ring_id).await?;
             println!("RING_ID={}", ring_id);
             println!("RING_PK={}", ring_pk);
         }

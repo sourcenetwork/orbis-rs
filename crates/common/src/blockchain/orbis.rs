@@ -324,6 +324,29 @@ impl MsgCreateNodeInfo {
 #[derive(Clone, Message)]
 pub struct MsgCreateNodeInfoResponse {}
 
+#[derive(Clone, Message)]
+pub struct MsgUpdateNodeInfo {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub node_key: String,
+    #[prost(string, optional, tag = "3")]
+    pub peer_id: Option<String>,
+    #[prost(string, repeated, tag = "4")]
+    pub whitelisted_policy_ids: Vec<String>,
+    #[prost(string, repeated, tag = "5")]
+    pub whitelisted_ring_ids: Vec<String>,
+    #[prost(string, optional, tag = "6")]
+    pub controller_key: Option<String>,
+}
+
+impl MsgUpdateNodeInfo {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgUpdateNodeInfo";
+}
+
+#[derive(Clone, Message)]
+pub struct MsgUpdateNodeInfoResponse {}
+
 // ============================================================================
 // Query Request/Response Types
 // ============================================================================
@@ -441,9 +464,33 @@ pub struct RingReshareFinalizeSignDoc {
     pub block_number_nonce: u64,
 }
 
+/// Canonical Orbis protocol state hashed into reshare finalization sign docs.
+///
+/// This intentionally excludes SourceHub storage-only fields such as creator DID
+/// and fresh-DKG confirmations. Participant lists must be sorted before hashing.
+#[derive(Clone, Message)]
+pub struct RingReshareSignState {
+    #[prost(string, tag = "1")]
+    pub ring_pk: String,
+    #[prost(string, repeated, tag = "2")]
+    pub peer_node_keys: Vec<String>,
+    #[prost(uint32, tag = "3")]
+    pub threshold: u32,
+    #[prost(string, repeated, tag = "4")]
+    pub new_peer_node_keys: Vec<String>,
+    #[prost(uint32, optional, tag = "5")]
+    pub new_threshold: Option<u32>,
+    #[prost(uint64, optional, tag = "6")]
+    pub pss_interval: Option<u64>,
+    #[prost(uint64, tag = "7")]
+    pub block_number_nonce: u64,
+    #[prost(string, tag = "8")]
+    pub policy_id: String,
+}
+
 /// Build SourceHub-compatible sign bytes for a ring reshare finalization.
 /// `current_ring_sha256` and `finalized_ring_sha256` must each be exactly 32 bytes —
-/// SHA-256 of the cosmos-proto-encoded `Ring` structs for the current and finalized states.
+/// SHA-256 of the canonical Orbis reshare sign-state for the current and finalized states.
 pub fn ring_reshare_finalize_sign_bytes(
     chain_id: &str,
     ring_id: &str,
@@ -477,37 +524,12 @@ pub fn ring_reshare_finalize_sign_bytes(
     .encode_to_vec())
 }
 
-/// Hash a proto-encoded `Ring` for use in reshare sign docs.
-pub fn ring_state_hash(ring: &Ring) -> [u8; 32] {
-    Sha256::digest(ring.encode_to_vec()).into()
-}
-
-// ============================================================================
-// Ring ID generation (mirrors SourceHub's GenerateRingID)
-// ============================================================================
-
-/// Compute the deterministic ring ID matching SourceHub's on-chain `GenerateRingID`.
-///
-/// Encoding: each string is 4-byte big-endian length + UTF-8 bytes; string slices
-/// have a 4-byte big-endian count prefix; uint32 is 4-byte big-endian;
-/// optional uint64 is a 1-byte presence flag followed by 8-byte big-endian if present.
-pub fn generate_ring_id(
-    peer_node_keys: &[String],
-    threshold: u32,
-    pss_interval: Option<u64>,
-    policy_id: &str,
-    nonce: Option<&str>,
-) -> String {
-    let mut h = Sha256::new();
-
-    write_string(&mut h, "orbis/ring/v1");
-    write_string_slice(&mut h, peer_node_keys);
-    h.update(threshold.to_be_bytes());
-    write_optional_u64(&mut h, pss_interval);
-    write_string(&mut h, policy_id);
-    write_optional_string(&mut h, nonce);
-
-    hex::encode(h.finalize())
+/// Hash a canonicalized reshare sign-state for use in reshare sign docs.
+pub fn ring_reshare_sign_state_hash(state: &RingReshareSignState) -> [u8; 32] {
+    let mut canonical = state.clone();
+    canonical.peer_node_keys.sort();
+    canonical.new_peer_node_keys.sort();
+    Sha256::digest(canonical.encode_to_vec()).into()
 }
 
 /// Compute the deterministic document ID matching SourceHub's on-chain `GenerateDocumentID`.
@@ -568,13 +590,6 @@ fn write_optional_string(h: &mut Sha256, value: Option<&str>) {
             h.update([1u8]);
             write_string(h, v);
         }
-    }
-}
-
-fn write_string_slice(h: &mut Sha256, slice: &[String]) {
-    h.update((slice.len() as u32).to_be_bytes());
-    for s in slice {
-        write_string(h, s);
     }
 }
 
@@ -890,6 +905,31 @@ impl SourceHubClient {
         .await
     }
 
+    pub async fn orbis_update_node_info(
+        &self,
+        node_key: &str,
+        whitelisted_policy_ids: Vec<String>,
+        whitelisted_ring_ids: Vec<String>,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgUpdateNodeInfo {
+            creator: signer.address(),
+            node_key: node_key.to_string(),
+            peer_id: None,
+            whitelisted_policy_ids,
+            whitelisted_ring_ids,
+            controller_key: None,
+        };
+        self.broadcast_proto_msg_with_gas(
+            MsgUpdateNodeInfo::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
     pub async fn orbis_update_ring_by_acp(
         &self,
         ring_id: &str,
@@ -1053,9 +1093,10 @@ mod tests {
     use prost::Message;
 
     use super::{
-        decode_store_document_id, decode_store_key_derivation_id, MsgCreateRing, MsgFinalizeRing,
-        MsgFinalizeRingReshareByThresholdSignature, MsgStoreDocumentResponse,
-        MsgStoreKeyDerivationResponse, MsgUpdateRingByAcp,
+        decode_store_document_id, decode_store_key_derivation_id, ring_reshare_sign_state_hash,
+        MsgCreateRing, MsgFinalizeRing, MsgFinalizeRingReshareByThresholdSignature,
+        MsgStoreDocumentResponse, MsgStoreKeyDerivationResponse, MsgUpdateRingByAcp,
+        RingReshareSignState,
     };
 
     #[test]
@@ -1111,6 +1152,30 @@ mod tests {
         assert_eq!(
             hex::encode(msg.encode_to_vec()),
             "0a01631201721a017322020102"
+        );
+    }
+
+    #[test]
+    fn ring_reshare_sign_state_hash_sorts_participant_lists() {
+        let state = RingReshareSignState {
+            ring_pk: "pk".to_string(),
+            peer_node_keys: vec!["node-b".to_string(), "node-a".to_string()],
+            threshold: 2,
+            new_peer_node_keys: vec!["node-d".to_string(), "node-c".to_string()],
+            new_threshold: Some(1),
+            pss_interval: Some(30),
+            block_number_nonce: 9,
+            policy_id: "policy".to_string(),
+        };
+        let reordered = RingReshareSignState {
+            peer_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
+            new_peer_node_keys: vec!["node-c".to_string(), "node-d".to_string()],
+            ..state.clone()
+        };
+
+        assert_eq!(
+            ring_reshare_sign_state_hash(&state),
+            ring_reshare_sign_state_hash(&reordered)
         );
     }
 

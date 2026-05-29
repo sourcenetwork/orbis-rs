@@ -6,6 +6,28 @@ use crate::app_state::AppState;
 
 pub const BULLETIN_RING_NAMESPACE: &str = "orbis";
 pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
+
+pub const ORBIS_RING_POLICY_YAML: &str = r#"
+name: orbis ring policy
+resources:
+- name: ring_policy
+  permissions:
+  - name: create_ring
+    expr: ring_creator
+  relations:
+  - name: ring_creator
+    types:
+    - actor
+- name: ring
+  permissions:
+  - name: update_ring
+    expr: operator
+  relations:
+  - name: operator
+    types:
+    - actor
+"#;
+
 use crate::helpers::create_routers::{
     create_router_with_all_handlers, create_router_with_handlers,
 };
@@ -19,7 +41,9 @@ use bulletin::{
     BulletinImpl,
 };
 use cli_tool;
-use common::blockchain::ChainConfigBuilder;
+use common::blockchain::{
+    acp::Object, ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+};
 use hex;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -28,6 +52,7 @@ use local_storage::{
 use network::{NetworkImpl, Router};
 use proto::info_service::NodeStatus;
 use std::{fs, sync::Arc};
+use tokio::time::Duration;
 
 // Concrete crypto implementations for tests (selected via crypto crate features)
 use crypto::{DkgImpl, PreImpl, SignImpl};
@@ -1063,5 +1088,118 @@ pub async fn wait_for_nodes_ready(
                 }
             }
         }
+    }
+}
+
+// ============================================================================
+// Integration-test chain helpers (new DKG flow)
+// ============================================================================
+
+/// Create an orbis ring governance policy as TEST_ACCOUNT_HEX_KEY, register its
+/// own policy ID as a `ring_policy` ACP object, and return the policy ID.
+pub async fn create_orbis_ring_policy() -> String {
+    let client = SourceHubClient::with_signer(
+        ChainConfig::local(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("chain client for policy creation");
+
+    let ids_before: std::collections::HashSet<String> = client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids")
+        .ids
+        .into_iter()
+        .collect();
+
+    client
+        .acp_create_policy(ORBIS_RING_POLICY_YAML, 1)
+        .await
+        .expect("create orbis ring policy");
+
+    let policy_id = client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids after create")
+        .ids
+        .into_iter()
+        .find(|id| !ids_before.contains(id))
+        .expect("new policy ID not found in list");
+
+    client
+        .acp_register_object(
+            &policy_id,
+            Object {
+                resource: "ring_policy".to_string(),
+                id: policy_id.clone(),
+            },
+        )
+        .await
+        .expect("register ring_policy object");
+
+    policy_id
+}
+
+/// Create a ring on-chain as TEST_ACCOUNT_HEX_KEY and return its ring_id.
+pub async fn create_ring_on_chain(
+    node_keys: &[String],
+    threshold: u32,
+    policy_id: &str,
+    nonce: Option<&str>,
+) -> String {
+    create_ring_on_chain_with_pss(node_keys, threshold, policy_id, nonce, None).await
+}
+
+/// Create a ring on-chain with an explicit PSS interval. Returns its ring_id.
+pub async fn create_ring_on_chain_with_pss(
+    node_keys: &[String],
+    threshold: u32,
+    policy_id: &str,
+    nonce: Option<&str>,
+    pss_interval: Option<u64>,
+) -> String {
+    let client = SourceHubClient::with_signer(
+        ChainConfig::local(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("chain client for ring creation");
+
+    let (_, ring_id) = client
+        .orbis_create_ring_get_id(
+            node_keys.to_vec(),
+            threshold,
+            pss_interval,
+            policy_id,
+            nonce.map(String::from),
+            Some("integration-test".to_string()),
+        )
+        .await
+        .expect("create ring on-chain");
+
+    ring_id
+}
+
+/// Poll the chain until the ring is finalized (ring_pk != "") or the timeout expires.
+/// Panics on timeout.
+pub async fn wait_for_ring_finalized(ring_id: &str, timeout: Duration) -> String {
+    let client = SourceHubClient::new(ChainConfig::local())
+        .await
+        .expect("chain client for ring polling");
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Ok(Some(ring)) = client.orbis_read_ring(ring_id).await {
+            if !ring.ring_pk.is_empty() {
+                return ring.ring_pk;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("Timed out waiting for ring {} to be finalized", ring_id);
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
