@@ -187,7 +187,7 @@ impl SourceHubClient {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
-        self.resync_nonce_inner(&signer).await
+        self.resync_nonce_inner(signer).await
     }
 
     /// Resync nonce given an already-resolved signer reference. Used internally
@@ -694,7 +694,7 @@ impl SourceHubClient {
                 // submitted, so the in-memory counter is ahead of reality. Resyncing
                 // handles both "document already exists" (chain still at N) and
                 // "sequence mismatch" (chain advanced to M while we held N).
-                self.resync_nonce_inner(&signer)
+                self.resync_nonce_inner(signer)
                     .await
                     .map_err(|resync_err| {
                         BlockchainError::Signing(format!(
