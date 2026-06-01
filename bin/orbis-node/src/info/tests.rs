@@ -71,10 +71,12 @@ async fn test_get_node_info_reports_managed_ring_count_from_ring_index() {
         RingIndexEntry {
             ring_pk_str: "ring-key-1".to_string(),
             bulletin_post_id: "post-1".to_string(),
+            indexed_at_secs: 0,
         },
         RingIndexEntry {
             ring_pk_str: "ring-key-2".to_string(),
             bulletin_post_id: "post-2".to_string(),
+            indexed_at_secs: 0,
         },
     ];
     app_state

@@ -1358,6 +1358,7 @@ mod tests {
                 serde_json::to_vec(&vec![RingIndexEntry {
                     ring_pk_str: "pk".to_string(),
                     bulletin_post_id: post_id,
+                    indexed_at_secs: 0,
                 }])
                 .unwrap(),
             )

@@ -270,6 +270,10 @@ pub fn determine_session_node_id(our_peer_id: &str, all_peer_ids: &[String]) -> 
 }
 
 pub fn determine_ring_node_id_from_peer_id(peer_id: &str, ring: &RingConfig) -> Option<u32> {
+    if ring.peer_node_keys.len() != ring.peer_ids.len() {
+        return None;
+    }
+
     let peer_node_part = extract_node_part(peer_id);
     let node_key = ring
         .peer_node_keys
@@ -393,4 +397,47 @@ fn decode_pub_poly_hex<D: Dkg>(hex_str: &str) -> Result<D::PubPoly, String> {
         hex::decode(hex_str).map_err(|e| format!("Failed to decode polynomial hex: {}", e))?;
     <D::PubPoly>::from_bytes(&bytes)
         .map_err(|e| format!("Failed to deserialize public polynomial: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ring_config(peer_node_keys: Vec<String>, peer_ids: Vec<String>) -> RingConfig {
+        RingConfig {
+            ring_pk_bytes: vec![],
+            peer_ids,
+            peer_node_keys,
+            threshold: 1,
+            total_participants: 1,
+            public_polynomial_hex: String::new(),
+        }
+    }
+
+    #[test]
+    fn determine_ring_node_id_from_peer_id_fails_closed_on_length_mismatch() {
+        let ring = ring_config(
+            vec!["node-a".to_string(), "node-b".to_string()],
+            vec!["peer-a".to_string()],
+        );
+
+        assert_eq!(determine_ring_node_id_from_peer_id("peer-a", &ring), None);
+    }
+
+    #[test]
+    fn determine_ring_node_id_from_peer_id_maps_peer_to_node_key_position() {
+        let ring = ring_config(
+            vec!["node-b".to_string(), "node-a".to_string()],
+            vec!["peer-b".to_string(), "peer-a".to_string()],
+        );
+
+        assert_eq!(
+            determine_ring_node_id_from_peer_id("peer-a", &ring),
+            Some(1)
+        );
+        assert_eq!(
+            determine_ring_node_id_from_peer_id("peer-b", &ring),
+            Some(2)
+        );
+    }
 }

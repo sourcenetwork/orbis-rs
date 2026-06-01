@@ -7,6 +7,7 @@ use bulletin::r#trait::{BulletinWriteKind, RingFinalizationPayload};
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{types::CoordinatorDkg, DkgCoordinator};
 
@@ -73,6 +74,7 @@ where
     let _guard = app_state.ring_index_lock.lock().await;
 
     let mut ring_index = read_ring_index(&app_state.local_storage, "RingIndex")?;
+    let now_secs = current_unix_secs();
 
     // Upsert: update bulletin_post_id on an existing entry (e.g. DealerReceiver after reshare),
     // or push a new one for first-time entries.
@@ -85,6 +87,7 @@ where
         ring_index.push(RingIndexEntry {
             ring_pk_str: storage_key.to_string(),
             bulletin_post_id,
+            indexed_at_secs: now_secs,
         });
     }
 
@@ -198,4 +201,11 @@ fn ensure_local_ring_capacity(ring_index: &[RingIndexEntry], storage_key: &str) 
     }
 
     Ok(())
+}
+
+fn current_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

@@ -157,17 +157,18 @@ async fn create_test_app_state_with_bulletin_inner(
     let local_storage =
         LocalStorageImpl::new(None, test_db_path(db_name)).expect("Failed to create local storage");
     let local_peer_id_hex = hex::encode(network.local_peer_id().as_bytes());
-    let node_key = format!("test-node-key-{}", local_peer_id_hex);
+    let test_node_key = format!("test-node-key-{}", local_peer_id_hex);
     let node_info = NodeInfo {
         peer_id: local_peer_id_hex,
         controller_key: "test-controller-key".to_string(),
         whitelisted_policy_ids: vec!["test-policy".to_string()],
         whitelisted_ring_ids: vec![TEST_FRESH_DKG_RING_ID.to_string()],
     };
-    if let Some(dummy_bulletin) = dummy_bulletin {
+    let node_key = if let Some(dummy_bulletin) = dummy_bulletin {
         dummy_bulletin
-            .set_node_info(node_key.clone(), node_info)
+            .set_node_info(test_node_key.clone(), node_info)
             .expect("Failed to seed test NodeInfo");
+        test_node_key
     } else {
         let node_info_payload: Vec<u8> = node_info
             .try_into()
@@ -175,8 +176,8 @@ async fn create_test_app_state_with_bulletin_inner(
         bulletin
             .post(BulletinWriteKind::NodeInfo, node_info_payload)
             .await
-            .expect("Failed to seed test NodeInfo");
-    }
+            .expect("Failed to seed test NodeInfo")
+    };
     let mut authz: Arc<dyn Authz> = Arc::new(
         AuthzImpl::new(ChainConfigBuilder::default())
             .await
@@ -976,6 +977,7 @@ pub async fn write_ring_to_bulletin(
         ring_index.push(RingIndexEntry {
             ring_pk_str: ring_pk.to_string(),
             bulletin_post_id: post_id,
+            indexed_at_secs: 0,
         });
         storage
             .set(

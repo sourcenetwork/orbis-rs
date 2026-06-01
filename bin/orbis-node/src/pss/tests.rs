@@ -1,7 +1,7 @@
 use crate::dkg::error::DkgError;
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bulletin, test_db_path};
-use crate::ring_state::{RingIndexEntry, RingShareBundle};
+use crate::ring_state::RingIndexEntry;
 use bulletin::{
     dummy::DummyBulletin,
     r#trait::{BulletinPost, NodeInfo, RingPayload},
@@ -9,7 +9,6 @@ use bulletin::{
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use zeroize::Zeroizing;
 
 use crypto::DkgImpl;
 
@@ -44,6 +43,7 @@ async fn make_state_with_ring(
     let entry = RingIndexEntry {
         ring_pk_str: ring_payload.ring_pk.clone(),
         bulletin_post_id: post_id,
+        indexed_at_secs: 0,
     };
     let index_bytes = serde_json::to_vec(&vec![&entry]).expect("serialize RingIndex");
     app_state
@@ -134,6 +134,7 @@ async fn test_refresh_all_rings_bulletin_miss_does_not_propagate() {
     let ring_index = vec![RingIndexEntry {
         ring_pk_str: "nonexistent_ring".to_string(),
         bulletin_post_id: "nonexistent_ring_id".to_string(),
+        indexed_at_secs: 0,
     }];
     let index_bytes = serde_json::to_vec(&ring_index).expect("serialize ring index");
     app_state
@@ -282,6 +283,7 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     let entry = RingIndexEntry {
         ring_pk_str: ring_pk_str.to_string(),
         bulletin_post_id: post_id,
+        indexed_at_secs: 0,
     };
     app_state
         .local_storage
@@ -327,6 +329,7 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
     let entry = RingIndexEntry {
         ring_pk_str: "expected_ring_pk".to_string(),
         bulletin_post_id: post_id,
+        indexed_at_secs: 0,
     };
     app_state
         .local_storage
@@ -362,20 +365,27 @@ async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
         policy_id: None,
     };
 
-    let entry = post_ring_and_seed_index_with_local_key(
+    let mut entry = post_ring_and_seed_index_with_local_key(
         &app_state,
         &bulletin,
         &ring_payload,
         local_ring_pk,
     )
     .await;
-    save_dummy_ring_bundle(&app_state, local_ring_pk, 0);
+    entry.indexed_at_secs = current_unix_secs().saturating_sub(2);
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&vec![&entry]).expect("serialize RingIndex"),
+        )
+        .expect("write RingIndex");
     assert!(
-        app_state
+        !app_state
             .local_storage
             .contains(LocalStorageKeys::RingKey(local_ring_pk.to_string()))
             .expect("check RingKey presence"),
-        "test setup should store local pending fresh DKG bundle"
+        "test setup should not store a finalized pending fresh DKG bundle"
     );
 
     let state_arc = Arc::new(app_state);
@@ -391,7 +401,7 @@ async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
             .local_storage
             .contains(LocalStorageKeys::RingKey(local_ring_pk.to_string()))
             .expect("check RingKey deletion"),
-        "expired pending fresh DKG bundle should be deleted"
+        "pending fresh DKG cleanup should tolerate a missing finalized bundle"
     );
     assert!(
         !ring_index_entries(&state_arc)
@@ -426,7 +436,6 @@ async fn test_pending_fresh_dkg_before_interval_remains_indexed() {
         local_ring_pk,
     )
     .await;
-    save_dummy_ring_bundle(&app_state, local_ring_pk, current_unix_secs());
 
     let state_arc = Arc::new(app_state);
     let result = super::pss_ring(&state_arc, &entry).await;
@@ -437,11 +446,11 @@ async fn test_pending_fresh_dkg_before_interval_remains_indexed() {
         result
     );
     assert!(
-        state_arc
+        !state_arc
             .local_storage
             .contains(LocalStorageKeys::RingKey(local_ring_pk.to_string()))
             .expect("check RingKey presence"),
-        "not-yet-expired pending fresh DKG bundle should remain"
+        "pending fresh DKG should not require a finalized bundle before interval"
     );
     assert!(
         ring_index_entries(&state_arc)
@@ -476,7 +485,6 @@ async fn test_pending_fresh_dkg_without_interval_remains_indexed() {
         local_ring_pk,
     )
     .await;
-    save_dummy_ring_bundle(&app_state, local_ring_pk, 0);
 
     let state_arc = Arc::new(app_state);
     let result = super::pss_ring(&state_arc, &entry).await;
@@ -487,11 +495,11 @@ async fn test_pending_fresh_dkg_without_interval_remains_indexed() {
         result
     );
     assert!(
-        state_arc
+        !state_arc
             .local_storage
             .contains(LocalStorageKeys::RingKey(local_ring_pk.to_string()))
             .expect("check RingKey presence"),
-        "pending fresh DKG bundle should remain when pss_interval is absent"
+        "pending fresh DKG should not require a finalized bundle when pss_interval is absent"
     );
     assert!(
         ring_index_entries(&state_arc)
@@ -569,6 +577,7 @@ async fn post_ring_and_seed_index_with_local_key(
     let entry = RingIndexEntry {
         ring_pk_str: local_ring_pk.to_string(),
         bulletin_post_id: post_id,
+        indexed_at_secs: current_unix_secs(),
     };
     app_state
         .local_storage
@@ -578,21 +587,6 @@ async fn post_ring_and_seed_index_with_local_key(
         )
         .expect("write RingIndex");
     entry
-}
-
-fn save_dummy_ring_bundle(
-    app_state: &crate::app_state::AppState<DkgImpl>,
-    ring_pk: &str,
-    last_pss: u64,
-) {
-    let bundle = RingShareBundle {
-        share_bytes: Zeroizing::new(vec![1, 2, 3, 4]),
-        public_polynomial: "dummy-public-polynomial".to_string(),
-        last_pss,
-    };
-    bundle
-        .save_by_ring_key(&app_state.local_storage, ring_pk)
-        .expect("save dummy RingShareBundle");
 }
 
 fn ring_index_entries(app_state: &crate::app_state::AppState<DkgImpl>) -> Vec<RingIndexEntry> {
@@ -804,6 +798,7 @@ async fn test_refresh_ring_missing_from_bulletin() {
     let entry = RingIndexEntry {
         ring_pk_str: "ghost_ring".to_string(),
         bulletin_post_id: "ghost_ring".to_string(),
+        indexed_at_secs: 0,
     };
     let result = super::pss_ring(&Arc::new(app_state), &entry).await;
     assert!(

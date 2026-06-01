@@ -205,6 +205,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
     ring_index.push(RingIndexEntry {
         ring_pk_str: session_ring_pk.to_string(),
         bulletin_post_id: post_id,
+        indexed_at_secs: 0,
     });
     app_state
         .local_storage
@@ -647,6 +648,7 @@ async fn write_ring_with_announced_reshare(
     ring_index.push(RingIndexEntry {
         ring_pk_str: ring_pk.to_string(),
         bulletin_post_id: post_id,
+        indexed_at_secs: 0,
     });
     app_state
         .local_storage
@@ -968,6 +970,7 @@ async fn post_ring_for_validation(
     ring_index.push(RingIndexEntry {
         ring_pk_str: ring_pk.to_string(),
         bulletin_post_id: post_id,
+        indexed_at_secs: 0,
     });
     app_state
         .local_storage

@@ -275,15 +275,8 @@ where
         }
     };
 
-    let bundle =
-        RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str).map_err(|e| {
-            DkgError::Storage(format!(
-                "PSS: failed to load pending fresh DKG bundle for cleanup: {}",
-                e
-            ))
-        })?;
     let now_secs = current_unix_secs();
-    let elapsed_secs = now_secs.saturating_sub(bundle.last_pss);
+    let elapsed_secs = now_secs.saturating_sub(entry.indexed_at_secs);
 
     if elapsed_secs < pss_interval_secs {
         tracing::debug!(

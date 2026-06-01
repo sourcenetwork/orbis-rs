@@ -72,6 +72,7 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
     let ring_index = vec![RingIndexEntry {
         ring_pk_str: TEST_RING_ID.to_string(),
         bulletin_post_id: TEST_RING_ID.to_string(),
+        indexed_at_secs: 0,
     }];
     app_state
         .local_storage
@@ -400,6 +401,7 @@ async fn test_store_secret_idempotent() {
     let ring_index = vec![RingIndexEntry {
         ring_pk_str: ring_id.clone(),
         bulletin_post_id: ring_id.clone(),
+        indexed_at_secs: 0,
     }];
     app_state
         .local_storage

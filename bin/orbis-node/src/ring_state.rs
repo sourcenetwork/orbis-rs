@@ -14,6 +14,10 @@ pub struct RingIndexEntry {
     pub ring_pk_str: String,
     /// Content-hash post_id of this ring's `RingPayload` on the bulletin.
     pub bulletin_post_id: String,
+    /// Unix timestamp when this local index entry was created or first observed.
+    /// Pending fresh DKG cleanup uses this to age entries whose bulletin payload
+    /// has not been finalized yet.
+    pub indexed_at_secs: u64,
 }
 
 /// Combined share + polynomial bundle stored as a single encrypted write under
