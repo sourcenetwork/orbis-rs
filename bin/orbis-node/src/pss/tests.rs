@@ -533,7 +533,7 @@ async fn make_initiator_state(
             NodeInfo {
                 peer_id,
                 controller_key: "test-controller-key".to_string(),
-                whitelisted_policy_ids: vec![],
+                whitelisted_policy_ids: vec!["test-policy".to_string()],
                 whitelisted_ring_ids: vec![],
             },
         )
@@ -630,7 +630,7 @@ async fn test_pss_ring_reshare_bypasses_interval() {
         threshold: 1,
         pss_interval: None, // no interval — refresh would skip silently
         block_number_nonce: 0,
-        policy_id: None,
+        policy_id: Some("test-policy".to_string()),
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -642,6 +642,55 @@ async fn test_pss_ring_reshare_bypasses_interval() {
          then failed to load absent share bundle. Got: {:?}",
         result
     );
+    cleanup_db(&db_path);
+}
+
+/// A local PSS reshare initiation must still honor this node's NodeInfo opt-in
+/// when the local node is in the new committee.
+#[tokio::test]
+async fn test_pss_ring_reshare_rejects_new_committee_node_without_allowlist() {
+    let db_name = "pss_reshare_rejects_unauthorized_new_member";
+    let (app_state, our_node_key, db_path, bulletin) = make_initiator_state(db_name).await;
+    let local_peer_id = hex::encode(app_state.network.local_peer_id().as_bytes());
+    bulletin
+        .set_node_info(
+            our_node_key.clone(),
+            NodeInfo {
+                peer_id: local_peer_id,
+                controller_key: "test-controller-key".to_string(),
+                whitelisted_policy_ids: vec![],
+                whitelisted_ring_ids: vec![],
+            },
+        )
+        .expect("override self NodeInfo without allowlist");
+
+    let ring_payload = RingPayload {
+        ring_pk: "pss_reshare_unauthorized_pk".to_string(),
+        peer_node_keys: vec![our_node_key.clone()],
+        new_peer_node_keys: Some(vec![our_node_key]),
+        new_threshold: Some(1),
+        threshold: 1,
+        pss_interval: None,
+        block_number_nonce: 0,
+        policy_id: Some("test-policy".to_string()),
+    };
+
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+    let result = super::pss_ring(&Arc::new(app_state), &entry).await;
+
+    match result {
+        Err(DkgError::Unauthorized(message)) => {
+            assert!(
+                message.contains("does not allow policy_id"),
+                "expected NodeInfo allowlist rejection, got: {}",
+                message
+            );
+        }
+        other => panic!(
+            "Expected Unauthorized allowlist rejection, got: {:?}",
+            other
+        ),
+    }
     cleanup_db(&db_path);
 }
 
@@ -661,7 +710,7 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
         threshold: 1,
         pss_interval: None,
         block_number_nonce: 0,
-        policy_id: None,
+        policy_id: Some("test-policy".to_string()),
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;

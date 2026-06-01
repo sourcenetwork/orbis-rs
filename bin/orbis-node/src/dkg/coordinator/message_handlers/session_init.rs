@@ -176,6 +176,21 @@ where
                 .unwrap_or_else(|| ring_payload.peer_node_keys.clone());
             let authoritative_new_threshold =
                 ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
+            if authoritative_new_peer_node_keys
+                .iter()
+                .any(|node_key| node_key == &coord.app_state.node_key)
+            {
+                let our_peer_id_hex =
+                    hex::encode(coord.app_state.network.local_peer_id().as_bytes());
+                validate_reshare_dkg_node_authorization(
+                    &coord.app_state.bulletin,
+                    &coord.app_state.node_key,
+                    &our_peer_id_hex,
+                    reshare_bulletin_post_id,
+                    &ring_payload,
+                )
+                .await?;
+            }
             let expected_session_id = derive_reshare_session_id(
                 ring_pk_hex,
                 reshare_bulletin_post_id,

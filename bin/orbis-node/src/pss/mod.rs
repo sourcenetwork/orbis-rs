@@ -34,7 +34,7 @@ use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::helpers::{
     build_reshare_params, derive_refresh_session_id, derive_reshare_session_id,
-    ring_payload_matches_ring_key,
+    ring_payload_matches_ring_key, validate_reshare_dkg_node_authorization,
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::dkg::session_state::RingPssClaimOutcome;
@@ -608,6 +608,20 @@ where
         .map_err(DkgError::InvalidInput)?;
     let new_route_peer_ids = peer_ids_from_routes(&new_routes);
     let new_threshold: u32 = ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
+
+    if new_peer_node_keys
+        .iter()
+        .any(|node_key| node_key == &app_state.node_key)
+    {
+        validate_reshare_dkg_node_authorization(
+            &app_state.bulletin,
+            &app_state.node_key,
+            &our_peer_id_hex,
+            post_id,
+            ring_payload,
+        )
+        .await?;
+    }
 
     let (our_node_id, dkg_role, reshare_params) = match build_reshare_params(
         ring_pk_str,

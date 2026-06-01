@@ -7,7 +7,7 @@ use crate::dkg::helpers::{
     load_reshare_ring_payload, serialize_commitment_coefficients, session_not_found,
     validate_dkg_claims, validate_fresh_dkg_node_authorization, validate_fresh_dkg_ring_payload,
     validate_fresh_session_init_params, validate_refresh_session_init,
-    validate_reshare_session_init,
+    validate_reshare_dkg_node_authorization, validate_reshare_session_init,
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::dkg::session_state::RingPssClaimOutcome;

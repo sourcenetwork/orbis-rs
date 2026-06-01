@@ -280,6 +280,116 @@ async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
     cleanup_db(&db_path);
 }
 
+/// A pure new-committee receiver must explicitly opt in via its NodeInfo policy/ring
+/// allowlist before accepting a reshare `SessionInit`.
+#[tokio::test]
+async fn test_reshare_session_init_rejects_new_receiver_without_node_allowlist() {
+    let db_name = "test_reshare_rejects_new_receiver_without_allowlist";
+    let db_path = test_db_path(db_name);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
+
+    let ring_pk = "reshare_ring";
+    let post_id = "test-reshare-unauthorized-receiver".to_string();
+    let sender_node_key = "old-node-key".to_string();
+    let sender_peer_hex = "aabbccdd".to_string();
+    let receiver_node_key = app_state.node_key.clone();
+    let receiver_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+
+    dummy_bulletin
+        .set_node_info(
+            sender_node_key.clone(),
+            NodeInfo {
+                peer_id: sender_peer_hex.clone(),
+                controller_key: "test-controller-key".to_string(),
+                whitelisted_policy_ids: vec!["test-policy".to_string()],
+                whitelisted_ring_ids: vec![post_id.clone()],
+            },
+        )
+        .expect("seed sender NodeInfo");
+    dummy_bulletin
+        .set_node_info(
+            receiver_node_key.clone(),
+            NodeInfo {
+                peer_id: receiver_peer_hex,
+                controller_key: "test-controller-key".to_string(),
+                whitelisted_policy_ids: vec![],
+                whitelisted_ring_ids: vec![],
+            },
+        )
+        .expect("override receiver NodeInfo without allowlist");
+
+    dummy_bulletin
+        .set_ring(
+            post_id.clone(),
+            RingPayload {
+                ring_pk: ring_pk.to_string(),
+                peer_node_keys: vec![sender_node_key.clone()],
+                new_peer_node_keys: Some(vec![receiver_node_key.clone()]),
+                new_threshold: Some(1),
+                threshold: 1,
+                pss_interval: None,
+                block_number_nonce: 0,
+                policy_id: Some("test-policy".to_string()),
+            },
+        )
+        .expect("seed reshare announcement");
+
+    let mut node_id_assignments = std::collections::HashMap::new();
+    node_id_assignments.insert(sender_node_key.clone(), 1);
+    let session_id = 99_999_500;
+    let msg = DkgMessage::SessionInit {
+        session_id,
+        threshold: 1,
+        total_participants: 1,
+        peer_ids: vec![sender_peer_hex.clone()],
+        peer_node_keys: vec![sender_node_key],
+        node_id_assignments,
+        token_string: String::new(),
+        kind: SessionKind::Reshare {
+            ring_pk_hex: ring_pk.to_string(),
+            new_peer_node_keys: vec![receiver_node_key],
+            new_threshold: 1,
+            bulletin_post_id: post_id,
+        },
+        pss_interval: None,
+        policy_id: None,
+        ring_id: String::new(),
+    };
+
+    let sender_bytes = hex::decode(sender_peer_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::new(app_state.clone());
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    match result {
+        Err(crate::dkg::error::DkgError::Unauthorized(message)) => {
+            assert!(
+                message.contains("does not allow policy_id"),
+                "expected NodeInfo allowlist rejection, got: {}",
+                message
+            );
+        }
+        other => panic!(
+            "Expected Unauthorized allowlist rejection, got: {:?}",
+            other
+        ),
+    }
+    assert!(
+        !app_state
+            .dkg_session_state
+            .session_exists(&session_id)
+            .await,
+        "unauthorized reshare must not create local session state"
+    );
+    cleanup_db(&db_path);
+}
+
 /// If `try_mark_ring_pss` is already held for a ring, an incoming reshare
 /// `SessionInit` for that ring must be rejected with `Unauthorized`.
 #[tokio::test]
@@ -1177,7 +1287,7 @@ async fn post_reshare_announcement(
         new_threshold: Some(new_threshold),
         pss_interval: None,
         block_number_nonce: 0,
-        policy_id: None,
+        policy_id: Some("test-policy".to_string()),
     };
     bulletin
         .set_ring(format!("test-reshare-announcement-{key_string}"), payload)

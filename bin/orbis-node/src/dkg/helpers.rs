@@ -491,15 +491,61 @@ pub async fn validate_fresh_dkg_node_authorization(
     ring_id: &str,
     ring_payload: &RingPayload,
 ) -> Result<()> {
+    validate_dkg_node_authorization_for_committee(
+        bulletin,
+        node_key,
+        local_peer_id_hex,
+        ring_id,
+        ring_payload,
+        &ring_payload.peer_node_keys,
+        "Fresh DKG",
+    )
+    .await
+}
+
+/// Validate that this node is authorized by its NodeInfo record to receive a Reshare.
+///
+/// Reshare authorization is scoped to the effective new committee: nodes that will hold
+/// the reshared ring must allow either the ring policy or the reshare bulletin post ID.
+/// Old-only dealers should not call this helper.
+pub async fn validate_reshare_dkg_node_authorization(
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    node_key: &str,
+    local_peer_id_hex: &str,
+    ring_id: &str,
+    ring_payload: &RingPayload,
+) -> Result<()> {
+    validate_dkg_node_authorization_for_committee(
+        bulletin,
+        node_key,
+        local_peer_id_hex,
+        ring_id,
+        ring_payload,
+        effective_new_peer_node_keys(ring_payload),
+        "Reshare",
+    )
+    .await
+}
+
+async fn validate_dkg_node_authorization_for_committee(
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    node_key: &str,
+    local_peer_id_hex: &str,
+    ring_id: &str,
+    ring_payload: &RingPayload,
+    authorized_committee: &[String],
+    session_label: &str,
+) -> Result<()> {
     if node_key.is_empty() {
         return Err(DkgError::Unauthorized(
             "Local node signing key is not configured".to_string(),
         ));
     }
     if ring_id.is_empty() {
-        return Err(DkgError::Unauthorized(
-            "Fresh DKG ring_id must not be empty".to_string(),
-        ));
+        return Err(DkgError::Unauthorized(format!(
+            "{} ring_id must not be empty",
+            session_label
+        )));
     }
 
     let node_info_post = bulletin
@@ -521,11 +567,7 @@ pub async fn validate_fresh_dkg_node_authorization(
             node_info.peer_id, local_peer_id_hex
         )));
     }
-    if !ring_payload
-        .peer_node_keys
-        .iter()
-        .any(|key| key == node_key)
-    {
+    if !authorized_committee.iter().any(|key| key == node_key) {
         return Err(DkgError::Unauthorized(format!(
             "Local node_key {} is not a participant in ring {}",
             node_key, ring_id
@@ -876,6 +918,19 @@ mod tests {
         }
     }
 
+    fn make_valid_reshare_ring_payload(old_node_key: &str, new_node_key: &str) -> RingPayload {
+        RingPayload {
+            ring_pk: "ring-pk".to_string(),
+            peer_node_keys: vec![old_node_key.to_string()],
+            new_peer_node_keys: Some(vec![new_node_key.to_string()]),
+            new_threshold: Some(1),
+            threshold: 1,
+            pss_interval: None,
+            block_number_nonce: 0,
+            policy_id: Some("policy".to_string()),
+        }
+    }
+
     #[tokio::test]
     async fn test_validate_fresh_dkg_node_authorization_allows_policy_id() {
         let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
@@ -1030,6 +1085,116 @@ mod tests {
             node_key,
             "peer-local",
             "ring-1",
+            &ring_payload,
+        )
+        .await;
+        assert!(matches!(result, Err(DkgError::Unauthorized(_))));
+    }
+
+    #[tokio::test]
+    async fn test_validate_reshare_dkg_node_authorization_allows_policy_id() {
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
+        let node_key = "new-node-key";
+        let local_peer_id = "peer-local";
+        let ring_payload = make_valid_reshare_ring_payload("old-node-key", node_key);
+        seed_node_info(
+            &dummy_bulletin,
+            node_key,
+            local_peer_id,
+            vec!["policy".to_string()],
+            vec![],
+        )
+        .await;
+
+        let result = validate_reshare_dkg_node_authorization(
+            &bulletin,
+            node_key,
+            local_peer_id,
+            "reshare-ring-id",
+            &ring_payload,
+        )
+        .await;
+        assert!(result.is_ok(), "expected policy allow, got: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_validate_reshare_dkg_node_authorization_allows_ring_id() {
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
+        let node_key = "new-node-key";
+        let local_peer_id = "peer-local";
+        let ring_id = "reshare-ring-id";
+        let mut ring_payload = make_valid_reshare_ring_payload("old-node-key", node_key);
+        ring_payload.policy_id = None;
+        seed_node_info(
+            &dummy_bulletin,
+            node_key,
+            local_peer_id,
+            vec![],
+            vec![ring_id.to_string()],
+        )
+        .await;
+
+        let result = validate_reshare_dkg_node_authorization(
+            &bulletin,
+            node_key,
+            local_peer_id,
+            ring_id,
+            &ring_payload,
+        )
+        .await;
+        assert!(result.is_ok(), "expected ring allow, got: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_validate_reshare_dkg_node_authorization_rejects_deny() {
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
+        let node_key = "new-node-key";
+        let local_peer_id = "peer-local";
+        let ring_payload = make_valid_reshare_ring_payload("old-node-key", node_key);
+        seed_node_info(
+            &dummy_bulletin,
+            node_key,
+            local_peer_id,
+            vec!["other-policy".to_string()],
+            vec!["other-ring".to_string()],
+        )
+        .await;
+
+        let result = validate_reshare_dkg_node_authorization(
+            &bulletin,
+            node_key,
+            local_peer_id,
+            "reshare-ring-id",
+            &ring_payload,
+        )
+        .await;
+        assert!(matches!(result, Err(DkgError::Unauthorized(_))));
+    }
+
+    #[tokio::test]
+    async fn test_validate_reshare_dkg_node_authorization_uses_new_committee_membership() {
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
+        let old_only_node_key = "old-node-key";
+        let local_peer_id = "peer-local";
+        let ring_payload = make_valid_reshare_ring_payload(old_only_node_key, "new-node-key");
+        seed_node_info(
+            &dummy_bulletin,
+            old_only_node_key,
+            local_peer_id,
+            vec!["policy".to_string()],
+            vec!["reshare-ring-id".to_string()],
+        )
+        .await;
+
+        let result = validate_reshare_dkg_node_authorization(
+            &bulletin,
+            old_only_node_key,
+            local_peer_id,
+            "reshare-ring-id",
             &ring_payload,
         )
         .await;
