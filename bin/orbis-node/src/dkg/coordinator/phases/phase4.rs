@@ -132,6 +132,24 @@ where
     if is_fresh {
         ring_storage::preflight_new_ring_capacity(&coord.app_state, &storage_key).await?;
     }
+    let fresh_ring_id = if is_fresh {
+        Some(
+            coord
+                .app_state
+                .dkg_session_state
+                .ring_id_for_session(&session_id)
+                .await
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    DkgError::Bulletin(format!(
+                        "Fresh DKG session {} is missing ring_id",
+                        session_id
+                    ))
+                })?,
+        )
+    } else {
+        None
+    };
 
     // Write share + polynomial as a single encrypted bundle.
     // Atomicity: both fields land in one set_encrypted call, so a crash leaves the
@@ -179,16 +197,28 @@ where
             .get_peer_ids(&session_id)
             .await
             .unwrap_or_default();
+        let peer_node_keys = coord
+            .app_state
+            .dkg_session_state
+            .get_peer_node_keys(&session_id)
+            .await
+            .ok_or_else(|| {
+                DkgError::InvalidState(format!(
+                    "Refresh Phase 4 session {} is missing peer_node_keys",
+                    session_id
+                ))
+            })?;
+        if peer_node_keys.is_empty() {
+            return Err(DkgError::InvalidState(format!(
+                "Refresh Phase 4 session {} has empty peer_node_keys",
+                session_id
+            )));
+        }
         let candidate = RefreshHealthCheckCandidate {
             ring_key: storage_key.clone(),
             ring_pk_hex: hex::encode(&ring_pk_bytes),
             bundle: staged_bundle,
-            peer_node_keys: coord
-                .app_state
-                .dkg_session_state
-                .get_peer_node_keys(&session_id)
-                .await
-                .unwrap_or_default(),
+            peer_node_keys,
             peer_ids,
             threshold,
         };
@@ -253,17 +283,7 @@ where
     // confirmed on-chain while the local state was cleaned up.
     // For Refresh: bulletin entry is unchanged; polynomial updated in RingShareBundle above.
     // For Reshare: bulletin is updated below by new-committee node 1.
-    if is_fresh {
-        let ring_id = coord
-            .app_state
-            .dkg_session_state
-            .ring_id_for_session(&session_id)
-            .await
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| {
-                DkgError::Bulletin("Fresh DKG session is missing ring_id".to_string())
-            })?;
-
+    if let Some(ring_id) = fresh_ring_id {
         if let Err(e) =
             ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, ring_id.clone())
                 .await

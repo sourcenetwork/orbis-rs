@@ -314,9 +314,9 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
 ///    If `pss_interval` is `None` the time check is skipped (any time is acceptable);
 ///    `Some(0)` is present and therefore requires an existing ring timestamp.
 ///
-/// Sender membership is **not** checked here — it requires resolving node keys to P2P
-/// peer IDs via NodeInfo bulletin lookups, which is done by the SessionInit handler
-/// after this function returns.
+/// Local node membership is **not** checked here — it requires resolving node keys to
+/// P2P peer IDs via NodeInfo bulletin lookups, which is done by the SessionInit
+/// handler after this function returns.
 ///
 /// The caller is responsible for the atomic in-progress flag
 /// (`try_mark_ring_pss`) after this returns `Ok`.

@@ -903,10 +903,11 @@ pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
         .unwrap_or(proto::info_service::NodeStatus::Unspecified);
 
     let output = format!(
-        "Node Info:\n{}\n  Public Address: {}\n  Peer ID: {}\n  P2P Address: {}\n  Status: {}\n  Managed Ring Count: {}",
+        "Node Info:\n{}\n  Public Address: {}\n  Peer ID: {}\n  Node Key: {}\n  P2P Address: {}\n  Status: {}\n  Managed Ring Count: {}",
         "=".repeat(60),
         node_info.public_address,
         node_info.peer_id,
+        node_info.node_key,
         node_info.p2p_address,
         status.as_str_name(),
         node_info.managed_ring_count

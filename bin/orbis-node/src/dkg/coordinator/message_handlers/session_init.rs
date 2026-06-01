@@ -81,10 +81,14 @@ where
                     ring_pk_hex
                 )));
             }
-            if node_key_for_peer(&routes, &sender_hex).is_none() {
+            let local_node_peer_hex =
+                hex::encode(coord.app_state.network.local_peer_id().as_bytes());
+            if node_key_for_peer(&routes, &local_node_peer_hex)
+                != Some(coord.app_state.node_key.as_str())
+            {
                 return Err(DkgError::Unauthorized(format!(
-                    "Refresh initiator {} is not a member of ring {}",
-                    sender_hex, ring_pk_hex
+                    "Local node {} with peer {} is not a member of ring {}",
+                    coord.app_state.node_key, local_node_peer_hex, ring_pk_hex
                 )));
             }
             let route_assignments =
