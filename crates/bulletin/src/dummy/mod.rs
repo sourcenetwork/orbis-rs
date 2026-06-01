@@ -17,6 +17,8 @@ use std::sync::Mutex;
 pub struct DummyBulletin {
     /// Storage for typed Orbis objects by object ID.
     posts: Mutex<HashMap<String, BulletinPost>>,
+    /// Pending fresh-DKG aggregate public key candidates by ring ID.
+    pending_finalization_ring_pks: Mutex<HashMap<String, String>>,
     /// Successful fresh-DKG finalization confirmations by ring ID.
     finalization_counts: Mutex<HashMap<String, usize>>,
 }
@@ -120,17 +122,46 @@ impl DummyBulletin {
             })?;
         let mut payload: RingPayload = serde_json::from_slice(&post.payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        let participant_count = payload.peer_node_keys.len();
+        if participant_count == 0 {
+            return Err(BulletinError::ParseError(format!(
+                "ring {} has no peer_node_keys",
+                finalize.ring_id
+            )));
+        }
 
         if payload.ring_pk.is_empty() {
-            payload.ring_pk = finalize.ring_pk;
-            post.payload = serde_json::to_vec(&payload)
-                .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-            *self
-                .finalization_counts
-                .lock()
-                .unwrap()
-                .entry(finalize.ring_id.clone())
-                .or_default() += 1;
+            {
+                let mut pending = self.pending_finalization_ring_pks.lock().unwrap();
+                if let Some(pending_ring_pk) = pending.get(&finalize.ring_id) {
+                    if pending_ring_pk != &finalize.ring_pk {
+                        return Err(BulletinError::ParseError(format!(
+                            "ring_pk conflict for ring {}",
+                            finalize.ring_id
+                        )));
+                    }
+                } else {
+                    pending.insert(finalize.ring_id.clone(), finalize.ring_pk.clone());
+                }
+            }
+
+            let finalization_count = {
+                let mut counts = self.finalization_counts.lock().unwrap();
+                let count = counts.entry(finalize.ring_id.clone()).or_default();
+                *count += 1;
+                *count
+            };
+
+            if finalization_count >= participant_count {
+                payload.ring_pk = finalize.ring_pk;
+                post.payload = serde_json::to_vec(&payload)
+                    .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+                self.pending_finalization_ring_pks
+                    .lock()
+                    .unwrap()
+                    .remove(&finalize.ring_id);
+            }
+
             return Ok(finalize.ring_id);
         }
 
@@ -155,6 +186,7 @@ impl Default for DummyBulletin {
     fn default() -> Self {
         DummyBulletin {
             posts: Mutex::new(HashMap::new()),
+            pending_finalization_ring_pks: Mutex::new(HashMap::new()),
             finalization_counts: Mutex::new(HashMap::new()),
         }
     }
@@ -277,25 +309,37 @@ mod tests {
             .await
     }
 
+    async fn read_ring_payload(bulletin: &DummyBulletin, ring_id: &str) -> RingPayload {
+        let post = bulletin
+            .read(ring_id.to_string(), BulletinKind::Ring)
+            .await
+            .expect("read ring");
+        RingPayload::try_from(post).expect("parse ring")
+    }
+
     #[tokio::test]
-    async fn finalize_ring_sets_ring_pk() {
+    async fn finalize_ring_sets_ring_pk_after_all_participants_confirm() {
         let (bulletin, ring_id) = pending_ring_fixture();
 
         post_finalized_ring(&bulletin, &ring_id, "ring-pk")
             .await
             .expect("finalize ring through post");
 
-        let post = bulletin
-            .read(ring_id.clone(), BulletinKind::Ring)
-            .await
-            .expect("read ring");
-        let payload = RingPayload::try_from(post).expect("parse ring");
-        assert_eq!(payload.ring_pk, "ring-pk");
+        let payload = read_ring_payload(&bulletin, &ring_id).await;
+        assert_eq!(payload.ring_pk, "");
         assert_eq!(bulletin.finalization_count(&ring_id), 1);
+
+        post_finalized_ring(&bulletin, &ring_id, "ring-pk")
+            .await
+            .expect("second finalize ring through post");
+
+        let payload = read_ring_payload(&bulletin, &ring_id).await;
+        assert_eq!(payload.ring_pk, "ring-pk");
+        assert_eq!(bulletin.finalization_count(&ring_id), 2);
     }
 
     #[tokio::test]
-    async fn finalize_ring_accepts_matching_repeat() {
+    async fn finalize_ring_accepts_matching_confirmations() {
         let (bulletin, ring_id) = pending_ring_fixture();
 
         post_finalized_ring(&bulletin, &ring_id, "ring-pk")
@@ -305,6 +349,8 @@ mod tests {
             .await
             .expect("matching repeat finalize");
 
+        let payload = read_ring_payload(&bulletin, &ring_id).await;
+        assert_eq!(payload.ring_pk, "ring-pk");
         assert_eq!(bulletin.finalization_count(&ring_id), 2);
     }
 
@@ -319,11 +365,7 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(bulletin.finalization_count(&ring_id), 1);
-        let post = bulletin
-            .read(ring_id, BulletinKind::Ring)
-            .await
-            .expect("ring remains present");
-        let payload = RingPayload::try_from(post).expect("parse ring");
-        assert_eq!(payload.ring_pk, "ring-pk");
+        let payload = read_ring_payload(&bulletin, &ring_id).await;
+        assert_eq!(payload.ring_pk, "");
     }
 }
