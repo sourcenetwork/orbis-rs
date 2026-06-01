@@ -141,7 +141,7 @@ async fn test_dkg_then_sign_end_to_end() {
             RingConfig {
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: sign_peer_ids.clone(),
-                peer_node_keys: sign_peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),,
                 threshold: ring_payload.threshold as usize,
                 total_participants: ring_payload.peer_node_keys.len(),
                 public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
