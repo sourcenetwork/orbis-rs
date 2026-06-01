@@ -46,7 +46,7 @@ services:
 
   sourcehub:
     build:
-      context: https://github.com/sourcenetwork/sourcehub.git#new-dkg-flow
+      context: https://github.com/sourcenetwork/sourcehub.git#jesse/Orbis-module
     volumes:
       - sourcehub-data:/home/node/.sourcehub
     entrypoint: ["/bin/sh", "-c"]

@@ -104,6 +104,8 @@ completes.
 
 Other ring dependent operation can not happen until the ring is finalized (Store document, create dervation, updateRingbyAcp)
 
+In a ring reshare the checks of whitelist happens on the bulletin and at the node level.
+
 ## Phase 3: Cascade Kickoff Through A Relayer Node
 
 After the ring has been created on the bulletin, anyone can kick off the DKG.
@@ -155,23 +157,17 @@ locally.
 
 `FinalizeRing` records confirmations from participant nodes. Each confirmation
 says, in effect: "this node completed DKG for this ring and computed this
-`ring_pk`." The bulletin tracks how many participant nodes have confirmed and
-checks that all confirmations agree on the same ring public key.
+`ring_pk`." The bulletin tracks participant confirmations and finalizes only
+after all nodes listed in the ring have confirmed.
 
-If a participant submits a different `ring_pk` from a prior confirmation, the
-DKG is considered failed. The bulletin deletes the pending ring instead of
-finalizing it, so the system fails hard and the caller can retry from a clean
-ring creation.
-
-If enough matching confirmations arrive, the bulletin finalizes the ring by
-setting the ring public key. After that point, ring-dependent operations such as
+When every participant has confirmed, the bulletin finalizes the ring by setting
+the ring public key. After that point, ring-dependent operations such as
 document storage, key derivation creation, and ACP-governed ring updates can use
 the ring.
 
-Open question: should `FinalizeRing` finalize after a threshold of participant
-confirmations, or only after all participant nodes confirm? The current leaning
-is all nodes: if any listed participant fails or computes a different key, fail
-the DKG hard and fast rather than accepting a bad or partially healthy setup.
+Conflicting `ring_pk` cleanup is not part of the eager finalization path. If a
+ring gets stuck because participants disagree or fail to complete, cleanup can
+be handled later by a PSS-backed or other lazy cleanup process.
 
 ## Phase 6: Ring Is Live
 
