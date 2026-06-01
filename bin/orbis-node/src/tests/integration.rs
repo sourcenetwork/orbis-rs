@@ -128,6 +128,13 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .expect("controller chain client");
 
     for node_key in &node_keys {
+        wait_for_node_info_on_chain(
+            &controller_client,
+            node_key,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
         controller_client
             .orbis_update_node_info(node_key, vec![policy_id.clone()], vec![])
             .await
@@ -1018,6 +1025,32 @@ async fn wait_for_ring_state_on_all_nodes(
             Instant::now() < deadline,
             "Timed out waiting for all nodes to expose DKG ring state. Last observed: {}",
             statuses.join("; ")
+        );
+        sleep(poll_interval).await;
+    }
+}
+
+async fn wait_for_node_info_on_chain(
+    controller_client: &SourceHubClient,
+    node_key: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+) {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let status = match controller_client.orbis_read_node_info(node_key).await {
+            Ok(Some(_)) => return,
+            Ok(None) => "not found".to_string(),
+            Err(e) => e.to_string(),
+        };
+
+        assert!(
+            Instant::now() < deadline,
+            "NodeInfo for node_key {} was not visible on-chain within {:?}: {}",
+            node_key,
+            timeout,
+            status
         );
         sleep(poll_interval).await;
     }

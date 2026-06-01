@@ -19,7 +19,7 @@ impl SourceHubTestContainer {
 
         // Start the container
         let status = Command::new("docker")
-            .args(["compose", "-f", &compose_file, "up", "-d", "--build"])
+            .args(["compose", "-f", &compose_file, "up", "-d"])
             .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..")
             .status()
             .expect("Failed to start docker compose");
