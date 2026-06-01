@@ -799,7 +799,7 @@ async fn test_refresh_rejected_already_in_progress() {
 
     // Pre-mark the ring as already refreshing so the coordinator rejects the second attempt.
     let expected_session_id =
-        derive_refresh_session_id(ring_pk, &[local_node_key.clone()], 1, "").unwrap();
+        derive_refresh_session_id(ring_pk, std::slice::from_ref(&local_node_key), 1, "").unwrap();
     assert_eq!(
         app_state
             .dkg_session_state

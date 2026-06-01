@@ -49,8 +49,8 @@ use tonic::Request;
 /// A running in-process orbis node with its gRPC server.
 struct LiveNodeHandle {
     grpc_endpoint: String,
-    peer_addr: String,
-    public_address: String,
+    _peer_addr: String,
+    _public_address: String,
     db_path: String,
     task: tokio::task::JoinHandle<()>,
 }
@@ -65,8 +65,8 @@ impl Drop for LiveNodeHandle {
 /// Three in-process orbis nodes backed by a real SourceHub chain.
 struct LiveThreeNodeNetwork {
     alice: LiveNodeHandle,
-    bob: LiveNodeHandle,
-    charlie: LiveNodeHandle,
+    _bob: LiveNodeHandle,
+    _charlie: LiveNodeHandle,
     /// ACP policy ID all three nodes are whitelisted for.
     policy_id: String,
     /// Compressed pubkeys of alice, bob, charlie (in that order).
@@ -86,12 +86,6 @@ struct LiveFourNodeNetwork {
     /// Compressed pubkeys of alice, bob, charlie, non_participant (in that order).
     node_keys: Vec<String>,
     _chain: SourceHubTestContainer,
-}
-
-impl LiveFourNodeNetwork {
-    fn participant_node_keys(&self) -> Vec<String> {
-        self.node_keys[..3].to_vec()
-    }
 }
 
 /// Build and spawn a gRPC server from an `InitializedNode`.
@@ -235,8 +229,8 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
 
         handles.push(LiveNodeHandle {
             grpc_endpoint: format!("http://{}", grpc_bind),
-            peer_addr,
-            public_address,
+            _peer_addr: peer_addr,
+            _public_address: public_address,
             db_path,
             task,
         });
@@ -249,8 +243,8 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
     let mut it = handles.into_iter();
     LiveThreeNodeNetwork {
         alice: it.next().unwrap(),
-        bob: it.next().unwrap(),
-        charlie: it.next().unwrap(),
+        _bob: it.next().unwrap(),
+        _charlie: it.next().unwrap(),
         policy_id,
         node_keys,
         _chain: chain,
@@ -357,8 +351,8 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
 
         handles.push(LiveNodeHandle {
             grpc_endpoint: format!("http://{}", grpc_bind),
-            peer_addr,
-            public_address,
+            _peer_addr: peer_addr,
+            _public_address: public_address,
             db_path,
             task,
         });

@@ -51,8 +51,8 @@ use tokio::time::Duration;
 /// A running in-process orbis node backed by a FaultNetwork.
 struct FaultableNodeHandle {
     grpc_endpoint: String,
-    peer_addr: String,
-    public_address: String,
+    _peer_addr: String,
+    _public_address: String,
     db_path: String,
     task: tokio::task::JoinHandle<()>,
     /// 64-char hex node ID — used to block this node on other nodes' controllers.
@@ -216,8 +216,8 @@ async fn setup_fault_three_node_network(
 
         handles.push(FaultableNodeHandle {
             grpc_endpoint: format!("http://{}", grpc_bind),
-            peer_addr,
-            public_address,
+            _peer_addr: peer_addr,
+            _public_address: public_address,
             db_path,
             task,
             peer_hex,
