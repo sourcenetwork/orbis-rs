@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::SessionKind;
+use crate::helpers::node_routes::NodeRoute;
 pub(in crate::dkg::coordinator) fn same_peer_set(left: &[String], right: &[String]) -> bool {
     let mut left_sorted = left.to_vec();
     let mut right_sorted = right.to_vec();
@@ -76,18 +77,53 @@ pub(in crate::dkg::coordinator) fn validate_node_id_assignments(
 
 pub(in crate::dkg::coordinator) fn old_committee_node_peer_mappings(
     peer_node_keys: &[String],
-    peer_ids: &[String],
+    routes: &[NodeRoute],
     node_id_assignments: &HashMap<String, u32>,
-) -> HashMap<u32, String> {
-    peer_node_keys
-        .iter()
-        .zip(peer_ids.iter())
-        .filter_map(|(node_key, peer_id)| {
-            node_id_assignments
-                .get(node_key)
-                .map(|node_id| (*node_id, peer_id.clone()))
-        })
-        .collect()
+) -> Result<HashMap<u32, String>> {
+    if routes.len() != peer_node_keys.len() {
+        return Err(DkgError::InvalidInput(format!(
+            "old committee route count {} does not match peer_node_keys count {}",
+            routes.len(),
+            peer_node_keys.len()
+        )));
+    }
+
+    let mut peer_id_by_node_key = HashMap::with_capacity(routes.len());
+    for route in routes {
+        if peer_id_by_node_key
+            .insert(route.node_key.as_str(), route.peer_id.as_str())
+            .is_some()
+        {
+            return Err(DkgError::InvalidInput(format!(
+                "duplicate route for old committee node_key {}",
+                route.node_key
+            )));
+        }
+    }
+
+    let mut mappings = HashMap::with_capacity(peer_node_keys.len());
+    for node_key in peer_node_keys {
+        let node_id = *node_id_assignments.get(node_key).ok_or_else(|| {
+            DkgError::InvalidInput(format!(
+                "missing node_id assignment for old committee node_key {}",
+                node_key
+            ))
+        })?;
+        let peer_id = peer_id_by_node_key.get(node_key.as_str()).ok_or_else(|| {
+            DkgError::InvalidInput(format!(
+                "missing peer_id route for old committee node_key {}",
+                node_key
+            ))
+        })?;
+        if mappings.insert(node_id, (*peer_id).to_string()).is_some() {
+            return Err(DkgError::InvalidInput(format!(
+                "duplicate node_id assignment {} for old committee",
+                node_id
+            )));
+        }
+    }
+
+    Ok(mappings)
 }
 
 #[cfg(test)]
@@ -112,5 +148,41 @@ mod tests {
         let result = validate_node_id_assignments(&peer_node_keys, &supplied);
 
         assert!(matches!(result, Err(DkgError::Unauthorized(_))));
+    }
+
+    #[test]
+    fn old_committee_mappings_resolve_peer_ids_by_node_key() {
+        let peer_node_keys = vec!["node-b".to_string(), "node-a".to_string()];
+        let routes = vec![
+            NodeRoute {
+                node_key: "node-a".to_string(),
+                peer_id: "peer-a".to_string(),
+            },
+            NodeRoute {
+                node_key: "node-b".to_string(),
+                peer_id: "peer-b".to_string(),
+            },
+        ];
+        let assignments = canonical_node_id_assignments(&peer_node_keys).expect("assignments");
+
+        let result =
+            old_committee_node_peer_mappings(&peer_node_keys, &routes, &assignments).unwrap();
+
+        assert_eq!(result.get(&1), Some(&"peer-a".to_string()));
+        assert_eq!(result.get(&2), Some(&"peer-b".to_string()));
+    }
+
+    #[test]
+    fn old_committee_mappings_reject_missing_route() {
+        let peer_node_keys = vec!["node-b".to_string(), "node-a".to_string()];
+        let routes = vec![NodeRoute {
+            node_key: "node-a".to_string(),
+            peer_id: "peer-a".to_string(),
+        }];
+        let assignments = canonical_node_id_assignments(&peer_node_keys).expect("assignments");
+
+        let result = old_committee_node_peer_mappings(&peer_node_keys, &routes, &assignments);
+
+        assert!(matches!(result, Err(DkgError::InvalidInput(_))));
     }
 }

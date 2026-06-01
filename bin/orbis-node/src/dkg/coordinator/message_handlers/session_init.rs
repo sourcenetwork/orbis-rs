@@ -94,8 +94,11 @@ where
             let route_assignments =
                 canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
                     .map_err(DkgError::InvalidInput)?;
-            let route_map = node_id_to_peer_id_from_routes(&routes, &route_assignments)
-                .map_err(DkgError::InvalidInput)?;
+            let route_map = peers::old_committee_node_peer_mappings(
+                &ring_payload.peer_node_keys,
+                &routes,
+                &route_assignments,
+            )?;
             resolved_old_peer_ids = Some(route_peer_ids);
             resolved_old_node_id_to_peer_id = Some(route_map);
 
@@ -229,8 +232,11 @@ where
             let old_route_assignments =
                 canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
                     .map_err(DkgError::InvalidInput)?;
-            let old_route_map = node_id_to_peer_id_from_routes(&old_routes, &old_route_assignments)
-                .map_err(DkgError::InvalidInput)?;
+            let old_route_map = peers::old_committee_node_peer_mappings(
+                &ring_payload.peer_node_keys,
+                &old_routes,
+                &old_route_assignments,
+            )?;
 
             let new_routes =
                 resolve_node_routes(&coord.app_state.bulletin, reshare_new_peer_node_keys)
@@ -330,8 +336,11 @@ where
             }
             let route_assignments = canonical_node_id_assignments_from_node_keys(peer_node_keys)
                 .map_err(DkgError::InvalidInput)?;
-            let route_map = node_id_to_peer_id_from_routes(&routes, &route_assignments)
-                .map_err(DkgError::InvalidInput)?;
+            let route_map = peers::old_committee_node_peer_mappings(
+                peer_node_keys,
+                &routes,
+                &route_assignments,
+            )?;
             resolved_old_peer_ids = Some(route_peer_ids);
             resolved_old_node_id_to_peer_id = Some(route_map);
         }
@@ -525,13 +534,12 @@ where
 
     // Store old committee node_id → peer_id mappings for sender validation
     // (peer_id_to_node_id uses old committee IDs for all session kinds).
-    let node_id_to_peer_id = resolved_old_node_id_to_peer_id.unwrap_or_else(|| {
-        peers::old_committee_node_peer_mappings(
-            peer_node_keys,
-            peer_ids,
-            &canonical_node_id_assignments,
-        )
-    });
+    let node_id_to_peer_id = resolved_old_node_id_to_peer_id.ok_or_else(|| {
+        DkgError::InvalidState(format!(
+            "SessionInit {} is missing resolved old committee peer mappings",
+            session_id
+        ))
+    })?;
     coord
         .app_state
         .dkg_session_state
