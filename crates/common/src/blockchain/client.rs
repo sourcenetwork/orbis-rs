@@ -694,7 +694,14 @@ impl SourceHubClient {
                 // submitted, so the in-memory counter is ahead of reality. Resyncing
                 // handles both "document already exists" (chain still at N) and
                 // "sequence mismatch" (chain advanced to M while we held N).
-                let _ = self.resync_nonce_inner(&signer).await;
+                self.resync_nonce_inner(&signer)
+                    .await
+                    .map_err(|resync_err| {
+                        BlockchainError::Signing(format!(
+                            "Gas simulation failed: {}; additionally failed to resync nonce: {}",
+                            e, resync_err
+                        ))
+                    })?;
                 return Err(BlockchainError::Signing(format!(
                     "Gas simulation failed: {}",
                     e
