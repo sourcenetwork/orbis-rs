@@ -232,6 +232,7 @@ where
             ring_key = %storage_key,
             "Refresh: staged RingShareBundle pending health-check result"
         );
+        refresh_health_check::apply_pending_result_if_present(coord, session_id).await?;
         Some(candidate)
     } else {
         persist_ring_bundle(

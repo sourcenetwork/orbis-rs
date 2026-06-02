@@ -283,7 +283,7 @@ claim, and removes the session.
 Outgoing session messages use `coordinator/network.rs`.
 
 For `session_id = Some(_)`, each peer gets a cached QUIC stream plus a per-peer
-send lock. This preserves intended per-peer message ordering such as:
+send lock. This preserves local send order for that peer where possible, such as:
 
 ```text
 SessionInit -> Commitment -> Share
@@ -293,6 +293,12 @@ If a cached stream fails, the send path evicts it and retries once with a fresh
 stream while holding the same per-peer lock. Session-generation checks prevent a
 stale sender from delivering messages into a newly recreated session with the
 same external `session_id`.
+
+Do not rely on this as a global delivery guarantee. Stream replacement,
+cross-peer delivery, and locally staged state can still make valid inbound
+messages arrive before their dependent local state is visible. Handlers should
+queue and replay early-but-valid messages instead of sleeping inside the handler
+until a timeout.
 
 ## Concurrency Rules
 
@@ -308,6 +314,8 @@ When changing this code, keep these invariants intact:
 6. Let `handle_message` own inbound sender validation and message dedup claims.
 7. If a command sends an important protocol message, make it idempotent or
    retryable.
+8. If an inbound message is authenticated and well-formed but depends on local
+   state that may arrive later, queue it and replay when that state is published.
 
 ## Adding A New Transition
 

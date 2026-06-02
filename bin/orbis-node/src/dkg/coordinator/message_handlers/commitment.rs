@@ -243,5 +243,29 @@ where
         coord.check_and_trigger_phase4(session_id).await?;
     }
 
+    if let Some(pending_share) = coord
+        .app_state
+        .dkg_session_state
+        .take_pending_share_waiting_for_commitment(&session_id, from_node_id)
+        .await
+    {
+        tracing::debug!(
+            from_node_id = from_node_id,
+            to_node_id = pending_share.to_id,
+            session_id = session_id,
+            "DKG Coordinator: Replaying share that was waiting for commitment"
+        );
+        if let Err(e) =
+            super::share::receive_and_record_share(coord, session_id, pending_share).await
+        {
+            tracing::error!(
+                from_node_id = from_node_id,
+                session_id = session_id,
+                error = %e,
+                "DKG Coordinator: Queued share failed after commitment arrived"
+            );
+        }
+    }
+
     Ok(None)
 }

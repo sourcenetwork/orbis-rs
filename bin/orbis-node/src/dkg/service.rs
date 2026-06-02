@@ -291,11 +291,12 @@ where
             };
 
             // Send SessionInit to all peers (they will create their sessions and start Phase 1).
-            // Use the session-cached connection when we are participating so SessionInit,
-            // Commitment, and Share all travel on the same persistent QUIC stream —
-            // preventing CONNECTION_CLOSE from racing with data delivery on one-shot
-            // connections.  When we are a non-participating coordinator (no session
-            // created) fall back to a fresh one-shot connection.
+            // Use the session-cached connection when we are participating so local
+            // sends to each peer stay ordered where possible. Inbound handlers still
+            // tolerate valid early messages because stream replacement and cross-peer
+            // delivery can expose dependent local state out of order. When we are a
+            // non-participating coordinator (no session created), fall back to a
+            // fresh one-shot connection.
             let init_session_id = our_assigned_node_id.map(|_| session_id);
             for peer_id_str in &peer_ids {
                 if is_self_peer_id(&self.state.network, peer_id_str) {

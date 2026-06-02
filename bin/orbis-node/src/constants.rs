@@ -110,10 +110,6 @@ pub const DKG_SESSION_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// enough that valid early messages are not dropped before the session appears.
 pub const DKG_UNKNOWN_SESSION_MESSAGE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Maximum grace period for a share that arrives before the sender's commitment
-/// has been recorded locally.
-pub const DKG_SHARE_COMMITMENT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
-
 // ============================================================================
 // PRE (Proxy Re-Encryption) Constants
 // ============================================================================

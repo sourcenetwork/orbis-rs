@@ -819,6 +819,87 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
 }
 
 #[tokio::test]
+async fn test_fresh_session_init_publishes_complete_state() {
+    let db_name = "test_fresh_session_init_publishes_complete_state";
+    let db_path = test_db_path(db_name);
+
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let app_state =
+        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
+    let node_key = app_state.node_key.clone();
+    let local_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let session_id = 222_333u64;
+    let pss_interval = Some(60u64);
+
+    bulletin
+        .set_ring(
+            TEST_FRESH_DKG_RING_ID.to_string(),
+            RingPayload {
+                ring_pk: String::new(),
+                peer_node_keys: vec![node_key.clone()],
+                new_peer_node_keys: None,
+                new_threshold: None,
+                threshold: 1,
+                pss_interval,
+                block_number_nonce: 0,
+                policy_id: Some("test-policy".to_string()),
+            },
+        )
+        .expect("seed fresh ring");
+
+    let app_state = Arc::new(app_state);
+    let coordinator = DkgCoordinator::new(app_state.clone());
+    let token = TestKeyPair::new()
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("create JWT");
+    let session_init = DkgMessage::SessionInit {
+        session_id,
+        threshold: 1,
+        total_participants: 1,
+        peer_ids: vec![local_peer_id_hex.clone()],
+        peer_node_keys: vec![node_key.clone()],
+        node_id_assignments: std::collections::HashMap::from([(node_key.clone(), 1)]),
+        token_string: token,
+        kind: SessionKind::Fresh,
+        pss_interval,
+        policy_id: Some("test-policy".to_string()),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+    };
+
+    let sender_peer_id = app_state.network.local_peer_id().clone();
+    coordinator
+        .handle_message(session_init, &sender_peer_id)
+        .await
+        .expect("valid SessionInit should create session");
+
+    let snapshot = app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| {
+            (
+                state.peer_ids.clone(),
+                state.peer_node_keys.clone(),
+                state.ring_id.clone(),
+                state.pss_interval,
+                state.policy_id.clone(),
+                state.node_id_to_peer_id.clone(),
+                state.peer_id_to_node_id.clone(),
+            )
+        })
+        .await
+        .expect("session should exist");
+
+    assert_eq!(snapshot.0, vec![local_peer_id_hex.clone()]);
+    assert_eq!(snapshot.1, vec![node_key]);
+    assert_eq!(snapshot.2, TEST_FRESH_DKG_RING_ID);
+    assert_eq!(snapshot.3, pss_interval);
+    assert_eq!(snapshot.4, Some("test-policy".to_string()));
+    assert_eq!(snapshot.5.get(&1), Some(&local_peer_id_hex));
+    assert_eq!(snapshot.6.get(&local_peer_id_hex), Some(&1));
+
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
 async fn test_start_dkg_rejects_self_participant_nodeinfo_deny() {
     let db_name = "test_start_dkg_rejects_self_participant_nodeinfo_deny";
     let db_path = test_db_path(db_name);

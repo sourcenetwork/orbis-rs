@@ -1,5 +1,4 @@
 use super::*;
-use crate::constants::{DKG_SESSION_WAIT_POLL_INTERVAL, DKG_SHARE_COMMITMENT_WAIT_TIMEOUT};
 use crypto::error::CryptoError;
 
 /// Handle a `DkgMessage::Share`.
@@ -83,10 +82,6 @@ where
         return Ok(None);
     }
 
-    // Commitment and share are delivered over the same persistent QUIC stream
-    // (one stream per connection, opened lazily on first send).  QUIC guarantees
-    // in-order delivery within a stream, so the commitment always arrives before
-    // the share — no retry needed.
     let share_val = <D::ShareValue>::from_bytes(share_value.as_slice()).map_err(|e| {
         DkgError::Deserialization(format!("Failed to deserialize share value: {}", e))
     })?;
@@ -98,38 +93,82 @@ where
         session_id,
     };
 
-    let wait_started = tokio::time::Instant::now();
-    loop {
-        let receive_result = coord
-            .app_state
-            .dkg_session_state
-            .with_state_mut(&session_id, |state| state.node.receive_share(share.clone()))
-            .await
-            .ok_or_else(|| session_not_found(session_id))?;
+    match try_receive_share(coord, session_id, share.clone()).await? {
+        Ok(()) => {
+            record_accepted_share(coord, session_id, from_node_id, to_node_id).await?;
+        }
+        Err(CryptoError::CommitmentMissing(missing_node_id)) if missing_node_id == from_node_id => {
+            let inserted = coord
+                .app_state
+                .dkg_session_state
+                .store_pending_share_waiting_for_commitment(&session_id, share)
+                .await
+                .ok_or_else(|| session_not_found(session_id))?;
 
-        match receive_result {
-            Ok(()) => break,
-            Err(CryptoError::CommitmentMissing(missing_node_id))
-                if missing_node_id == from_node_id
-                    && wait_started.elapsed() < DKG_SHARE_COMMITMENT_WAIT_TIMEOUT =>
-            {
-                tracing::debug!(
-                    from_node_id = from_node_id,
-                    to_node_id = to_node_id,
-                    session_id = session_id,
-                    "DKG Coordinator: Share arrived before commitment; waiting to retry verification"
-                );
-                tokio::time::sleep(DKG_SESSION_WAIT_POLL_INTERVAL).await;
-            }
-            Err(e) => {
-                return Err(DkgError::ShareVerificationFailed(format!(
-                    "Failed to receive share: {}",
-                    e
-                )));
-            }
+            tracing::debug!(
+                from_node_id = from_node_id,
+                to_node_id = to_node_id,
+                session_id = session_id,
+                inserted = inserted,
+                "DKG Coordinator: Share arrived before commitment; queued for replay"
+            );
+        }
+        Err(e) => {
+            return Err(DkgError::ShareVerificationFailed(format!(
+                "Failed to receive share: {}",
+                e
+            )));
         }
     }
 
+    Ok(None)
+}
+
+pub(super) async fn receive_and_record_share<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u64,
+    share: DistributedShare<D::ShareValue>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let from_node_id = share.from_id;
+    let to_node_id = share.to_id;
+
+    match try_receive_share(coord, session_id, share).await? {
+        Ok(()) => record_accepted_share(coord, session_id, from_node_id, to_node_id).await,
+        Err(e) => Err(DkgError::ShareVerificationFailed(format!(
+            "Failed to receive share: {}",
+            e
+        ))),
+    }
+}
+
+async fn try_receive_share<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u64,
+    share: DistributedShare<D::ShareValue>,
+) -> Result<std::result::Result<(), CryptoError>>
+where
+    D: CoordinatorDkg,
+{
+    coord
+        .app_state
+        .dkg_session_state
+        .with_state_mut(&session_id, |state| state.node.receive_share(share))
+        .await
+        .ok_or_else(|| session_not_found(session_id))
+}
+
+async fn record_accepted_share<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u64,
+    from_node_id: u32,
+    to_node_id: u32,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
     tracing::debug!(
         from_node_id = from_node_id,
         to_node_id = to_node_id,
@@ -151,5 +190,5 @@ where
     )
     .await?;
 
-    Ok(None)
+    Ok(())
 }

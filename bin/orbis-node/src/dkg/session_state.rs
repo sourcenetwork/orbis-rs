@@ -15,7 +15,8 @@ use crate::dkg::error::DkgError;
 use crate::dkg::messages::SessionKind;
 use crate::metrics;
 use crate::ring_state::RingShareBundle;
-use crypto::r#trait::{Dkg, DkgMode};
+use crate::sign::messages::RefreshHealthCheckStatement;
+use crypto::r#trait::{DistributedShare, Dkg, DkgMode};
 use network::Connection;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -118,6 +119,14 @@ pub struct RefreshHealthCheckCandidate {
     pub peer_node_keys: Vec<String>,
     pub peer_ids: Vec<String>,
     pub threshold: usize,
+}
+
+/// Refresh health-check result that arrived before this node staged its candidate.
+#[derive(Clone, Debug)]
+pub struct PendingRefreshHealthCheckResult {
+    pub from_node_id: u32,
+    pub statement: RefreshHealthCheckStatement,
+    pub signature: Option<String>,
 }
 
 /// Reshare-specific parameters stored in session state during an active reshare ceremony.
@@ -225,6 +234,12 @@ pub struct DkgSessionState<D: Dkg> {
     pub reshare_dealer_completion_order: Vec<u32>,
     /// Reshare-only: accepted session-wide old-dealer subset.
     pub reshare_selected_dealers: Option<Vec<u32>>,
+    /// Shares that arrived before the sender's commitment was available locally.
+    ///
+    /// These are replayed when the matching commitment is stored. This keeps a
+    /// reconnect or stream replacement from making share/commitment ordering a
+    /// terminal liveness failure.
+    pub pending_shares_waiting_for_commitment: HashMap<u32, DistributedShare<D::ShareValue>>,
     /// Processed message IDs for deduplication (session_id, from_node_id, message_type)
     pub processed_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
     /// Message IDs currently being handled.
@@ -245,10 +260,14 @@ pub struct DkgSessionState<D: Dkg> {
     pub reshare_params: Option<ReshareParams<D::ShareValue>>,
     /// Staged Refresh bundle. Promoted only after the health-check signature is verified.
     pub refresh_health_check_candidate: Option<RefreshHealthCheckCandidate>,
+    /// Refresh health-check result received before the staged candidate was available.
+    pub pending_refresh_health_check_result: Option<PendingRefreshHealthCheckResult>,
     /// Per-peer QUIC streams for this session.
     ///
-    /// All DKG messages to the same peer within a session travel on the same stream,
-    /// preserving QUIC's within-stream ordering guarantee (SessionInit → Commitment → Share).
+    /// DKG messages to the same peer normally share one stream so local send order
+    /// is preserved where possible. Inbound handlers still queue valid early messages
+    /// because stream replacement and cross-peer delivery can expose dependent state
+    /// out of order.
     /// Streams are dropped automatically when the session is removed.
     pub peer_streams: HashMap<String, Arc<dyn Connection>>,
     /// Per-peer send locks for this session.
@@ -282,6 +301,7 @@ impl<D: Dkg> DkgSessionState<D> {
             reshare_share_acks: HashMap::new(),
             reshare_dealer_completion_order: Vec::new(),
             reshare_selected_dealers: None,
+            pending_shares_waiting_for_commitment: HashMap::new(),
             processed_messages: std::collections::HashSet::new(),
             processing_messages: std::collections::HashSet::new(),
             kind: SessionKind::Fresh,
@@ -289,6 +309,7 @@ impl<D: Dkg> DkgSessionState<D> {
             policy_id: None,
             reshare_params: None,
             refresh_health_check_candidate: None,
+            pending_refresh_health_check_result: None,
             peer_streams: HashMap::new(),
             peer_send_locks: HashMap::new(),
         }
@@ -842,6 +863,33 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
+    /// Store a refresh health-check result that arrived before Phase 4 staged its candidate.
+    pub async fn store_pending_refresh_health_check_result(
+        &self,
+        session_id: &u64,
+        result: PendingRefreshHealthCheckResult,
+    ) -> Option<bool> {
+        let mut states = self.states.write().await;
+        let state = states.get_mut(session_id)?;
+        if state.pending_refresh_health_check_result.is_some() {
+            return Some(false);
+        }
+        state.pending_refresh_health_check_result = Some(result);
+        Some(true)
+    }
+
+    /// Remove and return an early refresh health-check result, if one was queued.
+    pub async fn take_pending_refresh_health_check_result(
+        &self,
+        session_id: &u64,
+    ) -> Option<PendingRefreshHealthCheckResult> {
+        let mut states = self.states.write().await;
+        states
+            .get_mut(session_id)?
+            .pending_refresh_health_check_result
+            .take()
+    }
+
     /// Store the PSS refresh interval for this session so Phase 4 can persist it.
     pub async fn set_pss_interval(&self, session_id: &u64, interval: Option<u64>) {
         let mut states = self.states.write().await;
@@ -969,6 +1017,44 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 state.processed_messages.insert(key);
             }
         }
+    }
+
+    /// Store a share whose sender commitment has not arrived yet.
+    ///
+    /// Returns `Some(true)` when this is the first pending share for the sender,
+    /// `Some(false)` when a pending share from that sender already exists, and
+    /// `None` when the session is gone.
+    pub async fn store_pending_share_waiting_for_commitment(
+        &self,
+        session_id: &u64,
+        share: DistributedShare<D::ShareValue>,
+    ) -> Option<bool> {
+        let mut states = self.states.write().await;
+        let state = states.get_mut(session_id)?;
+        let from_node_id = share.from_id;
+        if state
+            .pending_shares_waiting_for_commitment
+            .contains_key(&from_node_id)
+        {
+            return Some(false);
+        }
+        state
+            .pending_shares_waiting_for_commitment
+            .insert(from_node_id, share);
+        Some(true)
+    }
+
+    /// Remove and return a pending share that was waiting on `from_node_id`'s commitment.
+    pub async fn take_pending_share_waiting_for_commitment(
+        &self,
+        session_id: &u64,
+        from_node_id: u32,
+    ) -> Option<DistributedShare<D::ShareValue>> {
+        let mut states = self.states.write().await;
+        states
+            .get_mut(session_id)?
+            .pending_shares_waiting_for_commitment
+            .remove(&from_node_id)
     }
 
     /// Mark a message as processed
@@ -1107,6 +1193,7 @@ mod tests {
     use crate::dkg::messages::SessionKind;
     use crypto::r#trait::DkgRole;
     use crypto::DkgImpl;
+    use crypto::ScalarField as Fr;
     use std::sync::Arc;
 
     /// Create a minimal DkgImpl node for state-manager tests.
@@ -1391,6 +1478,136 @@ mod tests {
                 .await,
             MessageProcessingClaim::AlreadyProcessed
         );
+    }
+
+    #[tokio::test]
+    async fn test_pending_share_waiting_for_commitment_is_drained_once() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(3, make_node(1), 3, |_| {}).await;
+
+        let share = DistributedShare {
+            from_id: 2,
+            to_id: 1,
+            value: Fr::from(42u64),
+            nonce: [7u8; 16],
+            session_id: 3,
+        };
+
+        assert_eq!(
+            mgr.store_pending_share_waiting_for_commitment(&3, share.clone())
+                .await,
+            Some(true)
+        );
+        assert_eq!(
+            mgr.store_pending_share_waiting_for_commitment(&3, share)
+                .await,
+            Some(false),
+            "a duplicate early share from the same sender should not replace the first"
+        );
+
+        let drained = mgr
+            .take_pending_share_waiting_for_commitment(&3, 2)
+            .await
+            .expect("pending share should be present");
+        assert_eq!(drained.from_id, 2);
+        assert_eq!(drained.to_id, 1);
+        assert!(
+            mgr.take_pending_share_waiting_for_commitment(&3, 2)
+                .await
+                .is_none(),
+            "pending share should only drain once"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pending_refresh_health_check_result_is_drained_once() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(4, make_node(1), 3, |_| {}).await;
+
+        let result = PendingRefreshHealthCheckResult {
+            from_node_id: 1,
+            statement: RefreshHealthCheckStatement {
+                domain: "health-check".to_string(),
+                session_id: 4,
+                ring_pk: "ring".to_string(),
+                public_polynomial_sha256: "poly".to_string(),
+                peer_ids_sha256: "peers".to_string(),
+                threshold: 2,
+                total_participants: 3,
+            },
+            signature: None,
+        };
+
+        assert_eq!(
+            mgr.store_pending_refresh_health_check_result(&4, result.clone())
+                .await,
+            Some(true)
+        );
+        assert_eq!(
+            mgr.store_pending_refresh_health_check_result(&4, result)
+                .await,
+            Some(false),
+            "a duplicate early health-check result should not replace the first"
+        );
+
+        let drained = mgr
+            .take_pending_refresh_health_check_result(&4)
+            .await
+            .expect("pending health-check result should be present");
+        assert_eq!(drained.from_node_id, 1);
+        assert_eq!(drained.statement.session_id, 4);
+        assert!(
+            mgr.take_pending_refresh_health_check_result(&4)
+                .await
+                .is_none(),
+            "pending health-check result should only drain once"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_session_can_publish_routing_maps_atomically() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(5, make_node(1), 3, |state| {
+            state.peer_ids = vec!["old-a".to_string(), "old-b".to_string()];
+            state.peer_node_keys = vec!["node-a".to_string(), "node-b".to_string()];
+            state.ring_id = "ring-id".to_string();
+            state.pss_interval = Some(60);
+
+            state.node_id_to_peer_id =
+                HashMap::from([(1, "old-a".to_string()), (2, "old-b".to_string())]);
+            state.peer_id_to_node_id =
+                HashMap::from([("old-a".to_string(), 1), ("old-b".to_string(), 2)]);
+            state.reshare_new_node_id_to_peer_id =
+                HashMap::from([(1, "new-a".to_string()), (2, "new-b".to_string())]);
+            state.reshare_new_peer_id_to_node_id =
+                HashMap::from([("new-a".to_string(), 1), ("new-b".to_string(), 2)]);
+        })
+        .await;
+
+        let snapshot = mgr
+            .with_state(&5, |state| {
+                (
+                    state.peer_ids.clone(),
+                    state.peer_node_keys.clone(),
+                    state.ring_id.clone(),
+                    state.pss_interval,
+                    state.node_id_to_peer_id.clone(),
+                    state.peer_id_to_node_id.clone(),
+                    state.reshare_new_node_id_to_peer_id.clone(),
+                    state.reshare_new_peer_id_to_node_id.clone(),
+                )
+            })
+            .await
+            .expect("session should exist");
+
+        assert_eq!(snapshot.0, vec!["old-a", "old-b"]);
+        assert_eq!(snapshot.1, vec!["node-a", "node-b"]);
+        assert_eq!(snapshot.2, "ring-id");
+        assert_eq!(snapshot.3, Some(60));
+        assert_eq!(snapshot.4.get(&2), Some(&"old-b".to_string()));
+        assert_eq!(snapshot.5.get("old-a"), Some(&1));
+        assert_eq!(snapshot.6.get(&1), Some(&"new-a".to_string()));
+        assert_eq!(snapshot.7.get("new-b"), Some(&2));
     }
 
     // =========================================================================

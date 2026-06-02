@@ -441,6 +441,29 @@ where
     let init_params = maybe_reshare_params;
     let init_policy_id = policy_id;
 
+    // For Reshare: peer_ids in session state = new committee. Old dealers only need
+    // to broadcast commitments and shares to receivers; they do not need commitments
+    // from other old-only dealers.
+    let init_peer_ids = resolved_new_route_peer_ids
+        .clone()
+        .or_else(|| resolved_old_peer_ids.clone())
+        .unwrap_or_else(|| peers::session_peer_ids(kind, peer_ids));
+
+    // Store old committee node_id -> peer_id mappings for sender validation
+    // (peer_id_to_node_id uses old committee IDs for all session kinds).
+    let init_old_node_id_to_peer_id = resolved_old_node_id_to_peer_id.ok_or_else(|| {
+        DkgError::InvalidState(format!(
+            "SessionInit {} is missing resolved old committee peer mappings",
+            session_id
+        ))
+    })?;
+
+    let init_new_node_id_to_peer_id = if matches!(kind, SessionKind::Reshare { .. }) {
+        resolved_new_node_id_to_peer_id.unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+
     // If session doesn't exist, create it.
     // Idempotent: treat "session already exists" from a concurrent handler as success.
     let mut session_created_here = false;
@@ -460,6 +483,29 @@ where
                 move |state| {
                     state.kind = init_kind;
                     state.policy_id = init_policy_id;
+                    state.pss_interval = pss_interval;
+                    state.peer_ids = init_peer_ids;
+                    state.peer_node_keys = session_peer_node_keys;
+                    state.ring_id = ring_id;
+
+                    let mut node_to_peer = HashMap::new();
+                    let mut peer_to_node = HashMap::new();
+                    for (node_id, peer_id) in init_old_node_id_to_peer_id {
+                        node_to_peer.insert(node_id, peer_id.clone());
+                        peer_to_node.insert(peer_id, node_id);
+                    }
+                    state.node_id_to_peer_id = node_to_peer;
+                    state.peer_id_to_node_id = peer_to_node;
+
+                    let mut new_node_to_peer = HashMap::new();
+                    let mut new_peer_to_node = HashMap::new();
+                    for (node_id, peer_id) in init_new_node_id_to_peer_id {
+                        new_node_to_peer.insert(node_id, peer_id.clone());
+                        new_peer_to_node.insert(peer_id, node_id);
+                    }
+                    state.reshare_new_node_id_to_peer_id = new_node_to_peer;
+                    state.reshare_new_peer_id_to_node_id = new_peer_to_node;
+
                     if let Some(params) = init_params {
                         state.reshare_params = Some(params);
                     }
@@ -505,54 +551,6 @@ where
                 return Err(e);
             }
         }
-
-        coord
-            .app_state
-            .dkg_session_state
-            .set_pss_interval(&session_id, pss_interval)
-            .await;
-    }
-
-    // For Reshare: peer_ids in session state = new committee. Old dealers only need
-    // to broadcast commitments and shares to receivers; they do not need commitments
-    // from other old-only dealers.
-    let session_peer_ids = resolved_new_route_peer_ids
-        .clone()
-        .or_else(|| resolved_old_peer_ids.clone())
-        .unwrap_or_else(|| peers::session_peer_ids(kind, peer_ids));
-    coord.set_peer_ids(&session_id, session_peer_ids).await;
-    coord
-        .app_state
-        .dkg_session_state
-        .set_peer_node_keys(&session_id, session_peer_node_keys)
-        .await;
-    coord
-        .app_state
-        .dkg_session_state
-        .set_ring_id(&session_id, ring_id.clone())
-        .await;
-
-    // Store old committee node_id → peer_id mappings for sender validation
-    // (peer_id_to_node_id uses old committee IDs for all session kinds).
-    let node_id_to_peer_id = resolved_old_node_id_to_peer_id.ok_or_else(|| {
-        DkgError::InvalidState(format!(
-            "SessionInit {} is missing resolved old committee peer mappings",
-            session_id
-        ))
-    })?;
-    coord
-        .app_state
-        .dkg_session_state
-        .set_node_peer_mappings(&session_id, node_id_to_peer_id)
-        .await;
-
-    if matches!(kind, SessionKind::Reshare { .. }) {
-        let new_node_id_to_peer_id = resolved_new_node_id_to_peer_id.unwrap_or_default();
-        coord
-            .app_state
-            .dkg_session_state
-            .set_reshare_new_peer_mappings(&session_id, new_node_id_to_peer_id)
-            .await;
     }
 
     // When the gRPC initiator is not a participant, nobody calls
