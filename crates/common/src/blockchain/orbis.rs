@@ -462,8 +462,9 @@ pub struct RingReshareFinalizeSignDoc {
 
 /// Canonical Orbis protocol state hashed into reshare finalization sign docs.
 ///
-/// This intentionally excludes SourceHub storage-only fields such as creator DID
-/// and fresh-DKG confirmations. Participant lists must be sorted before hashing.
+/// This intentionally excludes SourceHub storage-only fields such as creator DID,
+/// fresh-DKG confirmations, and operational scheduling metadata such as PSS
+/// interval. Participant lists must be sorted before hashing.
 #[derive(Clone, Message)]
 pub struct RingReshareSignState {
     #[prost(string, tag = "1")]
@@ -525,6 +526,7 @@ pub fn ring_reshare_sign_state_hash(state: &RingReshareSignState) -> [u8; 32] {
     let mut canonical = state.clone();
     canonical.peer_node_keys.sort();
     canonical.new_peer_node_keys.sort();
+    canonical.pss_interval = None;
     Sha256::digest(canonical.encode_to_vec()).into()
 }
 
@@ -1154,6 +1156,29 @@ mod tests {
         assert_eq!(
             ring_reshare_sign_state_hash(&state),
             ring_reshare_sign_state_hash(&reordered)
+        );
+    }
+
+    #[test]
+    fn ring_reshare_sign_state_hash_ignores_pss_interval() {
+        let state = RingReshareSignState {
+            ring_pk: "pk".to_string(),
+            peer_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
+            threshold: 2,
+            new_peer_node_keys: vec!["node-c".to_string(), "node-d".to_string()],
+            new_threshold: Some(1),
+            pss_interval: None,
+            block_number_nonce: 9,
+            policy_id: "policy".to_string(),
+        };
+        let with_pss_interval = RingReshareSignState {
+            pss_interval: Some(30),
+            ..state.clone()
+        };
+
+        assert_eq!(
+            ring_reshare_sign_state_hash(&state),
+            ring_reshare_sign_state_hash(&with_pss_interval)
         );
     }
 

@@ -69,7 +69,7 @@ fn ring_reshare_sign_state_from_payload(payload: &RingPayload) -> RingReshareSig
         threshold: payload.threshold,
         new_peer_node_keys: payload.new_peer_node_keys.clone().unwrap_or_default(),
         new_threshold: payload.new_threshold,
-        pss_interval: payload.pss_interval,
+        pss_interval: None,
         block_number_nonce: payload.block_number_nonce,
         policy_id: payload.policy_id.clone().unwrap_or_default(),
     }
@@ -830,6 +830,29 @@ mod ring_reshare_update_tests {
     }
 
     #[test]
+    fn ring_reshare_sign_state_hash_ignores_pss_interval() {
+        let payload = RingPayload {
+            ring_pk: "ring-pk".to_string(),
+            peer_node_keys: vec!["old-a".to_string(), "old-b".to_string()],
+            new_peer_node_keys: Some(vec!["new-a".to_string(), "new-b".to_string()]),
+            new_threshold: Some(1),
+            threshold: 2,
+            pss_interval: None,
+            block_number_nonce: 9,
+            policy_id: Some("policy".to_string()),
+        };
+        let with_pss_interval = RingPayload {
+            pss_interval: Some(30),
+            ..payload.clone()
+        };
+
+        assert_eq!(
+            ring_payload_reshare_sign_state_sha256_hex(&payload),
+            ring_payload_reshare_sign_state_sha256_hex(&with_pss_interval)
+        );
+    }
+
+    #[test]
     fn finalized_ring_sign_state_hash_applies_and_clears_pending_reshare_fields() {
         let current = RingPayload {
             ring_pk: "ring-pk".to_string(),
@@ -847,7 +870,7 @@ mod ring_reshare_update_tests {
             threshold: 1,
             new_peer_node_keys: vec![],
             new_threshold: None,
-            pss_interval: Some(30),
+            pss_interval: None,
             block_number_nonce: 9,
             policy_id: "policy".to_string(),
         };
