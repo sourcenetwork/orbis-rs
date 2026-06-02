@@ -412,7 +412,11 @@ pub fn validate_fresh_dkg_ring_payload(ring_id: &str, ring_payload: &RingPayload
             ring_payload.peer_node_keys.len()
         )));
     }
-    if ring_payload.policy_id.as_deref().unwrap_or("").is_empty() {
+    if !ring_payload
+        .policy_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty())
+    {
         return Err(DkgError::InvalidInput(format!(
             "Fresh DKG target ring {} has no policy_id",
             ring_id
