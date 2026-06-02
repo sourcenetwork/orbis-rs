@@ -475,56 +475,16 @@ pub fn validate_fresh_session_init_params(
     Ok(())
 }
 
-/// Validate that this node is authorized by its NodeInfo record to participate in a Fresh DKG.
+/// Validate that this node is authorized by its NodeInfo record to participate in a DKG session.
 ///
-/// Checks NodeInfo membership and policy/ring allowlist against an already-fetched `ring_payload`.
-/// Callers are responsible for reading the ring from the bulletin and calling
-/// `validate_fresh_dkg_ring_payload` first. The `session_init` handler also cross-validates
-/// wire params against the ring payload before calling this.
-pub async fn validate_fresh_dkg_node_authorization(
-    bulletin: &Arc<dyn Bulletin + Send + Sync>,
-    node_key: &str,
-    local_peer_id_hex: &str,
-    ring_id: &str,
-    ring_payload: &RingPayload,
-) -> Result<()> {
-    validate_dkg_node_authorization_for_committee(
-        bulletin,
-        node_key,
-        local_peer_id_hex,
-        ring_id,
-        ring_payload,
-        &ring_payload.peer_node_keys,
-        "Fresh DKG",
-    )
-    .await
-}
-
-/// Validate that this node is authorized by its NodeInfo record to receive a Reshare.
+/// `authorized_committee` is the set of node keys that must include `node_key`:
+/// - Fresh DKG: pass `&ring_payload.peer_node_keys`
+/// - Reshare receiver: pass `effective_new_peer_node_keys(ring_payload)`
 ///
-/// Reshare authorization is scoped to the effective new committee: nodes that will hold
-/// the reshared ring must allow either the ring policy or the reshare bulletin post ID.
-/// Old-only dealers should not call this helper.
-pub async fn validate_reshare_dkg_node_authorization(
-    bulletin: &Arc<dyn Bulletin + Send + Sync>,
-    node_key: &str,
-    local_peer_id_hex: &str,
-    ring_id: &str,
-    ring_payload: &RingPayload,
-) -> Result<()> {
-    validate_dkg_node_authorization_for_committee(
-        bulletin,
-        node_key,
-        local_peer_id_hex,
-        ring_id,
-        ring_payload,
-        effective_new_peer_node_keys(ring_payload),
-        "Reshare",
-    )
-    .await
-}
-
-async fn validate_dkg_node_authorization_for_committee(
+/// `session_label` is used only in error messages (e.g. `"Fresh DKG"`, `"Reshare"`).
+/// Callers are responsible for fetching the ring payload and validating its structure before
+/// calling this.
+pub async fn validate_dkg_node_authorization_for_committee(
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
     node_key: &str,
     local_peer_id_hex: &str,
@@ -944,12 +904,14 @@ mod tests {
         )
         .await;
 
-        let result = validate_fresh_dkg_node_authorization(
+        let result = validate_dkg_node_authorization_for_committee(
             &bulletin,
             node_key,
             local_peer_id,
             "ring-1",
             &ring_payload,
+            &ring_payload.peer_node_keys,
+            "Fresh DKG",
         )
         .await;
         assert!(result.is_ok(), "expected policy allow, got: {:?}", result);
@@ -981,12 +943,14 @@ mod tests {
         )
         .await;
 
-        let result = validate_fresh_dkg_node_authorization(
+        let result = validate_dkg_node_authorization_for_committee(
             &bulletin,
             node_key,
             local_peer_id,
             ring_id,
             &ring_payload,
+            &ring_payload.peer_node_keys,
+            "Fresh DKG",
         )
         .await;
         assert!(result.is_ok(), "expected ring allow, got: {:?}", result);
@@ -1009,12 +973,14 @@ mod tests {
         .await;
 
         // ring_id = "ring-1" is not in ["other-ring"], policy "policy" is not in ["other-policy"]
-        let result = validate_fresh_dkg_node_authorization(
+        let result = validate_dkg_node_authorization_for_committee(
             &bulletin,
             node_key,
             local_peer_id,
             "ring-1",
             &ring_payload,
+            &ring_payload.peer_node_keys,
+            "Fresh DKG",
         )
         .await;
         assert!(matches!(result, Err(DkgError::Unauthorized(_))));
@@ -1026,12 +992,14 @@ mod tests {
         let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         let ring_payload = make_valid_ring_payload("missing-node");
 
-        let result = validate_fresh_dkg_node_authorization(
+        let result = validate_dkg_node_authorization_for_committee(
             &bulletin,
             "missing-node",
             "peer-local",
             "ring-1",
             &ring_payload,
+            &ring_payload.peer_node_keys,
+            "Fresh DKG",
         )
         .await;
         assert!(matches!(result, Err(DkgError::Unauthorized(_))));
@@ -1051,12 +1019,14 @@ mod tests {
         );
         let ring_payload = make_valid_ring_payload(node_key);
 
-        let result = validate_fresh_dkg_node_authorization(
+        let result = validate_dkg_node_authorization_for_committee(
             &bulletin,
             node_key,
             "peer-local",
             "ring-1",
             &ring_payload,
+            &ring_payload.peer_node_keys,
+            "Fresh DKG",
         )
         .await;
         assert!(matches!(result, Err(DkgError::Unauthorized(_))));
@@ -1077,12 +1047,14 @@ mod tests {
         .await;
         let ring_payload = make_valid_ring_payload(node_key);
 
-        let result = validate_fresh_dkg_node_authorization(
+        let result = validate_dkg_node_authorization_for_committee(
             &bulletin,
             node_key,
             "peer-local",
             "ring-1",
             &ring_payload,
+            &ring_payload.peer_node_keys,
+            "Fresh DKG",
         )
         .await;
         assert!(matches!(result, Err(DkgError::Unauthorized(_))));
@@ -1104,12 +1076,14 @@ mod tests {
         )
         .await;
 
-        let result = validate_reshare_dkg_node_authorization(
+        let result = validate_dkg_node_authorization_for_committee(
             &bulletin,
             node_key,
             local_peer_id,
             "reshare-ring-id",
             &ring_payload,
+            effective_new_peer_node_keys(&ring_payload),
+            "Reshare",
         )
         .await;
         assert!(result.is_ok(), "expected policy allow, got: {:?}", result);
@@ -1133,12 +1107,14 @@ mod tests {
         )
         .await;
 
-        let result = validate_reshare_dkg_node_authorization(
+        let result = validate_dkg_node_authorization_for_committee(
             &bulletin,
             node_key,
             local_peer_id,
             ring_id,
             &ring_payload,
+            effective_new_peer_node_keys(&ring_payload),
+            "Reshare",
         )
         .await;
         assert!(result.is_ok(), "expected ring allow, got: {:?}", result);
@@ -1160,12 +1136,14 @@ mod tests {
         )
         .await;
 
-        let result = validate_reshare_dkg_node_authorization(
+        let result = validate_dkg_node_authorization_for_committee(
             &bulletin,
             node_key,
             local_peer_id,
             "reshare-ring-id",
             &ring_payload,
+            effective_new_peer_node_keys(&ring_payload),
+            "Reshare",
         )
         .await;
         assert!(matches!(result, Err(DkgError::Unauthorized(_))));
@@ -1187,12 +1165,14 @@ mod tests {
         )
         .await;
 
-        let result = validate_reshare_dkg_node_authorization(
+        let result = validate_dkg_node_authorization_for_committee(
             &bulletin,
             old_only_node_key,
             local_peer_id,
             "reshare-ring-id",
             &ring_payload,
+            effective_new_peer_node_keys(&ring_payload),
+            "Reshare",
         )
         .await;
         assert!(matches!(result, Err(DkgError::Unauthorized(_))));

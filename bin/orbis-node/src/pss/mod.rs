@@ -34,7 +34,8 @@ use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::helpers::{
     build_reshare_params, derive_refresh_session_id, derive_reshare_session_id,
-    ring_payload_matches_ring_key, validate_reshare_dkg_node_authorization,
+    effective_new_peer_node_keys, ring_payload_matches_ring_key,
+    validate_dkg_node_authorization_for_committee,
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::dkg::session_state::RingPssClaimOutcome;
@@ -606,12 +607,14 @@ where
         .iter()
         .any(|node_key| node_key == &app_state.node_key)
     {
-        validate_reshare_dkg_node_authorization(
+        validate_dkg_node_authorization_for_committee(
             &app_state.bulletin,
             &app_state.node_key,
             &our_peer_id_hex,
             post_id,
             ring_payload,
+            effective_new_peer_node_keys(ring_payload),
+            "Reshare",
         )
         .await?;
     }

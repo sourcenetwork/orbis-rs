@@ -2,8 +2,8 @@ use crate::app_state::AppState;
 use crate::dkg::coordinator::DkgCoordinator;
 use crate::dkg::error::DkgError;
 use crate::dkg::helpers::{
-    derive_fresh_dkg_session_id, validate_dkg_claims, validate_fresh_dkg_node_authorization,
-    validate_fresh_dkg_ring_payload,
+    derive_fresh_dkg_session_id, validate_dkg_claims,
+    validate_dkg_node_authorization_for_committee, validate_fresh_dkg_ring_payload,
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
@@ -141,12 +141,14 @@ where
             .any(|node_key| node_key == &self.state.node_key);
 
         if self_included {
-            validate_fresh_dkg_node_authorization(
+            validate_dkg_node_authorization_for_committee(
                 &self.state.bulletin,
                 &self.state.node_key,
                 &our_peer_id_hex,
                 &ring_id,
                 &ring_payload,
+                &ring_payload.peer_node_keys,
+                "Fresh DKG",
             )
             .await?;
         }

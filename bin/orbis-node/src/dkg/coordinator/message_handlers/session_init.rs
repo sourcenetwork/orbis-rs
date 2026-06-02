@@ -188,12 +188,14 @@ where
             {
                 let our_peer_id_hex =
                     hex::encode(coord.app_state.network.local_peer_id().as_bytes());
-                validate_reshare_dkg_node_authorization(
+                validate_dkg_node_authorization_for_committee(
                     &coord.app_state.bulletin,
                     &coord.app_state.node_key,
                     &our_peer_id_hex,
                     reshare_bulletin_post_id,
                     &ring_payload,
+                    effective_new_peer_node_keys(&ring_payload),
+                    "Reshare",
                 )
                 .await?;
             }
@@ -308,12 +310,14 @@ where
             )?;
 
             let our_peer_id_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
-            validate_fresh_dkg_node_authorization(
+            validate_dkg_node_authorization_for_committee(
                 &coord.app_state.bulletin,
                 &coord.app_state.node_key,
                 &our_peer_id_hex,
                 &ring_id,
                 &bulletin_ring_payload,
+                &bulletin_ring_payload.peer_node_keys,
+                "Fresh DKG",
             )
             .await?;
             tracing::info!(
