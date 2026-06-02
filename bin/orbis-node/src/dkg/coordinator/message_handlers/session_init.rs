@@ -139,7 +139,6 @@ where
             );
             validate_reshare_session_init(
                 ring_pk_hex,
-                &sender_hex,
                 reshare_new_peer_node_keys,
                 *reshare_new_threshold,
                 reshare_bulletin_post_id,
@@ -447,7 +446,12 @@ where
     let init_peer_ids = resolved_new_route_peer_ids
         .clone()
         .or_else(|| resolved_old_peer_ids.clone())
-        .unwrap_or_else(|| peers::session_peer_ids(kind, peer_ids));
+        .ok_or_else(|| {
+            DkgError::InvalidState(format!(
+                "SessionInit {} is missing resolved peer IDs",
+                session_id
+            ))
+        })?;
 
     // Store old committee node_id -> peer_id mappings for sender validation
     // (peer_id_to_node_id uses old committee IDs for all session kinds).

@@ -200,14 +200,15 @@ pub fn refresh_health_check_message(statement: &RefreshHealthCheckStatement) -> 
         "public_polynomial_sha256",
         &statement.public_polynomial_sha256,
     )?;
-    let peer_ids_sha256 = decode_sha256_hex("peer_ids_sha256", &statement.peer_ids_sha256)?;
+    let peer_node_keys_sha256 =
+        decode_sha256_hex("peer_node_keys_sha256", &statement.peer_node_keys_sha256)?;
 
     let mut bytes = Vec::new();
     write_len_prefixed_str(&mut bytes, &statement.domain);
     bytes.extend_from_slice(&statement.session_id.to_le_bytes());
     write_len_prefixed_str(&mut bytes, &statement.ring_pk);
     write_len_prefixed_bytes(&mut bytes, &public_polynomial_sha256);
-    write_len_prefixed_bytes(&mut bytes, &peer_ids_sha256);
+    write_len_prefixed_bytes(&mut bytes, &peer_node_keys_sha256);
     bytes.extend_from_slice(&statement.threshold.to_le_bytes());
     bytes.extend_from_slice(&statement.total_participants.to_le_bytes());
     Ok(bytes)
@@ -385,7 +386,7 @@ pub async fn validate_refresh_health_check_statement<D: Dkg + 'static>(
         )));
     }
     let expected_peer_hash = refresh_health_check_peer_node_keys_sha256(&candidate.peer_node_keys);
-    if expected_peer_hash != statement.peer_ids_sha256 {
+    if expected_peer_hash != statement.peer_node_keys_sha256 {
         return Err(SignError::Unauthorized(
             "Refresh health-check peer set hash does not match staged candidate".to_string(),
         ));
@@ -1072,7 +1073,7 @@ mod refresh_health_check_tests {
             session_id,
             ring_pk: ring_pk_hex,
             public_polynomial_sha256: sha256_hex(&pub_poly_bytes),
-            peer_ids_sha256: refresh_health_check_peer_node_keys_sha256(&peer_node_keys),
+            peer_node_keys_sha256: refresh_health_check_peer_node_keys_sha256(&peer_node_keys),
             threshold: 2,
             total_participants: 2,
         };

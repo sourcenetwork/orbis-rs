@@ -514,7 +514,7 @@ where
         },
         pss_interval: ring_payload.pss_interval,
         policy_id: None,
-        ring_id: String::new(),
+        ring_id: post_id.clone(),
     };
 
     for peer_id_str in peer_ids {
@@ -786,7 +786,7 @@ where
         kind,
         pss_interval: ring_payload.pss_interval,
         policy_id: None,
-        ring_id: String::new(),
+        ring_id: post_id.clone(),
     };
 
     for peer_id_str in &union_peers {

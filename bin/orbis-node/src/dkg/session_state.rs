@@ -1531,7 +1531,7 @@ mod tests {
                 session_id: 4,
                 ring_pk: "ring".to_string(),
                 public_polynomial_sha256: "poly".to_string(),
-                peer_ids_sha256: "peers".to_string(),
+                peer_node_keys_sha256: "peers".to_string(),
                 threshold: 2,
                 total_participants: 3,
             },

@@ -80,7 +80,9 @@ where
         session_id,
         ring_pk: candidate.ring_pk_hex.clone(),
         public_polynomial_sha256,
-        peer_ids_sha256: refresh_health_check_peer_node_keys_sha256(&candidate.peer_node_keys),
+        peer_node_keys_sha256: refresh_health_check_peer_node_keys_sha256(
+            &candidate.peer_node_keys,
+        ),
         threshold: candidate.threshold as u32,
         total_participants: candidate.peer_ids.len() as u32,
     };
@@ -375,7 +377,7 @@ where
         || statement.ring_pk != candidate.ring_pk_hex
         || statement.threshold as usize != candidate.threshold
         || statement.total_participants as usize != candidate.peer_ids.len()
-        || statement.peer_ids_sha256
+        || statement.peer_node_keys_sha256
             != refresh_health_check_peer_node_keys_sha256(&candidate.peer_node_keys)
     {
         return Err(DkgError::Unauthorized(
@@ -632,7 +634,7 @@ mod tests {
             session_id,
             ring_pk: "00".to_string(),
             public_polynomial_sha256: String::new(),
-            peer_ids_sha256: String::new(),
+            peer_node_keys_sha256: String::new(),
             threshold: 1,
             total_participants: 1,
         };
@@ -695,7 +697,7 @@ mod tests {
             session_id,
             ring_pk: "00".to_string(),
             public_polynomial_sha256: String::new(),
-            peer_ids_sha256: String::new(),
+            peer_node_keys_sha256: String::new(),
             threshold: 1,
             total_participants: 1,
         };
@@ -754,7 +756,7 @@ mod tests {
             session_id,
             ring_pk: "00".to_string(),
             public_polynomial_sha256: String::new(),
-            peer_ids_sha256: String::new(),
+            peer_node_keys_sha256: String::new(),
             threshold: 1,
             total_participants: 1,
         };
@@ -831,7 +833,7 @@ mod tests {
             session_id,
             ring_pk: "00".to_string(),
             public_polynomial_sha256: String::new(),
-            peer_ids_sha256: String::new(),
+            peer_node_keys_sha256: String::new(),
             threshold: 1,
             total_participants: 1,
         };

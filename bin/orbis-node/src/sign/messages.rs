@@ -69,8 +69,8 @@ pub struct RefreshHealthCheckStatement {
     pub ring_pk: String,
     /// SHA-256 hex of the refreshed public polynomial bytes.
     pub public_polynomial_sha256: String,
-    /// SHA-256 hex of the canonical sorted peer-id list.
-    pub peer_ids_sha256: String,
+    /// SHA-256 hex of the canonical sorted peer node key list.
+    pub peer_node_keys_sha256: String,
     /// Current ring threshold.
     pub threshold: u32,
     /// Current ring committee size.

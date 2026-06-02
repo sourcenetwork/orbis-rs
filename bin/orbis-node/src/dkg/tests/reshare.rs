@@ -1014,7 +1014,6 @@ async fn test_validate_reshare_accepts_new_peer_node_keys_fallback_to_current() 
 
     let result = validate_reshare_session_init(
         ring_pk,
-        sender_hex,
         &[sender_hex.to_string()], // matches fallback = peer_ids
         1,
         "",
@@ -1064,7 +1063,6 @@ async fn test_validate_reshare_accepts_new_threshold_fallback_to_current() {
 
     let result = validate_reshare_session_init(
         ring_pk,
-        sender_hex,
         &[new_peer.to_string()],
         1, // matches fallback = current threshold
         "",
@@ -1113,7 +1111,6 @@ async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
 
     let result = validate_reshare_session_init(
         ring_pk,
-        sender_hex,
         &["00112233".to_string()], // differs from fallback = ["aabbccdd"]
         1,
         "",
@@ -1164,7 +1161,6 @@ async fn test_validate_reshare_rejects_when_threshold_differs_from_fallback() {
 
     let result = validate_reshare_session_init(
         ring_pk,
-        sender_hex,
         &[new_peer_1.to_string(), new_peer_2.to_string()],
         1, // differs from fallback = 2
         "",

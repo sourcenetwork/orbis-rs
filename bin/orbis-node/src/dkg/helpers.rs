@@ -208,7 +208,6 @@ async fn load_ring_payload_by_post_id(
 /// preventing unilateral redirection of a reshare to an arbitrary new committee.
 pub async fn validate_reshare_session_init<S: LocalStorage>(
     ring_pk_hex: &str,
-    sender_hex: &str,
     proposed_new_peer_node_keys: &[String],
     proposed_new_threshold: u32,
     bulletin_post_id: &str,
@@ -259,15 +258,9 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         )));
     }
 
-    // 3. Sender must be in the old committee. For now this check is completed by
-    // the SessionInit handler after resolving node keys to P2P routes.
-    let sender_in_ring = !sender_hex.is_empty();
-    if !sender_in_ring {
-        return Err(DkgError::Unauthorized(format!(
-            "Reshare initiator {} is not a member of ring {}",
-            sender_hex, ring_pk_hex
-        )));
-    }
+    // 3. Sender membership in the old committee is verified by the caller (session_init
+    // handler) after resolving NodeInfo routes: it needs the resolved peer→node-key map
+    // that this function cannot produce. No check is done here.
 
     // 4. Proposed new_peer_node_keys must match the authoritative committee.
     //    Bulletin present → must match it; absent → must match current peer_node_keys (fallback).
