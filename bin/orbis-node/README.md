@@ -51,6 +51,32 @@ From [`helpers/launch.rs`](src/helpers/launch.rs) (`clap` **`Args`**):
 
 Password and node identity: see **`constants`**, **`get_password`**, **`get_network_key_secret`**, **`derive_secret_key_bytes`** in the same module.
 
+## Secure secret provisioning
+
+`orbis-node` needs two local secret classes: the password used to encrypt local
+storage and the node network identity key. Treat both as production secrets.
+
+- Prefer a secrets manager or a read-only mounted file for the storage password.
+  The file path checked by default is `~/.orbis_password`; set owner-only
+  permissions (`chmod 600 ~/.orbis_password`) and keep it out of backups that are
+  not also encrypted.
+- Use `ORBIS_PASSWORD` only for local development, CI, or short-lived test
+  containers. Environment variables are commonly visible through process,
+  container, crash-report, and orchestration inspection paths.
+- Let the node generate and persist its network identity on first start, or
+  restore a previously encrypted local store. Avoid raw `ORBIS_SECRET_KEY` in
+  production unless a secret manager injects it directly at process launch and
+  your runtime prevents environment inspection.
+- The checked-in Docker compose files contain fixed `ORBIS_PASSWORD` and
+  `ORBIS_SECRET_KEY` values for deterministic local tests only. Do not reuse
+  them for any shared, staging, or production network.
+- Back up encrypted local storage and the password together under an operational
+  key-management policy. Losing either the encrypted share store or its password
+  can permanently strand a node's DKG/PSS shares.
+- Rotate node identity and storage passwords through a maintenance window. A
+  node identity change must be reflected in bulletin committee metadata before
+  peers will treat it as the same operational participant.
+
 ## In-repo docs
 
 - [`src/dkg/PROTOCOL_FLOW.md`](src/dkg/PROTOCOL_FLOW.md) — DKG session flow (when present).

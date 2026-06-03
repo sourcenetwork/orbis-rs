@@ -1,5 +1,8 @@
 # Docker Compose for integration tests
 # Spins up sourcehub chain + 3 orbis nodes with proper dependencies and healthchecks
+# Fixed ORBIS_PASSWORD and ORBIS_SECRET_KEY values in this file are local-test
+# fixtures only. Production deployments should inject secrets from a secret
+# manager or read-only mounted files; see bin/orbis-node/README.md.
 services:
   sourcehub:
     build:

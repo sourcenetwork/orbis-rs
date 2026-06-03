@@ -27,7 +27,7 @@ async fn send_on_stream(
 
 async fn get_cached_or_open_stream<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     peer_id_str: &str,
 ) -> Result<(Arc<dyn NetworkConnection>, bool)>
 where
@@ -56,7 +56,7 @@ where
 
 async fn ensure_session_generation<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     generation: u64,
 ) -> Result<()>
 where
@@ -96,7 +96,7 @@ pub(super) async fn send_message_to_peer<D>(
     coord: &DkgCoordinator<D>,
     peer_id_str: &str,
     message: DkgMessage,
-    session_id: Option<u64>,
+    session_id: Option<u128>,
 ) -> Result<()>
 where
     D: Dkg<
@@ -409,7 +409,7 @@ mod tests {
         let (app_state, remote_peer_id) =
             make_fake_app_state("dkg_send_retry_replaces_stream", shared_state.clone()).await;
         let coordinator = Arc::new(DkgCoordinator::new(app_state.clone()));
-        let session_id = 42_u64;
+        let session_id = 42_u128;
 
         coordinator
             .create_session(
@@ -508,7 +508,7 @@ mod tests {
         let (app_state, remote_peer_id) =
             make_fake_app_state("dkg_send_stale_session_generation", shared_state.clone()).await;
         let coordinator = Arc::new(DkgCoordinator::new(app_state.clone()));
-        let session_id = 84_u64;
+        let session_id = 84_u128;
 
         coordinator
             .create_session(

@@ -34,7 +34,7 @@ pub struct RingReshareUpdateStatement {
     /// Domain separator, must equal [`RING_RESHARE_UPDATE_DOMAIN`].
     pub domain: String,
     /// DKG/PSS reshare session that produced the new shares.
-    pub session_id: u64,
+    pub session_id: u128,
     /// SourceHub chain ID that will verify the signature.
     pub chain_id: String,
     /// Hex-encoded ring public key. Reshare preserves this key.
@@ -64,7 +64,7 @@ pub struct RefreshHealthCheckStatement {
     /// Domain separator, must equal [`REFRESH_HEALTH_CHECK_DOMAIN`].
     pub domain: String,
     /// DKG/PSS refresh session that produced the current refreshed shares.
-    pub session_id: u64,
+    pub session_id: u128,
     /// Hex-encoded ring public key. Refresh preserves this key.
     pub ring_pk: String,
     /// SHA-256 hex of the refreshed public polynomial bytes.

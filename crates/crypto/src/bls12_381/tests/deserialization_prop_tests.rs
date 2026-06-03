@@ -49,7 +49,7 @@ proptest! {
         from_id in any::<u32>(),
         to_id in any::<u32>(),
         index in any::<u32>(),
-        session_id in any::<u64>(),
+        session_id in any::<u128>(),
         nonce in any::<[u8; 16]>(),
         a in any::<u64>(),
         b in any::<u64>(),
@@ -111,8 +111,8 @@ fn malicious_length_prefixes_are_rejected_before_allocation() {
     assert!(PubPoly::from_bytes(&huge).is_err());
     assert!(PolynomialCommitment::from_bytes(&huge).is_err());
 
-    let mut share = vec![0u8; 36];
-    share[32..36].copy_from_slice(&huge);
+    let mut share = vec![0u8; 44];
+    share[40..44].copy_from_slice(&huge);
     assert!(DistributedShare::<Fr>::from_bytes(&share).is_err());
 
     let mut reply = Vec::with_capacity(12);

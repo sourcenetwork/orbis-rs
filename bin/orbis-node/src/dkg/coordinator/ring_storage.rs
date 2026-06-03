@@ -13,7 +13,7 @@ use super::{types::CoordinatorDkg, DkgCoordinator};
 
 pub(in crate::dkg::coordinator) async fn cleanup_departing_dealer<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     ring_key: Option<String>,
 ) -> Result<()>
 where

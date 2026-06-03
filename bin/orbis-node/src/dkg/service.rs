@@ -127,7 +127,7 @@ where
         // for the same ring produce the same session_id, so the second hits
         // SessionAlreadyExists and returns in_progress instead of launching a competing
         // ceremony that would deadlock finalization.
-        let session_id: u64 = derive_fresh_dkg_session_id(&ring_id)?;
+        let session_id: u128 = derive_fresh_dkg_session_id(&ring_id)?;
 
         // Create DKG coordinator (AppState clone is cheap - contains Arc types internally)
         let coordinator = DkgCoordinator::new(Arc::new(self.state.clone()));

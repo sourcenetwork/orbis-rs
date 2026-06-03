@@ -13,9 +13,10 @@ form_urlencoded = { workspace = true }
 serde = { workspace = true }
 jsonwebtoken = "9"
 pkcs8 = { version = "0.10.2", features = ["alloc"] }
-tonic = "0.14.2"
+tonic = { workspace = true }
 zeroize = { workspace = true }
 sha2 = { workspace = true }
+rand = { workspace = true }
 
 [lints]
 workspace = true

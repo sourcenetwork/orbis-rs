@@ -208,7 +208,7 @@ async fn test_dkg_then_sign_end_to_end() {
 /// Helper function to wait for DKG completion and return the RingPayload and ring_id
 async fn wait_for_dkg_completion(
     network: &crate::helpers::test_helpers::ThreeNodeNetwork,
-    _session_id: u64,
+    _session_id: u128,
 ) -> (RingPayload, String) {
     let check_interval = Duration::from_millis(500);
     let max_wait = Duration::from_secs(60);

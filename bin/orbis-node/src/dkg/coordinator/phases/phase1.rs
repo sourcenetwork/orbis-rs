@@ -2,7 +2,7 @@ use super::*;
 
 pub(in crate::dkg::coordinator) async fn initiate_phase1_commitments<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     peer_ids: &[String],
 ) -> Result<()>
 where
@@ -142,7 +142,7 @@ where
 /// Called after each incoming commitment message.
 pub(in crate::dkg::coordinator) async fn check_and_trigger_phase2<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     peer_ids: &[String],
 ) -> Result<()>
 where

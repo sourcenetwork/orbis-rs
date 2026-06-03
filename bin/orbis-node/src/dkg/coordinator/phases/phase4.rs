@@ -2,7 +2,7 @@ use super::*;
 
 pub(in crate::dkg::coordinator) async fn check_and_trigger_phase4<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
@@ -11,7 +11,7 @@ where
 }
 pub(in crate::dkg::coordinator) async fn initiate_phase4_completion<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
 ) -> Result<()>
 where
     D: CoordinatorDkg + Send + Sync,

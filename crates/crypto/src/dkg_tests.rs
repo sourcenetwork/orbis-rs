@@ -48,11 +48,11 @@ where
     Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
     Node::PolynomialCommitment: Clone,
     Node::ShareValue: Clone + zeroize::Zeroize,
-    F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
+    F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>> + Clone,
     Z: Fn(&Node::PublicKey) -> bool + Clone,
     G: Fn(&Node::ShareValue) -> Node::PublicKey + Clone,
     W: Fn() -> Node::ShareValue + Clone,
-    I: Fn(u32, u32, u64) -> crate::r#trait::DistributedShare<Node::ShareValue> + Clone,
+    I: Fn(u32, u32, u128) -> crate::r#trait::DistributedShare<Node::ShareValue> + Clone,
 {
     generic_tests::test_dkg_2_of_3(node_factory.clone(), Some(check_zero.clone()))?;
     generic_tests::test_dkg_3_of_5(node_factory.clone(), Some(check_zero.clone()))?;

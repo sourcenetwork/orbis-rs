@@ -190,7 +190,7 @@ where
             })?;
 
             // Generate random session id
-            let session_id: u64 = rand::random();
+            let session_id: u128 = rand::random();
             let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
             let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
                 .map_err(|e| StoreSecretError::Validation(format!("Invalid ring_pk hex: {}", e)))?;

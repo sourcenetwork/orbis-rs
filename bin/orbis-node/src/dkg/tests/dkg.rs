@@ -828,7 +828,7 @@ async fn test_fresh_session_init_publishes_complete_state() {
         create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
     let node_key = app_state.node_key.clone();
     let local_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
-    let session_id = 222_333u64;
+    let session_id = 222_333u128;
     let pss_interval = Some(60u64);
 
     bulletin
@@ -947,7 +947,7 @@ async fn test_session_cleanup_guard_cleans_up_on_drop() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     // Create a mock DKG node and session
-    let session_id = 12345u64;
+    let session_id = 12345u128;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
     manager
         .create_session(session_id, dkg_node, 3, |_| {})
@@ -991,7 +991,7 @@ async fn test_session_cleanup_guard_defuse_prevents_cleanup() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     // Create a mock DKG node and session
-    let session_id = 67890u64;
+    let session_id = 67890u128;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
     manager
         .create_session(session_id, dkg_node, 3, |_| {})
@@ -1039,7 +1039,7 @@ async fn test_session_expiration_removes_old_sessions() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
     // Create a session
-    let session_id = 11111u64;
+    let session_id = 11111u128;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
     manager
         .create_session(session_id, dkg_node, 3, |_| {})
@@ -1120,7 +1120,7 @@ async fn test_session_expiration_removes_old_sessions() {
 async fn test_message_dedup_detects_duplicates() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
-    let session_id = 100u64;
+    let session_id = 100u128;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
     manager
         .create_session(session_id, dkg_node, 3, |_| {})
@@ -1155,7 +1155,7 @@ async fn test_message_dedup_detects_duplicates() {
 async fn test_message_dedup_different_types_not_duplicate() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
-    let session_id = 101u64;
+    let session_id = 101u128;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
     manager
         .create_session(session_id, dkg_node, 3, |_| {})
@@ -1182,7 +1182,7 @@ async fn test_message_dedup_different_types_not_duplicate() {
 async fn test_message_dedup_different_nodes_not_duplicate() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
-    let session_id = 102u64;
+    let session_id = 102u128;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
     manager
         .create_session(session_id, dkg_node, 3, |_| {})
@@ -1209,8 +1209,8 @@ async fn test_message_dedup_different_nodes_not_duplicate() {
 async fn test_message_dedup_different_sessions_isolated() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
-    let session_1 = 103u64;
-    let session_2 = 104u64;
+    let session_1 = 103u128;
+    let session_2 = 104u128;
     let dkg_node_1 = *DkgImpl::new(1, 2, 3, session_1, DkgRole::Standard).expect("create DKG node");
     let dkg_node_2 = *DkgImpl::new(1, 2, 3, session_2, DkgRole::Standard).expect("create DKG node");
     manager
@@ -1242,7 +1242,7 @@ async fn test_message_dedup_different_sessions_isolated() {
 async fn test_message_dedup_cleaned_up_with_session() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
-    let session_id = 105u64;
+    let session_id = 105u128;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
     manager
         .create_session(session_id, dkg_node, 3, |_| {})
@@ -1278,7 +1278,7 @@ async fn test_message_dedup_cleaned_up_with_session() {
 async fn test_peer_node_mappings_consistent() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
-    let session_id = 200u64;
+    let session_id = 200u128;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
     manager
         .create_session(session_id, dkg_node, 3, |_| {})
@@ -1324,7 +1324,7 @@ async fn test_peer_node_mappings_consistent() {
 async fn test_peer_identity_unknown_peer_not_in_mapping() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
-    let session_id = 201u64;
+    let session_id = 201u128;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
     manager
         .create_session(session_id, dkg_node, 3, |_| {})
@@ -1365,9 +1365,9 @@ async fn test_session_limit_enforced() {
     // Fill up to the limit
     for i in 0..MAX_DKG_SESSIONS {
         let dkg_node =
-            *DkgImpl::new(1, 2, 3, i as u64, DkgRole::Standard).expect("create DKG node");
+            *DkgImpl::new(1, 2, 3, i as u128, DkgRole::Standard).expect("create DKG node");
         assert_eq!(
-            manager.create_session(i as u64, dkg_node, 3, |_| {}).await,
+            manager.create_session(i as u128, dkg_node, 3, |_| {}).await,
             CreateSessionOutcome::Created,
             "Session {} should be created within limit",
             i
@@ -1377,11 +1377,11 @@ async fn test_session_limit_enforced() {
     assert_eq!(manager.session_count().await, MAX_DKG_SESSIONS);
 
     // One more should be rejected
-    let dkg_node = *DkgImpl::new(1, 2, 3, MAX_DKG_SESSIONS as u64, DkgRole::Standard)
+    let dkg_node = *DkgImpl::new(1, 2, 3, MAX_DKG_SESSIONS as u128, DkgRole::Standard)
         .expect("create DKG node");
     assert_eq!(
         manager
-            .create_session(MAX_DKG_SESSIONS as u64, dkg_node, 3, |_| {})
+            .create_session(MAX_DKG_SESSIONS as u128, dkg_node, 3, |_| {})
             .await,
         CreateSessionOutcome::LimitReached,
         "Session beyond limit should be rejected"
@@ -1389,7 +1389,7 @@ async fn test_session_limit_enforced() {
 
     // Clean up
     for i in 0..MAX_DKG_SESSIONS {
-        manager.remove_session(&(i as u64)).await;
+        manager.remove_session(&(i as u128)).await;
     }
 }
 
@@ -1398,7 +1398,7 @@ async fn test_session_limit_enforced() {
 async fn test_duplicate_session_id_rejected() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
-    let session_id = 300u64;
+    let session_id = 300u128;
     let dkg_node_1 =
         *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
     let dkg_node_2 =
@@ -1426,7 +1426,7 @@ async fn test_duplicate_session_id_rejected() {
 async fn test_commitment_and_share_counters() {
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
 
-    let session_id = 400u64;
+    let session_id = 400u128;
     let dkg_node = *DkgImpl::new(1, 2, 3, session_id, DkgRole::Standard).expect("create DKG node");
     manager
         .create_session(session_id, dkg_node, 3, |_| {})

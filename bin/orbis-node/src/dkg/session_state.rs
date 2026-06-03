@@ -69,7 +69,7 @@ pub enum RingPssClaimOutcome {
     /// The ring is already claimed by this exact session. Safe to treat as idempotent.
     AlreadyClaimedBySameSession,
     /// The ring is currently claimed by a different session.
-    Conflict { active_session_id: u64 },
+    Conflict { active_session_id: u128 },
 }
 
 /// DKG Message Type for deduplication (more efficient than String)
@@ -101,7 +101,7 @@ pub enum MessageProcessingClaim {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ReshareSignatureReadyKey {
     pub ring_key: String,
-    pub session_id: u64,
+    pub session_id: u128,
     pub ring_id: String,
     pub current_ring_sha256: String,
     pub finalized_ring_sha256: String,
@@ -241,11 +241,11 @@ pub struct DkgSessionState<D: Dkg> {
     /// terminal liveness failure.
     pub pending_shares_waiting_for_commitment: HashMap<u32, DistributedShare<D::ShareValue>>,
     /// Processed message IDs for deduplication (session_id, from_node_id, message_type)
-    pub processed_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
+    pub processed_messages: std::collections::HashSet<(u128, u32, DkgMessageType)>,
     /// Message IDs currently being handled.
     ///
     /// Prevents concurrent duplicate deliveries from both entering the crypto layer.
-    pub processing_messages: std::collections::HashSet<(u64, u32, DkgMessageType)>,
+    pub processing_messages: std::collections::HashSet<(u128, u32, DkgMessageType)>,
     /// What kind of ceremony this session is running (Fresh, Refresh, or Reshare).
     ///
     /// Drives `generate_polynomial` mode selection and Phase 4 storage/bulletin behaviour.
@@ -393,13 +393,13 @@ impl<D: Dkg> DkgSessionState<D> {
 /// guard.defuse(); // Session completed successfully, don't clean up
 /// ```
 pub struct SessionCleanupGuard {
-    cleanup_tx: mpsc::UnboundedSender<u64>,
-    session_id: u64,
+    cleanup_tx: mpsc::UnboundedSender<u128>,
+    session_id: u128,
     defused: Arc<AtomicBool>,
 }
 
 impl SessionCleanupGuard {
-    fn new(cleanup_tx: mpsc::UnboundedSender<u64>, session_id: u64) -> Self {
+    fn new(cleanup_tx: mpsc::UnboundedSender<u128>, session_id: u128) -> Self {
         Self {
             cleanup_tx,
             session_id,
@@ -436,15 +436,15 @@ impl Drop for SessionCleanupGuard {
 /// Global session state manager
 pub struct SessionStateManager<D: Dkg> {
     /// session_id -> session state
-    pub(crate) states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
+    pub(crate) states: Arc<RwLock<HashMap<u128, DkgSessionState<D>>>>,
     /// Channel for queueing session cleanup requests
-    cleanup_tx: mpsc::UnboundedSender<u64>,
+    cleanup_tx: mpsc::UnboundedSender<u128>,
     /// Monotonic counter used to stamp each newly created in-memory session state.
     next_session_generation: AtomicU64,
     /// Ring public key strings mapped to their active in-progress PSS ceremony
     /// session IDs. Cleared on Phase 4 success or session cleanup/expiration so
     /// that a new ceremony can be initiated after failure.
-    rings_pss: Arc<RwLock<HashMap<String, u64>>>,
+    rings_pss: Arc<RwLock<HashMap<String, u128>>>,
     /// Exact reshare bulletin updates this node is ready to sign.
     reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
 }
@@ -484,9 +484,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
 
     /// Background task that processes cleanup requests from guards
     async fn cleanup_worker(
-        states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
-        mut rx: mpsc::UnboundedReceiver<u64>,
-        rings_pss: Arc<RwLock<HashMap<String, u64>>>,
+        states: Arc<RwLock<HashMap<u128, DkgSessionState<D>>>>,
+        mut rx: mpsc::UnboundedReceiver<u128>,
+        rings_pss: Arc<RwLock<HashMap<String, u128>>>,
         reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
     ) {
         while let Some(session_id) = rx.recv().await {
@@ -522,8 +522,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Sessions older than SESSION_TTL that haven't completed are considered
     /// abandoned and are removed to prevent memory leaks.
     async fn expiration_worker(
-        states: Arc<RwLock<HashMap<u64, DkgSessionState<D>>>>,
-        rings_pss: Arc<RwLock<HashMap<String, u64>>>,
+        states: Arc<RwLock<HashMap<u128, DkgSessionState<D>>>>,
+        rings_pss: Arc<RwLock<HashMap<String, u128>>>,
         reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
     ) {
         let mut interval = tokio::time::interval(SESSION_EXPIRATION_CHECK_INTERVAL);
@@ -536,7 +536,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             let initial_count = states.len();
 
             // Collect session IDs to remove (expired or stalled)
-            let mut to_remove_ids: Vec<u64> = Vec::new();
+            let mut to_remove_ids: Vec<u128> = Vec::new();
             for (session_id, state) in states.iter() {
                 if state.phase == DkgPhase::Phase4Complete {
                     continue;
@@ -571,7 +571,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             }
 
             // Remove sessions (connections are per-peer and never closed here)
-            let mut ring_claims_to_clear: Vec<(String, u64)> = Vec::new();
+            let mut ring_claims_to_clear: Vec<(String, u128)> = Vec::new();
             for session_id in to_remove_ids {
                 if let Some(state) = states.remove(&session_id) {
                     if let Some(k) = state.kind.ring_key() {
@@ -594,7 +594,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     }
                 }
 
-                let expired_ids: HashSet<u64> =
+                let expired_ids: HashSet<u128> =
                     ring_claims_to_clear.iter().map(|(_, id)| *id).collect();
                 reshare_signature_ready
                     .write()
@@ -622,7 +622,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub async fn claim_ring_pss_session(
         &self,
         ring_pk_hex: &str,
-        session_id: u64,
+        session_id: u128,
     ) -> RingPssClaimOutcome {
         let mut claims = self.rings_pss.write().await;
         match claims.get(ring_pk_hex).copied() {
@@ -645,7 +645,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     /// Returns the active PSS session ID for a ring, if any.
-    pub async fn active_ring_pss_session(&self, ring_pk_key: &str) -> Option<u64> {
+    pub async fn active_ring_pss_session(&self, ring_pk_key: &str) -> Option<u128> {
         self.rings_pss.read().await.get(ring_pk_key).copied()
     }
 
@@ -666,7 +666,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     /// Clear the in-progress PSS claim only if this exact session still owns it.
-    pub async fn unmark_ring_pss_if_matches(&self, ring_pk_hex: &str, session_id: u64) {
+    pub async fn unmark_ring_pss_if_matches(&self, ring_pk_hex: &str, session_id: u128) {
         let mut claims = self.rings_pss.write().await;
         if claims.get(ring_pk_hex).copied() == Some(session_id) {
             claims.remove(ring_pk_hex);
@@ -678,12 +678,12 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// The guard will automatically clean up the session when dropped unless
     /// `defuse()` is called. Use this to ensure sessions are cleaned up on
     /// error paths without manual cleanup code.
-    pub fn cleanup_guard(&self, session_id: u64) -> SessionCleanupGuard {
+    pub fn cleanup_guard(&self, session_id: u128) -> SessionCleanupGuard {
         SessionCleanupGuard::new(self.cleanup_tx.clone(), session_id)
     }
 
     /// Execute a function with read-only access to a session state
-    pub async fn with_state<F, R>(&self, session_id: &u64, f: F) -> Option<R>
+    pub async fn with_state<F, R>(&self, session_id: &u128, f: F) -> Option<R>
     where
         F: FnOnce(&DkgSessionState<D>) -> R,
     {
@@ -692,7 +692,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     /// Execute a function with mutable access to a session state
-    pub async fn with_state_mut<F, R>(&self, session_id: &u64, f: F) -> Option<R>
+    pub async fn with_state_mut<F, R>(&self, session_id: &u128, f: F) -> Option<R>
     where
         F: FnOnce(&mut DkgSessionState<D>) -> R,
     {
@@ -720,7 +720,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// initialization is needed.
     pub async fn create_session<F>(
         &self,
-        session_id: u64,
+        session_id: u128,
         node: D,
         total_participants: usize,
         init_fn: F,
@@ -766,19 +766,19 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     /// Check if a session exists
-    pub async fn session_exists(&self, session_id: &u64) -> bool {
+    pub async fn session_exists(&self, session_id: &u128) -> bool {
         let states = self.states.read().await;
         states.contains_key(session_id)
     }
 
     /// Get the current in-memory generation for a session, if it exists.
-    pub async fn get_session_generation(&self, session_id: &u64) -> Option<u64> {
+    pub async fn get_session_generation(&self, session_id: &u128) -> Option<u64> {
         let states = self.states.read().await;
         states.get(session_id).map(|s| s.generation)
     }
 
     /// Returns true iff the session currently exists and still has the expected generation.
-    pub async fn session_generation_matches(&self, session_id: &u64, generation: u64) -> bool {
+    pub async fn session_generation_matches(&self, session_id: &u128, generation: u64) -> bool {
         let states = self.states.read().await;
         matches!(states.get(session_id), Some(state) if state.generation == generation)
     }
@@ -789,21 +789,21 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states.len()
     }
 
-    pub async fn set_peer_ids(&self, session_id: &u64, peer_ids: Vec<String>) {
+    pub async fn set_peer_ids(&self, session_id: &u128, peer_ids: Vec<String>) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.peer_ids = peer_ids;
         }
     }
 
-    pub async fn set_peer_node_keys(&self, session_id: &u64, peer_node_keys: Vec<String>) {
+    pub async fn set_peer_node_keys(&self, session_id: &u128, peer_node_keys: Vec<String>) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.peer_node_keys = peer_node_keys;
         }
     }
 
-    pub async fn set_ring_id(&self, session_id: &u64, ring_id: String) {
+    pub async fn set_ring_id(&self, session_id: &u128, ring_id: String) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.ring_id = ring_id;
@@ -814,7 +814,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ///
     /// Must be called before `initiate_phase1_commitments` so that
     /// `generate_polynomial` uses the correct `DkgMode`.
-    pub async fn set_session_kind(&self, session_id: &u64, kind: SessionKind) {
+    pub async fn set_session_kind(&self, session_id: &u128, kind: SessionKind) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.kind = kind;
@@ -825,7 +825,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ///
     /// Must be called (for Dealer / DealerReceiver nodes) before Phase 1 so that
     /// `generate_polynomial` can construct `DkgMode::Reshare`.
-    pub async fn set_reshare_params(&self, session_id: &u64, params: ReshareParams<D::ShareValue>) {
+    pub async fn set_reshare_params(
+        &self,
+        session_id: &u128,
+        params: ReshareParams<D::ShareValue>,
+    ) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.reshare_params = Some(params);
@@ -835,7 +839,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Stage a refresh bundle while waiting for the post-refresh health-check result.
     pub async fn set_refresh_health_check_candidate(
         &self,
-        session_id: &u64,
+        session_id: &u128,
         candidate: RefreshHealthCheckCandidate,
     ) {
         let mut states = self.states.write().await;
@@ -847,7 +851,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Load the staged refresh bundle, if this session still has one.
     pub async fn refresh_health_check_candidate(
         &self,
-        session_id: &u64,
+        session_id: &u128,
     ) -> Option<RefreshHealthCheckCandidate> {
         let states = self.states.read().await;
         states
@@ -856,7 +860,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     /// Discard any staged refresh bundle for this session.
-    pub async fn clear_refresh_health_check_candidate(&self, session_id: &u64) {
+    pub async fn clear_refresh_health_check_candidate(&self, session_id: &u128) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.refresh_health_check_candidate = None;
@@ -866,7 +870,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Store a refresh health-check result that arrived before Phase 4 staged its candidate.
     pub async fn store_pending_refresh_health_check_result(
         &self,
-        session_id: &u64,
+        session_id: &u128,
         result: PendingRefreshHealthCheckResult,
     ) -> Option<bool> {
         let mut states = self.states.write().await;
@@ -881,7 +885,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Remove and return an early refresh health-check result, if one was queued.
     pub async fn take_pending_refresh_health_check_result(
         &self,
-        session_id: &u64,
+        session_id: &u128,
     ) -> Option<PendingRefreshHealthCheckResult> {
         let mut states = self.states.write().await;
         states
@@ -891,24 +895,24 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     /// Store the PSS refresh interval for this session so Phase 4 can persist it.
-    pub async fn set_pss_interval(&self, session_id: &u64, interval: Option<u64>) {
+    pub async fn set_pss_interval(&self, session_id: &u128, interval: Option<u64>) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.pss_interval = interval;
         }
     }
 
-    pub async fn get_peer_ids(&self, session_id: &u64) -> Option<Vec<String>> {
+    pub async fn get_peer_ids(&self, session_id: &u128) -> Option<Vec<String>> {
         let states = self.states.read().await;
         states.get(session_id).map(|s| s.peer_ids.clone())
     }
 
-    pub async fn get_peer_node_keys(&self, session_id: &u64) -> Option<Vec<String>> {
+    pub async fn get_peer_node_keys(&self, session_id: &u128) -> Option<Vec<String>> {
         let states = self.states.read().await;
         states.get(session_id).map(|s| s.peer_node_keys.clone())
     }
 
-    pub async fn ring_id_for_session(&self, session_id: &u64) -> Option<String> {
+    pub async fn ring_id_for_session(&self, session_id: &u128) -> Option<String> {
         let states = self.states.read().await;
         states.get(session_id).map(|s| s.ring_id.clone())
     }
@@ -916,7 +920,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Set node_id to peer_id mappings for efficient routing
     pub async fn set_node_peer_mappings(
         &self,
-        session_id: &u64,
+        session_id: &u128,
         node_id_to_peer_id: HashMap<u32, String>,
     ) {
         let mut states = self.states.write().await;
@@ -936,7 +940,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Set new-committee node_id to peer_id mappings for reshare-only messages.
     pub async fn set_reshare_new_peer_mappings(
         &self,
-        session_id: &u64,
+        session_id: &u128,
         node_id_to_peer_id: HashMap<u32, String>,
     ) {
         let mut states = self.states.write().await;
@@ -953,7 +957,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     /// Get peer_id for a node_id
-    pub async fn get_peer_id_for_node(&self, session_id: &u64, node_id: u32) -> Option<String> {
+    pub async fn get_peer_id_for_node(&self, session_id: &u128, node_id: u32) -> Option<String> {
         let states = self.states.read().await;
         states
             .get(session_id)?
@@ -965,7 +969,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Check if a message has already been processed (for deduplication)
     pub async fn is_message_processed(
         &self,
-        session_id: &u64,
+        session_id: &u128,
         from_node_id: u32,
         message_type: DkgMessageType,
     ) -> bool {
@@ -982,7 +986,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Atomically claim a message for processing.
     pub async fn try_claim_message_processing(
         &self,
-        session_id: &u64,
+        session_id: &u128,
         from_node_id: u32,
         message_type: DkgMessageType,
     ) -> MessageProcessingClaim {
@@ -1004,7 +1008,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Finish a previously claimed message, marking it processed only on success.
     pub async fn finish_message_processing(
         &self,
-        session_id: &u64,
+        session_id: &u128,
         from_node_id: u32,
         message_type: DkgMessageType,
         processed: bool,
@@ -1026,7 +1030,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// `None` when the session is gone.
     pub async fn store_pending_share_waiting_for_commitment(
         &self,
-        session_id: &u64,
+        session_id: &u128,
         share: DistributedShare<D::ShareValue>,
     ) -> Option<bool> {
         let mut states = self.states.write().await;
@@ -1047,7 +1051,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Remove and return a pending share that was waiting on `from_node_id`'s commitment.
     pub async fn take_pending_share_waiting_for_commitment(
         &self,
-        session_id: &u64,
+        session_id: &u128,
         from_node_id: u32,
     ) -> Option<DistributedShare<D::ShareValue>> {
         let mut states = self.states.write().await;
@@ -1060,7 +1064,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Mark a message as processed
     pub async fn mark_message_processed(
         &self,
-        session_id: &u64,
+        session_id: &u128,
         from_node_id: u32,
         message_type: DkgMessageType,
     ) {
@@ -1072,7 +1076,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
-    pub async fn update_phase(&self, session_id: &u64, phase: DkgPhase) {
+    pub async fn update_phase(&self, session_id: &u128, phase: DkgPhase) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.phase = phase;
@@ -1080,14 +1084,14 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
-    pub async fn increment_commitments(&self, session_id: &u64) {
+    pub async fn increment_commitments(&self, session_id: &u128) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.commitments_received += 1;
         }
     }
 
-    pub async fn increment_shares(&self, session_id: &u64) {
+    pub async fn increment_shares(&self, session_id: &u128) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.shares_received += 1;
@@ -1097,7 +1101,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Get the cached outbound stream to a peer for this session, if one exists.
     pub async fn get_peer_stream(
         &self,
-        session_id: &u64,
+        session_id: &u128,
         peer_id: &str,
     ) -> Option<Arc<dyn Connection>> {
         let states = self.states.read().await;
@@ -1107,7 +1111,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Cache an outbound stream to a peer for this session.
     pub async fn store_peer_stream(
         &self,
-        session_id: &u64,
+        session_id: &u128,
         peer_id: String,
         stream: Arc<dyn Connection>,
     ) {
@@ -1118,7 +1122,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     /// Remove the cached outbound stream to a peer for this session, if any.
-    pub async fn remove_peer_stream(&self, session_id: &u64, peer_id: &str) {
+    pub async fn remove_peer_stream(&self, session_id: &u128, peer_id: &str) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.peer_streams.remove(peer_id);
@@ -1128,7 +1132,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Get or create the per-peer outbound send lock for this session.
     pub async fn get_or_create_peer_send_lock(
         &self,
-        session_id: &u64,
+        session_id: &u128,
         peer_id: &str,
     ) -> Option<(Arc<Mutex<()>>, u64)> {
         let mut states = self.states.write().await;
@@ -1150,7 +1154,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Per-session streams in `peer_streams` are dropped here (FIN sent on drop).
     /// Per-peer QUIC connections in `peer_connections` are NOT closed — they remain
     /// open in the pool for future sessions.
-    pub async fn remove_session(&self, session_id: &u64) {
+    pub async fn remove_session(&self, session_id: &u128) {
         let ring_key_to_clear = {
             let mut states = self.states.write().await;
             if let Some(state) = states.remove(session_id) {
@@ -1251,7 +1255,7 @@ mod tests {
     async fn test_session_limit_enforcement() {
         let mgr = SessionStateManager::<DkgImpl>::new();
 
-        for i in 0..MAX_DKG_SESSIONS as u64 {
+        for i in 0..MAX_DKG_SESSIONS as u128 {
             let ok = mgr.create_session(i, make_node(1), 3, |_| {}).await;
             assert_eq!(
                 ok,
@@ -1263,7 +1267,7 @@ mod tests {
 
         // One beyond the limit must be rejected
         let rejected = mgr
-            .create_session(MAX_DKG_SESSIONS as u64, make_node(1), 3, |_| {})
+            .create_session(MAX_DKG_SESSIONS as u128, make_node(1), 3, |_| {})
             .await;
         assert_eq!(
             rejected,

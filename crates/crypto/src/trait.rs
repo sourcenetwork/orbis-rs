@@ -7,6 +7,13 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use zeroize::Zeroize;
 
+/// DKG/PSS session identifier.
+///
+/// Session IDs are deterministic protocol identifiers in node orchestration and
+/// replay-binding identifiers in distributed shares. Use 128 bits so truncated
+/// hash-derived IDs have a collision margin appropriate for concurrent rings.
+pub type SessionId = u128;
+
 /// Trait for types that can be serialized to bytes.
 ///
 /// This provides a generic interface for crypto type serialization,
@@ -35,8 +42,8 @@ pub struct DistributedShare<ShareValue: Zeroize> {
     pub from_id: u32,
     pub to_id: u32,
     pub value: ShareValue,
-    pub nonce: [u8; 16], // Nonce to prevent replay attacks
-    pub session_id: u64, // Session ID to prevent replay attacks
+    pub nonce: [u8; 16],       // Nonce to prevent replay attacks
+    pub session_id: SessionId, // Session ID to prevent replay attacks
 }
 
 impl<ShareValue: Zeroize> Drop for DistributedShare<ShareValue> {
@@ -146,8 +153,8 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoSerialize
         let value_bytes = zeroize::Zeroizing::new(self.value.to_bytes()?);
         let value_len = value_bytes.len() as u32;
 
-        // Format: from_id (4) + to_id (4) + session_id (8) + nonce (16) + value_len (4) + value
-        let mut bytes = Vec::with_capacity(4 + 4 + 8 + 16 + 4 + value_bytes.len());
+        // Format: from_id (4) + to_id (4) + session_id (16) + nonce (16) + value_len (4) + value
+        let mut bytes = Vec::with_capacity(4 + 4 + 16 + 16 + 4 + value_bytes.len());
         bytes.extend_from_slice(&self.from_id.to_le_bytes());
         bytes.extend_from_slice(&self.to_id.to_le_bytes());
         bytes.extend_from_slice(&self.session_id.to_le_bytes());
@@ -158,8 +165,8 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoSerialize
     }
 
     fn serialized_size() -> usize {
-        // 4 + 4 + 8 + 16 + 4 + ShareValue::serialized_size()
-        36 + ShareValue::serialized_size()
+        // 4 + 4 + 16 + 16 + 4 + ShareValue::serialized_size()
+        44 + ShareValue::serialized_size()
     }
 }
 
@@ -169,7 +176,7 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoDeserializ
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
         use crate::error::CryptoError;
 
-        if bytes.len() < 36 {
+        if bytes.len() < 44 {
             return Err(CryptoError::DKGError(
                 "DistributedShare bytes too short".to_string(),
             ));
@@ -185,21 +192,21 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoDeserializ
                 .try_into()
                 .map_err(|_| CryptoError::DKGError("Invalid to_id bytes".to_string()))?,
         );
-        let session_id = u64::from_le_bytes(
-            bytes[8..16]
+        let session_id = SessionId::from_le_bytes(
+            bytes[8..24]
                 .try_into()
                 .map_err(|_| CryptoError::DKGError("Invalid session_id bytes".to_string()))?,
         );
-        let nonce: [u8; 16] = bytes[16..32]
+        let nonce: [u8; 16] = bytes[24..40]
             .try_into()
             .map_err(|_| CryptoError::DKGError("Invalid nonce bytes".to_string()))?;
         let value_len = u32::from_le_bytes(
-            bytes[32..36]
+            bytes[40..44]
                 .try_into()
                 .map_err(|_| CryptoError::DKGError("Invalid value_len bytes".to_string()))?,
         ) as usize;
 
-        let expected_len = 36 + value_len;
+        let expected_len = 44 + value_len;
         if bytes.len() < expected_len {
             return Err(CryptoError::DKGError(
                 "DistributedShare bytes too short for value".to_string(),
@@ -213,7 +220,7 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoDeserializ
             )));
         }
 
-        let value = ShareValue::from_bytes(&bytes[36..expected_len])?;
+        let value = ShareValue::from_bytes(&bytes[44..expected_len])?;
 
         Ok(Self {
             from_id,
@@ -543,7 +550,7 @@ pub trait Dkg: Send + Sync {
         id: u32,
         threshold: usize,
         total_nodes: usize,
-        session_id: u64,
+        session_id: SessionId,
         role: DkgRole,
     ) -> Result<Box<Self>>
     where

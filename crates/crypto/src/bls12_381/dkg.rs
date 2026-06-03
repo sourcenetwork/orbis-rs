@@ -56,7 +56,7 @@ pub struct DKGNode {
     selected_reshare_participants: Option<Vec<u32>>,
 
     // Session ID for this DKG run (prevents replay attacks)
-    pub session_id: u64,
+    pub session_id: u128,
 
     // Track received nonces to prevent replay (HashSet for O(1) lookup)
     received_nonces: HashMap<u32, HashSet<[u8; 16]>>, // from_id -> set of nonces
@@ -75,7 +75,7 @@ impl Dkg for DKGNode {
         id: u32,
         threshold: usize,
         total_nodes: usize,
-        session_id: u64,
+        session_id: u128,
         role: DkgRole,
     ) -> Result<Box<Self>> {
         if id == 0 {

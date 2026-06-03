@@ -39,7 +39,7 @@ struct PreparedReshareUpdate {
 
 pub(in crate::dkg::coordinator) async fn update_bulletin_if_selector<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     kind: &SessionKind,
     dkg_role: DkgRole,
     storage_key: &str,
@@ -195,7 +195,7 @@ where
 
 async fn prepare_reshare_update<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     storage_key: &str,
     new_peer_node_keys: &[String],
     new_threshold: u32,
@@ -281,7 +281,7 @@ where
 
 async fn new_committee_peer_ids_from_session<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     new_committee_size: usize,
 ) -> Result<Vec<String>>
 where
@@ -330,7 +330,7 @@ fn is_retryable_reshare_signature_error(error: &SignError) -> bool {
 }
 
 async fn collect_reshare_update_signature_with_retry<F, Fut>(
-    session_id: u64,
+    session_id: u128,
     retry_delay: Duration,
     mut sign_attempt: F,
 ) -> std::result::Result<Vec<u8>, SignError>

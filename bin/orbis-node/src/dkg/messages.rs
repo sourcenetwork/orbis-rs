@@ -56,13 +56,13 @@ impl SessionKind {
 pub enum DkgMessage {
     /// Phase 1: Polynomial commitment broadcast
     Commitment {
-        session_id: u64,
+        session_id: u128,
         from_node_id: u32,
         commitment: Vec<u8>, // Serialized PolynomialCommitment
     },
     /// Phase 2: Share distribution
     Share {
-        session_id: u64,
+        session_id: u128,
         from_node_id: u32,
         to_node_id: u32,
         share_value: Vec<u8>, // Serialized share value
@@ -70,7 +70,7 @@ pub enum DkgMessage {
     },
     /// Phase 3: Complaint about a malicious node
     Complaint {
-        session_id: u64,
+        session_id: u128,
         from_node_id: u32,
         accused_node_id: u32,
         reason: String,
@@ -78,14 +78,14 @@ pub enum DkgMessage {
     /// Reshare-only: a new-committee receiver confirms it has verified one
     /// valid share from an old-committee dealer.
     ReshareShareAck {
-        session_id: u64,
+        session_id: u128,
         receiver_node_id: u32,
         dealer_id: u32,
     },
     /// Reshare-only: new-committee node 1 freezes the old-dealer subset that
     /// every receiver must use for weighted Phase 4 aggregation.
     ReshareParticipantSet {
-        session_id: u64,
+        session_id: u128,
         from_node_id: u32,
         selected_dealer_ids: Vec<u32>,
     },
@@ -93,14 +93,14 @@ pub enum DkgMessage {
     /// result. Receivers verify the signature against their staged refresh
     /// bundle before promoting; `None` means rollback.
     RefreshHealthCheckResult {
-        session_id: u64,
+        session_id: u128,
         from_node_id: u32,
         statement: RefreshHealthCheckStatement,
         signature: Option<String>,
     },
     /// Phase 4: Session initialization/coordination
     SessionInit {
-        session_id: u64,
+        session_id: u128,
         threshold: u32,
         total_participants: u32,
         /// Peer IDs of the old (or only) committee — used for sender validation
@@ -126,12 +126,12 @@ pub enum DkgMessage {
         ring_id: String,
     },
     /// Error message
-    Error { session_id: u64, error: String },
+    Error { session_id: u128, error: String },
 }
 
 impl DkgMessage {
     /// Get the session ID from any message
-    pub fn session_id(&self) -> u64 {
+    pub fn session_id(&self) -> u128 {
         match self {
             DkgMessage::Commitment { session_id, .. } => *session_id,
             DkgMessage::Share { session_id, .. } => *session_id,

@@ -10,7 +10,7 @@ use crate::metrics;
 pub(in crate::dkg::coordinator) fn spawn_bulletin_finalized_cleanup<D>(
     app_state: Arc<AppState<D>>,
     ring_key: Option<String>,
-    session_id: u64,
+    session_id: u128,
     bulletin_post_id: Option<String>,
 ) where
     D: Dkg + Clone + Send + Sync + 'static,
@@ -26,7 +26,7 @@ pub(in crate::dkg::coordinator) fn spawn_bulletin_finalized_cleanup<D>(
 async fn wait_for_reshare_bulletin_finalized<D>(
     app_state: Arc<AppState<D>>,
     ring_key: Option<String>,
-    session_id: u64,
+    session_id: u128,
     bulletin_post_id: Option<String>,
 ) where
     D: Dkg + Clone + Send + Sync + 'static,

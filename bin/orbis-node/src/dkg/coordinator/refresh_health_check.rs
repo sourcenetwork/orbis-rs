@@ -32,7 +32,7 @@ const REFRESH_HEALTH_CHECK_RESULT_RETRY_DELAY: Duration = Duration::from_millis(
 
 pub(in crate::dkg::coordinator) async fn run_selector<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     ring_pk_bytes: &[u8],
     candidate: &RefreshHealthCheckCandidate,
 ) -> Result<()>
@@ -174,7 +174,7 @@ where
 
 async fn broadcast_result<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     peer_ids: &[String],
     statement: &RefreshHealthCheckStatement,
     signature: Option<String>,
@@ -239,7 +239,7 @@ fn is_retryable_refresh_health_check_error(error: &SignError) -> bool {
 
 pub(in crate::dkg::coordinator) async fn handle_result<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     from_node_id: u32,
     statement: RefreshHealthCheckStatement,
     signature: Option<String>,
@@ -253,7 +253,7 @@ where
 
 pub(in crate::dkg::coordinator) async fn apply_pending_result_if_present<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
@@ -284,7 +284,7 @@ where
 
 async fn apply_result<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     from_node_id: u32,
     statement: RefreshHealthCheckStatement,
     signature: Option<String>,
@@ -437,7 +437,7 @@ where
 
 async fn promote_candidate<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     candidate: RefreshHealthCheckCandidate,
 ) -> Result<()>
 where
@@ -475,7 +475,7 @@ where
     Ok(())
 }
 
-async fn rollback_candidate<D>(coord: &DkgCoordinator<D>, session_id: u64, ring_key: &str)
+async fn rollback_candidate<D>(coord: &DkgCoordinator<D>, session_id: u128, ring_key: &str)
 where
     D: CoordinatorDkg,
 {
@@ -500,7 +500,7 @@ where
 }
 
 async fn collect_refresh_health_check_signature_with_retry<F, Fut>(
-    session_id: u64,
+    session_id: u128,
     retry_delay: Duration,
     mut sign_attempt: F,
 ) -> std::result::Result<Vec<u8>, SignError>

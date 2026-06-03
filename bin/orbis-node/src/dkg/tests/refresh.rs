@@ -397,7 +397,7 @@ async fn test_share_before_commitment_waits_for_commitment() {
     let app_state = Arc::new(create_test_app_state_default(db_name).await);
     let coordinator = DkgCoordinator::new(app_state.clone());
 
-    let session_id: u64 = 77_777;
+    let session_id: u128 = 77_777;
     coordinator
         .create_session(session_id, 1, 2, 3, DkgRole::Standard, |_| {})
         .await
@@ -495,7 +495,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
 
     // ── Step 1: Simulate a ring that is already undergoing a PSS refresh. ──────
     let ring_key = "deadbeef1234ring";
-    let refresh_session_id: u64 = 100;
+    let refresh_session_id: u128 = 100;
 
     // Mark the ring as refreshing — this is what PSS mod.rs does before
     // creating a refresh session.
@@ -526,7 +526,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
 
     // ── Step 2: A fresh DKG on the same ring is NOT blocked. ─────────────────
     // rings_refreshing has no effect on create_session for a new DKG.
-    let fresh_dkg_session_id: u64 = 200;
+    let fresh_dkg_session_id: u128 = 200;
     coordinator
         .create_session(fresh_dkg_session_id, 1, 2, 3, DkgRole::Standard, |_| {})
         .await
