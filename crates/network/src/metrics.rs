@@ -175,3 +175,9 @@ pub fn record_recv_error(protocol: &[u8]) {
     let label = protocol_label(protocol);
     P2P_ERRORS_TOTAL.with_label_values(&[&label, "recv"]).inc();
 }
+
+/// Record an inbound stream dropped before handler execution.
+pub fn record_ingress_limited(protocol: &[u8], limit: &'static str) {
+    let label = protocol_label(protocol);
+    P2P_ERRORS_TOTAL.with_label_values(&[&label, limit]).inc();
+}

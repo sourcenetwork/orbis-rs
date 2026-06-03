@@ -14,6 +14,11 @@ The **`orbis-node`** binary is the **ring node**: it exposes **gRPC** APIs for o
 
 **Control plane vs data plane:** Clients talk **gRPC** to one node; nodes talk **QUIC** to each other for DKG/PRE/Sign messages. **`GenericProtocolHandler`** ([`helpers/protocol_handler.rs`](src/helpers/protocol_handler.rs)) implements the `network::ProtocolHandler` receive loop for all three MPC protocols.
 
+Ingress limits are applied in two places:
+
+- The gRPC server caps per-connection request concurrency and HTTP/2 streams in [`src/main.rs`](src/main.rs).
+- The P2P router caps inbound concurrent streams per protocol and per-peer stream rate before DKG/PRE/Sign handlers run; values live in [`src/constants.rs`](src/constants.rs).
+
 ## Workspace crates
 
 Depends on **`crypto`**, **`network`**, **`local-storage`**, **`proto`**, **`authn`**, **`authz`**, **`bulletin`**, **`common`**, and **`tonic`**.
@@ -49,7 +54,7 @@ Password and node identity: see **`constants`**, **`get_password`**, **`get_netw
 ## In-repo docs
 
 - [`src/dkg/PROTOCOL_FLOW.md`](src/dkg/PROTOCOL_FLOW.md) — DKG session flow (when present).
-- **[`src/constants.rs`](src/constants.rs)** — JWT limits, session TTL, timeouts, limits.
+- **[`src/constants.rs`](src/constants.rs)** — JWT limits, session TTL, network ingress limits, timeouts, limits.
 
 ## Running
 

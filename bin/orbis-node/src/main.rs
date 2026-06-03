@@ -399,6 +399,8 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     // Start gRPC server
     let grpc_server = tonic::transport::Server::builder()
         .accept_http1(true)
+        .concurrency_limit_per_connection(constants::GRPC_CONCURRENCY_LIMIT_PER_CONNECTION)
+        .max_concurrent_streams(Some(constants::GRPC_MAX_CONCURRENT_STREAMS))
         .layer(CorsLayer::permissive())
         .layer(GrpcWebLayer::new())
         .add_service(DkgServiceServer::new(dkg_service))

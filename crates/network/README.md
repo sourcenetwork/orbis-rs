@@ -46,7 +46,7 @@ Trait-based networking for Orbis with a **QUIC / [iroh](https://github.com/n0-co
 │  Router (server side) — [`src/iroh/router.rs`](src/iroh/router.rs)   │
 │                                                                     │
 │   IrohRouterBuilder::spawn() → IrohRouterWrapper                  │
-│   Per ALPN: loop { accept_bi() → spawn ProtocolHandler::handle() }  │
+│   Per ALPN: accept_bi() → ingress limits → ProtocolHandler::handle │
 │                                                                     │
 │   Application registers handlers (e.g. orbis-node’s generic       │
 │   handler that deserializes and forwards to a coordinator).         │
@@ -77,7 +77,7 @@ These are ALPN / protocol names passed to `connect` and router registration.
 | `PeerConnection` | [`IrohPeerConnection`](src/iroh/base.rs) | `open_stream`, `close` |
 | `Connection` | [`IrohStreamWrapper`](src/iroh/base.rs) | `send` / `recv` with length prefix |
 | `ProtocolHandler` | *application* | e.g. orbis-node wraps coordinators; this crate only has [`IrohProtocolHandlerWrapper`](src/iroh/router.rs) (internal) to bridge iroh’s handler API |
-| `RouterBuilder` | [`IrohRouterBuilder`](src/iroh/router.rs) | `accept`, `max_message_size`, `spawn` |
+| `RouterBuilder` | [`IrohRouterBuilder`](src/iroh/router.rs) | `accept`, `max_message_size`, ingress limits, `spawn` |
 | `Router` | [`IrohRouterWrapper`](src/iroh/router.rs) | `shutdown` |
 
 Public re-exports (with `feature = "iroh"`): **`NetworkImpl`** (`IrohNetwork`), **`IrohNetworkBuilder`**, **`IrohRouterBuilder`**, **`IrohRouterWrapper`**, **`SecretKey`**.
@@ -90,6 +90,16 @@ Public re-exports (with `feature = "iroh"`): **`NetworkImpl`** (`IrohNetwork`), 
 | `gossip` | no | Pulls in optional [`iroh-gossip`](https://crates.io/crates/iroh-gossip) (`Cargo.toml`); no integration in this crate’s sources yet |
 | `fault-injection` | no | [`FaultNetwork`](src/fault.rs) / [`FaultNetworkController`](src/fault.rs) — block outbound peers to simulate partitions in tests |
 
+## Ingress Limits
+
+[`RouterIngressLimits`](src/trait.rs) bounds inbound work before a protocol handler runs:
+
+- `max_concurrent_streams` caps concurrently executing handler tasks per registered protocol.
+- `max_streams_per_peer_per_second` caps accepted streams from one remote peer per protocol in a fixed one-second window.
+- `max_message_size` still applies inside [`IrohStreamWrapper`](src/iroh/base.rs) before payload allocation.
+
+The iroh router drops excess streams before DKG/PRE/Sign deserialization or crypto work. Dropped streams are counted under `p2p_errors_total` with `ingress_rate_limit` or `ingress_concurrency_limit`.
+
 ## Orchestration behavior (orbis-node, not this crate)
 
 The following are **not** enforced inside `crates/network`; they describe how the node binary typically uses these APIs:
@@ -101,7 +111,7 @@ The following are **not** enforced inside `crates/network`; they describe how th
 ## Key invariants (this crate)
 
 - **`PeerConnection::open_stream`** creates a **new** bidirectional QUIC stream; streams are independent (no head-of-line blocking between concurrent streams on the same connection).
-- **Incoming side:** [`IrohProtocolHandlerWrapper`](src/iroh/router.rs) runs `accept_bi()` in a loop and spawns **`ProtocolHandler::handle`** per stream.
+- **Incoming side:** [`IrohProtocolHandlerWrapper`](src/iroh/router.rs) runs `accept_bi()` in a loop, applies ingress limits, and spawns **`ProtocolHandler::handle`** per accepted stream.
 - **`IrohStreamWrapper` drop** finishes the send half so the peer sees **STREAM_FIN** rather than reset (see `Drop` impl in [`base.rs`](src/iroh/base.rs)).
 
 ## Metrics

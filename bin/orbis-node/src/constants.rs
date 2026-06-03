@@ -172,6 +172,27 @@ pub const SIGN_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// connection closes, `open_stream()` fails, and the pool reconnects.
 pub const NETWORK_IDLE_TIMEOUT_MS: u32 = 30_000;
 
+/// Maximum concurrently executing inbound P2P handler tasks per protocol.
+///
+/// The iroh router accepts one QUIC stream per node-to-node request/session.
+/// This cap prevents a single protocol from spawning unbounded handler tasks
+/// under flood or retry storms. Excess streams are dropped before protocol
+/// deserialization.
+pub const NETWORK_MAX_CONCURRENT_INBOUND_STREAMS: usize = 1024;
+
+/// Maximum inbound P2P streams accepted from one peer per protocol per second.
+///
+/// DKG, PRE, and Sign traffic should stay well below this in normal operation;
+/// the limit primarily protects handler allocation and downstream crypto work
+/// from cheap stream-open floods.
+pub const NETWORK_MAX_INBOUND_STREAMS_PER_PEER_PER_SECOND: usize = 512;
+
+/// Maximum in-flight gRPC requests per client connection.
+pub const GRPC_CONCURRENCY_LIMIT_PER_CONNECTION: usize = 128;
+
+/// Maximum concurrent HTTP/2 streams per gRPC client connection.
+pub const GRPC_MAX_CONCURRENT_STREAMS: u32 = 256;
+
 // ============================================================================
 // Peer ID Validation Constants
 // ============================================================================

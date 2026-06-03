@@ -16,6 +16,7 @@ pub use error::{NetworkError, Result};
 pub use protocol::{DKG, REENCRYPT, SIGN};
 pub use r#trait::{
     Connection, Message, Network, PeerConnection, PeerId, ProtocolHandler, Router, RouterBuilder,
+    RouterIngressLimits,
 };
 
 // Export the selected implementation
