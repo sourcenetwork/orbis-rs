@@ -1,4 +1,3 @@
-use crate::helpers::helpers::ring_namespace_for_post_id;
 use crate::pre::{
     error::{PreError, Result},
     messages::PreMessage,
@@ -16,21 +15,15 @@ use std::sync::Arc;
 
 /// Fetches and deserializes the document and ring payloads from the bulletin.
 ///
-/// Reads the document by `namespace`/`object_id`, then follows the embedded
-/// `ring_id` to load the corresponding ring payload. The ring's bulletin namespace
-/// is resolved from the local `RingIndex` by matching `bulletin_post_id == ring_id`.
+/// Reads the document by object ID, then follows the embedded `ring_id` to load
+/// the corresponding ring payload.
 pub async fn fetch_bulletin_payloads(
     bulletin: &(dyn Bulletin + Send + Sync),
-    local_storage: &impl LocalStorage,
-    namespace: &str,
+    _local_storage: &impl LocalStorage,
     object_id: &str,
 ) -> Result<(DocumentPayload, RingPayload)> {
     let object_info = bulletin
-        .read(
-            namespace.to_string(),
-            object_id.to_string(),
-            BulletinKind::Document,
-        )
+        .read(object_id.to_string(), BulletinKind::Document)
         .await
         .map_err(|e| PreError::Storage(format!("Failed to read object '{}': {}", object_id, e)))?;
 
@@ -39,15 +32,8 @@ pub async fn fetch_bulletin_payloads(
             PreError::Deserialization(format!("Failed to parse document payload: {}", e))
         })?;
 
-    let ring_namespace = ring_namespace_for_post_id(local_storage, &document_payload.ring_id)
-        .map_err(PreError::Storage)?;
-
     let ring_info = bulletin
-        .read(
-            ring_namespace,
-            document_payload.ring_id.clone(),
-            BulletinKind::Ring,
-        )
+        .read(document_payload.ring_id.clone(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             PreError::Storage(format!(
@@ -151,7 +137,6 @@ pub fn validate_pre_claims(
     token: &BearerToken<PreClaims>,
     rdr_pk: &Vec<u8>,
     object_id: &String,
-    namespace: &String,
     derivation: &Option<Vec<u8>>,
     salt: &Option<String>,
 ) -> Result<()> {
@@ -166,13 +151,6 @@ pub fn validate_pre_claims(
         return Err(PreError::Unauthorized(format!(
             "Token object_id '{}' does not match request object_id '{}'",
             token.claims.object_id, object_id
-        )));
-    }
-
-    if token.claims.namespace != *namespace {
-        return Err(PreError::Unauthorized(format!(
-            "Token namespace '{}' does not match request namespace '{}'",
-            token.claims.namespace, namespace
         )));
     }
 

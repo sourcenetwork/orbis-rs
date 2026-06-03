@@ -8,7 +8,21 @@ use crate::r#trait::{Connection, Message, Network, ProtocolHandler};
 use crate::tests as trait_tests;
 use crate::{PeerId, Result, SecretKey};
 use async_trait::async_trait;
+use std::net::SocketAddrV4;
 use std::sync::Arc;
+
+fn loopback() -> SocketAddrV4 {
+    "127.0.0.1:0".parse().unwrap()
+}
+
+async fn new_test_network() -> IrohNetwork {
+    IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .no_relay()
+        .build()
+        .await
+        .expect("Should create network")
+}
 // ============================================================================
 // Run Generic Trait Tests Against IrohNetwork
 // ============================================================================
@@ -21,64 +35,64 @@ fn test_name() {
 #[tokio::test]
 #[serial_test::serial]
 async fn iroh_network_creation() {
-    let network = IrohNetwork::new().await.expect("Should create network");
+    let network = new_test_network().await;
     trait_tests::test_network_creation(&network).await;
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn iroh_connection_establishment() {
-    let net1 = IrohNetwork::new().await.expect("Should create network 1");
-    let net2 = IrohNetwork::new().await.expect("Should create network 2");
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
     trait_tests::test_connection_establishment(&net1, &net2).await;
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn iroh_single_message_roundtrip() {
-    let net1 = IrohNetwork::new().await.expect("Should create network 1");
-    let net2 = IrohNetwork::new().await.expect("Should create network 2");
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
     trait_tests::test_single_message_roundtrip(&net1, &net2).await;
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn iroh_multiple_messages() {
-    let net1 = IrohNetwork::new().await.expect("Should create network 1");
-    let net2 = IrohNetwork::new().await.expect("Should create network 2");
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
     trait_tests::test_multiple_messages(&net1, &net2).await;
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn iroh_large_message() {
-    let net1 = IrohNetwork::new().await.expect("Should create network 1");
-    let net2 = IrohNetwork::new().await.expect("Should create network 2");
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
     trait_tests::test_large_message(&net1, &net2).await;
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn iroh_router_multiple_protocols() {
-    let net1 = IrohNetwork::new().await.expect("Should create network 1");
-    let net2 = IrohNetwork::new().await.expect("Should create network 2");
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
     trait_tests::test_router_multiple_protocols(&net1, &net2).await;
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn iroh_connection_peer_id() {
-    let net1 = IrohNetwork::new().await.expect("Should create network 1");
-    let net2 = IrohNetwork::new().await.expect("Should create network 2");
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
     trait_tests::test_connection_peer_id(&net1, &net2).await;
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn iroh_concurrent_connections() {
-    let net1 = IrohNetwork::new().await.expect("Should create network 1");
-    let net2 = IrohNetwork::new().await.expect("Should create network 2");
-    let net3 = IrohNetwork::new().await.expect("Should create network 3");
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
+    let net3 = new_test_network().await;
     trait_tests::test_concurrent_connections(&net1, &net2, &net3).await;
 }
 
@@ -202,11 +216,18 @@ async fn iroh_router_builder_max_message_size() {
     // Both networks need larger max message size
     let large_size = 2 * 1024 * 1024; // 2MB
     let net1 = IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .no_relay()
         .max_message_size(large_size)
         .build()
         .await
         .expect("Should create network 1");
-    let net2 = IrohNetwork::new().await.expect("Should create network 2");
+    let net2 = IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .no_relay()
+        .build()
+        .await
+        .expect("Should create network 2");
 
     // Set max message size via router builder
     let router_builder = net2

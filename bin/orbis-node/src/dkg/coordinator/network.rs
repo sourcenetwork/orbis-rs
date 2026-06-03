@@ -83,9 +83,10 @@ where
 /// Send a DKG message to a peer.
 ///
 /// When `session_id` is `Some`, the stream is cached in the session state so that
-/// all messages within a session to the same peer travel on the same QUIC stream.
-/// This preserves QUIC's within-stream ordering guarantee
-/// (SessionInit → Commitment → Share arrive in order at the receiver).
+/// messages to the same peer normally travel on the same QUIC stream under one
+/// per-peer send lock. This preserves local send order for that peer, but a stream
+/// replacement or cross-peer delivery can still make valid messages arrive before
+/// dependent local state is visible.
 ///
 /// When `session_id` is `None`, a fresh stream is opened and dropped after the send.
 ///
@@ -391,6 +392,7 @@ mod tests {
         (
             Arc::new(AppState::<DkgImpl>::new(
                 "127.0.0.1:0".to_string(),
+                "test-node-key".to_string(),
                 network,
                 local_storage,
                 authz,

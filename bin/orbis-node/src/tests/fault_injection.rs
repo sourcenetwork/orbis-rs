@@ -11,7 +11,6 @@
 //!     -- fault_injection --nocapture
 
 use crate::dkg::service::DkgServiceImpl;
-use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::info::InfoServiceImpl;
 use crate::pre::service::PreServiceImpl;
 use crate::sign::service::SignServiceImpl;
@@ -20,18 +19,18 @@ use crate::{
     constants::{MIN_NODE_BALANCE, PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT},
     helpers::{
         launch::{create_and_store_node_key, LogLevel},
-        test_helpers::{cleanup_db, test_db_path, wait_for_nodes_ready},
+        test_helpers::{
+            cleanup_db, create_orbis_ring_policy, create_ring_on_chain, test_db_path,
+            wait_for_nodes_ready, wait_for_ring_finalized,
+        },
     },
     init_node, Args, NodeConfig,
 };
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
-use bulletin::r#trait::{Bulletin, BulletinKind, RingPayload};
+use bulletin::r#trait::{Bulletin, BulletinWriteKind, NodeInfo};
 use bulletin::BulletinImpl;
-use common::{
-    blockchain::{events::BulletinEventSubscription, ChainConfigBuilder},
-    SourceHubTestContainer, SOURCEHUB_RPC_URL,
-};
+use common::{blockchain::ChainConfigBuilder, SourceHubTestContainer};
 use crypto::{helpers::generate_keypair, CryptoSerialize, DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{FaultNetwork, FaultNetworkController, Network, NetworkImpl};
@@ -52,8 +51,8 @@ use tokio::time::Duration;
 /// A running in-process orbis node backed by a FaultNetwork.
 struct FaultableNodeHandle {
     grpc_endpoint: String,
-    peer_addr: String,
-    public_address: String,
+    _peer_addr: String,
+    _public_address: String,
     db_path: String,
     task: tokio::task::JoinHandle<()>,
     /// 64-char hex node ID — used to block this node on other nodes' controllers.
@@ -75,18 +74,12 @@ struct FaultableThreeNodeNetwork {
     alice: FaultableNodeHandle,
     bob: FaultableNodeHandle,
     charlie: FaultableNodeHandle,
+    /// ACP policy ID all three nodes are whitelisted for.
+    policy_id: String,
+    /// Compressed pubkeys of alice, bob, charlie (in that order).
+    node_keys: Vec<String>,
     /// Keeps the SourceHub Docker container alive via RAII.
     _chain: SourceHubTestContainer,
-}
-
-impl FaultableThreeNodeNetwork {
-    fn peer_addrs(&self) -> Vec<String> {
-        vec![
-            self.alice.peer_addr.clone(),
-            self.bob.peer_addr.clone(),
-            self.charlie.peer_addr.clone(),
-        ]
-    }
 }
 
 /// Build and spawn a gRPC server from an `InitializedNode`.
@@ -119,7 +112,11 @@ async fn setup_fault_three_node_network(
 ) -> FaultableThreeNodeNetwork {
     let chain = SourceHubTestContainer::new();
 
+    let policy_id = create_orbis_ring_policy().await;
+
     let mut handles: Vec<FaultableNodeHandle> = Vec::new();
+    let mut node_keys: Vec<String> = Vec::new();
+
     for i in 0..3u16 {
         let port = base_port + i;
         let db_path = test_db_path(&format!("{}_{}", db_prefix, i));
@@ -131,6 +128,7 @@ async fn setup_fault_three_node_network(
             create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
                 .expect("create node signing key");
         let public_address = signer.address();
+        let node_key = signer.public_key_hex();
 
         cli_tool::fund(
             public_address.clone(),
@@ -168,6 +166,22 @@ async fn setup_fault_three_node_network(
             .unwrap_or_else(|| "127.0.0.1:0".to_string());
         let peer_addr = format!("{}@{}", peer_hex, p2p_socket);
 
+        // Register NodeInfo on-chain so the DKG service can look up this node's peer_id.
+        let node_info_bytes: Vec<u8> = NodeInfo {
+            peer_id: peer_addr.clone(),
+            controller_key: node_key.clone(),
+            whitelisted_policy_ids: vec![policy_id.clone()],
+            whitelisted_ring_ids: vec![],
+        }
+        .try_into()
+        .expect("serialize NodeInfo");
+        bulletin
+            .post(BulletinWriteKind::NodeInfo, node_info_bytes)
+            .await
+            .expect("register NodeInfo on-chain");
+
+        node_keys.push(node_key.clone());
+
         // Wrap with FaultNetwork to enable test-time connection blocking
         let (fault_net, fault_ctrl) = FaultNetwork::new(Arc::new(real_net));
         let network: Arc<dyn Network> = Arc::new(fault_net);
@@ -185,11 +199,12 @@ async fn setup_fault_three_node_network(
                 metrics_addr: None,
                 loki_url: None,
                 reshare_interval_secs: 0,
-                node_controller_key: "test-controller-key".to_string(),
+                node_controller_key: node_key.clone(),
                 node_peer_id: None,
-                node_whitelisted_namespaces: vec![],
+                node_whitelisted_policy_ids: vec![policy_id.clone()],
                 node_whitelisted_ring_ids: vec![],
             },
+            node_key,
             network,
             local_storage,
             authz,
@@ -201,8 +216,8 @@ async fn setup_fault_three_node_network(
 
         handles.push(FaultableNodeHandle {
             grpc_endpoint: format!("http://{}", grpc_bind),
-            peer_addr,
-            public_address,
+            _peer_addr: peer_addr,
+            _public_address: public_address,
             db_path,
             task,
             peer_hex,
@@ -218,59 +233,28 @@ async fn setup_fault_three_node_network(
         alice: it.next().unwrap(),
         bob: it.next().unwrap(),
         charlie: it.next().unwrap(),
+        policy_id,
+        node_keys,
         _chain: chain,
     }
 }
 
-/// Register the ring namespace, add all three nodes as collaborators, run DKG,
-/// and return `(ring_pk_hex, ring_id)` once the bulletin post is confirmed.
+/// Create a ring on-chain, run DKG, and return `(ring_pk_hex, ring_id)` once
+/// all participant nodes have called FinalizeRing and the chain confirms.
 async fn setup_ring(
     endpoint: &str,
+    node_keys: &[String],
     threshold: u32,
-    peer_ids: Vec<String>,
-    node_public_addresses: &[&str],
+    policy_id: &str,
 ) -> (String, String) {
-    cli_tool::register_bulletin_namespace(BULLETIN_RING_NAMESPACE.to_string())
+    let ring_id = create_ring_on_chain(node_keys, threshold, policy_id, None).await;
+
+    cli_tool::do_dkg(endpoint.to_string(), ring_id.clone())
         .await
-        .expect("register ring namespace");
-    for addr in node_public_addresses {
-        cli_tool::add_bulletin_collaborator(BULLETIN_RING_NAMESPACE.to_string(), addr.to_string())
-            .await
-            .expect("add ring collaborator");
-    }
+        .expect("DKG initiation");
 
-    let sub = BulletinEventSubscription::connect(SOURCEHUB_RPC_URL)
-        .await
-        .expect("ring event subscription");
-
-    let dkg_result = cli_tool::do_dkg(
-        endpoint.to_string(),
-        threshold,
-        peer_ids,
-        None,
-        None,
-        BULLETIN_RING_NAMESPACE.to_string(),
-    )
-    .await
-    .expect("DKG initiation");
-
-    let post_event = sub
-        .wait_for_artifact(&dkg_result.session_id, Duration::from_secs(90))
-        .await
-        .expect("DKG completion event");
-
-    let post_payload = cli_tool::read_bulletin_post(
-        BULLETIN_RING_NAMESPACE.to_string(),
-        post_event.ring_id.clone(),
-        BulletinKind::Ring,
-    )
-    .await
-    .expect("read ring post");
-
-    let ring_payload: RingPayload =
-        serde_json::from_slice(&post_payload).expect("parse RingPayload");
-
-    (ring_payload.ring_pk, post_event.ring_id)
+    let ring_pk = wait_for_ring_finalized(&ring_id, Duration::from_secs(90)).await;
+    (ring_pk, ring_id)
 }
 
 // =========================================================================
@@ -288,27 +272,11 @@ async fn test_pre_one_node_down_succeeds() {
     let net = setup_fault_three_node_network("fault_pre_1node_down", 51060).await;
 
     let endpoint = net.alice.grpc_endpoint.clone();
-    let peer_ids = net.peer_addrs();
-    let node_addrs = [
-        net.alice.public_address.as_str(),
-        net.bob.public_address.as_str(),
-        net.charlie.public_address.as_str(),
-    ];
 
     // Step 1: DKG → ring (threshold=2)
-    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, 2, peer_ids, &node_addrs).await;
+    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, &net.node_keys, 2, &net.policy_id).await;
 
-    // Step 2: User namespace + alice as collaborator
-    let user_namespace = "fault_pre_ns1".to_string();
-
-    cli_tool::register_bulletin_namespace(user_namespace.clone())
-        .await
-        .expect("register user namespace");
-    cli_tool::add_bulletin_collaborator(user_namespace.clone(), net.alice.public_address.clone())
-        .await
-        .expect("add alice to user namespace");
-
-    // Step 3: Add policy + prepare + store secret + authz relationship
+    // Step 2: Add policy + prepare + store secret + authz relationship
     let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");
     let resource = "document".to_string();
     let permission = "read".to_string();
@@ -331,7 +299,6 @@ async fn test_pre_one_node_down_succeeds() {
         endpoint.clone(),
         &prepared,
         ring_id.clone(),
-        user_namespace.clone(),
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
@@ -376,7 +343,6 @@ async fn test_pre_one_node_down_succeeds() {
         Some(reader_sk_hex.clone()),
         object_id.clone(),
         Some(did.clone()),
-        user_namespace.clone(),
         None,
         None,
         None,
@@ -410,27 +376,11 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
     let net = setup_fault_three_node_network("fault_pre_below_threshold", 51063).await;
 
     let endpoint = net.alice.grpc_endpoint.clone();
-    let peer_ids = net.peer_addrs();
-    let node_addrs = [
-        net.alice.public_address.as_str(),
-        net.bob.public_address.as_str(),
-        net.charlie.public_address.as_str(),
-    ];
 
     // Step 1: DKG → ring (threshold=2)
-    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, 2, peer_ids, &node_addrs).await;
+    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, &net.node_keys, 2, &net.policy_id).await;
 
-    // Step 2: User namespace + alice as collaborator
-    let user_namespace = "fault_pre_ns2".to_string();
-
-    cli_tool::register_bulletin_namespace(user_namespace.clone())
-        .await
-        .expect("register user namespace");
-    cli_tool::add_bulletin_collaborator(user_namespace.clone(), net.alice.public_address.clone())
-        .await
-        .expect("add alice to user namespace");
-
-    // Step 3: Add policy + prepare + store secret + authz relationship
+    // Step 2: Add policy + prepare + store secret + authz relationship
     let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");
     let resource = "document".to_string();
     let permission = "read".to_string();
@@ -453,7 +403,6 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
         endpoint.clone(),
         &prepared,
         ring_id.clone(),
-        user_namespace.clone(),
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
@@ -502,7 +451,6 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
             Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
-            user_namespace.clone(),
             None,
             None,
             None,
@@ -539,26 +487,11 @@ async fn test_sign_one_node_down_succeeds() {
     let net = setup_fault_three_node_network("fault_sign_1node_down", 51066).await;
 
     let endpoint = net.alice.grpc_endpoint.clone();
-    let peer_ids = net.peer_addrs();
-    let node_addrs = [
-        net.alice.public_address.as_str(),
-        net.bob.public_address.as_str(),
-        net.charlie.public_address.as_str(),
-    ];
 
     // Step 1: DKG → ring (threshold=2)
-    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, 2, peer_ids, &node_addrs).await;
+    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, &net.node_keys, 2, &net.policy_id).await;
 
-    // Step 2: User namespace + alice as collaborator
-    let user_namespace = "fault_sign_ns1".to_string();
-    cli_tool::register_bulletin_namespace(user_namespace.clone())
-        .await
-        .expect("register user namespace");
-    cli_tool::add_bulletin_collaborator(user_namespace.clone(), net.alice.public_address.clone())
-        .await
-        .expect("add alice to user namespace");
-
-    // Step 3: Prepare secret (local, no network needed)
+    // Step 2: Prepare secret (local, no network needed)
     let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");
     let resource = "document".to_string();
     let permission = "read".to_string();
@@ -586,7 +519,6 @@ async fn test_sign_one_node_down_succeeds() {
         endpoint.clone(),
         &prepared,
         ring_id.clone(),
-        user_namespace.clone(),
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
@@ -626,26 +558,11 @@ async fn test_sign_below_threshold_nodes_down_fails_fast() {
     let net = setup_fault_three_node_network("fault_sign_below_threshold", 51069).await;
 
     let endpoint = net.alice.grpc_endpoint.clone();
-    let peer_ids = net.peer_addrs();
-    let node_addrs = [
-        net.alice.public_address.as_str(),
-        net.bob.public_address.as_str(),
-        net.charlie.public_address.as_str(),
-    ];
 
     // Step 1: DKG → ring (threshold=2)
-    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, 2, peer_ids, &node_addrs).await;
+    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, &net.node_keys, 2, &net.policy_id).await;
 
-    // Step 2: User namespace + alice as collaborator
-    let user_namespace = "fault_sign_ns2".to_string();
-    cli_tool::register_bulletin_namespace(user_namespace.clone())
-        .await
-        .expect("register user namespace");
-    cli_tool::add_bulletin_collaborator(user_namespace.clone(), net.alice.public_address.clone())
-        .await
-        .expect("add alice to user namespace");
-
-    // Step 3: Prepare secret (local)
+    // Step 2: Prepare secret (local)
     let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");
     let resource = "document".to_string();
     let permission = "read".to_string();
@@ -677,7 +594,6 @@ async fn test_sign_below_threshold_nodes_down_fails_fast() {
             endpoint.clone(),
             &prepared,
             ring_id.clone(),
-            user_namespace.clone(),
             policy_id.clone(),
             resource.clone(),
             permission.clone(),
@@ -717,21 +633,9 @@ async fn test_dkg_fails_when_node_unreachable() {
     let net = setup_fault_three_node_network("fault_dkg_unreachable", 51072).await;
 
     let endpoint = net.alice.grpc_endpoint.clone();
-    let peer_ids = net.peer_addrs();
 
-    // Register the ring namespace and authorise all three nodes to post
-    cli_tool::register_bulletin_namespace(BULLETIN_RING_NAMESPACE.to_string())
-        .await
-        .expect("register ring namespace");
-    for addr in [
-        &net.alice.public_address,
-        &net.bob.public_address,
-        &net.charlie.public_address,
-    ] {
-        cli_tool::add_bulletin_collaborator(BULLETIN_RING_NAMESPACE.to_string(), addr.clone())
-            .await
-            .expect("add ring collaborator");
-    }
+    // Create the ring on-chain before blocking charlie
+    let ring_id = create_ring_on_chain(&net.node_keys, 2, &net.policy_id, None).await;
 
     // Block charlie on alice AND bob so charlie is unreachable for DKG
     let charlie_hex = net.charlie.peer_hex.clone();
@@ -741,15 +645,7 @@ async fn test_dkg_fails_when_node_unreachable() {
     // Initiate DKG — the DKG service checks connectivity to all peers upfront.
     // Because charlie is blocked on alice's outbound controller, alice cannot
     // reach charlie and the DKG call must return an error immediately.
-    let dkg_result = cli_tool::do_dkg(
-        endpoint.to_string(),
-        2,
-        peer_ids,
-        None,
-        None,
-        BULLETIN_RING_NAMESPACE.to_string(),
-    )
-    .await;
+    let dkg_result = cli_tool::do_dkg(endpoint.to_string(), ring_id).await;
 
     assert!(
         dkg_result.is_err(),

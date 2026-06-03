@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
 use crate::helpers::helpers::{validate_all_peer_ids, RingConfig};
+use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::metrics;
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
@@ -90,7 +91,6 @@ where
         let (document_payload, ring_payload) = fetch_bulletin_payloads(
             &*self.state.bulletin,
             &self.state.local_storage,
-            &req.namespace,
             &req.object_id,
         )
         .await?;
@@ -109,7 +109,6 @@ where
             &token,
             &req.rdr_pk,
             &req.object_id,
-            &req.namespace,
             &req.derivation,
             &req.salt,
         )?;
@@ -139,7 +138,7 @@ where
             ring_id = %document_payload.ring_id,
             ring_pk = %ring_payload.ring_pk,
             reader_pk = ?req.rdr_pk,
-            peer_ids = ?ring_payload.peer_ids,
+            peer_node_keys = ?ring_payload.peer_node_keys,
             issuer = %token.issuer_id,
             "Authenticated StartPre request"
         );
@@ -151,17 +150,20 @@ where
         let secret_bytes = document_payload.document.as_bytes().to_vec();
 
         // 2. Validate we have peers
-        if ring_payload.peer_ids.is_empty() {
+        if ring_payload.peer_node_keys.is_empty() {
             return Err(PreError::InvalidInput(
-                "No peer IDs provided for reencryption".to_string(),
+                "No peer node keys provided for reencryption".to_string(),
             )
             .into());
         }
 
+        let routes = resolve_node_routes(&self.state.bulletin, &ring_payload.peer_node_keys)
+            .await
+            .map_err(PreError::InvalidInput)?;
+        let peer_ids = peer_ids_from_routes(&routes);
+
         // 2b. Validate all peer IDs before attempting connections
-        if let Err((invalid_peer_id, validation_error)) =
-            validate_all_peer_ids(&ring_payload.peer_ids)
-        {
+        if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&peer_ids) {
             return Err(PreError::InvalidInput(format!(
                 "Invalid peer ID '{}': {}",
                 invalid_peer_id, validation_error
@@ -177,13 +179,14 @@ where
         // allowing threshold-of-n operation when some nodes are unreachable.
         metrics::record_pre_request_started();
         let coordinator = PreCoordinator::<D, T>::new(Arc::new(self.state.clone()));
-        let total_participants = ring_payload.peer_ids.len();
+        let total_participants = peer_ids.len();
         let poly_state = RingPolyState::load(&self.state.local_storage, &ring_pk).map_err(|e| {
             Status::internal(format!("Failed to load ring polynomial state: {}", e))
         })?;
         let ring = RingConfig {
             ring_pk_bytes,
-            peer_ids: ring_payload.peer_ids,
+            peer_ids,
+            peer_node_keys: ring_payload.peer_node_keys,
             threshold: ring_payload.threshold as usize,
             total_participants,
             public_polynomial_hex: poly_state.public_polynomial,
@@ -192,7 +195,6 @@ where
             rdr_pk_bytes: req.rdr_pk,
             object_id: req.object_id,
             token_string: token_str.to_string(),
-            namespace: req.namespace,
             derivation: req.derivation,
             salt: req.salt,
             valid_window,

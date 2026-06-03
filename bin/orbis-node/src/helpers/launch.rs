@@ -4,7 +4,7 @@ use crate::constants::{
 use crate::error::PasswordError;
 use bulletin::{
     error::BulletinError,
-    r#trait::{Bulletin, BulletinKind, NodeInfo},
+    r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo},
 };
 use clap::{Parser, ValueEnum};
 use common::blockchain::{ChainConfig, TxSigner};
@@ -59,9 +59,9 @@ pub struct Args {
     /// Override the peer ID registered in node info. Defaults to this node's local iroh peer ID.
     #[arg(long)]
     pub node_peer_id: Option<String>,
-    /// Namespace this node initially allows. Ignored if node info already exists.
-    #[arg(long = "node-whitelisted-namespace")]
-    pub node_whitelisted_namespaces: Vec<String>,
+    /// Policy ID this node initially allows. Ignored if node info already exists.
+    #[arg(long = "node-whitelisted-policy-id")]
+    pub node_whitelisted_policy_ids: Vec<String>,
     /// Ring ID this node initially allows. Ignored if node info already exists.
     #[arg(long = "node-whitelisted-ring-id")]
     pub node_whitelisted_ring_ids: Vec<String>,
@@ -89,11 +89,7 @@ pub async fn ensure_node_info(
         .to_string();
 
     let existing = match bulletin
-        .read(
-            node_key.to_string(),
-            node_key.to_string(),
-            BulletinKind::NodeInfo,
-        )
+        .read(node_key.to_string(), BulletinKind::NodeInfo)
         .await
     {
         Ok(post) => Some(NodeInfo::try_from(post)?),
@@ -117,12 +113,12 @@ pub async fn ensure_node_info(
             .into());
         }
 
-        if !args.node_whitelisted_namespaces.is_empty()
+        if !args.node_whitelisted_policy_ids.is_empty()
             || !args.node_whitelisted_ring_ids.is_empty()
         {
             tracing::warn!(
                 node_key = %node_key,
-                namespace_count = args.node_whitelisted_namespaces.len(),
+                policy_id_count = args.node_whitelisted_policy_ids.len(),
                 ring_id_count = args.node_whitelisted_ring_ids.len(),
                 "Existing node info found; ignoring startup whitelist flags because controller-owned updates must use UpdateNodeInfo"
             );
@@ -135,16 +131,33 @@ pub async fn ensure_node_info(
         return Ok(());
     }
 
-    let node_info = NodeInfo {
-        peer_id: peer_id.clone(),
+    let node_info = build_node_info_from_args(peer_id.clone(), controller_key, args);
+    let payload: Vec<u8> = node_info.try_into()?;
+    let created_node_key = bulletin.post(BulletinWriteKind::NodeInfo, payload).await?;
+    if created_node_key != node_key {
+        return Err(format!(
+            "bulletin created node info under key {}, expected {}",
+            created_node_key, node_key
+        )
+        .into());
+    }
+    tracing::info!(
+        node_key = %node_key,
+        peer_id = %peer_id,
+        "Created node info"
+    );
+    Ok(())
+}
+
+pub fn build_node_info_from_args(peer_id: String, controller_key: &str, args: &Args) -> NodeInfo {
+    NodeInfo {
+        peer_id,
         controller_key: controller_key.to_string(),
-        whitelisted_namespaces: args
-            .node_whitelisted_namespaces
+        whitelisted_policy_ids: args
+            .node_whitelisted_policy_ids
             .iter()
-            .filter_map(|namespace| {
-                let namespace = namespace.trim();
-                (!namespace.is_empty()).then(|| common::blockchain::orbis::namespace_id(namespace))
-            })
+            .map(|policy_id| policy_id.trim().to_string())
+            .filter(|policy_id| !policy_id.is_empty())
             .collect(),
         whitelisted_ring_ids: args
             .node_whitelisted_ring_ids
@@ -152,17 +165,7 @@ pub async fn ensure_node_info(
             .map(|ring_id| ring_id.trim().to_string())
             .filter(|ring_id| !ring_id.is_empty())
             .collect(),
-    };
-    let payload: Vec<u8> = node_info.try_into()?;
-    bulletin
-        .post(node_key.to_string(), BulletinKind::NodeInfo, payload, None)
-        .await?;
-    tracing::info!(
-        node_key = %node_key,
-        peer_id = %peer_id,
-        "Created node info"
-    );
-    Ok(())
+    }
 }
 
 // ============================================================================

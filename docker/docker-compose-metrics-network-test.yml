@@ -3,7 +3,7 @@
 services:
   sourcehub:
     build:
-      context: https://github.com/sourcenetwork/sourcehub.git#jesse/add-node-info
+      context: https://github.com/sourcenetwork/sourcehub.git#jesse/Orbis-module
     entrypoint: ["/bin/sh", "-c"]
     container_name: sourcehub-integration-test
     command:
@@ -43,7 +43,7 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret1testsecret1
       - RUST_LOG=info
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--loki-url", "http://loki:3100", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62", "--node-whitelisted-namespace", "orbis"]
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--loki-url", "http://loki:3100", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "50051:50051"
       - "9091:9090"
@@ -70,7 +70,7 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret2testsecret2
       - RUST_LOG=info
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--loki-url", "http://loki:3100", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62", "--node-whitelisted-namespace", "orbis"]
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--loki-url", "http://loki:3100", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "50052:50051"
       - "9092:9090"
@@ -97,7 +97,7 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret3testsecret3
       - RUST_LOG=info
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--loki-url", "http://loki:3100", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62", "--node-whitelisted-namespace", "orbis"]
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--loki-url", "http://loki:3100", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "50053:50051"
       - "9093:9090"

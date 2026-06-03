@@ -5,6 +5,29 @@
 use crate::app_state::AppState;
 
 pub const BULLETIN_RING_NAMESPACE: &str = "orbis";
+pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
+
+pub const ORBIS_RING_POLICY_YAML: &str = r#"
+name: orbis ring policy
+resources:
+- name: ring_policy
+  permissions:
+  - name: create_ring
+    expr: ring_creator
+  relations:
+  - name: ring_creator
+    types:
+    - actor
+- name: ring
+  permissions:
+  - name: update_ring
+    expr: operator
+  relations:
+  - name: operator
+    types:
+    - actor
+"#;
+
 use crate::helpers::create_routers::{
     create_router_with_all_handlers, create_router_with_handlers,
 };
@@ -14,11 +37,13 @@ use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::{
     dummy::DummyBulletin,
-    r#trait::{Bulletin, BulletinKind, BulletinPost, RingPayload},
+    r#trait::{Bulletin, BulletinPost, BulletinWriteKind, NodeInfo, RingPayload},
     BulletinImpl,
 };
 use cli_tool;
-use common::blockchain::ChainConfigBuilder;
+use common::blockchain::{
+    acp::Object, ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+};
 use hex;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -27,6 +52,7 @@ use local_storage::{
 use network::{NetworkImpl, Router};
 use proto::info_service::NodeStatus;
 use std::{fs, sync::Arc};
+use tokio::time::Duration;
 
 // Concrete crypto implementations for tests (selected via crypto crate features)
 use crypto::{DkgImpl, PreImpl, SignImpl};
@@ -64,20 +90,28 @@ pub async fn create_test_app_state(
     dummy_bulletin: bool,
     db_name: &str,
 ) -> AppState<DkgImpl> {
-    let bulletin: Arc<dyn Bulletin + Send + Sync> = if dummy_bulletin {
-        Arc::new(
+    if dummy_bulletin {
+        let bulletin = Arc::new(
             DummyBulletin::new()
                 .await
                 .expect("Failed to initialize dummy bulletin"),
-        )
+        );
+        create_test_app_state_with_bulletin(bind_address, dummy_authz, bulletin, db_name).await
     } else {
-        Arc::new(
+        let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
             BulletinImpl::new(ChainConfigBuilder::default())
                 .await
                 .expect("Failed to initialize bulletin"),
+        );
+        create_test_app_state_with_bulletin_inner(
+            bind_address,
+            dummy_authz,
+            bulletin,
+            None,
+            db_name,
         )
-    };
-    create_test_app_state_with_bulletin(bind_address, dummy_authz, bulletin, db_name).await
+        .await
+    }
 }
 
 /// Create a test AppState with a shared bulletin instance
@@ -86,7 +120,25 @@ pub async fn create_test_app_state(
 pub async fn create_test_app_state_with_bulletin(
     bind_address: Option<String>,
     dummy_authz: bool,
+    bulletin: Arc<DummyBulletin>,
+    db_name: &str,
+) -> AppState<DkgImpl> {
+    let bulletin_trait: Arc<dyn Bulletin + Send + Sync> = bulletin.clone();
+    create_test_app_state_with_bulletin_inner(
+        bind_address,
+        dummy_authz,
+        bulletin_trait,
+        Some(bulletin),
+        db_name,
+    )
+    .await
+}
+
+async fn create_test_app_state_with_bulletin_inner(
+    bind_address: Option<String>,
+    dummy_authz: bool,
     bulletin: Arc<dyn Bulletin + Send + Sync>,
+    dummy_bulletin: Option<Arc<DummyBulletin>>,
     db_name: &str,
 ) -> AppState<DkgImpl> {
     let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
@@ -104,6 +156,28 @@ pub async fn create_test_app_state_with_bulletin(
     );
     let local_storage =
         LocalStorageImpl::new(None, test_db_path(db_name)).expect("Failed to create local storage");
+    let local_peer_id_hex = hex::encode(network.local_peer_id().as_bytes());
+    let test_node_key = format!("test-node-key-{}", local_peer_id_hex);
+    let node_info = NodeInfo {
+        peer_id: local_peer_id_hex,
+        controller_key: "test-controller-key".to_string(),
+        whitelisted_policy_ids: vec!["test-policy".to_string()],
+        whitelisted_ring_ids: vec![TEST_FRESH_DKG_RING_ID.to_string()],
+    };
+    let node_key = if let Some(dummy_bulletin) = dummy_bulletin {
+        dummy_bulletin
+            .set_node_info(test_node_key.clone(), node_info)
+            .expect("Failed to seed test NodeInfo");
+        test_node_key
+    } else {
+        let node_info_payload: Vec<u8> = node_info
+            .try_into()
+            .expect("Failed to serialize test NodeInfo");
+        bulletin
+            .post(BulletinWriteKind::NodeInfo, node_info_payload)
+            .await
+            .expect("Failed to seed test NodeInfo")
+    };
     let mut authz: Arc<dyn Authz> = Arc::new(
         AuthzImpl::new(ChainConfigBuilder::default())
             .await
@@ -119,7 +193,14 @@ pub async fn create_test_app_state_with_bulletin(
     }
 
     // Create AppState with the network (node_id is no longer needed - it's session-specific)
-    AppState::<DkgImpl>::new(bind_address, network, local_storage, authz, bulletin)
+    AppState::<DkgImpl>::new(
+        bind_address,
+        node_key,
+        network,
+        local_storage,
+        authz,
+        bulletin,
+    )
 }
 
 /// Create a test AppState with default values
@@ -224,6 +305,44 @@ impl ThreeNodeNetwork {
     }
 }
 
+fn seed_three_node_dummy_bulletin(
+    dummy_bulletin: &Arc<DummyBulletin>,
+    nodes: [(&AppState<DkgImpl>, &str); 3],
+) {
+    let peer_node_keys: Vec<String> = nodes
+        .iter()
+        .map(|(state, _)| state.node_key.clone())
+        .collect();
+
+    for (state, peer_id) in nodes {
+        dummy_bulletin
+            .set_node_info(
+                state.node_key.clone(),
+                NodeInfo {
+                    peer_id: peer_id.to_string(),
+                    controller_key: "test-controller-key".to_string(),
+                    whitelisted_policy_ids: vec!["test-policy".to_string()],
+                    whitelisted_ring_ids: vec![TEST_FRESH_DKG_RING_ID.to_string()],
+                },
+            )
+            .expect("seed routed NodeInfo");
+    }
+
+    let payload = RingPayload {
+        ring_pk: String::new(),
+        peer_node_keys,
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 2,
+        pss_interval: None,
+        block_number_nonce: 0,
+        policy_id: Some("test-policy".to_string()),
+    };
+    dummy_bulletin
+        .set_ring(TEST_FRESH_DKG_RING_ID.to_string(), payload)
+        .expect("seed fresh DKG ring fixture");
+}
+
 /// Set up a three-node test network
 ///
 /// This function creates three nodes (Alice, Bob, Charlie), initializes their networks,
@@ -260,27 +379,25 @@ pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> Thr
             .await
             .expect("Failed to initialize shared dummy bulletin"),
     );
-    let shared_bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
-
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
     let alice_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
-        shared_bulletin.clone(),
+        dummy_bulletin.clone(),
         &format!("{}_1", db_name),
     )
     .await;
     let bob_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
-        shared_bulletin.clone(),
+        dummy_bulletin.clone(),
         &format!("{}_2", db_name),
     )
     .await;
     let charlie_state = create_test_app_state_with_bulletin(
         Some("127.0.0.1:0".to_string()),
         true,
-        shared_bulletin,
+        dummy_bulletin.clone(),
         &format!("{}_3", db_name),
     )
     .await;
@@ -343,6 +460,15 @@ pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> Thr
         "Charlie - Peer ID: {}, Address: {}",
         hex::encode(charlie_peer_id.as_bytes()),
         charlie_address
+    );
+
+    seed_three_node_dummy_bulletin(
+        &dummy_bulletin,
+        [
+            (&alice_state, &alice_peer_id_with_addr),
+            (&bob_state, &bob_peer_id_with_addr),
+            (&charlie_state, &charlie_peer_id_with_addr),
+        ],
     );
 
     // Optionally start routers for all nodes with the production protocol handlers.
@@ -455,24 +581,27 @@ pub async fn setup_three_node_network_with_pre(
     };
 
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
-    let alice_state = create_test_app_state_with_bulletin(
+    let alice_state = create_test_app_state_with_bulletin_inner(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
+        dummy_bulletin_arc.clone(),
         &format!("{}_1", db_name),
     )
     .await;
-    let bob_state = create_test_app_state_with_bulletin(
+    let bob_state = create_test_app_state_with_bulletin_inner(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
+        dummy_bulletin_arc.clone(),
         &format!("{}_2", db_name),
     )
     .await;
-    let charlie_state = create_test_app_state_with_bulletin(
+    let charlie_state = create_test_app_state_with_bulletin_inner(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin,
+        dummy_bulletin_arc.clone(),
         &format!("{}_3", db_name),
     )
     .await;
@@ -536,6 +665,17 @@ pub async fn setup_three_node_network_with_pre(
         hex::encode(charlie_peer_id.as_bytes()),
         charlie_address
     );
+
+    if let Some(dummy_bulletin) = &dummy_bulletin_arc {
+        seed_three_node_dummy_bulletin(
+            dummy_bulletin,
+            [
+                (&alice_state, &alice_peer_id_with_addr),
+                (&bob_state, &bob_peer_id_with_addr),
+                (&charlie_state, &charlie_peer_id_with_addr),
+            ],
+        );
+    }
 
     // Start routers for all nodes with both DKG and PRE protocol handlers
     let alice_router = if start_routers {
@@ -642,24 +782,27 @@ pub async fn setup_three_node_network_with_sign(
     };
 
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
-    let alice_state = create_test_app_state_with_bulletin(
+    let alice_state = create_test_app_state_with_bulletin_inner(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
+        dummy_bulletin_arc.clone(),
         &format!("{}_1", db_name),
     )
     .await;
-    let bob_state = create_test_app_state_with_bulletin(
+    let bob_state = create_test_app_state_with_bulletin_inner(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
+        dummy_bulletin_arc.clone(),
         &format!("{}_2", db_name),
     )
     .await;
-    let charlie_state = create_test_app_state_with_bulletin(
+    let charlie_state = create_test_app_state_with_bulletin_inner(
         Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin,
+        dummy_bulletin_arc.clone(),
         &format!("{}_3", db_name),
     )
     .await;
@@ -722,6 +865,17 @@ pub async fn setup_three_node_network_with_sign(
         hex::encode(charlie_peer_id.as_bytes()),
         charlie_address
     );
+
+    if let Some(dummy_bulletin) = &dummy_bulletin_arc {
+        seed_three_node_dummy_bulletin(
+            dummy_bulletin,
+            [
+                (&alice_state, &alice_peer_id_with_addr),
+                (&bob_state, &bob_peer_id_with_addr),
+                (&charlie_state, &charlie_peer_id_with_addr),
+            ],
+        );
+    }
 
     // Start routers for all nodes with DKG, PRE, and Sign protocol handlers
     let alice_router = if start_routers {
@@ -794,34 +948,25 @@ pub async fn setup_three_node_network_with_sign(
 /// Shared by all test modules that need to set up a ring for PSS / refresh validation tests.
 pub async fn write_ring_to_bulletin(
     storage: &impl LocalStorage,
-    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    bulletin: &DummyBulletin,
     ring_pk: &str,
-    peer_ids: Vec<String>,
+    peer_node_keys: Vec<String>,
     pss_interval: Option<u64>,
 ) {
     let payload = RingPayload {
         ring_pk: ring_pk.to_string(),
-        peer_ids,
-        new_peer_ids: None,
+        peer_node_keys,
+        new_peer_node_keys: None,
         new_threshold: None,
         threshold: 1,
         pss_interval,
         block_number_nonce: 0,
         policy_id: None,
     };
-    let bytes = serde_json::to_vec(&payload).unwrap();
+    let post_id = format!("test-ring-{ring_pk}");
     bulletin
-        .post(
-            BULLETIN_RING_NAMESPACE.to_string(),
-            BulletinKind::Ring,
-            bytes.clone(),
-            None,
-        )
-        .await
-        .unwrap();
-    let post_id = bulletin
-        .get_post_id(BULLETIN_RING_NAMESPACE, &bytes)
-        .unwrap();
+        .set_ring(post_id.clone(), payload)
+        .expect("seed ring fixture");
     let mut ring_index: Vec<RingIndexEntry> = storage
         .get(LocalStorageKeys::RingIndex)
         .ok()
@@ -832,7 +977,7 @@ pub async fn write_ring_to_bulletin(
         ring_index.push(RingIndexEntry {
             ring_pk_str: ring_pk.to_string(),
             bulletin_post_id: post_id,
-            bulletin_namespace: BULLETIN_RING_NAMESPACE.to_string(),
+            indexed_at_secs: 0,
         });
         storage
             .set(
@@ -857,10 +1002,18 @@ pub fn cleanup_db(path: &str) {
 }
 
 /// Get bulletin ring info for tests using the DummyBulletin directly
-/// Returns the first post in the BULLETIN_RING_NAMESPACE, or a default empty post if none found
+/// Returns the first dummy bulletin post, or a default empty post if none found.
 pub fn get_test_ring_post(dummy_bulletin: &DummyBulletin) -> BulletinPost {
-    let posts = dummy_bulletin.get_posts_by_namespace(BULLETIN_RING_NAMESPACE);
-    posts.into_iter().next().unwrap_or_default()
+    let posts = dummy_bulletin.get_posts();
+    posts
+        .iter()
+        .find(|post| {
+            serde_json::from_slice::<RingPayload>(&post.payload)
+                .map(|ring| !ring.ring_pk.is_empty())
+                .unwrap_or(false)
+        })
+        .cloned()
+        .unwrap_or_default()
 }
 
 async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
@@ -937,5 +1090,117 @@ pub async fn wait_for_nodes_ready(
                 }
             }
         }
+    }
+}
+
+// ============================================================================
+// Integration-test chain helpers (new DKG flow)
+// ============================================================================
+
+/// Create an orbis ring governance policy as TEST_ACCOUNT_HEX_KEY, register its
+/// own policy ID as a `ring_policy` ACP object, and return the policy ID.
+pub async fn create_orbis_ring_policy() -> String {
+    let client = SourceHubClient::with_signer(
+        ChainConfig::local(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("chain client for policy creation");
+
+    let ids_before: std::collections::HashSet<String> = client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids")
+        .ids
+        .into_iter()
+        .collect();
+
+    client
+        .acp_create_policy(ORBIS_RING_POLICY_YAML, 1)
+        .await
+        .expect("create orbis ring policy");
+
+    let policy_id = client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids after create")
+        .ids
+        .into_iter()
+        .find(|id| !ids_before.contains(id))
+        .expect("new policy ID not found in list");
+
+    client
+        .acp_register_object(
+            &policy_id,
+            Object {
+                resource: "ring_policy".to_string(),
+                id: policy_id.clone(),
+            },
+        )
+        .await
+        .expect("register ring_policy object");
+
+    policy_id
+}
+
+/// Create a ring on-chain as TEST_ACCOUNT_HEX_KEY and return its ring_id.
+pub async fn create_ring_on_chain(
+    node_keys: &[String],
+    threshold: u32,
+    policy_id: &str,
+    nonce: Option<&str>,
+) -> String {
+    create_ring_on_chain_with_pss(node_keys, threshold, policy_id, nonce, None).await
+}
+
+/// Create a ring on-chain with an explicit PSS interval. Returns its ring_id.
+pub async fn create_ring_on_chain_with_pss(
+    node_keys: &[String],
+    threshold: u32,
+    policy_id: &str,
+    nonce: Option<&str>,
+    pss_interval: Option<u64>,
+) -> String {
+    let client = SourceHubClient::with_signer(
+        ChainConfig::local(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("chain client for ring creation");
+
+    let (_, ring_id) = client
+        .orbis_create_ring_get_id(
+            node_keys.to_vec(),
+            threshold,
+            pss_interval,
+            policy_id,
+            nonce.map(String::from),
+        )
+        .await
+        .expect("create ring on-chain");
+
+    ring_id
+}
+
+/// Poll the chain until the ring is finalized (ring_pk != "") or the timeout expires.
+/// Panics on timeout.
+pub async fn wait_for_ring_finalized(ring_id: &str, timeout: Duration) -> String {
+    let client = SourceHubClient::new(ChainConfig::local())
+        .await
+        .expect("chain client for ring polling");
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Ok(Some(ring)) = client.orbis_read_ring(ring_id).await {
+            if !ring.ring_pk.is_empty() {
+                return ring.ring_pk;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("Timed out waiting for ring {} to be finalized", ring_id);
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }

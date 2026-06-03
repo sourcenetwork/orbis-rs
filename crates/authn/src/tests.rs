@@ -47,7 +47,6 @@ fn test_resolve_jwt_did_with_pre_claims() {
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
-            namespace: "".to_string(),
             derivation: None,
             salt: None,
         },
@@ -74,11 +73,7 @@ fn test_resolve_jwt_did_with_dkg_claims() {
         expiration_time: 2000,
         not_before: None,
         claims: DkgClaims {
-            peer_ids: vec![],
-            threshold: 2,
-            pss_interval: None,
-            policy_id: None,
-            namespace: "test_namespace".to_string(),
+            ring_id: "ring-1".to_string(),
         },
     };
 
@@ -89,7 +84,6 @@ fn test_resolve_jwt_did_with_dkg_claims() {
     assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
     let decoded = result.unwrap();
     assert_eq!(decoded.issuer_id, did_uri);
-    assert_eq!(decoded.claims.namespace, "test_namespace");
 }
 
 #[test]
@@ -106,7 +100,6 @@ fn test_resolve_jwt_did_expired() {
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
-            namespace: "".to_string(),
             derivation: None,
             salt: None,
         },
@@ -134,7 +127,6 @@ fn test_resolve_jwt_did_future_issued_time() {
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
-            namespace: "".to_string(),
             derivation: None,
             salt: None,
         },
@@ -222,7 +214,6 @@ fn test_token_lifetime_at_limit() {
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
-            namespace: "".to_string(),
             derivation: None,
             salt: None,
         },
@@ -255,7 +246,6 @@ fn test_token_lifetime_one_second_over_limit() {
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
-            namespace: "".to_string(),
             derivation: None,
             salt: None,
         },
@@ -290,7 +280,6 @@ fn test_token_lifetime_far_future() {
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
-            namespace: "".to_string(),
             derivation: None,
             salt: None,
         },
@@ -322,7 +311,6 @@ fn test_resolve_jwt_did_invalid_signature() {
         claims: PreClaims {
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
-            namespace: "".to_string(),
             derivation: None,
             salt: None,
         },
@@ -461,7 +449,7 @@ fn test_token_at_max_size_reaches_normal_validation() {
     // (it will still fail or pass based on its content — here we use a real valid token).
     let signer = JwtSigner::new();
     let token = signer
-        .create_sign_jwt("my-namespace", "my-derivation-id", b"hello world")
+        .create_sign_jwt("my-derivation-id", b"hello world")
         .expect("create JWT");
 
     assert!(

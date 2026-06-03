@@ -1,13 +1,16 @@
 use crate::app_state::AppState;
 use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
-use crate::helpers::helpers::{ring_namespace_for_post_id, RingConfig};
+use crate::helpers::helpers::RingConfig;
+use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::metrics;
 use crate::ring_state::RingPolyState;
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::messages::SignContext;
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
-use bulletin::r#trait::{BulletinKind, BulletinPost, DocumentPayload, RingPayload};
+use bulletin::r#trait::{
+    BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, RingPayload,
+};
 use crypto::r#trait::{Dkg, EncryptionProof, Secret};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
@@ -94,18 +97,15 @@ where
 
         tracing::info!(
             ring_id = %req.ring_id,
-            namespace = %req.namespace,
             issuer = %token.issuer_id,
             "Authenticated StoreSecret request"
         );
 
         // Get ring public_key from bulletin
-        let ring_namespace = ring_namespace_for_post_id(&self.state.local_storage, &req.ring_id)
-            .map_err(StoreSecretError::Storage)?;
         let ring_info = self
             .state
             .bulletin
-            .read(ring_namespace, req.ring_id.clone(), BulletinKind::Ring)
+            .read(req.ring_id.clone(), BulletinKind::Ring)
             .await
             .map_err(|e| {
                 StoreSecretError::Storage(format!("Failed to read ring '{}': {}", req.ring_id, e))
@@ -158,63 +158,19 @@ where
                     ))
                 })?;
 
-        // 5. Compute object_id before posting (deterministic typed Orbis hash).
+        // 5. Post to bulletin and use the authoritative object id returned by the backend.
         let object_id = self
             .state
             .bulletin
-            .get_post_id(&req.namespace, &payload_bytes)
-            .map_err(|e| StoreSecretError::Storage(format!("Failed to compute post ID: {}", e)))?;
-
-        // 6. Post to bulletin (only if it doesn't already exist)
-        // Check if the post already exists (read returns NotFound error if not found)
-        let post_exists = match self
-            .state
-            .bulletin
-            .read(
-                req.namespace.clone(),
-                object_id.clone(),
-                BulletinKind::Document,
-            )
+            .post(BulletinWriteKind::Document, payload_bytes.clone())
             .await
-        {
-            Ok(_) => true,
-            Err(bulletin::error::BulletinError::NotFound { .. }) => false,
-            Err(e) => {
-                return Err(StoreSecretError::Storage(format!(
-                    "Failed to check existing post: {}",
-                    e
-                ))
-                .into())
-            }
-        };
-
-        if !post_exists {
-            self.state
-                .bulletin
-                .post(
-                    req.namespace.clone(),
-                    BulletinKind::Document,
-                    payload_bytes.clone(),
-                    None,
-                )
-                .await
-                .map_err(|e| {
-                    StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e))
-                })?;
-        } else {
-            tracing::debug!(
-                object_id = %object_id,
-                namespace = %req.namespace,
-                "Post already exists on bulletin, skipping post"
-            );
-        }
+            .map_err(|e| StoreSecretError::Storage(format!("Failed to post to bulletin: {}", e)))?;
 
         let created_at = current_time as i64;
 
         tracing::info!(
             object_id = %object_id,
             ring_id = %req.ring_id,
-            namespace = %req.namespace,
             owner = %token.issuer_id,
             "Successfully stored encrypted secret"
         );
@@ -225,7 +181,6 @@ where
             // Construct the BulletinPost that was stored
             let bulletin_post = BulletinPost {
                 id: object_id.clone(),
-                namespace: req.namespace.clone(),
                 payload: payload_bytes.clone(),
             };
 
@@ -239,7 +194,11 @@ where
             let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
             let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
                 .map_err(|e| StoreSecretError::Validation(format!("Invalid ring_pk hex: {}", e)))?;
-            let total_participants = ring_payload.peer_ids.len();
+            let routes = resolve_node_routes(&self.state.bulletin, &ring_payload.peer_node_keys)
+                .await
+                .map_err(StoreSecretError::Validation)?;
+            let peer_ids = peer_ids_from_routes(&routes);
+            let total_participants = peer_ids.len();
             let poly_state = RingPolyState::load_from_ring_pk_hex(
                 &self.state.local_storage,
                 &ring_payload.ring_pk,
@@ -249,7 +208,8 @@ where
             })?;
             let ring = RingConfig {
                 ring_pk_bytes,
-                peer_ids: ring_payload.peer_ids,
+                peer_ids,
+                peer_node_keys: ring_payload.peer_node_keys,
                 threshold: ring_payload.threshold as usize,
                 total_participants,
                 public_polynomial_hex: poly_state.public_polynomial,
@@ -339,13 +299,6 @@ fn validate_store_secret_claims(
         return Err(StoreSecretError::Unauthorized(format!(
             "Token ring_id '{}' does not match request ring_id '{}'",
             token.claims.ring_id, req.ring_id
-        )));
-    }
-
-    if token.claims.namespace != req.namespace {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token namespace '{}' does not match request namespace '{}'",
-            token.claims.namespace, req.namespace
         )));
     }
 

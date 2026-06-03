@@ -4,14 +4,16 @@ use crate::dkg::{
     messages::{DkgMessage, SessionKind},
 };
 use crate::helpers::helpers::extract_node_part;
-use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
+use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
-    cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_ring_post,
-    setup_three_node_network, test_db_path, write_ring_to_bulletin, TestKeyPair,
+    cleanup_db, create_authenticated_request, create_test_app_state_default,
+    create_test_app_state_with_bulletin, get_test_ring_post, setup_three_node_network,
+    test_db_path, write_ring_to_bulletin, TestKeyPair,
 };
 use crate::ring_state::RingPolyState;
 use crate::DkgServiceImpl;
-use bulletin::r#trait::RingPayload;
+use bulletin::dummy::DummyBulletin;
+use bulletin::r#trait::{NodeInfo, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgMode, DkgRole, PubPoly as PubPolyTrait};
 use crypto::CryptoSerialize;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -58,20 +60,35 @@ async fn test_dkg_followed_by_pss_refresh() {
 
     let mut network = setup_three_node_network(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
+    let peer_node_keys = vec![
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        network.charlie.app_state.node_key.clone(),
+    ];
+    let node_key_to_peer_id = std::collections::HashMap::from([
+        (
+            network.alice.app_state.node_key.clone(),
+            network.alice.address.clone(),
+        ),
+        (
+            network.bob.app_state.node_key.clone(),
+            network.bob.address.clone(),
+        ),
+        (
+            network.charlie.app_state.node_key.clone(),
+            network.charlie.address.clone(),
+        ),
+    ]);
 
     // ── Phase A: Run the initial DKG ──────────────────────────────────────────
     let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
     let test_keys = TestKeyPair::new();
     let token = test_keys
-        .create_dkg_jwt(2, &peer_ids, None, None, BULLETIN_RING_NAMESPACE)
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("create JWT");
     let tonic_req = create_authenticated_request(
         StartDkgRequest {
-            threshold: 2,
-            peer_ids: peer_ids.clone(),
-            pss_interval: None,
-            policy_id: None,
-            namespace: BULLETIN_RING_NAMESPACE.to_string(),
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
         },
         &token,
     )
@@ -143,29 +160,26 @@ async fn test_dkg_followed_by_pss_refresh() {
 
     // ── Phase B: Set up and run a PSS refresh ─────────────────────────────────
 
-    // Determine node_id assignments (same deterministic rule as DKG service).
-    let mut sorted_peers = peer_ids.clone();
-    sorted_peers.sort();
+    // Determine node_id assignments (same deterministic node-key rule as DKG service).
+    let mut sorted_node_keys = peer_node_keys.clone();
+    sorted_node_keys.sort();
     let mut node_id_assignments = std::collections::HashMap::new();
-    for (idx, peer) in sorted_peers.iter().enumerate() {
-        node_id_assignments.insert(extract_node_part(peer), (idx + 1) as u32);
+    for (idx, node_key) in sorted_node_keys.iter().enumerate() {
+        node_id_assignments.insert(node_key.clone(), (idx + 1) as u32);
     }
 
-    // The initiator is the node whose peer_id is first in sorted order.
-    let initiator_node_part = extract_node_part(&sorted_peers[0]);
-
-    let alice_hex = hex::encode(network.alice.app_state.network.local_peer_id().as_bytes());
-    let bob_hex = hex::encode(network.bob.app_state.network.local_peer_id().as_bytes());
+    // The initiator is the node whose chain node key is first in sorted order.
+    let initiator_node_key = sorted_node_keys[0].clone();
 
     let (initiator_state, initiator_node_id) =
-        if extract_node_part(&alice_hex) == initiator_node_part {
-            let nid = *node_id_assignments.get(&initiator_node_part).unwrap();
+        if network.alice.app_state.node_key == initiator_node_key {
+            let nid = *node_id_assignments.get(&initiator_node_key).unwrap();
             (network.alice.app_state.clone(), nid)
-        } else if extract_node_part(&bob_hex) == initiator_node_part {
-            let nid = *node_id_assignments.get(&initiator_node_part).unwrap();
+        } else if network.bob.app_state.node_key == initiator_node_key {
+            let nid = *node_id_assignments.get(&initiator_node_key).unwrap();
             (network.bob.app_state.clone(), nid)
         } else {
-            let nid = *node_id_assignments.get(&initiator_node_part).unwrap();
+            let nid = *node_id_assignments.get(&initiator_node_key).unwrap();
             (network.charlie.app_state.clone(), nid)
         };
 
@@ -178,10 +192,11 @@ async fn test_dkg_followed_by_pss_refresh() {
     .expect("load initiator bundle for refresh session id");
     let refresh_session_id = derive_refresh_session_id(
         &key_string,
-        &peer_ids,
+        &peer_node_keys,
         2,
         &initiator_bundle.public_polynomial,
-    );
+    )
+    .unwrap();
     let coordinator = DkgCoordinator::new(Arc::new(initiator_state.clone()));
 
     coordinator
@@ -211,15 +226,15 @@ async fn test_dkg_followed_by_pss_refresh() {
     coordinator
         .set_peer_ids(&refresh_session_id, peer_ids.clone())
         .await;
+    initiator_state
+        .dkg_session_state
+        .set_peer_node_keys(&refresh_session_id, peer_node_keys.clone())
+        .await;
 
     // Set node_id ↔ peer_id mappings on the initiator.
     let mut node_id_to_peer_id = std::collections::HashMap::new();
-    for (peer_key, &node_id) in &node_id_assignments {
-        let full_peer = peer_ids
-            .iter()
-            .find(|p| extract_node_part(p) == *peer_key)
-            .cloned()
-            .unwrap();
+    for (node_key, &node_id) in &node_id_assignments {
+        let full_peer = node_key_to_peer_id.get(node_key).cloned().unwrap();
         node_id_to_peer_id.insert(node_id, full_peer);
     }
     initiator_state
@@ -234,6 +249,7 @@ async fn test_dkg_followed_by_pss_refresh() {
         threshold: 2,
         total_participants: 3,
         peer_ids: peer_ids.clone(),
+        peer_node_keys: peer_node_keys.clone(),
         node_id_assignments: node_id_assignments.clone(),
         token_string: String::new(), // refresh bypasses JWT
         kind: SessionKind::Refresh {
@@ -241,9 +257,13 @@ async fn test_dkg_followed_by_pss_refresh() {
         },
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
+    let initiator_peer_hex = hex::encode(initiator_state.network.local_peer_id().as_bytes());
     for peer_id_str in &peer_ids {
+        if extract_node_part(peer_id_str) == extract_node_part(&initiator_peer_hex) {
+            continue;
+        }
         if let Err(e) = coordinator
             .send_message_to_peer(peer_id_str, init_msg.clone(), Some(refresh_session_id))
             .await
@@ -571,7 +591,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
 // coordinator rejects invalid PSS refresh SessionInit messages
 //
 // These tests confirm that the coordinator enforces the three validation
-// checks (sender membership, minimum elapsed time, no concurrent refresh)
+// checks (local-node membership, minimum elapsed time, no concurrent refresh)
 // before creating any session state.  They use a single-node app_state with
 // pre-populated local storage — no three-node network is required because the
 // checks happen before any network I/O.
@@ -592,15 +612,17 @@ fn write_last_refresh(
 }
 
 /// Build a minimal refresh `SessionInit` targeted at `ring_pk`.
-fn refresh_session_init(ring_pk: &str, sender_hex: &str) -> DkgMessage {
-    let peer_ids = vec![sender_hex.to_string()];
+fn refresh_session_init(ring_pk: &str, peer_node_key: &str, peer_id: &str) -> DkgMessage {
+    let peer_node_keys = vec![peer_node_key.to_string()];
+    let peer_ids = vec![peer_id.to_string()];
     let mut node_id_assignments = std::collections::HashMap::new();
-    node_id_assignments.insert(sender_hex.to_string(), 1u32);
+    node_id_assignments.insert(peer_node_key.to_string(), 1u32);
     DkgMessage::SessionInit {
-        session_id: derive_refresh_session_id(ring_pk, &peer_ids, 1, ""),
+        session_id: derive_refresh_session_id(ring_pk, &peer_node_keys, 1, "").unwrap(),
         threshold: 1,
         total_participants: 1,
-        peer_ids,
+        peer_ids: peer_ids.clone(),
+        peer_node_keys,
         node_id_assignments,
         token_string: String::new(),
         kind: SessionKind::Refresh {
@@ -608,24 +630,32 @@ fn refresh_session_init(ring_pk: &str, sender_hex: &str) -> DkgMessage {
         },
         pss_interval: None,
         policy_id: None,
-        namespace: BULLETIN_RING_NAMESPACE.to_string(),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     }
 }
 
 #[tokio::test]
-async fn test_refresh_rejected_sender_not_in_ring() {
-    let db_name = "test_refresh_rejected_sender_not_in_ring";
+async fn test_refresh_accepts_external_sender_when_local_node_in_ring() {
+    let db_name = "test_refresh_accepts_external_sender_when_local_node_in_ring";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     let ring_pk = "ring_pk";
-    // Ring contains only "aabbccdd"; the sender will be "deadbeef".
+    let local_node_key = app_state.node_key.clone();
+    let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     write_ring_to_bulletin(
         &app_state.local_storage,
-        &app_state.bulletin,
+        &dummy_bulletin,
         ring_pk,
-        vec!["aabbccdd".to_string()],
-        None, // membership check fires before time check
+        vec![local_node_key.clone()],
+        None,
     )
     .await;
     write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
@@ -633,12 +663,63 @@ async fn test_refresh_rejected_sender_not_in_ring() {
     let sender_bytes = hex::decode("deadbeef").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
     let coordinator = DkgCoordinator::new(app_state);
-    let msg = refresh_session_init(ring_pk, "deadbeef");
+    let msg = refresh_session_init(ring_pk, &local_node_key, &local_peer_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
-        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
-        "Expected Unauthorized for sender not in ring, got: {:?}",
+        matches!(result, Ok(None)),
+        "Expected external sender to be accepted when local node is in ring, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_refresh_rejected_local_node_not_in_ring() {
+    let db_name = "test_refresh_rejected_local_node_not_in_ring";
+    let db_path = test_db_path(db_name);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
+
+    let ring_pk = "ring_pk";
+    let other_node_key = "other-node-key".to_string();
+    let other_peer_hex = "a".repeat(64);
+    dummy_bulletin
+        .set_node_info(
+            other_node_key.clone(),
+            NodeInfo {
+                peer_id: other_peer_hex.clone(),
+                controller_key: "test-controller-key".to_string(),
+                whitelisted_policy_ids: vec![],
+                whitelisted_ring_ids: vec![],
+            },
+        )
+        .expect("seed other node info");
+    write_ring_to_bulletin(
+        &app_state.local_storage,
+        &dummy_bulletin,
+        ring_pk,
+        vec![other_node_key.clone()],
+        None,
+    )
+    .await;
+    write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
+
+    let sender_bytes = hex::decode("deadbeef").unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::new(app_state);
+    let msg = refresh_session_init(ring_pk, &other_node_key, &other_peer_hex);
+
+    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(ref msg)) if msg.contains("Local node")),
+        "Expected Unauthorized for local node not in ring, got: {:?}",
         result
     );
     cleanup_db(&db_path);
@@ -648,15 +729,23 @@ async fn test_refresh_rejected_sender_not_in_ring() {
 async fn test_refresh_rejected_too_soon() {
     let db_name = "test_refresh_rejected_too_soon";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     let ring_pk = "ring_pk";
-    let sender_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let local_node_key = app_state.node_key.clone();
+    let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     write_ring_to_bulletin(
         &app_state.local_storage,
-        &app_state.bulletin,
+        &dummy_bulletin,
         ring_pk,
-        vec![sender_hex.to_string()],
+        vec![local_node_key.clone()],
         Some(86400), // 24h interval required
     )
     .await;
@@ -668,10 +757,10 @@ async fn test_refresh_rejected_too_soon() {
         .as_secs();
     write_last_refresh(&app_state.local_storage, ring_pk, now_secs);
 
-    let sender_bytes = hex::decode(&sender_hex).unwrap();
+    let sender_bytes = hex::decode(&local_peer_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
     let coordinator = DkgCoordinator::new(app_state);
-    let msg = refresh_session_init(ring_pk, &sender_hex);
+    let msg = refresh_session_init(ring_pk, &local_node_key, &local_peer_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
@@ -686,22 +775,31 @@ async fn test_refresh_rejected_too_soon() {
 async fn test_refresh_rejected_already_in_progress() {
     let db_name = "test_refresh_rejected_already_in_progress";
     let db_path = test_db_path(db_name);
-    let app_state = Arc::new(create_test_app_state_default(db_name).await);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state = Arc::new(
+        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
+    );
 
     let ring_pk = "ring_pk";
-    let sender_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let local_node_key = app_state.node_key.clone();
+    let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     write_ring_to_bulletin(
         &app_state.local_storage,
-        &app_state.bulletin,
+        &dummy_bulletin,
         ring_pk,
-        vec![sender_hex.to_string()],
+        vec![local_node_key.clone()],
         None, // time check irrelevant; rejected by in-progress flag
     )
     .await;
     write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
 
     // Pre-mark the ring as already refreshing so the coordinator rejects the second attempt.
-    let expected_session_id = derive_refresh_session_id(ring_pk, &[sender_hex.to_string()], 1, "");
+    let expected_session_id =
+        derive_refresh_session_id(ring_pk, std::slice::from_ref(&local_node_key), 1, "").unwrap();
     assert_eq!(
         app_state
             .dkg_session_state
@@ -711,10 +809,10 @@ async fn test_refresh_rejected_already_in_progress() {
         "initial conflicting claim should succeed"
     );
 
-    let sender_bytes = hex::decode(&sender_hex).unwrap();
+    let sender_bytes = hex::decode(&local_peer_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
     let coordinator = DkgCoordinator::new(app_state);
-    let msg = refresh_session_init(ring_pk, &sender_hex);
+    let msg = refresh_session_init(ring_pk, &local_node_key, &local_peer_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(

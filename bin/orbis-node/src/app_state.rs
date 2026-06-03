@@ -108,6 +108,8 @@ where
 {
     /// Server configuration
     pub config: ServerConfig,
+    /// Public key for this node's SourceHub signing key.
+    pub node_key: String,
     /// Network for node-to-node communication
     pub network: Arc<dyn Network>,
     /// Local Storage implementation for storing items locally
@@ -144,6 +146,7 @@ where
     /// Create a new AppState instance
     pub fn new(
         bind_address: String,
+        node_key: String,
         network: Arc<dyn Network>,
         local_storage: LocalStorageImpl,
         authz: Arc<dyn Authz + Send + Sync>,
@@ -151,6 +154,7 @@ where
     ) -> Self {
         Self {
             config: ServerConfig { bind_address },
+            node_key,
             network,
             local_storage,
             dkg_session_state: Arc::new(SessionStateManager::new()),
@@ -171,6 +175,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppState")
             .field("config", &self.config)
+            .field("node_key", &self.node_key)
             .field("network", &"<Network>")
             .field("dkg_session_state", &"<SessionStateManager>")
             .field("pre_response_state", &"<PreResponseManager>")

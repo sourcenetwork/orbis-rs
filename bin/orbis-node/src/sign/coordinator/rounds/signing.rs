@@ -1,7 +1,7 @@
 use crate::constants::SIGN_COLLECTION_TIMEOUT;
 use crate::helpers::helpers::{
-    determine_session_node_id, is_ring_reshare_in_progress, is_self_peer_id,
-    load_ring_pub_poly_and_bundle, RingConfig,
+    determine_ring_node_id_from_peer_id, determine_session_node_id, is_ring_reshare_in_progress,
+    is_self_peer_id, load_ring_pub_poly_and_bundle, RingConfig,
 };
 use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::error::{Result, SignError};
@@ -42,8 +42,7 @@ where
         context: SignContext,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
-        let our_peer_id = hex::encode(self.app_state.network.local_peer_id().as_bytes());
-        let node_id_opt = determine_session_node_id(&our_peer_id, &ring.peer_ids);
+        let node_id_opt = determine_session_node_id(&self.app_state.node_key, &ring.peer_node_keys);
 
         // self_in_list derived from node_id - guarantees consistency
         let self_in_list = node_id_opt.is_some();
@@ -322,7 +321,7 @@ where
                     continue;
                 }
                 if S::INTERACTIVE {
-                    let peer_node_id = determine_session_node_id(peer_id_str, &ring.peer_ids);
+                    let peer_node_id = determine_ring_node_id_from_peer_id(peer_id_str, &ring);
                     if !peer_node_id
                         .map(|id| selected_signer_ids.contains(&id))
                         .unwrap_or(false)
@@ -365,7 +364,7 @@ where
                     match res {
                         Ok(Ok(Some(response))) => {
                             let Some(expected_node_id) =
-                                determine_session_node_id(&response.sender_peer_hex, &ring.peer_ids)
+                                determine_ring_node_id_from_peer_id(&response.sender_peer_hex, &ring)
                             else {
                                 tracing::error!(
                                     sender_peer = %response.sender_peer_hex,
@@ -435,7 +434,7 @@ where
 
         for response in collected_responses {
             let Some(expected_node_id) =
-                determine_session_node_id(&response.sender_peer_hex, &ring.peer_ids)
+                determine_ring_node_id_from_peer_id(&response.sender_peer_hex, &ring)
             else {
                 tracing::error!(
                     sender_peer = %response.sender_peer_hex,

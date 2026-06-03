@@ -30,3 +30,9 @@ pub mod tests;
 /// with Cosmos HD path m/44'/118'/0'/0/0
 pub const TEST_ACCOUNT_HEX_KEY: &str =
     "c4a48e2fce1481cd3294b4490f6678090ea98d3d0e5cd984558ab0968741b104";
+
+/// Compressed secp256k1 public key of `TEST_ACCOUNT_HEX_KEY`.
+/// Used as `--node-controller-key` in Docker integration-test compose files so that
+/// the test account can call `UpdateNodeInfo` on behalf of the nodes.
+pub const TEST_ACCOUNT_PUBKEY_HEX: &str =
+    "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62";

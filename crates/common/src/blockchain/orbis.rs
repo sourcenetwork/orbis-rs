@@ -10,7 +10,6 @@ use prost::Message;
 use super::bulletin::{PageRequest, PageResponse};
 
 pub const RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN: &str = "orbis-ring-reshare-finalize";
-pub const NAMESPACE_ID_PREFIX: &str = "orbis/";
 
 // ============================================================================
 // Domain Types (on-chain state)
@@ -22,25 +21,34 @@ pub struct Ring {
     #[prost(string, tag = "1")]
     pub id: String,
     #[prost(string, tag = "2")]
-    pub namespace: String,
-    #[prost(string, tag = "3")]
     pub creator_did: String,
-    #[prost(string, tag = "4")]
+    #[prost(string, tag = "3")]
     pub ring_pk: String,
-    #[prost(string, repeated, tag = "5")]
-    pub peer_ids: Vec<String>,
-    #[prost(uint32, tag = "6")]
+    #[prost(string, repeated, tag = "4")]
+    pub peer_node_keys: Vec<String>,
+    #[prost(uint32, tag = "5")]
     pub threshold: u32,
-    #[prost(string, repeated, tag = "7")]
-    pub new_peer_ids: Vec<String>,
-    #[prost(uint32, optional, tag = "8")]
+    #[prost(string, repeated, tag = "6")]
+    pub new_peer_node_keys: Vec<String>,
+    #[prost(uint32, optional, tag = "7")]
     pub new_threshold: Option<u32>,
-    #[prost(uint64, optional, tag = "9")]
+    #[prost(uint64, optional, tag = "8")]
     pub pss_interval: Option<u64>,
-    #[prost(uint64, tag = "10")]
+    #[prost(uint64, tag = "9")]
     pub block_number_nonce: u64,
-    #[prost(string, tag = "11")]
+    #[prost(string, tag = "10")]
     pub policy_id: String,
+    #[prost(message, repeated, tag = "11")]
+    pub confirmations: Vec<RingConfirmation>,
+}
+
+/// Fresh-DKG confirmation stored on an unfinalized ring.
+#[derive(Clone, Message)]
+pub struct RingConfirmation {
+    #[prost(string, tag = "1")]
+    pub node_key: String,
+    #[prost(string, tag = "2")]
+    pub ring_pk: String,
 }
 
 /// Document state stored in x/orbis.
@@ -49,24 +57,22 @@ pub struct Document {
     #[prost(string, tag = "1")]
     pub id: String,
     #[prost(string, tag = "2")]
-    pub namespace: String,
-    #[prost(string, tag = "3")]
     pub creator_did: String,
-    #[prost(string, tag = "4")]
+    #[prost(string, tag = "3")]
     pub ring_id: String,
-    #[prost(string, tag = "5")]
+    #[prost(string, tag = "4")]
     pub document: String,
-    #[prost(string, tag = "6")]
+    #[prost(string, tag = "5")]
     pub proof: String,
-    #[prost(string, tag = "7")]
+    #[prost(string, tag = "6")]
     pub policy_id: String,
-    #[prost(string, tag = "8")]
+    #[prost(string, tag = "7")]
     pub resource: String,
-    #[prost(string, tag = "9")]
+    #[prost(string, tag = "8")]
     pub permission: String,
-    #[prost(string, optional, tag = "10")]
+    #[prost(string, optional, tag = "9")]
     pub tier: Option<String>,
-    #[prost(uint64, optional, tag = "11")]
+    #[prost(uint64, optional, tag = "10")]
     pub timestamp: Option<u64>,
 }
 
@@ -76,18 +82,16 @@ pub struct KeyDerivation {
     #[prost(string, tag = "1")]
     pub id: String,
     #[prost(string, tag = "2")]
-    pub namespace: String,
-    #[prost(string, tag = "3")]
     pub creator_did: String,
-    #[prost(string, tag = "4")]
+    #[prost(string, tag = "3")]
     pub ring_id: String,
-    #[prost(string, tag = "5")]
+    #[prost(string, tag = "4")]
     pub derivation: String,
-    #[prost(string, tag = "6")]
+    #[prost(string, tag = "5")]
     pub policy_id: String,
-    #[prost(string, tag = "7")]
+    #[prost(string, tag = "6")]
     pub resource: String,
-    #[prost(string, tag = "8")]
+    #[prost(string, tag = "7")]
     pub permission: String,
 }
 
@@ -99,7 +103,7 @@ pub struct NodeInfo {
     #[prost(string, tag = "2")]
     pub controller_key: String,
     #[prost(string, repeated, tag = "3")]
-    pub whitelisted_namespaces: Vec<String>,
+    pub whitelisted_policy_ids: Vec<String>,
     #[prost(string, repeated, tag = "4")]
     pub whitelisted_ring_ids: Vec<String>,
 }
@@ -112,20 +116,16 @@ pub struct NodeInfo {
 pub struct MsgCreateRing {
     #[prost(string, tag = "1")]
     pub creator: String,
-    #[prost(string, tag = "2")]
-    pub namespace: String,
-    #[prost(string, tag = "3")]
-    pub ring_pk: String,
-    #[prost(string, repeated, tag = "4")]
-    pub peer_ids: Vec<String>,
-    #[prost(uint32, tag = "5")]
+    #[prost(string, repeated, tag = "2")]
+    pub peer_node_keys: Vec<String>,
+    #[prost(uint32, tag = "3")]
     pub threshold: u32,
-    #[prost(uint64, optional, tag = "6")]
+    #[prost(uint64, optional, tag = "4")]
     pub pss_interval: Option<u64>,
-    #[prost(string, tag = "7")]
+    #[prost(string, tag = "5")]
     pub policy_id: String,
-    #[prost(string, tag = "8")]
-    pub artifact: String,
+    #[prost(string, optional, tag = "6")]
+    pub nonce: Option<String>,
 }
 
 impl MsgCreateRing {
@@ -133,23 +133,19 @@ impl MsgCreateRing {
 
     pub fn new(
         creator: &str,
-        namespace: &str,
-        ring_pk: &str,
-        peer_ids: Vec<String>,
+        peer_node_keys: Vec<String>,
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
-        artifact: Option<String>,
+        nonce: Option<String>,
     ) -> Self {
         Self {
             creator: creator.to_string(),
-            namespace: namespace.to_string(),
-            ring_pk: ring_pk.to_string(),
-            peer_ids,
+            peer_node_keys,
             threshold,
             pss_interval,
             policy_id: policy_id.to_string(),
-            artifact: artifact.unwrap_or_default(),
+            nonce,
         }
     }
 }
@@ -167,7 +163,7 @@ pub struct MsgUpdateRingByAcp {
     #[prost(string, tag = "2")]
     pub ring_id: String,
     #[prost(string, repeated, tag = "3")]
-    pub new_peer_ids: Vec<String>,
+    pub new_peer_node_keys: Vec<String>,
     #[prost(uint32, optional, tag = "4")]
     pub new_threshold: Option<u32>,
     #[prost(uint64, optional, tag = "5")]
@@ -180,19 +176,44 @@ impl MsgUpdateRingByAcp {
     pub fn new(
         creator: &str,
         ring_id: &str,
-        new_peer_ids: Vec<String>,
+        new_peer_node_keys: Vec<String>,
         new_threshold: Option<u32>,
         pss_interval: Option<u64>,
     ) -> Self {
         Self {
             creator: creator.to_string(),
             ring_id: ring_id.to_string(),
-            new_peer_ids,
+            new_peer_node_keys,
             new_threshold,
             pss_interval,
         }
     }
 }
+
+#[derive(Clone, Message)]
+pub struct MsgFinalizeRing {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub ring_id: String,
+    #[prost(string, tag = "3")]
+    pub ring_pk: String,
+}
+
+impl MsgFinalizeRing {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgFinalizeRing";
+
+    pub fn new(creator: &str, ring_id: &str, ring_pk: &str) -> Self {
+        Self {
+            creator: creator.to_string(),
+            ring_id: ring_id.to_string(),
+            ring_pk: ring_pk.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgFinalizeRingResponse {}
 
 #[derive(Clone, Message)]
 pub struct MsgFinalizeRingReshareByThresholdSignature {
@@ -225,22 +246,20 @@ pub struct MsgStoreDocument {
     #[prost(string, tag = "1")]
     pub creator: String,
     #[prost(string, tag = "2")]
-    pub namespace: String,
-    #[prost(string, tag = "3")]
     pub ring_id: String,
-    #[prost(string, tag = "4")]
+    #[prost(string, tag = "3")]
     pub document: String,
-    #[prost(string, tag = "5")]
+    #[prost(string, tag = "4")]
     pub proof: String,
-    #[prost(string, tag = "6")]
+    #[prost(string, tag = "5")]
     pub policy_id: String,
-    #[prost(string, tag = "7")]
+    #[prost(string, tag = "6")]
     pub resource: String,
-    #[prost(string, tag = "8")]
+    #[prost(string, tag = "7")]
     pub permission: String,
-    #[prost(string, optional, tag = "9")]
+    #[prost(string, optional, tag = "8")]
     pub tier: Option<String>,
-    #[prost(uint64, optional, tag = "10")]
+    #[prost(uint64, optional, tag = "9")]
     pub timestamp: Option<u64>,
 }
 
@@ -259,16 +278,14 @@ pub struct MsgStoreKeyDerivation {
     #[prost(string, tag = "1")]
     pub creator: String,
     #[prost(string, tag = "2")]
-    pub namespace: String,
-    #[prost(string, tag = "3")]
     pub ring_id: String,
-    #[prost(string, tag = "4")]
+    #[prost(string, tag = "3")]
     pub derivation: String,
-    #[prost(string, tag = "5")]
+    #[prost(string, tag = "4")]
     pub policy_id: String,
-    #[prost(string, tag = "6")]
+    #[prost(string, tag = "5")]
     pub resource: String,
-    #[prost(string, tag = "7")]
+    #[prost(string, tag = "6")]
     pub permission: String,
 }
 
@@ -291,7 +308,7 @@ pub struct MsgCreateNodeInfo {
     #[prost(string, tag = "3")]
     pub controller_key: String,
     #[prost(string, repeated, tag = "4")]
-    pub whitelisted_namespaces: Vec<String>,
+    pub whitelisted_policy_ids: Vec<String>,
     #[prost(string, repeated, tag = "5")]
     pub whitelisted_ring_ids: Vec<String>,
 }
@@ -302,6 +319,29 @@ impl MsgCreateNodeInfo {
 
 #[derive(Clone, Message)]
 pub struct MsgCreateNodeInfoResponse {}
+
+#[derive(Clone, Message)]
+pub struct MsgUpdateNodeInfo {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub node_key: String,
+    #[prost(string, optional, tag = "3")]
+    pub peer_id: Option<String>,
+    #[prost(string, repeated, tag = "4")]
+    pub whitelisted_policy_ids: Vec<String>,
+    #[prost(string, repeated, tag = "5")]
+    pub whitelisted_ring_ids: Vec<String>,
+    #[prost(string, optional, tag = "6")]
+    pub controller_key: Option<String>,
+}
+
+impl MsgUpdateNodeInfo {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgUpdateNodeInfo";
+}
+
+#[derive(Clone, Message)]
+pub struct MsgUpdateNodeInfoResponse {}
 
 // ============================================================================
 // Query Request/Response Types
@@ -321,9 +361,7 @@ pub struct QueryRingResponse {
 
 #[derive(Clone, Message)]
 pub struct QueryRingsRequest {
-    #[prost(string, tag = "1")]
-    pub namespace: String,
-    #[prost(message, optional, tag = "2")]
+    #[prost(message, optional, tag = "1")]
     pub pagination: Option<PageRequest>,
 }
 
@@ -338,8 +376,6 @@ pub struct QueryRingsResponse {
 #[derive(Clone, Message)]
 pub struct QueryDocumentRequest {
     #[prost(string, tag = "1")]
-    pub namespace: String,
-    #[prost(string, tag = "2")]
     pub id: String,
 }
 
@@ -351,9 +387,7 @@ pub struct QueryDocumentResponse {
 
 #[derive(Clone, Message)]
 pub struct QueryDocumentsRequest {
-    #[prost(string, tag = "1")]
-    pub namespace: String,
-    #[prost(message, optional, tag = "2")]
+    #[prost(message, optional, tag = "1")]
     pub pagination: Option<PageRequest>,
 }
 
@@ -368,8 +402,6 @@ pub struct QueryDocumentsResponse {
 #[derive(Clone, Message)]
 pub struct QueryKeyDerivationRequest {
     #[prost(string, tag = "1")]
-    pub namespace: String,
-    #[prost(string, tag = "2")]
     pub id: String,
 }
 
@@ -381,9 +413,7 @@ pub struct QueryKeyDerivationResponse {
 
 #[derive(Clone, Message)]
 pub struct QueryKeyDerivationsRequest {
-    #[prost(string, tag = "1")]
-    pub namespace: String,
-    #[prost(message, optional, tag = "2")]
+    #[prost(message, optional, tag = "1")]
     pub pagination: Option<PageRequest>,
 }
 
@@ -419,25 +449,47 @@ pub struct RingReshareFinalizeSignDoc {
     #[prost(string, tag = "2")]
     pub chain_id: String,
     #[prost(string, tag = "3")]
-    pub namespace: String,
-    #[prost(string, tag = "4")]
     pub ring_id: String,
-    #[prost(string, tag = "5")]
+    #[prost(string, tag = "4")]
     pub ring_pk: String,
-    #[prost(bytes = "vec", tag = "6")]
+    #[prost(bytes = "vec", tag = "5")]
     pub current_ring_sha256: Vec<u8>,
-    #[prost(bytes = "vec", tag = "7")]
+    #[prost(bytes = "vec", tag = "6")]
     pub finalized_ring_sha256: Vec<u8>,
-    #[prost(uint64, tag = "8")]
+    #[prost(uint64, tag = "7")]
     pub block_number_nonce: u64,
+}
+
+/// Canonical Orbis protocol state hashed into reshare finalization sign docs.
+///
+/// This intentionally excludes SourceHub storage-only fields such as creator DID,
+/// fresh-DKG confirmations, and operational scheduling metadata such as PSS
+/// interval. Participant lists must be sorted before hashing.
+#[derive(Clone, Message)]
+pub struct RingReshareSignState {
+    #[prost(string, tag = "1")]
+    pub ring_pk: String,
+    #[prost(string, repeated, tag = "2")]
+    pub peer_node_keys: Vec<String>,
+    #[prost(uint32, tag = "3")]
+    pub threshold: u32,
+    #[prost(string, repeated, tag = "4")]
+    pub new_peer_node_keys: Vec<String>,
+    #[prost(uint32, optional, tag = "5")]
+    pub new_threshold: Option<u32>,
+    #[prost(uint64, optional, tag = "6")]
+    pub pss_interval: Option<u64>,
+    #[prost(uint64, tag = "7")]
+    pub block_number_nonce: u64,
+    #[prost(string, tag = "8")]
+    pub policy_id: String,
 }
 
 /// Build SourceHub-compatible sign bytes for a ring reshare finalization.
 /// `current_ring_sha256` and `finalized_ring_sha256` must each be exactly 32 bytes —
-/// SHA-256 of the cosmos-proto-encoded `Ring` structs for the current and finalized states.
+/// SHA-256 of the canonical Orbis reshare sign-state for the current and finalized states.
 pub fn ring_reshare_finalize_sign_bytes(
     chain_id: &str,
-    namespace: &str,
     ring_id: &str,
     ring_pk: &str,
     current_ring_sha256: Vec<u8>,
@@ -460,7 +512,6 @@ pub fn ring_reshare_finalize_sign_bytes(
     Ok(RingReshareFinalizeSignDoc {
         domain: RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN.to_string(),
         chain_id: chain_id.to_string(),
-        namespace: namespace.to_string(),
         ring_id: ring_id.to_string(),
         ring_pk: ring_pk.to_string(),
         current_ring_sha256,
@@ -470,54 +521,17 @@ pub fn ring_reshare_finalize_sign_bytes(
     .encode_to_vec())
 }
 
-/// Hash a proto-encoded `Ring` for use in reshare sign docs.
-pub fn ring_state_hash(ring: &Ring) -> [u8; 32] {
-    Sha256::digest(ring.encode_to_vec()).into()
-}
-
-// ============================================================================
-// Ring ID generation (mirrors SourceHub's GenerateRingID)
-// ============================================================================
-
-/// Add SourceHub's Orbis namespace prefix unless the caller already supplied it.
-pub fn namespace_id(namespace: &str) -> String {
-    if namespace.starts_with(NAMESPACE_ID_PREFIX) {
-        namespace.to_string()
-    } else {
-        format!("{NAMESPACE_ID_PREFIX}{namespace}")
-    }
-}
-
-/// Compute the deterministic ring ID matching SourceHub's on-chain `GenerateRingID`.
-///
-/// Encoding: each string is 4-byte big-endian length + UTF-8 bytes; string slices
-/// have a 4-byte big-endian count prefix; uint32 is 4-byte big-endian;
-/// optional uint64 is a 1-byte presence flag followed by 8-byte big-endian if present.
-pub fn generate_ring_id(
-    namespace: &str,
-    ring_pk: &str,
-    peer_ids: &[String],
-    threshold: u32,
-    pss_interval: Option<u64>,
-    policy_id: &str,
-) -> String {
-    let namespace = namespace_id(namespace);
-    let mut h = Sha256::new();
-
-    write_string(&mut h, "orbis/ring/v1");
-    write_string(&mut h, &namespace);
-    write_string(&mut h, ring_pk);
-    write_string_slice(&mut h, peer_ids);
-    h.update(threshold.to_be_bytes());
-    write_optional_u64(&mut h, pss_interval);
-    write_string(&mut h, policy_id);
-
-    hex::encode(h.finalize())
+/// Hash a canonicalized reshare sign-state for use in reshare sign docs.
+pub fn ring_reshare_sign_state_hash(state: &RingReshareSignState) -> [u8; 32] {
+    let mut canonical = state.clone();
+    canonical.peer_node_keys.sort();
+    canonical.new_peer_node_keys.sort();
+    canonical.pss_interval = None;
+    Sha256::digest(canonical.encode_to_vec()).into()
 }
 
 /// Compute the deterministic document ID matching SourceHub's on-chain `GenerateDocumentID`.
 pub fn generate_document_id(
-    namespace: &str,
     ring_id: &str,
     document: &str,
     proof: &str,
@@ -527,11 +541,9 @@ pub fn generate_document_id(
     tier: Option<&str>,
     timestamp: Option<u64>,
 ) -> String {
-    let namespace = namespace_id(namespace);
     let mut h = Sha256::new();
 
     write_string(&mut h, "orbis/document/v1");
-    write_string(&mut h, &namespace);
     write_string(&mut h, ring_id);
     write_string(&mut h, document);
     write_string(&mut h, proof);
@@ -546,18 +558,15 @@ pub fn generate_document_id(
 
 /// Compute the deterministic key derivation ID matching SourceHub's on-chain `GenerateKeyDerivationID`.
 pub fn generate_key_derivation_id(
-    namespace: &str,
     ring_id: &str,
     derivation: &str,
     policy_id: &str,
     resource: &str,
     permission: &str,
 ) -> String {
-    let namespace = namespace_id(namespace);
     let mut h = Sha256::new();
 
     write_string(&mut h, "orbis/key_derivation/v1");
-    write_string(&mut h, &namespace);
     write_string(&mut h, ring_id);
     write_string(&mut h, derivation);
     write_string(&mut h, policy_id);
@@ -579,13 +588,6 @@ fn write_optional_string(h: &mut Sha256, value: Option<&str>) {
             h.update([1u8]);
             write_string(h, v);
         }
-    }
-}
-
-fn write_string_slice(h: &mut Sha256, slice: &[String]) {
-    h.update((slice.len() as u32).to_be_bytes());
-    for s in slice {
-        write_string(h, s);
     }
 }
 
@@ -628,6 +630,24 @@ struct TxMsgData {
 /// then falls back to interpreting the raw data as `MsgCreateRingResponse`
 /// directly. Returns `None` if decoding fails or the ring_id is empty.
 pub fn decode_create_ring_id(data: Option<&Vec<u8>>) -> Option<String> {
+    decode_tx_response_id::<MsgCreateRingResponse, _>(data, |resp| &resp.ring_id)
+}
+
+/// Extract `MsgStoreDocumentResponse.document_id` from a broadcast result.
+pub fn decode_store_document_id(data: Option<&Vec<u8>>) -> Option<String> {
+    decode_tx_response_id::<MsgStoreDocumentResponse, _>(data, |resp| &resp.document_id)
+}
+
+/// Extract `MsgStoreKeyDerivationResponse.key_derivation_id` from a broadcast result.
+pub fn decode_store_key_derivation_id(data: Option<&Vec<u8>>) -> Option<String> {
+    decode_tx_response_id::<MsgStoreKeyDerivationResponse, _>(data, |resp| &resp.key_derivation_id)
+}
+
+fn decode_tx_response_id<T, F>(data: Option<&Vec<u8>>, extract_id: F) -> Option<String>
+where
+    T: Message + Default,
+    F: Fn(&T) -> &str,
+{
     let bytes = data?;
     if bytes.is_empty() {
         return None;
@@ -636,18 +656,20 @@ pub fn decode_create_ring_id(data: Option<&Vec<u8>>) -> Option<String> {
     // Try modern Cosmos SDK 0.46+ format: TxMsgData.msg_responses[0].value
     if let Ok(tx_data) = TxMsgData::decode(bytes.as_slice()) {
         for any in &tx_data.msg_responses {
-            if let Ok(resp) = MsgCreateRingResponse::decode(any.value.as_slice()) {
-                if !resp.ring_id.is_empty() {
-                    return Some(resp.ring_id);
+            if let Ok(resp) = T::decode(any.value.as_slice()) {
+                let id = extract_id(&resp);
+                if !id.is_empty() {
+                    return Some(id.to_string());
                 }
             }
         }
     }
 
-    // Fallback: try decoding the bytes directly as MsgCreateRingResponse
-    if let Ok(resp) = MsgCreateRingResponse::decode(bytes.as_slice()) {
-        if !resp.ring_id.is_empty() {
-            return Some(resp.ring_id);
+    // Fallback: try decoding the bytes directly as the response message.
+    if let Ok(resp) = T::decode(bytes.as_slice()) {
+        let id = extract_id(&resp);
+        if !id.is_empty() {
+            return Some(id.to_string());
         }
     }
 
@@ -663,26 +685,22 @@ use crate::blockchain::{BroadcastResult, SourceHubClient};
 impl SourceHubClient {
     pub async fn orbis_create_ring(
         &self,
-        namespace: &str,
-        ring_pk: &str,
-        peer_ids: Vec<String>,
+        peer_node_keys: Vec<String>,
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
-        artifact: Option<String>,
+        nonce: Option<String>,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
         let msg = MsgCreateRing::new(
             &signer.address(),
-            namespace,
-            ring_pk,
-            peer_ids,
+            peer_node_keys,
             threshold,
             pss_interval,
             policy_id,
-            artifact,
+            nonce,
         );
         self.broadcast_proto_msg_with_gas(
             MsgCreateRing::TYPE_URL,
@@ -695,27 +713,16 @@ impl SourceHubClient {
     /// Create a ring and return the chain-assigned ring_id alongside the broadcast result.
     ///
     /// The ring_id is decoded from `MsgCreateRingResponse` in the ABCI response data.
-    /// If decoding fails, falls back to `generate_ring_id` computed locally.
     pub async fn orbis_create_ring_get_id(
         &self,
-        namespace: &str,
-        ring_pk: &str,
-        peer_ids: Vec<String>,
+        peer_node_keys: Vec<String>,
         threshold: u32,
         pss_interval: Option<u64>,
         policy_id: &str,
-        artifact: Option<String>,
+        nonce: Option<String>,
     ) -> Result<(BroadcastResult, String)> {
         let result = self
-            .orbis_create_ring(
-                namespace,
-                ring_pk,
-                peer_ids,
-                threshold,
-                pss_interval,
-                policy_id,
-                artifact,
-            )
+            .orbis_create_ring(peer_node_keys, threshold, pss_interval, policy_id, nonce)
             .await?;
 
         if result.code != 0 {
@@ -737,7 +744,6 @@ impl SourceHubClient {
 
     pub async fn orbis_store_document(
         &self,
-        namespace: &str,
         ring_id: &str,
         document: &str,
         proof: &str,
@@ -752,7 +758,6 @@ impl SourceHubClient {
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
         let msg = MsgStoreDocument {
             creator: signer.address(),
-            namespace: namespace.to_string(),
             ring_id: ring_id.to_string(),
             document: document.to_string(),
             proof: proof.to_string(),
@@ -770,9 +775,43 @@ impl SourceHubClient {
         .await
     }
 
+    /// Store a document and return the chain-assigned document_id alongside the broadcast result.
+    pub async fn orbis_store_document_get_id(
+        &self,
+        ring_id: &str,
+        document: &str,
+        proof: &str,
+        policy_id: &str,
+        resource: &str,
+        permission: &str,
+        tier: Option<String>,
+        timestamp: Option<u64>,
+    ) -> Result<(BroadcastResult, String)> {
+        let result = self
+            .orbis_store_document(
+                ring_id, document, proof, policy_id, resource, permission, tier, timestamp,
+            )
+            .await?;
+
+        if result.code != 0 {
+            return Err(BlockchainError::TxFailed {
+                code: result.code,
+                log: result.log.clone(),
+            });
+        }
+
+        let document_id = decode_store_document_id(result.data.as_ref()).ok_or_else(|| {
+            BlockchainError::Serialization(format!(
+                "Failed to decode document_id from store document response for tx {}",
+                result.tx_hash
+            ))
+        })?;
+
+        Ok((result, document_id))
+    }
+
     pub async fn orbis_store_key_derivation(
         &self,
-        namespace: &str,
         ring_id: &str,
         derivation: &str,
         policy_id: &str,
@@ -784,7 +823,6 @@ impl SourceHubClient {
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
         let msg = MsgStoreKeyDerivation {
             creator: signer.address(),
-            namespace: namespace.to_string(),
             ring_id: ring_id.to_string(),
             derivation: derivation.to_string(),
             policy_id: policy_id.to_string(),
@@ -799,11 +837,42 @@ impl SourceHubClient {
         .await
     }
 
+    /// Store a key derivation and return the chain-assigned key_derivation_id alongside the broadcast result.
+    pub async fn orbis_store_key_derivation_get_id(
+        &self,
+        ring_id: &str,
+        derivation: &str,
+        policy_id: &str,
+        resource: &str,
+        permission: &str,
+    ) -> Result<(BroadcastResult, String)> {
+        let result = self
+            .orbis_store_key_derivation(ring_id, derivation, policy_id, resource, permission)
+            .await?;
+
+        if result.code != 0 {
+            return Err(BlockchainError::TxFailed {
+                code: result.code,
+                log: result.log.clone(),
+            });
+        }
+
+        let key_derivation_id =
+            decode_store_key_derivation_id(result.data.as_ref()).ok_or_else(|| {
+                BlockchainError::Serialization(format!(
+                    "Failed to decode key_derivation_id from store key derivation response for tx {}",
+                    result.tx_hash
+                ))
+            })?;
+
+        Ok((result, key_derivation_id))
+    }
+
     pub async fn orbis_create_node_info(
         &self,
         peer_id: &str,
         controller_key: &str,
-        whitelisted_namespaces: Vec<String>,
+        whitelisted_policy_ids: Vec<String>,
         whitelisted_ring_ids: Vec<String>,
     ) -> Result<BroadcastResult> {
         let signer = self
@@ -813,7 +882,7 @@ impl SourceHubClient {
             creator: signer.address(),
             peer_id: peer_id.to_string(),
             controller_key: controller_key.to_string(),
-            whitelisted_namespaces,
+            whitelisted_policy_ids,
             whitelisted_ring_ids,
         };
         self.broadcast_proto_msg_with_gas(
@@ -824,10 +893,35 @@ impl SourceHubClient {
         .await
     }
 
+    pub async fn orbis_update_node_info(
+        &self,
+        node_key: &str,
+        whitelisted_policy_ids: Vec<String>,
+        whitelisted_ring_ids: Vec<String>,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgUpdateNodeInfo {
+            creator: signer.address(),
+            node_key: node_key.to_string(),
+            peer_id: None,
+            whitelisted_policy_ids,
+            whitelisted_ring_ids,
+            controller_key: None,
+        };
+        self.broadcast_proto_msg_with_gas(
+            MsgUpdateNodeInfo::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
     pub async fn orbis_update_ring_by_acp(
         &self,
         ring_id: &str,
-        new_peer_ids: Vec<String>,
+        new_peer_node_keys: Vec<String>,
         new_threshold: Option<u32>,
         pss_interval: Option<u64>,
     ) -> Result<BroadcastResult> {
@@ -837,12 +931,29 @@ impl SourceHubClient {
         let msg = MsgUpdateRingByAcp::new(
             &signer.address(),
             ring_id,
-            new_peer_ids,
+            new_peer_node_keys,
             new_threshold,
             pss_interval,
         );
         self.broadcast_proto_msg_with_gas(
             MsgUpdateRingByAcp::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    pub async fn orbis_finalize_ring(
+        &self,
+        ring_id: &str,
+        ring_pk: &str,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgFinalizeRing::new(&signer.address(), ring_id, ring_pk);
+        self.broadcast_proto_msg_with_gas(
+            MsgFinalizeRing::TYPE_URL,
             &msg,
             self.config().gas_multiplier,
         )
@@ -895,11 +1006,8 @@ impl SourceHubClient {
         Ok(response.ring)
     }
 
-    pub async fn orbis_read_document(&self, namespace: &str, id: &str) -> Result<Option<Document>> {
-        let request = QueryDocumentRequest {
-            namespace: namespace.to_string(),
-            id: id.to_string(),
-        };
+    pub async fn orbis_read_document(&self, id: &str) -> Result<Option<Document>> {
+        let request = QueryDocumentRequest { id: id.to_string() };
         let response_bytes = match self
             .abci_query(
                 "/sourcehub.orbis.Query/Document",
@@ -919,15 +1027,8 @@ impl SourceHubClient {
         Ok(response.document)
     }
 
-    pub async fn orbis_read_key_derivation(
-        &self,
-        namespace: &str,
-        id: &str,
-    ) -> Result<Option<KeyDerivation>> {
-        let request = QueryKeyDerivationRequest {
-            namespace: namespace.to_string(),
-            id: id.to_string(),
-        };
+    pub async fn orbis_read_key_derivation(&self, id: &str) -> Result<Option<KeyDerivation>> {
+        let request = QueryKeyDerivationRequest { id: id.to_string() };
         let response_bytes = match self
             .abci_query(
                 "/sourcehub.orbis.Query/KeyDerivation",
@@ -979,25 +1080,21 @@ impl SourceHubClient {
 mod tests {
     use prost::Message;
 
-    use super::{MsgCreateRing, MsgFinalizeRingReshareByThresholdSignature, MsgUpdateRingByAcp};
+    use super::{
+        decode_store_document_id, decode_store_key_derivation_id, ring_reshare_sign_state_hash,
+        MsgCreateRing, MsgFinalizeRing, MsgFinalizeRingReshareByThresholdSignature,
+        MsgStoreDocumentResponse, MsgStoreKeyDerivationResponse, MsgUpdateRingByAcp,
+        RingReshareSignState,
+    };
 
     #[test]
     fn create_ring_preserves_present_zero_pss_interval_on_wire() {
-        let msg = MsgCreateRing::new(
-            "c",
-            "n",
-            "r",
-            vec!["p1".to_string()],
-            1,
-            Some(0),
-            "policy",
-            None,
-        );
+        let msg = MsgCreateRing::new("c", vec!["p1".to_string()], 1, Some(0), "policy", None);
         let bytes = msg.encode_to_vec();
 
         assert!(
-            bytes.windows(2).any(|window| window == [0x30, 0x00]),
-            "encoded MsgCreateRing should include optional field 6 with value 0: {}",
+            bytes.windows(2).any(|window| window == [0x20, 0x00]),
+            "encoded MsgCreateRing should include optional field 4 with value 0: {}",
             hex::encode(&bytes)
         );
 
@@ -1022,12 +1119,92 @@ mod tests {
     }
 
     #[test]
+    fn finalize_ring_wire_fields_match_sourcehub_proto() {
+        let msg = MsgFinalizeRing::new("c", "r", "pk");
+
+        assert_eq!(hex::encode(msg.encode_to_vec()), "0a01631201721a02706b");
+    }
+
+    #[test]
     fn finalize_ring_reshare_wire_fields_match_sourcehub_proto() {
         let msg = MsgFinalizeRingReshareByThresholdSignature::new("c", "r", "s", vec![1, 2]);
 
         assert_eq!(
             hex::encode(msg.encode_to_vec()),
             "0a01631201721a017322020102"
+        );
+    }
+
+    #[test]
+    fn ring_reshare_sign_state_hash_sorts_participant_lists() {
+        let state = RingReshareSignState {
+            ring_pk: "pk".to_string(),
+            peer_node_keys: vec!["node-b".to_string(), "node-a".to_string()],
+            threshold: 2,
+            new_peer_node_keys: vec!["node-d".to_string(), "node-c".to_string()],
+            new_threshold: Some(1),
+            pss_interval: Some(30),
+            block_number_nonce: 9,
+            policy_id: "policy".to_string(),
+        };
+        let reordered = RingReshareSignState {
+            peer_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
+            new_peer_node_keys: vec!["node-c".to_string(), "node-d".to_string()],
+            ..state.clone()
+        };
+
+        assert_eq!(
+            ring_reshare_sign_state_hash(&state),
+            ring_reshare_sign_state_hash(&reordered)
+        );
+    }
+
+    #[test]
+    fn ring_reshare_sign_state_hash_ignores_pss_interval() {
+        let state = RingReshareSignState {
+            ring_pk: "pk".to_string(),
+            peer_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
+            threshold: 2,
+            new_peer_node_keys: vec!["node-c".to_string(), "node-d".to_string()],
+            new_threshold: Some(1),
+            pss_interval: None,
+            block_number_nonce: 9,
+            policy_id: "policy".to_string(),
+        };
+        let with_pss_interval = RingReshareSignState {
+            pss_interval: Some(30),
+            ..state.clone()
+        };
+
+        assert_eq!(
+            ring_reshare_sign_state_hash(&state),
+            ring_reshare_sign_state_hash(&with_pss_interval)
+        );
+    }
+
+    #[test]
+    fn decode_store_document_id_from_direct_response() {
+        let response = MsgStoreDocumentResponse {
+            document_id: "doc-id".to_string(),
+        };
+        let bytes = response.encode_to_vec();
+
+        assert_eq!(
+            decode_store_document_id(Some(&bytes)),
+            Some("doc-id".to_string())
+        );
+    }
+
+    #[test]
+    fn decode_store_key_derivation_id_from_direct_response() {
+        let response = MsgStoreKeyDerivationResponse {
+            key_derivation_id: "key-derivation-id".to_string(),
+        };
+        let bytes = response.encode_to_vec();
+
+        assert_eq!(
+            decode_store_key_derivation_id(Some(&bytes)),
+            Some("key-derivation-id".to_string())
         );
     }
 }

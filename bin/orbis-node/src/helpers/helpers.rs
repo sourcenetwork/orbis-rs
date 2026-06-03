@@ -4,11 +4,10 @@
 use crate::constants::{EXPECTED_HEX_NODE_ID_LENGTH, MAX_PEER_ID_LENGTH};
 use crate::dkg::session_state::SessionStateManager;
 use crate::error::PeerIdValidationError;
-use crate::ring_state::RingIndexEntry;
 use crate::ring_state::RingShareBundle;
 use crypto::r#trait::{CryptoDeserialize, Dkg};
 use crypto::GroupAffine as G1Affine;
-use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use local_storage::r#trait::LocalStorage;
 use network::{Network, PeerId};
 use sha2::{Digest, Sha256};
 use std::collections::hash_map::DefaultHasher;
@@ -237,15 +236,17 @@ pub fn is_self_peer_id(network: &Arc<dyn Network>, peer_id_str: &str) -> bool {
     our_peer_id_hex == peer_node_part
 }
 
-/// Determine node_id for a DKG session based on sorted peer_ids
+/// Determine node_id for a DKG session based on sorted participant identities.
 ///
 /// In a DKG session, node_id must be between 1 and total_nodes.
-/// This function sorts all peer_ids and returns the 1-indexed position
-/// of the given peer_id in that sorted list.
+/// This function sorts all identities and returns the 1-indexed position
+/// of the given identity in that sorted list. For current ring logic those
+/// identities are chain node keys; older route-oriented tests may still pass
+/// peer IDs, which are normalized by stripping any `@address` suffix.
 ///
 /// # Arguments
-/// * `our_peer_id` - Our own peer ID (hex-encoded, may include @address)
-/// * `all_peer_ids` - All peer IDs participating in the session (including ours)
+/// * `our_peer_id` - Our own identity or peer ID (peer IDs may include @address)
+/// * `all_peer_ids` - All identities participating in the session (including ours)
 ///
 /// # Returns
 /// The node_id (1-indexed) for this peer in the session, or None if peer_id not found
@@ -268,6 +269,22 @@ pub fn determine_session_node_id(our_peer_id: &str, all_peer_ids: &[String]) -> 
         .map(|idx| (idx + 1) as u32)
 }
 
+pub fn determine_ring_node_id_from_peer_id(peer_id: &str, ring: &RingConfig) -> Option<u32> {
+    if ring.peer_node_keys.len() != ring.peer_ids.len() {
+        return None;
+    }
+
+    let peer_node_part = extract_node_part(peer_id);
+    let node_key = ring
+        .peer_node_keys
+        .iter()
+        .zip(ring.peer_ids.iter())
+        .find(|(_, route_peer_id)| extract_node_part(route_peer_id) == peer_node_part)
+        .map(|(node_key, _)| node_key.as_str())?;
+
+    determine_session_node_id(node_key, &ring.peer_node_keys)
+}
+
 /// Ring configuration fetched from the bulletin.
 ///
 /// Groups the five bulletin-derived fields that always travel together through
@@ -279,6 +296,8 @@ pub struct RingConfig {
     pub ring_pk_bytes: Vec<u8>,
     /// Network addresses of all ring participants
     pub peer_ids: Vec<String>,
+    /// Chain node keys of all ring participants, in the same order as `peer_ids`.
+    pub peer_node_keys: Vec<String>,
     /// Minimum shares required to reconstruct
     pub threshold: usize,
     /// Total number of nodes in the ring
@@ -373,33 +392,52 @@ where
     }
 }
 
-/// Look up the bulletin namespace for a ring by its `bulletin_post_id`.
-///
-/// Returns `Err(message)` if the ring index cannot be read or deserialized,
-/// and `Err(message)` if no entry matches `post_id`. Callers map the error
-/// string to their own error type via `.map_err(MyError::Storage)?`.
-pub fn ring_namespace_for_post_id(
-    local_storage: &impl LocalStorage,
-    post_id: &str,
-) -> Result<String, String> {
-    let raw = local_storage
-        .get(LocalStorageKeys::RingIndex)
-        .map_err(|e| format!("Failed to read ring index: {}", e))?;
-    let ring_index: Vec<RingIndexEntry> = match raw {
-        None => vec![],
-        Some(b) => serde_json::from_slice(&b)
-            .map_err(|e| format!("Failed to deserialize ring index: {}", e))?,
-    };
-    ring_index
-        .iter()
-        .find(|e| e.bulletin_post_id == post_id)
-        .map(|e| e.bulletin_namespace.clone())
-        .ok_or_else(|| format!("Ring '{}' not found in local ring index", post_id))
-}
-
 fn decode_pub_poly_hex<D: Dkg>(hex_str: &str) -> Result<D::PubPoly, String> {
     let bytes =
         hex::decode(hex_str).map_err(|e| format!("Failed to decode polynomial hex: {}", e))?;
     <D::PubPoly>::from_bytes(&bytes)
         .map_err(|e| format!("Failed to deserialize public polynomial: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ring_config(peer_node_keys: Vec<String>, peer_ids: Vec<String>) -> RingConfig {
+        RingConfig {
+            ring_pk_bytes: vec![],
+            peer_ids,
+            peer_node_keys,
+            threshold: 1,
+            total_participants: 1,
+            public_polynomial_hex: String::new(),
+        }
+    }
+
+    #[test]
+    fn determine_ring_node_id_from_peer_id_fails_closed_on_length_mismatch() {
+        let ring = ring_config(
+            vec!["node-a".to_string(), "node-b".to_string()],
+            vec!["peer-a".to_string()],
+        );
+
+        assert_eq!(determine_ring_node_id_from_peer_id("peer-a", &ring), None);
+    }
+
+    #[test]
+    fn determine_ring_node_id_from_peer_id_maps_peer_to_node_key_position() {
+        let ring = ring_config(
+            vec!["node-b".to_string(), "node-a".to_string()],
+            vec!["peer-b".to_string(), "peer-a".to_string()],
+        );
+
+        assert_eq!(
+            determine_ring_node_id_from_peer_id("peer-a", &ring),
+            Some(1)
+        );
+        assert_eq!(
+            determine_ring_node_id_from_peer_id("peer-b", &ring),
+            Some(2)
+        );
+    }
 }

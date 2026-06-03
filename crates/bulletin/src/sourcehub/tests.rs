@@ -1,21 +1,69 @@
 use super::SourceHubBulletin;
-use crate::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
+use crate::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, RingPayload};
 use common::{
-    blockchain::{ChainConfig, ChainConfigBuilder, TxSigner, TEST_ACCOUNT_HEX_KEY},
+    blockchain::{
+        acp::Object, ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner,
+        TEST_ACCOUNT_HEX_KEY,
+    },
     SourceHubTestContainer,
 };
 
-fn test_ring_payload() -> RingPayload {
-    RingPayload {
-        ring_pk: "test-ring-pk".to_string(),
-        peer_ids: vec![
-            "peer-1".to_string(),
-            "peer-2".to_string(),
-            "peer-3".to_string(),
-        ],
-        threshold: 2,
-        ..Default::default()
-    }
+const ORBIS_RING_POLICY_YAML: &str = r#"
+name: orbis ring policy
+resources:
+- name: ring_policy
+  permissions:
+  - name: create_ring
+    expr: ring_creator
+  relations:
+  - name: ring_creator
+    types:
+    - actor
+- name: ring
+  permissions:
+  - name: update_ring
+    expr: operator
+  relations:
+  - name: operator
+    types:
+    - actor
+"#;
+
+async fn create_orbis_ring_policy(client: &SourceHubClient) -> String {
+    let ids_before: std::collections::HashSet<String> = client
+        .acp_list_policy_ids()
+        .await
+        .unwrap()
+        .ids
+        .into_iter()
+        .collect();
+
+    client
+        .acp_create_policy(ORBIS_RING_POLICY_YAML, 1)
+        .await
+        .unwrap();
+
+    let policy_id = client
+        .acp_list_policy_ids()
+        .await
+        .unwrap()
+        .ids
+        .into_iter()
+        .find(|id| !ids_before.contains(id))
+        .expect("new policy ID not found");
+
+    client
+        .acp_register_object(
+            &policy_id,
+            Object {
+                resource: "ring_policy".to_string(),
+                id: policy_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+    policy_id
 }
 
 #[test]
@@ -32,62 +80,56 @@ async fn test_bulletin_document() {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
 
+    let node_key = signer.public_key_hex();
+
     let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
         .await
         .unwrap();
 
-    let namespace = "test_namespace";
-    let ring_payload = test_ring_payload();
-    let ring_payload_bytes: Vec<u8> = ring_payload.clone().try_into().unwrap();
+    let policy_id = create_orbis_ring_policy(&bulletin.chain_client).await;
+
     bulletin
-        .post(
-            namespace.to_string(),
-            BulletinKind::Ring,
-            ring_payload_bytes,
+        .chain_client
+        .orbis_create_node_info("test-peer-id", &node_key, vec![], vec![])
+        .await
+        .unwrap();
+
+    let (_, ring_id) = bulletin
+        .chain_client
+        .orbis_create_ring_get_id(
+            vec![node_key],
+            1,
             None,
+            &policy_id,
+            Some("document-test".to_string()),
         )
         .await
         .unwrap();
-    let ring_id = bulletin
-        .get_ring_id(
-            namespace,
-            &ring_payload.ring_pk,
-            &ring_payload.peer_ids,
-            ring_payload.threshold,
-            ring_payload.pss_interval,
-            ring_payload.policy_id.as_deref().unwrap_or(""),
-        )
+
+    bulletin
+        .chain_client
+        .orbis_finalize_ring(&ring_id, "dummy_ring_pk")
+        .await
         .unwrap();
 
     let payload = DocumentPayload {
         ring_id,
         document: "encrypted-document".to_string(),
         proof: "proof".to_string(),
-        policy_id: "policy-id".to_string(),
+        policy_id,
         resource: "resource".to_string(),
         permission: "read".to_string(),
         ..Default::default()
     };
     let serialized_payload: Vec<u8> = payload.clone().try_into().unwrap();
 
-    bulletin.register(namespace.to_string()).await.unwrap();
-
-    bulletin
-        .post(
-            namespace.to_string(),
-            BulletinKind::Document,
-            serialized_payload.clone(),
-            None,
-        )
+    let post_id = bulletin
+        .post(BulletinWriteKind::Document, serialized_payload.clone())
         .await
         .unwrap();
 
-    let post_id = bulletin
-        .get_post_id(namespace, &serialized_payload)
-        .unwrap();
-
     let created_post = bulletin
-        .read(namespace.to_string(), post_id, BulletinKind::Document)
+        .read(post_id, BulletinKind::Document)
         .await
         .unwrap();
     println!("Created post ID: {}", created_post.id);
@@ -111,38 +153,46 @@ async fn test_bulletin_ring() {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
 
+    let node_key = signer.public_key_hex();
+
     let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
         .await
         .unwrap();
 
-    let namespace = "test_namespace";
-    let payload = test_ring_payload();
-    let serialized_payload: Vec<u8> = payload.clone().try_into().unwrap();
-
-    bulletin.register(namespace.to_string()).await.unwrap();
+    let policy_id = create_orbis_ring_policy(&bulletin.chain_client).await;
 
     bulletin
-        .post(
-            namespace.to_string(),
-            BulletinKind::Ring,
-            serialized_payload.clone(),
+        .chain_client
+        .orbis_create_node_info("test-peer-id", &node_key, vec![], vec![])
+        .await
+        .unwrap();
+
+    let peer_node_keys = vec![node_key];
+    let threshold = 1u32;
+
+    let payload = RingPayload {
+        ring_pk: String::new(),
+        peer_node_keys: peer_node_keys.clone(),
+        threshold,
+        policy_id: Some(policy_id.clone()),
+        ..Default::default()
+    };
+    let serialized_payload: Vec<u8> = payload.clone().try_into().unwrap();
+
+    let (_, ring_id) = bulletin
+        .chain_client
+        .orbis_create_ring_get_id(
+            peer_node_keys,
+            threshold,
             None,
+            &policy_id,
+            Some("ring-test".to_string()),
         )
         .await
         .unwrap();
-    let ring_id = bulletin
-        .get_ring_id(
-            namespace,
-            &payload.ring_pk,
-            &payload.peer_ids,
-            payload.threshold,
-            payload.pss_interval,
-            payload.policy_id.as_deref().unwrap_or(""),
-        )
-        .unwrap();
 
     let created_post = bulletin
-        .read(namespace.to_string(), ring_id.clone(), BulletinKind::Ring)
+        .read(ring_id.clone(), BulletinKind::Ring)
         .await
         .unwrap();
     println!("Created post ID: {}", created_post.id);

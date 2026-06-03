@@ -5,7 +5,7 @@
 //! and stored here until the threshold is met.
 
 use crate::constants::MAX_PRE_RESPONSES;
-use crate::helpers::response_manager::ResponseManager;
+use crate::helpers::response_manager::{AuthenticatedResponse, ResponseManager};
 use crate::pre::messages::PreMessage;
 
 /// PRE Response State Manager
@@ -66,6 +66,14 @@ impl PreResponseManager {
     /// write lock and moves the `Vec` out without cloning.
     pub async fn take_responses(&self, request_id: &str) -> Option<Vec<PreMessage>> {
         self.inner.take_responses(request_id).await
+    }
+
+    /// Take collected PRE responses with their authenticated sender peer.
+    pub async fn take_authenticated_responses(
+        &self,
+        request_id: &str,
+    ) -> Option<Vec<AuthenticatedResponse<PreMessage>>> {
+        self.inner.take_authenticated_responses(request_id).await
     }
 
     /// Remove PRE response entry (cleanup after completion)

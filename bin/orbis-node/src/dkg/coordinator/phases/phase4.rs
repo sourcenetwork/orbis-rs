@@ -31,28 +31,17 @@ where
         "DKG Coordinator: Starting Phase 4 completion"
     );
 
-    let (
-        kind,
-        pss_interval,
-        policy_id,
-        bulletin_namespace,
-        dkg_role,
-        reshare_new_peer_ids,
-        reshare_bulletin_post_id,
-    ) = coord
+    let (kind, dkg_role, reshare_new_peer_node_keys, reshare_bulletin_post_id) = coord
         .app_state
         .dkg_session_state
         .with_state(&session_id, |state| {
             (
                 state.kind.clone(),
-                state.pss_interval,
-                state.policy_id.clone(),
-                state.namespace.clone(),
                 state.node.role(),
                 state
                     .reshare_params
                     .as_ref()
-                    .map(|p| p.new_peer_ids.clone()),
+                    .map(|p| p.new_peer_node_keys.clone()),
                 state
                     .reshare_params
                     .as_ref()
@@ -143,6 +132,24 @@ where
     if is_fresh {
         ring_storage::preflight_new_ring_capacity(&coord.app_state, &storage_key).await?;
     }
+    let fresh_ring_id = if is_fresh {
+        Some(
+            coord
+                .app_state
+                .dkg_session_state
+                .ring_id_for_session(&session_id)
+                .await
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    DkgError::Bulletin(format!(
+                        "Fresh DKG session {} is missing ring_id",
+                        session_id
+                    ))
+                })?,
+        )
+    } else {
+        None
+    };
 
     // Write share + polynomial as a single encrypted bundle.
     // Atomicity: both fields land in one set_encrypted call, so a crash leaves the
@@ -190,10 +197,28 @@ where
             .get_peer_ids(&session_id)
             .await
             .unwrap_or_default();
+        let peer_node_keys = coord
+            .app_state
+            .dkg_session_state
+            .get_peer_node_keys(&session_id)
+            .await
+            .ok_or_else(|| {
+                DkgError::InvalidState(format!(
+                    "Refresh Phase 4 session {} is missing peer_node_keys",
+                    session_id
+                ))
+            })?;
+        if peer_node_keys.is_empty() {
+            return Err(DkgError::InvalidState(format!(
+                "Refresh Phase 4 session {} has empty peer_node_keys",
+                session_id
+            )));
+        }
         let candidate = RefreshHealthCheckCandidate {
             ring_key: storage_key.clone(),
             ring_pk_hex: hex::encode(&ring_pk_bytes),
             bundle: staged_bundle,
+            peer_node_keys,
             peer_ids,
             threshold,
         };
@@ -207,6 +232,7 @@ where
             ring_key = %storage_key,
             "Refresh: staged RingShareBundle pending health-check result"
         );
+        refresh_health_check::apply_pending_result_if_present(coord, session_id).await?;
         Some(candidate)
     } else {
         persist_ring_bundle(
@@ -232,13 +258,9 @@ where
     // (they had no prior index entry).  Dealers have already left and skip this entirely.
     if matches!(kind, SessionKind::Reshare { .. }) && dkg_role != DkgRole::Dealer {
         if let Some(post_id) = &reshare_bulletin_post_id {
-            if let Err(e) = ring_storage::add_ring_index_entry(
-                &coord.app_state,
-                &storage_key,
-                post_id.clone(),
-                bulletin_namespace.clone(),
-            )
-            .await
+            if let Err(e) =
+                ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, post_id.clone())
+                    .await
             {
                 cleanup_new_ring_bundle_after_index_failure(
                     &coord.app_state.local_storage,
@@ -255,58 +277,37 @@ where
         }
     }
 
-    // For fresh DKG: post the RingPayload to the bulletin (node 1 only) and write a
-    // RingIndexEntry on all nodes so the PSS scheduler can discover this ring.
-    //
-    // Node 1 posts first so the chain-assigned ring_id can be read from the tx
-    // response; all other nodes compute the ring_id locally via generate_ring_id.
-    //
+    // For fresh DKG: write the RingIndexEntry first, then confirm on the bulletin.
+    // Writing the index before the chain post means that if the chain post fails,
+    // the node still has its share and index entry intact — the orphaned entry is
+    // harmless (PSS will reconcile it) and is far better than the inverse: having
+    // confirmed on-chain while the local state was cleaned up.
     // For Refresh: bulletin entry is unchanged; polynomial updated in RingShareBundle above.
     // For Reshare: bulletin is updated below by new-committee node 1.
-    if is_fresh {
-        let bulletin_post_id = if node_id == 1 {
-            // Post to the chain
-            ring_storage::post_fresh_ring_payload(
-                coord,
-                session_id,
-                &ring_pk_bytes,
-                threshold,
-                pss_interval,
-                policy_id.clone(),
-                &bulletin_namespace,
-            )
-            .await?
-        } else {
-            // Nodes 2 and 3: compute the ring_id locally.
-            let peer_ids = coord
-                .app_state
-                .dkg_session_state
-                .get_peer_ids(&session_id)
+    if let Some(ring_id) = fresh_ring_id {
+        if let Err(e) =
+            ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, ring_id.clone())
                 .await
-                .unwrap_or_default();
-            ring_storage::fresh_ring_index_post_id(
-                &coord.app_state,
-                &aggregate_pk,
-                peer_ids,
-                threshold,
-                pss_interval,
-                policy_id.clone(),
-                &bulletin_namespace,
-            )?
-        };
-
-        if let Err(e) = ring_storage::add_ring_index_entry(
-            &coord.app_state,
-            &storage_key,
-            bulletin_post_id,
-            bulletin_namespace.clone(),
-        )
-        .await
         {
             cleanup_new_ring_bundle_after_index_failure(
                 &coord.app_state.local_storage,
                 &storage_key,
                 adds_new_local_ring,
+            );
+            return Err(e);
+        }
+
+        if let Err(e) =
+            ring_storage::post_fresh_ring_finalization(coord, &ring_id, &ring_pk_bytes).await
+        {
+            tracing::error!(
+                ring_id = %ring_id,
+                ring_pk = %hex::encode(&ring_pk_bytes),
+                error = %e,
+                "Phase 4: FinalizeRing chain post failed after local state was written. \
+                 This node holds a valid share and index entry but has not confirmed \
+                 on-chain. The ring will remain pending until another participant \
+                 retries or operator intervention. Local state is preserved."
             );
             return Err(e);
         }
@@ -364,7 +365,7 @@ where
         &storage_key,
         &ring_pk_bytes,
         &pub_poly_bytes,
-        reshare_new_peer_ids.as_deref(),
+        reshare_new_peer_node_keys.as_deref(),
         reshare_bulletin_post_id.as_deref(),
     )
     .await?;
@@ -376,7 +377,7 @@ where
         .await;
 
     // All new-committee Reshare nodes defer cleanup to a background task that
-    // polls the bulletin until new_peer_ids is cleared, then releases the PSS
+    // polls the bulletin until new_peer_node_keys is cleared, then releases the PSS
     // claim and removes the session. Node 1 already posted the update so its
     // first poll succeeds immediately; non-node-1 nodes wait for node 1 to post.
     // This single path prevents the PSS scheduler from re-triggering a duplicate
@@ -389,7 +390,6 @@ where
             ring_key,
             session_id,
             bulletin_post_id,
-            bulletin_namespace.clone(),
         );
         return Ok(());
     }

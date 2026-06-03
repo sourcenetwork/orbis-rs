@@ -1,8 +1,8 @@
 # Bulletin crate
 
-A small async abstraction over a **namespace/key-value bulletin**: register namespaces, **post** opaque payloads, **read** posts by id, and compute **deterministic post ids** from `(namespace, payload)`.
+A small async abstraction over typed Orbis bulletin objects: **read** rings by authoritative id, and **post** fresh ring finalizations, node info, encrypted document handles, and key-derivation records.
 
-Orbis uses this for shared metadata (rings, encrypted document handles, key-derivation records). The default backend is **SourceHub** on-chain bulletin storage; an in-memory **dummy** implementation ships for tests and local development.
+The default backend is SourceHub `x/orbis`; an in-memory **dummy** implementation ships for tests and local development.
 
 ## `Bulletin` trait
 
@@ -10,17 +10,17 @@ Defined in [`src/trait.rs`](src/trait.rs):
 
 | Method | Role |
 |--------|------|
-| `register(namespace)` | Create / claim a bulletin namespace (chain-specific). |
-| `post(namespace, payload, artifact)` | Store a post; id is implied by chain or local rules. |
-| `read(namespace, id)` | Load a `BulletinPost` (`id`, `namespace`, `payload`). |
-| `get_post_id(namespace, payload)` | Deterministic id for a payload under a namespace (must match on-chain rules for SourceHub). |
+| `post(kind, payload)` | Store a typed write object and return its authoritative id. Write kinds are `Finalize`, `Document`, `KeyDerivation`, and `NodeInfo`. |
+| `read(id, kind)` | Load a `BulletinPost` (`id`, `payload`). |
 
 Shared **value types** (JSON serde):
 
-- **`BulletinPost`** — `id`, `namespace`, raw **`payload`** bytes.
+- **`BulletinPost`** — `id`, raw **`payload`** bytes.
 - **`DocumentPayload`** — Encrypted document + Chaum–Pedersen proof fields + policy binding (`ring_id`, `policy_id`, `resource`, `permission`, optional tier/timestamp).
-**`RingPayload`** — Ring metadata: `ring_pk`, `peer_ids`, `threshold`, optional `pss_interval`, optional **`new_peer_ids`** / **`new_threshold`** for reshare coordination, and **`block_number_nonce`** used as anti-replay input to the reshare finalization sign doc.
+- **`RingPayload`** — Ring metadata: `ring_pk`, `peer_node_keys`, `threshold`, optional `pss_interval`, optional **`new_peer_node_keys`** / **`new_threshold`** for reshare coordination, and **`block_number_nonce`** used as anti-replay input to the reshare finalization sign doc.
+- **`RingFinalizationPayload`** — Fresh DKG finalization confirmation: `ring_id` and aggregate `ring_pk`.
 - **`KeyDerivation`** — Bulletin entry for signing/PRE derivation: `ring_id`, `derivation`, policy fields.
+- **`NodeInfo`** — Node registration: `peer_id`, `controller_key`, `whitelisted_policy_ids`, and `whitelisted_ring_ids`.
 
 `TryFrom` helpers convert between posts and these structs (JSON in `payload`).
 
@@ -43,10 +43,9 @@ cargo build -p bulletin --no-default-features --features dummy
 
 **`SourceHubBulletin`** wraps [`SourceHubClient`](../common) from the workspace `common` crate.
 
-- **`register`** — `bulletin_register_namespace`.
-- **`post`** — `bulletin_create_post` (optional `artifact`).
-- **`read`** — Reads posts stored under the chain prefix **`bulletin/{namespace}`** (the implementation prepends `bulletin/` when querying).
-- **`get_post_id` / `compute_post_id`** — SHA-256 over **`"bulletin/{namespace}"` as bytes concatenated with `payload`**, hex-encoded — matches on-chain id derivation.
+- **`post`** — routes to fresh `FinalizeRing`, `StoreDocument`, `StoreKeyDerivation`, or `CreateNodeInfo`, returning the chain id for the written object.
+- **`read`** — routes to typed `x/orbis` queries by object id.
+- Ring creation is intentionally outside this abstraction; callers receive a `ring_id` from SourceHub `CreateRing` and pass that id through DKG.
 
 Construction:
 
@@ -59,26 +58,26 @@ Integration tests in [`src/sourcehub/tests.rs`](src/sourcehub/tests.rs) may requ
 
 ## Dummy implementation
 
-**`DummyBulletin`** keeps posts in a process-local **`HashMap`**, keyed by `(namespace, id)`. Post ids use the **same** `compute_post_id` rule as SourceHub so tests can assert deterministic behavior.
+**`DummyBulletin`** keeps typed objects in a process-local **`HashMap`**, keyed by object id. Document and key-derivation writes return the same typed ids as SourceHub.
 
-Extras for tests: **`set_post`**, **`get_posts_by_namespace`**.
+Extras for tests: **`set_post`**, **`set_ring`**, **`set_node_info`**, **`get_posts`**, and **`finalization_count`**. `DummyBulletin::post` rejects `NodeInfo` because the dummy backend has no signer to derive the node key.
 
 Diagnostics name: **`"bulletin/dummy"`**.
 
 ## Errors
 
-[`BulletinError`](src/error.rs): **`ChainError`**, **`ParseError`**, **`NotFound { namespace, id }`**.
+[`BulletinError`](src/error.rs): **`ChainError`**, **`ParseError`**, **`NotFound { id }`**.
 
 ## Dependencies (high level)
 
 - **`async-trait`**, **`serde`** / **`serde_json`**
-- **`sha2`**, **`hex`** — deterministic post-id hashing
+- **`sha2`**, **`hex`** — canonical ring hash helpers
 - **`backoff`** — balance retries in `with_signer`
 - **`common`** — SourceHub chain client
 
 ## Spec notes
 
-The repo includes a short intent doc [`bulletin_spec.md`](bulletin_spec.md): first implementation is SourceHub; other bulletin backends can be added if they honor the same contract expectations (namespaces, posts, deterministic ids where applicable). Filling out the spec is a TODO
+The repo includes a short intent doc [`bulletin_spec.md`](bulletin_spec.md): first implementation is SourceHub; other bulletin backends can be added if they honor the same typed-object contract expectations and deterministic ids where applicable. Filling out the spec is a TODO.
 
 ## Tests
 

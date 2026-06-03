@@ -197,12 +197,13 @@ where
             threshold,
             total_participants,
             peer_ids,
+            peer_node_keys,
             node_id_assignments,
             token_string,
             kind,
             pss_interval,
             policy_id,
-            namespace,
+            ring_id,
             ..
         } = &message
         {
@@ -212,12 +213,13 @@ where
                 *threshold,
                 *total_participants,
                 peer_ids,
+                peer_node_keys,
                 node_id_assignments,
                 token_string,
                 kind,
                 *pss_interval,
                 policy_id.clone(),
-                namespace.clone(),
+                ring_id.clone(),
                 sender_peer_id,
             )
             .await;
@@ -517,9 +519,9 @@ where
     /// Send a DKG message to a peer.
     ///
     /// When `session_id` is `Some`, the stream is cached in the session state so
-    /// that all messages within a session to the same peer travel on the same QUIC
-    /// stream, preserving QUIC's within-stream ordering guarantee
-    /// (SessionInit → Commitment → Share arrive in order at the receiver).
+    /// messages to the same peer normally travel on the same QUIC stream under one
+    /// per-peer send lock. Valid inbound handlers still need to tolerate dependent
+    /// local state arriving slightly later.
     ///
     /// When `session_id` is `None` (fire-and-forget messages), a fresh stream is
     /// opened each time and dropped after the send.

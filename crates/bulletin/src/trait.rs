@@ -10,11 +10,18 @@ pub enum BulletinKind {
     NodeInfo,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BulletinWriteKind {
+    Finalize,
+    Document,
+    KeyDerivation,
+    NodeInfo,
+}
+
 /// Struct for posting to the Bulletin
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
 pub struct BulletinPost {
     pub id: String,
-    pub namespace: String,
     pub payload: Vec<u8>,
 }
 
@@ -49,15 +56,15 @@ pub struct RingPayload {
     /// committee — **nodes may still require this field** (e.g. orbis-node enforces a
     /// pre-announced committee for reshare).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub new_peer_ids: Option<Vec<String>>,
-    /// Threshold for the new committee announced by `new_peer_ids`.
+    pub new_peer_node_keys: Option<Vec<String>>,
+    /// Threshold for the new committee announced by `new_peer_node_keys`.
     /// Validated against `SessionKind::Reshare::new_threshold` when present.
     /// `None` means the bulletin does not constrain the new threshold — **nodes may still
     /// require this field** (e.g. orbis-node enforces a pre-announced threshold for reshare).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_threshold: Option<u32>,
     /// Network ids of peers in ring
-    pub peer_ids: Vec<String>,
+    pub peer_node_keys: Vec<String>,
     /// Threshold of ring
     pub threshold: u32,
     /// Seconds between automatic PSS refresh ceremonies.
@@ -72,6 +79,15 @@ pub struct RingPayload {
     /// If set, the ring is updated externally governed by this policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_id: Option<String>,
+}
+
+/// Payload for confirming a completed fresh DKG ring.
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+pub struct RingFinalizationPayload {
+    /// Id of the pending ring to finalize.
+    pub ring_id: String,
+    /// Aggregate public key computed by DKG participants.
+    pub ring_pk: String,
 }
 
 /// Payload for derivation information derivation_id => payload
@@ -95,8 +111,8 @@ pub struct NodeInfo {
     pub peer_id: String,
     /// Key stored externally from node to control ring participants
     pub controller_key: String,
-    /// whitelisted namespaces that will complete DKG with
-    pub whitelisted_namespaces: Vec<String>,
+    /// whitelisted policy IDs that will complete DKG with
+    pub whitelisted_policy_ids: Vec<String>,
     /// whitelisted ring_ids to complete DKG with
     pub whitelisted_ring_ids: Vec<String>,
 }
@@ -149,6 +165,22 @@ impl TryFrom<RingPayload> for Vec<u8> {
     }
 }
 
+impl TryFrom<BulletinPost> for RingFinalizationPayload {
+    type Error = BulletinError;
+
+    fn try_from(post: BulletinPost) -> Result<Self> {
+        serde_json::from_slice(&post.payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<RingFinalizationPayload> for Vec<u8> {
+    type Error = BulletinError;
+
+    fn try_from(payload: RingFinalizationPayload) -> Result<Self> {
+        serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
 impl TryFrom<BulletinPost> for KeyDerivation {
     type Error = BulletinError;
 
@@ -183,52 +215,18 @@ impl TryFrom<NodeInfo> for Vec<u8> {
 
 #[async_trait]
 pub trait Bulletin {
-    /// Register a bulletin instance
-    async fn register(&self, namespace: String) -> Result<()>;
-    /// Post a message to the bulletin namespace
-    async fn post(
-        &self,
-        namespace: String,
-        kind: BulletinKind,
-        payload: Vec<u8>,
-        artifact: Option<String>,
-    ) -> Result<()>;
-    /// Finalize an existing message update in the bulletin namespace while preserving its ID.
-    async fn update(
-        &self,
-        namespace: String,
-        id: String,
-        signature_scheme: String,
-        signature: Vec<u8>,
-    ) -> Result<()>;
-    /// Read a message from the bulletin namespace
-    async fn read(&self, namespace: String, id: String, kind: BulletinKind)
-        -> Result<BulletinPost>;
+    /// Post a typed Orbis object.
+    async fn post(&self, kind: BulletinWriteKind, payload: Vec<u8>) -> Result<String>;
+    /// Finalize an existing typed Orbis object update while preserving its ID.
+    async fn update(&self, id: String, signature_scheme: String, signature: Vec<u8>) -> Result<()>;
+    /// Read a typed Orbis object.
+    async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost>;
     /// Chain ID used when building chain-bound signing statements.
     fn chain_id(&self) -> String;
-    /// Compute a deterministic post ID from namespace and raw payload bytes.
-    fn get_post_id(&self, namespace: &str, payload: &[u8]) -> Result<String>;
-    /// Compute the deterministic ring ID from ring creation parameters.
-    fn get_ring_id(
-        &self,
-        namespace: &str,
-        ring_pk: &str,
-        peer_ids: &[String],
-        threshold: u32,
-        pss_interval: Option<u64>,
-        policy_id: &str,
-    ) -> Result<String>;
-    /// Return the canonical hash of the current ring state used in reshare sign docs.
-    /// Each bulletin backend defines what "canonical" means for its storage representation.
-    async fn ring_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]>;
-    /// Return the canonical hash of the ring state after reshare finalization:
-    /// new_peer_ids → peer_ids, new_threshold applied, block_number_nonce incremented.
-    async fn ring_finalized_canonical_hash(&self, ring_id: &str) -> Result<[u8; 32]>;
     /// Serialize the canonical sign bytes for a ring reshare finalization sign doc.
     fn ring_reshare_finalize_sign_bytes(
         &self,
         chain_id: &str,
-        namespace: &str,
         ring_id: &str,
         ring_pk: &str,
         current_ring_sha256: Vec<u8>,

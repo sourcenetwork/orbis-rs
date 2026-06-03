@@ -7,13 +7,15 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
-use crate::helpers::test_helpers::BULLETIN_RING_NAMESPACE;
 use crate::{
     constants::MIN_NODE_BALANCE,
     dkg::service::DkgServiceImpl,
     helpers::{
         launch::{create_and_store_node_key, LogLevel},
-        test_helpers::{cleanup_db, test_db_path, wait_for_nodes_ready},
+        test_helpers::{
+            cleanup_db, create_orbis_ring_policy, create_ring_on_chain, test_db_path,
+            wait_for_nodes_ready, wait_for_ring_finalized,
+        },
     },
     info::InfoServiceImpl,
     init_node,
@@ -24,12 +26,9 @@ use crate::{
 };
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
-use bulletin::r#trait::{Bulletin, BulletinKind, RingPayload};
+use bulletin::r#trait::{Bulletin, BulletinWriteKind, NodeInfo};
 use bulletin::BulletinImpl;
-use common::{
-    blockchain::{events::BulletinEventSubscription, ChainConfigBuilder},
-    SourceHubTestContainer, SOURCEHUB_RPC_URL,
-};
+use common::{blockchain::ChainConfigBuilder, SourceHubTestContainer};
 use crypto::{helpers::generate_keypair, CryptoSerialize, DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl};
@@ -50,8 +49,8 @@ use tonic::Request;
 /// A running in-process orbis node with its gRPC server.
 struct LiveNodeHandle {
     grpc_endpoint: String,
-    peer_addr: String,
-    public_address: String,
+    _peer_addr: String,
+    _public_address: String,
     db_path: String,
     task: tokio::task::JoinHandle<()>,
 }
@@ -66,41 +65,27 @@ impl Drop for LiveNodeHandle {
 /// Three in-process orbis nodes backed by a real SourceHub chain.
 struct LiveThreeNodeNetwork {
     alice: LiveNodeHandle,
-    bob: LiveNodeHandle,
-    charlie: LiveNodeHandle,
+    _bob: LiveNodeHandle,
+    _charlie: LiveNodeHandle,
+    /// ACP policy ID all three nodes are whitelisted for.
+    policy_id: String,
+    /// Compressed pubkeys of alice, bob, charlie (in that order).
+    node_keys: Vec<String>,
     /// Keeps the SourceHub Docker container alive via RAII.
     _chain: SourceHubTestContainer,
 }
 
-impl LiveThreeNodeNetwork {
-    fn peer_addrs(&self) -> Vec<String> {
-        vec![
-            self.alice.peer_addr.clone(),
-            self.bob.peer_addr.clone(),
-            self.charlie.peer_addr.clone(),
-        ]
-    }
-}
-
-/// Four in-process nodes: three DKG participants plus one extra used only as gRPC initiator.
+/// Four in-process nodes: all four participate in DKG.
 struct LiveFourNodeNetwork {
     alice: LiveNodeHandle,
     bob: LiveNodeHandle,
     charlie: LiveNodeHandle,
-    /// gRPC-only coordinator: not included in DKG `peer_ids`.
     non_participant: LiveNodeHandle,
+    /// ACP policy ID all four nodes are whitelisted for.
+    policy_id: String,
+    /// Compressed pubkeys of alice, bob, charlie, non_participant (in that order).
+    node_keys: Vec<String>,
     _chain: SourceHubTestContainer,
-}
-
-impl LiveFourNodeNetwork {
-    /// Peer addresses for the three DKG participants (same order as `LiveThreeNodeNetwork::peer_addrs`).
-    fn participant_peer_addrs(&self) -> Vec<String> {
-        vec![
-            self.alice.peer_addr.clone(),
-            self.bob.peer_addr.clone(),
-            self.charlie.peer_addr.clone(),
-        ]
-    }
 }
 
 /// Build and spawn a gRPC server from an `InitializedNode`.
@@ -136,12 +121,17 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
 /// - Its own local-storage DB at `test_dbs/<db_prefix>_<i>.redb`
 /// - A gRPC server on `127.0.0.1:(base_port + i)`
 /// - An OS-assigned iroh P2P port
+/// - NodeInfo registered on-chain (whitelisted for the shared policy)
 ///
 /// Waits until all three gRPC servers are ready before returning.
 async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveThreeNodeNetwork {
     let chain = SourceHubTestContainer::new();
 
+    let policy_id = create_orbis_ring_policy().await;
+
     let mut handles: Vec<LiveNodeHandle> = Vec::new();
+    let mut node_keys: Vec<String> = Vec::new();
+
     for i in 0..3u16 {
         let port = base_port + i;
         let db_path = test_db_path(&format!("{}_{}", db_prefix, i));
@@ -154,6 +144,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
             create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
                 .expect("create node signing key");
         let public_address = signer.address();
+        let node_key = signer.public_key_hex();
 
         cli_tool::fund(
             public_address.clone(),
@@ -180,7 +171,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
                 .expect("AuthzImpl"),
         );
 
-        // Iroh P2P network (OS-assigned port)
+        // Iroh P2P network (loopback, OS-assigned port)
         let network: Arc<dyn Network> = Arc::new(NetworkImpl::new().await.expect("NetworkImpl"));
 
         let local_address = network.local_address().expect("network local_address");
@@ -191,6 +182,22 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
             .map(|a| a.to_string())
             .unwrap_or_else(|| "127.0.0.1:0".to_string());
         let peer_addr = format!("{}@{}", local_address, p2p_socket);
+
+        // Register NodeInfo on-chain so the DKG service can look up this node's peer_id.
+        let node_info_bytes: Vec<u8> = NodeInfo {
+            peer_id: peer_addr.clone(),
+            controller_key: node_key.clone(),
+            whitelisted_policy_ids: vec![policy_id.clone()],
+            whitelisted_ring_ids: vec![],
+        }
+        .try_into()
+        .expect("serialize NodeInfo");
+        bulletin
+            .post(BulletinWriteKind::NodeInfo, node_info_bytes)
+            .await
+            .expect("register NodeInfo on-chain");
+
+        node_keys.push(node_key.clone());
 
         let grpc_bind = format!("127.0.0.1:{}", port);
         let config = NodeConfig {
@@ -205,11 +212,12 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
                 metrics_addr: None,
                 loki_url: None,
                 reshare_interval_secs: 0,
-                node_controller_key: "test-controller-key".to_string(),
+                node_controller_key: node_key.clone(),
                 node_peer_id: None,
-                node_whitelisted_namespaces: vec![],
+                node_whitelisted_policy_ids: vec![policy_id.clone()],
                 node_whitelisted_ring_ids: vec![],
             },
+            node_key,
             network,
             local_storage,
             authz,
@@ -221,8 +229,8 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
 
         handles.push(LiveNodeHandle {
             grpc_endpoint: format!("http://{}", grpc_bind),
-            peer_addr,
-            public_address,
+            _peer_addr: peer_addr,
+            _public_address: public_address,
             db_path,
             task,
         });
@@ -235,8 +243,10 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
     let mut it = handles.into_iter();
     LiveThreeNodeNetwork {
         alice: it.next().unwrap(),
-        bob: it.next().unwrap(),
-        charlie: it.next().unwrap(),
+        _bob: it.next().unwrap(),
+        _charlie: it.next().unwrap(),
+        policy_id,
+        node_keys,
         _chain: chain,
     }
 }
@@ -244,7 +254,11 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
 async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFourNodeNetwork {
     let chain = SourceHubTestContainer::new();
 
+    let policy_id = create_orbis_ring_policy().await;
+
     let mut handles: Vec<LiveNodeHandle> = Vec::new();
+    let mut node_keys: Vec<String> = Vec::new();
+
     for i in 0..4u16 {
         let port = base_port + i;
         let db_path = test_db_path(&format!("{}_{}", db_prefix, i));
@@ -256,6 +270,7 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
             create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
                 .expect("create node signing key");
         let public_address = signer.address();
+        let node_key = signer.public_key_hex();
 
         cli_tool::fund(
             public_address.clone(),
@@ -291,6 +306,21 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
             .unwrap_or_else(|| "127.0.0.1:0".to_string());
         let peer_addr = format!("{}@{}", local_address, p2p_socket);
 
+        let node_info_bytes: Vec<u8> = NodeInfo {
+            peer_id: peer_addr.clone(),
+            controller_key: node_key.clone(),
+            whitelisted_policy_ids: vec![policy_id.clone()],
+            whitelisted_ring_ids: vec![],
+        }
+        .try_into()
+        .expect("serialize NodeInfo");
+        bulletin
+            .post(BulletinWriteKind::NodeInfo, node_info_bytes)
+            .await
+            .expect("register NodeInfo on-chain");
+
+        node_keys.push(node_key.clone());
+
         let grpc_bind = format!("127.0.0.1:{}", port);
         let config = NodeConfig {
             args: Args {
@@ -304,11 +334,12 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
                 metrics_addr: None,
                 loki_url: None,
                 reshare_interval_secs: 0,
-                node_controller_key: "test-controller-key".to_string(),
+                node_controller_key: node_key.clone(),
                 node_peer_id: None,
-                node_whitelisted_namespaces: vec![],
+                node_whitelisted_policy_ids: vec![policy_id.clone()],
                 node_whitelisted_ring_ids: vec![],
             },
+            node_key,
             network,
             local_storage,
             authz,
@@ -320,8 +351,8 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
 
         handles.push(LiveNodeHandle {
             grpc_endpoint: format!("http://{}", grpc_bind),
-            peer_addr,
-            public_address,
+            _peer_addr: peer_addr,
+            _public_address: public_address,
             db_path,
             task,
         });
@@ -336,6 +367,8 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
         bob: it.next().unwrap(),
         charlie: it.next().unwrap(),
         non_participant: it.next().unwrap(),
+        policy_id,
+        node_keys,
         _chain: chain,
     }
 }
@@ -344,55 +377,22 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
 // Shared helpers
 // =========================================================================
 
-/// Register the ring namespace, add all three nodes as collaborators, run DKG,
-/// and return `(ring_pk_hex, ring_id)` once the bulletin post is confirmed.
+/// Create a ring on-chain, run DKG, and return `(ring_pk_hex, ring_id)` once
+/// all participant nodes have called FinalizeRing and the chain confirms.
 async fn setup_ring(
     endpoint: &str,
+    node_keys: &[String],
     threshold: u32,
-    peer_ids: Vec<String>,
-    node_public_addresses: &[&str],
+    policy_id: &str,
 ) -> (String, String) {
-    cli_tool::register_bulletin_namespace(BULLETIN_RING_NAMESPACE.to_string())
+    let ring_id = create_ring_on_chain(node_keys, threshold, policy_id, None).await;
+
+    cli_tool::do_dkg(endpoint.to_string(), ring_id.clone())
         .await
-        .expect("register ring namespace");
-    for addr in node_public_addresses {
-        cli_tool::add_bulletin_collaborator(BULLETIN_RING_NAMESPACE.to_string(), addr.to_string())
-            .await
-            .expect("add ring collaborator");
-    }
+        .expect("DKG initiation");
 
-    let sub = BulletinEventSubscription::connect(SOURCEHUB_RPC_URL)
-        .await
-        .expect("ring event subscription");
-
-    let dkg_result = cli_tool::do_dkg(
-        endpoint.to_string(),
-        threshold,
-        peer_ids,
-        None,
-        None,
-        BULLETIN_RING_NAMESPACE.to_string(),
-    )
-    .await
-    .expect("DKG initiation");
-
-    let post_event = sub
-        .wait_for_artifact(&dkg_result.session_id, Duration::from_secs(90))
-        .await
-        .expect("DKG completion event");
-
-    let post_payload = cli_tool::read_bulletin_post(
-        BULLETIN_RING_NAMESPACE.to_string(),
-        post_event.ring_id.clone(),
-        BulletinKind::Ring,
-    )
-    .await
-    .expect("read ring post");
-
-    let ring_payload: RingPayload =
-        serde_json::from_slice(&post_payload).expect("parse RingPayload");
-
-    (ring_payload.ring_pk, post_event.ring_id)
+    let ring_pk = wait_for_ring_finalized(&ring_id, Duration::from_secs(90)).await;
+    (ring_pk, ring_id)
 }
 
 // =========================================================================
@@ -411,49 +411,22 @@ async fn test_two_simultaneous_dkg_sessions() {
     let net = setup_live_three_node_network("dual_dkg", 51051).await;
 
     let endpoint = net.alice.grpc_endpoint.clone();
-    let peer_ids = net.peer_addrs();
-    let threshold = 2u32;
 
-    // Register the ring namespace and authorise all three nodes to post to it
-    cli_tool::register_bulletin_namespace(BULLETIN_RING_NAMESPACE.to_string())
-        .await
-        .expect("register ring namespace");
-    for addr in [
-        &net.alice.public_address,
-        &net.bob.public_address,
-        &net.charlie.public_address,
-    ] {
-        cli_tool::add_bulletin_collaborator(BULLETIN_RING_NAMESPACE.to_string(), addr.clone())
-            .await
-            .expect("add collaborator to ring namespace");
-    }
+    // Create two separate rings (different nonces → different ring IDs)
+    let ring_id_1 =
+        create_ring_on_chain(&net.node_keys, 2, &net.policy_id, Some("session-1")).await;
+    let ring_id_2 =
+        create_ring_on_chain(&net.node_keys, 2, &net.policy_id, Some("session-2")).await;
 
-    // Subscribe to bulletin events BEFORE initiating DKGs to avoid missing events
-    let sub1 = BulletinEventSubscription::connect(SOURCEHUB_RPC_URL)
-        .await
-        .expect("event subscription 1");
-    let sub2 = BulletinEventSubscription::connect(SOURCEHUB_RPC_URL)
-        .await
-        .expect("event subscription 2");
+    assert_ne!(
+        ring_id_1, ring_id_2,
+        "distinct nonces must produce distinct ring IDs"
+    );
 
     // Launch both DKG sessions concurrently from the same endpoint
     let (r1, r2) = tokio::join!(
-        cli_tool::do_dkg(
-            endpoint.clone(),
-            threshold,
-            peer_ids.clone(),
-            None,
-            None,
-            BULLETIN_RING_NAMESPACE.to_string()
-        ),
-        cli_tool::do_dkg(
-            endpoint.clone(),
-            threshold,
-            peer_ids.clone(),
-            None,
-            None,
-            BULLETIN_RING_NAMESPACE.to_string()
-        ),
+        cli_tool::do_dkg(endpoint.clone(), ring_id_1.clone()),
+        cli_tool::do_dkg(endpoint.clone(), ring_id_2.clone()),
     );
 
     let session1 = r1.expect("DKG 1 initiation failed").session_id;
@@ -463,26 +436,21 @@ async fn test_two_simultaneous_dkg_sessions() {
         "concurrent DKGs must receive distinct session IDs"
     );
 
-    // Wait for both DKG completion events (each DKG posts its ring to the bulletin)
     let timeout = Duration::from_secs(90);
-    let (ev1, ev2) = tokio::join!(
-        sub1.wait_for_artifact(&session1, timeout),
-        sub2.wait_for_artifact(&session2, timeout),
+    let (pk1, pk2) = tokio::join!(
+        wait_for_ring_finalized(&ring_id_1, timeout),
+        wait_for_ring_finalized(&ring_id_2, timeout),
     );
 
-    let ev1 = ev1.expect("timed out waiting for DKG 1 completion event");
-    let ev2 = ev2.expect("timed out waiting for DKG 2 completion event");
-
-    assert!(!ev1.ring_id.is_empty(), "DKG 1 must produce a ring ID");
-    assert!(!ev2.ring_id.is_empty(), "DKG 2 must produce a ring ID");
-    assert_ne!(
-        ev1.ring_id, ev2.ring_id,
-        "each DKG must produce a distinct ring ID (no session state leakage)"
-    );
+    assert!(!pk1.is_empty(), "DKG 1 must produce a ring key");
+    assert!(!pk2.is_empty(), "DKG 2 must produce a ring key");
 
     println!(
-        "Both DKGs completed successfully:\n  ring1 ring_id={}\n  ring2 ring_id={}",
-        ev1.ring_id, ev2.ring_id,
+        "Both DKGs completed successfully:\n  ring1={} pk={}\n  ring2={} pk={}",
+        ring_id_1,
+        &pk1[..8.min(pk1.len())],
+        ring_id_2,
+        &pk2[..8.min(pk2.len())],
     );
 }
 
@@ -497,26 +465,11 @@ async fn test_two_simultaneous_dkg_sessions() {
 async fn test_concurrent_pre_requests() {
     let net = setup_live_three_node_network("concurrent_pre", 51054).await;
     let endpoint = net.alice.grpc_endpoint.clone();
-    let peer_ids = net.peer_addrs();
-    let node_addrs = [
-        net.alice.public_address.as_str(),
-        net.bob.public_address.as_str(),
-        net.charlie.public_address.as_str(),
-    ];
 
     // Step 1: DKG → ring
-    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, 2, peer_ids, &node_addrs).await;
+    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, &net.node_keys, 2, &net.policy_id).await;
 
-    // Step 2: User namespace + node as collaborator
-    let user_namespace = "pre_ns".to_string();
-    cli_tool::register_bulletin_namespace(user_namespace.clone())
-        .await
-        .expect("register user namespace");
-    cli_tool::add_bulletin_collaborator(user_namespace.clone(), net.alice.public_address.clone())
-        .await
-        .expect("add alice to user namespace");
-
-    // Step 3: Store one encrypted secret on the bulletin
+    // Step 2: Store one encrypted secret on the bulletin
     let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");
     let resource = "document".to_string();
     let permission = "read".to_string();
@@ -539,7 +492,6 @@ async fn test_concurrent_pre_requests() {
         endpoint.clone(),
         &prepared,
         ring_id.clone(),
-        user_namespace.clone(),
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
@@ -552,7 +504,7 @@ async fn test_concurrent_pre_requests() {
     .expect("store prepared secret");
     let object_id = obj_resp.object_id;
 
-    // Step 4: Authz — register the object and grant read access to the test DID
+    // Step 3: Authz — register the object and grant read access to the test DID
     let did = "pre_reader".to_string();
     cli_tool::register_object_to_chain(policy_id.clone(), object_id.clone(), resource.clone())
         .await
@@ -567,14 +519,14 @@ async fn test_concurrent_pre_requests() {
     .await
     .expect("set relationship on chain");
 
-    // Step 5: Generate a reader keypair
+    // Step 4: Generate a reader keypair
     let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
     let reader_sk_hex =
         hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk"));
     let reader_pk_hex =
         hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize reader pk"));
 
-    // Step 6: Three concurrent PRE decryptions
+    // Step 5: Three concurrent PRE decryptions
     let (r1, r2, r3) = tokio::join!(
         cli_tool::do_pre(
             endpoint.clone(),
@@ -583,7 +535,6 @@ async fn test_concurrent_pre_requests() {
             Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
-            user_namespace.clone(),
             None,
             None,
             None,
@@ -597,7 +548,6 @@ async fn test_concurrent_pre_requests() {
             Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
-            user_namespace.clone(),
             None,
             None,
             None,
@@ -611,7 +561,6 @@ async fn test_concurrent_pre_requests() {
             Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
-            user_namespace.clone(),
             None,
             None,
             None,
@@ -642,26 +591,11 @@ async fn test_concurrent_pre_requests() {
 async fn test_concurrent_sign_requests() {
     let net = setup_live_three_node_network("concurrent_sign", 51057).await;
     let endpoint = net.alice.grpc_endpoint.clone();
-    let peer_ids = net.peer_addrs();
-    let node_addrs = [
-        net.alice.public_address.as_str(),
-        net.bob.public_address.as_str(),
-        net.charlie.public_address.as_str(),
-    ];
 
     // Step 1: DKG → ring
-    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, 2, peer_ids, &node_addrs).await;
+    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, &net.node_keys, 2, &net.policy_id).await;
 
-    // Step 2: User namespace + node as collaborator
-    let user_namespace = "sign_ns".to_string();
-    cli_tool::register_bulletin_namespace(user_namespace.clone())
-        .await
-        .expect("register user namespace");
-    cli_tool::add_bulletin_collaborator(user_namespace.clone(), net.alice.public_address.clone())
-        .await
-        .expect("add alice to user namespace");
-
-    // Step 3: Add a policy (required as payload metadata; authz enforcement is PRE-only)
+    // Step 2: Add a policy (required as payload metadata; authz enforcement is PRE-only)
     let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");
     let resource = "document".to_string();
     let permission = "read".to_string();
@@ -686,14 +620,13 @@ async fn test_concurrent_sign_requests() {
         })
         .collect();
 
-    // Step 4: Three concurrent store_prepared_secret calls
+    // Step 3: Three concurrent store_prepared_secret calls
     //         Each triggers a full FROST threshold BLS signing round-trip
     let (r1, r2, r3) = tokio::join!(
         cli_tool::store_prepared_secret(
             endpoint.clone(),
             &preps[0],
             ring_id.clone(),
-            user_namespace.clone(),
             policy_id.clone(),
             resource.clone(),
             permission.clone(),
@@ -706,7 +639,6 @@ async fn test_concurrent_sign_requests() {
             endpoint.clone(),
             &preps[1],
             ring_id.clone(),
-            user_namespace.clone(),
             policy_id.clone(),
             resource.clone(),
             permission.clone(),
@@ -719,7 +651,6 @@ async fn test_concurrent_sign_requests() {
             endpoint.clone(),
             &preps[2],
             ring_id.clone(),
-            user_namespace.clone(),
             policy_id.clone(),
             resource.clone(),
             permission.clone(),
@@ -778,66 +709,26 @@ async fn test_concurrent_sign_requests() {
     );
 }
 
-/// DKG must complete when `StartDkg` is invoked on a node that is **not** in `peer_ids`
-/// (pure coordinator). Participants used to stall because only the initiator called
-/// `initiate_phase1_commitments`; node 1 now starts Phase 1 upon `SessionInit`.
+/// DKG must complete when `StartDkg` is invoked on any ring participant.
+///
+/// Verifies the Phase 1 fix: every participant starts phase 1 upon receiving
+/// `SessionInit` without waiting for the initiator to drive them. The four-node
+/// setup lets us confirm DKG completes even when initiated from the last node
+/// (non_participant here is also a ring participant).
 #[tokio::test]
 #[serial_test::serial]
 async fn test_dkg_non_participant_initiator_completes() {
     let net = setup_live_four_node_network("dkg_non_participant", 51070).await;
 
-    cli_tool::register_bulletin_namespace(BULLETIN_RING_NAMESPACE.to_string())
+    // Create a ring with all four nodes as participants (threshold=2)
+    let ring_id = create_ring_on_chain(&net.node_keys, 2, &net.policy_id, None).await;
+
+    // Initiate DKG from the last node's endpoint (non_participant)
+    cli_tool::do_dkg(net.non_participant.grpc_endpoint.clone(), ring_id.clone())
         .await
-        .expect("register ring namespace");
-    for addr in [
-        &net.alice.public_address,
-        &net.bob.public_address,
-        &net.charlie.public_address,
-    ] {
-        cli_tool::add_bulletin_collaborator(BULLETIN_RING_NAMESPACE.to_string(), addr.clone())
-            .await
-            .expect("add collaborator to ring namespace");
-    }
+        .expect("DKG from non_participant initiator");
 
-    let sub = BulletinEventSubscription::connect(SOURCEHUB_RPC_URL)
-        .await
-        .expect("ring event subscription");
-
-    let peer_ids = net.participant_peer_addrs();
-    let threshold = 2u32;
-
-    let dkg_result = cli_tool::do_dkg(
-        net.non_participant.grpc_endpoint.clone(),
-        threshold,
-        peer_ids,
-        None,
-        None,
-        BULLETIN_RING_NAMESPACE.to_string(),
-    )
-    .await
-    .expect("DKG from non-participant initiator");
-
-    let post_event = sub
-        .wait_for_artifact(&dkg_result.session_id, Duration::from_secs(90))
-        .await
-        .expect("timed out waiting for DKG completion (non-participant initiator)");
-
-    assert!(
-        !post_event.ring_id.is_empty(),
-        "DKG must produce a ring bulletin post"
-    );
-
-    let post_payload = cli_tool::read_bulletin_post(
-        BULLETIN_RING_NAMESPACE.to_string(),
-        post_event.ring_id.clone(),
-        BulletinKind::Ring,
-    )
-    .await
-    .expect("read ring post");
-
-    let ring_payload: RingPayload =
-        serde_json::from_slice(&post_payload).expect("parse RingPayload");
-    let ring_pk_hex = ring_payload.ring_pk;
+    let ring_pk_hex = wait_for_ring_finalized(&ring_id, Duration::from_secs(90)).await;
 
     async fn assert_has_ring_state(grpc_endpoint: &str, ring_pk_hex: &str) {
         let mut client = InfoServiceClient::connect(grpc_endpoint.to_string())
@@ -858,17 +749,5 @@ async fn test_dkg_non_participant_initiator_completes() {
     assert_has_ring_state(&net.alice.grpc_endpoint, &ring_pk_hex).await;
     assert_has_ring_state(&net.bob.grpc_endpoint, &ring_pk_hex).await;
     assert_has_ring_state(&net.charlie.grpc_endpoint, &ring_pk_hex).await;
-
-    let mut np_client = InfoServiceClient::connect(net.non_participant.grpc_endpoint.clone())
-        .await
-        .expect("connect InfoService on non-participant");
-    let np_ring = np_client
-        .get_ring_state(Request::new(GetRingStateRequest {
-            ring_pk_hex: ring_pk_hex.clone(),
-        }))
-        .await;
-    assert!(
-        np_ring.is_err(),
-        "non-participant initiator must not persist ring state for the ceremony it coordinated"
-    );
+    assert_has_ring_state(&net.non_participant.grpc_endpoint, &ring_pk_hex).await;
 }

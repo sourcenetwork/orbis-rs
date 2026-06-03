@@ -20,8 +20,6 @@ pub struct PreRequestContext {
     pub object_id: String,
     /// Raw JWT string issued by the caller
     pub token_string: String,
-    /// Namespace of the document on the bulletin
-    pub namespace: String,
     /// Optional key derivation bytes
     pub derivation: Option<Vec<u8>>,
     /// Optional salt for policy metadata binding

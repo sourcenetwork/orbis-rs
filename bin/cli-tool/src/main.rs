@@ -4,10 +4,10 @@ use anyhow::Result;
 use bulletin::r#trait::BulletinKind;
 use clap::{Parser, Subcommand};
 pub use commands::{
-    add_bulletin_collaborator, add_policy_to_chain, add_ring_governance_policy,
-    create_bulletin_post, do_dkg, do_encrypt_secret, do_generate_reader_key, do_pre, do_sign,
-    do_store_secret, fund, get_account_sequence, get_latest_ring, list_bulletin_posts,
-    post_key_derivation, prepare_secret, query_node_info, query_ring_state, read_bulletin_post,
+    add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg,
+    do_encrypt_secret, do_generate_reader_key, do_pre, do_sign, do_store_secret, fund,
+    get_account_sequence, get_latest_ring, list_bulletin_posts, post_key_derivation,
+    prepare_secret, query_node_info, query_ring_state, read_bulletin_post,
     register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
     store_prepared_secret, update_ring_post_by_acp, PreparedSecret, SignResult,
 };
@@ -28,20 +28,9 @@ pub enum SubCommands {
         #[clap(short, long, default_value = "http://localhost:50051")]
         endpoint: String,
 
-        /// Number of nodes required to reconstruct (threshold)
-        #[clap(short, long)]
-        threshold: u32,
-
-        /// Peer IDs for P2P connections (required)
-        #[clap(long, required = true, num_args = 1..)]
-        peer_ids: Vec<String>,
-
-        /// Optional policy that externally governs ring updates
+        /// Pre-created blank ring entry targeted by this DKG
         #[clap(long)]
-        policy_id: Option<String>,
-        /// Bulletin namespace for this ring (default: orbis)
-        #[clap(long, default_value = "orbis")]
-        namespace: String,
+        ring_id: String,
     },
 
     /// Start a Proxy Re-Encryption session
@@ -66,10 +55,6 @@ pub enum SubCommands {
         /// Id of object
         #[clap(long)]
         object_id: String,
-
-        /// Id of object
-        #[clap(long)]
-        namespace: String,
 
         /// A private key to generate a reader did
         #[clap(long)]
@@ -129,12 +114,6 @@ pub enum SubCommands {
     GenerateReaderKey,
     /// Add a policy to the chain
     AddPolicyToChain,
-    /// Add a ring governance policy and register its bulletin namespace object
-    AddRingGovernancePolicy {
-        /// Bulletin namespace governed by the policy
-        #[clap(long, default_value = "orbis")]
-        namespace: String,
-    },
     /// Register object to the chain
     RegisterObjectToChain {
         /// Policy to add object to
@@ -177,15 +156,6 @@ pub enum SubCommands {
         #[clap(long)]
         collaborator: String,
     },
-    /// Create a post on the bulletin
-    CreateBulletinPost {
-        /// Namespace to post to
-        #[clap(long)]
-        namespace: String,
-        /// Payload as hex string
-        #[clap(long)]
-        payload: String,
-    },
     /// Update a ring via ACP authorization
     UpdateRingPostByAcp {
         /// Ring ID to update
@@ -209,10 +179,7 @@ pub enum SubCommands {
     },
     /// Read an item from a bulletin
     ReadBulletinPost {
-        /// Namespace to add collaborator to
-        #[clap(long)]
-        namespace: String,
-        /// Collaborator address to add
+        /// Post ID to read
         #[clap(long)]
         id: String,
     },
@@ -263,9 +230,6 @@ pub enum SubCommands {
         /// Ring id of ring to encrypt to
         #[clap(long)]
         ring_id: String,
-        /// Namespace of board to store secret to
-        #[clap(long)]
-        namespace: String,
         /// Policy to attach to secret
         #[clap(long)]
         policy_id: String,
@@ -302,9 +266,6 @@ pub enum SubCommands {
         /// Ring id of ring to encrypt to
         #[clap(long)]
         ring_id: String,
-        /// Namespace of board to store secret to
-        #[clap(long)]
-        namespace: String,
         /// Policy to attach to secret
         #[clap(long)]
         policy_id: String,
@@ -348,17 +309,14 @@ pub enum SubCommands {
         #[clap(long)]
         ring_pk_hex: String,
     },
-    /// Get latest ring from bulletin (after DKG). Prints RING_ID and RING_PK for sourcing in scripts.
+    /// Fetch a ring from the orbis module by ring_id. Prints RING_ID and RING_PK for sourcing in scripts.
     GetLatestRing {
-        /// Bulletin namespace for ring payloads [default: orbis]
+        /// Ring ID to look up
         #[clap(long)]
-        namespace: Option<String>,
+        ring_id: String,
     },
     /// Post a KeyDerivation to the bulletin (registers a sign key derivation config)
     PostKeyDerivation {
-        /// Bulletin namespace to post to
-        #[clap(long)]
-        namespace: String,
         /// Ring ID from DKG (used to fetch the ring public key from the bulletin)
         #[clap(long)]
         ring_id: String,
@@ -383,9 +341,6 @@ pub enum SubCommands {
         /// Message to sign (hex encoded)
         #[clap(long)]
         message: String,
-        /// Bulletin namespace that holds the KeyDerivation
-        #[clap(long)]
-        namespace: String,
         /// Derivation ID (post ID returned by post-key-derivation)
         #[clap(long)]
         derivation_id: String,
@@ -406,14 +361,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        SubCommands::Dkg {
-            endpoint,
-            threshold,
-            peer_ids,
-            policy_id,
-            namespace,
-        } => {
-            do_dkg(endpoint, threshold, peer_ids, None, policy_id, namespace).await?;
+        SubCommands::Dkg { endpoint, ring_id } => {
+            do_dkg(endpoint, ring_id).await?;
         }
         SubCommands::Pre {
             endpoint,
@@ -422,7 +371,6 @@ async fn main() -> Result<()> {
             reader_sk,
             object_id,
             reader_did_pk,
-            namespace,
             derivation,
             salt,
             valid_window_start,
@@ -449,7 +397,6 @@ async fn main() -> Result<()> {
                 reader_sk,
                 object_id,
                 reader_did_pk,
-                namespace,
                 derivation_bytes,
                 salt,
                 valid_window_start,
@@ -491,10 +438,6 @@ async fn main() -> Result<()> {
             let policy_id = add_policy_to_chain().await?;
             println!("POLICY_ID={}", policy_id);
         }
-        SubCommands::AddRingGovernancePolicy { namespace } => {
-            let policy_id = add_ring_governance_policy(&namespace).await?;
-            println!("POLICY_ID={}", policy_id);
-        }
         SubCommands::RegisterObjectToChain {
             policy_id,
             object_id,
@@ -521,10 +464,6 @@ async fn main() -> Result<()> {
         } => {
             add_bulletin_collaborator(namespace, collaborator).await?;
         }
-        SubCommands::CreateBulletinPost { namespace, payload } => {
-            let payload_bytes = hex::decode(&payload).expect("Failed to decode payload hex");
-            create_bulletin_post(namespace, BulletinKind::Ring, payload_bytes).await?;
-        }
         SubCommands::UpdateRingPostByAcp {
             id,
             new_peer_ids,
@@ -536,8 +475,8 @@ async fn main() -> Result<()> {
         SubCommands::Fund { address } => {
             fund(address, ChainConfig::local()).await?;
         }
-        SubCommands::ReadBulletinPost { namespace, id } => {
-            read_bulletin_post(namespace, id, BulletinKind::Ring).await?;
+        SubCommands::ReadBulletinPost { id } => {
+            read_bulletin_post(id, BulletinKind::Ring).await?;
         }
         SubCommands::ListBulletinPost { namespace } => {
             list_bulletin_posts(namespace).await?;
@@ -575,7 +514,6 @@ async fn main() -> Result<()> {
             endpoint,
             prepared_json,
             ring_id,
-            namespace,
             policy_id,
             resource,
             permission,
@@ -590,7 +528,6 @@ async fn main() -> Result<()> {
                 endpoint,
                 &prepared,
                 ring_id,
-                namespace,
                 policy_id,
                 resource,
                 permission,
@@ -606,7 +543,6 @@ async fn main() -> Result<()> {
             secret,
             ring_pk_hex,
             ring_id,
-            namespace,
             policy_id,
             resource,
             permission,
@@ -624,7 +560,6 @@ async fn main() -> Result<()> {
                 secret.as_bytes(),
                 ring_pk_hex,
                 ring_id,
-                namespace,
                 policy_id,
                 resource,
                 permission,
@@ -648,30 +583,26 @@ async fn main() -> Result<()> {
             println!("PUBLIC_POLYNOMIAL={}", poly);
             println!("LAST_PSS={}", last_pss);
         }
-        SubCommands::GetLatestRing { namespace } => {
-            let (ring_id, ring_pk) = get_latest_ring(namespace).await?;
+        SubCommands::GetLatestRing { ring_id } => {
+            let (ring_id, ring_pk) = get_latest_ring(ring_id).await?;
             println!("RING_ID={}", ring_id);
             println!("RING_PK={}", ring_pk);
         }
         SubCommands::PostKeyDerivation {
-            namespace,
             ring_id,
             derivation,
             policy_id,
             resource,
             permission,
         } => {
-            let (derivation_id, derived_pk_hex) = post_key_derivation(
-                namespace, ring_id, derivation, policy_id, resource, permission,
-            )
-            .await?;
+            let (derivation_id, derived_pk_hex) =
+                post_key_derivation(ring_id, derivation, policy_id, resource, permission).await?;
             println!("DERIVATION_ID={}", derivation_id);
             println!("DERIVED_PK={}", derived_pk_hex);
         }
         SubCommands::Sign {
             endpoint,
             message,
-            namespace,
             derivation_id,
             reader_did_pk,
             valid_window_start,
@@ -690,7 +621,6 @@ async fn main() -> Result<()> {
             do_sign(
                 endpoint,
                 message_bytes,
-                namespace,
                 derivation_id,
                 reader_did_pk,
                 valid_window_start,
