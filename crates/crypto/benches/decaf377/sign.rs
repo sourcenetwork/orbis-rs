@@ -17,7 +17,7 @@ impl SignBenchSetup for Decaf377SignBench {
             |id: u32,
              threshold: usize,
              total_nodes: usize,
-             session_id: u64,
+             session_id: u128,
              role: crypto::r#trait::DkgRole| {
                 <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id, role)
             },

@@ -42,7 +42,7 @@ pub trait DkgBenchSetup {
         id: u32,
         threshold: usize,
         total_nodes: usize,
-        session_id: u64,
+        session_id: u128,
     ) -> Box<Self::Node>;
 
     /// Build a full fixture: run Phase 1, exchange commitments, generate shares.
