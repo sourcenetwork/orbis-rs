@@ -16,7 +16,10 @@ use crate::pre::service::PreServiceImpl;
 use crate::sign::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{
-    constants::{MIN_NODE_BALANCE, PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT, GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS},
+    constants::{
+        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MIN_NODE_BALANCE,
+        PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
+    },
     helpers::{
         launch::{create_and_store_node_key, LogLevel},
         test_helpers::{
