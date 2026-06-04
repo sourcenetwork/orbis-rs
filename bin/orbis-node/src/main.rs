@@ -357,9 +357,7 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
         local_address,
         metrics_addr,
         reshare_interval: std::time::Duration::from_secs(config.args.reshare_interval_secs),
-        grpc_concurrency_limit_per_connection: config
-            .args
-            .grpc_concurrency_limit_per_connection,
+        grpc_concurrency_limit_per_connection: config.args.grpc_concurrency_limit_per_connection,
         grpc_max_concurrent_streams: config.args.grpc_max_concurrent_streams,
     })
 }
