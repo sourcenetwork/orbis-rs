@@ -137,8 +137,8 @@ fn test_frost_rejects_tampered_commitment_from_coordinator() {
 fn hash_to_sign_scalar_is_deterministic() {
     let transcript = b"orbis-frost-scalar-deterministic";
 
-    let first = hash_to_sign_scalar(FROST_BINDING_DOMAIN, transcript);
-    let second = hash_to_sign_scalar(FROST_BINDING_DOMAIN, transcript);
+    let first = hash_to_sign_scalar(FROST_BINDING_DOMAIN, transcript).unwrap();
+    let second = hash_to_sign_scalar(FROST_BINDING_DOMAIN, transcript).unwrap();
 
     assert_eq!(first, second);
 }
@@ -147,9 +147,9 @@ fn hash_to_sign_scalar_is_deterministic() {
 fn hash_to_sign_scalar_separates_domains() {
     let transcript = b"orbis-frost-scalar-domain-separation";
 
-    let binding = hash_to_sign_scalar(FROST_BINDING_DOMAIN, transcript);
-    let challenge = hash_to_sign_scalar(FROST_CHALLENGE_DOMAIN, transcript);
-    let derivation = hash_to_sign_scalar(SIGN_DERIVATION_DOMAIN, transcript);
+    let binding = hash_to_sign_scalar(FROST_BINDING_DOMAIN, transcript).unwrap();
+    let challenge = hash_to_sign_scalar(FROST_CHALLENGE_DOMAIN, transcript).unwrap();
+    let derivation = hash_to_sign_scalar(SIGN_DERIVATION_DOMAIN, transcript).unwrap();
 
     assert_ne!(binding, challenge);
     assert_ne!(binding, derivation);
