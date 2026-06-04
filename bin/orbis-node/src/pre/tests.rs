@@ -11,19 +11,22 @@ use crate::pre::coordinator::{PreCoordinator, PreResponse};
 use crate::pre::service::PreServiceImpl;
 use crate::DkgServiceImpl;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, DocumentPayload, RingPayload};
-use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, EncryptionProof, ThresholdDealer};
+use crypto::r#trait::{
+    CryptoDeserialize, CryptoSerialize, Dkg, DkgMode, DkgRole, EncryptionProof, ThresholdDealer,
+};
 use crypto::{DkgImpl, PreImpl};
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
 use proto::pre_service::{pre_service_server::PreService, StartPreRequest};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tonic::Request;
+use zeroize::Zeroizing;
 
 use crate::helpers::helpers::RingConfig;
 use crate::pre::error::PreError;
 use crate::pre::helpers::check_policy_access;
 use crate::pre::messages::PreRequestContext;
-use crate::ring_state::RingPolyState;
+use crate::ring_state::{RingPolyState, RingShareBundle};
 use bulletin::dummy::DummyBulletin;
 
 /// Generate policy metadata matching the test DocumentPayload fields.
@@ -1327,6 +1330,108 @@ async fn test_pre_fails_with_bad_proof() {
     for path in &db_paths {
         cleanup_db(path);
     }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_local_pre_share_verification_failure_is_not_counted() {
+    let db_name = "test_local_pre_share_verification_failure_is_not_counted";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
+
+    let mut dkg_node = DkgImpl::new(1, 1, 1, 42, DkgRole::Standard).expect("create DKG node");
+    dkg_node
+        .generate_polynomial(DkgMode::Fresh)
+        .expect("generate polynomial");
+    let pri_share = dkg_node
+        .compute_secret_share()
+        .expect("compute local secret share");
+    let aggregate_pk = dkg_node
+        .compute_aggregate_public_key()
+        .expect("compute aggregate public key");
+
+    let mut mismatched_dkg_node =
+        DkgImpl::new(1, 1, 1, 43, DkgRole::Standard).expect("create mismatched DKG node");
+    mismatched_dkg_node
+        .generate_polynomial(DkgMode::Refresh)
+        .expect("generate mismatched polynomial");
+    let mismatched_pub_poly = mismatched_dkg_node
+        .compute_public_polynomial()
+        .expect("compute mismatched public polynomial");
+
+    let share_bytes = CryptoSerialize::to_bytes(&pri_share).expect("serialize private share");
+    let mismatched_pub_poly_bytes =
+        CryptoSerialize::to_bytes(&mismatched_pub_poly).expect("serialize mismatched polynomial");
+    let ring_pk_bytes =
+        CryptoSerialize::to_bytes(&aggregate_pk).expect("serialize aggregate public key");
+    let mismatched_public_polynomial_hex = hex::encode(&mismatched_pub_poly_bytes);
+
+    RingShareBundle {
+        share_bytes: Zeroizing::new(share_bytes),
+        public_polynomial: mismatched_public_polynomial_hex.clone(),
+        last_pss: 0,
+    }
+    .save(&app_state.local_storage, &aggregate_pk)
+    .expect("save local ring share bundle");
+
+    let (_bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).expect("serialize reader public key");
+    let (_, encrypted_secret, _) =
+        PreImpl::encrypt_secret(&aggregate_pk, b"local verification failure", None, None)
+            .expect("encrypt secret");
+    let secret_bytes = serde_json::to_vec(&encrypted_secret).expect("serialize secret");
+
+    let request_id = "local-share-verify-failure".to_string();
+    assert!(
+        app_state
+            .pre_response_state
+            .init_response(request_id.clone(), &[])
+            .await,
+        "response collection should initialize"
+    );
+
+    let peer_id = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let coordinator = PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(app_state.clone()));
+    let result = coordinator
+        .initiate_reencryption_inner(
+            request_id.clone(),
+            RingConfig {
+                ring_pk_bytes,
+                peer_ids: vec![peer_id],
+                peer_node_keys: vec![app_state.node_key.clone()],
+                threshold: 1,
+                total_participants: 1,
+                public_polynomial_hex: mismatched_public_polynomial_hex,
+            },
+            secret_bytes,
+            1,
+            true,
+            0,
+            PreRequestContext {
+                rdr_pk_bytes: bob_pk_bytes,
+                object_id: "local-verify-failure-object".to_string(),
+                token_string: "unused".to_string(),
+                derivation: None,
+                salt: None,
+                valid_window: None,
+            },
+        )
+        .await;
+
+    app_state
+        .pre_response_state
+        .remove_response(&request_id)
+        .await;
+
+    match result {
+        Err(PreError::InsufficientShares { got, need }) => {
+            assert_eq!(got, 0, "unverified local share must not be counted");
+            assert_eq!(need, 1);
+        }
+        other => panic!("expected InsufficientShares got=0 need=1, got {other:?}"),
+    }
+
+    cleanup_db(&db_path);
 }
 
 /// Regression test: check_policy_access must propagate authz denial as an error.
