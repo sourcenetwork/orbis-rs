@@ -133,11 +133,7 @@ async fn test_dkg_then_pre_end_to_end() {
 
     // Wait for DKG to complete and get the ring payload from bulletin
     println!("Waiting for DKG to complete...");
-    let ring_payload = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let ring_payload = wait_for_dkg_completion(&network).await;
 
     // Deserialize the aggregate public key from the ring payload
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
@@ -316,7 +312,6 @@ async fn test_dkg_then_pre_end_to_end() {
 /// Helper function to wait for DKG completion and return the RingPayload
 async fn wait_for_dkg_completion(
     network: &crate::helpers::test_helpers::ThreeNodeNetwork,
-    _session_id: u128,
 ) -> RingPayload {
     let check_interval = Duration::from_millis(500);
     let max_wait = Duration::from_secs(60);
@@ -383,11 +378,7 @@ async fn test_pre_with_large_secret() {
         .await;
     assert!(result.is_ok());
 
-    let ring_payload = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let ring_payload = wait_for_dkg_completion(&network).await;
 
     // Deserialize the aggregate public key from the ring payload
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
@@ -518,11 +509,7 @@ async fn test_pre_fails_with_wrong_key() {
         .await;
     assert!(result.is_ok());
 
-    let ring_payload = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let ring_payload = wait_for_dkg_completion(&network).await;
 
     // Deserialize the aggregate public key from the ring payload
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
@@ -654,11 +641,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         .await;
     assert!(result.is_ok());
 
-    let ring_payload = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let ring_payload = wait_for_dkg_completion(&network).await;
 
     // Deserialize the aggregate public key from the ring payload
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
@@ -797,11 +780,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         .await;
     assert!(result.is_ok());
 
-    let ring_payload = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let ring_payload = wait_for_dkg_completion(&network).await;
 
     // Deserialize the aggregate public key from the ring payload
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
@@ -1083,11 +1062,7 @@ async fn test_pre_fails_with_wrong_derivation() {
         .await;
     assert!(result.is_ok());
 
-    let ring_payload = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let ring_payload = wait_for_dkg_completion(&network).await;
 
     // Deserialize the aggregate public key from the ring payload
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
@@ -1260,11 +1235,7 @@ async fn test_pre_fails_with_bad_proof() {
         .await;
     assert!(result.is_ok());
 
-    let ring_payload = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let ring_payload = wait_for_dkg_completion(&network).await;
 
     // Deserialize the aggregate public key from the ring payload
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
