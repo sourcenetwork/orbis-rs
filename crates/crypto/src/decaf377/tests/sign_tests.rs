@@ -1,5 +1,8 @@
 use crate::decaf377::dkg::DKGNode;
-use crate::decaf377::sign::{FrostNonceCommitment, ThresholdDecafSigner};
+use crate::decaf377::sign::{
+    hash_to_sign_scalar, FrostNonceCommitment, ThresholdDecafSigner, FROST_BINDING_DOMAIN,
+    FROST_CHALLENGE_DOMAIN, SIGN_DERIVATION_DOMAIN,
+};
 use crate::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crate::test_helper::DKGCoordinator;
 use decaf377::{Element, Fr};
@@ -128,4 +131,27 @@ fn test_frost_rejects_tampered_commitment_from_coordinator() {
         result1.is_ok(),
         "Signer 1's commitment wasn't tampered — they sign (though R is wrong)"
     );
+}
+
+#[test]
+fn hash_to_sign_scalar_is_deterministic() {
+    let transcript = b"orbis-frost-scalar-deterministic";
+
+    let first = hash_to_sign_scalar(FROST_BINDING_DOMAIN, transcript);
+    let second = hash_to_sign_scalar(FROST_BINDING_DOMAIN, transcript);
+
+    assert_eq!(first, second);
+}
+
+#[test]
+fn hash_to_sign_scalar_separates_domains() {
+    let transcript = b"orbis-frost-scalar-domain-separation";
+
+    let binding = hash_to_sign_scalar(FROST_BINDING_DOMAIN, transcript);
+    let challenge = hash_to_sign_scalar(FROST_CHALLENGE_DOMAIN, transcript);
+    let derivation = hash_to_sign_scalar(SIGN_DERIVATION_DOMAIN, transcript);
+
+    assert_ne!(binding, challenge);
+    assert_ne!(binding, derivation);
+    assert_ne!(challenge, derivation);
 }
