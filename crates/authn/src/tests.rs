@@ -4,7 +4,7 @@ use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
 
 const TEST_MAX_LIFETIME: u64 = 86400; // 24 hours, mirrors the node constant
 const TEST_MAX_JWT_BYTES: usize = 16 * 1024; // mirrors the node constant
-const TEST_CLOCK_SKEW_LEEWAY: u64 = 16 * 60; // mirrors the node clock-skew leeway
+const TEST_CLOCK_SKEW_LEEWAY: u64 = 5 * 60; // mirrors the node clock-skew leeway
 
 /// Helper to create a test JWT with PreClaims
 fn create_test_jwt_with_pre_claims(
@@ -423,6 +423,38 @@ fn test_expiration_within_clock_skew_accepted() {
     );
 
     assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+}
+
+#[test]
+fn test_expiration_at_clock_skew_boundary_rejected() {
+    let key_pair = generate::<DidEd25519KeyPair>(None);
+    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+
+    let expiration_time = 2000;
+    let current_time = expiration_time + TEST_CLOCK_SKEW_LEEWAY;
+    let token = BearerToken {
+        issuer_id: did_uri,
+        issued_time: 1000,
+        expiration_time,
+        not_before: None,
+        claims: PreClaims::default(),
+    };
+
+    let jwt = create_test_jwt_with_pre_claims(&key_pair, &token);
+    let result: Result<BearerToken<PreClaims>> = resolve_jwt_did(
+        &jwt,
+        current_time,
+        TEST_MAX_LIFETIME,
+        TEST_MAX_JWT_BYTES,
+        TEST_CLOCK_SKEW_LEEWAY,
+    );
+
+    let err = result.expect_err("token must be rejected once clock-skew leeway is exhausted");
+    assert!(
+        matches!(&err, AuthNError::JwtError(msg) if msg.contains("expired")),
+        "Expected expired error, got: {:?}",
+        err
+    );
 }
 
 #[test]

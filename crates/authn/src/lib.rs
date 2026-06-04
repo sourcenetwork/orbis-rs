@@ -179,11 +179,7 @@ where
     let bearer_token = verified.claims;
 
     // Check expiration
-    if current_time
-        >= bearer_token
-            .expiration_time
-            .saturating_add(clock_skew_leeway_secs)
-    {
+    if current_time.saturating_sub(clock_skew_leeway_secs) >= bearer_token.expiration_time {
         return Err(AuthNError::JwtError("Token has expired".to_string()));
     }
 

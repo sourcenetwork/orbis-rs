@@ -19,8 +19,9 @@ pub const MAX_TOKEN_LIFETIME_SECS: u64 = 24 * 60 * 60;
 ///
 /// Tokens are signed by clients and validated independently by each node, so
 /// real deployments must tolerate small wall-clock differences across hosts or
-/// containers. This mirrors the previous jwt-simple default leeway of 16 minutes.
-pub const JWT_CLOCK_SKEW_LEEWAY_SECS: u64 = 16 * 60;
+/// containers. Keep the leeway small to avoid unnecessarily extending replay
+/// windows after token expiry.
+pub const JWT_CLOCK_SKEW_LEEWAY_SECS: u64 = 5 * 60;
 
 /// Maximum allowed byte length for a bearer token string.
 ///
