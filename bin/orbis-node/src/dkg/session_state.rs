@@ -737,7 +737,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
 
         let mut states = self.states.write().await;
-        
+
         // Check if session already exists to avoid overwriting existing state
         if states.contains_key(&session_id) {
             tracing::debug!(
@@ -746,7 +746,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             );
             return CreateSessionOutcome::AlreadyExists;
         }
-        
+
         // Enforce maximum concurrent session limit to prevent resource exhaustion
         if states.len() >= MAX_DKG_SESSIONS {
             tracing::warn!(
@@ -757,7 +757,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             );
             return CreateSessionOutcome::LimitReached;
         }
-
 
         let generation = self.next_session_generation.fetch_add(1, Ordering::SeqCst);
         let mut new_state = DkgSessionState::new(node, total_participants, generation);
