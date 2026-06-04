@@ -75,6 +75,8 @@ pub struct InitializedNode {
     pub metrics_addr: Option<SocketAddr>,
     /// Interval between PSS reshare ceremonies. Zero means disabled.
     pub reshare_interval: std::time::Duration,
+    pub grpc_concurrency_limit_per_connection: usize,
+    pub grpc_max_concurrent_streams: u32,
 }
 
 /// Running info-only gRPC server used while the node waits for chain funding.
@@ -355,6 +357,10 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
         local_address,
         metrics_addr,
         reshare_interval: std::time::Duration::from_secs(config.args.reshare_interval_secs),
+        grpc_concurrency_limit_per_connection: config
+            .args
+            .grpc_concurrency_limit_per_connection,
+        grpc_max_concurrent_streams: config.args.grpc_max_concurrent_streams,
     })
 }
 
@@ -399,8 +405,8 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     // Start gRPC server
     let grpc_server = tonic::transport::Server::builder()
         .accept_http1(true)
-        .concurrency_limit_per_connection(constants::GRPC_CONCURRENCY_LIMIT_PER_CONNECTION)
-        .max_concurrent_streams(Some(constants::GRPC_MAX_CONCURRENT_STREAMS))
+        .concurrency_limit_per_connection(node.grpc_concurrency_limit_per_connection)
+        .max_concurrent_streams(Some(node.grpc_max_concurrent_streams))
         .layer(CorsLayer::permissive())
         .layer(GrpcWebLayer::new())
         .add_service(DkgServiceServer::new(dkg_service))

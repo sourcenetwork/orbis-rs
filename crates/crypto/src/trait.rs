@@ -7,13 +7,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use zeroize::Zeroize;
 
-/// DKG/PSS session identifier.
-///
-/// Session IDs are deterministic protocol identifiers in node orchestration and
-/// replay-binding identifiers in distributed shares. Use 128 bits so truncated
-/// hash-derived IDs have a collision margin appropriate for concurrent rings.
-pub type SessionId = u128;
-
 /// Trait for types that can be serialized to bytes.
 ///
 /// This provides a generic interface for crypto type serialization,
@@ -42,8 +35,8 @@ pub struct DistributedShare<ShareValue: Zeroize> {
     pub from_id: u32,
     pub to_id: u32,
     pub value: ShareValue,
-    pub nonce: [u8; 16],       // Nonce to prevent replay attacks
-    pub session_id: SessionId, // Session ID to prevent replay attacks
+    pub nonce: [u8; 16],  // Nonce to prevent replay attacks
+    pub session_id: u128, // Session ID to prevent replay attacks
 }
 
 impl<ShareValue: Zeroize> Drop for DistributedShare<ShareValue> {
@@ -192,7 +185,7 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoDeserializ
                 .try_into()
                 .map_err(|_| CryptoError::DKGError("Invalid to_id bytes".to_string()))?,
         );
-        let session_id = SessionId::from_le_bytes(
+        let session_id = u128::from_le_bytes(
             bytes[8..24]
                 .try_into()
                 .map_err(|_| CryptoError::DKGError("Invalid session_id bytes".to_string()))?,
@@ -550,7 +543,7 @@ pub trait Dkg: Send + Sync {
         id: u32,
         threshold: usize,
         total_nodes: usize,
-        session_id: SessionId,
+        session_id: u128,
         role: DkgRole,
     ) -> Result<Box<Self>>
     where

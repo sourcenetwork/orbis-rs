@@ -78,14 +78,19 @@ impl RouterBuilderTrait for IrohRouterBuilder {
         let mut builder = IrohRouter::builder(self.endpoint.clone());
         let max_message_size = self.max_message_size;
         let ingress_limits = self.ingress_limits;
+        // One semaphore and one rate-limiter table shared across every ALPN so
+        // the limits are global rather than per-protocol.
+        let concurrent_streams = Arc::new(Semaphore::new(ingress_limits.max_concurrent_streams));
+        let peer_rate_limiters: Arc<Mutex<HashMap<PeerId, FixedWindowRateLimiter>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         for (alpn, handler) in self.handlers {
             let handler_wrapper = IrohProtocolHandlerWrapper {
                 handler,
                 max_message_size,
                 ingress_limits,
-                concurrent_streams: Arc::new(Semaphore::new(ingress_limits.max_concurrent_streams)),
-                peer_rate_limiters: Arc::new(Mutex::new(HashMap::new())),
+                concurrent_streams: Arc::clone(&concurrent_streams),
+                peer_rate_limiters: Arc::clone(&peer_rate_limiters),
             };
             builder = builder.accept(alpn, Arc::new(handler_wrapper));
         }
@@ -183,7 +188,15 @@ async fn allow_peer_stream(
         limiters.retain(|_, limiter| !limiter.is_idle(now, RATE_LIMIT_PEER_IDLE_TTL));
 
         if limiters.len() >= MAX_TRACKED_RATE_LIMIT_PEERS {
-            return false;
+            // Evict the least-recently-seen peer so the new peer gets a slot
+            // rather than being hard-rejected due to map capacity alone.
+            let lrs_key = limiters
+                .iter()
+                .min_by_key(|(_, limiter)| limiter.last_seen)
+                .map(|(k, _)| k.clone());
+            if let Some(key) = lrs_key {
+                limiters.remove(&key);
+            }
         }
     }
 
@@ -221,14 +234,14 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
                 )
                 .await
                 {
-                    metrics::record_ingress_limited(protocol.as_ref(), "ingress_rate_limit");
+                    metrics::record_ingress_dropped(protocol.as_ref(), "rate_limit");
                     drop(send);
                     drop(recv);
                     continue;
                 }
 
                 let Some(permit) = try_acquire_stream_permit(&concurrent_streams) else {
-                    metrics::record_ingress_limited(protocol.as_ref(), "ingress_concurrency_limit");
+                    metrics::record_ingress_dropped(protocol.as_ref(), "concurrency_limit");
                     drop(send);
                     drop(recv);
                     continue;

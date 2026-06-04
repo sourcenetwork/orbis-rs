@@ -85,6 +85,14 @@ lazy_static! {
         &["protocol", "operation"]
     )
     .expect("failed to register p2p_errors_total");
+
+    // Ingress-limiting metrics (expected/normal — separate from errors)
+    pub static ref P2P_INGRESS_DROPPED_TOTAL: CounterVec = register_counter_vec!(
+        "p2p_ingress_dropped_total",
+        "Inbound streams dropped by the router before handler execution, by limiting reason",
+        &["protocol", "reason"]
+    )
+    .expect("failed to register p2p_ingress_dropped_total");
 }
 
 /// Force initialization of all metrics. Call early in startup so any
@@ -100,6 +108,7 @@ pub fn init() {
     lazy_static::initialize(&P2P_RECV_DURATION_SECONDS);
     lazy_static::initialize(&P2P_CONNECT_DURATION_SECONDS);
     lazy_static::initialize(&P2P_ERRORS_TOTAL);
+    lazy_static::initialize(&P2P_INGRESS_DROPPED_TOTAL);
 }
 
 /// Helper to convert protocol bytes to a string label
@@ -176,8 +185,11 @@ pub fn record_recv_error(protocol: &[u8]) {
     P2P_ERRORS_TOTAL.with_label_values(&[&label, "recv"]).inc();
 }
 
-/// Record an inbound stream dropped before handler execution.
-pub fn record_ingress_limited(protocol: &[u8], limit: &'static str) {
+/// Record an inbound stream dropped by the router before handler execution.
+/// `reason` is one of `"rate_limit"` or `"concurrency_limit"`.
+pub fn record_ingress_dropped(protocol: &[u8], reason: &'static str) {
     let label = protocol_label(protocol);
-    P2P_ERRORS_TOTAL.with_label_values(&[&label, limit]).inc();
+    P2P_INGRESS_DROPPED_TOTAL
+        .with_label_values(&[&label, reason])
+        .inc();
 }

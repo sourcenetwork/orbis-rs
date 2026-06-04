@@ -65,6 +65,18 @@ pub struct Args {
     /// Ring ID this node initially allows. Ignored if node info already exists.
     #[arg(long = "node-whitelisted-ring-id")]
     pub node_whitelisted_ring_ids: Vec<String>,
+    /// Maximum in-flight gRPC requests per client connection.
+    #[arg(
+        long,
+        default_value_t = crate::constants::GRPC_CONCURRENCY_LIMIT_PER_CONNECTION
+    )]
+    pub grpc_concurrency_limit_per_connection: usize,
+    /// Maximum concurrent HTTP/2 streams per gRPC client connection.
+    #[arg(
+        long,
+        default_value_t = crate::constants::GRPC_MAX_CONCURRENT_STREAMS
+    )]
+    pub grpc_max_concurrent_streams: u32,
 }
 
 /// Ensure the node has a matching x/orbis NodeInfo record before serving traffic.
