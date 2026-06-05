@@ -152,7 +152,13 @@ where
             .await
             {
                 Ok(Ok(())) => {}
-                Ok(Err(e)) => return Err(e),
+                Ok(Err(e)) => {
+                    self.app_state
+                        .sign_response_state
+                        .remove_response(&nonce_request_id)
+                        .await;
+                    return Err(e);
+                }
                 Err(_) => {
                     tracing::warn!(
                         request_id = %request_id,
