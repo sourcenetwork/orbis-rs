@@ -94,6 +94,14 @@ pub const DKG_PHASE_TIMEOUT: Duration = Duration::from_secs(120);
 /// confirmation work, so this must exceed the normal phase timeout.
 pub const DKG_PHASE4_COMPLETION_TIMEOUT: Duration = Duration::from_secs(240);
 
+/// Maximum time a completed DKG session may remain in memory.
+///
+/// Normal Fresh/Refresh cleanup is immediate. Reshare cleanup may wait up to
+/// `RESHARE_BULLETIN_CONFIRM_TIMEOUT` (200 seconds) for bulletin confirmation,
+/// so five minutes leaves margin for that task while bounding leaks if explicit
+/// cleanup never runs.
+pub const DKG_COMPLETED_SESSION_TTL: Duration = Duration::from_secs(300);
+
 /// How often to re-check session existence when an early message arrives before
 /// the session has been created (e.g. a peer's commitment races with our own
 /// SessionInit bulletin validation).  Kept small so the ceremony proceeds as

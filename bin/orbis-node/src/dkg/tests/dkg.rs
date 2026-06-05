@@ -1058,7 +1058,8 @@ async fn test_session_expiration_removes_old_sessions() {
         if let Some(state) = states.get_mut(&session_id) {
             // Set created_at to 31 minutes ago (beyond 30 min TTL)
             state.created_at = Instant::now() - std::time::Duration::from_secs(31 * 60);
-            // Ensure it's not in Phase4Complete (which is exempt from expiration)
+            // Ensure the active-session TTL path is exercised, not the separate
+            // completed-session retention policy.
             assert_ne!(
                 state.phase,
                 DkgPhase::Phase4Complete,

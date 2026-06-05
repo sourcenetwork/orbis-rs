@@ -8,7 +8,7 @@
 //! a single unified structure.
 
 use crate::constants::{
-    DKG_PHASE4_COMPLETION_TIMEOUT, DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS,
+    DKG_COMPLETED_SESSION_TTL, DKG_PHASE4_COMPLETION_TIMEOUT, DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS,
     SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
 };
 use crate::dkg::error::DkgError;
@@ -519,8 +519,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
 
     /// Background task that periodically removes expired sessions
     ///
-    /// Sessions older than SESSION_TTL that haven't completed are considered
-    /// abandoned and are removed to prevent memory leaks.
+    /// Active sessions older than `SESSION_TTL` and completed sessions retained
+    /// longer than `DKG_COMPLETED_SESSION_TTL` are removed to prevent memory leaks.
     async fn expiration_worker(
         states: Arc<RwLock<HashMap<u128, DkgSessionState<D>>>>,
         rings_pss: Arc<RwLock<HashMap<String, u128>>>,
@@ -537,8 +537,19 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
 
             // Collect session IDs to remove (expired or stalled)
             let mut to_remove_ids: Vec<u128> = Vec::new();
+            let mut completed_ids: HashSet<u128> = HashSet::new();
             for (session_id, state) in states.iter() {
+                let phase_age = now.duration_since(state.phase_started_at);
                 if state.phase == DkgPhase::Phase4Complete {
+                    if phase_age >= DKG_COMPLETED_SESSION_TTL {
+                        tracing::warn!(
+                            session_id = session_id,
+                            completed_age_secs = phase_age.as_secs(),
+                            "SessionStateManager: Removing retained completed DKG session"
+                        );
+                        to_remove_ids.push(*session_id);
+                        completed_ids.insert(*session_id);
+                    }
                     continue;
                 }
                 let age = now.duration_since(state.created_at);
@@ -553,7 +564,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     to_remove_ids.push(*session_id);
                     continue;
                 }
-                let phase_age = now.duration_since(state.phase_started_at);
                 let phase_timeout = match state.phase {
                     DkgPhase::Phase4Completing => DKG_PHASE4_COMPLETION_TIMEOUT,
                     _ => DKG_PHASE_TIMEOUT,
@@ -572,8 +582,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
 
             // Remove sessions (connections are per-peer and never closed here)
             let mut ring_claims_to_clear: Vec<(String, u128)> = Vec::new();
+            let mut removed_ids: HashSet<u128> = HashSet::new();
             for session_id in to_remove_ids {
                 if let Some(state) = states.remove(&session_id) {
+                    removed_ids.insert(session_id);
+                    if completed_ids.contains(&session_id) {
+                        metrics::record_dkg_session_completed();
+                    }
                     if let Some(k) = state.kind.ring_key() {
                         ring_claims_to_clear.push((k.to_string(), session_id));
                     }
@@ -593,13 +608,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         );
                     }
                 }
+            }
 
-                let expired_ids: HashSet<u128> =
-                    ring_claims_to_clear.iter().map(|(_, id)| *id).collect();
+            if !removed_ids.is_empty() {
                 reshare_signature_ready
                     .write()
                     .await
-                    .retain(|k| !expired_ids.contains(&k.session_id));
+                    .retain(|k| !removed_ids.contains(&k.session_id));
             }
 
             let removed = initial_count - states.len();
@@ -1760,9 +1775,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_expiration_worker_keeps_completed_sessions() {
-        // Phase4Complete sessions are intentionally skipped by the expiration worker
-        // (they wait for explicit remove_session() after the DKG result is stored).
+    async fn test_expiration_worker_keeps_recent_completed_sessions() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
         mgr.create_session(40, make_node(1), 3, |_| {}).await;
 
@@ -1770,8 +1783,8 @@ mod tests {
             let mut states = mgr.states.write().await;
             if let Some(s) = states.get_mut(&40) {
                 s.phase = DkgPhase::Phase4Complete;
-                // Backdate past SESSION_TTL — worker should still skip it
-                s.created_at = Instant::now() - (SESSION_TTL + std::time::Duration::from_secs(10));
+                s.phase_started_at = Instant::now()
+                    - (DKG_COMPLETED_SESSION_TTL - std::time::Duration::from_secs(10));
             }
         }
 
@@ -1781,7 +1794,63 @@ mod tests {
 
         assert!(
             mgr.session_exists(&40).await,
-            "Phase4Complete sessions should not be removed by the expiration worker"
+            "recent Phase4Complete sessions should retain their cleanup grace period"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_expiration_worker_removes_completed_sessions_past_ttl() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        let ready_key = ReshareSignatureReadyKey {
+            ring_key: "ring_complete".to_string(),
+            session_id: 42,
+            ring_id: "post".to_string(),
+            current_ring_sha256: "current".to_string(),
+            finalized_ring_sha256: "updated".to_string(),
+        };
+
+        mgr.create_session(42, make_node(1), 3, |_| {}).await;
+        mgr.set_session_kind(
+            &42,
+            SessionKind::Reshare {
+                ring_pk_hex: "ring_complete".to_string(),
+                new_peer_node_keys: vec!["node".to_string()],
+                new_threshold: 1,
+                bulletin_post_id: "post".to_string(),
+            },
+        )
+        .await;
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_complete", 42).await,
+            RingPssClaimOutcome::Claimed
+        );
+        mgr.mark_reshare_signature_ready(ready_key.clone()).await;
+
+        {
+            let mut states = mgr.states.write().await;
+            if let Some(s) = states.get_mut(&42) {
+                s.phase = DkgPhase::Phase4Complete;
+                s.phase_started_at = Instant::now()
+                    - (DKG_COMPLETED_SESSION_TTL + std::time::Duration::from_secs(10));
+            }
+        }
+
+        tokio::time::advance(SESSION_EXPIRATION_CHECK_INTERVAL + std::time::Duration::from_secs(1))
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !mgr.session_exists(&42).await,
+            "Phase4Complete sessions must be removed after their maximum TTL"
+        );
+        assert_eq!(
+            mgr.claim_ring_pss_session("ring_complete", 43).await,
+            RingPssClaimOutcome::Claimed,
+            "completed-session expiration must release the PSS claim"
+        );
+        assert!(
+            !mgr.is_reshare_signature_ready(&ready_key).await,
+            "completed-session expiration must remove readiness markers"
         );
     }
 
