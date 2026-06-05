@@ -113,6 +113,40 @@ async fn test_refresh_all_rings_empty_index() {
     cleanup_db(&db_path);
 }
 
+/// A corrupt ring index must surface an error so the scheduler alerts operators
+/// instead of silently treating the node as if it manages no rings.
+#[tokio::test]
+async fn test_refresh_all_rings_rejects_corrupt_index() {
+    let db_name = "pss_corrupt_index";
+    let db_path = test_db_path(db_name);
+
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let app_state = create_test_app_state_with_bulletin(
+        Some("127.0.0.1:0".to_string()),
+        true,
+        bulletin,
+        db_name,
+    )
+    .await;
+
+    app_state
+        .local_storage
+        .set(LocalStorageKeys::RingIndex, b"not valid json".to_vec())
+        .expect("write corrupt RingIndex");
+
+    let result = super::pss_all_rings(&Arc::new(app_state)).await;
+    assert!(
+        matches!(
+            result,
+            Err(DkgError::Storage(ref message))
+                if message.contains("failed to deserialize RingIndex")
+        ),
+        "corrupt RingIndex should be reported, got: {result:?}"
+    );
+
+    cleanup_db(&db_path);
+}
+
 /// When the ring index lists a ring that has no matching entry in the bulletin,
 /// `refresh_all_rings` should still return Ok(()) — per-ring errors are logged
 /// and swallowed so other rings are not affected.

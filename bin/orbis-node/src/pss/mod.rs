@@ -104,14 +104,11 @@ where
         + Sync
         + 'static,
 {
-    let ring_index: Vec<RingIndexEntry> =
-        match app_state.local_storage.get(LocalStorageKeys::RingIndex) {
-            Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
-            _ => {
-                tracing::debug!("PSS: ring index empty, nothing to check");
-                return Ok(());
-            }
-        };
+    let ring_index = read_ring_index(&app_state.local_storage)?;
+    if ring_index.is_empty() {
+        tracing::debug!("PSS: ring index empty, nothing to check");
+        return Ok(());
+    }
 
     for entry in &ring_index {
         if let Err(e) = pss_ring(app_state, entry).await {
