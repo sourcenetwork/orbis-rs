@@ -19,10 +19,7 @@ use crate::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, PubPoly as PubPolyTrait, PubShare,
     ThresholdSigner,
 };
-use ark_ff::{
-    field_hashers::{DefaultFieldHasher, HashToField},
-    One, Zero,
-};
+use ark_ff::{One, Zero};
 use ark_serialize::CanonicalSerialize;
 use decaf377::{Element, Fr};
 use rand_core::OsRng;
@@ -31,7 +28,7 @@ use sha2::{Digest, Sha256};
 use super::common::{ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
 
 /// Domain separation tag for signing key derivation (distinct from PRE derivation domain).
-pub const SIGN_DERIVATION_DOMAIN: &[u8] = b"sign-derivation-v1";
+const SIGN_DERIVATION_DOMAIN: &[u8] = b"sign-derivation-v1";
 
 /// Domain separation tag for signing metadata encoding.
 const SIGN_METADATA_DOMAIN: &[u8] = b"orbis-sign-metadata-v1";
@@ -158,28 +155,30 @@ impl CryptoDeserialize for FrostSigningState {
 // ============================================================================
 
 /// Domain separation tags
-pub const FROST_BINDING_DOMAIN: &[u8] = b"FROST-decaf377-binding";
-pub const FROST_CHALLENGE_DOMAIN: &[u8] = b"FROST-decaf377-challenge";
+const FROST_BINDING_DOMAIN: &[u8] = b"FROST-decaf377-binding";
+const FROST_CHALLENGE_DOMAIN: &[u8] = b"FROST-decaf377-challenge";
 
 /// Compute binding factor for participant j:
-///   rho_j = hash_to_field(BINDING_DOMAIN, j || msg || encoded_commitments)
+///   rho_j = H(BINDING_DOMAIN || j || msg || encoded_commitments)
 fn compute_binding_factor(
     participant_id: u32,
     msg: &[u8],
     all_commitments: &[(u32, FrostNonceCommitment)],
 ) -> Result<Fr> {
-    let mut transcript = Vec::new();
-    transcript.extend_from_slice(&participant_id.to_le_bytes());
-    transcript.extend_from_slice(&(msg.len() as u64).to_le_bytes());
-    transcript.extend_from_slice(msg);
+    let mut hasher = Sha256::new();
+    hasher.update(FROST_BINDING_DOMAIN);
+    hasher.update(participant_id.to_le_bytes());
+    hasher.update((msg.len() as u64).to_le_bytes());
+    hasher.update(msg);
     // Encode all commitments deterministically (sorted by participant_id)
-    transcript.extend_from_slice(&(all_commitments.len() as u32).to_le_bytes());
+    hasher.update((all_commitments.len() as u32).to_le_bytes());
     for (id, commitment) in all_commitments {
-        transcript.extend_from_slice(&id.to_le_bytes());
+        hasher.update(id.to_le_bytes());
         let bytes = commitment.to_bytes()?;
-        transcript.extend_from_slice(&bytes);
+        hasher.update(&bytes);
     }
-    hash_to_sign_scalar(FROST_BINDING_DOMAIN, &transcript)
+    let hash = hasher.finalize();
+    Ok(fr_from_hash(&hash))
 }
 
 /// Compute the group commitment R = sum(D_j + rho_j * E_j)
@@ -212,31 +211,30 @@ fn compute_group_commitment(
 
 /// Fiat-Shamir challenge: c = H(CHALLENGE_DOMAIN || R || Y || msg)
 fn compute_challenge(r_point: &Element, aggregate_pk: &Element, msg: &[u8]) -> Result<Fr> {
-    let mut transcript = Vec::new();
+    let mut hasher = Sha256::new();
+    hasher.update(FROST_CHALLENGE_DOMAIN);
     let mut r_bytes = Vec::new();
     r_point
         .serialize_compressed(&mut r_bytes)
         .map_err(|_| CryptoError::InvalidSignature)?;
-    transcript.extend_from_slice(&r_bytes);
+    hasher.update(&r_bytes);
     let mut pk_bytes = Vec::new();
     aggregate_pk
         .serialize_compressed(&mut pk_bytes)
         .map_err(|_| CryptoError::InvalidSignature)?;
-    transcript.extend_from_slice(&pk_bytes);
-    transcript.extend_from_slice(msg);
-    hash_to_sign_scalar(FROST_CHALLENGE_DOMAIN, &transcript)
+    hasher.update(&pk_bytes);
+    hasher.update(msg);
+    let hash = hasher.finalize();
+    Ok(fr_from_hash(&hash))
 }
 
-/// Hash transcript bytes to a decaf377 signing scalar using RFC9380-style XMD.
-pub fn hash_to_sign_scalar(dst: &[u8], transcript: &[u8]) -> Result<Fr> {
-    let hasher = <DefaultFieldHasher<Sha256> as HashToField<Fr>>::new(dst);
-    hasher
-        .hash_to_field(transcript, 1)
-        .into_iter()
-        .next()
-        .ok_or(CryptoError::SigningError(
-            "hash_to_field returned empty output".to_string(),
-        ))
+/// Convert a 32-byte hash to an Fr element (reduce mod p)
+fn fr_from_hash(hash: &[u8]) -> Fr {
+    // Interpret as little-endian u256 and reduce mod the field modulus.
+    // decaf377::Fr::from_le_bytes_mod_order handles this correctly.
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(&hash[..32]);
+    Fr::from_le_bytes_mod_order(&bytes)
 }
 
 /// Lagrange coefficient: lambda_i = product_{j != i} (x_j / (x_j - x_i)) evaluated at x=0
@@ -376,7 +374,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         // Metadata is folded into the derivation scalar for binding.
         let aggregate_pk = aggregate_pk_from_pub_poly(pub_poly);
         let effective_pk = if let Some(deriv) = derivation {
-            let d = derive_sign_scalar(deriv, metadata)?;
+            let d = derive_sign_scalar(deriv, metadata);
             if d.is_zero() {
                 return Err(CryptoError::SigningError(
                     "Zero derivation scalar".to_string(),
@@ -396,7 +394,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
 
         // Apply derivation (with metadata) to secret share: s_i' = d * s_i
         let s_i_eff = if let Some(deriv) = derivation {
-            s_i * derive_sign_scalar(deriv, metadata)?
+            s_i * derive_sign_scalar(deriv, metadata)
         } else {
             s_i
         };
@@ -440,7 +438,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         // Aggregate public key; use derived pk (with metadata binding) in challenge
         let aggregate_pk = aggregate_pk_from_pub_poly(pub_poly);
         let effective_pk = if let Some(deriv) = derivation {
-            aggregate_pk * derive_sign_scalar(deriv, metadata)?
+            aggregate_pk * derive_sign_scalar(deriv, metadata)
         } else {
             aggregate_pk
         };
@@ -452,7 +450,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
 
         // Public key share for this participant: pk_i' = d * pub_poly.eval(idx)
         let pk_i_eff = if let Some(deriv) = derivation {
-            pub_poly.eval(idx) * derive_sign_scalar(deriv, metadata)?
+            pub_poly.eval(idx) * derive_sign_scalar(deriv, metadata)
         } else {
             pub_poly.eval(idx)
         };
@@ -522,7 +520,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         derivation: &[u8],
         metadata: Option<&[u8]>,
     ) -> Result<Self::PublicKey> {
-        let d = derive_sign_scalar(derivation, metadata)?;
+        let d = derive_sign_scalar(derivation, metadata);
         if d.is_zero() {
             return Err(CryptoError::SigningError(
                 "Zero derivation scalar".to_string(),
@@ -534,18 +532,20 @@ impl ThresholdSigner for ThresholdDecafSigner {
 
 /// Derive a scalar for multiplicative key tweaking.
 ///
-/// Without metadata: `d = hash_to_field(SIGN_DERIVATION_DOMAIN, derivation)`
-/// With metadata:    `d = hash_to_field(SIGN_DERIVATION_DOMAIN, derivation || \x00 || len(metadata) || metadata)`
+/// Without metadata: `d = H(SIGN_DERIVATION_DOMAIN || derivation)`
+/// With metadata:    `d = H(SIGN_DERIVATION_DOMAIN || derivation || \x00 || len(metadata) || metadata)`
 ///
 /// The null-byte separator guarantees no collision between derivation-only and
-/// derivation+metadata inputs.
-fn derive_sign_scalar(derivation: &[u8], metadata: Option<&[u8]>) -> Result<Fr> {
-    let mut transcript = Vec::new();
-    transcript.extend_from_slice(derivation);
+/// derivation+metadata inputs. Backward compatible: passing `None` for metadata
+/// yields the same hash as the previous single-argument form.
+fn derive_sign_scalar(derivation: &[u8], metadata: Option<&[u8]>) -> Fr {
+    let mut hasher = Sha256::new();
+    hasher.update(SIGN_DERIVATION_DOMAIN);
+    hasher.update(derivation);
     if let Some(meta) = metadata {
-        transcript.extend_from_slice(b"\x00");
-        transcript.extend_from_slice(&(meta.len() as u64).to_le_bytes());
-        transcript.extend_from_slice(meta);
+        hasher.update(b"\x00"); // separator — prevents collision with derivation-only path
+        hasher.update((meta.len() as u64).to_le_bytes());
+        hasher.update(meta);
     }
-    hash_to_sign_scalar(SIGN_DERIVATION_DOMAIN, &transcript)
+    Fr::from_le_bytes_mod_order(&hasher.finalize())
 }
