@@ -115,6 +115,14 @@ pub struct FrostSigningState {
     pub participant_index: u32,
 }
 
+impl Drop for FrostSigningState {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.hiding_nonce.zeroize();
+        self.binding_nonce.zeroize();
+    }
+}
+
 impl CryptoSerialize for FrostSigningState {
     fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut bytes = Vec::with_capacity(4 + 2 * FR_COMPRESSED_SIZE);

@@ -77,7 +77,10 @@ impl RingShareBundle {
             if buf.len() < *pos + 4 {
                 return Err("RingShareBundle: buffer too short (u32)".to_string());
             }
-            let v = u32::from_le_bytes(buf[*pos..*pos + 4].try_into().unwrap());
+            let encoded = buf[*pos..*pos + 4]
+                .try_into()
+                .map_err(|_| "RingShareBundle: invalid u32 encoding".to_string())?;
+            let v = u32::from_le_bytes(encoded);
             *pos += 4;
             Ok(v)
         };
@@ -100,7 +103,10 @@ impl RingShareBundle {
         if bytes.len() < cursor + 8 {
             return Err("RingShareBundle: buffer too short (last_pss)".to_string());
         }
-        let last_pss = u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap());
+        let encoded_last_pss = bytes[cursor..cursor + 8]
+            .try_into()
+            .map_err(|_| "RingShareBundle: invalid last_pss encoding".to_string())?;
+        let last_pss = u64::from_le_bytes(encoded_last_pss);
 
         Ok(Self {
             share_bytes,
@@ -164,6 +170,50 @@ impl RingShareBundle {
             public_polynomial: self.public_polynomial.clone(),
             last_pss: self.last_pss,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RingShareBundle, BUNDLE_VERSION};
+
+    #[test]
+    fn ring_share_bundle_rejects_truncated_length_prefix() {
+        let result = RingShareBundle::from_bytes(&[BUNDLE_VERSION, 0, 0, 0]);
+
+        assert_eq!(
+            result.unwrap_err(),
+            "RingShareBundle: buffer too short (u32)"
+        );
+    }
+
+    #[test]
+    fn ring_share_bundle_rejects_truncated_last_pss() {
+        let bytes = [
+            BUNDLE_VERSION,
+            0,
+            0,
+            0,
+            0, // empty share
+            0,
+            0,
+            0,
+            0, // empty polynomial
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0, // seven of eight last_pss bytes
+        ];
+
+        let result = RingShareBundle::from_bytes(&bytes);
+
+        assert_eq!(
+            result.unwrap_err(),
+            "RingShareBundle: buffer too short (last_pss)"
+        );
     }
 }
 
