@@ -580,7 +580,7 @@ async fn test_bootstrap_info_server_shutdown_on_init_error() {
     .expect("start bootstrap info server");
     let grpc_addr = bootstrap.local_addr();
 
-    let init_error = std::io::Error::new(std::io::ErrorKind::Other, "synthetic init failure");
+    let init_error = std::io::Error::other("synthetic init failure");
     let err = match shutdown_bootstrap_after_init(bootstrap, Err(Box::new(init_error))).await {
         Ok(_) => panic!("synthetic init failure should be returned"),
         Err(err) => err,

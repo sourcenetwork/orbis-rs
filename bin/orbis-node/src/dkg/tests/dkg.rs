@@ -315,7 +315,7 @@ async fn test_start_dkg_succeeds_on_all_connections() {
             .dkg_session_state
             .session_count()
             .await;
-        if start.elapsed().as_secs() % 5 == 0 {
+        if start.elapsed().as_secs().is_multiple_of(5) {
             println!(
                 "Session count: {}, elapsed: {:?}",
                 session_count,

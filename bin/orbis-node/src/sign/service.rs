@@ -73,7 +73,7 @@ where
         let current_time = current_unix_time().map_err(|e| {
             let duration = start.elapsed().as_secs_f64();
             metrics::record_grpc_request("sign", "start_sign", "error", duration);
-            Status::internal(e)
+            SignError::RequestTimestamp(e)
         })?;
 
         // reject oversized messages before any crypto work ---
@@ -162,7 +162,7 @@ where
         let poly_state =
             RingPolyState::load_from_ring_pk_hex(&self.state.local_storage, &ring_payload.ring_pk)
                 .map_err(|e| {
-                    Status::internal(format!("Failed to load ring polynomial state: {}", e))
+                    SignError::RingState(format!("Failed to load ring polynomial state: {}", e))
                 })?;
         let ring = RingConfig {
             ring_pk_bytes,

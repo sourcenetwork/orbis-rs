@@ -68,7 +68,7 @@ where
                 "error",
                 start.elapsed().as_secs_f64(),
             );
-            Status::internal(e)
+            DkgError::SystemTime(e)
         })?;
 
         // 1. Authenticate: Extract and validate JWT
@@ -260,16 +260,16 @@ where
                 if is_self_peer_id(&self.state.network, peer_id_str) {
                     continue;
                 }
-                if let Err(e) = self
-                    .state
+                self.state
                     .peer_connection_pool
                     .get_or_connect(&self.state.network, peer_id_str, DKG)
                     .await
-                {
-                    let error_msg = format!("Failed to connect to peer {}: {}", peer_id_str, e);
-                    tracing::error!(error = %error_msg, "Failed to connect to all peers");
-                    return Err(DkgError::NetworkConnection(error_msg).into());
-                }
+                    .map_err(|e| {
+                        DkgError::NetworkConnection(format!(
+                            "Failed to connect to peer {}: {}",
+                            peer_id_str, e
+                        ))
+                    })?;
             }
 
             // Send SessionInit message to all peers
@@ -315,14 +315,9 @@ where
 
             // Initiate Phase 1 only if we're participating
             if self_included {
-                if let Err(e) = coordinator
+                coordinator
                     .initiate_phase1_commitments(session_id, &peer_ids)
-                    .await
-                {
-                    tracing::error!(error = %e, "Failed to initiate Phase 1");
-                    // cleanup_guard will automatically clean up the session when dropped
-                    return Err(e.into());
-                }
+                    .await?;
                 tracing::info!("DKG Protocol: Phase 1 initiated, commitments broadcasted");
             } else {
                 tracing::info!("DKG Protocol: SessionInit sent to participants (coordinator not participating)");

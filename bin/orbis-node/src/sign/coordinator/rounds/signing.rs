@@ -407,8 +407,7 @@ where
             })
             .await
             {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => return Err(e),
+                Ok(result) => result?,
                 Err(_) => {
                     tracing::warn!(
                         request_id = %request_id,

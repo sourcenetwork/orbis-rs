@@ -616,7 +616,7 @@ where
         .await?;
     }
 
-    let (our_node_id, dkg_role, reshare_params) = match build_reshare_params(
+    let (our_node_id, dkg_role, reshare_params) = build_reshare_params(
         ring_pk_str,
         old_peer_node_keys,
         &new_peer_node_keys,
@@ -624,10 +624,7 @@ where
         post_id,
         &app_state.node_key,
         &app_state.local_storage,
-    ) {
-        Ok(v) => v,
-        Err(e) => return Err(e),
-    };
+    )?;
 
     // sorted_new is already sorted inside reshare_params.new_peer_node_keys.
     let sorted_new_peer_node_keys = reshare_params.new_peer_node_keys.clone();

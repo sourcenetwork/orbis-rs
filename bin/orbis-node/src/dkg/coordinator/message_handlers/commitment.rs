@@ -27,7 +27,7 @@ where
         ));
     }
 
-    if commitment.len() % G1_COMPRESSED_SIZE != 0 {
+    if !commitment.len().is_multiple_of(G1_COMPRESSED_SIZE) {
         return Err(DkgError::CommitmentVerificationFailed(format!(
             "Invalid commitment length: {} bytes is not a multiple of {} (G1 compressed size)",
             commitment.len(),

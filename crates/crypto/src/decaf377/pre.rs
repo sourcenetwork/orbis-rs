@@ -687,7 +687,7 @@ impl ThresholdDealerNode {
     fn fq_to_challenge_scalar(fq: Fq) -> Fr {
         let mut bytes = fq.into_bigint().to_bytes_le();
         let keep_bits = Fr::MODULUS_BIT_SIZE - 1;
-        let keep_bytes = (keep_bits as usize + 7) / 8;
+        let keep_bytes = (keep_bits as usize).div_ceil(8);
         let spare_bits = keep_bytes * 8 - keep_bits as usize;
         bytes[keep_bytes - 1] &= 0xFF >> spare_bits;
         Fr::from_le_bytes_mod_order(&bytes)

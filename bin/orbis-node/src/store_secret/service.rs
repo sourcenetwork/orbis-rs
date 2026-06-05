@@ -75,7 +75,7 @@ where
         let start = Instant::now();
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| Status::internal(format!("Failed to get timestamp: {}", e)))?
+            .map_err(|e| StoreSecretError::SystemTime(format!("Failed to get timestamp: {}", e)))?
             .as_secs();
 
         // 1. Authenticate: Extract and validate JWT

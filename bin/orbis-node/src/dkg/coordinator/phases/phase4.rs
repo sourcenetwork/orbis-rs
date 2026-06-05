@@ -258,17 +258,15 @@ where
     // (they had no prior index entry).  Dealers have already left and skip this entirely.
     if matches!(kind, SessionKind::Reshare { .. }) && dkg_role != DkgRole::Dealer {
         if let Some(post_id) = &reshare_bulletin_post_id {
-            if let Err(e) =
-                ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, post_id.clone())
-                    .await
-            {
-                cleanup_new_ring_bundle_after_index_failure(
-                    &coord.app_state.local_storage,
-                    &storage_key,
-                    adds_new_local_ring,
-                );
-                return Err(e);
-            }
+            ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, post_id.clone())
+                .await
+                .inspect_err(|_| {
+                    cleanup_new_ring_bundle_after_index_failure(
+                        &coord.app_state.local_storage,
+                        &storage_key,
+                        adds_new_local_ring,
+                    );
+                })?;
             tracing::info!(
                 session_id = session_id,
                 ring_pk = %storage_key,
@@ -285,32 +283,29 @@ where
     // For Refresh: bulletin entry is unchanged; polynomial updated in RingShareBundle above.
     // For Reshare: bulletin is updated below by new-committee node 1.
     if let Some(ring_id) = fresh_ring_id {
-        if let Err(e) =
-            ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, ring_id.clone())
-                .await
-        {
-            cleanup_new_ring_bundle_after_index_failure(
-                &coord.app_state.local_storage,
-                &storage_key,
-                adds_new_local_ring,
-            );
-            return Err(e);
-        }
+        ring_storage::add_ring_index_entry(&coord.app_state, &storage_key, ring_id.clone())
+            .await
+            .inspect_err(|_| {
+                cleanup_new_ring_bundle_after_index_failure(
+                    &coord.app_state.local_storage,
+                    &storage_key,
+                    adds_new_local_ring,
+                );
+            })?;
 
-        if let Err(e) =
-            ring_storage::post_fresh_ring_finalization(coord, &ring_id, &ring_pk_bytes).await
-        {
-            tracing::error!(
-                ring_id = %ring_id,
-                ring_pk = %hex::encode(&ring_pk_bytes),
-                error = %e,
-                "Phase 4: FinalizeRing chain post failed after local state was written. \
-                 This node holds a valid share and index entry but has not confirmed \
-                 on-chain. The ring will remain pending until another participant \
-                 retries or operator intervention. Local state is preserved."
-            );
-            return Err(e);
-        }
+        ring_storage::post_fresh_ring_finalization(coord, &ring_id, &ring_pk_bytes)
+            .await
+            .inspect_err(|error| {
+                tracing::error!(
+                    ring_id = %ring_id,
+                    ring_pk = %hex::encode(&ring_pk_bytes),
+                    error = %error,
+                    "Phase 4: FinalizeRing chain post failed after local state was written. \
+                     This node holds a valid share and index entry but has not confirmed \
+                     on-chain. The ring will remain pending until another participant \
+                     retries or operator intervention. Local state is preserved."
+                );
+            })?;
     }
 
     tracing::info!(

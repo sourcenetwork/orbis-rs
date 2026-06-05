@@ -75,7 +75,7 @@ where
         let current_time = current_unix_time().map_err(|e| {
             let duration = start.elapsed().as_secs_f64();
             metrics::record_grpc_request("pre", "start_pre", "error", duration);
-            Status::internal(e)
+            PreError::SystemTime(e)
         })?;
 
         // 1. Authenticate: Extract and validate JWT
@@ -181,7 +181,7 @@ where
         let coordinator = PreCoordinator::<D, T>::new(Arc::new(self.state.clone()));
         let total_participants = peer_ids.len();
         let poly_state = RingPolyState::load(&self.state.local_storage, &ring_pk).map_err(|e| {
-            Status::internal(format!("Failed to load ring polynomial state: {}", e))
+            PreError::RingState(format!("Failed to load ring polynomial state: {}", e))
         })?;
         let ring = RingConfig {
             ring_pk_bytes,
