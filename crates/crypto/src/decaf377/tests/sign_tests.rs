@@ -1,5 +1,6 @@
 use crate::decaf377::dkg::DKGNode;
 use crate::decaf377::sign::{FrostNonceCommitment, ThresholdDecafSigner};
+
 use crate::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crate::test_helper::DKGCoordinator;
 use decaf377::{Element, Fr};
@@ -23,7 +24,7 @@ fn test_all_sign() {
         // run_dkg: full DKG ceremony
         |n, t| {
             let mut coordinator = DKGCoordinator::new(
-                |id: u32, threshold: usize, total_nodes: usize, session_id: u64, role| {
+                |id: u32, threshold: usize, total_nodes: usize, session_id: u128, role| {
                     <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id, role)
                 },
                 n,
@@ -57,7 +58,7 @@ fn test_frost_rejects_tampered_commitment_from_coordinator() {
     let t = 2;
 
     let mut coordinator = DKGCoordinator::new(
-        |id: u32, threshold: usize, total_nodes: usize, session_id: u64, role| {
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u128, role| {
             <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id, role)
         },
         n,

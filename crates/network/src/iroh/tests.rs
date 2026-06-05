@@ -10,9 +10,21 @@ use crate::{PeerId, Result, SecretKey};
 use async_trait::async_trait;
 use std::net::SocketAddrV4;
 use std::sync::Arc;
+use tokio::sync::{mpsc, Notify};
 
 fn loopback() -> SocketAddrV4 {
     "127.0.0.1:0".parse().unwrap()
+}
+
+fn peer_addr(network: &IrohNetwork) -> PeerId {
+    let node_id_str = network.local_address().expect("Should get local address");
+    let bound_addrs = network.bound_addresses();
+
+    if let Some(addr) = bound_addrs.first() {
+        PeerId::from_bytes(format!("{}@{}", node_id_str, addr).as_bytes())
+    } else {
+        PeerId::from_bytes(node_id_str.as_bytes())
+    }
 }
 
 async fn new_test_network() -> IrohNetwork {
@@ -275,6 +287,87 @@ async fn iroh_router_builder_max_message_size() {
 
     assert_eq!(response.data.len(), large_size - 1000);
 
+    conn.close().await.expect("Should close");
+    Box::new(router)
+        .shutdown()
+        .await
+        .expect("Router should shutdown");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_router_builder_limits_concurrent_inbound_streams() {
+    struct HoldingHandler {
+        started: mpsc::Sender<()>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl ProtocolHandler for HoldingHandler {
+        async fn handle(&self, connection: Box<dyn Connection>) -> Result<()> {
+            let _ = self.started.send(()).await;
+            let _ = connection.recv().await;
+            self.release.notified().await;
+            Ok(())
+        }
+    }
+
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
+    let (started_tx, mut started_rx) = mpsc::channel(4);
+    let release = Arc::new(Notify::new());
+
+    let router = net2
+        .create_router_builder()
+        .expect("Should create router builder")
+        .max_concurrent_streams(1)
+        .accept(
+            b"test/concurrency-limit".to_vec(),
+            Arc::new(HoldingHandler {
+                started: started_tx,
+                release: Arc::clone(&release),
+            }),
+        )
+        .spawn()
+        .expect("Should spawn router");
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let conn = net1
+        .connect(&peer_addr(&net2), b"test/concurrency-limit")
+        .await
+        .expect("Should connect");
+
+    let stream1 = conn.open_stream().await.expect("Should open stream 1");
+    stream1
+        .send(Message::new(
+            bytes::Bytes::from_static(b"one"),
+            b"test/concurrency-limit".as_slice(),
+        ))
+        .await
+        .expect("Should send first stream");
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), started_rx.recv())
+        .await
+        .expect("First handler should start")
+        .expect("First handler signal should be present");
+
+    let stream2 = conn.open_stream().await.expect("Should open stream 2");
+    let _ = stream2
+        .send(Message::new(
+            bytes::Bytes::from_static(b"two"),
+            b"test/concurrency-limit".as_slice(),
+        ))
+        .await;
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(250), started_rx.recv())
+            .await
+            .is_err(),
+        "second stream should be dropped while the concurrency permit is held"
+    );
+
+    release.notify_waiters();
     conn.close().await.expect("Should close");
     Box::new(router)
         .shutdown()

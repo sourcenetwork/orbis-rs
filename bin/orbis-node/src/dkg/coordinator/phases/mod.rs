@@ -36,7 +36,7 @@ pub(in crate::dkg::coordinator) use phase4::{
 
 pub(in crate::dkg::coordinator) async fn drive_event<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     event: DkgEvent,
     peer_ids: Option<&[String]>,
 ) -> Result<()>
@@ -50,7 +50,7 @@ where
 
 pub(in crate::dkg::coordinator) async fn drive_post_phase2_event<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     event: DkgEvent,
 ) -> Result<()>
 where
@@ -63,7 +63,7 @@ where
 
 async fn claim_transition<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     event: DkgEvent,
 ) -> Result<(SessionSnapshot, state_machine::Transition)>
 where
@@ -103,7 +103,7 @@ where
 
 async fn execute_commands<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     commands: Vec<DkgCommand>,
     peer_ids: Option<&[String]>,
 ) -> Result<()>
@@ -144,7 +144,7 @@ where
 
 async fn execute_post_phase2_commands<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     commands: Vec<DkgCommand>,
 ) -> Result<()>
 where
@@ -180,7 +180,7 @@ where
 }
 
 fn log_transition_wait(
-    session_id: u64,
+    session_id: u128,
     event: DkgEvent,
     snapshot: &SessionSnapshot,
     transition: &state_machine::Transition,
@@ -231,7 +231,7 @@ fn log_transition_wait(
     }
 }
 
-fn log_phase4_wait(snapshot: &SessionSnapshot, session_id: u64) {
+fn log_phase4_wait(snapshot: &SessionSnapshot, session_id: u128) {
     if matches!(
         snapshot.phase,
         DkgPhase::Phase4Completing | DkgPhase::Phase4Complete

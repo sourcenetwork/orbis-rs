@@ -52,7 +52,7 @@ use std::sync::Arc;
 /// return, panic), `Drop` spawns a background task that releases the entry with
 /// `success = false`, so the message can be retried by a reconnecting peer.
 struct MessageClaimGuard<D: Dkg + Clone + 'static> {
-    session_id: u64,
+    session_id: u128,
     from_node_id: u32,
     message_type: DkgMessageType,
     app_state: Arc<AppState<D>>,
@@ -64,7 +64,7 @@ struct MessageClaimGuard<D: Dkg + Clone + 'static> {
 
 impl<D: Dkg + Clone + 'static> MessageClaimGuard<D> {
     fn new(
-        session_id: u64,
+        session_id: u128,
         from_node_id: u32,
         message_type: DkgMessageType,
         app_state: Arc<AppState<D>>,
@@ -472,7 +472,7 @@ where
     /// it. Pass `|_| {}` when no extra initialization is needed.
     pub async fn create_session<F>(
         &self,
-        session_id: u64,
+        session_id: u128,
         node_id: u32,
         threshold: usize,
         total_nodes: usize,
@@ -501,7 +501,7 @@ where
     }
 
     /// Remove a DKG session from state.
-    pub(in crate::dkg::coordinator) async fn remove_session(&self, session_id: u64) {
+    pub(in crate::dkg::coordinator) async fn remove_session(&self, session_id: u128) {
         self.app_state
             .dkg_session_state
             .remove_session(&session_id)
@@ -509,7 +509,7 @@ where
     }
 
     /// Store peer IDs for a session (needed for sending messages in later phases).
-    pub async fn set_peer_ids(&self, session_id: &u64, peer_ids: Vec<String>) {
+    pub async fn set_peer_ids(&self, session_id: &u128, peer_ids: Vec<String>) {
         self.app_state
             .dkg_session_state
             .set_peer_ids(session_id, peer_ids)
@@ -529,7 +529,7 @@ where
         &self,
         peer_id_str: &str,
         message: DkgMessage,
-        session_id: Option<u64>,
+        session_id: Option<u128>,
     ) -> Result<()> {
         network::send_message_to_peer(self, peer_id_str, message, session_id).await
     }
@@ -547,7 +547,7 @@ where
     /// Called by the initiator after `StartDkg`, or by the PSS scheduler.
     pub async fn initiate_phase1_commitments(
         &self,
-        session_id: u64,
+        session_id: u128,
         peer_ids: &[String],
     ) -> Result<()> {
         phases::initiate_phase1_commitments(self, session_id, peer_ids).await
@@ -558,7 +558,7 @@ where
     /// Called after each incoming commitment message.
     pub async fn check_and_trigger_phase2(
         &self,
-        session_id: u64,
+        session_id: u128,
         peer_ids: &[String],
     ) -> Result<()> {
         phases::check_and_trigger_phase2(self, session_id, peer_ids).await
@@ -567,21 +567,25 @@ where
     /// Phase 2: Generate shares and send them to all peers.
     ///
     /// Called when all commitments have been received.
-    pub async fn initiate_phase2_shares(&self, session_id: u64, peer_ids: &[String]) -> Result<()> {
+    pub async fn initiate_phase2_shares(
+        &self,
+        session_id: u128,
+        peer_ids: &[String],
+    ) -> Result<()> {
         phases::initiate_phase2_shares(self, session_id, peer_ids).await
     }
 
     /// Check if Phase 2 is complete (all shares received) and trigger Phase 4 if so.
     ///
     /// Called after each incoming share message.
-    pub async fn check_and_trigger_phase4(&self, session_id: u64) -> Result<()> {
+    pub async fn check_and_trigger_phase4(&self, session_id: u128) -> Result<()> {
         phases::check_and_trigger_phase4(self, session_id).await
     }
 
     /// Phase 4: Compute final secret share and aggregate public key.
     ///
     /// If this node is node_id == 1, also posts the `RingPayload` to the bulletin.
-    pub async fn initiate_phase4_completion(&self, session_id: u64) -> Result<()> {
+    pub async fn initiate_phase4_completion(&self, session_id: u128) -> Result<()> {
         phases::initiate_phase4_completion(self, session_id).await
     }
 }

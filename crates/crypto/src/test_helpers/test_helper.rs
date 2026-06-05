@@ -46,7 +46,7 @@ where
     /// * `threshold` - Minimum number of nodes needed to reconstruct
     pub fn new<F>(node_factory: F, node_count: usize, threshold: usize) -> Result<Self>
     where
-        F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>>,
+        F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>>,
     {
         if node_count == 0 {
             return Err(CryptoError::DKGError(
@@ -67,9 +67,9 @@ where
 
         use rand_core::{OsRng, RngCore};
         let mut rng = OsRng;
-        let mut session_id_bytes = [0u8; 8];
+        let mut session_id_bytes = [0u8; 16];
         rng.fill_bytes(&mut session_id_bytes);
-        let session_id = u64::from_le_bytes(session_id_bytes);
+        let session_id = u128::from_le_bytes(session_id_bytes);
 
         let mut nodes = Vec::new();
         for i in 1..=node_count {
@@ -220,7 +220,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
-        F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>>,
+        F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>>,
         Z: Fn(&Node::PublicKey) -> bool,
     {
         let mut coordinator = DKGCoordinator::new(node_factory, node_count, threshold)?;
@@ -259,7 +259,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
-        F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>>,
+        F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>>,
         G: Fn(&Node::ShareValue) -> Node::PublicKey,
     {
         let mut coordinator = DKGCoordinator::new(node_factory, node_count, threshold)?;
@@ -286,7 +286,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
-        F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>>,
+        F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>>,
         Z: Fn(&Node::PublicKey) -> bool,
     {
         test_dkg_basic(node_factory, 3, 2, check_zero)
@@ -300,7 +300,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
-        F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>>,
+        F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>>,
         Z: Fn(&Node::PublicKey) -> bool,
     {
         test_dkg_basic(node_factory, 5, 3, check_zero)
@@ -317,7 +317,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
-        F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>>,
+        F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>>,
         CreateWrong: Fn() -> Node::ShareValue,
     {
         let mut node = *node_factory(1, 2, 3, 0, DkgRole::Standard)?;
@@ -351,7 +351,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
-        F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
+        F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>> + Clone,
     {
         let result = DKGCoordinator::new(node_factory.clone(), 3, 4);
         assert!(
@@ -379,14 +379,14 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
-        F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
-        CreateShare: Fn(u32, u32, u64) -> crate::r#trait::DistributedShare<Node::ShareValue>,
+        F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>> + Clone,
+        CreateShare: Fn(u32, u32, u128) -> crate::r#trait::DistributedShare<Node::ShareValue>,
     {
         use rand_core::{OsRng, RngCore};
         let mut rng = OsRng;
-        let mut session_id_bytes = [0u8; 8];
+        let mut session_id_bytes = [0u8; 16];
         rng.fill_bytes(&mut session_id_bytes);
-        let session_id = u64::from_le_bytes(session_id_bytes);
+        let session_id = u128::from_le_bytes(session_id_bytes);
 
         let mut node1 = *node_factory(1, 2, 3, session_id, DkgRole::Standard)?;
         let mut node2 = *node_factory(2, 2, 3, session_id, DkgRole::Standard)?;
@@ -435,7 +435,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
-        F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
+        F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>> + Clone,
         Z: Fn(&Node::PublicKey) -> bool,
     {
         // Fresh DKG first — verify we get a non-zero PK
@@ -470,7 +470,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
-        F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
+        F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>> + Clone,
     {
         let n: usize = 3;
         let t: usize = 2;
@@ -487,9 +487,9 @@ pub mod generic_tests {
         // ── Step 2: reshare ceremony (same committee, all DealerReceiver) ───
         use rand_core::{OsRng, RngCore};
         let mut rng = OsRng;
-        let mut session_id_bytes = [0u8; 8];
+        let mut session_id_bytes = [0u8; 16];
         rng.fill_bytes(&mut session_id_bytes);
-        let session_id = u64::from_le_bytes(session_id_bytes);
+        let session_id = u128::from_le_bytes(session_id_bytes);
 
         let participating_ids: Vec<u32> = (1..=n as u32).collect();
 
@@ -592,7 +592,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
-        F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
+        F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>> + Clone,
         G: Fn(&Node::ShareValue) -> Node::PublicKey,
     {
         let n_old: usize = 3;
@@ -610,9 +610,9 @@ pub mod generic_tests {
 
         use rand_core::{OsRng, RngCore};
         let mut rng = OsRng;
-        let mut session_id_bytes = [0u8; 8];
+        let mut session_id_bytes = [0u8; 16];
         rng.fill_bytes(&mut session_id_bytes);
-        let session_id = u64::from_le_bytes(session_id_bytes);
+        let session_id = u128::from_le_bytes(session_id_bytes);
 
         let participating_ids: Vec<u32> = (1..=n_old as u32).collect();
         let share_map: std::collections::HashMap<u32, Node::ShareValue> =
@@ -704,7 +704,7 @@ pub mod generic_tests {
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
-        F: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
+        F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>> + Clone,
     {
         let n_old: usize = 3;
         let t_old: usize = 2;
@@ -723,9 +723,9 @@ pub mod generic_tests {
         // ── Step 2: reshare to new committee ──────────────────────────────
         use rand_core::{OsRng, RngCore};
         let mut rng = OsRng;
-        let mut session_id_bytes = [0u8; 8];
+        let mut session_id_bytes = [0u8; 16];
         rng.fill_bytes(&mut session_id_bytes);
-        let session_id = u64::from_le_bytes(session_id_bytes);
+        let session_id = u128::from_le_bytes(session_id_bytes);
 
         let participating_ids: Vec<u32> = (1..=n_old as u32).collect();
 

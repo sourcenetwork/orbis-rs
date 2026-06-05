@@ -14,6 +14,8 @@ use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::error::SignError;
 use crate::sign::helpers::check_policy_access;
 use crate::sign::messages::{PolicyContext, SignContext};
+#[cfg(feature = "decaf377")]
+use crate::sign::messages::{SignMessage, SignRequest};
 use crate::sign::service::SignServiceImpl;
 use crate::DkgServiceImpl;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
@@ -87,11 +89,7 @@ async fn test_dkg_then_sign_end_to_end() {
 
     // Wait for DKG to complete and get the ring payload from bulletin
     println!("Waiting for DKG to complete...");
-    let (ring_payload, ring_id) = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let (ring_payload, ring_id) = wait_for_dkg_completion(&network).await;
 
     // Deserialize the aggregate public key from the ring payload
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
@@ -208,7 +206,6 @@ async fn test_dkg_then_sign_end_to_end() {
 /// Helper function to wait for DKG completion and return the RingPayload and ring_id
 async fn wait_for_dkg_completion(
     network: &crate::helpers::test_helpers::ThreeNodeNetwork,
-    _session_id: u64,
 ) -> (RingPayload, String) {
     let check_interval = Duration::from_millis(500);
     let max_wait = Duration::from_secs(60);
@@ -314,11 +311,7 @@ async fn test_sign_different_messages() {
         .await;
     assert!(result.is_ok());
 
-    let (ring_payload, ring_id) = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let (ring_payload, ring_id) = wait_for_dkg_completion(&network).await;
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
     let aggregate_pk =
@@ -425,11 +418,7 @@ async fn test_sign_fails_wrong_message() {
         .await;
     assert!(result.is_ok());
 
-    let (ring_payload, ring_id) = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let (ring_payload, ring_id) = wait_for_dkg_completion(&network).await;
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
     let aggregate_pk =
@@ -540,11 +529,7 @@ async fn test_sign_response_cleanup() {
         .await;
     assert!(result.is_ok());
 
-    let (ring_payload, ring_id) = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let (ring_payload, ring_id) = wait_for_dkg_completion(&network).await;
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
@@ -643,11 +628,7 @@ async fn test_sign_fails_invalid_bulletin_post() {
         .await;
     assert!(result.is_ok());
 
-    let (ring_payload, _ring_id) = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let (ring_payload, _ring_id) = wait_for_dkg_completion(&network).await;
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
@@ -735,11 +716,7 @@ async fn test_sign_fails_post_not_on_bulletin() {
         .await;
     assert!(result.is_ok());
 
-    let (ring_payload, ring_id) = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let (ring_payload, ring_id) = wait_for_dkg_completion(&network).await;
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
@@ -848,11 +825,7 @@ async fn test_sign_fails_tampered_payload() {
         .await;
     assert!(result.is_ok());
 
-    let (ring_payload, ring_id) = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let (ring_payload, ring_id) = wait_for_dkg_completion(&network).await;
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
@@ -982,11 +955,7 @@ async fn test_sign_fails_invalid_ring_id() {
         .await;
     assert!(result.is_ok());
 
-    let (ring_payload, _ring_id) = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let (ring_payload, _ring_id) = wait_for_dkg_completion(&network).await;
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
@@ -1140,11 +1109,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
         result.err()
     );
 
-    let (ring_payload, ring_id) = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let (ring_payload, ring_id) = wait_for_dkg_completion(&network).await;
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
@@ -1292,11 +1257,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
         .await;
     assert!(result.is_ok());
 
-    let (ring_payload, ring_id) = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let (ring_payload, ring_id) = wait_for_dkg_completion(&network).await;
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
@@ -1392,11 +1353,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
         .await;
     assert!(result.is_ok());
 
-    let (ring_payload, ring_id) = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let (ring_payload, ring_id) = wait_for_dkg_completion(&network).await;
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 
@@ -1591,6 +1548,59 @@ async fn test_sign_service_rejects_oversized_message() {
     cleanup_db(&test_db_path(db_name));
 }
 
+#[cfg(feature = "decaf377")]
+#[tokio::test]
+#[serial_test::serial]
+async fn test_failed_round_two_consumes_nonce_state() {
+    let db_name = "test_failed_round_two_consumes_nonce_state";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state(None, true, true, db_name).await;
+    let sender_peer_id = app_state.network.local_peer_id().clone();
+    let request_id = "failed-round-two";
+    let nonce_key = format!("nonce-{request_id}");
+
+    assert!(
+        app_state
+            .sign_response_state
+            .store_nonce(
+                nonce_key.clone(),
+                vec![1, 2, 3],
+                "bulletin".to_string(),
+                sender_peer_id.as_bytes().to_vec(),
+            )
+            .await
+    );
+
+    let coordinator = SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(app_state.clone()));
+    let result = coordinator
+        .handle_message(
+            SignMessage::SignRequest(SignRequest {
+                request_id: request_id.to_string(),
+                from_node_id: 0,
+                message: vec![0; MAX_SIGN_MESSAGE_BYTES + 1],
+                all_commitments: Vec::new(),
+                context: SignContext::Bulletin,
+            }),
+            &sender_peer_id,
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(SignError::InvalidInput(_))),
+        "oversized Round 2 should fail validation, got: {result:?}"
+    );
+    assert!(
+        app_state
+            .sign_response_state
+            .consume_nonce_for_sign_request(&nonce_key, sender_peer_id.as_bytes())
+            .await
+            .is_none(),
+        "failed Round 2 must release its nonce slot"
+    );
+
+    cleanup_db(&db_path);
+}
+
 /// Policy signing should fail when the JWT was created for a different message than what is sent.
 #[tokio::test]
 #[serial_test::serial]
@@ -1623,11 +1633,7 @@ async fn test_sign_policy_fails_wrong_message_digest() {
         .await;
     assert!(result.is_ok());
 
-    let (ring_payload, ring_id) = wait_for_dkg_completion(
-        &network,
-        result.unwrap().into_inner().session_id.parse().unwrap(),
-    )
-    .await;
+    let (ring_payload, ring_id) = wait_for_dkg_completion(&network).await;
 
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
 

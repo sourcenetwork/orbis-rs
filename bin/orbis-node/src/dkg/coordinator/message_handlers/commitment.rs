@@ -7,7 +7,7 @@ use super::*;
 /// generated ours), then checks whether Phase 1 is complete.
 pub(in crate::dkg::coordinator) async fn handle_commitment_message<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     from_node_id: u32,
     commitment: Vec<u8>,
 ) -> Result<Option<DkgMessage>>

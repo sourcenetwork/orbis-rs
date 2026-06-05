@@ -8,7 +8,7 @@ use crypto::error::CryptoError;
 /// Phase 2 is complete.
 pub(in crate::dkg::coordinator) async fn handle_share_message<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     from_node_id: u32,
     to_node_id: u32,
     share_value: Vec<u8>,
@@ -126,7 +126,7 @@ where
 
 pub(super) async fn receive_and_record_share<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     share: DistributedShare<D::ShareValue>,
 ) -> Result<()>
 where
@@ -146,7 +146,7 @@ where
 
 async fn try_receive_share<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     share: DistributedShare<D::ShareValue>,
 ) -> Result<std::result::Result<(), CryptoError>>
 where
@@ -162,7 +162,7 @@ where
 
 async fn record_accepted_share<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     from_node_id: u32,
     to_node_id: u32,
 ) -> Result<()>

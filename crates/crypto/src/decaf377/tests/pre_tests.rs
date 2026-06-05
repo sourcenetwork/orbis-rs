@@ -22,7 +22,7 @@ fn test_all_pre() {
         // run_dkg: full DKG ceremony
         |n, t| {
             let mut coordinator = DKGCoordinator::new(
-                |id: u32, threshold: usize, total_nodes: usize, session_id: u64, role| {
+                |id: u32, threshold: usize, total_nodes: usize, session_id: u128, role| {
                     <crate::decaf377::dkg::DKGNode as crate::r#trait::Dkg>::new(
                         id,
                         threshold,

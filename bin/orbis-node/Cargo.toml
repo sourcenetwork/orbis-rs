@@ -14,7 +14,7 @@ proto = { path = "../../crates/proto" }
 authn = { path = "../../crates/authn" }
 authz = { path = "../../crates/authz" }
 bulletin = { path = "../../crates/bulletin" }
-tonic = "0.14.2"
+tonic = { workspace = true }
 tonic-web = "0.14.2"
 tower-http = { version = "0.6", features = ["cors"] }
 iroh = { workspace = true }

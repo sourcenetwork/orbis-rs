@@ -16,7 +16,10 @@ use crate::pre::service::PreServiceImpl;
 use crate::sign::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{
-    constants::{MIN_NODE_BALANCE, PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT},
+    constants::{
+        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MIN_NODE_BALANCE,
+        PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
+    },
     helpers::{
         launch::{create_and_store_node_key, LogLevel},
         test_helpers::{
@@ -203,6 +206,8 @@ async fn setup_fault_three_node_network(
                 node_peer_id: None,
                 node_whitelisted_policy_ids: vec![policy_id.clone()],
                 node_whitelisted_ring_ids: vec![],
+                grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
+                grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
             },
             node_key,
             network,

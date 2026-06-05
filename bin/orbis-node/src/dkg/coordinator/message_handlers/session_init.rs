@@ -10,7 +10,7 @@ use super::*;
 /// Returns `Ok(None)` — the caller should return this directly from `handle_message`.
 pub(in crate::dkg::coordinator) async fn handle_session_init<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     threshold: u32,
     total_participants: u32,
     peer_ids: &[String],

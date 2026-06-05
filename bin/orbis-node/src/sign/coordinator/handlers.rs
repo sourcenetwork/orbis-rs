@@ -47,7 +47,7 @@ where
                     sender_peer = %hex::encode(sender_peer_id.as_bytes()),
                     "Sign Coordinator: Received NonceRequest"
                 );
-                self.handle_nonce_request(req).await
+                self.handle_nonce_request(req, sender_peer_id).await
             }
             SignMessage::SignRequest(req) => {
                 tracing::info!(
@@ -55,7 +55,7 @@ where
                     from_node_id = req.from_node_id,
                     "Sign Coordinator: Received SignRequest"
                 );
-                self.handle_sign_request(req).await
+                self.handle_sign_request(req, sender_peer_id).await
             }
             SignMessage::SignResponse { .. } | SignMessage::NonceResponse { .. } => {
                 tracing::debug!(
@@ -80,7 +80,11 @@ where
     /// Auth is checked here — before generating (and burning) a nonce — so that
     /// an untrusted relayer cannot waste node resources by sending unauthenticated
     /// requests. Only if auth passes does the nonce get generated and stored.
-    async fn handle_nonce_request(&self, req: NonceRequest) -> Result<Option<SignMessage>> {
+    async fn handle_nonce_request(
+        &self,
+        req: NonceRequest,
+        sender_peer_id: &PeerId,
+    ) -> Result<Option<SignMessage>> {
         let NonceRequest {
             request_id,
             ring_pk: ring_pk_bytes,
@@ -182,6 +186,9 @@ where
             .generate_nonces(&dist_key_share)
             .map_err(|e| SignError::Crypto(format!("Nonce generation failed: {}", e)))?;
 
+        let commitment_bytes = CryptoSerialize::to_bytes(&commitment).map_err(|e| {
+            SignError::Serialization(format!("Failed to serialize nonce commitment: {}", e))
+        })?;
         let state_bytes = CryptoSerialize::to_bytes(&signing_state).map_err(|e| {
             SignError::Serialization(format!("Failed to serialize signing state: {}", e))
         })?;
@@ -202,17 +209,18 @@ where
         if !self
             .app_state
             .sign_response_state
-            .store_nonce(request_id.clone(), state_bytes, context_key)
+            .store_nonce(
+                request_id.clone(),
+                state_bytes,
+                context_key,
+                sender_peer_id.as_bytes().to_vec(),
+            )
             .await
         {
             return Err(SignError::NonceState(
                 "Failed to store nonce state (limit exceeded or duplicate)".to_string(),
             ));
         }
-
-        let commitment_bytes = CryptoSerialize::to_bytes(&commitment).map_err(|e| {
-            SignError::Serialization(format!("Failed to serialize nonce commitment: {}", e))
-        })?;
 
         Ok(Some(SignMessage::NonceResponse {
             request_id,
@@ -222,7 +230,11 @@ where
     }
 
     /// Handle a sign request (responder side)
-    async fn handle_sign_request(&self, req: SignRequest) -> Result<Option<SignMessage>> {
+    async fn handle_sign_request(
+        &self,
+        req: SignRequest,
+        sender_peer_id: &PeerId,
+    ) -> Result<Option<SignMessage>> {
         let SignRequest {
             request_id,
             from_node_id,
@@ -232,6 +244,27 @@ where
         } = req;
         // Note: We do NOT validate from_node_id here because the sign request initiator
         // may not be in the ring (external requesters use node_id=0).
+
+        // Consume responder-side FROST state before any fallible Round 2 work.
+        // Every request from the coordinator that created the nonce therefore frees
+        // its slot even when authorization, deserialization, or signing later fails.
+        let consumed_nonce = if S::INTERACTIVE {
+            let nonce_key = format!("nonce-{}", request_id);
+            Some(
+                self.app_state
+                    .sign_response_state
+                    .consume_nonce_for_sign_request(&nonce_key, sender_peer_id.as_bytes())
+                    .await
+                    .ok_or_else(|| {
+                        SignError::NonceState(format!(
+                            "No nonce state found for request_id {} or coordinator mismatch",
+                            request_id
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
 
         if message.len() > MAX_SIGN_MESSAGE_BYTES {
             return Err(SignError::InvalidInput(format!(
@@ -360,7 +393,6 @@ where
         let all_commitments = deserialize_commitments::<S>(&all_commitments_bytes)?;
 
         let signing_state = if S::INTERACTIVE {
-            let nonce_key = format!("nonce-{}", request_id);
             let expected_context_key = match &context {
                 SignContext::Bulletin => "bulletin".to_string(),
                 SignContext::Policy(ctx) => ctx.derivation_id.clone(),
@@ -371,14 +403,13 @@ where
                     refresh_health_check_context_key(&ctx.statement)?
                 }
             };
-            let state_bytes = self
-                .app_state
-                .sign_response_state
-                .take_nonce(&nonce_key, &expected_context_key)
-                .await
+            let consumed_nonce = consumed_nonce
+                .ok_or_else(|| SignError::NonceState("Missing nonce state".into()))?;
+            let state_bytes = consumed_nonce
+                .into_bytes_for_context(&request_id, &expected_context_key)
                 .ok_or_else(|| {
                     SignError::NonceState(format!(
-                        "No nonce state found for request_id {} (or context key mismatch)",
+                        "Nonce context key mismatch for request_id {}",
                         request_id
                     ))
                 })?;

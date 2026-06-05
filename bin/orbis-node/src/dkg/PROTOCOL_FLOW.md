@@ -202,6 +202,6 @@ T10                                             Receive Share from Alice
 ✅ Phase 1 initiation from start_dkg
 ✅ Phase 2 initiation when commitments complete
 ✅ Phase 4 initiation when shares complete
-⏳ Commitment deserialization (TODO)
-⏳ Share deserialization (partially done)
-⏳ Proper node_id mapping (currently simplified)
+✅ Bounded commitment deserialization and coefficient validation
+✅ Share deserialization with recipient/session validation and pending-share replay
+✅ Authenticated peer-to-node mapping for current and reshare committees

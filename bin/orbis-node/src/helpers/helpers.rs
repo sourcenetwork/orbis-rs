@@ -306,29 +306,29 @@ pub struct RingConfig {
     pub public_polynomial_hex: String,
 }
 
-/// Convert session_id string to u64 using SHA-256 (cryptographic hash)
+/// Convert a session_id string to u128 using SHA-256 (cryptographic hash)
 ///
-/// This function allows string session IDs from the proto while DKGNode uses u64.
+/// This function allows string session IDs from the proto while DKGNode uses u128.
 /// Using SHA-256 prevents collision attacks that would be possible with DefaultHasher.
 ///
 /// # Arguments
 /// * `session_id_str` - The session ID string to convert
 ///
 /// # Returns
-/// * `Ok(u64)` - The session ID as a u64
+/// * `Ok(u128)` - The session ID as a u128
 /// * `Err(std::array::TryFromSliceError)` - If the hash conversion fails
 ///
 /// # Example
 /// ```rust
-/// use crate::helpers::helpers::session_id_string_to_u64;
+/// use crate::helpers::helpers::session_id_string_to_u128;
 ///
-/// let session_id = session_id_string_to_u64("test-session-123")?;
+/// let session_id = session_id_string_to_u128("test-session-123")?;
 /// ```
-pub fn session_id_string_to_u64(
+pub fn session_id_string_to_u128(
     session_id_str: &str,
-) -> Result<u64, std::array::TryFromSliceError> {
+) -> Result<u128, std::array::TryFromSliceError> {
     let hash = Sha256::digest(session_id_str.as_bytes());
-    Ok(u64::from_le_bytes(hash[..8].try_into()?))
+    Ok(u128::from_le_bytes(hash[..16].try_into()?))
 }
 
 /// Returns `true` when a PSS reshare is currently in progress for the ring

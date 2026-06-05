@@ -200,12 +200,29 @@ where
                     );
                     PreError::Crypto(format!("Local reencryption failed: {}", e))
                 })?;
-            tracing::debug!(
-                from_node_id = reply.share.i,
-                "PRE Coordinator: Added local share"
-            );
-            seen_node_ids.insert(reply.share.i);
-            verified_shares.push(reply.share.clone());
+            match dealer.verify(
+                &rdr_pk,
+                &pub_poly,
+                &enc_cmt,
+                &reply,
+                ctx.derivation.as_deref(),
+            ) {
+                Ok(_) => {
+                    tracing::debug!(
+                        from_node_id = reply.share.i,
+                        "PRE Coordinator: Added local share"
+                    );
+                    seen_node_ids.insert(reply.share.i);
+                    verified_shares.push(reply.share.clone());
+                }
+                Err(e) => {
+                    tracing::error!(
+                        from_node_id = reply.share.i,
+                        error = %e,
+                        "PRE Coordinator: Local share verification failed"
+                    );
+                }
+            }
         }
 
         let min_needed_from_network = ring.threshold.saturating_sub(verified_shares.len());

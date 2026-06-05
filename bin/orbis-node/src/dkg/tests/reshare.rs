@@ -465,7 +465,7 @@ async fn test_dealer_phase4_deletes_share_and_ring_index_entry() {
 
     let ring_pk = "dealer_phase4_ring";
     // Arbitrary non-colliding session ID for Dealer Phase 4 tests.
-    let session_id = 88_000_001u64;
+    let session_id = 88_000_001u128;
 
     // Pre-populate local storage: share bundle + ring index entry.
     write_last_refresh(&app_state.local_storage, ring_pk, 0);
@@ -544,7 +544,7 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
 
     let ring_pk = "dealer_phase4_pss_ring";
     // Arbitrary non-colliding session ID for Dealer Phase 4 PSS flag test.
-    let session_id = 88_000_002u64;
+    let session_id = 88_000_002u128;
 
     write_last_refresh(&app_state.local_storage, ring_pk, 0);
     write_ring_to_bulletin(

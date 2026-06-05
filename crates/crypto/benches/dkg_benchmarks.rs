@@ -42,16 +42,16 @@ pub trait DkgBenchSetup {
         id: u32,
         threshold: usize,
         total_nodes: usize,
-        session_id: u64,
+        session_id: u128,
     ) -> Box<Self::Node>;
 
     /// Build a full fixture: run Phase 1, exchange commitments, generate shares.
     fn create_fixture(threshold: usize, total_nodes: usize) -> DkgBenchFixture<Self::Node> {
         use rand_core::{OsRng, RngCore};
         let mut rng = OsRng;
-        let mut session_id_bytes = [0u8; 8];
+        let mut session_id_bytes = [0u8; 16];
         rng.fill_bytes(&mut session_id_bytes);
-        let session_id = u64::from_le_bytes(session_id_bytes);
+        let session_id = u128::from_le_bytes(session_id_bytes);
 
         let mut nodes: Vec<Box<Self::Node>> = (1..=total_nodes as u32)
             .map(|id| Self::create_node(id, threshold, total_nodes, session_id))

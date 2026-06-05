@@ -2,7 +2,7 @@ use super::*;
 
 pub(in crate::dkg::coordinator) async fn record_and_ack_valid_reshare_share<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     dealer_id: u32,
 ) -> Result<()>
 where
@@ -71,7 +71,7 @@ where
 
 fn spawn_reshare_share_ack_delivery<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     receiver_node_id: u32,
     dealer_id: u32,
     selector_peer_id: String,
@@ -93,7 +93,7 @@ fn spawn_reshare_share_ack_delivery<D>(
 
 async fn deliver_reshare_share_ack_until_done<D>(
     coord: DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     receiver_node_id: u32,
     dealer_id: u32,
     selector_peer_id: String,
@@ -144,7 +144,7 @@ async fn deliver_reshare_share_ack_until_done<D>(
     }
 }
 
-async fn reshare_share_ack_still_needed<D>(coord: &DkgCoordinator<D>, session_id: u64) -> bool
+async fn reshare_share_ack_still_needed<D>(coord: &DkgCoordinator<D>, session_id: u128) -> bool
 where
     D: CoordinatorDkg,
 {
@@ -161,7 +161,7 @@ where
 
 pub(in crate::dkg::coordinator) async fn handle_reshare_share_ack<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     receiver_node_id: u32,
     dealer_id: u32,
 ) -> Result<Option<DkgMessage>>
@@ -300,7 +300,7 @@ where
 
 async fn broadcast_reshare_participant_set<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     selected_dealer_ids: &[u32],
     new_route_peer_ids: &[String],
 ) -> Result<()>
@@ -365,7 +365,7 @@ where
 
 pub(in crate::dkg::coordinator) async fn handle_reshare_participant_set<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u64,
+    session_id: u128,
     from_node_id: u32,
     selected_dealer_ids: Vec<u32>,
 ) -> Result<Option<DkgMessage>>

@@ -8,6 +8,24 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::sync::Arc;
 
+/// Inbound stream limits enforced by routers before protocol handlers run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RouterIngressLimits {
+    /// Maximum concurrently executing handler tasks per registered protocol.
+    pub max_concurrent_streams: usize,
+    /// Maximum accepted streams per remote peer per one-second window.
+    pub max_streams_per_peer_per_second: usize,
+}
+
+impl Default for RouterIngressLimits {
+    fn default() -> Self {
+        Self {
+            max_concurrent_streams: 1024,
+            max_streams_per_peer_per_second: 512,
+        }
+    }
+}
+
 /// A peer identifier in the network
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PeerId(Arc<[u8]>);
@@ -106,6 +124,12 @@ pub trait RouterBuilder: Send + Sync {
 
     /// Set the maximum message size for connections
     fn max_message_size(self: Box<Self>, size: usize) -> Box<dyn RouterBuilder>;
+
+    /// Set the maximum concurrently executing inbound streams per protocol.
+    fn max_concurrent_streams(self: Box<Self>, limit: usize) -> Box<dyn RouterBuilder>;
+
+    /// Set the maximum accepted inbound streams per peer per one-second window.
+    fn max_streams_per_peer_per_second(self: Box<Self>, limit: usize) -> Box<dyn RouterBuilder>;
 
     /// Build and spawn the router with all registered handlers
     fn spawn(self: Box<Self>) -> Result<Box<dyn Router>>;

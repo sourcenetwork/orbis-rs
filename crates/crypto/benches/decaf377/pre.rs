@@ -17,7 +17,7 @@ impl BenchSetup for Decaf377Bench {
             |id: u32,
              threshold: usize,
              total_nodes: usize,
-             session_id: u64,
+             session_id: u128,
              role: crypto::r#trait::DkgRole| {
                 <crypto::decaf377::dkg::DKGNode as crypto::r#trait::Dkg>::new(
                     id,

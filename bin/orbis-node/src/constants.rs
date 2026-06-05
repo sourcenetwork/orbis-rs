@@ -19,8 +19,9 @@ pub const MAX_TOKEN_LIFETIME_SECS: u64 = 24 * 60 * 60;
 ///
 /// Tokens are signed by clients and validated independently by each node, so
 /// real deployments must tolerate small wall-clock differences across hosts or
-/// containers. This mirrors the previous jwt-simple default leeway of 16 minutes.
-pub const JWT_CLOCK_SKEW_LEEWAY_SECS: u64 = 16 * 60;
+/// containers. Keep the leeway small to avoid unnecessarily extending replay
+/// windows after token expiry.
+pub const JWT_CLOCK_SKEW_LEEWAY_SECS: u64 = 5 * 60;
 
 /// Maximum allowed byte length for a bearer token string.
 ///
@@ -93,6 +94,14 @@ pub const DKG_PHASE_TIMEOUT: Duration = Duration::from_secs(120);
 /// confirmation work, so this must exceed the normal phase timeout.
 pub const DKG_PHASE4_COMPLETION_TIMEOUT: Duration = Duration::from_secs(240);
 
+/// Maximum time a completed DKG session may remain in memory.
+///
+/// Normal Fresh/Refresh cleanup is immediate. Reshare cleanup may wait up to
+/// `RESHARE_BULLETIN_CONFIRM_TIMEOUT` (200 seconds) for bulletin confirmation,
+/// so five minutes leaves margin for that task while bounding leaks if explicit
+/// cleanup never runs.
+pub const DKG_COMPLETED_SESSION_TTL: Duration = Duration::from_secs(300);
+
 /// How often to re-check session existence when an early message arrives before
 /// the session has been created (e.g. a peer's commitment races with our own
 /// SessionInit bulletin validation).  Kept small so the ceremony proceeds as
@@ -142,9 +151,9 @@ pub const MAX_NONCE_STATES: usize = 1000;
 ///
 /// Nonce states should be consumed within seconds (between Round 1 and Round 2).
 /// If a nonce is not consumed within this duration, the signing process was likely
-/// abandoned (e.g., initiator crashed after Round 1). Set to 2 minutes to match
-/// DKG_PHASE_TIMEOUT.
-pub const SIGN_NONCE_TTL: Duration = Duration::from_secs(120);
+/// abandoned (e.g., initiator crashed after Round 1 or did not select this signer).
+/// This covers the 30-second Round 1 collection deadline plus 15 seconds of grace.
+pub const SIGN_NONCE_TTL: Duration = Duration::from_secs(45);
 
 /// Time-to-live for sign response entries before they are eligible for cleanup
 ///
@@ -171,6 +180,27 @@ pub const SIGN_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// hang until Quinn exhausts its retransmission backoff. On timeout the
 /// connection closes, `open_stream()` fails, and the pool reconnects.
 pub const NETWORK_IDLE_TIMEOUT_MS: u32 = 30_000;
+
+/// Maximum concurrently executing inbound P2P handler tasks per protocol.
+///
+/// The iroh router accepts one QUIC stream per node-to-node request/session.
+/// This cap prevents a single protocol from spawning unbounded handler tasks
+/// under flood or retry storms. Excess streams are dropped before protocol
+/// deserialization.
+pub const NETWORK_MAX_CONCURRENT_INBOUND_STREAMS: usize = 1024;
+
+/// Maximum inbound P2P streams accepted from one peer per protocol per second.
+///
+/// DKG, PRE, and Sign traffic should stay well below this in normal operation;
+/// the limit primarily protects handler allocation and downstream crypto work
+/// from cheap stream-open floods.
+pub const NETWORK_MAX_INBOUND_STREAMS_PER_PEER_PER_SECOND: usize = 512;
+
+/// Maximum in-flight gRPC requests per client connection.
+pub const GRPC_CONCURRENCY_LIMIT_PER_CONNECTION: usize = 128;
+
+/// Maximum concurrent HTTP/2 streams per gRPC client connection.
+pub const GRPC_MAX_CONCURRENT_STREAMS: u32 = 256;
 
 // ============================================================================
 // Peer ID Validation Constants

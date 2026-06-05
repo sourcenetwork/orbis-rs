@@ -48,11 +48,14 @@ form_urlencoded = { version = "1.2", features = ["alloc"] }
 cosmrs = { version = "0.22", features = ["rpc", "bip32"] }
 tendermint = "0.40"
 tendermint-rpc = { version = "0.40", features = ["http-client"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 bip32 = { version = "0.5", features = ["mnemonic", "bip39"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
-prost = "0.13"
-tonic = "0.12"
+prost = "0.14.1"
+tonic = "0.14.2"
+tonic-prost = "0.14"
+tonic-build = "0.14.2"
+tonic-prost-build = "0.14"
 rand = "0.8"
 base64 = "0.22"
 did-key = "0.2.1"

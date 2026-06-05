@@ -6,6 +6,9 @@
 #   ORBIS_INTEGRATION_CRYPTO=bls12-381  docker compose -f docker/docker-compose-integration-test.yml up --build -d
 #   ORBIS_INTEGRATION_CRYPTO=decaf377   docker compose -f docker/docker-compose-integration-test.yml up --build -d
 # Default is bls12-381 when unset.
+# Fixed ORBIS_PASSWORD and ORBIS_SECRET_KEY values in this file are local-test
+# fixtures only. Production deployments should inject secrets from a secret
+# manager or read-only mounted files; see bin/orbis-node/README.md.
 services:
   sourcehub:
     build:

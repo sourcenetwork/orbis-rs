@@ -8,7 +8,9 @@
 //!   cargo test --features integration-test -- --nocapture
 
 use crate::{
-    constants::MIN_NODE_BALANCE,
+    constants::{
+        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MIN_NODE_BALANCE,
+    },
     dkg::service::DkgServiceImpl,
     helpers::{
         launch::{create_and_store_node_key, LogLevel},
@@ -216,6 +218,8 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
                 node_peer_id: None,
                 node_whitelisted_policy_ids: vec![policy_id.clone()],
                 node_whitelisted_ring_ids: vec![],
+                grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
+                grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
             },
             node_key,
             network,
@@ -338,6 +342,8 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
                 node_peer_id: None,
                 node_whitelisted_policy_ids: vec![policy_id.clone()],
                 node_whitelisted_ring_ids: vec![],
+                grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
+                grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
             },
             node_key,
             network,

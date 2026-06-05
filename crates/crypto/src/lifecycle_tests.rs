@@ -144,13 +144,13 @@ where
     SV: Clone + zeroize::Zeroize,
     PK: Clone + CanonicalSerialize + Debug,
     PP: Clone + PubPolyTrait<PublicKey = PK>,
-    NF: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>>,
+    NF: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>>,
 {
     use rand_core::{OsRng, RngCore};
     let mut rng = OsRng;
-    let mut session_id_bytes = [0u8; 8];
+    let mut session_id_bytes = [0u8; 16];
     rng.fill_bytes(&mut session_id_bytes);
-    let session_id = u64::from_le_bytes(session_id_bytes);
+    let session_id = u128::from_le_bytes(session_id_bytes);
 
     let participating_ids: Vec<u32> = (1..=n as u32).collect();
     let mut share_map: HashMap<u32, SV> = old_shares.iter().map(|s| (s.i, s.v.clone())).collect();
@@ -278,7 +278,7 @@ where
     SV: Clone + zeroize::Zeroize,
     PK: Clone + PartialEq + Debug + CanonicalSerialize,
     PP: Clone + PubPolyTrait<PublicKey = PK>,
-    NF: Fn(u32, usize, usize, u64, DkgRole) -> Result<Box<Node>> + Clone,
+    NF: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>> + Clone,
     MK: Fn() -> (SV, PK),
     AS: Fn(&SV, &SV) -> SV,
     APK: Fn(&PP, &PP) -> PP,

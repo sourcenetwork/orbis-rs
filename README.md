@@ -332,8 +332,15 @@ cargo build --release
 
 **Password for encrypted storage** (checked in order):
 1. File: `~/.orbis_password`
-2. Environment: `ORBIS_PASSWORD`
+2. Environment: `ORBIS_PASSWORD` (development and CI only)
 3. Interactive prompt
+
+For production, provision secrets through a secrets manager or mounted file with
+owner-only permissions (`0600`). Avoid `ORBIS_PASSWORD` and `ORBIS_SECRET_KEY` in
+shell history, container environment blocks, compose files, or images. The sample
+Docker compose files use fixed test credentials only for local development; see
+[`bin/orbis-node/README.md`](bin/orbis-node/README.md#secure-secret-provisioning)
+for the node hardening checklist.
 
 ### gRPC Services
 
