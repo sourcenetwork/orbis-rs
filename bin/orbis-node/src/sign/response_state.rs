@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
+use zeroize::Zeroizing;
 
 /// FROST nonce state entry with timestamp for TTL-based expiration.
 ///
@@ -25,10 +26,37 @@ use tokio::sync::RwLock;
 /// and must match the context presented in Round 2, preventing a coordinator from
 /// generating a nonce under one derivation but spending it under a different one.
 struct NonceEntry {
-    bytes: Vec<u8>,
+    bytes: Zeroizing<Vec<u8>>,
     /// Derivation ID (Policy path) or "bulletin" (Bulletin path) from Round 1 auth.
     context_key: String,
+    /// Authenticated peer that requested the nonce in Round 1.
+    coordinator_peer_id: Vec<u8>,
     created_at: Instant,
+}
+
+pub(crate) struct ConsumedNonce {
+    bytes: Zeroizing<Vec<u8>>,
+    context_key: String,
+}
+
+impl ConsumedNonce {
+    /// Validate the Round 2 context after the nonce slot has already been released.
+    pub(crate) fn into_bytes_for_context(
+        self,
+        request_id: &str,
+        expected_context_key: &str,
+    ) -> Option<Zeroizing<Vec<u8>>> {
+        if self.context_key != expected_context_key {
+            tracing::warn!(
+                request_id = %request_id,
+                stored_key = %self.context_key,
+                expected_key = %expected_context_key,
+                "Nonce context key mismatch; consumed nonce will not be reused"
+            );
+            return None;
+        }
+        Some(self.bytes)
+    }
 }
 
 /// Sign Response State Manager
@@ -39,7 +67,7 @@ struct NonceEntry {
 ///
 /// Also holds FROST nonce signing state on the responder side between
 /// Round 1 (nonce generation) and Round 2 (signing). Nonce state entries
-/// are consumed on read to prevent nonce reuse.
+/// are consumed when Round 2 arrives to prevent nonce reuse and release capacity.
 ///
 /// A background expiration worker periodically sweeps both maps to remove
 /// entries older than their respective TTLs, preventing memory leaks from
@@ -80,23 +108,8 @@ impl SignResponseManager {
         let mut interval = tokio::time::interval(SIGN_EXPIRATION_CHECK_INTERVAL);
         loop {
             interval.tick().await;
-            let now = Instant::now();
             let mut nonces = nonce_states.write().await;
-            let before = nonces.len();
-            nonces.retain(|request_id, entry| {
-                let age = now.duration_since(entry.created_at);
-                if age > SIGN_NONCE_TTL {
-                    metrics::record_sign_state_abandoned();
-                    tracing::warn!(
-                        request_id = %request_id,
-                        age_secs = age.as_secs(),
-                        "SignResponseManager: Removing expired nonce state"
-                    );
-                    return false;
-                }
-                true
-            });
-            let removed = before - nonces.len();
+            let removed = Self::remove_expired_nonces(&mut nonces, Instant::now());
             if removed > 0 {
                 tracing::info!(
                     removed,
@@ -105,6 +118,24 @@ impl SignResponseManager {
                 );
             }
         }
+    }
+
+    fn remove_expired_nonces(nonces: &mut HashMap<String, NonceEntry>, now: Instant) -> usize {
+        let before = nonces.len();
+        nonces.retain(|request_id, entry| {
+            let age = now.duration_since(entry.created_at);
+            if age >= SIGN_NONCE_TTL {
+                metrics::record_sign_state_abandoned();
+                tracing::warn!(
+                    request_id = %request_id,
+                    age_secs = age.as_secs(),
+                    "SignResponseManager: Removing expired nonce state"
+                );
+                return false;
+            }
+            true
+        });
+        before - nonces.len()
     }
 
     /// Initialize sign response collection with the set of expected responders.
@@ -177,8 +208,8 @@ impl SignResponseManager {
     ///
     /// `context_key` must be derived from the `SignContext` that authorized this nonce
     /// in Round 1 (derivation_id for Policy, "bulletin" for Bulletin). It is verified
-    /// in `take_nonce` to prevent a coordinator from generating a nonce under one
-    /// derivation and spending it under a different one.
+    /// after consumption to prevent a coordinator from generating a nonce under
+    /// one derivation and spending it under a different one.
     ///
     /// Returns false if the limit is exceeded or the key already exists.
     pub async fn store_nonce(
@@ -186,8 +217,11 @@ impl SignResponseManager {
         request_id: String,
         bytes: Vec<u8>,
         context_key: String,
+        coordinator_peer_id: Vec<u8>,
     ) -> bool {
+        let bytes = Zeroizing::new(bytes);
         let mut states = self.nonce_states.write().await;
+        Self::remove_expired_nonces(&mut states, Instant::now());
         if states.len() >= MAX_NONCE_STATES {
             tracing::error!(
                 pending = states.len(),
@@ -208,33 +242,37 @@ impl SignResponseManager {
             NonceEntry {
                 bytes,
                 context_key,
+                coordinator_peer_id,
                 created_at: Instant::now(),
             },
         );
         true
     }
 
-    /// Take (consume) signing state bytes for a request, verifying the context key.
+    /// Consume signing state as soon as Round 2 arrives from the Round 1 coordinator.
     ///
-    /// Returns `None` if the entry is not found or if `expected_context_key` does not
-    /// match what was stored in Round 1. Removes the entry on success to prevent reuse.
-    pub async fn take_nonce(
+    /// The returned context key is validated by the caller after request authorization.
+    /// Removing the entry before that fallible work ensures every accepted Round 2
+    /// attempt releases its nonce slot, while the peer binding prevents another node
+    /// from canceling the coordinator's nonce.
+    pub(crate) async fn consume_nonce_for_sign_request(
         &self,
         request_id: &str,
-        expected_context_key: &str,
-    ) -> Option<Vec<u8>> {
+        coordinator_peer_id: &[u8],
+    ) -> Option<ConsumedNonce> {
         let mut states = self.nonce_states.write().await;
         let entry = states.get(request_id)?;
-        if entry.context_key != expected_context_key {
+        if entry.coordinator_peer_id != coordinator_peer_id {
             tracing::warn!(
                 request_id = %request_id,
-                stored_key = %entry.context_key,
-                expected_key = %expected_context_key,
-                "Nonce context key mismatch — rejecting Round 2 with swapped context"
+                "SignRequest sender does not match the nonce's Round 1 coordinator"
             );
             return None;
         }
-        states.remove(request_id).map(|e| e.bytes)
+        states.remove(request_id).map(|entry| ConsumedNonce {
+            bytes: entry.bytes,
+            context_key: entry.context_key,
+        })
     }
 }
 
@@ -276,6 +314,8 @@ mod tests {
     const PEER_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const PEER_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const UNKNOWN: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    const COORDINATOR: &[u8] = b"coordinator";
+    const OTHER_COORDINATOR: &[u8] = b"other-coordinator";
 
     #[tokio::test]
     async fn test_accepts_expected_peers() {
@@ -529,8 +569,13 @@ mod tests {
 
         // Store a nonce normally
         assert!(
-            mgr.store_nonce("exp-1".into(), vec![1, 2, 3], "test-key".into())
-                .await
+            mgr.store_nonce(
+                "exp-1".into(),
+                vec![1, 2, 3],
+                "test-key".into(),
+                COORDINATOR.to_vec(),
+            )
+            .await
         );
 
         // Backdate the entry to make it look expired to the worker
@@ -550,8 +595,55 @@ mod tests {
 
         // The expired nonce should have been cleaned up
         assert!(
-            mgr.take_nonce("exp-1", "test-key").await.is_none(),
+            mgr.consume_nonce_for_sign_request("exp-1", COORDINATOR)
+                .await
+                .is_none(),
             "expired nonce should be cleaned up by expiration worker"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nonce_store_reclaims_timed_out_capacity() {
+        let mgr = SignResponseManager::new();
+
+        for i in 0..MAX_NONCE_STATES {
+            assert!(
+                mgr.store_nonce(
+                    format!("capacity-{i}"),
+                    vec![i as u8],
+                    "test-key".into(),
+                    COORDINATOR.to_vec(),
+                )
+                .await
+            );
+        }
+        assert!(
+            !mgr.store_nonce(
+                "capacity-extra".into(),
+                vec![0],
+                "test-key".into(),
+                COORDINATOR.to_vec(),
+            )
+            .await
+        );
+
+        {
+            let mut nonces = mgr.nonce_states.write().await;
+            nonces
+                .get_mut("capacity-0")
+                .expect("nonce should exist")
+                .created_at = Instant::now() - SIGN_NONCE_TTL;
+        }
+
+        assert!(
+            mgr.store_nonce(
+                "capacity-extra".into(),
+                vec![0],
+                "test-key".into(),
+                COORDINATOR.to_vec(),
+            )
+            .await,
+            "a new request must reclaim timed-out nonce capacity synchronously"
         );
     }
 
@@ -656,15 +748,28 @@ mod tests {
     async fn test_nonce_consumed_prevents_double_take() {
         let mgr = SignResponseManager::new();
         assert!(
-            mgr.store_nonce("nonce-1".into(), vec![1, 2, 3], "deriv-x".into())
-                .await
+            mgr.store_nonce(
+                "nonce-1".into(),
+                vec![1, 2, 3],
+                "deriv-x".into(),
+                COORDINATOR.to_vec(),
+            )
+            .await
         );
 
-        let first = mgr.take_nonce("nonce-1", "deriv-x").await;
-        assert_eq!(first, Some(vec![1, 2, 3]));
+        let first = mgr
+            .consume_nonce_for_sign_request("nonce-1", COORDINATOR)
+            .await
+            .and_then(|nonce| nonce.into_bytes_for_context("nonce-1", "deriv-x"));
+        assert_eq!(
+            first.as_ref().map(|bytes| bytes.as_slice()),
+            Some(&[1, 2, 3][..])
+        );
 
         // Second take must return None — nonce was consumed
-        let second = mgr.take_nonce("nonce-1", "deriv-x").await;
+        let second = mgr
+            .consume_nonce_for_sign_request("nonce-1", COORDINATOR)
+            .await;
         assert!(
             second.is_none(),
             "nonce must be consumed and unavailable after first take"
@@ -677,16 +782,27 @@ mod tests {
         // Only one should succeed; the other gets None, preventing nonce reuse.
         let mgr = Arc::new(SignResponseManager::new());
         assert!(
-            mgr.store_nonce("nonce-race".into(), vec![9, 8, 7], "deriv-x".into())
-                .await
+            mgr.store_nonce(
+                "nonce-race".into(),
+                vec![9, 8, 7],
+                "deriv-x".into(),
+                COORDINATOR.to_vec(),
+            )
+            .await
         );
 
         let m1 = mgr.clone();
         let m2 = mgr.clone();
 
         let (r1, r2) = tokio::join!(
-            async move { m1.take_nonce("nonce-race", "deriv-x").await },
-            async move { m2.take_nonce("nonce-race", "deriv-x").await },
+            async move {
+                m1.consume_nonce_for_sign_request("nonce-race", COORDINATOR)
+                    .await
+            },
+            async move {
+                m2.consume_nonce_for_sign_request("nonce-race", COORDINATOR)
+                    .await
+            },
         );
 
         assert_ne!(
@@ -700,7 +816,9 @@ mod tests {
     async fn test_take_nonce_before_store_returns_none() {
         // Models FROST Round 2 arriving before Round 1 on the responder.
         let mgr = SignResponseManager::new();
-        let result = mgr.take_nonce("nonce-not-yet-stored", "deriv-x").await;
+        let result = mgr
+            .consume_nonce_for_sign_request("nonce-not-yet-stored", COORDINATOR)
+            .await;
         assert!(
             result.is_none(),
             "take before store should return None, not panic"
@@ -708,28 +826,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_take_nonce_context_key_mismatch_rejected() {
+    async fn test_context_mismatch_consumes_nonce() {
         // Models the context-swap attack: coordinator uses derivation_A in Round 1
-        // but derivation_B in Round 2. The nonce must be rejected.
+        // but derivation_B in Round 2. The nonce must be rejected and discarded.
         let mgr = SignResponseManager::new();
         assert!(
-            mgr.store_nonce("nonce-swap".into(), vec![1, 2, 3], "deriv-A".into())
-                .await
+            mgr.store_nonce(
+                "nonce-swap".into(),
+                vec![1, 2, 3],
+                "deriv-A".into(),
+                COORDINATOR.to_vec(),
+            )
+            .await
         );
 
-        // Round 2 presents a different context key — must be rejected
-        let result = mgr.take_nonce("nonce-swap", "deriv-B").await;
+        let consumed = mgr
+            .consume_nonce_for_sign_request("nonce-swap", COORDINATOR)
+            .await
+            .expect("Round 2 should consume the stored nonce");
+        let result = consumed.into_bytes_for_context("nonce-swap", "deriv-B");
         assert!(
             result.is_none(),
             "nonce with mismatched context key must be rejected"
         );
 
-        // The nonce was NOT consumed — original context key still works
-        let result = mgr.take_nonce("nonce-swap", "deriv-A").await;
-        assert_eq!(
-            result,
-            Some(vec![1, 2, 3]),
-            "nonce must still be available after rejected mismatch take"
+        assert!(
+            mgr.consume_nonce_for_sign_request("nonce-swap", COORDINATOR)
+                .await
+                .is_none(),
+            "failed Round 2 must still release the nonce slot"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_other_peer_cannot_consume_nonce() {
+        let mgr = SignResponseManager::new();
+        assert!(
+            mgr.store_nonce(
+                "nonce-owner".into(),
+                vec![1, 2, 3],
+                "deriv-A".into(),
+                COORDINATOR.to_vec(),
+            )
+            .await
+        );
+
+        assert!(
+            mgr.consume_nonce_for_sign_request("nonce-owner", OTHER_COORDINATOR)
+                .await
+                .is_none(),
+            "a different peer must not be able to cancel the nonce"
+        );
+        assert!(
+            mgr.consume_nonce_for_sign_request("nonce-owner", COORDINATOR)
+                .await
+                .is_some(),
+            "the Round 1 coordinator must still be able to consume the nonce"
         );
     }
 
@@ -739,13 +891,23 @@ mod tests {
 
         for i in 0..MAX_NONCE_STATES {
             let ok = mgr
-                .store_nonce(format!("nonce-{}", i), vec![i as u8], "test-key".into())
+                .store_nonce(
+                    format!("nonce-{}", i),
+                    vec![i as u8],
+                    "test-key".into(),
+                    COORDINATOR.to_vec(),
+                )
                 .await;
             assert!(ok, "store should succeed for nonce {}", i);
         }
 
         let rejected = mgr
-            .store_nonce("nonce-over-limit".into(), vec![0], "test-key".into())
+            .store_nonce(
+                "nonce-over-limit".into(),
+                vec![0],
+                "test-key".into(),
+                COORDINATOR.to_vec(),
+            )
             .await;
         assert!(!rejected, "store should fail when nonce limit is reached");
     }
@@ -759,14 +921,24 @@ mod tests {
         // Fill nonces to limit
         for i in 0..MAX_NONCE_STATES {
             assert!(
-                mgr.store_nonce(format!("n-{}", i), vec![], "test-key".into())
-                    .await
+                mgr.store_nonce(
+                    format!("n-{}", i),
+                    vec![],
+                    "test-key".into(),
+                    COORDINATOR.to_vec(),
+                )
+                .await
             );
         }
         // Nonce limit reached — further stores fail
         assert!(
-            !mgr.store_nonce("n-extra".into(), vec![], "test-key".into())
-                .await
+            !mgr.store_nonce(
+                "n-extra".into(),
+                vec![],
+                "test-key".into(),
+                COORDINATOR.to_vec(),
+            )
+            .await
         );
 
         // Response entries are a completely separate map — should still accept inits

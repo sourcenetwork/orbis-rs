@@ -143,9 +143,9 @@ pub const MAX_NONCE_STATES: usize = 1000;
 ///
 /// Nonce states should be consumed within seconds (between Round 1 and Round 2).
 /// If a nonce is not consumed within this duration, the signing process was likely
-/// abandoned (e.g., initiator crashed after Round 1). Set to 2 minutes to match
-/// DKG_PHASE_TIMEOUT.
-pub const SIGN_NONCE_TTL: Duration = Duration::from_secs(120);
+/// abandoned (e.g., initiator crashed after Round 1 or did not select this signer).
+/// This covers the 30-second Round 1 collection deadline plus 15 seconds of grace.
+pub const SIGN_NONCE_TTL: Duration = Duration::from_secs(45);
 
 /// Time-to-live for sign response entries before they are eligible for cleanup
 ///
