@@ -47,7 +47,15 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                 .await
             {
                 Ok(post) => {
-                    if let Ok(payload) = serde_json::from_slice::<RingPayload>(&post.payload) {
+                    if let Ok(payload) = serde_json::from_slice::<RingPayload>(&post.payload)
+                        .inspect_err(|error| {
+                            tracing::warn!(
+                                session_id = session_id,
+                                error = %error,
+                                "Reshare: failed to deserialize bulletin payload while waiting for confirmation"
+                            );
+                        })
+                    {
                         if payload.new_peer_node_keys.is_none() && payload.new_threshold.is_none() {
                             tracing::debug!(
                                 session_id = session_id,

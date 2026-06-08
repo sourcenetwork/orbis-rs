@@ -84,9 +84,9 @@ where
         loop {
             ticker.tick().await;
             tracing::debug!("PSS scheduler: tick");
-            if let Err(e) = pss_all_rings(&app_state).await {
-                tracing::error!(error = %e, "PSS scheduler: error");
-            }
+            let _ = pss_all_rings(&app_state).await.inspect_err(|error| {
+                tracing::error!(error = %error, "PSS scheduler: error");
+            });
         }
     });
 }
@@ -111,9 +111,13 @@ where
     }
 
     for entry in &ring_index {
-        if let Err(e) = pss_ring(app_state, entry).await {
-            tracing::error!(ring_pk_str = %entry.ring_pk_str, error = %e, "PSS: ceremony failed for ring");
-        }
+        let _ = pss_ring(app_state, entry).await.inspect_err(|error| {
+            tracing::error!(
+                ring_pk_str = %entry.ring_pk_str,
+                error = %error,
+                "PSS: ceremony failed for ring"
+            );
+        });
     }
     Ok(())
 }
@@ -384,12 +388,9 @@ where
 
     let total = peer_ids.len();
 
-    if let Err((bad_peer, err)) = validate_all_peer_ids(peer_ids) {
-        return Err(DkgError::InvalidInput(format!(
-            "PSS: invalid peer ID '{}': {}",
-            bad_peer, err
-        )));
-    }
+    validate_all_peer_ids(peer_ids).map_err(|(bad_peer, error)| {
+        DkgError::InvalidInput(format!("PSS: invalid peer ID '{}': {}", bad_peer, error))
+    })?;
 
     let bundle =
         RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str).map_err(|e| {
@@ -616,7 +617,7 @@ where
         .await?;
     }
 
-    let (our_node_id, dkg_role, reshare_params) = match build_reshare_params(
+    let (our_node_id, dkg_role, reshare_params) = build_reshare_params(
         ring_pk_str,
         old_peer_node_keys,
         &new_peer_node_keys,
@@ -624,10 +625,7 @@ where
         post_id,
         &app_state.node_key,
         &app_state.local_storage,
-    ) {
-        Ok(v) => v,
-        Err(e) => return Err(e),
-    };
+    )?;
 
     // sorted_new is already sorted inside reshare_params.new_peer_node_keys.
     let sorted_new_peer_node_keys = reshare_params.new_peer_node_keys.clone();
@@ -661,12 +659,12 @@ where
 
     let coordinator = DkgCoordinator::new(app_state.clone());
 
-    if let Err((bad_peer, err)) = validate_all_peer_ids(&union_peers) {
-        return Err(DkgError::InvalidInput(format!(
+    validate_all_peer_ids(&union_peers).map_err(|(bad_peer, error)| {
+        DkgError::InvalidInput(format!(
             "PSS reshare: invalid peer ID '{}': {}",
-            bad_peer, err
-        )));
-    }
+            bad_peer, error
+        ))
+    })?;
 
     match app_state
         .dkg_session_state
@@ -793,16 +791,16 @@ where
         if extract_node_part(peer_id_str) == our_node_part {
             continue;
         }
-        if let Err(e) = coordinator
+        let _ = coordinator
             .send_message_to_peer(peer_id_str, init_msg.clone(), Some(session_id))
             .await
-        {
-            tracing::warn!(
-                peer = %peer_id_str,
-                error = %e,
-                "PSS: failed to send reshare SessionInit; continuing until threshold selection or timeout"
-            );
-        }
+            .inspect_err(|error| {
+                tracing::warn!(
+                    peer = %peer_id_str,
+                    error = %error,
+                    "PSS: failed to send reshare SessionInit; continuing until threshold selection or timeout"
+                );
+            });
     }
 
     if let Err(e) = coordinator

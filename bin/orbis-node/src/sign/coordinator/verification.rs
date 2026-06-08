@@ -1,5 +1,4 @@
 use super::SignCoordinator;
-use crate::sign::error::Result;
 use crate::sign::messages::SignMessage;
 use crypto::r#trait::{CryptoDeserialize, DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignaturePoint};
@@ -28,14 +27,14 @@ where
         metadata: Option<&[u8]>,
         expected_node_id: u32,
         seen_node_ids: &mut HashSet<u32>,
-    ) -> Result<Option<PubShare<SigShareInner>>> {
+    ) -> Option<PubShare<SigShareInner>> {
         let SignMessage::SignResponse {
             from_node_id,
             sig_share: sig_share_bytes,
             ..
         } = response
         else {
-            return Ok(None);
+            return None;
         };
 
         if from_node_id != expected_node_id {
@@ -44,70 +43,67 @@ where
                 expected_node_id = expected_node_id,
                 "Sign Coordinator: signature response node_id does not match authenticated peer"
             );
-            return Ok(None);
+            return None;
         }
 
         if seen_node_ids.contains(&from_node_id) {
-            return Ok(None);
+            return None;
         }
 
-        let sig_share_v = match SigShareInner::from_bytes(&sig_share_bytes[..]) {
-            Ok(sig_share_v) => sig_share_v,
-            Err(e) => {
+        let sig_share_v = SigShareInner::from_bytes(&sig_share_bytes[..])
+            .inspect_err(|error| {
                 tracing::error!(
                     from_node_id = from_node_id,
-                    error = %e,
+                    error = %error,
                     "Sign Coordinator: Failed to deserialize sig_share"
                 );
                 seen_node_ids.insert(from_node_id);
-                return Ok(None);
-            }
-        };
+            })
+            .ok()?;
 
         let sig_share = PubShare {
             i: from_node_id,
             v: sig_share_v,
         };
 
-        match signer.verify_share(
-            message,
-            pub_poly,
-            &sig_share,
-            signing_commitments,
-            derivation,
-            metadata,
-        ) {
-            Ok(_) => {
-                tracing::debug!(
-                    from_node_id = from_node_id,
-                    "Sign Coordinator: Verified share"
-                );
-                seen_node_ids.insert(sig_share.i);
-                Ok(Some(sig_share))
-            }
-            Err(e) => {
+        signer
+            .verify_share(
+                message,
+                pub_poly,
+                &sig_share,
+                signing_commitments,
+                derivation,
+                metadata,
+            )
+            .inspect_err(|error| {
                 tracing::error!(
                     from_node_id = from_node_id,
-                    error = %e,
+                    error = %error,
                     "Sign Coordinator: Failed to verify share"
                 );
-                Ok(None)
-            }
-        }
+            })
+            .ok()?;
+
+        tracing::debug!(
+            from_node_id = from_node_id,
+            "Sign Coordinator: Verified share"
+        );
+        seen_node_ids.insert(sig_share.i);
+        Some(sig_share)
     }
 
     pub(crate) fn parse_peer_nonce_response(
         response: SignMessage,
         expected_node_id: u32,
         seen_node_ids: &mut HashSet<u32>,
-    ) -> Result<Option<(u32, S::NonceCommitment)>> {
+    ) -> Option<(u32, S::NonceCommitment)> {
         let SignMessage::NonceResponse {
             from_node_id,
             nonce_commitment,
             ..
         } = response
         else {
-            return Ok(None);
+            return None;
         };
 
         if from_node_id != expected_node_id {
@@ -116,27 +112,25 @@ where
                 expected_node_id = expected_node_id,
                 "Sign Coordinator: nonce response node_id does not match authenticated peer"
             );
-            return Ok(None);
+            return None;
         }
 
         if seen_node_ids.contains(&from_node_id) {
-            return Ok(None);
+            return None;
         }
 
-        let commitment = match <S::NonceCommitment>::from_bytes(&nonce_commitment) {
-            Ok(commitment) => commitment,
-            Err(e) => {
+        let commitment = <S::NonceCommitment>::from_bytes(&nonce_commitment)
+            .inspect_err(|error| {
                 tracing::error!(
                     from_node_id = from_node_id,
-                    error = %e,
+                    error = %error,
                     "Sign Coordinator: Failed to deserialize nonce commitment"
                 );
                 seen_node_ids.insert(from_node_id);
-                return Ok(None);
-            }
-        };
+            })
+            .ok()?;
 
         seen_node_ids.insert(from_node_id);
-        Ok(Some((from_node_id, commitment)))
+        Some((from_node_id, commitment))
     }
 }

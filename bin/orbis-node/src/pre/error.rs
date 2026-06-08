@@ -1,3 +1,4 @@
+use crate::error::{GrpcErrorClassification, GrpcServiceError};
 use crate::metrics;
 use thiserror::Error;
 
@@ -73,6 +74,14 @@ pub enum PreError {
     #[error("PRE error: {0}")]
     Generic(String),
 
+    /// System time error
+    #[error("{0}")]
+    SystemTime(String),
+
+    /// Failed to load local ring state for the request
+    #[error("{0}")]
+    RingState(String),
+
     /// AuthZ error
     #[error("Authz error: {0}")]
     AuthZ(String),
@@ -81,43 +90,218 @@ pub enum PreError {
 /// Result type for PRE operations
 pub type Result<T> = std::result::Result<T, PreError>;
 
+impl GrpcServiceError for PreError {
+    const SERVICE: &'static str = "pre";
+
+    fn classification(&self) -> GrpcErrorClassification {
+        use tonic::Code;
+        use tracing::Level;
+
+        match self {
+            PreError::Unauthorized(_) | PreError::AuthZ(_) => {
+                GrpcErrorClassification::new(Code::Unauthenticated, Level::TRACE, false)
+            }
+            PreError::InvalidInput(_) => {
+                GrpcErrorClassification::new(Code::InvalidArgument, Level::TRACE, false)
+            }
+            PreError::SessionNotFound(_) => {
+                GrpcErrorClassification::new(Code::NotFound, Level::TRACE, false)
+            }
+            PreError::ReshareInProgress => {
+                GrpcErrorClassification::new(Code::Unavailable, Level::TRACE, true)
+            }
+            PreError::InsufficientShares { .. } => {
+                GrpcErrorClassification::new(Code::FailedPrecondition, Level::WARN, true)
+            }
+            PreError::Timeout(_) => {
+                GrpcErrorClassification::new(Code::DeadlineExceeded, Level::WARN, true)
+            }
+            PreError::NetworkConnection(_) => {
+                GrpcErrorClassification::new(Code::Unavailable, Level::WARN, true)
+            }
+            PreError::VerificationFailed(_) => {
+                GrpcErrorClassification::new(Code::InvalidArgument, Level::WARN, true)
+            }
+            PreError::NetworkCommunication(_) | PreError::ProtocolError(_) => {
+                GrpcErrorClassification::new(Code::Internal, Level::WARN, true)
+            }
+            PreError::SystemTime(_) => {
+                GrpcErrorClassification::new(Code::Internal, Level::ERROR, false)
+            }
+            PreError::RingState(_) => {
+                GrpcErrorClassification::new(Code::Internal, Level::ERROR, false)
+            }
+            PreError::Serialization(_)
+            | PreError::Deserialization(_)
+            | PreError::Crypto(_)
+            | PreError::RecoveryFailed(_)
+            | PreError::Storage(_)
+            | PreError::InvalidState(_)
+            | PreError::Generic(_) => {
+                GrpcErrorClassification::new(Code::Internal, Level::ERROR, true)
+            }
+        }
+    }
+
+    fn record_failure_metric(&self) {
+        metrics::record_pre_request_failed();
+    }
+}
+
 /// Convert PreError to tonic::Status for gRPC responses
 impl From<PreError> for tonic::Status {
     fn from(error: PreError) -> Self {
-        use tonic::Code;
-        match error {
-            PreError::Unauthorized(_) => {
-                tonic::Status::new(Code::Unauthenticated, error.to_string())
-            }
-            PreError::InvalidInput(_) => {
-                tonic::Status::new(Code::InvalidArgument, error.to_string())
-            }
-            PreError::SessionNotFound(_) => tonic::Status::new(Code::NotFound, error.to_string()),
-            PreError::InsufficientShares { .. } => {
-                metrics::record_pre_request_failed();
-                tonic::Status::new(Code::FailedPrecondition, error.to_string())
-            }
-            PreError::ReshareInProgress => {
-                metrics::record_pre_request_failed();
-                tonic::Status::new(Code::Unavailable, error.to_string())
-            }
-            PreError::Timeout(_) => {
-                metrics::record_pre_request_failed();
-                tonic::Status::new(Code::DeadlineExceeded, error.to_string())
-            }
-            PreError::NetworkConnection(_) => {
-                metrics::record_pre_request_failed();
-                tonic::Status::new(Code::Unavailable, error.to_string())
-            }
-            PreError::VerificationFailed(_) => {
-                metrics::record_pre_request_failed();
-                tonic::Status::new(Code::InvalidArgument, error.to_string())
-            }
-            PreError::AuthZ(_) => tonic::Status::new(Code::Unauthenticated, error.to_string()),
-            _ => {
-                metrics::record_pre_request_failed();
-                tonic::Status::new(Code::Internal, error.to_string())
-            }
+        error.into_status()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::GrpcServiceError;
+    use tonic::Code;
+    use tracing::Level;
+
+    #[test]
+    fn classifies_every_pre_error_variant() {
+        let cases = vec![
+            (
+                PreError::Unauthorized("test".into()),
+                Code::Unauthenticated,
+                Level::TRACE,
+                false,
+            ),
+            (
+                PreError::Serialization("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                PreError::Deserialization("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                PreError::NetworkConnection("test".into()),
+                Code::Unavailable,
+                Level::WARN,
+                true,
+            ),
+            (
+                PreError::NetworkCommunication("test".into()),
+                Code::Internal,
+                Level::WARN,
+                true,
+            ),
+            (
+                PreError::Crypto("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                PreError::VerificationFailed("test".into()),
+                Code::InvalidArgument,
+                Level::WARN,
+                true,
+            ),
+            (
+                PreError::RecoveryFailed("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                PreError::Storage("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                PreError::SessionNotFound("test".into()),
+                Code::NotFound,
+                Level::TRACE,
+                false,
+            ),
+            (
+                PreError::InsufficientShares { got: 1, need: 2 },
+                Code::FailedPrecondition,
+                Level::WARN,
+                true,
+            ),
+            (
+                PreError::Timeout("test".into()),
+                Code::DeadlineExceeded,
+                Level::WARN,
+                true,
+            ),
+            (
+                PreError::InvalidInput("test".into()),
+                Code::InvalidArgument,
+                Level::TRACE,
+                false,
+            ),
+            (
+                PreError::InvalidState("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                PreError::ProtocolError("test".into()),
+                Code::Internal,
+                Level::WARN,
+                true,
+            ),
+            (
+                PreError::ReshareInProgress,
+                Code::Unavailable,
+                Level::TRACE,
+                true,
+            ),
+            (
+                PreError::Generic("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                PreError::SystemTime("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                false,
+            ),
+            (
+                PreError::RingState("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                false,
+            ),
+            (
+                PreError::AuthZ("test".into()),
+                Code::Unauthenticated,
+                Level::TRACE,
+                false,
+            ),
+        ];
+
+        for (error, code, level, record_failure) in cases {
+            let classification = error.classification();
+            assert_eq!(classification.code, code, "{error}");
+            assert_eq!(classification.level, level, "{error}");
+            assert_eq!(classification.record_failure, record_failure, "{error}");
         }
+    }
+
+    #[test]
+    fn conversion_preserves_pre_error_message() {
+        let error = PreError::RingState("Failed to load ring polynomial state: missing".into());
+        let expected = error.to_string();
+        let status = tonic::Status::from(error);
+
+        assert_eq!(status.code(), Code::Internal);
+        assert_eq!(status.message(), expected);
     }
 }

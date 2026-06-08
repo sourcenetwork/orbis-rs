@@ -84,13 +84,12 @@ impl BulletinEventSubscription {
         let result = tokio::time::timeout(timeout, self.wait_for_artifact_inner(artifact)).await;
         let _ = self.stream.close(None).await;
 
-        match result {
-            Ok(inner) => inner,
-            Err(_) => Err(BlockchainError::Timeout(format!(
+        result.map_err(|_| {
+            BlockchainError::Timeout(format!(
                 "Timed out waiting for bulletin post event with artifact '{}'",
                 artifact,
-            ))),
-        }
+            ))
+        })?
     }
 
     async fn wait_for_artifact_inner(&mut self, artifact: &str) -> Result<BulletinPostEvent> {

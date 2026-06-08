@@ -1,3 +1,4 @@
+use crate::error::{GrpcErrorClassification, GrpcServiceError};
 use crate::metrics;
 use thiserror::Error;
 
@@ -76,6 +77,10 @@ pub enum DkgError {
     #[error("DKG error: {0}")]
     Generic(String),
 
+    /// System time error
+    #[error("{0}")]
+    SystemTime(String),
+
     /// Hash conversion error
     #[error("Hash conversion error: {0}")]
     HashConversion(#[from] std::array::TryFromSliceError),
@@ -94,44 +99,227 @@ pub enum DkgError {
 /// Result type for DKG operations
 pub type Result<T> = std::result::Result<T, DkgError>;
 
+impl GrpcServiceError for DkgError {
+    const SERVICE: &'static str = "dkg";
+
+    fn classification(&self) -> GrpcErrorClassification {
+        use tonic::Code;
+        use tracing::Level;
+
+        match self {
+            DkgError::Unauthorized(_) => {
+                GrpcErrorClassification::new(Code::Unauthenticated, Level::TRACE, false)
+            }
+            DkgError::InvalidInput(_) => {
+                GrpcErrorClassification::new(Code::InvalidArgument, Level::TRACE, false)
+            }
+            DkgError::SessionNotFound(_) => {
+                GrpcErrorClassification::new(Code::NotFound, Level::TRACE, false)
+            }
+            DkgError::SessionAlreadyExists => {
+                GrpcErrorClassification::new(Code::AlreadyExists, Level::TRACE, false)
+            }
+            DkgError::MaxSessionsReached | DkgError::MaxLocalRingsReached { .. } => {
+                GrpcErrorClassification::new(Code::ResourceExhausted, Level::WARN, false)
+            }
+            DkgError::ProtocolError(_) => {
+                GrpcErrorClassification::new(Code::FailedPrecondition, Level::WARN, true)
+            }
+            DkgError::NetworkConnection(_) => {
+                GrpcErrorClassification::new(Code::Unavailable, Level::WARN, true)
+            }
+            DkgError::CommitmentVerificationFailed(_) | DkgError::ShareVerificationFailed(_) => {
+                GrpcErrorClassification::new(Code::InvalidArgument, Level::WARN, true)
+            }
+            DkgError::NetworkCommunication(_) | DkgError::InsufficientPeers { .. } => {
+                GrpcErrorClassification::new(Code::Internal, Level::WARN, true)
+            }
+            DkgError::SystemTime(_) => {
+                GrpcErrorClassification::new(Code::Internal, Level::ERROR, false)
+            }
+            DkgError::Serialization(_)
+            | DkgError::Deserialization(_)
+            | DkgError::Crypto(_)
+            | DkgError::Storage(_)
+            | DkgError::Bulletin(_)
+            | DkgError::InvalidState(_)
+            | DkgError::Generic(_)
+            | DkgError::HashConversion(_) => {
+                GrpcErrorClassification::new(Code::Internal, Level::ERROR, true)
+            }
+        }
+    }
+
+    fn record_failure_metric(&self) {
+        metrics::record_dkg_session_failed();
+    }
+}
+
 /// Convert DkgError to tonic::Status for gRPC responses
 impl From<DkgError> for tonic::Status {
     fn from(error: DkgError) -> Self {
-        use tonic::Code;
-        match error {
-            DkgError::Unauthorized(_) => {
-                tonic::Status::new(Code::Unauthenticated, error.to_string())
-            }
-            DkgError::InvalidInput(_) => {
-                tonic::Status::new(Code::InvalidArgument, error.to_string())
-            }
-            DkgError::SessionNotFound(_) => tonic::Status::new(Code::NotFound, error.to_string()),
-            DkgError::SessionAlreadyExists => {
-                tonic::Status::new(Code::AlreadyExists, error.to_string())
-            }
-            DkgError::MaxSessionsReached | DkgError::MaxLocalRingsReached { .. } => {
-                tonic::Status::new(Code::ResourceExhausted, error.to_string())
-            }
-            DkgError::ProtocolError(_) => {
-                metrics::record_dkg_session_failed();
-                tonic::Status::new(Code::FailedPrecondition, error.to_string())
-            }
-            DkgError::NetworkConnection(_) => {
-                metrics::record_dkg_session_failed();
-                tonic::Status::new(Code::Unavailable, error.to_string())
-            }
-            DkgError::CommitmentVerificationFailed(_) => {
-                metrics::record_dkg_session_failed();
-                tonic::Status::new(Code::InvalidArgument, error.to_string())
-            }
-            DkgError::ShareVerificationFailed(_) => {
-                metrics::record_dkg_session_failed();
-                tonic::Status::new(Code::InvalidArgument, error.to_string())
-            }
-            _ => {
-                metrics::record_dkg_session_failed();
-                tonic::Status::new(Code::Internal, error.to_string())
-            }
+        error.into_status()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::GrpcServiceError;
+    use tonic::Code;
+    use tracing::Level;
+
+    #[test]
+    fn classifies_every_dkg_error_variant() {
+        let hash_error = <[u8; 2]>::try_from(&[1_u8][..]).unwrap_err();
+        let cases = vec![
+            (
+                DkgError::Unauthorized("test".into()),
+                Code::Unauthenticated,
+                Level::TRACE,
+                false,
+            ),
+            (
+                DkgError::Serialization("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                DkgError::Deserialization("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                DkgError::NetworkConnection("test".into()),
+                Code::Unavailable,
+                Level::WARN,
+                true,
+            ),
+            (
+                DkgError::NetworkCommunication("test".into()),
+                Code::Internal,
+                Level::WARN,
+                true,
+            ),
+            (
+                DkgError::Crypto("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                DkgError::Storage("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                DkgError::Bulletin("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                DkgError::SessionNotFound("test".into()),
+                Code::NotFound,
+                Level::TRACE,
+                false,
+            ),
+            (
+                DkgError::ProtocolError("test".into()),
+                Code::FailedPrecondition,
+                Level::WARN,
+                true,
+            ),
+            (
+                DkgError::SessionAlreadyExists,
+                Code::AlreadyExists,
+                Level::TRACE,
+                false,
+            ),
+            (
+                DkgError::MaxSessionsReached,
+                Code::ResourceExhausted,
+                Level::WARN,
+                false,
+            ),
+            (
+                DkgError::MaxLocalRingsReached { current: 4, max: 4 },
+                Code::ResourceExhausted,
+                Level::WARN,
+                false,
+            ),
+            (
+                DkgError::InvalidInput("test".into()),
+                Code::InvalidArgument,
+                Level::TRACE,
+                false,
+            ),
+            (
+                DkgError::InvalidState("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                DkgError::CommitmentVerificationFailed("test".into()),
+                Code::InvalidArgument,
+                Level::WARN,
+                true,
+            ),
+            (
+                DkgError::ShareVerificationFailed("test".into()),
+                Code::InvalidArgument,
+                Level::WARN,
+                true,
+            ),
+            (
+                DkgError::Generic("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                DkgError::SystemTime("test".into()),
+                Code::Internal,
+                Level::ERROR,
+                false,
+            ),
+            (
+                DkgError::HashConversion(hash_error),
+                Code::Internal,
+                Level::ERROR,
+                true,
+            ),
+            (
+                DkgError::InsufficientPeers {
+                    successful: 1,
+                    total: 3,
+                    threshold: 2,
+                },
+                Code::Internal,
+                Level::WARN,
+                true,
+            ),
+        ];
+
+        for (error, code, level, record_failure) in cases {
+            let classification = error.classification();
+            assert_eq!(classification.code, code, "{error}");
+            assert_eq!(classification.level, level, "{error}");
+            assert_eq!(classification.record_failure, record_failure, "{error}");
         }
+    }
+
+    #[test]
+    fn conversion_preserves_dkg_error_message() {
+        let error = DkgError::SystemTime("Failed to get timestamp: clock error".into());
+        let expected = error.to_string();
+        let status = tonic::Status::from(error);
+
+        assert_eq!(status.code(), Code::Internal);
+        assert_eq!(status.message(), expected);
     }
 }

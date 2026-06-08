@@ -158,20 +158,9 @@ where
 
                 let replacement = Arc::from(coord.open_stream_to_peer(peer_id_str).await?);
                 ensure_session_generation(coord, sid, session_generation).await?;
-                match send_on_stream(&replacement, peer_id_str, &message_data).await {
-                    Ok(()) => {
-                        ensure_session_generation(coord, sid, session_generation).await?;
-                        session_state
-                            .store_peer_stream(&sid, peer_id_str.to_string(), replacement)
-                            .await;
-                        tracing::debug!(
-                            session_id = sid,
-                            peer_id = %peer_id_str,
-                            message_type = message_type,
-                            "DKG send recovered after replacing cached stream"
-                        );
-                    }
-                    Err(retry_error) => {
+                send_on_stream(&replacement, peer_id_str, &message_data)
+                    .await
+                    .inspect_err(|retry_error| {
                         tracing::error!(
                             session_id = sid,
                             peer_id = %peer_id_str,
@@ -179,9 +168,17 @@ where
                             error = %retry_error,
                             "DKG send retry on a fresh stream failed"
                         );
-                        return Err(retry_error);
-                    }
-                }
+                    })?;
+                ensure_session_generation(coord, sid, session_generation).await?;
+                session_state
+                    .store_peer_stream(&sid, peer_id_str.to_string(), replacement)
+                    .await;
+                tracing::debug!(
+                    session_id = sid,
+                    peer_id = %peer_id_str,
+                    message_type = message_type,
+                    "DKG send recovered after replacing cached stream"
+                );
             }
         }
     } else {

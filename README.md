@@ -2,6 +2,19 @@
 
 A Rust implementation of threshold cryptography with Distributed Key Generation (DKG), Proxy Re-Encryption (PRE), and Threshold signing protocols.
 
+## Rust toolchain
+
+This workspace tracks the latest stable Rust release rather than declaring a
+minimum supported Rust version. Install updates before working on the project:
+
+```bash
+rustup update stable
+```
+
+The repository's `rust-toolchain.toml` selects the stable channel and installs
+the `rustfmt` and `clippy` components. CI and Docker also build against the
+latest stable toolchain.
+
 ## Overview
 
 Orbis enables secure, distributed encryption where:

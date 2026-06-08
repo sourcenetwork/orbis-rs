@@ -229,26 +229,19 @@ pub fn get_network_key_secret(
     let file_path =
         custom_file_path.unwrap_or_else(|| get_file_path(SECRET_KEY_FILE_NAME.to_string()));
     if file_path.exists() {
-        match fs::read_to_string(&file_path) {
-            Ok(content) => {
-                let secret = content.trim().to_string();
-                if secret.is_empty() {
-                    // File exists but is empty, continue to next source
-                    tracing::warn!(
-                        "secret file exists but is empty, checking environment variable"
-                    );
-                } else {
-                    tracing::info!(path = %file_path.display(), "secret network key loaded from file");
-                    return Ok(secret);
-                }
-            }
-            Err(e) => {
-                // Log warning but continue to next source
-                tracing::warn!(
-                    path = %file_path.display(),
-                    error = %e,
-                    "Could not read password file"
-                );
+        if let Ok(content) = fs::read_to_string(&file_path).inspect_err(|error| {
+            tracing::warn!(
+                path = %file_path.display(),
+                error = %error,
+                "Could not read password file"
+            );
+        }) {
+            let secret = content.trim().to_string();
+            if secret.is_empty() {
+                tracing::warn!("secret file exists but is empty, checking environment variable");
+            } else {
+                tracing::info!(path = %file_path.display(), "secret network key loaded from file");
+                return Ok(secret);
             }
         }
     }
@@ -271,21 +264,19 @@ pub fn get_network_key_secret(
     }
 
     // Get secret from local storage
-    match local_storage.get_encrypted(LocalStorageKeys::NodeSecretKey) {
-        Ok(secret_node_key_option) => {
-            if let Some(secret_node_key) = secret_node_key_option {
-                tracing::info!("secret network key loaded from local storage");
-                return String::from_utf8(secret_node_key.to_vec())
-                    .map_err(PasswordError::Utf8Error);
-            }
-        }
-        Err(e) => {
-            // Log warning but continue to next source
+    if let Some(secret_node_key) = local_storage
+        .get_encrypted(LocalStorageKeys::NodeSecretKey)
+        .inspect_err(|error| {
             tracing::warn!(
-                error = %e,
+                error = %error,
                 "Could not get secret from local storage creating new one"
             );
-        }
+        })
+        .ok()
+        .flatten()
+    {
+        tracing::info!("secret network key loaded from local storage");
+        return String::from_utf8(secret_node_key.to_vec()).map_err(PasswordError::Utf8Error);
     }
     // None exist - generate new secret key
     let mut key_bytes = [0u8; 32];
@@ -335,26 +326,19 @@ pub fn get_password(custom_file_path: Option<PathBuf>) -> Result<String, Passwor
     let file_path =
         custom_file_path.unwrap_or_else(|| get_file_path(PASSWORD_FILE_NAME.to_string()));
     if file_path.exists() {
-        match fs::read_to_string(&file_path) {
-            Ok(content) => {
-                let password = content.trim().to_string();
-                if password.is_empty() {
-                    // File exists but is empty, continue to next source
-                    tracing::warn!(
-                        "Password file exists but is empty, checking environment variable"
-                    );
-                } else {
-                    tracing::info!(path = %file_path.display(), "Password loaded from file");
-                    return Ok(password);
-                }
-            }
-            Err(e) => {
-                // Log warning but continue to next source
-                tracing::warn!(
-                    path = %file_path.display(),
-                    error = %e,
-                    "Could not read password file"
-                );
+        if let Ok(content) = fs::read_to_string(&file_path).inspect_err(|error| {
+            tracing::warn!(
+                path = %file_path.display(),
+                error = %error,
+                "Could not read password file"
+            );
+        }) {
+            let password = content.trim().to_string();
+            if password.is_empty() {
+                tracing::warn!("Password file exists but is empty, checking environment variable");
+            } else {
+                tracing::info!(path = %file_path.display(), "Password loaded from file");
+                return Ok(password);
             }
         }
     }
@@ -429,23 +413,27 @@ impl From<LogLevel> for tracing::Level {
     }
 }
 
-pub fn db_path(name: &str) -> String {
-    // Try to get project root (works in dev environment), fall back to /data for Docker
-    let base_path = match project_root::get_project_root() {
-        Ok(root) => root,
-        Err(_) => {
-            // In Docker or other environments without Cargo.toml, use /data or current dir
-            let data_dir = std::path::PathBuf::from("/data");
-            if data_dir.exists() {
-                data_dir
-            } else {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            }
+fn runtime_base_path() -> PathBuf {
+    project_root::get_project_root().unwrap_or_else(|_| {
+        let data_dir = PathBuf::from("/data");
+        if data_dir.exists() {
+            data_dir
+        } else {
+            env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         }
-    };
-    let db_dir = base_path.join("dbs");
+    })
+}
+
+pub fn db_path(name: &str) -> String {
+    let db_dir = runtime_base_path().join("dbs");
     // Create the dbs directory if it doesn't exist
-    std::fs::create_dir_all(&db_dir).ok();
+    let _ = std::fs::create_dir_all(&db_dir).inspect_err(|error| {
+        tracing::warn!(
+            path = %db_dir.display(),
+            error = %error,
+            "Could not create database directory"
+        );
+    });
     format!("{}/{}.redb", db_dir.display(), name)
 }
 
@@ -453,20 +441,7 @@ pub fn create_and_store_node_key(
     local_storage: LocalStorageImpl,
     config: ChainConfig,
 ) -> Result<TxSigner, String> {
-    // Write public key to file - try project root first, fall back to /data or current dir
-    let base_path = match project_root::get_project_root() {
-        Ok(root) => root,
-        Err(_) => {
-            // In Docker or other environments without Cargo.toml, use /data or current dir
-            let data_dir = std::path::PathBuf::from("/data");
-            if data_dir.exists() {
-                data_dir
-            } else {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            }
-        }
-    };
-    let public_key_path = base_path.join("public_key.txt");
+    let public_key_path = runtime_base_path().join("public_key.txt");
 
     // Check if a signing key exists in DB
     let hex_key = match local_storage.get_encrypted(LocalStorageKeys::NodeSigningKey) {

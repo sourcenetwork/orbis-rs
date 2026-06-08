@@ -138,17 +138,15 @@ where
         Ok(sign_response.signature)
     });
 
-    let signature = match signature_result {
-        Ok(signature) => Some(signature),
-        Err(e) => {
+    let signature = signature_result
+        .inspect_err(|error| {
             tracing::warn!(
                 session_id = session_id,
-                error = %e,
+                error = %error,
                 "Refresh health check: diagnostic signature collection failed; broadcasting rollback"
             );
-            None
-        }
-    };
+        })
+        .ok();
 
     if let Err(e) = broadcast_result(
         coord,
@@ -335,17 +333,15 @@ where
     };
 
     let should_promote = match signature {
-        Some(signature) => match verify_result_signature::<D>(&candidate, &statement, &signature) {
-            Ok(()) => true,
-            Err(e) => {
+        Some(signature) => verify_result_signature::<D>(&candidate, &statement, &signature)
+            .inspect_err(|error| {
                 tracing::warn!(
                     session_id = session_id,
-                    error = %e,
+                    error = %error,
                     "Refresh health check: result signature failed verification; rolling back"
                 );
-                false
-            }
-        },
+            })
+            .is_ok(),
         None => {
             tracing::warn!(
                 session_id = session_id,
@@ -512,22 +508,22 @@ where
     loop {
         attempt += 1;
         let request_id = format!("refresh-health-check-{}-{}", session_id, attempt);
-        let err = match sign_attempt(request_id).await {
-            Ok(bytes) => return Ok(bytes),
-            Err(e) => e,
-        };
-        if attempt >= REFRESH_HEALTH_CHECK_MAX_ATTEMPTS
-            || !is_retryable_refresh_health_check_error(&err)
-        {
-            return Err(err);
+        let result = sign_attempt(request_id).await;
+        if let Err(error) = &result {
+            if attempt < REFRESH_HEALTH_CHECK_MAX_ATTEMPTS
+                && is_retryable_refresh_health_check_error(error)
+            {
+                tracing::warn!(
+                    session_id = session_id,
+                    attempt = attempt,
+                    error = %error,
+                    "Refresh health check: diagnostic signature not ready yet, retrying"
+                );
+                tokio::time::sleep(retry_delay).await;
+                continue;
+            }
         }
-        tracing::warn!(
-            session_id = session_id,
-            attempt = attempt,
-            error = %err,
-            "Refresh health check: diagnostic signature not ready yet, retrying"
-        );
-        tokio::time::sleep(retry_delay).await;
+        return result;
     }
 }
 

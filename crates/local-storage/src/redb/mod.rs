@@ -6,7 +6,7 @@ use crate::{
 use aes_gcm::{Aes256Gcm, Key, KeyInit};
 use argon2::password_hash::SaltString;
 use rand_core::{OsRng, RngCore};
-use redb::{Database, ReadableDatabase, TableDefinition};
+use redb::{Database, ReadableDatabase, TableDefinition, TableError};
 use std::path::Path;
 use std::sync::Arc;
 use zeroize::Zeroizing;
@@ -120,10 +120,9 @@ impl LocalStorage for RedbStorage {
     }
 
     fn get_encrypted(&self, key: LocalStorageKeys) -> Result<Option<Zeroizing<Vec<u8>>>> {
-        match self.get(key)? {
-            None => Ok(None),
-            Some(stored) => decrypt_value(&self.cipher, &stored).map(|v| Some(Zeroizing::new(v))),
-        }
+        self.get(key)?
+            .map(|stored| decrypt_value(&self.cipher, &stored).map(Zeroizing::new))
+            .transpose()
     }
 
     fn set_encrypted(&self, key: LocalStorageKeys, value: Zeroizing<Vec<u8>>) -> Result<()> {
@@ -142,15 +141,20 @@ fn raw_get(db: &Database, key: &[u8]) -> Result<Option<Vec<u8>>> {
     let read_txn = db.begin_read().map_err(|e| {
         LocalStorageError::UniqueDBError(format!("Failed to begin read transaction: {}", e))
     })?;
-    match read_txn.open_table(TABLE) {
-        Ok(table) => {
-            let value = table.get(key).map_err(|e| {
-                LocalStorageError::UniqueDBError(format!("Failed to get value: {}", e))
-            })?;
-            Ok(value.map(|v| v.value().to_vec()))
+    let table = match read_txn.open_table(TABLE) {
+        Ok(table) => table,
+        Err(TableError::TableDoesNotExist(_)) => return Ok(None),
+        Err(error) => {
+            return Err(LocalStorageError::UniqueDBError(format!(
+                "Failed to open table: {}",
+                error
+            )));
         }
-        Err(_) => Ok(None), // Table doesn't exist yet
-    }
+    };
+    let value = table
+        .get(key)
+        .map_err(|e| LocalStorageError::UniqueDBError(format!("Failed to get value: {}", e)))?;
+    Ok(value.map(|v| v.value().to_vec()))
 }
 
 /// Raw set operation on database

@@ -501,10 +501,11 @@ impl SourceHubClient {
         let request_bytes = request.encode_to_vec();
         let path = "/sourcehub.bulletin.Query/Post";
 
-        let response_bytes = match self.abci_query(path, request_bytes, None, false).await {
-            Ok(bytes) => bytes,
-            Err(BlockchainError::NotFound(_)) => return Ok(None),
-            Err(e) => return Err(e),
+        let Some(response_bytes) = self
+            .abci_query_optional(path, request_bytes, None, false)
+            .await?
+        else {
+            return Ok(None);
         };
 
         let response = QueryPostResponse::decode(response_bytes.as_slice()).map_err(|e| {

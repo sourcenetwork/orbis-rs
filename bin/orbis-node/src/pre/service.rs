@@ -75,7 +75,8 @@ where
         let current_time = current_unix_time().map_err(|e| {
             let duration = start.elapsed().as_secs_f64();
             metrics::record_grpc_request("pre", "start_pre", "error", duration);
-            Status::internal(e)
+            tracing::error!("Failed to get current unix time: {}", e);
+            PreError::SystemTime("Failed to get current timestamp".to_string())
         })?;
 
         // 1. Authenticate: Extract and validate JWT
@@ -163,13 +164,12 @@ where
         let peer_ids = peer_ids_from_routes(&routes);
 
         // 2b. Validate all peer IDs before attempting connections
-        if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&peer_ids) {
-            return Err(PreError::InvalidInput(format!(
+        validate_all_peer_ids(&peer_ids).map_err(|(invalid_peer_id, validation_error)| {
+            PreError::InvalidInput(format!(
                 "Invalid peer ID '{}': {}",
                 invalid_peer_id, validation_error
             ))
-            .into());
-        }
+        })?;
 
         // 3. Generate unique request ID
         let request_id = rand::random::<u64>().to_string();
@@ -181,7 +181,8 @@ where
         let coordinator = PreCoordinator::<D, T>::new(Arc::new(self.state.clone()));
         let total_participants = peer_ids.len();
         let poly_state = RingPolyState::load(&self.state.local_storage, &ring_pk).map_err(|e| {
-            Status::internal(format!("Failed to load ring polynomial state: {}", e))
+            tracing::error!("Failed to load ring polynomial state: {}", e);
+            PreError::RingState("Failed to load ring polynomial state".to_string())
         })?;
         let ring = RingConfig {
             ring_pk_bytes,

@@ -1,5 +1,4 @@
 use super::PreCoordinator;
-use crate::pre::error::Result;
 use crate::pre::messages::PreMessage;
 use crypto::r#trait::{
     CryptoDeserialize, DistKeyShare, Dkg, PubShare, ReencryptReply, Secret, ThresholdDealer,
@@ -29,7 +28,7 @@ where
         derivation: Option<&[u8]>,
         expected_node_id: Option<u32>,
         seen_node_ids: &mut HashSet<u32>,
-    ) -> Result<Option<PubShare<D::PublicKey>>> {
+    ) -> Option<PubShare<D::PublicKey>> {
         let PreMessage::ReencryptResponse {
             from_node_id,
             share: share_bytes,
@@ -38,11 +37,11 @@ where
             ..
         } = response
         else {
-            return Ok(None);
+            return None;
         };
 
         if seen_node_ids.contains(&from_node_id) {
-            return Ok(None);
+            return None;
         }
 
         if let Some(expected_node_id) = expected_node_id {
@@ -52,45 +51,39 @@ where
                     expected_node_id = expected_node_id,
                     "PRE Coordinator: authenticated peer claimed the wrong node_id"
                 );
-                return Ok(None);
+                return None;
             }
         }
 
-        let share_v = match <D::PublicKey>::from_bytes(&share_bytes[..]) {
-            Ok(share_v) => share_v,
-            Err(e) => {
+        let share_v = <D::PublicKey>::from_bytes(&share_bytes[..])
+            .inspect_err(|error| {
                 tracing::error!(
                     from_node_id = from_node_id,
-                    error = %e,
+                    error = %error,
                     "PRE Coordinator: Failed to deserialize share"
                 );
-                return Ok(None);
-            }
-        };
+            })
+            .ok()?;
 
-        let challenge = match <D::ShareValue>::from_bytes(&challenge_bytes[..]) {
-            Ok(challenge) => challenge,
-            Err(e) => {
+        let challenge = <D::ShareValue>::from_bytes(&challenge_bytes[..])
+            .inspect_err(|error| {
                 tracing::error!(
                     from_node_id = from_node_id,
-                    error = %e,
+                    error = %error,
                     "PRE Coordinator: Failed to deserialize challenge"
                 );
-                return Ok(None);
-            }
-        };
+            })
+            .ok()?;
 
-        let proof = match <D::ShareValue>::from_bytes(&proof_bytes[..]) {
-            Ok(proof) => proof,
-            Err(e) => {
+        let proof = <D::ShareValue>::from_bytes(&proof_bytes[..])
+            .inspect_err(|error| {
                 tracing::error!(
                     from_node_id = from_node_id,
-                    error = %e,
+                    error = %error,
                     "PRE Coordinator: Failed to deserialize proof"
                 );
-                return Ok(None);
-            }
-        };
+            })
+            .ok()?;
 
         let reply = ReencryptReply {
             share: PubShare {
@@ -101,23 +94,22 @@ where
             proof,
         };
 
-        match dealer.verify(rdr_pk, pub_poly, enc_cmt, &reply, derivation) {
-            Ok(_) => {
-                tracing::debug!(
-                    from_node_id = from_node_id,
-                    "PRE Coordinator: Verified share"
-                );
-                seen_node_ids.insert(reply.share.i);
-                Ok(Some(reply.share.clone()))
-            }
-            Err(e) => {
+        dealer
+            .verify(rdr_pk, pub_poly, enc_cmt, &reply, derivation)
+            .inspect_err(|error| {
                 tracing::error!(
                     from_node_id = from_node_id,
-                    error = %e,
+                    error = %error,
                     "PRE Coordinator: Failed to verify share"
                 );
-                Ok(None)
-            }
-        }
+            })
+            .ok()?;
+
+        tracing::debug!(
+            from_node_id = from_node_id,
+            "PRE Coordinator: Verified share"
+        );
+        seen_node_ids.insert(reply.share.i);
+        Some(reply.share.clone())
     }
 }

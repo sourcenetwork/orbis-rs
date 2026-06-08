@@ -4,6 +4,101 @@
 
 use std::io;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GrpcErrorClassification {
+    pub(crate) code: tonic::Code,
+    pub(crate) level: tracing::Level,
+    pub(crate) record_failure: bool,
+}
+
+impl GrpcErrorClassification {
+    pub(crate) const fn new(
+        code: tonic::Code,
+        level: tracing::Level,
+        record_failure: bool,
+    ) -> Self {
+        Self {
+            code,
+            level,
+            record_failure,
+        }
+    }
+}
+
+pub(crate) trait GrpcServiceError: std::fmt::Display {
+    const SERVICE: &'static str;
+
+    fn classification(&self) -> GrpcErrorClassification;
+
+    fn record_failure_metric(&self) {}
+
+    fn into_status(self) -> tonic::Status
+    where
+        Self: Sized,
+    {
+        let classification = self.classification();
+        let message = self.to_string();
+
+        log_grpc_error(
+            classification.level,
+            Self::SERVICE,
+            classification.code,
+            &message,
+        );
+
+        if classification.record_failure {
+            self.record_failure_metric();
+        }
+
+        tonic::Status::new(classification.code, message)
+    }
+}
+
+fn log_grpc_error(level: tracing::Level, service: &str, code: tonic::Code, error: &str) {
+    match level {
+        tracing::Level::TRACE => {
+            tracing::trace!(
+                service = service,
+                grpc_code = ?code,
+                error = error,
+                "gRPC request failed"
+            );
+        }
+        tracing::Level::DEBUG => {
+            tracing::debug!(
+                service = service,
+                grpc_code = ?code,
+                error = error,
+                "gRPC request failed"
+            );
+        }
+        tracing::Level::INFO => {
+            tracing::info!(
+                service = service,
+                grpc_code = ?code,
+                error = error,
+                "gRPC request failed"
+            );
+        }
+        tracing::Level::WARN => {
+            tracing::warn!(
+                service = service,
+                grpc_code = ?code,
+                error = error,
+                "gRPC request failed"
+            );
+        }
+        tracing::Level::ERROR => {
+            tracing::error!(
+                service = service,
+                grpc_code = ?code,
+                error = error,
+                "gRPC request failed"
+            );
+        }
+    }
+}
+
 // ============================================================================
 // Peer ID Validation Errors
 // ============================================================================

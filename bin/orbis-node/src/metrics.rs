@@ -525,12 +525,12 @@ pub async fn start_metrics_server(
         let io = TokioIo::new(stream);
 
         tokio::spawn(async move {
-            if let Err(err) = http1::Builder::new()
+            let _ = http1::Builder::new()
                 .serve_connection(io, service_fn(handle_metrics))
                 .await
-            {
-                tracing::error!(error = %err, "Error serving metrics connection");
-            }
+                .inspect_err(|error| {
+                    tracing::error!(error = %error, "Error serving metrics connection");
+                });
         });
     }
 }

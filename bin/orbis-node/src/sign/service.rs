@@ -73,7 +73,7 @@ where
         let current_time = current_unix_time().map_err(|e| {
             let duration = start.elapsed().as_secs_f64();
             metrics::record_grpc_request("sign", "start_sign", "error", duration);
-            Status::internal(e)
+            SignError::RequestTimestamp(e)
         })?;
 
         // reject oversized messages before any crypto work ---
@@ -140,13 +140,12 @@ where
             .map_err(SignError::InvalidInput)?;
         let peer_ids = peer_ids_from_routes(&routes);
 
-        if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&peer_ids) {
-            return Err(SignError::InvalidInput(format!(
+        validate_all_peer_ids(&peer_ids).map_err(|(invalid_peer_id, validation_error)| {
+            SignError::InvalidInput(format!(
                 "Invalid peer ID '{}': {}",
                 invalid_peer_id, validation_error
             ))
-            .into());
-        }
+        })?;
 
         let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).map_err(|e| {
             SignError::Deserialization(format!("Failed to decode ring_pk hex: {}", e))
@@ -162,7 +161,7 @@ where
         let poly_state =
             RingPolyState::load_from_ring_pk_hex(&self.state.local_storage, &ring_payload.ring_pk)
                 .map_err(|e| {
-                    Status::internal(format!("Failed to load ring polynomial state: {}", e))
+                    SignError::RingState(format!("Failed to load ring polynomial state: {}", e))
                 })?;
         let ring = RingConfig {
             ring_pk_bytes,

@@ -27,7 +27,7 @@ where
         ));
     }
 
-    if commitment.len() % G1_COMPRESSED_SIZE != 0 {
+    if !commitment.len().is_multiple_of(G1_COMPRESSED_SIZE) {
         return Err(DkgError::CommitmentVerificationFailed(format!(
             "Invalid commitment length: {} bytes is not a multiple of {} (G1 compressed size)",
             commitment.len(),
@@ -163,18 +163,19 @@ where
                     commitment: commitment_bytes.clone(),
                 };
 
-                match coord
+                if coord
                     .send_message_to_peer(peer_id_str, commitment_msg, Some(session_id))
                     .await
-                {
-                    Ok(_) => sent_count += 1,
-                    Err(e) => {
+                    .inspect_err(|error| {
                         tracing::error!(
                             peer_id = %peer_id_str,
-                            error = %e,
+                            error = %error,
                             "Failed to send commitment to peer"
                         );
-                    }
+                    })
+                    .is_ok()
+                {
+                    sent_count += 1;
                 }
             }
 
@@ -255,16 +256,16 @@ where
             session_id = session_id,
             "DKG Coordinator: Replaying share that was waiting for commitment"
         );
-        if let Err(e) =
-            super::share::receive_and_record_share(coord, session_id, pending_share).await
-        {
-            tracing::error!(
-                from_node_id = from_node_id,
-                session_id = session_id,
-                error = %e,
-                "DKG Coordinator: Queued share failed after commitment arrived"
-            );
-        }
+        let _ = super::share::receive_and_record_share(coord, session_id, pending_share)
+            .await
+            .inspect_err(|error| {
+                tracing::error!(
+                    from_node_id = from_node_id,
+                    session_id = session_id,
+                    error = %error,
+                    "DKG Coordinator: Queued share failed after commitment arrived"
+                );
+            });
     }
 
     Ok(None)

@@ -119,27 +119,26 @@ where
                 share_value: share_value_bytes,
                 nonce: share.nonce,
             };
-            match coord
+            if coord
                 .send_message_to_peer(target_peer_id, share_msg, Some(session_id))
                 .await
-            {
-                Ok(_) => {
-                    shares_sent += 1;
-                    tracing::debug!(
-                        from_node = node_id,
-                        to_node = share.to_id,
-                        peer_id = %target_peer_id,
-                        "Reshare: Sent share to new committee member"
-                    );
-                }
-                Err(e) => {
+                .inspect_err(|error| {
                     tracing::error!(
                         to_node = share.to_id,
                         peer_id = %target_peer_id,
-                        error = %e,
+                        error = %error,
                         "Reshare: Failed to send share"
                     );
-                }
+                })
+                .is_ok()
+            {
+                shares_sent += 1;
+                tracing::debug!(
+                    from_node = node_id,
+                    to_node = share.to_id,
+                    peer_id = %target_peer_id,
+                    "Reshare: Sent share to new committee member"
+                );
             }
             continue;
         }
@@ -172,27 +171,26 @@ where
             share_value: share_value_bytes,
             nonce: share.nonce,
         };
-        match coord
+        if coord
             .send_message_to_peer(&target_peer_id, share_msg, Some(session_id))
             .await
-        {
-            Ok(_) => {
-                shares_sent += 1;
-                tracing::debug!(
-                    from_node = node_id,
-                    to_node = share.to_id,
-                    peer_id = %target_peer_id,
-                    "DKG Coordinator: Sent share"
-                );
-            }
-            Err(e) => {
+            .inspect_err(|error| {
                 tracing::error!(
                     to_node = share.to_id,
                     peer_id = %target_peer_id,
-                    error = %e,
+                    error = %error,
                     "Failed to send share"
                 );
-            }
+            })
+            .is_ok()
+        {
+            shares_sent += 1;
+            tracing::debug!(
+                from_node = node_id,
+                to_node = share.to_id,
+                peer_id = %target_peer_id,
+                "DKG Coordinator: Sent share"
+            );
         }
     }
 

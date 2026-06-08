@@ -465,7 +465,7 @@ pub fn deserialize_commitments<S: ThresholdSigner>(
     let mut commitments = Vec::with_capacity(count);
 
     for _ in 0..count {
-        if offset.checked_add(8).map_or(true, |end| end > bytes.len()) {
+        if offset.checked_add(8).is_none_or(|end| end > bytes.len()) {
             return Err(SignError::Deserialization(
                 "Commitment bytes truncated".to_string(),
             ));
@@ -494,7 +494,7 @@ pub fn deserialize_commitments<S: ThresholdSigner>(
 
         if offset
             .checked_add(commitment_len)
-            .map_or(true, |end| end > bytes.len())
+            .is_none_or(|end| end > bytes.len())
         {
             return Err(SignError::Deserialization(
                 "Commitment data truncated".to_string(),

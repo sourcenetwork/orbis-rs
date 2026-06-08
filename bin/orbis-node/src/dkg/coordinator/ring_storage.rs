@@ -38,15 +38,14 @@ where
         );
 
         let _guard = coord.app_state.ring_index_lock.lock().await;
-        if let Err(e) = remove_ring_index_entry(&coord.app_state.local_storage, key) {
+        remove_ring_index_entry(&coord.app_state.local_storage, key).inspect_err(|error| {
             tracing::error!(
                 session_id = session_id,
                 ring_key = %key,
-                error = %e,
+                error = %error,
                 "Reshare Dealer: failed to remove ring index entry"
             );
-            return Err(e);
-        }
+        })?;
 
         // All storage operations succeeded; release the PSS lock so future
         // ceremonies are not blocked by a departed dealer.

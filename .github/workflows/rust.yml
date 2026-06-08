@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+    - name: Update Rust stable
+      run: rustup update stable
     - name: Install protoc
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - name: Check formatting
@@ -34,6 +36,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Update Rust stable
+      run: rustup update stable
     - name: Install protoc
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - name: Pull SourceHub image

@@ -120,7 +120,7 @@ fn get_ring_state_response(
     ring_pk_hex: &str,
 ) -> Result<GetRingStateResponse, Status> {
     let state = RingPolyState::load_from_ring_pk_hex(local_storage, ring_pk_hex)
-        .map_err(Status::not_found)?;
+        .map_err(InfoError::RingNotFound)?;
     Ok(GetRingStateResponse {
         public_polynomial: state.public_polynomial,
         last_pss: state.last_pss,
