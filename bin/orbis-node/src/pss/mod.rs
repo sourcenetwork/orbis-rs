@@ -384,12 +384,9 @@ where
 
     let total = peer_ids.len();
 
-    if let Err((bad_peer, err)) = validate_all_peer_ids(peer_ids) {
-        return Err(DkgError::InvalidInput(format!(
-            "PSS: invalid peer ID '{}': {}",
-            bad_peer, err
-        )));
-    }
+    validate_all_peer_ids(peer_ids).map_err(|(bad_peer, error)| {
+        DkgError::InvalidInput(format!("PSS: invalid peer ID '{}': {}", bad_peer, error))
+    })?;
 
     let bundle =
         RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str).map_err(|e| {
@@ -658,12 +655,12 @@ where
 
     let coordinator = DkgCoordinator::new(app_state.clone());
 
-    if let Err((bad_peer, err)) = validate_all_peer_ids(&union_peers) {
-        return Err(DkgError::InvalidInput(format!(
+    validate_all_peer_ids(&union_peers).map_err(|(bad_peer, error)| {
+        DkgError::InvalidInput(format!(
             "PSS reshare: invalid peer ID '{}': {}",
-            bad_peer, err
-        )));
-    }
+            bad_peer, error
+        ))
+    })?;
 
     match app_state
         .dkg_session_state

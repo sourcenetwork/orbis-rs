@@ -264,43 +264,46 @@ where
         // deciding how many verified shares we still need from the network.
         if should_attempt_local_share {
             if let Some(dist_key_share) = local_dist_key_share {
-                match signer.sign(
-                    &dist_key_share,
-                    &message,
-                    &pub_poly,
-                    local_signing_state.as_ref(),
-                    &signing_commitments,
-                    derivation.as_deref(),
-                    metadata.as_deref(),
-                ) {
-                    Ok(sig_share) => match signer.verify_share(
+                if let Ok(sig_share) = signer
+                    .sign(
+                        &dist_key_share,
                         &message,
                         &pub_poly,
-                        &sig_share,
+                        local_signing_state.as_ref(),
                         &signing_commitments,
                         derivation.as_deref(),
                         metadata.as_deref(),
-                    ) {
-                        Ok(_) => {
-                            tracing::debug!(
-                                from_node_id = sig_share.i,
-                                "Sign Coordinator: Added local share"
-                            );
-                            seen_node_ids.insert(sig_share.i);
-                            verified_shares.push(sig_share);
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                error = %e,
-                                "Sign Coordinator: Local share verification failed"
-                            );
-                        }
-                    },
-                    Err(e) => {
+                    )
+                    .inspect_err(|error| {
                         tracing::error!(
-                            error = %e,
+                            error = %error,
                             "Sign Coordinator: Local signing failed"
                         );
+                    })
+                {
+                    if signer
+                        .verify_share(
+                            &message,
+                            &pub_poly,
+                            &sig_share,
+                            &signing_commitments,
+                            derivation.as_deref(),
+                            metadata.as_deref(),
+                        )
+                        .inspect_err(|error| {
+                            tracing::error!(
+                                error = %error,
+                                "Sign Coordinator: Local share verification failed"
+                            );
+                        })
+                        .is_ok()
+                    {
+                        tracing::debug!(
+                            from_node_id = sig_share.i,
+                            "Sign Coordinator: Added local share"
+                        );
+                        seen_node_ids.insert(sig_share.i);
+                        verified_shares.push(sig_share);
                     }
                 }
             }
@@ -382,7 +385,7 @@ where
                                 metadata.as_deref(),
                                 expected_node_id,
                                 &mut seen_node_ids,
-                            )? {
+                            ) {
                                 verified_shares.push(share);
                                 successful_responses += 1;
                                 if successful_responses >= min_needed_from_network {
@@ -451,7 +454,7 @@ where
                 metadata.as_deref(),
                 expected_node_id,
                 &mut seen_node_ids,
-            )? {
+            ) {
                 verified_shares.push(share);
             }
         }

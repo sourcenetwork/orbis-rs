@@ -163,13 +163,12 @@ where
         let peer_ids = peer_ids_from_routes(&routes);
 
         // 2b. Validate all peer IDs before attempting connections
-        if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&peer_ids) {
-            return Err(PreError::InvalidInput(format!(
+        validate_all_peer_ids(&peer_ids).map_err(|(invalid_peer_id, validation_error)| {
+            PreError::InvalidInput(format!(
                 "Invalid peer ID '{}': {}",
                 invalid_peer_id, validation_error
             ))
-            .into());
-        }
+        })?;
 
         // 3. Generate unique request ID
         let request_id = rand::random::<u64>().to_string();

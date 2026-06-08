@@ -126,7 +126,7 @@ where
                                 response.message,
                                 expected_node_id,
                                 &mut seen_node_ids,
-                            )? {
+                            ) {
                                 all_commitments.push(commitment);
                                 successful_responses += 1;
                                 if successful_responses >= min_needed_from_network {
@@ -198,7 +198,7 @@ where
                 response.message,
                 expected_node_id,
                 &mut seen_node_ids,
-            )? {
+            ) {
                 all_commitments.push(commitment);
             }
         }

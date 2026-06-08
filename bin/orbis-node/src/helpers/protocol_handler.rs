@@ -69,16 +69,14 @@ impl<C: MessageCoordinator> ProtocolHandler for GenericProtocolHandler<C> {
         tracing::info!(peer_id = ?peer_id, "{}: Accepted connection from peer", proto);
 
         loop {
-            let network_message = match connection.recv().await {
-                Ok(msg) => msg,
-                Err(e) => {
-                    tracing::debug!(
-                        peer_id = ?peer_id,
-                        error = %e,
-                        "{}: Connection closed or error from peer", proto
-                    );
-                    break;
-                }
+            let Ok(network_message) = connection.recv().await.inspect_err(|error| {
+                tracing::debug!(
+                    peer_id = ?peer_id,
+                    error = %error,
+                    "{}: Connection closed or error from peer", proto
+                );
+            }) else {
+                break;
             };
 
             let message: C::Msg = match serde_json::from_slice(&network_message.data) {

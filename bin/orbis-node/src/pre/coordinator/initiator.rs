@@ -178,50 +178,45 @@ where
         // how many verified shares we still need from the network.
         if self_in_list {
             let bundle = local_share_bundle.ok_or_else(|| {
-                tracing::error!("PRE Coordinator: local share bundle missing for ring member");
                 PreError::Storage("Local share bundle missing for ring member".to_string())
             })?;
             let pri_share =
-                PriShare::<D::ShareValue>::from_bytes(&bundle.share_bytes).map_err(|e| {
-                    tracing::error!(
-                        error = %e,
-                        "PRE Coordinator: Failed to deserialize local share"
-                    );
-                    PreError::Deserialization(format!("Failed to deserialize local share: {}", e))
+                PriShare::<D::ShareValue>::from_bytes(&bundle.share_bytes).map_err(|error| {
+                    PreError::Deserialization(format!(
+                        "Failed to deserialize local share: {}",
+                        error
+                    ))
                 })?;
             let dist_key_share = DistKeyShare { pri_share };
 
             let reply = dealer
                 .reencrypt(&dist_key_share, &secret, &rdr_pk, ctx.derivation.as_deref())
-                .map_err(|e| {
-                    tracing::error!(
-                        error = %e,
-                        "PRE Coordinator: Local reencryption failed"
-                    );
-                    PreError::Crypto(format!("Local reencryption failed: {}", e))
+                .map_err(|error| {
+                    PreError::Crypto(format!("Local reencryption failed: {}", error))
                 })?;
-            match dealer.verify(
-                &rdr_pk,
-                &pub_poly,
-                &enc_cmt,
-                &reply,
-                ctx.derivation.as_deref(),
-            ) {
-                Ok(_) => {
-                    tracing::debug!(
-                        from_node_id = reply.share.i,
-                        "PRE Coordinator: Added local share"
-                    );
-                    seen_node_ids.insert(reply.share.i);
-                    verified_shares.push(reply.share.clone());
-                }
-                Err(e) => {
+            if dealer
+                .verify(
+                    &rdr_pk,
+                    &pub_poly,
+                    &enc_cmt,
+                    &reply,
+                    ctx.derivation.as_deref(),
+                )
+                .inspect_err(|error| {
                     tracing::error!(
                         from_node_id = reply.share.i,
-                        error = %e,
+                        error = %error,
                         "PRE Coordinator: Local share verification failed"
                     );
-                }
+                })
+                .is_ok()
+            {
+                tracing::debug!(
+                    from_node_id = reply.share.i,
+                    "PRE Coordinator: Added local share"
+                );
+                seen_node_ids.insert(reply.share.i);
+                verified_shares.push(reply.share.clone());
             }
         }
 
@@ -291,7 +286,7 @@ where
                                 ctx.derivation.as_deref(),
                                 Some(expected_node_id),
                                 &mut seen_node_ids,
-                            )? {
+                            ) {
                                 verified_shares.push(share);
                                 successful_responses += 1;
                                 if successful_responses >= min_needed_from_network {
@@ -359,7 +354,7 @@ where
                 ctx.derivation.as_deref(),
                 Some(expected_node_id),
                 &mut seen_node_ids,
-            )? {
+            ) {
                 verified_shares.push(share);
             }
         }

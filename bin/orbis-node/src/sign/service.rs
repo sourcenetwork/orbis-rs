@@ -140,13 +140,12 @@ where
             .map_err(SignError::InvalidInput)?;
         let peer_ids = peer_ids_from_routes(&routes);
 
-        if let Err((invalid_peer_id, validation_error)) = validate_all_peer_ids(&peer_ids) {
-            return Err(SignError::InvalidInput(format!(
+        validate_all_peer_ids(&peer_ids).map_err(|(invalid_peer_id, validation_error)| {
+            SignError::InvalidInput(format!(
                 "Invalid peer ID '{}': {}",
                 invalid_peer_id, validation_error
             ))
-            .into());
-        }
+        })?;
 
         let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).map_err(|e| {
             SignError::Deserialization(format!("Failed to decode ring_pk hex: {}", e))
