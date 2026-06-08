@@ -163,18 +163,19 @@ where
                     commitment: commitment_bytes.clone(),
                 };
 
-                match coord
+                if coord
                     .send_message_to_peer(peer_id_str, commitment_msg, Some(session_id))
                     .await
-                {
-                    Ok(_) => sent_count += 1,
-                    Err(e) => {
+                    .inspect_err(|error| {
                         tracing::error!(
                             peer_id = %peer_id_str,
-                            error = %e,
+                            error = %error,
                             "Failed to send commitment to peer"
                         );
-                    }
+                    })
+                    .is_ok()
+                {
+                    sent_count += 1;
                 }
             }
 

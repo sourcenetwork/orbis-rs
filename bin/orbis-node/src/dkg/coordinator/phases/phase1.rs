@@ -86,12 +86,18 @@ where
             commitment: commitment_bytes.clone(),
         };
 
-        if let Err(e) = coord
+        if coord
             .send_message_to_peer(peer_id_str, commitment_msg, Some(session_id))
             .await
+            .inspect_err(|error| {
+                tracing::error!(
+                    peer_id = %peer_id_str,
+                    error = %error,
+                    "Failed to send commitment to peer"
+                );
+            })
+            .is_ok()
         {
-            tracing::error!(peer_id = %peer_id_str, error = %e, "Failed to send commitment to peer");
-        } else {
             peers_sent += 1;
         }
     }
