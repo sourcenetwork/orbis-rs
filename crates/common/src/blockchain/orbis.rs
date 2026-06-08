@@ -987,18 +987,16 @@ impl SourceHubClient {
         let request = QueryRingRequest {
             id: ring_id.to_string(),
         };
-        let response_bytes = match self
-            .abci_query(
+        let Some(response_bytes) = self
+            .abci_query_optional(
                 "/sourcehub.orbis.Query/Ring",
                 request.encode_to_vec(),
                 None,
                 false,
             )
-            .await
-        {
-            Ok(bytes) => bytes,
-            Err(BlockchainError::NotFound(_)) => return Ok(None),
-            Err(e) => return Err(e),
+            .await?
+        else {
+            return Ok(None);
         };
         let response = QueryRingResponse::decode(response_bytes.as_slice()).map_err(|e| {
             BlockchainError::Serialization(format!("Failed to decode ring response: {}", e))
@@ -1008,18 +1006,16 @@ impl SourceHubClient {
 
     pub async fn orbis_read_document(&self, id: &str) -> Result<Option<Document>> {
         let request = QueryDocumentRequest { id: id.to_string() };
-        let response_bytes = match self
-            .abci_query(
+        let Some(response_bytes) = self
+            .abci_query_optional(
                 "/sourcehub.orbis.Query/Document",
                 request.encode_to_vec(),
                 None,
                 false,
             )
-            .await
-        {
-            Ok(bytes) => bytes,
-            Err(BlockchainError::NotFound(_)) => return Ok(None),
-            Err(e) => return Err(e),
+            .await?
+        else {
+            return Ok(None);
         };
         let response = QueryDocumentResponse::decode(response_bytes.as_slice()).map_err(|e| {
             BlockchainError::Serialization(format!("Failed to decode document response: {}", e))
@@ -1029,18 +1025,16 @@ impl SourceHubClient {
 
     pub async fn orbis_read_key_derivation(&self, id: &str) -> Result<Option<KeyDerivation>> {
         let request = QueryKeyDerivationRequest { id: id.to_string() };
-        let response_bytes = match self
-            .abci_query(
+        let Some(response_bytes) = self
+            .abci_query_optional(
                 "/sourcehub.orbis.Query/KeyDerivation",
                 request.encode_to_vec(),
                 None,
                 false,
             )
-            .await
-        {
-            Ok(bytes) => bytes,
-            Err(BlockchainError::NotFound(_)) => return Ok(None),
-            Err(e) => return Err(e),
+            .await?
+        else {
+            return Ok(None);
         };
         let response =
             QueryKeyDerivationResponse::decode(response_bytes.as_slice()).map_err(|e| {
@@ -1056,18 +1050,16 @@ impl SourceHubClient {
         let request = QueryNodeInfoRequest {
             node_key: node_key.to_string(),
         };
-        let response_bytes = match self
-            .abci_query(
+        let Some(response_bytes) = self
+            .abci_query_optional(
                 "/sourcehub.orbis.Query/NodeInfo",
                 request.encode_to_vec(),
                 None,
                 false,
             )
-            .await
-        {
-            Ok(bytes) => bytes,
-            Err(BlockchainError::NotFound(_)) => return Ok(None),
-            Err(e) => return Err(e),
+            .await?
+        else {
+            return Ok(None);
         };
         let response = QueryNodeInfoResponse::decode(response_bytes.as_slice()).map_err(|e| {
             BlockchainError::Serialization(format!("Failed to decode node info response: {}", e))

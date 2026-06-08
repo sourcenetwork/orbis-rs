@@ -93,10 +93,9 @@ impl LocalStorage for MemoryStorage {
         Ok(store.contains_key(&key))
     }
     fn get_encrypted(&self, key: LocalStorageKeys) -> Result<Option<Zeroizing<Vec<u8>>>> {
-        match self.get(key)? {
-            None => Ok(None),
-            Some(stored) => decrypt_value(&self.cipher, &stored).map(|v| Some(Zeroizing::new(v))),
-        }
+        self.get(key)?
+            .map(|stored| decrypt_value(&self.cipher, &stored).map(Zeroizing::new))
+            .transpose()
     }
 
     fn set_encrypted(&self, key: LocalStorageKeys, value: Zeroizing<Vec<u8>>) -> Result<()> {

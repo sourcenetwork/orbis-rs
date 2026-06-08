@@ -487,6 +487,20 @@ impl SourceHubClient {
         Ok(decode_abci_data(response.value))
     }
 
+    pub(crate) async fn abci_query_optional(
+        &self,
+        path: &str,
+        data: Vec<u8>,
+        height: Option<u64>,
+        prove: bool,
+    ) -> Result<Option<Vec<u8>>> {
+        match self.abci_query(path, data, height, prove).await {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(BlockchainError::NotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Get the latest block height.
     pub async fn get_latest_height(&self) -> Result<u64> {
         let status = self.rpc_client.status().await?;

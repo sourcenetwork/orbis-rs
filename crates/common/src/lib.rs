@@ -108,9 +108,9 @@ impl Drop for SourceHubTestContainer {
             .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..")
             .status();
 
-        if let Err(e) = status {
-            eprintln!("Failed to stop docker compose: {}", e);
-        }
+        let _ = status.inspect_err(|error| {
+            eprintln!("Failed to stop docker compose: {}", error);
+        });
     }
 }
 
@@ -312,8 +312,8 @@ impl Drop for IntegrationTestNetwork {
             .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..")
             .status();
 
-        if let Err(e) = status {
-            eprintln!("Failed to stop docker compose: {}", e);
-        }
+        let _ = status.inspect_err(|error| {
+            eprintln!("Failed to stop docker compose: {}", error);
+        });
     }
 }
