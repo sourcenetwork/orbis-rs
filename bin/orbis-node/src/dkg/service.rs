@@ -304,13 +304,16 @@ where
                 if is_self_peer_id(&self.state.network, peer_id_str) {
                     continue;
                 }
-                if let Err(e) = coordinator
+                let _ = coordinator
                     .send_message_to_peer(peer_id_str, session_init_msg.clone(), init_session_id)
                     .await
-                {
-                    tracing::error!(peer_id = %peer_id_str, error = %e, "Failed to send SessionInit to peer");
-                    // Continue with other peers
-                }
+                    .inspect_err(|error| {
+                        tracing::error!(
+                            peer_id = %peer_id_str,
+                            error = %error,
+                            "Failed to send SessionInit to peer"
+                        );
+                    });
             }
 
             // Initiate Phase 1 only if we're participating

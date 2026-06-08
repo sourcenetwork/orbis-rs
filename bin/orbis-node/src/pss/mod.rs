@@ -84,9 +84,9 @@ where
         loop {
             ticker.tick().await;
             tracing::debug!("PSS scheduler: tick");
-            if let Err(e) = pss_all_rings(&app_state).await {
-                tracing::error!(error = %e, "PSS scheduler: error");
-            }
+            let _ = pss_all_rings(&app_state).await.inspect_err(|error| {
+                tracing::error!(error = %error, "PSS scheduler: error");
+            });
         }
     });
 }
@@ -111,9 +111,13 @@ where
     }
 
     for entry in &ring_index {
-        if let Err(e) = pss_ring(app_state, entry).await {
-            tracing::error!(ring_pk_str = %entry.ring_pk_str, error = %e, "PSS: ceremony failed for ring");
-        }
+        let _ = pss_ring(app_state, entry).await.inspect_err(|error| {
+            tracing::error!(
+                ring_pk_str = %entry.ring_pk_str,
+                error = %error,
+                "PSS: ceremony failed for ring"
+            );
+        });
     }
     Ok(())
 }
@@ -787,16 +791,16 @@ where
         if extract_node_part(peer_id_str) == our_node_part {
             continue;
         }
-        if let Err(e) = coordinator
+        let _ = coordinator
             .send_message_to_peer(peer_id_str, init_msg.clone(), Some(session_id))
             .await
-        {
-            tracing::warn!(
-                peer = %peer_id_str,
-                error = %e,
-                "PSS: failed to send reshare SessionInit; continuing until threshold selection or timeout"
-            );
-        }
+            .inspect_err(|error| {
+                tracing::warn!(
+                    peer = %peer_id_str,
+                    error = %error,
+                    "PSS: failed to send reshare SessionInit; continuing until threshold selection or timeout"
+                );
+            });
     }
 
     if let Err(e) = coordinator

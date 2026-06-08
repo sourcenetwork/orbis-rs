@@ -317,16 +317,16 @@ where
 
     if let Some(candidate) = refresh_candidate {
         if node_id == 1 {
-            if let Err(e) =
+            let _ =
                 refresh_health_check::run_selector(coord, session_id, &ring_pk_bytes, &candidate)
                     .await
-            {
-                tracing::warn!(
-                    session_id = session_id,
-                    error = %e,
-                    "Refresh health check selector failed"
-                );
-            }
+                    .inspect_err(|error| {
+                        tracing::warn!(
+                            session_id = session_id,
+                            error = %error,
+                            "Refresh health check selector failed"
+                        );
+                    });
         } else {
             tracing::info!(
                 session_id = session_id,
@@ -412,11 +412,13 @@ fn cleanup_new_ring_bundle_after_index_failure(
         return;
     }
 
-    if let Err(e) = storage.delete(LocalStorageKeys::RingKey(storage_key.to_string())) {
-        tracing::error!(
-            ring_key = %storage_key,
-            error = %e,
-            "Phase 4: failed to delete new RingShareBundle after RingIndex write failure"
-        );
-    }
+    let _ = storage
+        .delete(LocalStorageKeys::RingKey(storage_key.to_string()))
+        .inspect_err(|error| {
+            tracing::error!(
+                ring_key = %storage_key,
+                error = %error,
+                "Phase 4: failed to delete new RingShareBundle after RingIndex write failure"
+            );
+        });
 }

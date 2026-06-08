@@ -138,17 +138,15 @@ where
         Ok(sign_response.signature)
     });
 
-    let signature = match signature_result {
-        Ok(signature) => Some(signature),
-        Err(e) => {
+    let signature = signature_result
+        .inspect_err(|error| {
             tracing::warn!(
                 session_id = session_id,
-                error = %e,
+                error = %error,
                 "Refresh health check: diagnostic signature collection failed; broadcasting rollback"
             );
-            None
-        }
-    };
+        })
+        .ok();
 
     if let Err(e) = broadcast_result(
         coord,
@@ -335,17 +333,15 @@ where
     };
 
     let should_promote = match signature {
-        Some(signature) => match verify_result_signature::<D>(&candidate, &statement, &signature) {
-            Ok(()) => true,
-            Err(e) => {
+        Some(signature) => verify_result_signature::<D>(&candidate, &statement, &signature)
+            .inspect_err(|error| {
                 tracing::warn!(
                     session_id = session_id,
-                    error = %e,
+                    error = %error,
                     "Refresh health check: result signature failed verification; rolling back"
                 );
-                false
-            }
-        },
+            })
+            .is_ok(),
         None => {
             tracing::warn!(
                 session_id = session_id,

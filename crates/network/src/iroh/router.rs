@@ -255,9 +255,18 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
                     max_message_size,
                 );
                 let h = Arc::clone(&handler);
+                let handler_peer_id = peer_id.clone();
+                let handler_protocol = Arc::clone(&protocol);
                 tokio::spawn(async move {
                     let _permit = permit;
-                    let _ = h.handle(Box::new(stream)).await;
+                    let _ = h.handle(Box::new(stream)).await.inspect_err(|error| {
+                        tracing::error!(
+                            peer_id = ?handler_peer_id,
+                            protocol = %String::from_utf8_lossy(handler_protocol.as_ref()),
+                            error = %error,
+                            "Network protocol handler failed"
+                        );
+                    });
                 });
             }
 

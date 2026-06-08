@@ -136,12 +136,9 @@ pub fn validate_peer_ids(peer_ids: &[String]) -> Vec<(&String, Result<(), PeerId
 /// * `Ok(())` if all peer IDs are valid
 /// * `Err` with details about the first invalid peer ID
 pub fn validate_all_peer_ids(peer_ids: &[String]) -> Result<(), (String, PeerIdValidationError)> {
-    for peer_id in peer_ids {
-        if let Err(e) = validate_peer_id(peer_id) {
-            return Err((peer_id.clone(), e));
-        }
-    }
-    Ok(())
+    peer_ids
+        .iter()
+        .try_for_each(|peer_id| validate_peer_id(peer_id).map_err(|e| (peer_id.clone(), e)))
 }
 
 /// Connect to a single peer node
@@ -341,10 +338,10 @@ pub async fn is_ring_reshare_in_progress<D: Dkg + 'static>(
     ring_pk_bytes: &[u8],
     session_state: &SessionStateManager<D>,
 ) -> bool {
-    match G1Affine::from_bytes(ring_pk_bytes) {
-        Ok(ring_pk) => session_state.is_ring_pss_active(&ring_pk.to_string()).await,
-        Err(_) => false,
-    }
+    let Ok(ring_pk) = G1Affine::from_bytes(ring_pk_bytes) else {
+        return false;
+    };
+    session_state.is_ring_pss_active(&ring_pk.to_string()).await
 }
 
 /// Load the public polynomial and (when `self_in_list`) the local `RingShareBundle`

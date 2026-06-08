@@ -256,16 +256,16 @@ where
             session_id = session_id,
             "DKG Coordinator: Replaying share that was waiting for commitment"
         );
-        if let Err(e) =
-            super::share::receive_and_record_share(coord, session_id, pending_share).await
-        {
-            tracing::error!(
-                from_node_id = from_node_id,
-                session_id = session_id,
-                error = %e,
-                "DKG Coordinator: Queued share failed after commitment arrived"
-            );
-        }
+        let _ = super::share::receive_and_record_share(coord, session_id, pending_share)
+            .await
+            .inspect_err(|error| {
+                tracing::error!(
+                    from_node_id = from_node_id,
+                    session_id = session_id,
+                    error = %error,
+                    "DKG Coordinator: Queued share failed after commitment arrived"
+                );
+            });
     }
 
     Ok(None)

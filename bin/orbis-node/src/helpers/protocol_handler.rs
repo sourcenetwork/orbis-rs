@@ -90,10 +90,23 @@ impl<C: MessageCoordinator> ProtocolHandler for GenericProtocolHandler<C> {
                     let err_msg = self
                         .coordinator
                         .make_error("unknown", format!("Failed to deserialize message: {}", e));
-                    if let Ok(data) = serde_json::to_vec(&err_msg) {
+                    if let Ok(data) = serde_json::to_vec(&err_msg).inspect_err(|error| {
+                        tracing::error!(
+                            peer_id = ?peer_id,
+                            error = %error,
+                            "{}: Failed to serialize deserialization error response", proto
+                        );
+                    }) {
                         let _ = connection
                             .send(Message::new(data, network_message.protocol))
-                            .await;
+                            .await
+                            .inspect_err(|error| {
+                                tracing::error!(
+                                    peer_id = ?peer_id,
+                                    error = %error,
+                                    "{}: Failed to send deserialization error response", proto
+                                );
+                            });
                     }
                     continue;
                 }
@@ -115,26 +128,46 @@ impl<C: MessageCoordinator> ProtocolHandler for GenericProtocolHandler<C> {
 
             match self.coordinator.route_message(message, &peer_id).await {
                 Ok(Some(response)) => {
-                    if let Ok(data) = serde_json::to_vec(&response) {
-                        if let Err(e) = connection
+                    if let Ok(data) = serde_json::to_vec(&response).inspect_err(|error| {
+                        tracing::error!(
+                            peer_id = ?peer_id,
+                            error = %error,
+                            "{}: Failed to serialize response", proto
+                        );
+                    }) {
+                        let _ = connection
                             .send(Message::new(data, network_message.protocol))
                             .await
-                        {
-                            tracing::error!(
-                                error = %e,
-                                "{}: Failed to send response to peer", proto
-                            );
-                        }
+                            .inspect_err(|error| {
+                                tracing::error!(
+                                    peer_id = ?peer_id,
+                                    error = %error,
+                                    "{}: Failed to send response to peer", proto
+                                );
+                            });
                     }
                 }
                 Ok(None) => {}
                 Err(e) => {
                     tracing::error!(error = %e, "{}: Coordinator error", proto);
                     let err_msg = self.coordinator.make_error(&msg_id, e.to_string());
-                    if let Ok(data) = serde_json::to_vec(&err_msg) {
+                    if let Ok(data) = serde_json::to_vec(&err_msg).inspect_err(|error| {
+                        tracing::error!(
+                            peer_id = ?peer_id,
+                            error = %error,
+                            "{}: Failed to serialize coordinator error response", proto
+                        );
+                    }) {
                         let _ = connection
                             .send(Message::new(data, network_message.protocol))
-                            .await;
+                            .await
+                            .inspect_err(|error| {
+                                tracing::error!(
+                                    peer_id = ?peer_id,
+                                    error = %error,
+                                    "{}: Failed to send coordinator error response", proto
+                                );
+                            });
                     }
                 }
             }

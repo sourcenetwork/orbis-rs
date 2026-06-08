@@ -1,7 +1,5 @@
-#[cfg(feature = "redb")]
 use crate::error::LocalStorageError;
 use crate::r#trait::{LocalStorage, LocalStorageKeys};
-#[cfg(feature = "redb")]
 use std::path::Path;
 
 // Checks set, get, contains, delete
@@ -55,7 +53,6 @@ pub fn test_encrypted_functions<DB: LocalStorage>(db: DB) {
 // ============================================================================
 
 /// Test that creating a new database succeeds and creates the file
-#[cfg(feature = "redb")]
 pub fn test_new_creates_database<DB, F>(path: &str, constructor: F)
 where
     DB: LocalStorage,
@@ -78,7 +75,6 @@ where
 }
 
 /// Test that reopening a database with the correct password succeeds and data persists
-#[cfg(feature = "redb")]
 pub fn test_reopens_with_correct_password<DB, F>(path: &str, constructor: F)
 where
     DB: LocalStorage,
@@ -114,7 +110,6 @@ where
 }
 
 /// Test that reopening a database with the wrong password fails
-#[cfg(feature = "redb")]
 pub fn test_fails_with_wrong_password<DB, F>(path: &str, constructor: F)
 where
     DB: LocalStorage + std::fmt::Debug,
@@ -136,7 +131,6 @@ where
 }
 
 /// Test that creating a database without password works
-#[cfg(feature = "redb")]
 pub fn test_without_password<DB, F>(path: &str, constructor: F)
 where
     DB: LocalStorage,
@@ -160,7 +154,6 @@ where
 }
 
 /// Test that encrypted data persists across reopens
-#[cfg(feature = "redb")]
 pub fn test_encrypted_data_persists<DB, F>(path: &str, constructor: F)
 where
     DB: LocalStorage,

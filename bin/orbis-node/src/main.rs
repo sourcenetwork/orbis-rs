@@ -386,9 +386,11 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     // Start metrics server if configured
     if let Some(metrics_addr) = node.metrics_addr {
         tokio::spawn(async move {
-            if let Err(e) = metrics::start_metrics_server(metrics_addr).await {
-                tracing::error!(error = %e, "Metrics server failed");
-            }
+            let _ = metrics::start_metrics_server(metrics_addr)
+                .await
+                .inspect_err(|error| {
+                    tracing::error!(error = %error, "Metrics server failed");
+                });
         });
     }
 
