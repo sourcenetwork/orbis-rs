@@ -367,29 +367,30 @@ pub fn load_ring_pub_poly_and_bundle<D>(
 where
     D: Dkg<PublicKey = G1Affine>,
 {
-    if self_in_list {
-        match G1Affine::from_bytes(&ring.ring_pk_bytes) {
-            Ok(ring_pk) => match RingShareBundle::load(storage, &ring_pk) {
-                Ok(bundle) => {
-                    let poly = decode_pub_poly_hex::<D>(&bundle.public_polynomial)
-                        .map_err(|e| format!("bundle polynomial: {}", e))?;
-                    Ok((poly, Some(bundle)))
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "local bundle missing, falling back to ring config polynomial"
-                    );
-                    let poly = decode_pub_poly_hex::<D>(&ring.public_polynomial_hex)?;
-                    Ok((poly, None))
-                }
-            },
-            Err(e) => Err(format!("Failed to deserialize ring public key: {}", e)),
-        }
-    } else {
+    if !self_in_list {
         let poly = decode_pub_poly_hex::<D>(&ring.public_polynomial_hex)?;
-        Ok((poly, None))
+        return Ok((poly, None));
     }
+
+    let ring_pk = G1Affine::from_bytes(&ring.ring_pk_bytes)
+        .map_err(|error| format!("Failed to deserialize ring public key: {}", error))?;
+
+    let Some(bundle) = RingShareBundle::load(storage, &ring_pk)
+        .inspect_err(|error| {
+            tracing::warn!(
+                error = %error,
+                "local bundle missing, falling back to ring config polynomial"
+            );
+        })
+        .ok()
+    else {
+        let poly = decode_pub_poly_hex::<D>(&ring.public_polynomial_hex)?;
+        return Ok((poly, None));
+    };
+
+    let poly = decode_pub_poly_hex::<D>(&bundle.public_polynomial)
+        .map_err(|error| format!("bundle polynomial: {}", error))?;
+    Ok((poly, Some(bundle)))
 }
 
 fn decode_pub_poly_hex<D: Dkg>(hex_str: &str) -> Result<D::PubPoly, String> {

@@ -342,21 +342,22 @@ where
     loop {
         attempt += 1;
         let request_id = format!("reshare-update-{}-{}", session_id, attempt);
-        let err = match sign_attempt(request_id).await {
-            Ok(bytes) => return Ok(bytes),
-            Err(e) => e,
-        };
-        if attempt >= RESHARE_SIGNATURE_MAX_ATTEMPTS || !is_retryable_reshare_signature_error(&err)
-        {
-            return Err(err);
+        let result = sign_attempt(request_id).await;
+        if let Err(error) = &result {
+            if attempt < RESHARE_SIGNATURE_MAX_ATTEMPTS
+                && is_retryable_reshare_signature_error(error)
+            {
+                tracing::warn!(
+                    session_id = session_id,
+                    attempt = attempt,
+                    error = %error,
+                    "Reshare: threshold signature not ready yet, retrying"
+                );
+                tokio::time::sleep(retry_delay).await;
+                continue;
+            }
         }
-        tracing::warn!(
-            session_id = session_id,
-            attempt = attempt,
-            error = %err,
-            "Reshare: threshold signature not ready yet, retrying"
-        );
-        tokio::time::sleep(retry_delay).await;
+        return result;
     }
 }
 

@@ -429,21 +429,19 @@ impl From<LogLevel> for tracing::Level {
     }
 }
 
-pub fn db_path(name: &str) -> String {
-    // Try to get project root (works in dev environment), fall back to /data for Docker
-    let base_path = match project_root::get_project_root() {
-        Ok(root) => root,
-        Err(_) => {
-            // In Docker or other environments without Cargo.toml, use /data or current dir
-            let data_dir = std::path::PathBuf::from("/data");
-            if data_dir.exists() {
-                data_dir
-            } else {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            }
+fn runtime_base_path() -> PathBuf {
+    project_root::get_project_root().unwrap_or_else(|_| {
+        let data_dir = PathBuf::from("/data");
+        if data_dir.exists() {
+            data_dir
+        } else {
+            env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         }
-    };
-    let db_dir = base_path.join("dbs");
+    })
+}
+
+pub fn db_path(name: &str) -> String {
+    let db_dir = runtime_base_path().join("dbs");
     // Create the dbs directory if it doesn't exist
     std::fs::create_dir_all(&db_dir).ok();
     format!("{}/{}.redb", db_dir.display(), name)
@@ -453,20 +451,7 @@ pub fn create_and_store_node_key(
     local_storage: LocalStorageImpl,
     config: ChainConfig,
 ) -> Result<TxSigner, String> {
-    // Write public key to file - try project root first, fall back to /data or current dir
-    let base_path = match project_root::get_project_root() {
-        Ok(root) => root,
-        Err(_) => {
-            // In Docker or other environments without Cargo.toml, use /data or current dir
-            let data_dir = std::path::PathBuf::from("/data");
-            if data_dir.exists() {
-                data_dir
-            } else {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            }
-        }
-    };
-    let public_key_path = base_path.join("public_key.txt");
+    let public_key_path = runtime_base_path().join("public_key.txt");
 
     // Check if a signing key exists in DB
     let hex_key = match local_storage.get_encrypted(LocalStorageKeys::NodeSigningKey) {
