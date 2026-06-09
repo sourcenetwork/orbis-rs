@@ -262,8 +262,8 @@ pub async fn validate_ring_reshare_update_statement(
     }
     let statement_storage_key = storage_key_from_ring_pk_hex(&statement.ring_pk)?;
 
-    let (current_post, observed_height) = bulletin
-        .read_ring_with_height(statement.ring_id.clone())
+    let current_post = bulletin
+        .read(statement.ring_id.clone(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             SignError::VerificationFailed(format!(
@@ -277,7 +277,7 @@ pub async fn validate_ring_reshare_update_statement(
             SignError::Deserialization(format!("Failed to parse current ring payload: {}", e))
         })?;
     if enforce_protocol {
-        ensure_ring_protocol_version(&statement.ring_id, &current_payload, observed_height)
+        ensure_ring_protocol_version(&statement.ring_id, &current_payload)
             .map_err(SignError::ProtocolError)?;
     }
     let current_ring_hash = ring_payload_reshare_sign_state_sha256_hex(&current_payload);
@@ -637,8 +637,8 @@ pub async fn fetch_bulletin_payloads(
             SignError::Deserialization(format!("Failed to parse document payload: {}", e))
         })?;
 
-    let (ring_info, observed_height) = bulletin
-        .read_ring_with_height(derivation_payload.ring_id.clone())
+    let ring_info = bulletin
+        .read(derivation_payload.ring_id.clone(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             SignError::Storage(format!(
@@ -650,7 +650,7 @@ pub async fn fetch_bulletin_payloads(
     let ring_payload = serde_json::from_slice::<RingPayload>(&ring_info.payload)
         .map_err(|e| SignError::Deserialization(format!("Failed to parse ring payload: {}", e)))?;
     if enforce_protocol {
-        ensure_ring_protocol_version(&derivation_payload.ring_id, &ring_payload, observed_height)
+        ensure_ring_protocol_version(&derivation_payload.ring_id, &ring_payload)
             .map_err(SignError::ProtocolError)?;
     }
 
@@ -700,8 +700,8 @@ pub async fn verify_message_and_get_info<D: Dkg>(
     })?;
 
     // 5. Look up ring info from bulletin
-    let (ring_info, observed_height) = bulletin
-        .read_ring_with_height(doc_payload.ring_id.clone())
+    let ring_info = bulletin
+        .read(doc_payload.ring_id.clone(), BulletinKind::Ring)
         .await
         .map_err(|e| {
             SignError::VerificationFailed(format!(
@@ -713,7 +713,7 @@ pub async fn verify_message_and_get_info<D: Dkg>(
     let ring_payload: RingPayload = serde_json::from_slice(&ring_info.payload)
         .map_err(|e| SignError::Deserialization(format!("Failed to parse RingPayload: {}", e)))?;
     if enforce_protocol {
-        ensure_ring_protocol_version(&doc_payload.ring_id, &ring_payload, observed_height)
+        ensure_ring_protocol_version(&doc_payload.ring_id, &ring_payload)
             .map_err(SignError::ProtocolError)?;
     }
 
@@ -898,7 +898,7 @@ mod ring_reshare_update_tests {
             upgrade_info: bulletin::r#trait::UpgradeInfo {
                 current_version: 7,
                 next_version: Some(8),
-                activation_height: Some(900),
+                activation_time: Some(900),
             },
             ..payload.clone()
         };

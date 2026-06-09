@@ -138,7 +138,7 @@ where
     let post_id = &entry.bulletin_post_id;
     let ring_pk_str = &entry.ring_pk_str;
 
-    let (ring_payload, _observed_height) =
+    let ring_payload =
         crate::helpers::helpers::read_ring_for_protocol(&*app_state.bulletin, post_id)
             .await
             .map_err(DkgError::ProtocolError)?;

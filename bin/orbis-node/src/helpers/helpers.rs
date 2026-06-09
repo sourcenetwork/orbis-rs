@@ -4,6 +4,7 @@
 use crate::constants::{EXPECTED_HEX_NODE_ID_LENGTH, MAX_PEER_ID_LENGTH};
 use crate::dkg::session_state::SessionStateManager;
 use crate::error::PeerIdValidationError;
+use crate::helpers::auth::current_unix_time;
 use crate::ring_state::RingShareBundle;
 use crypto::r#trait::{CryptoDeserialize, Dkg};
 use crypto::GroupAffine as G1Affine;
@@ -390,74 +391,85 @@ where
     Ok((poly, Some(bundle)))
 }
 
-/// Resolve the ring protocol epoch at the height of its authoritative query.
+/// Resolve the ring protocol epoch at a captured Unix timestamp.
 pub fn effective_protocol_version(
     upgrade_info: &bulletin::r#trait::UpgradeInfo,
-    observed_height: i64,
+    current_time: u64,
 ) -> Result<u64, String> {
-    match (upgrade_info.next_version, upgrade_info.activation_height) {
+    match (upgrade_info.next_version, upgrade_info.activation_time) {
         (None, None) => Ok(upgrade_info.current_version),
-        (Some(next_version), Some(activation_height)) => {
+        (Some(next_version), Some(activation_time)) => {
             if next_version <= upgrade_info.current_version {
                 return Err(format!(
                     "next_version {} must be greater than current_version {}",
                     next_version, upgrade_info.current_version
                 ));
             }
-            if activation_height <= 0 {
-                return Err(format!(
-                    "activation_height {} must be positive",
-                    activation_height
-                ));
+            if activation_time == 0 {
+                return Err("activation_time must be positive".to_string());
             }
-            if observed_height >= activation_height {
+            if current_time >= activation_time {
                 Ok(next_version)
             } else {
                 Ok(upgrade_info.current_version)
             }
         }
-        _ => {
-            Err("next_version and activation_height must both be set or both be absent".to_string())
-        }
+        _ => Err("next_version and activation_time must both be set or both be absent".to_string()),
     }
 }
 
-/// Fail closed unless this binary serves the ring at the observed chain height.
+fn activation_time_label(upgrade_info: &bulletin::r#trait::UpgradeInfo) -> String {
+    upgrade_info
+        .activation_time
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+/// Capture local Unix time and fail closed unless this binary serves the ring.
 pub fn ensure_ring_protocol_version(
     ring_id: &str,
     ring_payload: &bulletin::r#trait::RingPayload,
-    observed_height: i64,
 ) -> Result<u64, String> {
     let node_version = crate::constants::PROTOCOL_VERSION;
-    let effective_version =
-        effective_protocol_version(&ring_payload.upgrade_info, observed_height).map_err(|error| {
+    let activation_time = activation_time_label(&ring_payload.upgrade_info);
+    let current_time = current_unix_time().map_err(|error| {
+        format!(
+            "failed to read system clock for ring {}: node_version={} effective_version=unknown current_time=unknown activation_time={}: {}",
+            ring_id, node_version, activation_time, error
+        )
+    })?;
+    let effective_version = effective_protocol_version(&ring_payload.upgrade_info, current_time)
+        .map_err(|error| {
             format!(
-                "malformed protocol upgrade state for ring {}: node_version={} effective_version=invalid observed_height={}: {}",
-                ring_id, node_version, observed_height, error
+                "malformed protocol upgrade state for ring {}: node_version={} effective_version=invalid current_time={} activation_time={}: {}",
+                ring_id, node_version, current_time, activation_time, error
             )
         })?;
 
     if effective_version != node_version {
         return Err(format!(
-            "protocol version mismatch for ring {}: node_version={} effective_version={} observed_height={}",
-            ring_id, node_version, effective_version, observed_height
+            "protocol version mismatch for ring {}: node_version={} effective_version={} current_time={} activation_time={}",
+            ring_id, node_version, effective_version, current_time, activation_time
         ));
     }
 
     Ok(effective_version)
 }
 
-/// Read and validate a ring and its query height as one authoritative snapshot.
+/// Read a ring and validate it against one captured local Unix timestamp.
 pub async fn read_ring_for_protocol(
     bulletin: &(dyn bulletin::r#trait::Bulletin + Send + Sync),
     ring_id: &str,
-) -> Result<(bulletin::r#trait::RingPayload, i64), String> {
-    let (ring_post, observed_height) = bulletin
-        .read_ring_with_height(ring_id.to_string())
+) -> Result<bulletin::r#trait::RingPayload, String> {
+    let ring_post = bulletin
+        .read(
+            ring_id.to_string(),
+            bulletin::r#trait::BulletinKind::Ring,
+        )
         .await
         .map_err(|error| {
             format!(
-                "failed to read protocol state for ring {}: node_version={} effective_version=unknown observed_height=unknown: {}",
+                "failed to read protocol state for ring {}: node_version={} effective_version=unknown current_time=unknown activation_time=unknown: {}",
                 ring_id,
                 crate::constants::PROTOCOL_VERSION,
                 error
@@ -466,15 +478,14 @@ pub async fn read_ring_for_protocol(
     let ring_payload =
         bulletin::r#trait::RingPayload::try_from(ring_post).map_err(|error| {
             format!(
-                "malformed ring payload for ring {}: node_version={} effective_version=invalid observed_height={}: {}",
+                "malformed ring payload for ring {}: node_version={} effective_version=invalid current_time=unknown activation_time=unknown: {}",
                 ring_id,
                 crate::constants::PROTOCOL_VERSION,
-                observed_height,
                 error
             )
         })?;
-    ensure_ring_protocol_version(ring_id, &ring_payload, observed_height)?;
-    Ok((ring_payload, observed_height))
+    ensure_ring_protocol_version(ring_id, &ring_payload)?;
+    Ok(ring_payload)
 }
 
 fn decode_pub_poly_hex<D: Dkg>(hex_str: &str) -> Result<D::PubPoly, String> {
@@ -531,27 +542,35 @@ mod tests {
         let info = bulletin::r#trait::UpgradeInfo {
             current_version: 0,
             next_version: Some(1),
-            activation_height: Some(50),
+            activation_time: Some(50),
         };
         assert_eq!(effective_protocol_version(&info, 49), Ok(0));
         assert_eq!(effective_protocol_version(&info, 50), Ok(1));
+        assert_eq!(effective_protocol_version(&info, 51), Ok(1));
     }
 
     #[test]
     fn effective_protocol_version_rejects_malformed_pending_fields() {
-        let missing_height = bulletin::r#trait::UpgradeInfo {
+        let missing_time = bulletin::r#trait::UpgradeInfo {
             current_version: 0,
             next_version: Some(1),
-            activation_height: None,
+            activation_time: None,
         };
-        assert!(effective_protocol_version(&missing_height, 50).is_err());
+        assert!(effective_protocol_version(&missing_time, 50).is_err());
 
         let non_monotonic = bulletin::r#trait::UpgradeInfo {
             current_version: 1,
             next_version: Some(1),
-            activation_height: Some(50),
+            activation_time: Some(50),
         };
         assert!(effective_protocol_version(&non_monotonic, 50).is_err());
+
+        let zero_activation_time = bulletin::r#trait::UpgradeInfo {
+            current_version: 0,
+            next_version: Some(1),
+            activation_time: Some(0),
+        };
+        assert!(effective_protocol_version(&zero_activation_time, 50).is_err());
     }
 
     #[test]
@@ -560,46 +579,15 @@ mod tests {
             upgrade_info: bulletin::r#trait::UpgradeInfo {
                 current_version: crate::constants::PROTOCOL_VERSION + 1,
                 next_version: None,
-                activation_height: None,
+                activation_time: None,
             },
             ..Default::default()
         };
-        let error = ensure_ring_protocol_version("ring-1", &payload, 77).unwrap_err();
+        let error = ensure_ring_protocol_version("ring-1", &payload).unwrap_err();
         assert!(error.contains("ring-1"));
         assert!(error.contains("node_version=0"));
         assert!(error.contains("effective_version=1"));
-        assert!(error.contains("observed_height=77"));
-    }
-
-    #[tokio::test]
-    async fn authoritative_ring_query_height_drives_activation_decision() {
-        let bulletin = bulletin::dummy::DummyBulletin::default();
-        let ring_id = "ring-height-snapshot";
-        bulletin
-            .set_ring(
-                ring_id.to_string(),
-                bulletin::r#trait::RingPayload {
-                    upgrade_info: bulletin::r#trait::UpgradeInfo {
-                        current_version: crate::constants::PROTOCOL_VERSION,
-                        next_version: Some(crate::constants::PROTOCOL_VERSION + 1),
-                        activation_height: Some(10),
-                    },
-                    ..Default::default()
-                },
-            )
-            .expect("seed ring");
-
-        bulletin.set_latest_height(9);
-        let (_, observed_height) = read_ring_for_protocol(&bulletin, ring_id)
-            .await
-            .expect("version 0 is effective before activation");
-        assert_eq!(observed_height, 9);
-
-        bulletin.set_latest_height(10);
-        let error = read_ring_for_protocol(&bulletin, ring_id)
-            .await
-            .expect_err("version 1 is effective at activation");
-        assert!(error.contains("effective_version=1"));
-        assert!(error.contains("observed_height=10"));
+        assert!(error.contains("current_time="));
+        assert!(error.contains("activation_time=none"));
     }
 }

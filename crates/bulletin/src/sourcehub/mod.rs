@@ -167,19 +167,6 @@ impl Bulletin for SourceHubBulletin {
         }
     }
 
-    async fn read_ring_with_height(&self, id: String) -> Result<(BulletinPost, i64)> {
-        let (ring, height) = self
-            .chain_client
-            .orbis_read_ring_with_height(&id)
-            .await
-            .map_err(|e| BulletinError::ChainError(e.to_string()))?
-            .ok_or_else(|| BulletinError::NotFound { id: id.clone() })?;
-        let height = i64::try_from(height).map_err(|_| {
-            BulletinError::ChainError(format!("ring query height {} exceeds i64", height))
-        })?;
-        Ok((ring_to_bulletin_post(ring)?, height))
-    }
-
     fn chain_id(&self) -> String {
         self.chain_client.config().chain_id.clone()
     }
@@ -308,7 +295,7 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
     let upgrade_info = ring.upgrade_info.ok_or_else(|| {
         BulletinError::ParseError(format!("ring {} is missing upgrade_info", ring.id))
     })?;
-    if upgrade_info.next_version.is_some() != upgrade_info.activation_height.is_some() {
+    if upgrade_info.next_version.is_some() != upgrade_info.activation_time.is_some() {
         return Err(BulletinError::ParseError(format!(
             "ring {} has malformed upgrade_info",
             ring.id
@@ -334,7 +321,7 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
         upgrade_info: UpgradeInfo {
             current_version: upgrade_info.current_version,
             next_version: upgrade_info.next_version,
-            activation_height: upgrade_info.activation_height,
+            activation_time: upgrade_info.activation_time,
         },
     };
     Ok(BulletinPost {

@@ -101,10 +101,9 @@ where
         );
 
         // Get ring public_key from bulletin
-        let (ring_payload, _observed_height) =
-            read_ring_for_protocol(&*self.state.bulletin, &req.ring_id)
-                .await
-                .map_err(StoreSecretError::ProtocolError)?;
+        let ring_payload = read_ring_for_protocol(&*self.state.bulletin, &req.ring_id)
+            .await
+            .map_err(StoreSecretError::ProtocolError)?;
 
         let proof = EncryptionProof {
             shared_point: req.shared_point,

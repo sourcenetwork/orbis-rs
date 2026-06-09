@@ -79,10 +79,9 @@ where
         validate_dkg_claims(&token, &req.ring_id)?;
 
         let ring_id = req.ring_id.clone();
-        let (ring_payload, _observed_height) =
-            read_ring_for_protocol(&*self.state.bulletin, &ring_id)
-                .await
-                .map_err(DkgError::ProtocolError)?;
+        let ring_payload = read_ring_for_protocol(&*self.state.bulletin, &ring_id)
+            .await
+            .map_err(DkgError::ProtocolError)?;
         validate_fresh_dkg_ring_payload(&ring_id, &ring_payload)?;
 
         let routes = resolve_node_routes(&self.state.bulletin, &ring_payload.peer_node_keys)

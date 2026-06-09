@@ -8,7 +8,8 @@ pub struct UpgradeInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_version: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub activation_height: Option<i64>,
+    /// Unix timestamp in seconds when `next_version` becomes effective.
+    pub activation_time: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,8 +233,6 @@ pub trait Bulletin {
     async fn update(&self, id: String, signature_scheme: String, signature: Vec<u8>) -> Result<()>;
     /// Read a typed Orbis object.
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost>;
-    /// Read an authoritative ring snapshot and the chain height that produced it.
-    async fn read_ring_with_height(&self, id: String) -> Result<(BulletinPost, i64)>;
     /// Chain ID used when building chain-bound signing statements.
     fn chain_id(&self) -> String;
     /// Serialize the canonical sign bytes for a ring reshare finalization sign doc.

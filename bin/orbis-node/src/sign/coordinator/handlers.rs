@@ -170,7 +170,7 @@ where
                             object_id, error
                         ))
                     })?;
-                let (ring_payload, _observed_height) =
+                let ring_payload =
                     read_ring_for_protocol(&*self.app_state.bulletin, &document_payload.ring_id)
                         .await
                         .map_err(SignError::ProtocolError)?;

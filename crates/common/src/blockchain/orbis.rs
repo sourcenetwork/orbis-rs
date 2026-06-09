@@ -50,8 +50,8 @@ pub struct UpgradeInfo {
     pub current_version: u64,
     #[prost(uint64, optional, tag = "2")]
     pub next_version: Option<u64>,
-    #[prost(int64, optional, tag = "3")]
-    pub activation_height: Option<i64>,
+    #[prost(uint64, optional, tag = "3")]
+    pub activation_time: Option<u64>,
 }
 
 /// Fresh-DKG confirmation stored on an unfinalized ring.
@@ -186,8 +186,8 @@ pub struct MsgUpdateRingByAcp {
     pub pss_interval: Option<u64>,
     #[prost(uint64, optional, tag = "6")]
     pub next_version: Option<u64>,
-    #[prost(int64, optional, tag = "7")]
-    pub activation_height: Option<i64>,
+    #[prost(uint64, optional, tag = "7")]
+    pub activation_time: Option<u64>,
     #[prost(bool, tag = "8")]
     pub clear_upgrade: bool,
 }
@@ -202,7 +202,7 @@ impl MsgUpdateRingByAcp {
         new_threshold: Option<u32>,
         pss_interval: Option<u64>,
         next_version: Option<u64>,
-        activation_height: Option<i64>,
+        activation_time: Option<u64>,
         clear_upgrade: bool,
     ) -> Self {
         Self {
@@ -212,7 +212,7 @@ impl MsgUpdateRingByAcp {
             new_threshold,
             pss_interval,
             next_version,
-            activation_height,
+            activation_time,
             clear_upgrade,
         }
     }
@@ -963,7 +963,7 @@ impl SourceHubClient {
         new_threshold: Option<u32>,
         pss_interval: Option<u64>,
         next_version: Option<u64>,
-        activation_height: Option<i64>,
+        activation_time: Option<u64>,
         clear_upgrade: bool,
     ) -> Result<BroadcastResult> {
         let signer = self
@@ -976,7 +976,7 @@ impl SourceHubClient {
             new_threshold,
             pss_interval,
             next_version,
-            activation_height,
+            activation_time,
             clear_upgrade,
         );
         self.broadcast_proto_msg_with_gas(
@@ -1046,29 +1046,6 @@ impl SourceHubClient {
             BlockchainError::Serialization(format!("Failed to decode ring response: {}", e))
         })?;
         Ok(response.ring)
-    }
-
-    pub async fn orbis_read_ring_with_height(&self, ring_id: &str) -> Result<Option<(Ring, u64)>> {
-        let request = QueryRingRequest {
-            id: ring_id.to_string(),
-        };
-        let (response_bytes, height) = match self
-            .abci_query_with_height(
-                "/sourcehub.orbis.Query/Ring",
-                request.encode_to_vec(),
-                None,
-                false,
-            )
-            .await
-        {
-            Ok(response) => response,
-            Err(BlockchainError::NotFound(_)) => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        let response = QueryRingResponse::decode(response_bytes.as_slice()).map_err(|e| {
-            BlockchainError::Serialization(format!("Failed to decode ring response: {}", e))
-        })?;
-        Ok(response.ring.map(|ring| (ring, height)))
     }
 
     pub async fn orbis_read_document(&self, id: &str) -> Result<Option<Document>> {
@@ -1277,7 +1254,7 @@ mod tests {
             upgrade_info: Some(UpgradeInfo {
                 current_version: 0,
                 next_version: Some(1),
-                activation_height: Some(100),
+                activation_time: Some(100),
             }),
             ..Default::default()
         };
@@ -1286,6 +1263,6 @@ mod tests {
         let info = decoded.upgrade_info.expect("upgrade_info");
         assert_eq!(info.current_version, 0);
         assert_eq!(info.next_version, Some(1));
-        assert_eq!(info.activation_height, Some(100));
+        assert_eq!(info.activation_time, Some(100));
     }
 }

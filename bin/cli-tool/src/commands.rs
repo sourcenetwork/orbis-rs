@@ -804,7 +804,7 @@ pub async fn update_ring_post_by_acp(
     new_threshold: Option<u32>,
     pss_interval: Option<u64>,
     next_version: Option<u64>,
-    activation_height: Option<i64>,
+    activation_time: Option<u64>,
     clear_upgrade: bool,
 ) -> Result<()> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
@@ -821,7 +821,7 @@ pub async fn update_ring_post_by_acp(
             new_threshold,
             pss_interval,
             next_version,
-            activation_height,
+            activation_time,
             clear_upgrade,
         )
         .await

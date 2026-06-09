@@ -487,36 +487,6 @@ impl SourceHubClient {
         Ok(decode_abci_data(response.value))
     }
 
-    /// Execute an ABCI query and return both decoded value and response height.
-    pub async fn abci_query_with_height(
-        &self,
-        path: &str,
-        data: Vec<u8>,
-        height: Option<u64>,
-        prove: bool,
-    ) -> Result<(Vec<u8>, u64)> {
-        let height = height
-            .map(tendermint::block::Height::try_from)
-            .transpose()
-            .map_err(|e| BlockchainError::Query(format!("Invalid block height: {}", e)))?;
-        let response = self
-            .rpc_client
-            .abci_query(Some(path.to_string()), data, height, prove)
-            .await?;
-        if response.code.is_err() {
-            let log = response.log.to_lowercase();
-            if log.contains("not found") {
-                return Err(BlockchainError::NotFound(response.log));
-            }
-            return Err(BlockchainError::Query(format!(
-                "ABCI query failed: {} (code {})",
-                response.log,
-                response.code.value()
-            )));
-        }
-        Ok((decode_abci_data(response.value), response.height.value()))
-    }
-
     pub(crate) async fn abci_query_optional(
         &self,
         path: &str,

@@ -21,7 +21,6 @@ pub struct DummyBulletin {
     pending_finalization_ring_pks: Mutex<HashMap<String, String>>,
     /// Successful fresh-DKG finalization confirmations by ring ID.
     finalization_counts: Mutex<HashMap<String, usize>>,
-    latest_height: Mutex<i64>,
 }
 
 #[async_trait]
@@ -86,11 +85,6 @@ impl Bulletin for DummyBulletin {
             .get(&id)
             .cloned()
             .ok_or(BulletinError::NotFound { id })
-    }
-
-    async fn read_ring_with_height(&self, id: String) -> Result<(BulletinPost, i64)> {
-        let post = self.read(id, BulletinKind::Ring).await?;
-        Ok((post, *self.latest_height.lock().unwrap()))
     }
 
     fn chain_id(&self) -> String {
@@ -194,7 +188,6 @@ impl Default for DummyBulletin {
             posts: Mutex::new(HashMap::new()),
             pending_finalization_ring_pks: Mutex::new(HashMap::new()),
             finalization_counts: Mutex::new(HashMap::new()),
-            latest_height: Mutex::new(0),
         }
     }
 }
@@ -279,10 +272,6 @@ impl DummyBulletin {
             .copied()
             .unwrap_or_default()
     }
-
-    pub fn set_latest_height(&self, height: i64) {
-        *self.latest_height.lock().unwrap() = height;
-    }
 }
 
 #[cfg(test)]
@@ -299,7 +288,7 @@ mod tests {
             upgrade_info: crate::r#trait::UpgradeInfo {
                 current_version: 1,
                 next_version: Some(2),
-                activation_height: Some(500),
+                activation_time: Some(500),
             },
             ..Default::default()
         };
@@ -353,7 +342,7 @@ mod tests {
         assert_eq!(payload.ring_pk, "ring-pk");
         assert_eq!(payload.upgrade_info.current_version, 1);
         assert_eq!(payload.upgrade_info.next_version, Some(2));
-        assert_eq!(payload.upgrade_info.activation_height, Some(500));
+        assert_eq!(payload.upgrade_info.activation_time, Some(500));
         assert_eq!(bulletin.finalization_count(&ring_id), 2);
     }
 

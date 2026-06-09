@@ -2,7 +2,7 @@ use crate::constants::PSS_GRACE_PERIOD_SECS;
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::SessionKind;
 use crate::dkg::session_state::ReshareParams;
-use crate::helpers::helpers::extract_node_part;
+use crate::helpers::helpers::{extract_node_part, read_ring_for_protocol};
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::{BearerToken, DkgClaims};
 use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo, RingPayload};
@@ -160,10 +160,9 @@ async fn load_ring_payload_by_post_id(
     post_id: &str,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<RingPayload> {
-    let (ring_payload, _observed_height) =
-        crate::helpers::helpers::read_ring_for_protocol(&**bulletin, post_id)
-            .await
-            .map_err(DkgError::ProtocolError)?;
+    let ring_payload = read_ring_for_protocol(&**bulletin, post_id)
+        .await
+        .map_err(DkgError::ProtocolError)?;
 
     if !ring_payload_matches_ring_key(ring_pk_hex, &ring_payload.ring_pk) {
         return Err(DkgError::Unauthorized(format!(

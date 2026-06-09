@@ -1,5 +1,5 @@
 use super::*;
-
+use crate::helpers::helpers::read_ring_for_protocol;
 /// Handle a `DkgMessage::SessionInit`.
 ///
 /// Validates the session kind (Fresh/Refresh/Reshare), assigns this node's role
@@ -272,13 +272,10 @@ where
             .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
             validate_dkg_claims(&token, &ring_id)?;
 
-            let (bulletin_ring_payload, _observed_height) =
-                crate::helpers::helpers::read_ring_for_protocol(
-                    &*coord.app_state.bulletin,
-                    &ring_id,
-                )
-                .await
-                .map_err(DkgError::ProtocolError)?;
+            let bulletin_ring_payload =
+                read_ring_for_protocol(&*coord.app_state.bulletin, &ring_id)
+                    .await
+                    .map_err(DkgError::ProtocolError)?;
             validate_fresh_dkg_ring_payload(&ring_id, &bulletin_ring_payload)?;
 
             validate_fresh_session_init_params(

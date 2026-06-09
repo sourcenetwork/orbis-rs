@@ -80,7 +80,7 @@ fn ring_query_conversion_preserves_upgrade_info() {
         upgrade_info: Some(common::blockchain::orbis::UpgradeInfo {
             current_version: 1,
             next_version: Some(2),
-            activation_height: Some(500),
+            activation_time: Some(500),
         }),
         ..Default::default()
     })
@@ -91,7 +91,7 @@ fn ring_query_conversion_preserves_upgrade_info() {
         UpgradeInfo {
             current_version: 1,
             next_version: Some(2),
-            activation_height: Some(500),
+            activation_time: Some(500),
         }
     );
 }
