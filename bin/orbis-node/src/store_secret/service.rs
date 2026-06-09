@@ -1,5 +1,6 @@
 use crate::app_state::AppState;
 use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
+use crate::helpers::helpers::read_ring_for_protocol;
 use crate::helpers::helpers::RingConfig;
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::metrics;
@@ -8,9 +9,7 @@ use crate::sign::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::messages::SignContext;
 use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
-use bulletin::r#trait::{
-    BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, RingPayload,
-};
+use bulletin::r#trait::{BulletinPost, BulletinWriteKind, DocumentPayload};
 use crypto::r#trait::{Dkg, EncryptionProof, Secret};
 use proto::store_secret_service::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
@@ -102,19 +101,10 @@ where
         );
 
         // Get ring public_key from bulletin
-        let ring_info = self
-            .state
-            .bulletin
-            .read(req.ring_id.clone(), BulletinKind::Ring)
-            .await
-            .map_err(|e| {
-                StoreSecretError::Storage(format!("Failed to read ring '{}': {}", req.ring_id, e))
-            })?;
-
-        let ring_payload =
-            serde_json::from_slice::<RingPayload>(&ring_info.payload).map_err(|e| {
-                StoreSecretError::Deserialization(format!("Failed to parse ring payload: {}", e))
-            })?;
+        let (ring_payload, _observed_height) =
+            read_ring_for_protocol(&*self.state.bulletin, &req.ring_id)
+                .await
+                .map_err(StoreSecretError::ProtocolError)?;
 
         let proof = EncryptionProof {
             shared_point: req.shared_point,
@@ -219,7 +209,9 @@ where
                     session_id.to_string(),
                     ring,
                     message_to_sign,
-                    SignContext::Bulletin,
+                    SignContext::Bulletin {
+                        object_id: object_id.clone(),
+                    },
                 )
                 .await
                 .map_err(|e| StoreSecretError::Signing(format!("Signing failed: {}", e)))?;

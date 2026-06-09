@@ -122,7 +122,10 @@ impl GrpcServiceError for PreError {
             PreError::VerificationFailed(_) => {
                 GrpcErrorClassification::new(Code::InvalidArgument, Level::WARN, true)
             }
-            PreError::NetworkCommunication(_) | PreError::ProtocolError(_) => {
+            PreError::ProtocolError(_) => {
+                GrpcErrorClassification::new(Code::FailedPrecondition, Level::WARN, true)
+            }
+            PreError::NetworkCommunication(_) => {
                 GrpcErrorClassification::new(Code::Internal, Level::WARN, true)
             }
             PreError::SystemTime(_) => {
@@ -251,7 +254,7 @@ mod tests {
             ),
             (
                 PreError::ProtocolError("test".into()),
-                Code::Internal,
+                Code::FailedPrecondition,
                 Level::WARN,
                 true,
             ),

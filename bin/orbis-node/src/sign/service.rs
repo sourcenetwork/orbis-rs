@@ -106,6 +106,7 @@ where
             &*self.state.bulletin,
             &self.state.local_storage,
             &req.derivation_id,
+            true,
         )
         .await?;
 

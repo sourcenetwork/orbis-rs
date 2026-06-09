@@ -84,6 +84,7 @@ where
             .map_err(PreError::Unauthorized)?;
 
         let req = request.into_inner();
+
         let valid_window = req.valid_window.map(|w| ValidWindow {
             start: w.start,
             end: w.end,

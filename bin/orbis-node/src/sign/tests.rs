@@ -150,7 +150,9 @@ async fn test_dkg_then_sign_end_to_end() {
                 .public_polynomial,
             },
             message.clone(),
-            SignContext::Bulletin,
+            SignContext::Bulletin {
+                object_id: bulletin_object_id(&message),
+            },
         )
         .await
         .expect("Signing should succeed");
@@ -277,6 +279,12 @@ async fn create_test_document_and_post(
     bulletin_post.try_into().expect("serialize BulletinPost")
 }
 
+fn bulletin_object_id(message: &[u8]) -> String {
+    BulletinPost::try_from(message.to_vec())
+        .expect("deserialize test BulletinPost")
+        .id
+}
+
 /// Test signing with different message hashes
 #[tokio::test]
 #[serial_test::serial]
@@ -352,7 +360,9 @@ async fn test_sign_different_messages() {
                     .public_polynomial,
                 },
                 message.clone(),
-                SignContext::Bulletin,
+                SignContext::Bulletin {
+                    object_id: bulletin_object_id(&message),
+                },
             )
             .await
             .expect("Signing should succeed");
@@ -456,7 +466,9 @@ async fn test_sign_fails_wrong_message() {
                 .public_polynomial,
             },
             original_message.clone(),
-            SignContext::Bulletin,
+            SignContext::Bulletin {
+                object_id: bulletin_object_id(&original_message),
+            },
         )
         .await
         .expect("Signing should succeed");
@@ -546,6 +558,7 @@ async fn test_sign_response_cleanup() {
             .unwrap()
             .as_millis()
     );
+    let object_id = bulletin_object_id(&message);
 
     let _sign_response_bytes = sign_coordinator
         .initiate_signing(
@@ -564,7 +577,7 @@ async fn test_sign_response_cleanup() {
                 .public_polynomial,
             },
             message,
-            SignContext::Bulletin,
+            SignContext::Bulletin { object_id },
         )
         .await
         .expect("Signing should succeed");
@@ -663,7 +676,9 @@ async fn test_sign_fails_invalid_bulletin_post() {
                 .public_polynomial,
             },
             invalid_message.to_vec(),
-            SignContext::Bulletin,
+            SignContext::Bulletin {
+                object_id: "invalid-bulletin-post".to_string(),
+            },
         )
         .await;
 
@@ -772,7 +787,9 @@ async fn test_sign_fails_post_not_on_bulletin() {
                 .public_polynomial,
             },
             fake_message,
-            SignContext::Bulletin,
+            SignContext::Bulletin {
+                object_id: "fake_post_id_that_doesnt_exist".to_string(),
+            },
         )
         .await;
 
@@ -866,7 +883,7 @@ async fn test_sign_fails_tampered_payload() {
     let tampered_payload: Vec<u8> = tampered_doc.try_into().expect("serialize");
 
     let tampered_bulletin_post = BulletinPost {
-        id: post_id,               // Same ID as the posted one
+        id: post_id.clone(),       // Same ID as the posted one
         payload: tampered_payload, // But different payload!
     };
 
@@ -902,7 +919,7 @@ async fn test_sign_fails_tampered_payload() {
                 .public_polynomial,
             },
             tampered_message,
-            SignContext::Bulletin,
+            SignContext::Bulletin { object_id: post_id },
         )
         .await;
 
@@ -982,7 +999,7 @@ async fn test_sign_fails_invalid_ring_id() {
         .expect("post to bulletin");
 
     let bulletin_post = BulletinPost {
-        id: post_id,
+        id: post_id.clone(),
         payload: payload_bytes,
     };
 
@@ -1016,7 +1033,7 @@ async fn test_sign_fails_invalid_ring_id() {
                 .public_polynomial,
             },
             message,
-            SignContext::Bulletin,
+            SignContext::Bulletin { object_id: post_id },
         )
         .await;
 
@@ -1565,7 +1582,7 @@ async fn test_failed_round_two_consumes_nonce_state() {
             .store_nonce(
                 nonce_key.clone(),
                 vec![1, 2, 3],
-                "bulletin".to_string(),
+                "bulletin:test-object".to_string(),
                 sender_peer_id.as_bytes().to_vec(),
             )
             .await
@@ -1579,7 +1596,9 @@ async fn test_failed_round_two_consumes_nonce_state() {
                 from_node_id: 0,
                 message: vec![0; MAX_SIGN_MESSAGE_BYTES + 1],
                 all_commitments: Vec::new(),
-                context: SignContext::Bulletin,
+                context: SignContext::Bulletin {
+                    object_id: "test-object".to_string(),
+                },
             }),
             &sender_peer_id,
         )

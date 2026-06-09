@@ -1,3 +1,4 @@
+use crate::helpers::helpers::ensure_ring_protocol_version;
 use crate::pre::{
     error::{PreError, Result},
     messages::PreMessage,
@@ -32,8 +33,8 @@ pub async fn fetch_bulletin_payloads(
             PreError::Deserialization(format!("Failed to parse document payload: {}", e))
         })?;
 
-    let ring_info = bulletin
-        .read(document_payload.ring_id.clone(), BulletinKind::Ring)
+    let (ring_info, observed_height) = bulletin
+        .read_ring_with_height(document_payload.ring_id.clone())
         .await
         .map_err(|e| {
             PreError::Storage(format!(
@@ -44,6 +45,8 @@ pub async fn fetch_bulletin_payloads(
 
     let ring_payload = serde_json::from_slice::<RingPayload>(&ring_info.payload)
         .map_err(|e| PreError::Deserialization(format!("Failed to parse ring payload: {}", e)))?;
+    ensure_ring_protocol_version(&document_payload.ring_id, &ring_payload, observed_height)
+        .map_err(PreError::ProtocolError)?;
 
     Ok((document_payload, ring_payload))
 }

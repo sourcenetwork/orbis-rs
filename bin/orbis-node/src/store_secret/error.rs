@@ -29,6 +29,9 @@ pub enum StoreSecretError {
     #[error("Signing error: {0}")]
     Signing(String),
 
+    #[error("Protocol error: {0}")]
+    ProtocolError(String),
+
     #[error("{0}")]
     SystemTime(String),
 }
@@ -52,6 +55,9 @@ impl GrpcServiceError for StoreSecretError {
             }
             StoreSecretError::RingNotFound(_) => {
                 GrpcErrorClassification::new(Code::NotFound, Level::TRACE, false)
+            }
+            StoreSecretError::ProtocolError(_) => {
+                GrpcErrorClassification::new(Code::FailedPrecondition, Level::WARN, true)
             }
             StoreSecretError::SystemTime(_) => {
                 GrpcErrorClassification::new(Code::Internal, Level::ERROR, false)
@@ -133,6 +139,12 @@ mod tests {
                 StoreSecretError::Signing("test".into()),
                 Code::Internal,
                 Level::ERROR,
+                true,
+            ),
+            (
+                StoreSecretError::ProtocolError("test".into()),
+                Code::FailedPrecondition,
+                Level::WARN,
                 true,
             ),
             (

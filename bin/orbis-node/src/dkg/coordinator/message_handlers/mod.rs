@@ -4,8 +4,8 @@ use crate::constants::{
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::helpers::{
     build_reshare_params, derive_refresh_session_id, derive_reshare_session_id,
-    effective_new_peer_node_keys, load_reshare_ring_payload, serialize_commitment_coefficients,
-    session_not_found, validate_dkg_claims, validate_dkg_node_authorization_for_committee,
+    effective_new_peer_node_keys, serialize_commitment_coefficients, session_not_found,
+    validate_dkg_claims, validate_dkg_node_authorization_for_committee,
     validate_fresh_dkg_ring_payload, validate_fresh_session_init_params,
     validate_refresh_session_init, validate_reshare_session_init,
 };
@@ -17,7 +17,6 @@ use crate::helpers::node_routes::{
     node_key_for_peer, peer_ids_from_routes, resolve_node_routes,
 };
 use crate::ring_state::RingShareBundle;
-use bulletin::r#trait::{BulletinKind, RingPayload};
 
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use crypto::r#trait::{DistributedShare, DkgRole};

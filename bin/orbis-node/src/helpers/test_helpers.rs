@@ -329,6 +329,7 @@ fn seed_three_node_dummy_bulletin(
     }
 
     let payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: String::new(),
         peer_node_keys,
         new_peer_node_keys: None,
@@ -954,6 +955,7 @@ pub async fn write_ring_to_bulletin(
     pss_interval: Option<u64>,
 ) {
     let payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: ring_pk.to_string(),
         peer_node_keys,
         new_peer_node_keys: None,
@@ -1177,6 +1179,7 @@ pub async fn create_ring_on_chain_with_pss(
             pss_interval,
             policy_id,
             nonce.map(String::from),
+            crate::constants::PROTOCOL_VERSION,
         )
         .await
         .expect("create ring on-chain");

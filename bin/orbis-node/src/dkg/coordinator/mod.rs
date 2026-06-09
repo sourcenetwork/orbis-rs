@@ -207,6 +207,18 @@ where
             ..
         } = &message
         {
+            if self
+                .app_state
+                .dkg_session_state
+                .session_exists(&session_id)
+                .await
+            {
+                tracing::debug!(
+                    session_id,
+                    "DKG Coordinator: ignoring duplicate SessionInit for existing session"
+                );
+                return Ok(None);
+            }
             return message_handlers::handle_session_init(
                 self,
                 session_id,

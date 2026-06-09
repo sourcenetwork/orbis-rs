@@ -1,5 +1,6 @@
 use crate::constants::{MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE};
 use crate::dkg::session_state::{ReshareSignatureReadyKey, SessionStateManager};
+use crate::helpers::helpers::ensure_ring_protocol_version;
 use crate::ring_state::{RingPolyState, RingShareBundle};
 use crate::sign::{
     error::{Result, SignError},
@@ -230,6 +231,7 @@ pub async fn validate_ring_reshare_update_statement(
     dkg_session_state: &SessionStateManager<impl Dkg + 'static>,
     statement: &RingReshareUpdateStatement,
     expected_message: Option<&[u8]>,
+    enforce_protocol: bool,
 ) -> Result<String> {
     if statement.domain != RING_RESHARE_UPDATE_DOMAIN {
         return Err(SignError::Unauthorized(format!(
@@ -260,8 +262,8 @@ pub async fn validate_ring_reshare_update_statement(
     }
     let statement_storage_key = storage_key_from_ring_pk_hex(&statement.ring_pk)?;
 
-    let current_post = bulletin
-        .read(statement.ring_id.clone(), BulletinKind::Ring)
+    let (current_post, observed_height) = bulletin
+        .read_ring_with_height(statement.ring_id.clone())
         .await
         .map_err(|e| {
             SignError::VerificationFailed(format!(
@@ -274,6 +276,10 @@ pub async fn validate_ring_reshare_update_statement(
         serde_json::from_slice(&current_post.payload).map_err(|e| {
             SignError::Deserialization(format!("Failed to parse current ring payload: {}", e))
         })?;
+    if enforce_protocol {
+        ensure_ring_protocol_version(&statement.ring_id, &current_payload, observed_height)
+            .map_err(SignError::ProtocolError)?;
+    }
     let current_ring_hash = ring_payload_reshare_sign_state_sha256_hex(&current_payload);
     if current_ring_hash != statement.current_ring_sha256 {
         return Err(SignError::VerificationFailed(format!(
@@ -617,6 +623,7 @@ pub async fn fetch_bulletin_payloads(
     bulletin: &(dyn Bulletin + Send + Sync),
     _local_storage: &impl LocalStorage,
     derivation_id: &str,
+    enforce_protocol: bool,
 ) -> Result<(KeyDerivation, RingPayload)> {
     let object_info = bulletin
         .read(derivation_id.to_string(), BulletinKind::KeyDerivation)
@@ -630,8 +637,8 @@ pub async fn fetch_bulletin_payloads(
             SignError::Deserialization(format!("Failed to parse document payload: {}", e))
         })?;
 
-    let ring_info = bulletin
-        .read(derivation_payload.ring_id.clone(), BulletinKind::Ring)
+    let (ring_info, observed_height) = bulletin
+        .read_ring_with_height(derivation_payload.ring_id.clone())
         .await
         .map_err(|e| {
             SignError::Storage(format!(
@@ -642,6 +649,10 @@ pub async fn fetch_bulletin_payloads(
 
     let ring_payload = serde_json::from_slice::<RingPayload>(&ring_info.payload)
         .map_err(|e| SignError::Deserialization(format!("Failed to parse ring payload: {}", e)))?;
+    if enforce_protocol {
+        ensure_ring_protocol_version(&derivation_payload.ring_id, &ring_payload, observed_height)
+            .map_err(SignError::ProtocolError)?;
+    }
 
     Ok((derivation_payload, ring_payload))
 }
@@ -651,11 +662,19 @@ pub async fn verify_message_and_get_info<D: Dkg>(
     message: &[u8],
     local_storage: &impl LocalStorage,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    expected_object_id: &str,
+    enforce_protocol: bool,
 ) -> Result<(String, D::PubPoly)> {
     // 1. Deserialize the BulletinPost from the message
     let post: BulletinPost = message.to_vec().try_into().map_err(|e| {
         SignError::Deserialization(format!("Failed to deserialize BulletinPost: {}", e))
     })?;
+    if post.id != expected_object_id {
+        return Err(SignError::Unauthorized(format!(
+            "Bulletin signing object_id '{}' does not match message post id '{}'",
+            expected_object_id, post.id
+        )));
+    }
 
     // 2. Verify it exists on bulletin by id.
     let actual_post = bulletin
@@ -681,8 +700,8 @@ pub async fn verify_message_and_get_info<D: Dkg>(
     })?;
 
     // 5. Look up ring info from bulletin
-    let ring_info = bulletin
-        .read(doc_payload.ring_id.clone(), BulletinKind::Ring)
+    let (ring_info, observed_height) = bulletin
+        .read_ring_with_height(doc_payload.ring_id.clone())
         .await
         .map_err(|e| {
             SignError::VerificationFailed(format!(
@@ -693,6 +712,10 @@ pub async fn verify_message_and_get_info<D: Dkg>(
 
     let ring_payload: RingPayload = serde_json::from_slice(&ring_info.payload)
         .map_err(|e| SignError::Deserialization(format!("Failed to parse RingPayload: {}", e)))?;
+    if enforce_protocol {
+        ensure_ring_protocol_version(&doc_payload.ring_id, &ring_payload, observed_height)
+            .map_err(SignError::ProtocolError)?;
+    }
 
     // 6. Load pub_poly from local RingPolyState (never on the bulletin).
     let poly_state = RingPolyState::load_from_ring_pk_hex(local_storage, &ring_payload.ring_pk)
@@ -762,6 +785,7 @@ mod ring_reshare_update_tests {
         let block_number_nonce = 0;
 
         let current_payload = RingPayload {
+            upgrade_info: Default::default(),
             ring_pk: ring_pk_hex.clone(),
             peer_node_keys: old_peer_node_keys,
             new_peer_node_keys,
@@ -809,6 +833,7 @@ mod ring_reshare_update_tests {
     #[test]
     fn ring_reshare_sign_state_hash_canonicalizes_participant_order() {
         let payload = RingPayload {
+            upgrade_info: Default::default(),
             ring_pk: "ring-pk".to_string(),
             peer_node_keys: vec!["old-b".to_string(), "old-a".to_string()],
             new_peer_node_keys: Some(vec!["new-b".to_string(), "new-a".to_string()]),
@@ -819,6 +844,7 @@ mod ring_reshare_update_tests {
             policy_id: Some("policy".to_string()),
         };
         let reordered = RingPayload {
+            upgrade_info: Default::default(),
             peer_node_keys: vec!["old-a".to_string(), "old-b".to_string()],
             new_peer_node_keys: Some(vec!["new-a".to_string(), "new-b".to_string()]),
             ..payload.clone()
@@ -833,6 +859,7 @@ mod ring_reshare_update_tests {
     #[test]
     fn ring_reshare_sign_state_hash_ignores_pss_interval() {
         let payload = RingPayload {
+            upgrade_info: Default::default(),
             ring_pk: "ring-pk".to_string(),
             peer_node_keys: vec!["old-a".to_string(), "old-b".to_string()],
             new_peer_node_keys: Some(vec!["new-a".to_string(), "new-b".to_string()]),
@@ -843,6 +870,7 @@ mod ring_reshare_update_tests {
             policy_id: Some("policy".to_string()),
         };
         let with_pss_interval = RingPayload {
+            upgrade_info: Default::default(),
             pss_interval: Some(30),
             ..payload.clone()
         };
@@ -854,8 +882,37 @@ mod ring_reshare_update_tests {
     }
 
     #[test]
+    fn ring_reshare_sign_state_hash_ignores_upgrade_info() {
+        let payload = RingPayload {
+            upgrade_info: Default::default(),
+            ring_pk: "ring-pk".to_string(),
+            peer_node_keys: vec!["old-a".to_string(), "old-b".to_string()],
+            new_peer_node_keys: Some(vec!["new-a".to_string(), "new-b".to_string()]),
+            new_threshold: Some(1),
+            threshold: 2,
+            pss_interval: Some(30),
+            block_number_nonce: 9,
+            policy_id: Some("policy".to_string()),
+        };
+        let with_upgrade = RingPayload {
+            upgrade_info: bulletin::r#trait::UpgradeInfo {
+                current_version: 7,
+                next_version: Some(8),
+                activation_height: Some(900),
+            },
+            ..payload.clone()
+        };
+
+        assert_eq!(
+            ring_payload_reshare_sign_state_sha256_hex(&payload),
+            ring_payload_reshare_sign_state_sha256_hex(&with_upgrade)
+        );
+    }
+
+    #[test]
     fn finalized_ring_sign_state_hash_applies_and_clears_pending_reshare_fields() {
         let current = RingPayload {
+            upgrade_info: Default::default(),
             ring_pk: "ring-pk".to_string(),
             peer_node_keys: vec!["old-a".to_string(), "old-b".to_string()],
             new_peer_node_keys: Some(vec!["new-a".to_string(), "new-b".to_string()]),
@@ -887,9 +944,10 @@ mod ring_reshare_update_tests {
         let (bulletin, state, statement, ready_key) = fixture(None, None).await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let ring_pk = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
-            .await
-            .expect("ready marker should authorize validation with current payload fallback");
+        let ring_pk =
+            validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
+                .await
+                .expect("ready marker should authorize validation with current payload fallback");
 
         assert_eq!(ring_pk, statement.ring_pk);
     }
@@ -902,7 +960,7 @@ mod ring_reshare_update_tests {
         )
         .await;
 
-        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
+        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
             .await
             .expect_err("missing local ready marker should be retryable");
 
@@ -918,9 +976,10 @@ mod ring_reshare_update_tests {
         .await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let ring_pk = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
-            .await
-            .expect("ready marker should authorize validation");
+        let ring_pk =
+            validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
+                .await
+                .expect("ready marker should authorize validation");
 
         assert_eq!(ring_pk, statement.ring_pk);
     }
@@ -935,7 +994,7 @@ mod ring_reshare_update_tests {
         state.mark_reshare_signature_ready(ready_key).await;
         statement.block_number_nonce += 1;
 
-        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
+        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
             .await
             .expect_err("mismatched nonce should be rejected");
 
@@ -953,9 +1012,10 @@ mod ring_reshare_update_tests {
             fixture(Some(vec!["new-a".to_string(), "new-b".to_string()]), None).await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let ring_pk = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
-            .await
-            .expect("committee-only reshare should use current threshold fallback");
+        let ring_pk =
+            validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
+                .await
+                .expect("committee-only reshare should use current threshold fallback");
 
         assert_eq!(ring_pk, statement.ring_pk);
     }
@@ -965,9 +1025,10 @@ mod ring_reshare_update_tests {
         let (bulletin, state, statement, ready_key) = fixture(None, Some(1)).await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let ring_pk = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None)
-            .await
-            .expect("threshold-only reshare should use current committee fallback");
+        let ring_pk =
+            validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
+                .await
+                .expect("threshold-only reshare should use current committee fallback");
 
         assert_eq!(ring_pk, statement.ring_pk);
     }

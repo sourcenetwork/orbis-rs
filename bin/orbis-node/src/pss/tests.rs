@@ -200,6 +200,7 @@ async fn test_refresh_ring_rejects_non_member() {
     // ring_pk is not validated on the non-member path because membership is checked
     // first once the payload is deserialized.
     let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: "fake_pk".to_string(),
         peer_node_keys: vec![fake_node_key_1.clone(), fake_node_key_2.clone()],
         new_peer_node_keys: None,
@@ -251,6 +252,7 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
 
     let ring_pk = "pss_invalid_peer_ring";
     let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: ring_pk.to_string(),
         peer_node_keys: vec![our_node_key.clone(), "missing-node-info-key".to_string()],
         new_peer_node_keys: None,
@@ -329,8 +331,8 @@ async fn test_refresh_ring_bad_bulletin_payload() {
 
     let result = super::pss_ring(&Arc::new(app_state), &entry).await;
     assert!(
-        matches!(result, Err(DkgError::Deserialization(_))),
-        "Expected Deserialization error, got: {:?}",
+        matches!(result, Err(DkgError::ProtocolError(_))),
+        "Expected ProtocolError, got: {:?}",
         result
     );
 
@@ -345,6 +347,7 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
     let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
 
     let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: "bulletin_ring_pk".to_string(),
         peer_node_keys: vec![our_hex],
         new_peer_node_keys: None,
@@ -389,6 +392,7 @@ async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
     let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
     let local_ring_pk = "pending_fresh_elapsed_local_ring_pk";
     let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: String::new(),
         peer_node_keys: vec![our_hex],
         new_peer_node_keys: None,
@@ -453,6 +457,7 @@ async fn test_pending_fresh_dkg_before_interval_remains_indexed() {
     let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
     let local_ring_pk = "pending_fresh_not_due_local_ring_pk";
     let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: String::new(),
         peer_node_keys: vec![our_hex],
         new_peer_node_keys: None,
@@ -502,6 +507,7 @@ async fn test_pending_fresh_dkg_without_interval_remains_indexed() {
     let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
     let local_ring_pk = "pending_fresh_no_interval_local_ring_pk";
     let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: String::new(),
         peer_node_keys: vec![our_hex],
         new_peer_node_keys: None,
@@ -651,6 +657,7 @@ async fn test_pss_ring_reshare_bypasses_interval() {
     let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
 
     let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: "pss_reshare_bypass_pk".to_string(),
         peer_node_keys: vec![our_hex.clone()],
         new_peer_node_keys: Some(vec![our_hex.clone()]),
@@ -693,6 +700,7 @@ async fn test_pss_ring_reshare_rejects_new_committee_node_without_allowlist() {
         .expect("override self NodeInfo without allowlist");
 
     let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: "pss_reshare_unauthorized_pk".to_string(),
         peer_node_keys: vec![our_node_key.clone()],
         new_peer_node_keys: Some(vec![our_node_key]),
@@ -731,6 +739,7 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
     let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
 
     let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: "pss_new_threshold_pk".to_string(),
         peer_node_keys: vec![our_hex.clone()],
         new_peer_node_keys: None, // only threshold change, no new members
@@ -762,6 +771,7 @@ async fn test_pss_ring_refresh_skips_without_interval() {
     let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
 
     let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: "pss_no_interval_pk".to_string(),
         peer_node_keys: vec![our_hex.clone()],
         new_peer_node_keys: None,
@@ -791,6 +801,7 @@ async fn test_pss_ring_refresh_zero_interval_is_due() {
     let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
 
     let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: "pss_zero_interval_pk".to_string(),
         peer_node_keys: vec![our_hex.clone()],
         new_peer_node_keys: None,
@@ -814,7 +825,7 @@ async fn test_pss_ring_refresh_zero_interval_is_due() {
 }
 
 /// When the ring index lists a ring that has no bulletin entry at all,
-/// `pss_ring` should return a Storage error.
+/// `pss_ring` should fail closed through the protocol-state guard.
 #[tokio::test]
 async fn test_refresh_ring_missing_from_bulletin() {
     let db_name = "pss_missing_ring";
@@ -836,8 +847,8 @@ async fn test_refresh_ring_missing_from_bulletin() {
     };
     let result = super::pss_ring(&Arc::new(app_state), &entry).await;
     assert!(
-        matches!(result, Err(DkgError::Storage(_))),
-        "Expected Storage error for missing ring, got: {:?}",
+        matches!(result, Err(DkgError::ProtocolError(_))),
+        "Expected ProtocolError for missing ring, got: {:?}",
         result
     );
 

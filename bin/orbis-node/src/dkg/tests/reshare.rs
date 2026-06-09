@@ -127,7 +127,7 @@ async fn test_rings_pss_blocks_refresh_and_reshare_equally() {
 }
 
 /// Reshare `SessionInit` for a ring that does not exist in `RingIndex` must be
-/// rejected with `Unauthorized`.
+/// rejected by the fail-closed protocol-state guard.
 #[tokio::test]
 async fn test_reshare_session_init_rejects_unknown_ring() {
     let db_name = "test_reshare_rejects_unknown_ring";
@@ -154,8 +154,8 @@ async fn test_reshare_session_init_rejects_unknown_ring() {
     );
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
-        matches!(result, Err(crate::dkg::error::DkgError::Unauthorized(_))),
-        "Expected Unauthorized for unknown ring, got: {:?}",
+        matches!(result, Err(crate::dkg::error::DkgError::ProtocolError(_))),
+        "Expected ProtocolError for unknown ring, got: {:?}",
         result
     );
     cleanup_db(&db_path);
@@ -181,6 +181,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
     let sender_hex = "aabbccdd";
     let session_ring_pk = "session_ring_hex";
     let payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: "payload_ring_pk_other".to_string(),
         peer_node_keys: vec![sender_hex.to_string()],
         new_peer_node_keys: Some(vec!["00112233".to_string()]),
@@ -330,6 +331,7 @@ async fn test_reshare_session_init_rejects_new_receiver_without_node_allowlist()
         .set_ring(
             post_id.clone(),
             RingPayload {
+                upgrade_info: Default::default(),
                 ring_pk: ring_pk.to_string(),
                 peer_node_keys: vec![sender_node_key.clone()],
                 new_peer_node_keys: Some(vec![receiver_node_key.clone()]),
@@ -625,6 +627,7 @@ async fn write_ring_with_announced_reshare(
     use local_storage::r#trait::LocalStorageKeys;
 
     let payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: ring_pk.to_string(),
         peer_node_keys,
         new_peer_node_keys: announced_new_peer_node_keys,
@@ -947,6 +950,7 @@ async fn post_ring_for_validation(
     use local_storage::r#trait::LocalStorageKeys;
 
     let payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: ring_pk.to_string(),
         peer_node_keys,
         new_peer_node_keys,
@@ -1279,6 +1283,7 @@ async fn post_reshare_announcement(
     bulletin: &DummyBulletin,
 ) -> String {
     let payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: key_string.to_string(),
         peer_node_keys: old_peer_node_keys.to_vec(),
         threshold: old_threshold,

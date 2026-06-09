@@ -803,6 +803,9 @@ pub async fn update_ring_post_by_acp(
     new_peer_ids: Vec<String>,
     new_threshold: Option<u32>,
     pss_interval: Option<u64>,
+    next_version: Option<u64>,
+    activation_height: Option<i64>,
+    clear_upgrade: bool,
 ) -> Result<()> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
@@ -812,7 +815,15 @@ pub async fn update_ring_post_by_acp(
         .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
 
     let result = client
-        .orbis_update_ring_by_acp(&ring_id, new_peer_ids, new_threshold, pss_interval)
+        .orbis_update_ring_by_acp(
+            &ring_id,
+            new_peer_ids,
+            new_threshold,
+            pss_interval,
+            next_version,
+            activation_height,
+            clear_upgrade,
+        )
         .await
         .map_err(|e| anyhow!("Failed to update ring: {}", e))?;
 

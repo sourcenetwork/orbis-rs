@@ -93,8 +93,8 @@ pub struct RefreshHealthCheckContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SignContext {
     /// Message bytes are a serialized `BulletinPost` verified against the chain.
-    /// No derivation or metadata — signs from the root key.
-    Bulletin,
+    /// The object ID lets nonce responders resolve and gate the authoritative ring.
+    Bulletin { object_id: String },
     /// Policy-authorized signing: JWT token is validated and policy access is checked.
     /// The derivation path is stored on the bulletin in the `KeyDerivation` entry and is
     /// NOT passed by the client — it is fetched from the chain and used directly.

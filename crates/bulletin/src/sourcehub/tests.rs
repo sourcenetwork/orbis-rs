@@ -1,5 +1,7 @@
-use super::SourceHubBulletin;
-use crate::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, RingPayload};
+use super::{ring_to_bulletin_post, SourceHubBulletin};
+use crate::r#trait::{
+    Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, RingPayload, UpgradeInfo,
+};
 use common::{
     blockchain::{
         acp::Object, ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner,
@@ -71,6 +73,29 @@ fn test_name() {
     assert_eq!(SourceHubBulletin::name(), "bulletin/sourcehub");
 }
 
+#[test]
+fn ring_query_conversion_preserves_upgrade_info() {
+    let post = ring_to_bulletin_post(common::blockchain::orbis::Ring {
+        id: "ring-1".to_string(),
+        upgrade_info: Some(common::blockchain::orbis::UpgradeInfo {
+            current_version: 1,
+            next_version: Some(2),
+            activation_height: Some(500),
+        }),
+        ..Default::default()
+    })
+    .expect("convert ring");
+    let payload = RingPayload::try_from(post).expect("parse ring payload");
+    assert_eq!(
+        payload.upgrade_info,
+        UpgradeInfo {
+            current_version: 1,
+            next_version: Some(2),
+            activation_height: Some(500),
+        }
+    );
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bulletin_document() {
@@ -102,6 +127,7 @@ async fn test_bulletin_document() {
             None,
             &policy_id,
             Some("document-test".to_string()),
+            0,
         )
         .await
         .unwrap();
@@ -187,6 +213,7 @@ async fn test_bulletin_ring() {
             None,
             &policy_id,
             Some("ring-test".to_string()),
+            0,
         )
         .await
         .unwrap();

@@ -160,14 +160,10 @@ async fn load_ring_payload_by_post_id(
     post_id: &str,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<RingPayload> {
-    let bulletin_post = bulletin
-        .read(post_id.to_string(), BulletinKind::Ring)
-        .await
-        .map_err(|e| {
-            DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
-        })?;
-    let ring_payload: RingPayload = serde_json::from_slice(&bulletin_post.payload)
-        .map_err(|e| DkgError::Deserialization(format!("Bad ring payload from bulletin: {}", e)))?;
+    let (ring_payload, _observed_height) =
+        crate::helpers::helpers::read_ring_for_protocol(&**bulletin, post_id)
+            .await
+            .map_err(DkgError::ProtocolError)?;
 
     if !ring_payload_matches_ring_key(ring_pk_hex, &ring_payload.ring_pk) {
         return Err(DkgError::Unauthorized(format!(
@@ -213,7 +209,7 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
     bulletin_post_id: &str,
     local_storage: &S,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
-) -> Result<()> {
+) -> Result<RingPayload> {
     // 0. Fast-fail on structurally invalid parameters before hitting the bulletin.
     if proposed_new_peer_node_keys.is_empty() {
         return Err(DkgError::InvalidInput(
@@ -242,21 +238,8 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
     let resolved_post_id = entry
         .map(|e| e.bulletin_post_id.as_str())
         .unwrap_or(bulletin_post_id);
-    let bulletin_post = bulletin
-        .read(resolved_post_id.to_string(), BulletinKind::Ring)
-        .await
-        .map_err(|e| {
-            DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
-        })?;
-    let ring_payload: RingPayload = serde_json::from_slice(&bulletin_post.payload)
-        .map_err(|e| DkgError::Deserialization(format!("Bad ring payload: {}", e)))?;
-
-    if !ring_payload_matches_ring_key(ring_pk_hex, &ring_payload.ring_pk) {
-        return Err(DkgError::Unauthorized(format!(
-            "Bulletin ring_pk does not match session ring for {}",
-            ring_pk_hex
-        )));
-    }
+    let ring_payload =
+        load_ring_payload_by_post_id(ring_pk_hex, resolved_post_id, bulletin).await?;
 
     // 3. Sender membership in the old committee is verified by the caller (session_init
     // handler) after resolving NodeInfo routes: it needs the resolved peer→node-key map
@@ -296,7 +279,7 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         )));
     }
 
-    Ok(())
+    Ok(ring_payload)
 }
 
 /// Validates an incoming PSS refresh `SessionInit` message.
@@ -331,14 +314,7 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
     let post_id = &entry.bulletin_post_id;
 
     // Fetch the canonical RingPayload from the bulletin — it is the source of truth.
-    let bulletin_post = bulletin
-        .read(post_id.to_string(), BulletinKind::Ring)
-        .await
-        .map_err(|e| {
-            DkgError::Unauthorized(format!("Ring {} not found in bulletin: {}", ring_pk_hex, e))
-        })?;
-    let ring_payload: RingPayload = serde_json::from_slice(&bulletin_post.payload)
-        .map_err(|e| DkgError::Deserialization(format!("Bad ring payload from bulletin: {}", e)))?;
+    let ring_payload = load_ring_payload_by_post_id(ring_pk_hex, post_id, bulletin).await?;
 
     // 2. Verify enough time has elapsed since the last refresh/DKG.
     //    Only enforced when the ring has a `pss_interval` set.
@@ -864,6 +840,7 @@ mod tests {
 
     fn make_valid_ring_payload(node_key: &str) -> RingPayload {
         RingPayload {
+            upgrade_info: Default::default(),
             ring_pk: String::new(),
             peer_node_keys: vec![node_key.to_string()],
             new_peer_node_keys: None,
@@ -877,6 +854,7 @@ mod tests {
 
     fn make_valid_reshare_ring_payload(old_node_key: &str, new_node_key: &str) -> RingPayload {
         RingPayload {
+            upgrade_info: Default::default(),
             ring_pk: "ring-pk".to_string(),
             peer_node_keys: vec![old_node_key.to_string()],
             new_peer_node_keys: Some(vec![new_node_key.to_string()]),
@@ -925,6 +903,7 @@ mod tests {
         let local_peer_id = "peer-local";
         let ring_id = "ring-1";
         let ring_payload = RingPayload {
+            upgrade_info: Default::default(),
             ring_pk: String::new(),
             peer_node_keys: vec![node_key.to_string()],
             new_peer_node_keys: None,
@@ -1342,8 +1321,8 @@ mod tests {
             .unwrap();
         let result = validate_refresh_session_init("pk", &storage, &bulletin).await;
         assert!(
-            matches!(result, Err(DkgError::Deserialization(_))),
-            "Expected Deserialization error for corrupt payload, got: {:?}",
+            matches!(result, Err(DkgError::ProtocolError(_))),
+            "Expected ProtocolError for corrupt payload, got: {:?}",
             result
         );
         cleanup_db(&db_path);

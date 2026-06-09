@@ -51,6 +51,7 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
 
     // Create a test RingPayload using curve-specific generator
     let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: test_ring_pk_hex(),
         peer_node_keys: vec!["peer1".to_string()],
         new_peer_node_keys: None,
@@ -378,6 +379,7 @@ async fn test_store_secret_idempotent() {
     let ring_pk_hex = hex::encode(&ring_pk_bytes);
 
     let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: ring_pk_hex.clone(),
         peer_node_keys: vec!["peer1".to_string()],
         new_peer_node_keys: None,

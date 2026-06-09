@@ -46,7 +46,7 @@ use crate::helpers::node_routes::{
 };
 use crate::metrics;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
-use bulletin::r#trait::{BulletinKind, RingPayload};
+use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{Dkg, DkgRole};
 use crypto::{GroupAffine, PolynomialCommitmentImpl, PubPolyImpl, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -138,19 +138,10 @@ where
     let post_id = &entry.bulletin_post_id;
     let ring_pk_str = &entry.ring_pk_str;
 
-    let bulletin_post = app_state
-        .bulletin
-        .read(post_id.to_string(), BulletinKind::Ring)
-        .await
-        .map_err(|e| {
-            DkgError::Storage(format!(
-                "PSS: failed to read RingPayload from bulletin (post_id={}): {}",
-                post_id, e
-            ))
-        })?;
-
-    let ring_payload: RingPayload = serde_json::from_slice(&bulletin_post.payload)
-        .map_err(|e| DkgError::Deserialization(format!("PSS: bad ring payload: {}", e)))?;
+    let (ring_payload, _observed_height) =
+        crate::helpers::helpers::read_ring_for_protocol(&*app_state.bulletin, post_id)
+            .await
+            .map_err(DkgError::ProtocolError)?;
 
     if ring_payload.ring_pk.is_empty() {
         return cleanup_pending_fresh_ring_if_due(app_state, entry, &ring_payload);

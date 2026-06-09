@@ -40,6 +40,18 @@ pub struct Ring {
     pub policy_id: String,
     #[prost(message, repeated, tag = "11")]
     pub confirmations: Vec<RingConfirmation>,
+    #[prost(message, optional, tag = "12")]
+    pub upgrade_info: Option<UpgradeInfo>,
+}
+
+#[derive(Clone, Message)]
+pub struct UpgradeInfo {
+    #[prost(uint64, tag = "1")]
+    pub current_version: u64,
+    #[prost(uint64, optional, tag = "2")]
+    pub next_version: Option<u64>,
+    #[prost(int64, optional, tag = "3")]
+    pub activation_height: Option<i64>,
 }
 
 /// Fresh-DKG confirmation stored on an unfinalized ring.
@@ -126,6 +138,8 @@ pub struct MsgCreateRing {
     pub policy_id: String,
     #[prost(string, optional, tag = "6")]
     pub nonce: Option<String>,
+    #[prost(uint64, tag = "7")]
+    pub current_version: u64,
 }
 
 impl MsgCreateRing {
@@ -138,6 +152,7 @@ impl MsgCreateRing {
         pss_interval: Option<u64>,
         policy_id: &str,
         nonce: Option<String>,
+        current_version: u64,
     ) -> Self {
         Self {
             creator: creator.to_string(),
@@ -146,6 +161,7 @@ impl MsgCreateRing {
             pss_interval,
             policy_id: policy_id.to_string(),
             nonce,
+            current_version,
         }
     }
 }
@@ -168,6 +184,12 @@ pub struct MsgUpdateRingByAcp {
     pub new_threshold: Option<u32>,
     #[prost(uint64, optional, tag = "5")]
     pub pss_interval: Option<u64>,
+    #[prost(uint64, optional, tag = "6")]
+    pub next_version: Option<u64>,
+    #[prost(int64, optional, tag = "7")]
+    pub activation_height: Option<i64>,
+    #[prost(bool, tag = "8")]
+    pub clear_upgrade: bool,
 }
 
 impl MsgUpdateRingByAcp {
@@ -179,6 +201,9 @@ impl MsgUpdateRingByAcp {
         new_peer_node_keys: Vec<String>,
         new_threshold: Option<u32>,
         pss_interval: Option<u64>,
+        next_version: Option<u64>,
+        activation_height: Option<i64>,
+        clear_upgrade: bool,
     ) -> Self {
         Self {
             creator: creator.to_string(),
@@ -186,6 +211,9 @@ impl MsgUpdateRingByAcp {
             new_peer_node_keys,
             new_threshold,
             pss_interval,
+            next_version,
+            activation_height,
+            clear_upgrade,
         }
     }
 }
@@ -690,6 +718,7 @@ impl SourceHubClient {
         pss_interval: Option<u64>,
         policy_id: &str,
         nonce: Option<String>,
+        current_version: u64,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
@@ -701,6 +730,7 @@ impl SourceHubClient {
             pss_interval,
             policy_id,
             nonce,
+            current_version,
         );
         self.broadcast_proto_msg_with_gas(
             MsgCreateRing::TYPE_URL,
@@ -720,9 +750,17 @@ impl SourceHubClient {
         pss_interval: Option<u64>,
         policy_id: &str,
         nonce: Option<String>,
+        current_version: u64,
     ) -> Result<(BroadcastResult, String)> {
         let result = self
-            .orbis_create_ring(peer_node_keys, threshold, pss_interval, policy_id, nonce)
+            .orbis_create_ring(
+                peer_node_keys,
+                threshold,
+                pss_interval,
+                policy_id,
+                nonce,
+                current_version,
+            )
             .await?;
 
         if result.code != 0 {
@@ -924,6 +962,9 @@ impl SourceHubClient {
         new_peer_node_keys: Vec<String>,
         new_threshold: Option<u32>,
         pss_interval: Option<u64>,
+        next_version: Option<u64>,
+        activation_height: Option<i64>,
+        clear_upgrade: bool,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
@@ -934,6 +975,9 @@ impl SourceHubClient {
             new_peer_node_keys,
             new_threshold,
             pss_interval,
+            next_version,
+            activation_height,
+            clear_upgrade,
         );
         self.broadcast_proto_msg_with_gas(
             MsgUpdateRingByAcp::TYPE_URL,
@@ -1002,6 +1046,29 @@ impl SourceHubClient {
             BlockchainError::Serialization(format!("Failed to decode ring response: {}", e))
         })?;
         Ok(response.ring)
+    }
+
+    pub async fn orbis_read_ring_with_height(&self, ring_id: &str) -> Result<Option<(Ring, u64)>> {
+        let request = QueryRingRequest {
+            id: ring_id.to_string(),
+        };
+        let (response_bytes, height) = match self
+            .abci_query_with_height(
+                "/sourcehub.orbis.Query/Ring",
+                request.encode_to_vec(),
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(BlockchainError::NotFound(_)) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let response = QueryRingResponse::decode(response_bytes.as_slice()).map_err(|e| {
+            BlockchainError::Serialization(format!("Failed to decode ring response: {}", e))
+        })?;
+        Ok(response.ring.map(|ring| (ring, height)))
     }
 
     pub async fn orbis_read_document(&self, id: &str) -> Result<Option<Document>> {
@@ -1075,13 +1142,13 @@ mod tests {
     use super::{
         decode_store_document_id, decode_store_key_derivation_id, ring_reshare_sign_state_hash,
         MsgCreateRing, MsgFinalizeRing, MsgFinalizeRingReshareByThresholdSignature,
-        MsgStoreDocumentResponse, MsgStoreKeyDerivationResponse, MsgUpdateRingByAcp,
-        RingReshareSignState,
+        MsgStoreDocumentResponse, MsgStoreKeyDerivationResponse, MsgUpdateRingByAcp, Ring,
+        RingReshareSignState, UpgradeInfo,
     };
 
     #[test]
     fn create_ring_preserves_present_zero_pss_interval_on_wire() {
-        let msg = MsgCreateRing::new("c", vec!["p1".to_string()], 1, Some(0), "policy", None);
+        let msg = MsgCreateRing::new("c", vec!["p1".to_string()], 1, Some(0), "policy", None, 0);
         let bytes = msg.encode_to_vec();
 
         assert!(
@@ -1102,11 +1169,14 @@ mod tests {
             vec!["p1".to_string(), "p2".to_string()],
             Some(2),
             Some(10),
+            Some(1),
+            Some(1000),
+            true,
         );
 
         assert_eq!(
             hex::encode(msg.encode_to_vec()),
-            "0a01631201721a0270311a0270322002280a"
+            "0a01631201721a0270311a0270322002280a300138e8074001"
         );
     }
 
@@ -1198,5 +1268,24 @@ mod tests {
             decode_store_key_derivation_id(Some(&bytes)),
             Some("key-derivation-id".to_string())
         );
+    }
+
+    #[test]
+    fn ring_upgrade_info_round_trips() {
+        let ring = Ring {
+            id: "ring-1".to_string(),
+            upgrade_info: Some(UpgradeInfo {
+                current_version: 0,
+                next_version: Some(1),
+                activation_height: Some(100),
+            }),
+            ..Default::default()
+        };
+        let bytes = ring.encode_to_vec();
+        let decoded = Ring::decode(bytes.as_slice()).expect("decode");
+        let info = decoded.upgrade_info.expect("upgrade_info");
+        assert_eq!(info.current_version, 0);
+        assert_eq!(info.next_version, Some(1));
+        assert_eq!(info.activation_height, Some(100));
     }
 }

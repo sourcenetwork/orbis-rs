@@ -119,7 +119,7 @@ async fn test_three_nodes_connect() {
     println!("Test completed successfully!");
 }
 
-/// Test: start_dkg returns Unauthenticated when the ring does not exist on the bulletin.
+/// Test: start_dkg fails closed when the ring does not exist on the bulletin.
 ///
 /// In the new flow the bulletin is read before any participant resolution happens,
 /// so a missing ring is the first meaningful rejection after JWT validation.
@@ -155,8 +155,8 @@ async fn test_start_dkg_ring_not_found() {
     let status = result.unwrap_err();
     assert_eq!(
         status.code(),
-        tonic::Code::Unauthenticated,
-        "ring not found should return Unauthenticated: {}",
+        tonic::Code::FailedPrecondition,
+        "ring not found should return FailedPrecondition: {}",
         status.message()
     );
     assert!(
@@ -187,6 +187,7 @@ async fn test_start_dkg_fails_on_connection_failure() {
         .set_ring(
             TEST_FRESH_DKG_RING_ID.to_string(),
             RingPayload {
+                upgrade_info: Default::default(),
                 ring_pk: String::new(),
                 peer_node_keys: vec![other_node_key.clone()],
                 new_peer_node_keys: None,
@@ -640,6 +641,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
         .set_ring(
             TEST_FRESH_DKG_RING_ID.to_string(),
             RingPayload {
+                upgrade_info: Default::default(),
                 ring_pk: String::new(),
                 peer_node_keys: peer_ids.clone(),
                 new_peer_node_keys: None,
@@ -756,7 +758,8 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
     assert!(
         error.to_string().contains("Unauthorized")
             || error.to_string().contains("peer_ids")
-            || error.to_string().contains("match"),
+            || error.to_string().contains("match")
+            || error.to_string().contains("protocol state"),
         "Error should indicate peer_ids mismatch: {}",
         error
     );
@@ -784,6 +787,22 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
     bulletin
         .set_node_info(node_key.clone(), denied_node_info)
         .expect("override NodeInfo");
+    bulletin
+        .set_ring(
+            TEST_FRESH_DKG_RING_ID.to_string(),
+            RingPayload {
+                upgrade_info: Default::default(),
+                ring_pk: String::new(),
+                peer_node_keys: vec![node_key.clone()],
+                new_peer_node_keys: None,
+                new_threshold: None,
+                threshold: 1,
+                pss_interval: None,
+                block_number_nonce: 0,
+                policy_id: Some("test-policy".to_string()),
+            },
+        )
+        .expect("seed ring");
 
     let app_state = Arc::new(app_state);
     let coordinator = DkgCoordinator::new(app_state.clone());
@@ -835,6 +854,7 @@ async fn test_fresh_session_init_publishes_complete_state() {
         .set_ring(
             TEST_FRESH_DKG_RING_ID.to_string(),
             RingPayload {
+                upgrade_info: Default::default(),
                 ring_pk: String::new(),
                 peer_node_keys: vec![node_key.clone()],
                 new_peer_node_keys: None,

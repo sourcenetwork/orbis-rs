@@ -390,6 +390,93 @@ where
     Ok((poly, Some(bundle)))
 }
 
+/// Resolve the ring protocol epoch at the height of its authoritative query.
+pub fn effective_protocol_version(
+    upgrade_info: &bulletin::r#trait::UpgradeInfo,
+    observed_height: i64,
+) -> Result<u64, String> {
+    match (upgrade_info.next_version, upgrade_info.activation_height) {
+        (None, None) => Ok(upgrade_info.current_version),
+        (Some(next_version), Some(activation_height)) => {
+            if next_version <= upgrade_info.current_version {
+                return Err(format!(
+                    "next_version {} must be greater than current_version {}",
+                    next_version, upgrade_info.current_version
+                ));
+            }
+            if activation_height <= 0 {
+                return Err(format!(
+                    "activation_height {} must be positive",
+                    activation_height
+                ));
+            }
+            if observed_height >= activation_height {
+                Ok(next_version)
+            } else {
+                Ok(upgrade_info.current_version)
+            }
+        }
+        _ => {
+            Err("next_version and activation_height must both be set or both be absent".to_string())
+        }
+    }
+}
+
+/// Fail closed unless this binary serves the ring at the observed chain height.
+pub fn ensure_ring_protocol_version(
+    ring_id: &str,
+    ring_payload: &bulletin::r#trait::RingPayload,
+    observed_height: i64,
+) -> Result<u64, String> {
+    let node_version = crate::constants::PROTOCOL_VERSION;
+    let effective_version =
+        effective_protocol_version(&ring_payload.upgrade_info, observed_height).map_err(|error| {
+            format!(
+                "malformed protocol upgrade state for ring {}: node_version={} effective_version=invalid observed_height={}: {}",
+                ring_id, node_version, observed_height, error
+            )
+        })?;
+
+    if effective_version != node_version {
+        return Err(format!(
+            "protocol version mismatch for ring {}: node_version={} effective_version={} observed_height={}",
+            ring_id, node_version, effective_version, observed_height
+        ));
+    }
+
+    Ok(effective_version)
+}
+
+/// Read and validate a ring and its query height as one authoritative snapshot.
+pub async fn read_ring_for_protocol(
+    bulletin: &(dyn bulletin::r#trait::Bulletin + Send + Sync),
+    ring_id: &str,
+) -> Result<(bulletin::r#trait::RingPayload, i64), String> {
+    let (ring_post, observed_height) = bulletin
+        .read_ring_with_height(ring_id.to_string())
+        .await
+        .map_err(|error| {
+            format!(
+                "failed to read protocol state for ring {}: node_version={} effective_version=unknown observed_height=unknown: {}",
+                ring_id,
+                crate::constants::PROTOCOL_VERSION,
+                error
+            )
+        })?;
+    let ring_payload =
+        bulletin::r#trait::RingPayload::try_from(ring_post).map_err(|error| {
+            format!(
+                "malformed ring payload for ring {}: node_version={} effective_version=invalid observed_height={}: {}",
+                ring_id,
+                crate::constants::PROTOCOL_VERSION,
+                observed_height,
+                error
+            )
+        })?;
+    ensure_ring_protocol_version(ring_id, &ring_payload, observed_height)?;
+    Ok((ring_payload, observed_height))
+}
+
 fn decode_pub_poly_hex<D: Dkg>(hex_str: &str) -> Result<D::PubPoly, String> {
     let bytes =
         hex::decode(hex_str).map_err(|e| format!("Failed to decode polynomial hex: {}", e))?;
@@ -437,5 +524,82 @@ mod tests {
             determine_ring_node_id_from_peer_id("peer-b", &ring),
             Some(2)
         );
+    }
+
+    #[test]
+    fn effective_protocol_version_returns_next_at_activation() {
+        let info = bulletin::r#trait::UpgradeInfo {
+            current_version: 0,
+            next_version: Some(1),
+            activation_height: Some(50),
+        };
+        assert_eq!(effective_protocol_version(&info, 49), Ok(0));
+        assert_eq!(effective_protocol_version(&info, 50), Ok(1));
+    }
+
+    #[test]
+    fn effective_protocol_version_rejects_malformed_pending_fields() {
+        let missing_height = bulletin::r#trait::UpgradeInfo {
+            current_version: 0,
+            next_version: Some(1),
+            activation_height: None,
+        };
+        assert!(effective_protocol_version(&missing_height, 50).is_err());
+
+        let non_monotonic = bulletin::r#trait::UpgradeInfo {
+            current_version: 1,
+            next_version: Some(1),
+            activation_height: Some(50),
+        };
+        assert!(effective_protocol_version(&non_monotonic, 50).is_err());
+    }
+
+    #[test]
+    fn protocol_mismatch_error_includes_decision_context() {
+        let payload = bulletin::r#trait::RingPayload {
+            upgrade_info: bulletin::r#trait::UpgradeInfo {
+                current_version: crate::constants::PROTOCOL_VERSION + 1,
+                next_version: None,
+                activation_height: None,
+            },
+            ..Default::default()
+        };
+        let error = ensure_ring_protocol_version("ring-1", &payload, 77).unwrap_err();
+        assert!(error.contains("ring-1"));
+        assert!(error.contains("node_version=0"));
+        assert!(error.contains("effective_version=1"));
+        assert!(error.contains("observed_height=77"));
+    }
+
+    #[tokio::test]
+    async fn authoritative_ring_query_height_drives_activation_decision() {
+        let bulletin = bulletin::dummy::DummyBulletin::default();
+        let ring_id = "ring-height-snapshot";
+        bulletin
+            .set_ring(
+                ring_id.to_string(),
+                bulletin::r#trait::RingPayload {
+                    upgrade_info: bulletin::r#trait::UpgradeInfo {
+                        current_version: crate::constants::PROTOCOL_VERSION,
+                        next_version: Some(crate::constants::PROTOCOL_VERSION + 1),
+                        activation_height: Some(10),
+                    },
+                    ..Default::default()
+                },
+            )
+            .expect("seed ring");
+
+        bulletin.set_latest_height(9);
+        let (_, observed_height) = read_ring_for_protocol(&bulletin, ring_id)
+            .await
+            .expect("version 0 is effective before activation");
+        assert_eq!(observed_height, 9);
+
+        bulletin.set_latest_height(10);
+        let error = read_ring_for_protocol(&bulletin, ring_id)
+            .await
+            .expect_err("version 1 is effective at activation");
+        assert!(error.contains("effective_version=1"));
+        assert!(error.contains("observed_height=10"));
     }
 }

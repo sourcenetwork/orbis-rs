@@ -2,6 +2,7 @@ use super::SignCoordinator;
 use crate::constants::{
     JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
 };
+use crate::helpers::helpers::read_ring_for_protocol;
 use crate::ring_state::RingShareBundle;
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
@@ -12,6 +13,7 @@ use crate::sign::helpers::{
 };
 use crate::sign::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
+use bulletin::r#trait::{BulletinKind, DocumentPayload};
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PubShare, ThresholdSigner,
 };
@@ -114,6 +116,7 @@ where
                     &*self.app_state.bulletin,
                     &self.app_state.local_storage,
                     derivation_id,
+                    true,
                 )
                 .await?;
                 check_policy_access(
@@ -126,12 +129,15 @@ where
                 .await?;
                 Some(ring_payload.ring_pk)
             }
+            // The ready marker proves this signing round belongs to an already accepted
+            // reshare session, which is allowed to finish across an activation boundary.
             SignContext::RingReshareUpdate(ctx) => Some(
                 validate_ring_reshare_update_statement(
                     &*self.app_state.bulletin,
                     &self.app_state.dkg_session_state,
                     &ctx.statement,
                     None,
+                    false,
                 )
                 .await?,
             ),
@@ -145,7 +151,31 @@ where
                 refresh_candidate_bundle = Some(bundle);
                 Some(ring_pk_hex)
             }
-            SignContext::Bulletin => None,
+            SignContext::Bulletin { object_id } => {
+                let document_post = self
+                    .app_state
+                    .bulletin
+                    .read(object_id.clone(), BulletinKind::Document)
+                    .await
+                    .map_err(|error| {
+                        SignError::VerificationFailed(format!(
+                            "Failed to read bulletin signing object '{}': {}",
+                            object_id, error
+                        ))
+                    })?;
+                let document_payload: DocumentPayload =
+                    serde_json::from_slice(&document_post.payload).map_err(|error| {
+                        SignError::Deserialization(format!(
+                            "Failed to parse bulletin signing document '{}': {}",
+                            object_id, error
+                        ))
+                    })?;
+                let (ring_payload, _observed_height) =
+                    read_ring_for_protocol(&*self.app_state.bulletin, &document_payload.ring_id)
+                        .await
+                        .map_err(SignError::ProtocolError)?;
+                Some(ring_payload.ring_pk)
+            }
         };
 
         // Auth passed — load share and generate nonce.
@@ -196,7 +226,7 @@ where
         // Bind the nonce to the context that authorized it so Round 2 cannot
         // swap to a different derivation using this nonce.
         let context_key = match &context {
-            SignContext::Bulletin => "bulletin".to_string(),
+            SignContext::Bulletin { object_id } => format!("bulletin:{object_id}"),
             SignContext::Policy(ctx) => ctx.derivation_id.clone(),
             SignContext::RingReshareUpdate(ctx) => {
                 ring_reshare_update_context_key(&*self.app_state.bulletin, &ctx.statement)?
@@ -276,13 +306,15 @@ where
 
         // Resolve ring info and auth based on pathway
         let (ring_pk_hex, derivation, metadata) = match context {
-            SignContext::Bulletin => {
+            SignContext::Bulletin { ref object_id } => {
                 // Message is a BulletinPost; on-chain existence is the authorization.
                 // Signs from root key: no derivation, no metadata.
                 let (ring_pk_hex, _) = verify_message_and_get_info::<D>(
                     &message,
                     &self.app_state.local_storage,
                     &self.app_state.bulletin,
+                    object_id,
+                    !S::INTERACTIVE,
                 )
                 .await?;
                 (ring_pk_hex, None, None)
@@ -311,6 +343,7 @@ where
                     &*self.app_state.bulletin,
                     &self.app_state.local_storage,
                     derivation_id,
+                    !S::INTERACTIVE,
                 )
                 .await?;
 
@@ -342,6 +375,7 @@ where
                     &self.app_state.dkg_session_state,
                     &ctx.statement,
                     Some(&message),
+                    false,
                 )
                 .await?;
                 (ring_pk_hex, None, None)
@@ -394,7 +428,7 @@ where
 
         let signing_state = if S::INTERACTIVE {
             let expected_context_key = match &context {
-                SignContext::Bulletin => "bulletin".to_string(),
+                SignContext::Bulletin { object_id } => format!("bulletin:{object_id}"),
                 SignContext::Policy(ctx) => ctx.derivation_id.clone(),
                 SignContext::RingReshareUpdate(ctx) => {
                     ring_reshare_update_context_key(&*self.app_state.bulletin, &ctx.statement)?

@@ -201,7 +201,7 @@ where
         // requester (self_in_list=false) would verify shares against the root key
         // instead of the derived key.
         let (derivation, metadata) = match &context {
-            SignContext::Bulletin => (None, None),
+            SignContext::Bulletin { .. } => (None, None),
             SignContext::Policy(ctx) => {
                 let key_derivation = &ctx.key_derivation;
                 let derivation = Some(key_derivation.derivation.clone().into_bytes());

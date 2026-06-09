@@ -138,7 +138,10 @@ impl GrpcServiceError for SignError {
             SignError::VerificationFailed(_) => {
                 GrpcErrorClassification::new(Code::InvalidArgument, Level::WARN, true)
             }
-            SignError::NetworkCommunication(_) | SignError::ProtocolError(_) => {
+            SignError::ProtocolError(_) => {
+                GrpcErrorClassification::new(Code::FailedPrecondition, Level::WARN, true)
+            }
+            SignError::NetworkCommunication(_) => {
                 GrpcErrorClassification::new(Code::Internal, Level::WARN, true)
             }
             SignError::RequestTimestamp(_) | SignError::RingState(_) => {
@@ -272,7 +275,7 @@ mod tests {
             ),
             (
                 SignError::ProtocolError("test".into()),
-                Code::Internal,
+                Code::FailedPrecondition,
                 Level::WARN,
                 true,
             ),

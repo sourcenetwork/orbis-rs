@@ -772,6 +772,9 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         reshare_peer_ids.clone(),
         Some(reshare_threshold),
         dkg_ring_payload.pss_interval,
+        None,
+        None,
+        false,
     )
     .await
     .expect("update ring bulletin post with reshare announcement");

@@ -137,18 +137,10 @@ where
                 sender_peer_hex = %sender_hex,
                 "DKG Coordinator: Reshare SessionInit received - pre-validation"
             );
-            validate_reshare_session_init(
+            let ring_payload = validate_reshare_session_init(
                 ring_pk_hex,
                 reshare_new_peer_node_keys,
                 *reshare_new_threshold,
-                reshare_bulletin_post_id,
-                &coord.app_state.local_storage,
-                &coord.app_state.bulletin,
-            )
-            .await?;
-
-            let ring_payload = load_reshare_ring_payload(
-                ring_pk_hex,
                 reshare_bulletin_post_id,
                 &coord.app_state.local_storage,
                 &coord.app_state.bulletin,
@@ -280,23 +272,13 @@ where
             .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
             validate_dkg_claims(&token, &ring_id)?;
 
-            let ring_post = coord
-                .app_state
-                .bulletin
-                .read(ring_id.clone(), BulletinKind::Ring)
+            let (bulletin_ring_payload, _observed_height) =
+                crate::helpers::helpers::read_ring_for_protocol(
+                    &*coord.app_state.bulletin,
+                    &ring_id,
+                )
                 .await
-                .map_err(|e| {
-                    DkgError::Unauthorized(format!(
-                        "Fresh DKG target ring {} not found: {}",
-                        ring_id, e
-                    ))
-                })?;
-            let bulletin_ring_payload = RingPayload::try_from(ring_post).map_err(|e| {
-                DkgError::Unauthorized(format!(
-                    "Fresh DKG target ring {} has malformed payload: {}",
-                    ring_id, e
-                ))
-            })?;
+                .map_err(DkgError::ProtocolError)?;
             validate_fresh_dkg_ring_payload(&ring_id, &bulletin_ring_payload)?;
 
             validate_fresh_session_init_params(

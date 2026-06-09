@@ -7,14 +7,13 @@ use crate::dkg::helpers::{
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
-use crate::helpers::helpers::is_self_peer_id;
+use crate::helpers::helpers::{is_self_peer_id, read_ring_for_protocol};
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
     peer_ids_from_routes, resolve_node_routes,
 };
 use crate::metrics;
 use authn::DkgClaims;
-use bulletin::r#trait::{BulletinKind, RingPayload};
 use network::DKG;
 use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
 use std::sync::Arc;
@@ -80,23 +79,10 @@ where
         validate_dkg_claims(&token, &req.ring_id)?;
 
         let ring_id = req.ring_id.clone();
-        let ring_post = self
-            .state
-            .bulletin
-            .read(ring_id.clone(), BulletinKind::Ring)
-            .await
-            .map_err(|e| {
-                DkgError::Unauthorized(format!(
-                    "Fresh DKG target ring {} not found: {}",
-                    ring_id, e
-                ))
-            })?;
-        let ring_payload = RingPayload::try_from(ring_post).map_err(|e| {
-            DkgError::Unauthorized(format!(
-                "Fresh DKG target ring {} has malformed payload: {}",
-                ring_id, e
-            ))
-        })?;
+        let (ring_payload, _observed_height) =
+            read_ring_for_protocol(&*self.state.bulletin, &ring_id)
+                .await
+                .map_err(DkgError::ProtocolError)?;
         validate_fresh_dkg_ring_payload(&ring_id, &ring_payload)?;
 
         let routes = resolve_node_routes(&self.state.bulletin, &ring_payload.peer_node_keys)
