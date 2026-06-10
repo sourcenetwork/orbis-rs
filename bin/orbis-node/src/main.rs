@@ -407,6 +407,7 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     for &version in network::SUPPORTED_PROTOCOL_VERSIONS {
         let protocol_routes = network::routes_for_version(version)
             .expect("supported protocol version must have registered routes");
+        #[allow(clippy::single_match)]
         match version {
             0 => {
                 let dkg_service = dkg::v0::service::DkgServiceImpl::<DkgImpl>::with_routes(
