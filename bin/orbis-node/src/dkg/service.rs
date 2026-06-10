@@ -1,11 +1,11 @@
 use crate::app_state::AppState;
-use crate::dkg::coordinator::DkgCoordinator;
-use crate::dkg::error::DkgError;
-use crate::dkg::helpers::{
+use crate::dkg::v0::coordinator::DkgCoordinator;
+use crate::dkg::v0::error::DkgError;
+use crate::dkg::v0::helpers::{
     derive_fresh_dkg_session_id, validate_dkg_claims,
     validate_dkg_node_authorization_for_committee, validate_fresh_dkg_ring_payload,
 };
-use crate::dkg::messages::{DkgMessage, SessionKind};
+use crate::dkg::v0::messages::{DkgMessage, SessionKind};
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
 use crate::helpers::helpers::{is_self_peer_id, read_ring_for_route};
 use crate::helpers::node_routes::{

@@ -293,7 +293,6 @@ pub const SECRET_KEY_FILE_NAME: &str = ".orbis_secret_key";
 /// the ongoing exposure window.
 pub const SECRET_KEY_ENV_VAR: &str = "ORBIS_SECRET_KEY";
 
-
 // ============================================================================
 // Bulletin Configuration Constants
 // ============================================================================

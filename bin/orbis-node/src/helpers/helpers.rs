@@ -2,7 +2,7 @@
 //!
 //! This module provides utility functions used across the codebase.
 use crate::constants::{EXPECTED_HEX_NODE_ID_LENGTH, MAX_PEER_ID_LENGTH};
-use crate::dkg::session_state::SessionStateManager;
+use crate::dkg::v0::session_state::SessionStateManager;
 use crate::error::PeerIdValidationError;
 use crate::helpers::auth::current_unix_time;
 use crate::ring_state::RingShareBundle;

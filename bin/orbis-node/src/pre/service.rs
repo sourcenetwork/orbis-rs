@@ -3,13 +3,13 @@ use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
 use crate::helpers::helpers::{validate_all_peer_ids, RingConfig};
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::metrics;
-use crate::pre::coordinator::PreCoordinator;
-use crate::pre::error::PreError;
-use crate::pre::helpers::{
+use crate::pre::v0::coordinator::PreCoordinator;
+use crate::pre::v0::error::PreError;
+use crate::pre::v0::helpers::{
     check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads_for_version,
     validate_pre_claims, verify_encryption_binding,
 };
-use crate::pre::messages::PreRequestContext;
+use crate::pre::v0::messages::PreRequestContext;
 use crate::ring_state::RingPolyState;
 use authn::PreClaims;
 use authz::sourcehub::ValidWindow;
@@ -213,8 +213,10 @@ where
             .await?;
 
         // 6. Parse result as PreResponse and encode as JSON
-        let pre_response: crate::pre::coordinator::PreResponse = serde_json::from_slice(&result)
-            .map_err(|e| PreError::Deserialization(format!("Failed to parse PRE result: {}", e)))?;
+        let pre_response: crate::pre::v0::coordinator::PreResponse =
+            serde_json::from_slice(&result).map_err(|e| {
+                PreError::Deserialization(format!("Failed to parse PRE result: {}", e))
+            })?;
 
         let encrypted_secret = serde_json::to_vec(&pre_response)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize response: {}", e)))?;

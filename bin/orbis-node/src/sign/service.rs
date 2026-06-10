@@ -5,12 +5,12 @@ use crate::helpers::helpers::{validate_all_peer_ids, RingConfig};
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::metrics;
 use crate::ring_state::RingPolyState;
-use crate::sign::coordinator::SignCoordinator;
-use crate::sign::error::SignError;
-use crate::sign::helpers::{
+use crate::sign::v0::coordinator::SignCoordinator;
+use crate::sign::v0::error::SignError;
+use crate::sign::v0::helpers::{
     check_policy_access, fetch_bulletin_payloads_for_version, validate_sign_claims,
 };
-use crate::sign::messages::{PolicyContext, SignContext};
+use crate::sign::v0::messages::{PolicyContext, SignContext};
 use authn::SignClaims;
 use authz::sourcehub::ValidWindow;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
@@ -197,8 +197,8 @@ where
             )
             .await?;
 
-        let sign_response: crate::sign::coordinator::SignResponse = serde_json::from_slice(&result)
-            .map_err(|e| {
+        let sign_response: crate::sign::v0::coordinator::SignResponse =
+            serde_json::from_slice(&result).map_err(|e| {
                 SignError::Deserialization(format!("Failed to parse sign result: {}", e))
             })?;
 

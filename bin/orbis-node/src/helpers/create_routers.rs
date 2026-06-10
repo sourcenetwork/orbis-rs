@@ -2,10 +2,10 @@ use crate::app_state::AppState;
 use crate::constants::{
     NETWORK_MAX_CONCURRENT_INBOUND_STREAMS, NETWORK_MAX_INBOUND_STREAMS_PER_PEER_PER_SECOND,
 };
-use crate::dkg::coordinator::DkgCoordinator;
+use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::helpers::protocol_handler::GenericProtocolHandler;
-use crate::pre::coordinator::PreCoordinator;
-use crate::sign::coordinator::SignCoordinator;
+use crate::pre::v0::coordinator::PreCoordinator;
+use crate::sign::v0::coordinator::SignCoordinator;
 use network::error::Result as NetworkResult;
 use network::Router;
 use std::sync::Arc;
