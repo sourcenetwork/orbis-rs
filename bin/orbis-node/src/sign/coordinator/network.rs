@@ -6,7 +6,6 @@ use crate::sign::messages::SignMessage;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignaturePoint};
 use network::Message as NetworkMessage;
-use network::SIGN;
 
 pub(crate) struct AuthenticatedSignMessage {
     pub(crate) message: SignMessage,
@@ -53,7 +52,7 @@ where
         let stream = self
             .app_state
             .peer_connection_pool
-            .open_stream(&self.app_state.network, peer_id_str, SIGN)
+            .open_stream(&self.app_state.network, peer_id_str, self.routes.sign_alpn)
             .await
             .map_err(|e| {
                 SignError::NetworkConnection(format!(
@@ -66,7 +65,7 @@ where
             .map_err(|e| SignError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
         stream
-            .send(NetworkMessage::new(message_data, SIGN))
+            .send(NetworkMessage::new(message_data, self.routes.sign_alpn))
             .await
             .map_err(|e| {
                 SignError::NetworkCommunication(format!(
@@ -110,6 +109,7 @@ where
         match response {
             response @ SignMessage::NonceResponse { .. } if expects_nonce_response => {
                 let accepted = store_response(
+                    self.routes.version,
                     response.clone(),
                     &authenticated_peer_id,
                     &self.app_state.sign_response_state,
@@ -131,6 +131,7 @@ where
             }
             response @ SignMessage::SignResponse { .. } if !expects_nonce_response => {
                 let accepted = store_response(
+                    self.routes.version,
                     response.clone(),
                     &authenticated_peer_id,
                     &self.app_state.sign_response_state,

@@ -6,7 +6,6 @@ use crate::pre::messages::PreMessage;
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use network::Message as NetworkMessage;
-use network::REENCRYPT;
 impl<D, T> PreCoordinator<D, T>
 where
     D: Dkg<ShareValue = Fr, PublicKey = G1Affine> + Clone + Send + Sync + 'static,
@@ -42,7 +41,11 @@ where
         let stream = self
             .app_state
             .peer_connection_pool
-            .open_stream(&self.app_state.network, peer_id_str, REENCRYPT)
+            .open_stream(
+                &self.app_state.network,
+                peer_id_str,
+                self.routes.reencrypt_alpn,
+            )
             .await
             .map_err(|e| {
                 PreError::NetworkConnection(format!(
@@ -55,7 +58,10 @@ where
             .map_err(|e| PreError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
         stream
-            .send(NetworkMessage::new(message_data, REENCRYPT))
+            .send(NetworkMessage::new(
+                message_data,
+                self.routes.reencrypt_alpn,
+            ))
             .await
             .map_err(|e| {
                 PreError::NetworkCommunication(format!(
@@ -99,6 +105,7 @@ where
         match response {
             response @ PreMessage::ReencryptResponse { .. } => {
                 let accepted = store_response(
+                    self.routes.version,
                     response.clone(),
                     &authenticated_peer_id,
                     &self.app_state.pre_response_state,

@@ -65,7 +65,11 @@ where
         if !self
             .app_state
             .sign_response_state
-            .init_response(nonce_request_id.clone(), &nonce_expected_peers)
+            .init_response_for_version(
+                self.routes.version,
+                nonce_request_id.clone(),
+                &nonce_expected_peers,
+            )
             .await
         {
             return Err(SignError::ProtocolError(
@@ -93,9 +97,10 @@ where
                 let peer_id = peer_id_str.clone();
                 let req_id = nonce_request_id.clone();
                 let app_state = self.app_state.clone();
+                let routes = self.routes;
 
                 set.spawn(async move {
-                    let coordinator = SignCoordinator::<D, S>::new(app_state);
+                    let coordinator = SignCoordinator::<D, S>::with_routes(app_state, routes);
                     coordinator
                         .send_request_and_receive_response(&peer_id, nonce_req, &req_id)
                         .await
@@ -155,7 +160,7 @@ where
                 Ok(Err(e)) => {
                     self.app_state
                         .sign_response_state
-                        .remove_response(&nonce_request_id)
+                        .remove_response_for_version(self.routes.version, &nonce_request_id)
                         .await;
                     return Err(e);
                 }
@@ -175,7 +180,7 @@ where
         let nonce_responses = self
             .app_state
             .sign_response_state
-            .take_authenticated_responses(&nonce_request_id)
+            .take_authenticated_responses_for_version(self.routes.version, &nonce_request_id)
             .await
             .ok_or_else(|| {
                 SignError::Timeout(format!(

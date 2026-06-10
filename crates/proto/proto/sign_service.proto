@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package sign_service;
+package orbis.v0.sign;
 
 service SignService {
   rpc StartSign(StartSignRequest) returns (StartSignResponse);

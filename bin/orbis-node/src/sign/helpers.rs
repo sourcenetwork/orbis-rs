@@ -1,6 +1,6 @@
 use crate::constants::{MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE};
 use crate::dkg::session_state::{ReshareSignatureReadyKey, SessionStateManager};
-use crate::helpers::helpers::ensure_ring_protocol_version;
+use crate::helpers::helpers::{ensure_ring_protocol_route, ensure_ring_protocol_version};
 use crate::ring_state::{RingPolyState, RingShareBundle};
 use crate::sign::{
     error::{Result, SignError},
@@ -625,6 +625,23 @@ pub async fn fetch_bulletin_payloads(
     derivation_id: &str,
     enforce_protocol: bool,
 ) -> Result<(KeyDerivation, RingPayload)> {
+    fetch_bulletin_payloads_for_version(
+        bulletin,
+        _local_storage,
+        derivation_id,
+        enforce_protocol,
+        network::V0.version,
+    )
+    .await
+}
+
+pub async fn fetch_bulletin_payloads_for_version(
+    bulletin: &(dyn Bulletin + Send + Sync),
+    _local_storage: &impl LocalStorage,
+    derivation_id: &str,
+    enforce_protocol: bool,
+    protocol_version: u64,
+) -> Result<(KeyDerivation, RingPayload)> {
     let object_info = bulletin
         .read(derivation_id.to_string(), BulletinKind::KeyDerivation)
         .await
@@ -650,7 +667,7 @@ pub async fn fetch_bulletin_payloads(
     let ring_payload = serde_json::from_slice::<RingPayload>(&ring_info.payload)
         .map_err(|e| SignError::Deserialization(format!("Failed to parse ring payload: {}", e)))?;
     if enforce_protocol {
-        ensure_ring_protocol_version(&derivation_payload.ring_id, &ring_payload)
+        ensure_ring_protocol_route(&derivation_payload.ring_id, &ring_payload, protocol_version)
             .map_err(SignError::ProtocolError)?;
     }
 
@@ -664,6 +681,25 @@ pub async fn verify_message_and_get_info<D: Dkg>(
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
     expected_object_id: &str,
     enforce_protocol: bool,
+) -> Result<(String, D::PubPoly)> {
+    verify_message_and_get_info_for_version::<D>(
+        message,
+        local_storage,
+        bulletin,
+        expected_object_id,
+        enforce_protocol,
+        network::V0.version,
+    )
+    .await
+}
+
+pub async fn verify_message_and_get_info_for_version<D: Dkg>(
+    message: &[u8],
+    local_storage: &impl LocalStorage,
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    expected_object_id: &str,
+    enforce_protocol: bool,
+    protocol_version: u64,
 ) -> Result<(String, D::PubPoly)> {
     // 1. Deserialize the BulletinPost from the message
     let post: BulletinPost = message.to_vec().try_into().map_err(|e| {
@@ -713,7 +749,7 @@ pub async fn verify_message_and_get_info<D: Dkg>(
     let ring_payload: RingPayload = serde_json::from_slice(&ring_info.payload)
         .map_err(|e| SignError::Deserialization(format!("Failed to parse RingPayload: {}", e)))?;
     if enforce_protocol {
-        ensure_ring_protocol_version(&doc_payload.ring_id, &ring_payload)
+        ensure_ring_protocol_route(&doc_payload.ring_id, &ring_payload, protocol_version)
             .map_err(SignError::ProtocolError)?;
     }
 
@@ -743,6 +779,7 @@ pub async fn verify_message_and_get_info<D: Dkg>(
 /// and duplicate responses from the same peer. Fake `from_node_id` values are caught
 /// downstream by crypto verification (`signer.verify_share()`).
 pub async fn store_response(
+    protocol_version: u64,
     message: SignMessage,
     sender_peer_id: &PeerId,
     sign_response_state: &Arc<SignResponseManager>,
@@ -757,7 +794,12 @@ pub async fn store_response(
     );
 
     sign_response_state
-        .store_response(&request_id, message, sender_peer_id.as_bytes())
+        .store_response_for_version(
+            protocol_version,
+            &request_id,
+            message,
+            sender_peer_id.as_bytes(),
+        )
         .await
 }
 

@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
-use crate::helpers::helpers::read_ring_for_protocol;
+use crate::helpers::helpers::read_ring_for_route;
 use crate::helpers::helpers::RingConfig;
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::metrics;
@@ -11,7 +11,7 @@ use crate::store_secret::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
 use bulletin::r#trait::{BulletinPost, BulletinWriteKind, DocumentPayload};
 use crypto::r#trait::{Dkg, EncryptionProof, Secret};
-use proto::store_secret_service::{
+use proto::v0::store_secret::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
 };
 use sha2::{Digest, Sha256};
@@ -30,6 +30,7 @@ where
     S: crypto::r#trait::ThresholdSigner,
 {
     pub state: AppState<D>,
+    pub routes: &'static network::ProtocolRoutes,
     _phantom: std::marker::PhantomData<S>,
 }
 
@@ -40,8 +41,13 @@ where
 {
     /// Create a new StoreSecretServiceImpl with shared application state
     pub fn new(state: AppState<D>) -> Self {
+        Self::with_routes(state, &network::V0)
+    }
+
+    pub fn with_routes(state: AppState<D>, routes: &'static network::ProtocolRoutes) -> Self {
         Self {
             state,
+            routes,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -101,9 +107,10 @@ where
         );
 
         // Get ring public_key from bulletin
-        let ring_payload = read_ring_for_protocol(&*self.state.bulletin, &req.ring_id)
-            .await
-            .map_err(StoreSecretError::ProtocolError)?;
+        let ring_payload =
+            read_ring_for_route(&*self.state.bulletin, &req.ring_id, self.routes.version)
+                .await
+                .map_err(StoreSecretError::ProtocolError)?;
 
         let proof = EncryptionProof {
             shared_point: req.shared_point,
@@ -180,7 +187,8 @@ where
 
             // Generate random session id
             let session_id: u128 = rand::random();
-            let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
+            let coordinator =
+                SignCoordinator::<D, S>::with_routes(Arc::new(self.state.clone()), self.routes);
             let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
                 .map_err(|e| StoreSecretError::Validation(format!("Invalid ring_pk hex: {}", e)))?;
             let routes = resolve_node_routes(&self.state.bulletin, &ring_payload.peer_node_keys)

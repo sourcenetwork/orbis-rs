@@ -38,11 +38,10 @@ use crypto::{helpers::generate_keypair, CryptoSerialize, DkgImpl, PreImpl, SignI
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{FaultNetwork, FaultNetworkController, Network, NetworkImpl};
 use proto::{
-    dkg_service::dkg_service_server::DkgServiceServer,
     info_service::info_service_server::InfoServiceServer,
-    pre_service::pre_service_server::PreServiceServer,
-    sign_service::sign_service_server::SignServiceServer,
-    store_secret_service::store_secret_service_server::StoreSecretServiceServer,
+    v0::dkg::dkg_service_server::DkgServiceServer, v0::pre::pre_service_server::PreServiceServer,
+    v0::sign::sign_service_server::SignServiceServer,
+    v0::store_secret::store_secret_service_server::StoreSecretServiceServer,
 };
 use std::sync::Arc;
 use tokio::time::Duration;

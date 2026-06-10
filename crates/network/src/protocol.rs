@@ -1,24 +1,48 @@
-//! Protocol identifiers for Orbis
-//!
-//! This module defines the protocol identifiers used for different Orbis protocols.
-//! These are network-agnostic protocol names that can be used with any network
-//! implementation (iroh, libp2p, etc.).
+//! Installed protocol route descriptors.
 
-/// DKG protocol between ring nodes
-///
-/// Used for Distributed Key Generation protocol communication between nodes
-/// participating in a DKG session.
-pub const DKG: &[u8] = b"orbis/dkg/0";
+/// The gRPC and Iroh routes installed for one protocol version.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProtocolRoutes {
+    pub version: u64,
+    pub dkg_alpn: &'static [u8],
+    pub reencrypt_alpn: &'static [u8],
+    pub sign_alpn: &'static [u8],
+}
 
-/// Re-encryption protocol (Bob → Ring nodes)
-///
-/// Used for Proxy Re-Encryption requests where a reader (Bob) requests
-/// re-encryption from ring nodes.
-pub const REENCRYPT: &[u8] = b"orbis/reencrypt/0";
+/// Version 0 routes. These ALPN identifiers are intentionally unchanged.
+pub const V0: ProtocolRoutes = ProtocolRoutes {
+    version: 0,
+    dkg_alpn: b"orbis/dkg/0",
+    reencrypt_alpn: b"orbis/reencrypt/0",
+    sign_alpn: b"orbis/sign/0",
+};
 
-/// Threshold BLS signing protocol
-///
-/// Used for threshold BLS signature generation where a requester asks
-/// ring nodes to produce signature shares that can be combined into
-/// a full signature.
-pub const SIGN: &[u8] = b"orbis/sign/0";
+/// Protocol versions served by this binary.
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[u64] = &[V0.version];
+
+/// Resolve the installed route descriptor for a protocol version.
+pub fn routes_for_version(version: u64) -> Option<&'static ProtocolRoutes> {
+    match version {
+        0 => Some(&V0),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v0_alpns_are_stable() {
+        assert_eq!(V0.dkg_alpn, b"orbis/dkg/0");
+        assert_eq!(V0.reencrypt_alpn, b"orbis/reencrypt/0");
+        assert_eq!(V0.sign_alpn, b"orbis/sign/0");
+    }
+
+    #[test]
+    fn registry_contains_only_v0() {
+        assert_eq!(SUPPORTED_PROTOCOL_VERSIONS, &[0]);
+        assert_eq!(routes_for_version(0), Some(&V0));
+        assert_eq!(routes_for_version(1), None);
+    }
+}

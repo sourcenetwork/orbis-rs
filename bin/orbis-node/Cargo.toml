@@ -54,6 +54,7 @@ ark-std = "0.4"
 rand_core = "0.6"
 crypto = { path = "../../crates/crypto", default-features = false, features = ["test-helpers"] }
 tokio-stream = "0.1"
+tonic-prost = { workspace = true }
 cli-tool = { path = "../cli-tool", default-features = false }
 
 [features]

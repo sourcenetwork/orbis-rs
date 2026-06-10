@@ -14,7 +14,7 @@ use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
 use crypto::{DkgImpl, PreImpl as ThresholdDealerNode, SignImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
-use proto::store_secret_service::{
+use proto::v0::store_secret::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest,
 };
 use std::sync::Arc;

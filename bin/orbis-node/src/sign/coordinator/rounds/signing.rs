@@ -79,7 +79,7 @@ where
         if !self
             .app_state
             .sign_response_state
-            .init_response(request_id.clone(), &expected_peers)
+            .init_response_for_version(self.routes.version, request_id.clone(), &expected_peers)
             .await
         {
             return Err(SignError::ProtocolError(
@@ -104,7 +104,7 @@ where
         // Pool connections are permanent — no per-request eviction needed.
         self.app_state
             .sign_response_state
-            .remove_response(&request_id_for_cleanup)
+            .remove_response_for_version(self.routes.version, &request_id_for_cleanup)
             .await;
 
         result
@@ -348,9 +348,10 @@ where
                 let peer_id = peer_id_str.clone();
                 let req_id = request_id.clone();
                 let app_state = self.app_state.clone();
+                let routes = self.routes;
 
                 set.spawn(async move {
-                    let coordinator = SignCoordinator::<D, S>::new(app_state);
+                    let coordinator = SignCoordinator::<D, S>::with_routes(app_state, routes);
                     coordinator
                         .send_request_and_receive_response(&peer_id, request, &req_id)
                         .await
@@ -428,7 +429,7 @@ where
         let collected_responses = self
             .app_state
             .sign_response_state
-            .take_authenticated_responses(&request_id)
+            .take_authenticated_responses_for_version(self.routes.version, &request_id)
             .await
             .ok_or_else(|| {
                 SignError::Timeout(format!("No responses found for request {}", &request_id))

@@ -293,12 +293,6 @@ pub const SECRET_KEY_FILE_NAME: &str = ".orbis_secret_key";
 /// the ongoing exposure window.
 pub const SECRET_KEY_ENV_VAR: &str = "ORBIS_SECRET_KEY";
 
-// ============================================================================
-// Version Constants
-// ============================================================================
-
-/// Single protocol epoch served by this binary.
-pub const PROTOCOL_VERSION: u64 = 0;
 
 // ============================================================================
 // Bulletin Configuration Constants

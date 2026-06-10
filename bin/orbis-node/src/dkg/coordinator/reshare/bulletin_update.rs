@@ -120,7 +120,8 @@ where
                 e
             ))
         })?;
-    let sign_coordinator = SignCoordinator::<D, SignImpl>::new(coord.app_state.clone());
+    let sign_coordinator =
+        SignCoordinator::<D, SignImpl>::with_routes(coord.app_state.clone(), coord.routes);
     let ring_config = RingConfig {
         ring_pk_bytes: ring_pk_bytes.to_vec(),
         peer_ids: prepared.new_route_peer_ids,

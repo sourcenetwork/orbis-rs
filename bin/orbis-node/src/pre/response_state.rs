@@ -18,6 +18,14 @@ pub struct PreResponseManager {
 }
 
 impl PreResponseManager {
+    fn key(protocol_version: u64, request_id: &str) -> String {
+        if protocol_version == network::V0.version {
+            request_id.to_string()
+        } else {
+            format!("{protocol_version}:{request_id}")
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             inner: ResponseManager::new(MAX_PRE_RESPONSES, "PRE"),
@@ -32,8 +40,18 @@ impl PreResponseManager {
     ///
     /// Returns false if the limit is exceeded or if the request_id already exists.
     pub async fn init_response(&self, request_id: String, expected_peer_ids: &[String]) -> bool {
+        self.init_response_for_version(network::V0.version, request_id, expected_peer_ids)
+            .await
+    }
+
+    pub async fn init_response_for_version(
+        &self,
+        protocol_version: u64,
+        request_id: String,
+        expected_peer_ids: &[String],
+    ) -> bool {
         self.inner
-            .init_response(request_id, expected_peer_ids)
+            .init_response(Self::key(protocol_version, &request_id), expected_peer_ids)
             .await
     }
 
@@ -49,8 +67,20 @@ impl PreResponseManager {
         message: PreMessage,
         sender_peer_bytes: &[u8],
     ) -> bool {
+        self.store_response_for_version(network::V0.version, request_id, message, sender_peer_bytes)
+            .await
+    }
+
+    pub async fn store_response_for_version(
+        &self,
+        protocol_version: u64,
+        request_id: &str,
+        message: PreMessage,
+        sender_peer_bytes: &[u8],
+    ) -> bool {
+        let key = Self::key(protocol_version, request_id);
         self.inner
-            .store_response(request_id, message, sender_peer_bytes)
+            .store_response(&key, message, sender_peer_bytes)
             .await
     }
 
@@ -73,12 +103,28 @@ impl PreResponseManager {
         &self,
         request_id: &str,
     ) -> Option<Vec<AuthenticatedResponse<PreMessage>>> {
-        self.inner.take_authenticated_responses(request_id).await
+        self.take_authenticated_responses_for_version(network::V0.version, request_id)
+            .await
+    }
+
+    pub async fn take_authenticated_responses_for_version(
+        &self,
+        protocol_version: u64,
+        request_id: &str,
+    ) -> Option<Vec<AuthenticatedResponse<PreMessage>>> {
+        let key = Self::key(protocol_version, request_id);
+        self.inner.take_authenticated_responses(&key).await
     }
 
     /// Remove PRE response entry (cleanup after completion)
     pub async fn remove_response(&self, request_id: &str) {
-        self.inner.remove_response(request_id).await
+        self.remove_response_for_version(network::V0.version, request_id)
+            .await
+    }
+
+    pub async fn remove_response_for_version(&self, protocol_version: u64, request_id: &str) {
+        let key = Self::key(protocol_version, request_id);
+        self.inner.remove_response(&key).await
     }
 
     /// Get the number of pending PRE requests
@@ -366,6 +412,42 @@ mod tests {
             mgr.get_responses("req-2").await.unwrap().len(),
             0,
             "PEER_A not expected in req-2"
+        );
+    }
+
+    #[tokio::test]
+    async fn protocol_versions_are_isolated() {
+        let mgr = PreResponseManager::new();
+        let expected = [PEER_A.to_string()];
+        assert!(
+            mgr.init_response_for_version(0, "same-id".into(), &expected)
+                .await
+        );
+        assert!(
+            mgr.init_response_for_version(1, "same-id".into(), &expected)
+                .await
+        );
+        assert!(
+            mgr.store_response_for_version(
+                1,
+                "same-id",
+                dummy_response("same-id", 1),
+                &peer_bytes(PEER_A),
+            )
+            .await
+        );
+
+        assert!(mgr
+            .take_authenticated_responses_for_version(0, "same-id")
+            .await
+            .expect("v0 entry")
+            .is_empty());
+        assert_eq!(
+            mgr.take_authenticated_responses_for_version(1, "same-id")
+                .await
+                .expect("v1 entry")
+                .len(),
+            1
         );
     }
 }

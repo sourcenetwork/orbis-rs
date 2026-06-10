@@ -47,6 +47,7 @@ async fn test_get_node_info_reports_zero_managed_ring_count_without_ring_index()
     assert!(!node_info.peer_id.is_empty(), "peer_id should not be empty");
     assert_eq!(node_info.status, NodeStatus::Ready as i32);
     assert_eq!(node_info.managed_ring_count, 0);
+    assert_eq!(node_info.supported_protocol_versions, vec![0]);
 
     // Verify peer_id is valid hex (since it's encoded from bytes)
     assert!(
@@ -96,6 +97,7 @@ async fn test_get_node_info_reports_managed_ring_count_from_ring_index() {
     let node_info = response.into_inner();
     assert_eq!(node_info.status, NodeStatus::Ready as i32);
     assert_eq!(node_info.managed_ring_count, 2);
+    assert_eq!(node_info.supported_protocol_versions, vec![0]);
 
     cleanup_db(&db_path);
 }

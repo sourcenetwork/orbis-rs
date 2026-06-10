@@ -7,15 +7,14 @@ use crate::dkg::helpers::{
 };
 use crate::dkg::messages::{DkgMessage, SessionKind};
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
-use crate::helpers::helpers::{is_self_peer_id, read_ring_for_protocol};
+use crate::helpers::helpers::{is_self_peer_id, read_ring_for_route};
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
     peer_ids_from_routes, resolve_node_routes,
 };
 use crate::metrics;
 use authn::DkgClaims;
-use network::DKG;
-use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
+use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
 use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
@@ -27,6 +26,7 @@ where
     D: crypto::r#trait::Dkg + Clone + 'static,
 {
     pub state: AppState<D>,
+    pub routes: &'static network::ProtocolRoutes,
 }
 
 impl<D> DkgServiceImpl<D>
@@ -35,7 +35,11 @@ where
 {
     /// Create a new DkgServiceImpl with shared application state
     pub fn new(state: AppState<D>) -> Self {
-        Self { state }
+        Self::with_routes(state, &network::V0)
+    }
+
+    pub fn with_routes(state: AppState<D>, routes: &'static network::ProtocolRoutes) -> Self {
+        Self { state, routes }
     }
 }
 
@@ -79,9 +83,10 @@ where
         validate_dkg_claims(&token, &req.ring_id)?;
 
         let ring_id = req.ring_id.clone();
-        let ring_payload = read_ring_for_protocol(&*self.state.bulletin, &ring_id)
-            .await
-            .map_err(DkgError::ProtocolError)?;
+        let ring_payload =
+            read_ring_for_route(&*self.state.bulletin, &ring_id, self.routes.version)
+                .await
+                .map_err(DkgError::ProtocolError)?;
         validate_fresh_dkg_ring_payload(&ring_id, &ring_payload)?;
 
         let routes = resolve_node_routes(&self.state.bulletin, &ring_payload.peer_node_keys)
@@ -115,7 +120,7 @@ where
         let session_id: u128 = derive_fresh_dkg_session_id(&ring_id)?;
 
         // Create DKG coordinator (AppState clone is cheap - contains Arc types internally)
-        let coordinator = DkgCoordinator::new(Arc::new(self.state.clone()));
+        let coordinator = DkgCoordinator::with_routes(Arc::new(self.state.clone()), self.routes);
 
         let our_peer_id_hex = hex::encode(self.state.network.local_peer_id().as_bytes());
 
@@ -247,7 +252,7 @@ where
                 }
                 self.state
                     .peer_connection_pool
-                    .get_or_connect(&self.state.network, peer_id_str, DKG)
+                    .get_or_connect(&self.state.network, peer_id_str, self.routes.dkg_alpn)
                     .await
                     .map_err(|e| {
                         DkgError::NetworkConnection(format!(

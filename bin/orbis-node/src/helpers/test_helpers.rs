@@ -1179,7 +1179,7 @@ pub async fn create_ring_on_chain_with_pss(
             pss_interval,
             policy_id,
             nonce.map(String::from),
-            crate::constants::PROTOCOL_VERSION,
+            network::V0.version,
         )
         .await
         .expect("create ring on-chain");

@@ -6,7 +6,7 @@ use crate::metrics;
 use crate::pre::coordinator::PreCoordinator;
 use crate::pre::error::PreError;
 use crate::pre::helpers::{
-    check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
+    check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads_for_version,
     validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::messages::PreRequestContext;
@@ -15,7 +15,7 @@ use authn::PreClaims;
 use authz::sourcehub::ValidWindow;
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
 use crypto::PreImpl as ThresholdDealerNode;
-use proto::pre_service::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
+use proto::v0::pre::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
 use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
@@ -28,6 +28,7 @@ where
     T: ThresholdDealer,
 {
     pub state: AppState<D>,
+    pub routes: &'static network::ProtocolRoutes,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -38,8 +39,13 @@ where
 {
     /// Create a new PreServiceImpl with shared application state
     pub fn new(state: AppState<D>) -> Self {
+        Self::with_routes(state, &network::V0)
+    }
+
+    pub fn with_routes(state: AppState<D>, routes: &'static network::ProtocolRoutes) -> Self {
         Self {
             state,
+            routes,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -90,13 +96,13 @@ where
             end: w.end,
         });
 
-        let (document_payload, ring_payload) = fetch_bulletin_payloads(
+        let (document_payload, ring_payload) = fetch_bulletin_payloads_for_version(
             &*self.state.bulletin,
             &self.state.local_storage,
             &req.object_id,
+            self.routes.version,
         )
         .await?;
-
         check_policy_access(
             &*self.state.authz,
             &document_payload,
@@ -179,7 +185,8 @@ where
         // Per-peer connectivity is handled inside the coordinator via JoinSet tasks,
         // allowing threshold-of-n operation when some nodes are unreachable.
         metrics::record_pre_request_started();
-        let coordinator = PreCoordinator::<D, T>::new(Arc::new(self.state.clone()));
+        let coordinator =
+            PreCoordinator::<D, T>::with_routes(Arc::new(self.state.clone()), self.routes);
         let total_participants = peer_ids.len();
         let poly_state = RingPolyState::load(&self.state.local_storage, &ring_pk).map_err(|e| {
             tracing::error!("Failed to load ring polynomial state: {}", e);

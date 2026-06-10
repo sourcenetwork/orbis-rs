@@ -200,6 +200,8 @@ pub struct DkgSessionState<D: Dkg> {
     // === Metadata ===
     /// When this session was created
     pub created_at: Instant,
+    /// Protocol route fixed by the SessionInit that created this session.
+    pub protocol_version: u64,
 
     // === Protocol State ===
     /// Current protocol phase
@@ -285,6 +287,7 @@ impl<D: Dkg> DkgSessionState<D> {
             generation,
             node,
             created_at: Instant::now(),
+            protocol_version: network::V0.version,
             phase: DkgPhase::Initializing,
             phase_started_at: Instant::now(),
             node_id_to_peer_id: HashMap::new(),

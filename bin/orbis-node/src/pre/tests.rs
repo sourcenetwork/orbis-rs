@@ -15,8 +15,8 @@ use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, Dkg, DkgMode, DkgRole, EncryptionProof, ThresholdDealer,
 };
 use crypto::{DkgImpl, PreImpl};
-use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
-use proto::pre_service::{pre_service_server::PreService, StartPreRequest};
+use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest};
+use proto::v0::pre::{pre_service_server::PreService, StartPreRequest};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tonic::Request;

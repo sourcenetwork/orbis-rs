@@ -20,11 +20,11 @@ use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use proto::dkg_service::dkg_service_client::DkgServiceClient;
 use proto::info_service::info_service_client::InfoServiceClient;
-use proto::pre_service::pre_service_client::PreServiceClient;
-use proto::sign_service::sign_service_client::SignServiceClient;
-use proto::store_secret_service::store_secret_service_client::StoreSecretServiceClient;
+use proto::v0::dkg::dkg_service_client::DkgServiceClient;
+use proto::v0::pre::pre_service_client::PreServiceClient;
+use proto::v0::sign::sign_service_client::SignServiceClient;
+use proto::v0::store_secret::store_secret_service_client::StoreSecretServiceClient;
 use tonic::Request;
 
 /// Response structure from PRE server
@@ -34,6 +34,75 @@ struct PreResponse {
     xnc_cmt: String,
     /// Original encrypted secret
     secret: Secret,
+}
+
+fn current_unix_time() -> Result<u64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| anyhow!("Failed to read system clock: {}", error))?
+        .as_secs())
+}
+
+async fn read_ring_payload(ring_id: &str) -> Result<RingPayload> {
+    let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
+        .await
+        .map_err(|error| anyhow!("Failed to create bulletin client: {}", error))?;
+    let post = bulletin
+        .read(ring_id.to_string(), BulletinKind::Ring)
+        .await
+        .map_err(|error| anyhow!("Failed to read ring {}: {}", ring_id, error))?;
+    RingPayload::try_from(post)
+        .map_err(|error| anyhow!("Failed to parse ring {}: {}", ring_id, error))
+}
+
+async fn resolve_ring_protocol_version(ring_id: &str) -> Result<u64> {
+    let ring = read_ring_payload(ring_id).await?;
+    let effective_version = ring
+        .upgrade_info
+        .effective_version(current_unix_time()?)
+        .map_err(|error| anyhow!("Malformed upgrade state for ring {}: {}", ring_id, error))?;
+    if network::routes_for_version(effective_version).is_none() {
+        return Err(anyhow!(
+            "Ring {} requires protocol version {}, but installed versions are {:?}",
+            ring_id,
+            effective_version,
+            network::SUPPORTED_PROTOCOL_VERSIONS
+        ));
+    }
+    Ok(effective_version)
+}
+
+async fn resolve_document_protocol_version(object_id: &str) -> Result<(String, u64)> {
+    let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
+        .await
+        .map_err(|error| anyhow!("Failed to create bulletin client: {}", error))?;
+    let post = bulletin
+        .read(object_id.to_string(), BulletinKind::Document)
+        .await
+        .map_err(|error| anyhow!("Failed to read document {}: {}", object_id, error))?;
+    let document = bulletin::r#trait::DocumentPayload::try_from(post)
+        .map_err(|error| anyhow!("Failed to parse document {}: {}", object_id, error))?;
+    let version = resolve_ring_protocol_version(&document.ring_id).await?;
+    Ok((document.ring_id, version))
+}
+
+async fn resolve_derivation_protocol_version(derivation_id: &str) -> Result<(String, u64)> {
+    let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
+        .await
+        .map_err(|error| anyhow!("Failed to create bulletin client: {}", error))?;
+    let post = bulletin
+        .read(derivation_id.to_string(), BulletinKind::KeyDerivation)
+        .await
+        .map_err(|error| anyhow!("Failed to read key derivation {}: {}", derivation_id, error))?;
+    let derivation = KeyDerivation::try_from(post).map_err(|error| {
+        anyhow!(
+            "Failed to parse key derivation {}: {}",
+            derivation_id,
+            error
+        )
+    })?;
+    let version = resolve_ring_protocol_version(&derivation.ring_id).await?;
+    Ok((derivation.ring_id, version))
 }
 
 /// Result of a DKG operation
@@ -52,11 +121,14 @@ pub async fn do_dkg(endpoint: String, ring_id: String) -> Result<DkgResult> {
 
     println!("Connecting to {}...", endpoint);
 
-    let mut client = DkgServiceClient::connect(endpoint.clone())
-        .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+    let protocol_version = resolve_ring_protocol_version(&ring_id).await?;
+    let mut client = match protocol_version {
+        0 => DkgServiceClient::connect(endpoint.clone()).await,
+        _ => unreachable!("unsupported versions are rejected during ring resolution"),
+    }
+    .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
-    let request = proto::dkg_service::StartDkgRequest {
+    let request = proto::v0::dkg::StartDkgRequest {
         ring_id: ring_id.clone(),
     };
 
@@ -193,11 +265,14 @@ pub async fn store_prepared_secret(
     println!("  Ring ID: {}", ring_id);
     println!();
 
-    let mut client = StoreSecretServiceClient::connect(endpoint.clone())
-        .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+    let protocol_version = resolve_ring_protocol_version(&ring_id).await?;
+    let mut client = match protocol_version {
+        0 => StoreSecretServiceClient::connect(endpoint.clone()).await,
+        _ => unreachable!("unsupported versions are rejected during ring resolution"),
+    }
+    .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
-    let request = proto::store_secret_service::StoreSecretRequest {
+    let request = proto::v0::store_secret::StoreSecretRequest {
         encrypted_document: prepared.encrypted_document.clone(),
         enc_cmt: prepared.enc_cmt.clone(),
         ring_id: ring_id.clone(),
@@ -363,16 +438,24 @@ pub async fn do_pre(
 
     // Step 2: Send to PRE service for re-encryption
     println!("Step 2: Sending to PRE service for re-encryption...");
-    let mut client = PreServiceClient::connect(endpoint.clone())
-        .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+    let (resolved_ring_id, protocol_version) =
+        resolve_document_protocol_version(&object_id).await?;
+    println!(
+        "  Resolved ring {} to protocol version {}",
+        resolved_ring_id, protocol_version
+    );
+    let mut client = match protocol_version {
+        0 => PreServiceClient::connect(endpoint.clone()).await,
+        _ => unreachable!("unsupported versions are rejected during ring resolution"),
+    }
+    .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
     let valid_window = match (valid_window_start, valid_window_end) {
-        (Some(start), Some(end)) => Some(proto::pre_service::TimestampRange { start, end }),
+        (Some(start), Some(end)) => Some(proto::v0::pre::TimestampRange { start, end }),
         _ => None,
     };
 
-    let request = proto::pre_service::StartPreRequest {
+    let request = proto::v0::pre::StartPreRequest {
         rdr_pk: reader_pk_bytes.clone(),
         object_id: object_id.clone(),
         derivation: derivation.clone(),
@@ -893,6 +976,7 @@ pub struct NodeInfoResult {
     pub managed_ring_count: u32,
     /// Compressed secp256k1 pubkey hex — the node's on-chain key in x/orbis NodeInfo.
     pub node_key: String,
+    pub supported_protocol_versions: Vec<u64>,
 }
 
 pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
@@ -914,14 +998,15 @@ pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
         .unwrap_or(proto::info_service::NodeStatus::Unspecified);
 
     let output = format!(
-        "Node Info:\n{}\n  Public Address: {}\n  Peer ID: {}\n  Node Key: {}\n  P2P Address: {}\n  Status: {}\n  Managed Ring Count: {}",
+        "Node Info:\n{}\n  Public Address: {}\n  Peer ID: {}\n  Node Key: {}\n  P2P Address: {}\n  Status: {}\n  Managed Ring Count: {}\n  Supported Protocol Versions: {:?}",
         "=".repeat(60),
         node_info.public_address,
         node_info.peer_id,
         node_info.node_key,
         node_info.p2p_address,
         status.as_str_name(),
-        node_info.managed_ring_count
+        node_info.managed_ring_count,
+        node_info.supported_protocol_versions
     );
 
     println!("{}", output);
@@ -933,6 +1018,7 @@ pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
         status,
         managed_ring_count: node_info.managed_ring_count,
         node_key: node_info.node_key,
+        supported_protocol_versions: node_info.supported_protocol_versions,
     })
 }
 
@@ -1066,16 +1152,24 @@ pub async fn do_sign(
     println!("  Message length: {} bytes", message.len());
     println!();
 
-    let mut client = SignServiceClient::connect(endpoint.clone())
-        .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+    let (resolved_ring_id, protocol_version) =
+        resolve_derivation_protocol_version(&derivation_id).await?;
+    println!(
+        "  Resolved ring {} to protocol version {}",
+        resolved_ring_id, protocol_version
+    );
+    let mut client = match protocol_version {
+        0 => SignServiceClient::connect(endpoint.clone()).await,
+        _ => unreachable!("unsupported versions are rejected during ring resolution"),
+    }
+    .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
     let valid_window = match (valid_window_start, valid_window_end) {
-        (Some(start), Some(end)) => Some(proto::sign_service::TimestampRange { start, end }),
+        (Some(start), Some(end)) => Some(proto::v0::sign::TimestampRange { start, end }),
         _ => None,
     };
 
-    let request = proto::sign_service::StartSignRequest {
+    let request = proto::v0::sign::StartSignRequest {
         message: message.clone(),
         derivation_id: derivation_id.clone(),
         valid_window,

@@ -138,7 +138,7 @@ where
     let post_id = &entry.bulletin_post_id;
     let ring_pk_str = &entry.ring_pk_str;
 
-    let ring_payload =
+    let (ring_payload, protocol_routes) =
         crate::helpers::helpers::read_ring_for_protocol(&*app_state.bulletin, post_id)
             .await
             .map_err(DkgError::ProtocolError)?;
@@ -205,6 +205,7 @@ where
             &routes,
             &node_id_assignments,
             &node_id_to_peer_id,
+            protocol_routes,
         )
         .await;
     }
@@ -234,6 +235,7 @@ where
         &peer_ids,
         &node_id_assignments,
         &node_id_to_peer_id,
+        protocol_routes,
     )
     .await
 }
@@ -355,6 +357,7 @@ async fn trigger_refresh<D>(
     peer_ids: &[String],
     node_id_assignments: &std::collections::HashMap<String, u32>,
     node_id_to_peer_id: &std::collections::HashMap<u32, String>,
+    protocol_routes: &'static network::ProtocolRoutes,
 ) -> Result<(), DkgError>
 where
     D: Dkg<
@@ -421,7 +424,7 @@ where
         }
     }
 
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), protocol_routes);
 
     match coordinator
         .create_session(
@@ -561,6 +564,7 @@ async fn trigger_reshare<D>(
     old_routes: &[NodeRoute],
     old_node_id_assignments: &std::collections::HashMap<String, u32>,
     old_node_id_to_peer_id: &std::collections::HashMap<u32, String>,
+    protocol_routes: &'static network::ProtocolRoutes,
 ) -> Result<(), DkgError>
 where
     D: Dkg<
@@ -648,7 +652,7 @@ where
         bulletin_post_id: post_id.clone(),
     };
 
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), protocol_routes);
 
     validate_all_peer_ids(&union_peers).map_err(|(bad_peer, error)| {
         DkgError::InvalidInput(format!(

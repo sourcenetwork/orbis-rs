@@ -97,6 +97,7 @@ fn get_node_info_response(
         status,
         managed_ring_count,
         node_key,
+        supported_protocol_versions: network::SUPPORTED_PROTOCOL_VERSIONS.to_vec(),
     })
 }
 

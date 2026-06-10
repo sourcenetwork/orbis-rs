@@ -19,7 +19,7 @@ use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole, PubPoly as PubPolyTrait};
 use crypto::CryptoSerialize;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::PeerId;
-use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
+use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::time::{sleep, Duration};

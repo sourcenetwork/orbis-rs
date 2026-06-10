@@ -50,11 +50,11 @@ use crypto::{DkgImpl, PreImpl, SignImpl};
 use tracing::Instrument;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use proto::dkg_service::dkg_service_server::DkgServiceServer;
 use proto::info_service::{info_service_server::InfoServiceServer, NodeStatus};
-use proto::pre_service::pre_service_server::PreServiceServer;
-use proto::sign_service::sign_service_server::SignServiceServer;
-use proto::store_secret_service::store_secret_service_server::StoreSecretServiceServer;
+use proto::v0::dkg::dkg_service_server::DkgServiceServer;
+use proto::v0::pre::pre_service_server::PreServiceServer;
+use proto::v0::sign::sign_service_server::SignServiceServer;
+use proto::v0::store_secret::store_secret_service_server::StoreSecretServiceServer;
 
 /// Configuration for running the node, allowing dependency injection for testing
 pub struct NodeConfig {
@@ -395,12 +395,17 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     }
 
     // Initialize services with shared state
-    let dkg_service = DkgServiceImpl::<DkgImpl>::new((*node.app_state).clone());
-    let pre_service = PreServiceImpl::<DkgImpl, PreImpl>::new((*node.app_state).clone());
+    let dkg_service =
+        DkgServiceImpl::<DkgImpl>::with_routes((*node.app_state).clone(), &network::V0);
+    let pre_service =
+        PreServiceImpl::<DkgImpl, PreImpl>::with_routes((*node.app_state).clone(), &network::V0);
     let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
-    let store_secret_service =
-        StoreSecretServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
-    let sign_service = SignServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
+    let store_secret_service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(
+        (*node.app_state).clone(),
+        &network::V0,
+    );
+    let sign_service =
+        SignServiceImpl::<DkgImpl, SignImpl>::with_routes((*node.app_state).clone(), &network::V0);
 
     // Start gRPC server
     let grpc_server = tonic::transport::Server::builder()

@@ -25,8 +25,8 @@ use bulletin::r#trait::{
 };
 use crypto::r#trait::{CryptoDeserialize, Dkg, ThresholdSigner};
 use crypto::{DkgImpl, SignImpl};
-use proto::dkg_service::{dkg_service_server::DkgService, StartDkgRequest};
-use proto::sign_service::{sign_service_server::SignService, StartSignRequest};
+use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest};
+use proto::v0::sign::{sign_service_server::SignService, StartSignRequest};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 /// End-to-end test: DKG → Sign message → Verify signature

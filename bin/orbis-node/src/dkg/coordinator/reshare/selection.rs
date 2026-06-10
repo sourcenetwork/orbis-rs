@@ -78,7 +78,7 @@ fn spawn_reshare_share_ack_delivery<D>(
 ) where
     D: CoordinatorDkg + Send + Sync,
 {
-    let coord = DkgCoordinator::new(coord.app_state.clone());
+    let coord = DkgCoordinator::with_routes(coord.app_state.clone(), coord.routes);
     tokio::spawn(async move {
         deliver_reshare_share_ack_until_done(
             coord,

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package pre_service;
+package orbis.v0.pre;
 
 service PreService {
   rpc StartPre(StartPreRequest) returns (StartPreResponse);

@@ -7,7 +7,7 @@ use crypto::{
     GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
     PubPolyImpl as PubPoly, ScalarField as Fr,
 };
-use network::{Connection as NetworkConnection, Message as NetworkMessage, DKG};
+use network::{Connection as NetworkConnection, Message as NetworkMessage};
 use std::sync::Arc;
 
 use super::DkgCoordinator;
@@ -16,9 +16,10 @@ async fn send_on_stream(
     stream: &Arc<dyn NetworkConnection>,
     peer_id_str: &str,
     message_data: &[u8],
+    alpn: &'static [u8],
 ) -> Result<()> {
     stream
-        .send(NetworkMessage::new(message_data.to_vec(), DKG))
+        .send(NetworkMessage::new(message_data.to_vec(), alpn))
         .await
         .map_err(|e| {
             DkgError::NetworkCommunication(format!("Failed to send to peer {}: {}", peer_id_str, e))
@@ -68,15 +69,26 @@ where
         > + Clone
         + 'static,
 {
-    if coord
+    let session_identity = coord
         .app_state
         .dkg_session_state
-        .session_generation_matches(&session_id, generation)
-        .await
-    {
-        Ok(())
-    } else {
-        Err(session_not_found(session_id))
+        .with_state(&session_id, |state| {
+            (state.generation, state.protocol_version)
+        })
+        .await;
+    match session_identity {
+        Some((current_generation, protocol_version))
+            if current_generation == generation && protocol_version == coord.routes.version =>
+        {
+            Ok(())
+        }
+        Some((_, protocol_version)) if protocol_version != coord.routes.version => {
+            Err(DkgError::ProtocolError(format!(
+                "DKG session {} is pinned to protocol version {}, but outbound message used version {}",
+                session_id, protocol_version, coord.routes.version
+            )))
+        }
+        _ => Err(session_not_found(session_id)),
     }
 }
 
@@ -134,7 +146,7 @@ where
         let (stream, was_cached) = get_cached_or_open_stream(coord, sid, peer_id_str).await?;
         ensure_session_generation(coord, sid, session_generation).await?;
 
-        match send_on_stream(&stream, peer_id_str, &message_data).await {
+        match send_on_stream(&stream, peer_id_str, &message_data, coord.routes.dkg_alpn).await {
             Ok(()) => {
                 if !was_cached {
                     ensure_session_generation(coord, sid, session_generation).await?;
@@ -158,17 +170,22 @@ where
 
                 let replacement = Arc::from(coord.open_stream_to_peer(peer_id_str).await?);
                 ensure_session_generation(coord, sid, session_generation).await?;
-                send_on_stream(&replacement, peer_id_str, &message_data)
-                    .await
-                    .inspect_err(|retry_error| {
-                        tracing::error!(
-                            session_id = sid,
-                            peer_id = %peer_id_str,
-                            message_type = message_type,
-                            error = %retry_error,
-                            "DKG send retry on a fresh stream failed"
-                        );
-                    })?;
+                send_on_stream(
+                    &replacement,
+                    peer_id_str,
+                    &message_data,
+                    coord.routes.dkg_alpn,
+                )
+                .await
+                .inspect_err(|retry_error| {
+                    tracing::error!(
+                        session_id = sid,
+                        peer_id = %peer_id_str,
+                        message_type = message_type,
+                        error = %retry_error,
+                        "DKG send retry on a fresh stream failed"
+                    );
+                })?;
                 ensure_session_generation(coord, sid, session_generation).await?;
                 session_state
                     .store_peer_stream(&sid, peer_id_str.to_string(), replacement)
@@ -184,7 +201,7 @@ where
     } else {
         let stream: Arc<dyn NetworkConnection> =
             Arc::from(coord.open_stream_to_peer(peer_id_str).await?);
-        send_on_stream(&stream, peer_id_str, &message_data).await?;
+        send_on_stream(&stream, peer_id_str, &message_data, coord.routes.dkg_alpn).await?;
     }
 
     metrics::record_dkg_message_sent(message_type);
@@ -208,7 +225,7 @@ where
     coord
         .app_state
         .peer_connection_pool
-        .open_stream(&coord.app_state.network, peer_id_str, DKG)
+        .open_stream(&coord.app_state.network, peer_id_str, coord.routes.dkg_alpn)
         .await
         .map_err(|e| {
             DkgError::NetworkConnection(format!(
@@ -587,6 +604,57 @@ mod tests {
         assert!(
             shared_state.successful_commitments.lock().await.is_empty(),
             "stale sender should not deliver protocol messages for an abandoned session"
+        );
+
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn test_session_rejects_cross_version_continuation() {
+        static V1_ROUTES: network::ProtocolRoutes = network::ProtocolRoutes {
+            version: 1,
+            dkg_alpn: b"orbis/dkg/1",
+            reencrypt_alpn: b"orbis/reencrypt/1",
+            sign_alpn: b"orbis/sign/1",
+        };
+
+        let db_path = test_db_path("dkg_cross_version_continuation");
+        let shared_state = Arc::new(FakeNetworkState::default());
+        let (app_state, remote_peer_id) =
+            make_fake_app_state("dkg_cross_version_continuation", shared_state).await;
+        let v0 = DkgCoordinator::with_routes(app_state.clone(), &network::V0);
+        let session_id = 99_u128;
+        v0.create_session(
+            session_id,
+            1,
+            1,
+            1,
+            crypto::r#trait::DkgRole::Standard,
+            |_| {},
+        )
+        .await
+        .expect("create v0 session");
+
+        let stored_version = app_state
+            .dkg_session_state
+            .with_state(&session_id, |state| state.protocol_version)
+            .await;
+        assert_eq!(stored_version, Some(0));
+
+        let v1 = DkgCoordinator::with_routes(app_state, &V1_ROUTES);
+        let error = v1
+            .handle_message(
+                DkgMessage::Commitment {
+                    session_id,
+                    from_node_id: 1,
+                    commitment: vec![1],
+                },
+                &PeerId::new(remote_peer_id.into_bytes()),
+            )
+            .await
+            .expect_err("cross-version continuation must fail");
+        assert!(
+            matches!(error, DkgError::ProtocolError(message) if message.contains("pinned to protocol version 0"))
         );
 
         cleanup_db(&db_path);

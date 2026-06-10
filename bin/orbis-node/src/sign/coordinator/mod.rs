@@ -46,6 +46,7 @@ where
     S: ThresholdSigner,
 {
     pub app_state: Arc<AppState<D>>,
+    pub routes: &'static ::network::ProtocolRoutes,
     _phantom: std::marker::PhantomData<S>,
 }
 
@@ -56,8 +57,16 @@ where
 {
     /// Create a new Sign coordinator for this node
     pub fn new(app_state: Arc<AppState<D>>) -> Self {
+        Self::with_routes(app_state, &::network::V0)
+    }
+
+    pub fn with_routes(
+        app_state: Arc<AppState<D>>,
+        routes: &'static ::network::ProtocolRoutes,
+    ) -> Self {
         Self {
             app_state,
+            routes,
             _phantom: std::marker::PhantomData,
         }
     }

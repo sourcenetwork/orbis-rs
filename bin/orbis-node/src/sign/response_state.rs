@@ -79,6 +79,14 @@ pub struct SignResponseManager {
 }
 
 impl SignResponseManager {
+    fn key(protocol_version: u64, request_id: &str) -> String {
+        if protocol_version == network::V0.version {
+            request_id.to_string()
+        } else {
+            format!("{protocol_version}:{request_id}")
+        }
+    }
+
     pub fn new() -> Self {
         let inner = ResponseManager::with_expiration(
             MAX_SIGN_RESPONSES,
@@ -146,8 +154,18 @@ impl SignResponseManager {
     ///
     /// Returns false if the limit is exceeded or if the request_id already exists.
     pub async fn init_response(&self, request_id: String, expected_peer_ids: &[String]) -> bool {
+        self.init_response_for_version(network::V0.version, request_id, expected_peer_ids)
+            .await
+    }
+
+    pub async fn init_response_for_version(
+        &self,
+        protocol_version: u64,
+        request_id: String,
+        expected_peer_ids: &[String],
+    ) -> bool {
         self.inner
-            .init_response(request_id, expected_peer_ids)
+            .init_response(Self::key(protocol_version, &request_id), expected_peer_ids)
             .await
     }
 
@@ -163,8 +181,20 @@ impl SignResponseManager {
         message: SignMessage,
         sender_peer_bytes: &[u8],
     ) -> bool {
+        self.store_response_for_version(network::V0.version, request_id, message, sender_peer_bytes)
+            .await
+    }
+
+    pub async fn store_response_for_version(
+        &self,
+        protocol_version: u64,
+        request_id: &str,
+        message: SignMessage,
+        sender_peer_bytes: &[u8],
+    ) -> bool {
+        let key = Self::key(protocol_version, request_id);
         self.inner
-            .store_response(request_id, message, sender_peer_bytes)
+            .store_response(&key, message, sender_peer_bytes)
             .await
     }
 
@@ -187,12 +217,28 @@ impl SignResponseManager {
         &self,
         request_id: &str,
     ) -> Option<Vec<AuthenticatedResponse<SignMessage>>> {
-        self.inner.take_authenticated_responses(request_id).await
+        self.take_authenticated_responses_for_version(network::V0.version, request_id)
+            .await
+    }
+
+    pub async fn take_authenticated_responses_for_version(
+        &self,
+        protocol_version: u64,
+        request_id: &str,
+    ) -> Option<Vec<AuthenticatedResponse<SignMessage>>> {
+        let key = Self::key(protocol_version, request_id);
+        self.inner.take_authenticated_responses(&key).await
     }
 
     /// Remove sign response entry (cleanup after completion)
     pub async fn remove_response(&self, request_id: &str) {
-        self.inner.remove_response(request_id).await
+        self.remove_response_for_version(network::V0.version, request_id)
+            .await
+    }
+
+    pub async fn remove_response_for_version(&self, protocol_version: u64, request_id: &str) {
+        let key = Self::key(protocol_version, request_id);
+        self.inner.remove_response(&key).await
     }
 
     /// Get the number of pending sign requests
@@ -219,6 +265,25 @@ impl SignResponseManager {
         context_key: String,
         coordinator_peer_id: Vec<u8>,
     ) -> bool {
+        self.store_nonce_for_version(
+            network::V0.version,
+            request_id,
+            bytes,
+            context_key,
+            coordinator_peer_id,
+        )
+        .await
+    }
+
+    pub async fn store_nonce_for_version(
+        &self,
+        protocol_version: u64,
+        request_id: String,
+        bytes: Vec<u8>,
+        context_key: String,
+        coordinator_peer_id: Vec<u8>,
+    ) -> bool {
+        let request_id = Self::key(protocol_version, &request_id);
         let bytes = Zeroizing::new(bytes);
         let mut states = self.nonce_states.write().await;
         Self::remove_expired_nonces(&mut states, Instant::now());
@@ -255,13 +320,29 @@ impl SignResponseManager {
     /// Removing the entry before that fallible work ensures every accepted Round 2
     /// attempt releases its nonce slot, while the peer binding prevents another node
     /// from canceling the coordinator's nonce.
+    #[cfg(test)]
     pub(crate) async fn consume_nonce_for_sign_request(
         &self,
         request_id: &str,
         coordinator_peer_id: &[u8],
     ) -> Option<ConsumedNonce> {
+        self.consume_nonce_for_sign_request_for_version(
+            network::V0.version,
+            request_id,
+            coordinator_peer_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn consume_nonce_for_sign_request_for_version(
+        &self,
+        protocol_version: u64,
+        request_id: &str,
+        coordinator_peer_id: &[u8],
+    ) -> Option<ConsumedNonce> {
+        let request_id = Self::key(protocol_version, request_id);
         let mut states = self.nonce_states.write().await;
-        let entry = states.get(request_id)?;
+        let entry = states.get(&request_id)?;
         if entry.coordinator_peer_id != coordinator_peer_id {
             tracing::warn!(
                 request_id = %request_id,
@@ -269,7 +350,7 @@ impl SignResponseManager {
             );
             return None;
         }
-        states.remove(request_id).map(|entry| ConsumedNonce {
+        states.remove(&request_id).map(|entry| ConsumedNonce {
             bytes: entry.bytes,
             context_key: entry.context_key,
         })
@@ -972,5 +1053,59 @@ mod tests {
             mgr.get_responses("req-take").await.is_none(),
             "entry must be removed after take_responses"
         );
+    }
+
+    #[tokio::test]
+    async fn protocol_versions_isolate_responses_and_nonces() {
+        let mgr = SignResponseManager::new();
+        let expected = [PEER_A.to_string()];
+        assert!(
+            mgr.init_response_for_version(0, "same-id".into(), &expected)
+                .await
+        );
+        assert!(
+            mgr.init_response_for_version(1, "same-id".into(), &expected)
+                .await
+        );
+        assert!(
+            mgr.store_response_for_version(
+                1,
+                "same-id",
+                dummy_sign_response("same-id", 1),
+                &peer_bytes(PEER_A),
+            )
+            .await
+        );
+        assert!(mgr
+            .take_authenticated_responses_for_version(0, "same-id")
+            .await
+            .expect("v0 entry")
+            .is_empty());
+        assert_eq!(
+            mgr.take_authenticated_responses_for_version(1, "same-id")
+                .await
+                .expect("v1 entry")
+                .len(),
+            1
+        );
+
+        assert!(
+            mgr.store_nonce_for_version(
+                1,
+                "nonce-id".into(),
+                vec![1, 2, 3],
+                "context".into(),
+                COORDINATOR.to_vec(),
+            )
+            .await
+        );
+        assert!(mgr
+            .consume_nonce_for_sign_request_for_version(0, "nonce-id", COORDINATOR,)
+            .await
+            .is_none());
+        assert!(mgr
+            .consume_nonce_for_sign_request_for_version(1, "nonce-id", COORDINATOR,)
+            .await
+            .is_some());
     }
 }

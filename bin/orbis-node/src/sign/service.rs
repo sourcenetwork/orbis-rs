@@ -7,14 +7,16 @@ use crate::metrics;
 use crate::ring_state::RingPolyState;
 use crate::sign::coordinator::SignCoordinator;
 use crate::sign::error::SignError;
-use crate::sign::helpers::{check_policy_access, fetch_bulletin_payloads, validate_sign_claims};
+use crate::sign::helpers::{
+    check_policy_access, fetch_bulletin_payloads_for_version, validate_sign_claims,
+};
 use crate::sign::messages::{PolicyContext, SignContext};
 use authn::SignClaims;
 use authz::sourcehub::ValidWindow;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crypto::SigShareInner;
 use crypto::SignaturePoint;
-use proto::sign_service::{sign_service_server::SignService, StartSignRequest, StartSignResponse};
+use proto::v0::sign::{sign_service_server::SignService, StartSignRequest, StartSignResponse};
 use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
@@ -27,6 +29,7 @@ where
     S: ThresholdSigner,
 {
     pub state: AppState<D>,
+    pub routes: &'static network::ProtocolRoutes,
     _phantom: std::marker::PhantomData<S>,
 }
 
@@ -36,8 +39,13 @@ where
     S: ThresholdSigner,
 {
     pub fn new(state: AppState<D>) -> Self {
+        Self::with_routes(state, &network::V0)
+    }
+
+    pub fn with_routes(state: AppState<D>, routes: &'static network::ProtocolRoutes) -> Self {
         Self {
             state,
+            routes,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -102,11 +110,12 @@ where
         });
 
         // Fetch ring and key derivation from bulletin (IO) ---
-        let (key_derivation, ring_payload) = fetch_bulletin_payloads(
+        let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
             &*self.state.bulletin,
             &self.state.local_storage,
             &req.derivation_id,
             true,
+            self.routes.version,
         )
         .await?;
 
@@ -157,7 +166,8 @@ where
 
         // Initiate threshold signing (network protocol) ---
         metrics::record_sign_request_started();
-        let coordinator = SignCoordinator::<D, S>::new(Arc::new(self.state.clone()));
+        let coordinator =
+            SignCoordinator::<D, S>::with_routes(Arc::new(self.state.clone()), self.routes);
         let total_participants = peer_ids.len();
         let poly_state =
             RingPolyState::load_from_ring_pk_hex(&self.state.local_storage, &ring_payload.ring_pk)

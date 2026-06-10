@@ -53,7 +53,13 @@ where
             &msg,
             SignMessage::SignResponse { .. } | SignMessage::NonceResponse { .. }
         ) {
-            store_response(msg, peer_id, &self.app_state.sign_response_state).await;
+            store_response(
+                self.routes.version,
+                msg,
+                peer_id,
+                &self.app_state.sign_response_state,
+            )
+            .await;
             None
         } else {
             Some(msg)

@@ -396,26 +396,9 @@ pub fn effective_protocol_version(
     upgrade_info: &bulletin::r#trait::UpgradeInfo,
     current_time: u64,
 ) -> Result<u64, String> {
-    match (upgrade_info.next_version, upgrade_info.activation_time) {
-        (None, None) => Ok(upgrade_info.current_version),
-        (Some(next_version), Some(activation_time)) => {
-            if next_version <= upgrade_info.current_version {
-                return Err(format!(
-                    "next_version {} must be greater than current_version {}",
-                    next_version, upgrade_info.current_version
-                ));
-            }
-            if activation_time == 0 {
-                return Err("activation_time must be positive".to_string());
-            }
-            if current_time >= activation_time {
-                Ok(next_version)
-            } else {
-                Ok(upgrade_info.current_version)
-            }
-        }
-        _ => Err("next_version and activation_time must both be set or both be absent".to_string()),
-    }
+    upgrade_info
+        .effective_version(current_time)
+        .map_err(|error| error.to_string())
 }
 
 fn activation_time_label(upgrade_info: &bulletin::r#trait::UpgradeInfo) -> String {
@@ -425,39 +408,105 @@ fn activation_time_label(upgrade_info: &bulletin::r#trait::UpgradeInfo) -> Strin
         .unwrap_or_else(|| "none".to_string())
 }
 
-/// Capture local Unix time and fail closed unless this binary serves the ring.
-pub fn ensure_ring_protocol_version(
+fn installed_versions_label() -> String {
+    format!("{:?}", network::SUPPORTED_PROTOCOL_VERSIONS)
+}
+
+fn resolve_ring_protocol_decision(
     ring_id: &str,
     ring_payload: &bulletin::r#trait::RingPayload,
-) -> Result<u64, String> {
-    let node_version = crate::constants::PROTOCOL_VERSION;
+) -> Result<(&'static network::ProtocolRoutes, u64, String), String> {
     let activation_time = activation_time_label(&ring_payload.upgrade_info);
     let current_time = current_unix_time().map_err(|error| {
         format!(
-            "failed to read system clock for ring {}: node_version={} effective_version=unknown current_time=unknown activation_time={}: {}",
-            ring_id, node_version, activation_time, error
+            "failed to read system clock for ring {}: effective_version=unknown installed_versions={} current_time=unknown activation_time={}: {}",
+            ring_id,
+            installed_versions_label(),
+            activation_time,
+            error
         )
     })?;
     let effective_version = effective_protocol_version(&ring_payload.upgrade_info, current_time)
         .map_err(|error| {
             format!(
-                "malformed protocol upgrade state for ring {}: node_version={} effective_version=invalid current_time={} activation_time={}: {}",
-                ring_id, node_version, current_time, activation_time, error
+                "malformed protocol upgrade state for ring {}: effective_version=invalid installed_versions={} current_time={} activation_time={}: {}",
+                ring_id,
+                installed_versions_label(),
+                current_time,
+                activation_time,
+                error
             )
         })?;
 
-    if effective_version != node_version {
-        return Err(format!(
-            "protocol version mismatch for ring {}: node_version={} effective_version={} current_time={} activation_time={}",
-            ring_id, node_version, effective_version, current_time, activation_time
-        ));
-    }
-
-    Ok(effective_version)
+    let routes = network::routes_for_version(effective_version).ok_or_else(|| {
+        format!(
+            "protocol version {} for ring {} is not installed: effective_version={} installed_versions={} current_time={} activation_time={}",
+            effective_version,
+            ring_id,
+            effective_version,
+            installed_versions_label(),
+            current_time,
+            activation_time
+        )
+    })?;
+    Ok((routes, current_time, activation_time))
 }
 
-/// Read a ring and validate it against one captured local Unix timestamp.
+/// Capture local Unix time and resolve an installed route for the ring.
+pub fn resolve_ring_protocol_routes(
+    ring_id: &str,
+    ring_payload: &bulletin::r#trait::RingPayload,
+) -> Result<&'static network::ProtocolRoutes, String> {
+    resolve_ring_protocol_decision(ring_id, ring_payload).map(|(routes, _, _)| routes)
+}
+
+/// Capture local Unix time and require the ring's effective version to be installed.
+pub fn ensure_ring_protocol_version(
+    ring_id: &str,
+    ring_payload: &bulletin::r#trait::RingPayload,
+) -> Result<u64, String> {
+    resolve_ring_protocol_routes(ring_id, ring_payload).map(|routes| routes.version)
+}
+
+/// Capture local Unix time and validate that a request used the ring's effective route.
+pub fn ensure_ring_protocol_route(
+    ring_id: &str,
+    ring_payload: &bulletin::r#trait::RingPayload,
+    route_version: u64,
+) -> Result<u64, String> {
+    let (routes, current_time, activation_time) =
+        resolve_ring_protocol_decision(ring_id, ring_payload)?;
+    if routes.version != route_version {
+        return Err(format!(
+            "protocol route mismatch for ring {}: route_version={} effective_version={} installed_versions={} current_time={} activation_time={}",
+            ring_id,
+            route_version,
+            routes.version,
+            installed_versions_label(),
+            current_time,
+            activation_time
+        ));
+    }
+    Ok(routes.version)
+}
+
+/// Read a ring and resolve its effective installed protocol route.
 pub async fn read_ring_for_protocol(
+    bulletin: &(dyn bulletin::r#trait::Bulletin + Send + Sync),
+    ring_id: &str,
+) -> Result<
+    (
+        bulletin::r#trait::RingPayload,
+        &'static network::ProtocolRoutes,
+    ),
+    String,
+> {
+    let ring_payload = read_ring_payload(bulletin, ring_id).await?;
+    let routes = resolve_ring_protocol_routes(ring_id, &ring_payload)?;
+    Ok((ring_payload, routes))
+}
+
+async fn read_ring_payload(
     bulletin: &(dyn bulletin::r#trait::Bulletin + Send + Sync),
     ring_id: &str,
 ) -> Result<bulletin::r#trait::RingPayload, String> {
@@ -469,22 +518,30 @@ pub async fn read_ring_for_protocol(
         .await
         .map_err(|error| {
             format!(
-                "failed to read protocol state for ring {}: node_version={} effective_version=unknown current_time=unknown activation_time=unknown: {}",
+                "failed to read protocol state for ring {}: effective_version=unknown installed_versions={} current_time=unknown activation_time=unknown: {}",
                 ring_id,
-                crate::constants::PROTOCOL_VERSION,
+                installed_versions_label(),
                 error
             )
         })?;
-    let ring_payload =
-        bulletin::r#trait::RingPayload::try_from(ring_post).map_err(|error| {
-            format!(
-                "malformed ring payload for ring {}: node_version={} effective_version=invalid current_time=unknown activation_time=unknown: {}",
-                ring_id,
-                crate::constants::PROTOCOL_VERSION,
-                error
-            )
-        })?;
-    ensure_ring_protocol_version(ring_id, &ring_payload)?;
+    bulletin::r#trait::RingPayload::try_from(ring_post).map_err(|error| {
+        format!(
+            "malformed ring payload for ring {}: effective_version=invalid installed_versions={} current_time=unknown activation_time=unknown: {}",
+            ring_id,
+            installed_versions_label(),
+            error
+        )
+    })
+}
+
+/// Read a ring and validate the versioned route used for this initiation.
+pub async fn read_ring_for_route(
+    bulletin: &(dyn bulletin::r#trait::Bulletin + Send + Sync),
+    ring_id: &str,
+    route_version: u64,
+) -> Result<bulletin::r#trait::RingPayload, String> {
+    let ring_payload = read_ring_payload(bulletin, ring_id).await?;
+    ensure_ring_protocol_route(ring_id, &ring_payload, route_version)?;
     Ok(ring_payload)
 }
 
@@ -577,17 +634,33 @@ mod tests {
     fn protocol_mismatch_error_includes_decision_context() {
         let payload = bulletin::r#trait::RingPayload {
             upgrade_info: bulletin::r#trait::UpgradeInfo {
-                current_version: crate::constants::PROTOCOL_VERSION + 1,
+                current_version: 1,
                 next_version: None,
                 activation_time: None,
             },
             ..Default::default()
         };
-        let error = ensure_ring_protocol_version("ring-1", &payload).unwrap_err();
+        let error = resolve_ring_protocol_routes("ring-1", &payload).unwrap_err();
         assert!(error.contains("ring-1"));
-        assert!(error.contains("node_version=0"));
         assert!(error.contains("effective_version=1"));
+        assert!(error.contains("installed_versions=[0]"));
         assert!(error.contains("current_time="));
         assert!(error.contains("activation_time=none"));
+    }
+
+    #[test]
+    fn route_validation_rejects_wrong_installed_route() {
+        let payload = bulletin::r#trait::RingPayload {
+            upgrade_info: bulletin::r#trait::UpgradeInfo {
+                current_version: 0,
+                next_version: None,
+                activation_time: None,
+            },
+            ..Default::default()
+        };
+        let error = ensure_ring_protocol_route("ring-1", &payload, 1).unwrap_err();
+        assert!(error.contains("route_version=1"));
+        assert!(error.contains("effective_version=0"));
+        assert!(error.contains("installed_versions=[0]"));
     }
 }

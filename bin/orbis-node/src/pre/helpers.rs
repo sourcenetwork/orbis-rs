@@ -1,4 +1,4 @@
-use crate::helpers::helpers::read_ring_for_protocol;
+use crate::helpers::helpers::read_ring_for_route;
 use crate::pre::{
     error::{PreError, Result},
     messages::PreMessage,
@@ -23,6 +23,16 @@ pub async fn fetch_bulletin_payloads(
     _local_storage: &impl LocalStorage,
     object_id: &str,
 ) -> Result<(DocumentPayload, RingPayload)> {
+    fetch_bulletin_payloads_for_version(bulletin, _local_storage, object_id, network::V0.version)
+        .await
+}
+
+pub async fn fetch_bulletin_payloads_for_version(
+    bulletin: &(dyn Bulletin + Send + Sync),
+    _local_storage: &impl LocalStorage,
+    object_id: &str,
+    protocol_version: u64,
+) -> Result<(DocumentPayload, RingPayload)> {
     let object_info = bulletin
         .read(object_id.to_string(), BulletinKind::Document)
         .await
@@ -33,7 +43,7 @@ pub async fn fetch_bulletin_payloads(
             PreError::Deserialization(format!("Failed to parse document payload: {}", e))
         })?;
 
-    let ring_payload = read_ring_for_protocol(bulletin, &document_payload.ring_id)
+    let ring_payload = read_ring_for_route(bulletin, &document_payload.ring_id, protocol_version)
         .await
         .map_err(PreError::ProtocolError)?;
 
@@ -169,6 +179,7 @@ pub fn validate_pre_claims(
 /// and duplicate responses from the same peer. Fake `from_node_id` values are caught
 /// downstream by crypto verification (`dealer.verify()`).
 pub async fn store_response(
+    protocol_version: u64,
     message: PreMessage,
     sender_peer_id: &PeerId,
     pre_response_state: &Arc<PreResponseManager>,
@@ -183,6 +194,11 @@ pub async fn store_response(
     );
 
     pre_response_state
-        .store_response(&request_id, message, sender_peer_id.as_bytes())
+        .store_response_for_version(
+            protocol_version,
+            &request_id,
+            message,
+            sender_peer_id.as_bytes(),
+        )
         .await
 }

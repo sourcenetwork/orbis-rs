@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package dkg_service;
+package orbis.v0.dkg;
 
 service DkgService {
   rpc StartDkg(StartDkgRequest) returns (StartDkgResponse);

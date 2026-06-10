@@ -130,6 +130,7 @@ where
     D: Dkg + Clone + 'static,
 {
     pub(in crate::dkg::coordinator) app_state: Arc<AppState<D>>,
+    pub(in crate::dkg::coordinator) routes: &'static ::network::ProtocolRoutes,
 }
 
 impl<D> DkgCoordinator<D>
@@ -144,7 +145,14 @@ where
 {
     /// Create a new DKG session manager for this node.
     pub fn new(app_state: Arc<AppState<D>>) -> Self {
-        Self { app_state }
+        Self::with_routes(app_state, &::network::V0)
+    }
+
+    pub fn with_routes(
+        app_state: Arc<AppState<D>>,
+        routes: &'static ::network::ProtocolRoutes,
+    ) -> Self {
+        Self { app_state, routes }
     }
 
     /// Handle an incoming DKG message.
@@ -191,6 +199,20 @@ where
             DkgMessageType::Error => "error",
         };
         metrics::record_dkg_message_received(message_type_str);
+
+        if let Some(session_version) = self
+            .app_state
+            .dkg_session_state
+            .with_state(&session_id, |state| state.protocol_version)
+            .await
+        {
+            if session_version != self.routes.version {
+                return Err(DkgError::ProtocolError(format!(
+                    "DKG session {} is pinned to protocol version {}, but message arrived on version {}",
+                    session_id, session_version, self.routes.version
+                )));
+            }
+        }
 
         // SessionInit can create a session — handle before the session-exists check.
         if let DkgMessage::SessionInit {
@@ -497,10 +519,14 @@ where
         let dkg_node = D::new(node_id, threshold, total_nodes, session_id, role)
             .map_err(|e| DkgError::Crypto(format!("Failed to create DKG node: {}", e)))?;
 
+        let protocol_version = self.routes.version;
         match self
             .app_state
             .dkg_session_state
-            .create_session(session_id, *dkg_node, total_nodes, init_fn)
+            .create_session(session_id, *dkg_node, total_nodes, move |state| {
+                state.protocol_version = protocol_version;
+                init_fn(state);
+            })
             .await
         {
             CreateSessionOutcome::Created => {}

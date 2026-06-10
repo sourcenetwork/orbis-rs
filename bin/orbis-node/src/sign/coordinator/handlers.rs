@@ -2,14 +2,15 @@ use super::SignCoordinator;
 use crate::constants::{
     JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
 };
-use crate::helpers::helpers::read_ring_for_protocol;
+use crate::helpers::helpers::read_ring_for_route;
 use crate::ring_state::RingShareBundle;
 use crate::sign::error::{Result, SignError};
 use crate::sign::helpers::{
-    check_policy_access, decode_ring_pk_bytes, deserialize_commitments, fetch_bulletin_payloads,
-    load_dist_key_share, refresh_health_check_context_key, ring_reshare_update_context_key,
-    validate_refresh_health_check_statement, validate_ring_reshare_update_statement,
-    validate_sign_claims, verify_message_and_get_info,
+    check_policy_access, decode_ring_pk_bytes, deserialize_commitments,
+    fetch_bulletin_payloads_for_version, load_dist_key_share, refresh_health_check_context_key,
+    ring_reshare_update_context_key, validate_refresh_health_check_statement,
+    validate_ring_reshare_update_statement, validate_sign_claims,
+    verify_message_and_get_info_for_version,
 };
 use crate::sign::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
@@ -112,11 +113,12 @@ where
                 )
                 .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
                 validate_sign_claims(&token, derivation_id, None)?;
-                let (key_derivation, ring_payload) = fetch_bulletin_payloads(
+                let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
                     &*self.app_state.bulletin,
                     &self.app_state.local_storage,
                     derivation_id,
                     true,
+                    self.routes.version,
                 )
                 .await?;
                 check_policy_access(
@@ -170,10 +172,13 @@ where
                             object_id, error
                         ))
                     })?;
-                let ring_payload =
-                    read_ring_for_protocol(&*self.app_state.bulletin, &document_payload.ring_id)
-                        .await
-                        .map_err(SignError::ProtocolError)?;
+                let ring_payload = read_ring_for_route(
+                    &*self.app_state.bulletin,
+                    &document_payload.ring_id,
+                    self.routes.version,
+                )
+                .await
+                .map_err(SignError::ProtocolError)?;
                 Some(ring_payload.ring_pk)
             }
         };
@@ -239,7 +244,8 @@ where
         if !self
             .app_state
             .sign_response_state
-            .store_nonce(
+            .store_nonce_for_version(
+                self.routes.version,
                 request_id.clone(),
                 state_bytes,
                 context_key,
@@ -283,7 +289,11 @@ where
             Some(
                 self.app_state
                     .sign_response_state
-                    .consume_nonce_for_sign_request(&nonce_key, sender_peer_id.as_bytes())
+                    .consume_nonce_for_sign_request_for_version(
+                        self.routes.version,
+                        &nonce_key,
+                        sender_peer_id.as_bytes(),
+                    )
                     .await
                     .ok_or_else(|| {
                         SignError::NonceState(format!(
@@ -309,12 +319,13 @@ where
             SignContext::Bulletin { ref object_id } => {
                 // Message is a BulletinPost; on-chain existence is the authorization.
                 // Signs from root key: no derivation, no metadata.
-                let (ring_pk_hex, _) = verify_message_and_get_info::<D>(
+                let (ring_pk_hex, _) = verify_message_and_get_info_for_version::<D>(
                     &message,
                     &self.app_state.local_storage,
                     &self.app_state.bulletin,
                     object_id,
                     !S::INTERACTIVE,
+                    self.routes.version,
                 )
                 .await?;
                 (ring_pk_hex, None, None)
@@ -339,11 +350,12 @@ where
                 validate_sign_claims(&token, derivation_id, Some(&message))?;
 
                 // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
-                let (key_derivation, ring_payload) = fetch_bulletin_payloads(
+                let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
                     &*self.app_state.bulletin,
                     &self.app_state.local_storage,
                     derivation_id,
                     !S::INTERACTIVE,
+                    self.routes.version,
                 )
                 .await?;
 

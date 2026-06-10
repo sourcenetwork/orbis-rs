@@ -29,16 +29,16 @@ use crypto::{DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl};
 use proto::{
-    dkg_service::{
-        dkg_service_client::DkgServiceClient, dkg_service_server::DkgServiceServer, StartDkgRequest,
-    },
     info_service::{
         info_service_client::InfoServiceClient, info_service_server::InfoServiceServer,
         GetNodeInfoRequest, GetRingStateRequest, NodeStatus,
     },
-    pre_service::pre_service_server::PreServiceServer,
-    sign_service::sign_service_server::SignServiceServer,
-    store_secret_service::store_secret_service_server::StoreSecretServiceServer,
+    v0::dkg::{
+        dkg_service_client::DkgServiceClient, dkg_service_server::DkgServiceServer, StartDkgRequest,
+    },
+    v0::pre::pre_service_server::PreServiceServer,
+    v0::sign::sign_service_server::SignServiceServer,
+    v0::store_secret::store_secret_service_server::StoreSecretServiceServer,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -432,6 +432,7 @@ async fn test_bootstrap_info_server_exposes_only_info() {
     assert_eq!(node_info.public_address, expected_address);
     assert_eq!(node_info.status, NodeStatus::Bootstrapping as i32);
     assert_eq!(node_info.managed_ring_count, 0);
+    assert_eq!(node_info.supported_protocol_versions, vec![0]);
     assert!(!node_info.peer_id.is_empty(), "peer_id should be set");
     assert!(
         node_info
@@ -550,6 +551,33 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
     assert_eq!(node_info.public_address, expected_address);
     assert_eq!(node_info.status, NodeStatus::Ready as i32);
     assert_eq!(node_info.managed_ring_count, 0);
+    assert_eq!(node_info.supported_protocol_versions, vec![0]);
+
+    let channel = tonic::transport::Endpoint::from_shared(endpoint.clone())
+        .expect("valid endpoint")
+        .connect()
+        .await
+        .expect("connect raw grpc client");
+    let mut raw_client = tonic::client::Grpc::new(channel);
+    raw_client.ready().await.expect("raw grpc client ready");
+    let old_route_result: Result<tonic::Response<proto::v0::dkg::StartDkgResponse>, tonic::Status> =
+        raw_client
+            .unary(
+                tonic::Request::new(StartDkgRequest {
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+                }),
+                tonic::codegen::http::uri::PathAndQuery::from_static(
+                    "/dkg_service.DkgService/StartDkg",
+                ),
+                tonic_prost::ProstCodec::default(),
+            )
+            .await;
+    assert_eq!(
+        old_route_result
+            .expect_err("old unversioned route must be absent")
+            .code(),
+        Code::Unimplemented
+    );
 
     let mut full_dkg_client = DkgServiceClient::connect(endpoint)
         .await

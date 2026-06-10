@@ -2,7 +2,7 @@ use crate::constants::PSS_GRACE_PERIOD_SECS;
 use crate::dkg::error::{DkgError, Result};
 use crate::dkg::messages::SessionKind;
 use crate::dkg::session_state::ReshareParams;
-use crate::helpers::helpers::{extract_node_part, read_ring_for_protocol};
+use crate::helpers::helpers::{extract_node_part, read_ring_for_route};
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::{BearerToken, DkgClaims};
 use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo, RingPayload};
@@ -132,7 +132,13 @@ pub async fn load_refresh_ring_payload<S: LocalStorage>(
         .iter()
         .find(|e| e.ring_pk_str == ring_pk_hex)
         .ok_or_else(|| DkgError::Unauthorized(format!("Unknown ring: {}", ring_pk_hex)))?;
-    load_ring_payload_by_post_id(ring_pk_hex, &entry.bulletin_post_id, bulletin).await
+    load_ring_payload_by_post_id(
+        ring_pk_hex,
+        &entry.bulletin_post_id,
+        bulletin,
+        network::V0.version,
+    )
+    .await
 }
 
 /// Load the canonical reshare ring payload, falling back to the wire-provided bulletin
@@ -152,15 +158,16 @@ pub async fn load_reshare_ring_payload<S: LocalStorage>(
     let resolved_post_id = entry
         .map(|e| e.bulletin_post_id.as_str())
         .unwrap_or(bulletin_post_id);
-    load_ring_payload_by_post_id(ring_pk_hex, resolved_post_id, bulletin).await
+    load_ring_payload_by_post_id(ring_pk_hex, resolved_post_id, bulletin, network::V0.version).await
 }
 
 async fn load_ring_payload_by_post_id(
     ring_pk_hex: &str,
     post_id: &str,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    protocol_version: u64,
 ) -> Result<RingPayload> {
-    let ring_payload = read_ring_for_protocol(&**bulletin, post_id)
+    let ring_payload = read_ring_for_route(&**bulletin, post_id, protocol_version)
         .await
         .map_err(DkgError::ProtocolError)?;
 
@@ -209,6 +216,27 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
     local_storage: &S,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<RingPayload> {
+    validate_reshare_session_init_for_version(
+        ring_pk_hex,
+        proposed_new_peer_node_keys,
+        proposed_new_threshold,
+        bulletin_post_id,
+        local_storage,
+        bulletin,
+        network::V0.version,
+    )
+    .await
+}
+
+pub async fn validate_reshare_session_init_for_version<S: LocalStorage>(
+    ring_pk_hex: &str,
+    proposed_new_peer_node_keys: &[String],
+    proposed_new_threshold: u32,
+    bulletin_post_id: &str,
+    local_storage: &S,
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    protocol_version: u64,
+) -> Result<RingPayload> {
     // 0. Fast-fail on structurally invalid parameters before hitting the bulletin.
     if proposed_new_peer_node_keys.is_empty() {
         return Err(DkgError::InvalidInput(
@@ -238,7 +266,8 @@ pub async fn validate_reshare_session_init<S: LocalStorage>(
         .map(|e| e.bulletin_post_id.as_str())
         .unwrap_or(bulletin_post_id);
     let ring_payload =
-        load_ring_payload_by_post_id(ring_pk_hex, resolved_post_id, bulletin).await?;
+        load_ring_payload_by_post_id(ring_pk_hex, resolved_post_id, bulletin, protocol_version)
+            .await?;
 
     // 3. Sender membership in the old committee is verified by the caller (session_init
     // handler) after resolving NodeInfo routes: it needs the resolved peer→node-key map
@@ -300,6 +329,21 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
     local_storage: &S,
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
 ) -> Result<RingPayload> {
+    validate_refresh_session_init_for_version(
+        ring_pk_hex,
+        local_storage,
+        bulletin,
+        network::V0.version,
+    )
+    .await
+}
+
+pub async fn validate_refresh_session_init_for_version<S: LocalStorage>(
+    ring_pk_hex: &str,
+    local_storage: &S,
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    protocol_version: u64,
+) -> Result<RingPayload> {
     // 1. Look up the bulletin post_id for this ring from the local RingIndex.
     let ring_index: Vec<RingIndexEntry> = local_storage
         .get(LocalStorageKeys::RingIndex)
@@ -313,7 +357,8 @@ pub async fn validate_refresh_session_init<S: LocalStorage>(
     let post_id = &entry.bulletin_post_id;
 
     // Fetch the canonical RingPayload from the bulletin — it is the source of truth.
-    let ring_payload = load_ring_payload_by_post_id(ring_pk_hex, post_id, bulletin).await?;
+    let ring_payload =
+        load_ring_payload_by_post_id(ring_pk_hex, post_id, bulletin, protocol_version).await?;
 
     // 2. Verify enough time has elapsed since the last refresh/DKG.
     //    Only enforced when the ring has a `pss_interval` set.

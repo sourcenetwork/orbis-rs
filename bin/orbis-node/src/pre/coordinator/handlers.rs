@@ -2,7 +2,7 @@ use super::PreCoordinator;
 use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
 use crate::pre::error::{PreError, Result};
 use crate::pre::helpers::{
-    check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads,
+    check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads_for_version,
     validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::messages::{PreMessage, ReencryptRequest};
@@ -92,10 +92,11 @@ where
             &ctx.salt,
         )?;
 
-        let (document_payload, ring_payload) = fetch_bulletin_payloads(
+        let (document_payload, ring_payload) = fetch_bulletin_payloads_for_version(
             &*self.app_state.bulletin,
             &self.app_state.local_storage,
             &ctx.object_id,
+            self.routes.version,
         )
         .await?;
 

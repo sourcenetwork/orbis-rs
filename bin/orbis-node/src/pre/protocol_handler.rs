@@ -53,7 +53,13 @@ where
     /// all other messages are routed to `handle_message`.
     async fn try_store_response(&self, msg: PreMessage, peer_id: &PeerId) -> Option<PreMessage> {
         if let PreMessage::ReencryptResponse { .. } = &msg {
-            store_response(msg, peer_id, &self.app_state.pre_response_state).await;
+            store_response(
+                self.routes.version,
+                msg,
+                peer_id,
+                &self.app_state.pre_response_state,
+            )
+            .await;
             None
         } else {
             Some(msg)
