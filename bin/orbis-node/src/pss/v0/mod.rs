@@ -39,7 +39,7 @@ use crate::dkg::v0::helpers::{
 };
 use crate::dkg::v0::messages::{DkgMessage, SessionKind};
 use crate::dkg::v0::session_state::RingPssClaimOutcome;
-use crate::helpers::helpers::{extract_node_part, validate_all_peer_ids};
+use crate::helpers::helpers::{extract_node_part, installed_versions_label, validate_all_peer_ids};
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
     peer_ids_from_routes, resolve_node_routes, NodeRoute,
@@ -197,47 +197,59 @@ where
     let node_id_to_peer_id = node_id_to_peer_id_from_routes(&routes, &node_id_assignments)
         .map_err(DkgError::InvalidInput)?;
 
-    if is_reshare {
-        return trigger_reshare(
-            app_state,
-            entry,
-            &ring_payload,
-            &routes,
-            &node_id_assignments,
-            &node_id_to_peer_id,
-            protocol_routes,
-        )
-        .await;
-    }
+    // Dispatch to the correct protocol implementation based on the ring's effective version.
+    // Add a new arm here when a v1/ folder is introduced.
+    match protocol_routes.version {
+        0 => {
+            if is_reshare {
+                return trigger_reshare(
+                    app_state,
+                    entry,
+                    &ring_payload,
+                    &routes,
+                    &node_id_assignments,
+                    &node_id_to_peer_id,
+                    protocol_routes,
+                )
+                .await;
+            }
 
-    // Refresh: also check that enough time has elapsed since the last ceremony.
-    let pss_interval_secs = ring_payload.pss_interval.unwrap(); // safe: checked above
-    let now_secs = current_unix_secs();
-    let last_refresh_secs =
-        RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str)
-            .map(|b| b.last_pss)
-            .unwrap_or(0);
-    let elapsed = now_secs.saturating_sub(last_refresh_secs);
-    if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
-        tracing::debug!(
-            post_id = %post_id,
-            elapsed_secs = elapsed,
-            pss_interval_secs = pss_interval_secs,
-            "PSS: refresh not yet due"
-        );
-        return Ok(());
-    }
+            // Refresh: also check that enough time has elapsed since the last ceremony.
+            let pss_interval_secs = ring_payload.pss_interval.unwrap(); // safe: checked above
+            let now_secs = current_unix_secs();
+            let last_refresh_secs =
+                RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str)
+                    .map(|b| b.last_pss)
+                    .unwrap_or(0);
+            let elapsed = now_secs.saturating_sub(last_refresh_secs);
+            if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
+                tracing::debug!(
+                    post_id = %post_id,
+                    elapsed_secs = elapsed,
+                    pss_interval_secs = pss_interval_secs,
+                    "PSS: refresh not yet due"
+                );
+                return Ok(());
+            }
 
-    trigger_refresh(
-        app_state,
-        entry,
-        &ring_payload,
-        &peer_ids,
-        &node_id_assignments,
-        &node_id_to_peer_id,
-        protocol_routes,
-    )
-    .await
+            trigger_refresh(
+                app_state,
+                entry,
+                &ring_payload,
+                &peer_ids,
+                &node_id_assignments,
+                &node_id_to_peer_id,
+                protocol_routes,
+            )
+            .await
+        }
+        v => Err(DkgError::ProtocolError(format!(
+            "ring {} requires unsupported protocol version {}; installed versions: {}",
+            post_id,
+            v,
+            installed_versions_label()
+        ))),
+    }
 }
 
 fn cleanup_pending_fresh_ring_if_due<D>(

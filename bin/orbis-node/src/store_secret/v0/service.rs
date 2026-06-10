@@ -106,7 +106,9 @@ where
             "Authenticated StoreSecret request"
         );
 
-        // Get ring public_key from bulletin
+        // Get ring public_key from bulletin.
+        // Validates that the ring's effective protocol version matches this service (v0).
+        // Returns an error with version details if the ring has migrated to a newer version.
         let ring_payload =
             read_ring_for_route(&*self.state.bulletin, &req.ring_id, self.routes.version)
                 .await

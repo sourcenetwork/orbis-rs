@@ -1,3 +1,4 @@
+use crate::dkg::v0::service::DkgServiceImpl;
 use crate::dkg::v0::{
     coordinator::DkgCoordinator,
     helpers::derive_reshare_session_id,
@@ -12,7 +13,6 @@ use crate::helpers::test_helpers::{
     TestKeyPair, TestNode,
 };
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
-use crate::DkgServiceImpl;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{BulletinKind, NodeInfo, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole, PubPoly as PubPolyTrait};

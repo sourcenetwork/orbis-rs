@@ -1,4 +1,5 @@
 use crate::constants::MAX_DKG_SESSIONS;
+use crate::dkg::v0::service::DkgServiceImpl;
 use crate::dkg::v0::{
     coordinator::DkgCoordinator,
     error::DkgError,
@@ -13,7 +14,6 @@ use crate::helpers::test_helpers::{
     test_db_path, TestKeyPair,
 };
 use crate::ring_state::RingIndexEntry;
-use crate::DkgServiceImpl;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{NodeInfo, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole};

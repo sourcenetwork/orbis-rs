@@ -1,3 +1,4 @@
+use crate::dkg::v0::service::DkgServiceImpl;
 use crate::dkg::v0::{
     coordinator::DkgCoordinator,
     helpers::{derive_refresh_session_id, serialize_commitment_coefficients},
@@ -11,7 +12,6 @@ use crate::helpers::test_helpers::{
     test_db_path, write_ring_to_bulletin, TestKeyPair,
 };
 use crate::ring_state::RingPolyState;
-use crate::DkgServiceImpl;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{NodeInfo, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgMode, DkgRole, PubPoly as PubPolyTrait};

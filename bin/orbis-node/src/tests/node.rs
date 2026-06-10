@@ -3,7 +3,7 @@
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::{
     constants::{GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS},
-    dkg::service::DkgServiceImpl,
+    dkg::v0::service::DkgServiceImpl,
     helpers::{
         launch::{
             build_node_info_from_args, create_and_store_node_key, derive_secret_key_bytes,
@@ -13,9 +13,9 @@ use crate::{
     },
     info::InfoServiceImpl,
     init_node,
-    pre::service::PreServiceImpl,
+    pre::v0::service::PreServiceImpl,
     shutdown_bootstrap_after_init,
-    sign::service::SignServiceImpl,
+    sign::v0::service::SignServiceImpl,
     start_bootstrap_info_server,
     store_secret::StoreSecretServiceImpl,
     Args, NodeConfig,

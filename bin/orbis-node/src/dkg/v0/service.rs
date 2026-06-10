@@ -19,7 +19,11 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
-/// Implementation of the DkgService
+/// Implementation of the v0 DkgService.
+///
+/// Accepts requests only for rings whose effective protocol version is 0.
+/// Once a ring's activation_time passes and its effective version becomes 1,
+/// callers must switch to the v1 DkgService endpoint.
 #[derive(Debug)]
 pub struct DkgServiceImpl<D>
 where
@@ -33,7 +37,6 @@ impl<D> DkgServiceImpl<D>
 where
     D: crypto::r#trait::Dkg + Clone + 'static,
 {
-    /// Create a new DkgServiceImpl with shared application state
     pub fn new(state: AppState<D>) -> Self {
         Self::with_routes(state, &network::V0)
     }
@@ -83,6 +86,8 @@ where
         validate_dkg_claims(&token, &req.ring_id)?;
 
         let ring_id = req.ring_id.clone();
+        // Validates that the ring's effective protocol version matches this service (v0).
+        // Returns an error with version details if the ring has migrated to a newer version.
         let ring_payload =
             read_ring_for_route(&*self.state.bulletin, &ring_id, self.routes.version)
                 .await
@@ -234,13 +239,6 @@ where
             .set_pss_interval(&session_id, pss_interval)
             .await;
 
-        // Store node_id to peer_id mappings for efficient routing
-        // We'll do this after sending SessionInit, but for now the coordinator will handle it
-        // when it processes the message (for consistency)
-
-        // Connect to peer nodes using iroh network
-        // Peer IDs should be in iroh PublicKey format: either "node_id" or "node_id@ip:port"
-        // where node_id is the iroh public key string representation
         if !peer_ids.is_empty() {
             // Pre-warm the connection pool for all peers before starting the ceremony.
             // Using get_or_connect (rather than a raw network.connect()) means the

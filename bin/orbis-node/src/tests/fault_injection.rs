@@ -10,10 +10,10 @@
 //!   cargo test --bin orbis-node --features "integration-test,fault-injection" \
 //!     -- fault_injection --nocapture
 
-use crate::dkg::service::DkgServiceImpl;
+use crate::dkg::v0::service::DkgServiceImpl;
 use crate::info::InfoServiceImpl;
-use crate::pre::service::PreServiceImpl;
-use crate::sign::service::SignServiceImpl;
+use crate::pre::v0::service::PreServiceImpl;
+use crate::sign::v0::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{
     constants::{

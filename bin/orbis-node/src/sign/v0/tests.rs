@@ -4,20 +4,20 @@
 //! These tests verify the complete flow: DKG → Sign message → Verify signature.
 
 use crate::constants::MAX_SIGN_MESSAGE_BYTES;
+use crate::dkg::v0::service::DkgServiceImpl;
 use crate::helpers::helpers::RingConfig;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, get_test_ring_post,
     setup_three_node_network_with_sign, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
 };
 use crate::ring_state::RingPolyState;
-use crate::sign::service::SignServiceImpl;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::helpers::check_policy_access;
 use crate::sign::v0::messages::{PolicyContext, SignContext};
 #[cfg(feature = "decaf377")]
 use crate::sign::v0::messages::{SignMessage, SignRequest};
-use crate::DkgServiceImpl;
+use crate::sign::v0::service::SignServiceImpl;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{

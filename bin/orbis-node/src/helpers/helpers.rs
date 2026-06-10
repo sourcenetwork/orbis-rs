@@ -408,7 +408,7 @@ fn activation_time_label(upgrade_info: &bulletin::r#trait::UpgradeInfo) -> Strin
         .unwrap_or_else(|| "none".to_string())
 }
 
-fn installed_versions_label() -> String {
+pub fn installed_versions_label() -> String {
     format!("{:?}", network::SUPPORTED_PROTOCOL_VERSIONS)
 }
 

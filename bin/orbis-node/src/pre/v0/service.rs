@@ -20,7 +20,11 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
-/// Implementation of the PreService
+/// Implementation of the v0 PreService.
+///
+/// Accepts requests only for rings whose effective protocol version is 0.
+/// Once a ring's activation_time passes and its effective version becomes 1,
+/// callers must switch to the v1 PreService endpoint.
 #[derive(Debug)]
 pub struct PreServiceImpl<D, T>
 where
@@ -37,7 +41,6 @@ where
     D: Dkg + Clone + 'static,
     T: ThresholdDealer,
 {
-    /// Create a new PreServiceImpl with shared application state
     pub fn new(state: AppState<D>) -> Self {
         Self::with_routes(state, &network::V0)
     }
@@ -96,6 +99,9 @@ where
             end: w.end,
         });
 
+        // Fetch document and ring payloads from bulletin (IO).
+        // Validates that the ring's effective protocol version matches this service (v0).
+        // Returns an error with version details if the ring has migrated to a newer version.
         let (document_payload, ring_payload) = fetch_bulletin_payloads_for_version(
             &*self.state.bulletin,
             &self.state.local_storage,

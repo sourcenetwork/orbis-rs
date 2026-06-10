@@ -11,7 +11,7 @@ use crate::{
     constants::{
         GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MIN_NODE_BALANCE,
     },
-    dkg::service::DkgServiceImpl,
+    dkg::v0::service::DkgServiceImpl,
     helpers::{
         launch::{create_and_store_node_key, LogLevel},
         test_helpers::{
@@ -21,8 +21,8 @@ use crate::{
     },
     info::InfoServiceImpl,
     init_node,
-    pre::service::PreServiceImpl,
-    sign::service::SignServiceImpl,
+    pre::v0::service::PreServiceImpl,
+    sign::v0::service::SignServiceImpl,
     store_secret::StoreSecretServiceImpl,
     Args, NodeConfig,
 };

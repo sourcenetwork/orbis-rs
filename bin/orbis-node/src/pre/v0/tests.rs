@@ -3,13 +3,13 @@
 //! This module contains end-to-end tests for the PRE (Proxy Re-Encryption) protocol.
 //! These tests verify the complete flow: DKG → Alice encrypts → PRE to Bob → Bob decrypts.
 
+use crate::dkg::v0::service::DkgServiceImpl;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_ring_post,
     setup_three_node_network_with_pre, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
 };
-use crate::pre::service::PreServiceImpl;
 use crate::pre::v0::coordinator::{PreCoordinator, PreResponse};
-use crate::DkgServiceImpl;
+use crate::pre::v0::service::PreServiceImpl;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, DocumentPayload, RingPayload};
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, Dkg, DkgMode, DkgRole, EncryptionProof, ThresholdDealer,

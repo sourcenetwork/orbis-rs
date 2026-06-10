@@ -1,5 +1,4 @@
 use crate::app_state::AppState;
-use crate::constants::MAX_SIGN_MESSAGE_BYTES;
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
 use crate::helpers::helpers::{validate_all_peer_ids, RingConfig};
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
@@ -21,7 +20,11 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
-/// Implementation of the SignService (Policy pathway only)
+/// Implementation of the v0 SignService.
+///
+/// Accepts requests only for rings whose effective protocol version is 0.
+/// Once a ring's activation_time passes and its effective version becomes 1,
+/// callers must switch to the v1 SignService endpoint.
 #[derive(Debug)]
 pub struct SignServiceImpl<D, S>
 where
@@ -85,11 +88,11 @@ where
         })?;
 
         // reject oversized messages before any crypto work ---
-        if request.get_ref().message.len() > MAX_SIGN_MESSAGE_BYTES {
+        if request.get_ref().message.len() > crate::constants::MAX_SIGN_MESSAGE_BYTES {
             return Err(SignError::InvalidInput(format!(
                 "Message too large: {} bytes exceeds maximum {}",
                 request.get_ref().message.len(),
-                MAX_SIGN_MESSAGE_BYTES
+                crate::constants::MAX_SIGN_MESSAGE_BYTES
             ))
             .into());
         }
@@ -109,7 +112,9 @@ where
             end: w.end,
         });
 
-        // Fetch ring and key derivation from bulletin (IO) ---
+        // Fetch ring and key derivation from bulletin (IO).
+        // Validates that the ring's effective protocol version matches this service (v0).
+        // Returns an error with version details if the ring has migrated to a newer version.
         let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
             &*self.state.bulletin,
             &self.state.local_storage,
