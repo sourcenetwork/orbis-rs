@@ -94,7 +94,6 @@ where
 
         let (document_payload, ring_payload) = fetch_bulletin_payloads_for_version(
             &*self.app_state.bulletin,
-            &self.app_state.local_storage,
             &ctx.object_id,
             self.routes.version,
         )

@@ -124,7 +124,12 @@ pub async fn do_dkg(endpoint: String, ring_id: String) -> Result<DkgResult> {
     let protocol_version = resolve_ring_protocol_version(&ring_id).await?;
     let mut client = match protocol_version {
         0 => DkgServiceClient::connect(endpoint.clone()).await,
-        _ => unreachable!("unsupported versions are rejected during ring resolution"),
+        _ => {
+            return Err(anyhow!(
+                "protocol version {} is not supported by this client",
+                protocol_version
+            ))
+        }
     }
     .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
@@ -268,7 +273,12 @@ pub async fn store_prepared_secret(
     let protocol_version = resolve_ring_protocol_version(&ring_id).await?;
     let mut client = match protocol_version {
         0 => StoreSecretServiceClient::connect(endpoint.clone()).await,
-        _ => unreachable!("unsupported versions are rejected during ring resolution"),
+        _ => {
+            return Err(anyhow!(
+                "protocol version {} is not supported by this client",
+                protocol_version
+            ))
+        }
     }
     .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
@@ -446,7 +456,12 @@ pub async fn do_pre(
     );
     let mut client = match protocol_version {
         0 => PreServiceClient::connect(endpoint.clone()).await,
-        _ => unreachable!("unsupported versions are rejected during ring resolution"),
+        _ => {
+            return Err(anyhow!(
+                "protocol version {} is not supported by this client",
+                protocol_version
+            ))
+        }
     }
     .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
@@ -1160,7 +1175,12 @@ pub async fn do_sign(
     );
     let mut client = match protocol_version {
         0 => SignServiceClient::connect(endpoint.clone()).await,
-        _ => unreachable!("unsupported versions are rejected during ring resolution"),
+        _ => {
+            return Err(anyhow!(
+                "protocol version {} is not supported by this client",
+                protocol_version
+            ))
+        }
     }
     .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 

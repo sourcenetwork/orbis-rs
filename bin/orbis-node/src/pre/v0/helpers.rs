@@ -10,26 +10,11 @@ use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
 use crypto::r#trait::{EncryptionProof, Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
-use local_storage::r#trait::LocalStorage;
 use network::PeerId;
 use std::sync::Arc;
 
-/// Fetches and deserializes the document and ring payloads from the bulletin.
-///
-/// Reads the document by object ID, then follows the embedded `ring_id` to load
-/// the corresponding ring payload.
-pub async fn fetch_bulletin_payloads(
-    bulletin: &(dyn Bulletin + Send + Sync),
-    _local_storage: &impl LocalStorage,
-    object_id: &str,
-) -> Result<(DocumentPayload, RingPayload)> {
-    fetch_bulletin_payloads_for_version(bulletin, _local_storage, object_id, network::V0.version)
-        .await
-}
-
 pub async fn fetch_bulletin_payloads_for_version(
     bulletin: &(dyn Bulletin + Send + Sync),
-    _local_storage: &impl LocalStorage,
     object_id: &str,
     protocol_version: u64,
 ) -> Result<(DocumentPayload, RingPayload)> {

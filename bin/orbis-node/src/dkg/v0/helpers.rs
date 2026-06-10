@@ -208,26 +208,6 @@ async fn load_ring_payload_by_post_id(
 /// "accept anything" — they mean "keep the current value".  A sender proposing a committee
 /// or threshold that differs from both the announced and current values is rejected,
 /// preventing unilateral redirection of a reshare to an arbitrary new committee.
-pub async fn validate_reshare_session_init<S: LocalStorage>(
-    ring_pk_hex: &str,
-    proposed_new_peer_node_keys: &[String],
-    proposed_new_threshold: u32,
-    bulletin_post_id: &str,
-    local_storage: &S,
-    bulletin: &Arc<dyn Bulletin + Send + Sync>,
-) -> Result<RingPayload> {
-    validate_reshare_session_init_for_version(
-        ring_pk_hex,
-        proposed_new_peer_node_keys,
-        proposed_new_threshold,
-        bulletin_post_id,
-        local_storage,
-        bulletin,
-        network::V0.version,
-    )
-    .await
-}
-
 pub async fn validate_reshare_session_init_for_version<S: LocalStorage>(
     ring_pk_hex: &str,
     proposed_new_peer_node_keys: &[String],
@@ -324,20 +304,6 @@ pub async fn validate_reshare_session_init_for_version<S: LocalStorage>(
 ///
 /// The caller is responsible for the atomic in-progress flag
 /// (`try_mark_ring_pss`) after this returns `Ok`.
-pub async fn validate_refresh_session_init<S: LocalStorage>(
-    ring_pk_hex: &str,
-    local_storage: &S,
-    bulletin: &Arc<dyn Bulletin + Send + Sync>,
-) -> Result<RingPayload> {
-    validate_refresh_session_init_for_version(
-        ring_pk_hex,
-        local_storage,
-        bulletin,
-        network::V0.version,
-    )
-    .await
-}
-
 pub async fn validate_refresh_session_init_for_version<S: LocalStorage>(
     ring_pk_hex: &str,
     local_storage: &S,
@@ -1328,7 +1294,13 @@ mod tests {
         let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
         // No RingIndex written — ring is unknown.
-        let result = validate_refresh_session_init("some_pk", &storage, &bulletin).await;
+        let result = validate_refresh_session_init_for_version(
+            "some_pk",
+            &storage,
+            &bulletin,
+            network::V0.version,
+        )
+        .await;
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
             "Expected Unauthorized for unknown ring, got: {:?}",
@@ -1363,7 +1335,13 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        let result = validate_refresh_session_init("pk", &storage, &bulletin).await;
+        let result = validate_refresh_session_init_for_version(
+            "pk",
+            &storage,
+            &bulletin,
+            network::V0.version,
+        )
+        .await;
         assert!(
             matches!(result, Err(DkgError::ProtocolError(_))),
             "Expected ProtocolError for corrupt payload, got: {:?}",
@@ -1388,7 +1366,13 @@ mod tests {
         )
         .await;
         // Intentionally do not write a RingShareBundle.
-        let result = validate_refresh_session_init(ring_pk, &storage, &bulletin).await;
+        let result = validate_refresh_session_init_for_version(
+            ring_pk,
+            &storage,
+            &bulletin,
+            network::V0.version,
+        )
+        .await;
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
             "Expected Unauthorized for missing timestamp, got: {:?}",
@@ -1423,7 +1407,13 @@ mod tests {
             .unwrap()
             .as_secs();
         write_last_refresh(&storage, ring_pk, now);
-        let result = validate_refresh_session_init(ring_pk, &storage, &bulletin).await;
+        let result = validate_refresh_session_init_for_version(
+            ring_pk,
+            &storage,
+            &bulletin,
+            network::V0.version,
+        )
+        .await;
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
             "Expected Unauthorized for too soon, got: {:?}",
@@ -1455,7 +1445,13 @@ mod tests {
         .await;
         // Timestamp at epoch — elapsed >> interval.
         write_last_refresh(&storage, ring_pk, 0);
-        let result = validate_refresh_session_init(ring_pk, &storage, &bulletin).await;
+        let result = validate_refresh_session_init_for_version(
+            ring_pk,
+            &storage,
+            &bulletin,
+            network::V0.version,
+        )
+        .await;
         assert!(
             result.is_ok(),
             "Expected Ok for valid refresh, got: {:?}",
@@ -1480,7 +1476,13 @@ mod tests {
         )
         .await;
         // No RingShareBundle written — would fail if the time check ran.
-        let result = validate_refresh_session_init(ring_pk, &storage, &bulletin).await;
+        let result = validate_refresh_session_init_for_version(
+            ring_pk,
+            &storage,
+            &bulletin,
+            network::V0.version,
+        )
+        .await;
         assert!(
             result.is_ok(),
             "Expected Ok when pss_interval is None (no time check), got: {:?}",
@@ -1504,7 +1506,13 @@ mod tests {
         )
         .await;
 
-        let missing = validate_refresh_session_init(ring_pk, &storage, &bulletin).await;
+        let missing = validate_refresh_session_init_for_version(
+            ring_pk,
+            &storage,
+            &bulletin,
+            network::V0.version,
+        )
+        .await;
         assert!(
             matches!(missing, Err(DkgError::Unauthorized(_))),
             "Expected missing timestamp to be rejected when pss_interval is Some(0), got: {:?}",
@@ -1512,7 +1520,13 @@ mod tests {
         );
 
         write_last_refresh(&storage, ring_pk, 0);
-        let result = validate_refresh_session_init(ring_pk, &storage, &bulletin).await;
+        let result = validate_refresh_session_init_for_version(
+            ring_pk,
+            &storage,
+            &bulletin,
+            network::V0.version,
+        )
+        .await;
         assert!(
             result.is_ok(),
             "Expected Some(0) to be accepted once the ring has a timestamp, got: {:?}",
@@ -1545,7 +1559,13 @@ mod tests {
             .as_secs();
         let half_grace = PSS_GRACE_PERIOD_SECS / 2;
         write_last_refresh(&storage, ring_pk, now - pss_interval + half_grace);
-        let result = validate_refresh_session_init(ring_pk, &storage, &bulletin).await;
+        let result = validate_refresh_session_init_for_version(
+            ring_pk,
+            &storage,
+            &bulletin,
+            network::V0.version,
+        )
+        .await;
         assert!(
             result.is_ok(),
             "Expected Ok: elapsed is within grace window, got: {:?}",
@@ -1583,7 +1603,13 @@ mod tests {
             ring_pk,
             now - pss_interval + PSS_GRACE_PERIOD_SECS + 2,
         );
-        let result = validate_refresh_session_init(ring_pk, &storage, &bulletin).await;
+        let result = validate_refresh_session_init_for_version(
+            ring_pk,
+            &storage,
+            &bulletin,
+            network::V0.version,
+        )
+        .await;
         assert!(
             matches!(result, Err(DkgError::Unauthorized(_))),
             "Expected Unauthorized: elapsed is outside grace window, got: {:?}",

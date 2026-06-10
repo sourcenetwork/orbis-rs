@@ -1,6 +1,6 @@
 use crate::constants::{MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE};
 use crate::dkg::v0::session_state::{ReshareSignatureReadyKey, SessionStateManager};
-use crate::helpers::helpers::{ensure_ring_protocol_route, ensure_ring_protocol_version};
+use crate::helpers::helpers::{ensure_ring_protocol_route, resolve_ring_protocol_routes};
 use crate::ring_state::{RingPolyState, RingShareBundle};
 use crate::sign::v0::{
     error::{Result, SignError},
@@ -277,7 +277,7 @@ pub async fn validate_ring_reshare_update_statement(
             SignError::Deserialization(format!("Failed to parse current ring payload: {}", e))
         })?;
     if enforce_protocol {
-        ensure_ring_protocol_version(&statement.ring_id, &current_payload)
+        resolve_ring_protocol_routes(&statement.ring_id, &current_payload)
             .map_err(SignError::ProtocolError)?;
     }
     let current_ring_hash = ring_payload_reshare_sign_state_sha256_hex(&current_payload);
@@ -618,26 +618,8 @@ pub async fn fetch_key_derivation(
         .map_err(|e| SignError::Deserialization(format!("Failed to parse document payload: {}", e)))
 }
 
-/// Fetches and deserializes the key derivation and ring payloads from the bulletin.
-pub async fn fetch_bulletin_payloads(
-    bulletin: &(dyn Bulletin + Send + Sync),
-    _local_storage: &impl LocalStorage,
-    derivation_id: &str,
-    enforce_protocol: bool,
-) -> Result<(KeyDerivation, RingPayload)> {
-    fetch_bulletin_payloads_for_version(
-        bulletin,
-        _local_storage,
-        derivation_id,
-        enforce_protocol,
-        network::V0.version,
-    )
-    .await
-}
-
 pub async fn fetch_bulletin_payloads_for_version(
     bulletin: &(dyn Bulletin + Send + Sync),
-    _local_storage: &impl LocalStorage,
     derivation_id: &str,
     enforce_protocol: bool,
     protocol_version: u64,
@@ -672,25 +654,6 @@ pub async fn fetch_bulletin_payloads_for_version(
     }
 
     Ok((derivation_payload, ring_payload))
-}
-
-/// Verify that a message exists on the bulletin and return the ring_pk, pub_poly
-pub async fn verify_message_and_get_info<D: Dkg>(
-    message: &[u8],
-    local_storage: &impl LocalStorage,
-    bulletin: &Arc<dyn Bulletin + Send + Sync>,
-    expected_object_id: &str,
-    enforce_protocol: bool,
-) -> Result<(String, D::PubPoly)> {
-    verify_message_and_get_info_for_version::<D>(
-        message,
-        local_storage,
-        bulletin,
-        expected_object_id,
-        enforce_protocol,
-        network::V0.version,
-    )
-    .await
 }
 
 pub async fn verify_message_and_get_info_for_version<D: Dkg>(

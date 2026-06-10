@@ -41,6 +41,7 @@ where
     D: Dkg + Clone + 'static,
     T: ThresholdDealer,
 {
+    #[cfg(test)]
     pub fn new(state: AppState<D>) -> Self {
         Self::with_routes(state, &network::V0)
     }
@@ -104,7 +105,6 @@ where
         // Returns an error with version details if the ring has migrated to a newer version.
         let (document_payload, ring_payload) = fetch_bulletin_payloads_for_version(
             &*self.state.bulletin,
-            &self.state.local_storage,
             &req.object_id,
             self.routes.version,
         )

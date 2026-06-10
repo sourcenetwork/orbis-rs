@@ -115,7 +115,6 @@ where
                 validate_sign_claims(&token, derivation_id, None)?;
                 let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
                     &*self.app_state.bulletin,
-                    &self.app_state.local_storage,
                     derivation_id,
                     true,
                     self.routes.version,
@@ -352,7 +351,6 @@ where
                 // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
                 let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
                     &*self.app_state.bulletin,
-                    &self.app_state.local_storage,
                     derivation_id,
                     !S::INTERACTIVE,
                     self.routes.version,

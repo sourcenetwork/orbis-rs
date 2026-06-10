@@ -392,7 +392,7 @@ where
 }
 
 /// Resolve the ring protocol epoch at a captured Unix timestamp.
-pub fn effective_protocol_version(
+pub(crate) fn effective_protocol_version(
     upgrade_info: &bulletin::r#trait::UpgradeInfo,
     current_time: u64,
 ) -> Result<u64, String> {
@@ -440,8 +440,7 @@ fn resolve_ring_protocol_decision(
 
     let routes = network::routes_for_version(effective_version).ok_or_else(|| {
         format!(
-            "protocol version {} for ring {} is not installed: effective_version={} installed_versions={} current_time={} activation_time={}",
-            effective_version,
+            "protocol version for ring {} is not installed: effective_version={} installed_versions={} current_time={} activation_time={}",
             ring_id,
             effective_version,
             installed_versions_label(),
@@ -453,19 +452,11 @@ fn resolve_ring_protocol_decision(
 }
 
 /// Capture local Unix time and resolve an installed route for the ring.
-pub fn resolve_ring_protocol_routes(
+pub(crate) fn resolve_ring_protocol_routes(
     ring_id: &str,
     ring_payload: &bulletin::r#trait::RingPayload,
 ) -> Result<&'static network::ProtocolRoutes, String> {
     resolve_ring_protocol_decision(ring_id, ring_payload).map(|(routes, _, _)| routes)
-}
-
-/// Capture local Unix time and require the ring's effective version to be installed.
-pub fn ensure_ring_protocol_version(
-    ring_id: &str,
-    ring_payload: &bulletin::r#trait::RingPayload,
-) -> Result<u64, String> {
-    resolve_ring_protocol_routes(ring_id, ring_payload).map(|routes| routes.version)
 }
 
 /// Capture local Unix time and validate that a request used the ring's effective route.

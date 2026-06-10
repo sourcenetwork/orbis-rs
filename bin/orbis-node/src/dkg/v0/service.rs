@@ -37,6 +37,7 @@ impl<D> DkgServiceImpl<D>
 where
     D: crypto::r#trait::Dkg + Clone + 'static,
 {
+    #[cfg(test)]
     pub fn new(state: AppState<D>) -> Self {
         Self::with_routes(state, &network::V0)
     }

@@ -1019,7 +1019,7 @@ async fn post_ring_for_validation(
 /// validation must succeed (fallback = keep current committee).
 #[tokio::test]
 async fn test_validate_reshare_accepts_new_peer_node_keys_fallback_to_current() {
-    use crate::dkg::v0::helpers::validate_reshare_session_init;
+    use crate::dkg::v0::helpers::validate_reshare_session_init_for_version;
 
     let db_name = "validate_reshare_fallback_accepts_peers";
     let db_path = test_db_path(db_name);
@@ -1046,13 +1046,14 @@ async fn test_validate_reshare_accepts_new_peer_node_keys_fallback_to_current() 
     )
     .await;
 
-    let result = validate_reshare_session_init(
+    let result = validate_reshare_session_init_for_version(
         ring_pk,
         &[sender_hex.to_string()], // matches fallback = peer_ids
         1,
         "",
         &app_state.local_storage,
         &app_state.bulletin,
+        network::V0.version,
     )
     .await;
     assert!(
@@ -1067,7 +1068,7 @@ async fn test_validate_reshare_accepts_new_peer_node_keys_fallback_to_current() 
 /// validation must succeed (fallback = keep current threshold).
 #[tokio::test]
 async fn test_validate_reshare_accepts_new_threshold_fallback_to_current() {
-    use crate::dkg::v0::helpers::validate_reshare_session_init;
+    use crate::dkg::v0::helpers::validate_reshare_session_init_for_version;
 
     let db_name = "validate_reshare_fallback_accepts_threshold";
     let db_path = test_db_path(db_name);
@@ -1095,13 +1096,14 @@ async fn test_validate_reshare_accepts_new_threshold_fallback_to_current() {
     )
     .await;
 
-    let result = validate_reshare_session_init(
+    let result = validate_reshare_session_init_for_version(
         ring_pk,
         &[new_peer.to_string()],
         1, // matches fallback = current threshold
         "",
         &app_state.local_storage,
         &app_state.bulletin,
+        network::V0.version,
     )
     .await;
     assert!(
@@ -1116,7 +1118,7 @@ async fn test_validate_reshare_accepts_new_threshold_fallback_to_current() {
 /// validation must reject — absent does not mean "accept any committee".
 #[tokio::test]
 async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
-    use crate::dkg::v0::helpers::validate_reshare_session_init;
+    use crate::dkg::v0::helpers::validate_reshare_session_init_for_version;
 
     let db_name = "validate_reshare_fallback_rejects_peers";
     let db_path = test_db_path(db_name);
@@ -1143,13 +1145,14 @@ async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
     )
     .await;
 
-    let result = validate_reshare_session_init(
+    let result = validate_reshare_session_init_for_version(
         ring_pk,
         &["00112233".to_string()], // differs from fallback = ["aabbccdd"]
         1,
         "",
         &app_state.local_storage,
         &app_state.bulletin,
+        network::V0.version,
     )
     .await;
     assert!(
@@ -1167,7 +1170,7 @@ async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
 /// validation must reject — absent does not mean "accept any threshold".
 #[tokio::test]
 async fn test_validate_reshare_rejects_when_threshold_differs_from_fallback() {
-    use crate::dkg::v0::helpers::validate_reshare_session_init;
+    use crate::dkg::v0::helpers::validate_reshare_session_init_for_version;
 
     let db_name = "validate_reshare_fallback_rejects_threshold";
     let db_path = test_db_path(db_name);
@@ -1196,13 +1199,14 @@ async fn test_validate_reshare_rejects_when_threshold_differs_from_fallback() {
     )
     .await;
 
-    let result = validate_reshare_session_init(
+    let result = validate_reshare_session_init_for_version(
         ring_pk,
         &[new_peer_1.to_string(), new_peer_2.to_string()],
         1, // differs from fallback = 2
         "",
         &app_state.local_storage,
         &app_state.bulletin,
+        network::V0.version,
     )
     .await;
     assert!(

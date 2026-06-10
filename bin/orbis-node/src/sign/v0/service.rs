@@ -41,6 +41,7 @@ where
     D: Dkg + Clone + 'static,
     S: ThresholdSigner,
 {
+    #[cfg(test)]
     pub fn new(state: AppState<D>) -> Self {
         Self::with_routes(state, &network::V0)
     }
@@ -117,7 +118,6 @@ where
         // Returns an error with version details if the ring has migrated to a newer version.
         let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
             &*self.state.bulletin,
-            &self.state.local_storage,
             &req.derivation_id,
             true,
             self.routes.version,

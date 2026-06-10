@@ -39,7 +39,7 @@ where
     D: Dkg + Clone + 'static,
     S: crypto::r#trait::ThresholdSigner,
 {
-    /// Create a new StoreSecretServiceImpl with shared application state
+    #[cfg(test)]
     pub fn new(state: AppState<D>) -> Self {
         Self::with_routes(state, &network::V0)
     }

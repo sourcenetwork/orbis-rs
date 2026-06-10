@@ -39,6 +39,7 @@ use crate::dkg::v0::helpers::{
 };
 use crate::dkg::v0::messages::{DkgMessage, SessionKind};
 use crate::dkg::v0::session_state::RingPssClaimOutcome;
+use crate::helpers::auth::current_unix_time;
 use crate::helpers::helpers::{extract_node_part, installed_versions_label, validate_all_peer_ids};
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
@@ -51,7 +52,7 @@ use crypto::r#trait::{Dkg, DkgRole};
 use crypto::{GroupAffine, PolynomialCommitmentImpl, PubPolyImpl, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 /// Spawn a background task that periodically checks rings for due PSS ceremonies.
 ///
@@ -216,7 +217,7 @@ where
 
             // Refresh: also check that enough time has elapsed since the last ceremony.
             let pss_interval_secs = ring_payload.pss_interval.unwrap(); // safe: checked above
-            let now_secs = current_unix_secs();
+            let now_secs = current_unix_time().map_err(DkgError::SystemTime)?;
             let last_refresh_secs =
                 RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str)
                     .map(|b| b.last_pss)
@@ -282,7 +283,7 @@ where
         }
     };
 
-    let now_secs = current_unix_secs();
+    let now_secs = current_unix_time().map_err(DkgError::SystemTime)?;
     let elapsed_secs = now_secs.saturating_sub(entry.indexed_at_secs);
 
     if elapsed_secs < pss_interval_secs {
@@ -352,13 +353,6 @@ fn read_ring_index(storage: &impl LocalStorage) -> Result<Vec<RingIndexEntry>, D
         })
         .transpose()
         .map(|index| index.unwrap_or_default())
-}
-
-fn current_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 /// Initiate a Refresh ceremony (same secret, new shares, same committee).

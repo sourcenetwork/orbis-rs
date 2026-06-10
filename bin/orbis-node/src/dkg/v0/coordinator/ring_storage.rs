@@ -1,13 +1,13 @@
 use crate::app_state::AppState;
 use crate::constants::MAX_LOCAL_RINGS_PER_NODE;
 use crate::dkg::v0::error::{DkgError, Result};
+use crate::helpers::auth::current_unix_time;
 use crate::metrics;
 use crate::ring_state::RingIndexEntry;
 use bulletin::r#trait::{BulletinWriteKind, RingFinalizationPayload};
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{types::CoordinatorDkg, DkgCoordinator};
 
@@ -73,7 +73,7 @@ where
     let _guard = app_state.ring_index_lock.lock().await;
 
     let mut ring_index = read_ring_index(&app_state.local_storage, "RingIndex")?;
-    let now_secs = current_unix_secs();
+    let now_secs = current_unix_time().map_err(DkgError::SystemTime)?;
 
     // Upsert: update bulletin_post_id on an existing entry (e.g. DealerReceiver after reshare),
     // or push a new one for first-time entries.
@@ -200,11 +200,4 @@ fn ensure_local_ring_capacity(ring_index: &[RingIndexEntry], storage_key: &str) 
     }
 
     Ok(())
-}
-
-fn current_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

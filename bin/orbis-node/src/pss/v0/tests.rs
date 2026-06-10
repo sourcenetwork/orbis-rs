@@ -1,4 +1,5 @@
 use crate::dkg::v0::error::DkgError;
+use crate::helpers::auth::current_unix_time;
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bulletin, test_db_path};
 use crate::ring_state::RingIndexEntry;
@@ -8,7 +9,7 @@ use bulletin::{
 };
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use crypto::DkgImpl;
 
@@ -410,7 +411,7 @@ async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
         local_ring_pk,
     )
     .await;
-    entry.indexed_at_secs = current_unix_secs().saturating_sub(2);
+    entry.indexed_at_secs = current_unix_time().expect("system clock").saturating_sub(2);
     app_state
         .local_storage
         .set(
@@ -617,7 +618,7 @@ async fn post_ring_and_seed_index_with_local_key(
     let entry = RingIndexEntry {
         ring_pk_str: local_ring_pk.to_string(),
         bulletin_post_id: post_id,
-        indexed_at_secs: current_unix_secs(),
+        indexed_at_secs: current_unix_time().expect("system clock"),
     };
     app_state
         .local_storage
@@ -636,13 +637,6 @@ fn ring_index_entries(app_state: &crate::app_state::AppState<DkgImpl>) -> Vec<Ri
         .expect("read RingIndex")
         .map(|bytes| serde_json::from_slice(&bytes).expect("parse RingIndex"))
         .unwrap_or_default()
-}
-
-fn current_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 /// When `new_peer_node_keys` is set, `pss_ring` must dispatch to `trigger_reshare`
