@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package info_service;
+package orbis.v0.info_service;
 
 service InfoService {
   rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);

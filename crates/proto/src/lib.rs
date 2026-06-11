@@ -1,5 +1,5 @@
 pub mod info_service {
-    tonic::include_proto!("info_service");
+    tonic::include_proto!("orbis.v0.info_service");
 }
 
 pub mod v0 {
