@@ -144,6 +144,6 @@ After `activation_time` has passed the upgrade cannot be rolled back via `--clea
 |-------|-------|-----|
 | `activation_time (X) must be at least Y` | Chain rejected — lead time is less than 600 s | Use `activation_time >= block_time + 600` (15 min recommended) |
 | `Ring X requires protocol version 1, but installed versions are [0]` | CLI binary does not support v1 | Upgrade the CLI binary |
-| `protocol version for ring X is not installed: effective_version=1 installed_versions=[0]` | Node binary does not support v1 | Upgrade the node binary before `activation_time` |
+| `protocol version for ring X is not installed: effective_version=1 installed_versions=[0] ... route_version=0` | Node binary does not support v1 | Upgrade the node binary before `activation_time` |
 | `next_version and activation_time must both be supplied` | Only one flag provided | Pass both `--next-version` and `--activation-time` |
 | `next_version conflicts with clear_upgrade` | Both flags given at once | Use one or the other, not both |

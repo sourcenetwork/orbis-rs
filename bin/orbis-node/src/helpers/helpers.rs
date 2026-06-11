@@ -466,7 +466,8 @@ pub fn ensure_ring_protocol_route(
     route_version: u64,
 ) -> Result<u64, String> {
     let (routes, current_time, activation_time) =
-        resolve_ring_protocol_decision(ring_id, ring_payload)?;
+        resolve_ring_protocol_decision(ring_id, ring_payload)
+            .map_err(|err| format!("{err} route_version={route_version}"))?;
     if routes.version != route_version {
         return Err(format!(
             "protocol route mismatch for ring {}: route_version={} effective_version={} installed_versions={} current_time={} activation_time={}",
