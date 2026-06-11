@@ -38,9 +38,7 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
     // The 120s lead absorbs Docker startup time; the dynamic wait below handles
     // any remaining gap so this test is robust on both warm and cold caches.
     let activation_time = unix_now() + ACTIVATION_LEAD_SECS;
-    println!(
-        "activation_time={activation_time} (in {ACTIVATION_LEAD_SECS}s from now)"
-    );
+    println!("activation_time={activation_time} (in {ACTIVATION_LEAD_SECS}s from now)");
 
     let _network = IntegrationTestNetwork::builder()
         .with_module_genesis(
