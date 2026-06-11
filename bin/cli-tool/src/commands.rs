@@ -105,6 +105,22 @@ async fn resolve_derivation_protocol_version(derivation_id: &str) -> Result<(Str
     Ok((derivation.ring_id, version))
 }
 
+async fn connect_for_version<C>(
+    protocol_version: u64,
+    endpoint: &str,
+    connect: impl std::future::Future<Output = Result<C, tonic::transport::Error>>,
+) -> Result<C> {
+    if protocol_version != 0 {
+        return Err(anyhow!(
+            "protocol version {} is not supported by this client",
+            protocol_version
+        ));
+    }
+    connect
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))
+}
+
 /// Result of a DKG operation
 #[derive(Debug)]
 pub struct DkgResult {
@@ -122,16 +138,12 @@ pub async fn do_dkg(endpoint: String, ring_id: String) -> Result<DkgResult> {
     println!("Connecting to {}...", endpoint);
 
     let protocol_version = resolve_ring_protocol_version(&ring_id).await?;
-    let mut client = match protocol_version {
-        0 => DkgServiceClient::connect(endpoint.clone()).await,
-        _ => {
-            return Err(anyhow!(
-                "protocol version {} is not supported by this client",
-                protocol_version
-            ))
-        }
-    }
-    .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+    let mut client = connect_for_version(
+        protocol_version,
+        &endpoint,
+        DkgServiceClient::connect(endpoint.clone()),
+    )
+    .await?;
 
     let request = proto::v0::dkg::StartDkgRequest {
         ring_id: ring_id.clone(),
@@ -271,16 +283,12 @@ pub async fn store_prepared_secret(
     println!();
 
     let protocol_version = resolve_ring_protocol_version(&ring_id).await?;
-    let mut client = match protocol_version {
-        0 => StoreSecretServiceClient::connect(endpoint.clone()).await,
-        _ => {
-            return Err(anyhow!(
-                "protocol version {} is not supported by this client",
-                protocol_version
-            ))
-        }
-    }
-    .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+    let mut client = connect_for_version(
+        protocol_version,
+        &endpoint,
+        StoreSecretServiceClient::connect(endpoint.clone()),
+    )
+    .await?;
 
     let request = proto::v0::store_secret::StoreSecretRequest {
         encrypted_document: prepared.encrypted_document.clone(),
@@ -454,16 +462,12 @@ pub async fn do_pre(
         "  Resolved ring {} to protocol version {}",
         resolved_ring_id, protocol_version
     );
-    let mut client = match protocol_version {
-        0 => PreServiceClient::connect(endpoint.clone()).await,
-        _ => {
-            return Err(anyhow!(
-                "protocol version {} is not supported by this client",
-                protocol_version
-            ))
-        }
-    }
-    .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+    let mut client = connect_for_version(
+        protocol_version,
+        &endpoint,
+        PreServiceClient::connect(endpoint.clone()),
+    )
+    .await?;
 
     let valid_window = match (valid_window_start, valid_window_end) {
         (Some(start), Some(end)) => Some(proto::v0::pre::TimestampRange { start, end }),
@@ -1173,16 +1177,12 @@ pub async fn do_sign(
         "  Resolved ring {} to protocol version {}",
         resolved_ring_id, protocol_version
     );
-    let mut client = match protocol_version {
-        0 => SignServiceClient::connect(endpoint.clone()).await,
-        _ => {
-            return Err(anyhow!(
-                "protocol version {} is not supported by this client",
-                protocol_version
-            ))
-        }
-    }
-    .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+    let mut client = connect_for_version(
+        protocol_version,
+        &endpoint,
+        SignServiceClient::connect(endpoint.clone()),
+    )
+    .await?;
 
     let valid_window = match (valid_window_start, valid_window_end) {
         (Some(start), Some(end)) => Some(proto::v0::sign::TimestampRange { start, end }),
