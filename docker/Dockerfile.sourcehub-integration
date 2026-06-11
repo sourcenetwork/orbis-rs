@@ -1,0 +1,14 @@
+FROM golang:1.26.2 AS builder
+ARG SOURCEHUB_BRANCH=jesse/update-orbis
+RUN git clone --branch ${SOURCEHUB_BRANCH} --depth 1 \
+    https://github.com/sourcenetwork/sourcehub.git /app
+WORKDIR /app
+RUN --mount=type=cache,target=/root/.cache \
+    go build -o /app/build/sourcehubd ./cmd/sourcehubd
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends jq ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/build/sourcehubd /usr/local/bin/sourcehubd
+RUN useradd --create-home --home-dir /home/node node
+USER node

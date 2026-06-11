@@ -132,6 +132,13 @@ pub struct NodeInfo {
 /// `ORBIS_INTEGRATION_CRYPTO=decaf377 cargo test test_cli_calls_dkg_and_pre_endpoint --no-default-features --features integration-test,decaf377`
 pub struct IntegrationTestNetwork {
     compose_file: String,
+    _patch_file: Option<tempfile::NamedTempFile>,
+}
+
+/// Builder for `IntegrationTestNetwork` that supports injecting arbitrary genesis module state
+/// into the SourceHub chain before it starts, bypassing keeper validation via `InitGenesis`.
+pub struct IntegrationTestNetworkBuilder {
+    genesis_patches: serde_json::Map<String, serde_json::Value>,
 }
 
 impl IntegrationTestNetwork {
@@ -145,55 +152,14 @@ impl IntegrationTestNetwork {
     pub const NODE2_CONTAINER: &'static str = "orbis-integration-node-2";
     pub const NODE3_CONTAINER: &'static str = "orbis-integration-node-3";
 
-    pub fn new() -> Self {
-        let compose_file = INTEGRATION_TEST_COMPOSE_FILE.to_string();
-
-        // Derive the crypto feature from compile-time cfg so the docker image
-        // always matches the test binary. An explicit ORBIS_INTEGRATION_CRYPTO
-        // env var overrides the compile-time default.
-        let crypto_feature: Option<&'static str> = if env::var("ORBIS_INTEGRATION_CRYPTO").is_ok() {
-            // Honour explicit override (already in env for docker-compose)
-            None
-        } else {
-            // Set env var from compile-time feature so docker-compose picks it up
-            #[cfg(feature = "bls12-381")]
-            {
-                Some("bls12-381")
-            }
-            #[cfg(all(not(feature = "bls12-381"), feature = "decaf377"))]
-            {
-                Some("decaf377")
-            }
-            #[cfg(not(any(feature = "bls12-381", feature = "decaf377")))]
-            {
-                None
-            }
-        };
-
-        if let Some(feat) = crypto_feature {
-            env::set_var("ORBIS_INTEGRATION_CRYPTO", feat);
+    pub fn builder() -> IntegrationTestNetworkBuilder {
+        IntegrationTestNetworkBuilder {
+            genesis_patches: serde_json::Map::new(),
         }
+    }
 
-        // Always rebuild so the node image matches the selected crypto feature
-        let args = vec!["compose", "-f", &compose_file, "up", "-d", "--build"];
-
-        let status = Command::new("docker")
-            .args(&args)
-            .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..")
-            .status()
-            .expect("Failed to start docker compose");
-
-        assert!(
-            status.success(),
-            "Failed to start integration test containers"
-        );
-
-        let network = Self { compose_file };
-
-        // Wait for all services to be healthy
-        network.wait_for_healthy();
-
-        network
+    pub fn new() -> Self {
+        Self::builder().build()
     }
 
     pub fn wait_for_healthy(&self) {
@@ -315,5 +281,70 @@ impl Drop for IntegrationTestNetwork {
         let _ = status.inspect_err(|error| {
             eprintln!("Failed to stop docker compose: {}", error);
         });
+    }
+}
+
+impl IntegrationTestNetworkBuilder {
+    pub fn with_module_genesis(mut self, module: &str, state: serde_json::Value) -> Self {
+        self.genesis_patches.insert(module.to_string(), state);
+        self
+    }
+
+    pub fn build(self) -> IntegrationTestNetwork {
+        let compose_file = INTEGRATION_TEST_COMPOSE_FILE.to_string();
+
+        let crypto_feature: Option<&'static str> = if env::var("ORBIS_INTEGRATION_CRYPTO").is_ok() {
+            None
+        } else {
+            #[cfg(feature = "bls12-381")]
+            {
+                Some("bls12-381")
+            }
+            #[cfg(all(not(feature = "bls12-381"), feature = "decaf377"))]
+            {
+                Some("decaf377")
+            }
+            #[cfg(not(any(feature = "bls12-381", feature = "decaf377")))]
+            {
+                None
+            }
+        };
+
+        if let Some(feat) = crypto_feature {
+            env::set_var("ORBIS_INTEGRATION_CRYPTO", feat);
+        }
+
+        let patch_file: Option<tempfile::NamedTempFile> = if self.genesis_patches.is_empty() {
+            env::remove_var("GENESIS_PATCH_FILE");
+            None
+        } else {
+            let mut f = tempfile::NamedTempFile::new().expect("genesis patch tempfile");
+            serde_json::to_writer(&mut f, &serde_json::Value::Object(self.genesis_patches))
+                .expect("write genesis patch");
+            env::set_var("GENESIS_PATCH_FILE", f.path());
+            Some(f)
+        };
+
+        let args = vec!["compose", "-f", &compose_file, "up", "-d", "--build"];
+        let status = Command::new("docker")
+            .args(&args)
+            .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..")
+            .status()
+            .expect("Failed to start docker compose");
+
+        assert!(
+            status.success(),
+            "Failed to start integration test containers"
+        );
+
+        // GENESIS_PATCH_FILE is only needed during docker compose up; clean up now
+        env::remove_var("GENESIS_PATCH_FILE");
+
+        let network = IntegrationTestNetwork {
+            compose_file,
+            _patch_file: patch_file,
+        };
+        network.wait_for_healthy();
+        network
     }
 }

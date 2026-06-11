@@ -25,6 +25,7 @@ prost = { workspace = true }
 tonic = { workspace = true }
 rand = { workspace = true }
 backoff = { version = "0.4", features = ["tokio"] }
+tempfile = { workspace = true }
 futures = { workspace = true }
 tokio-tungstenite = { workspace = true }
 

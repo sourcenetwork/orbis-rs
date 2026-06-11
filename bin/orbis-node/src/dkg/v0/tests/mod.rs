@@ -3,3 +3,4 @@
 mod dkg;
 mod refresh;
 mod reshare;
+mod upgrade;

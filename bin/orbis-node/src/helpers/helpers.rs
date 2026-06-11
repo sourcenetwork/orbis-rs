@@ -654,4 +654,71 @@ mod tests {
         assert!(error.contains("effective_version=0"));
         assert!(error.contains("installed_versions=[0]"));
     }
+
+    #[tokio::test]
+    async fn read_ring_for_route_rejects_migrated_ring() {
+        use bulletin::dummy::DummyBulletin;
+        use bulletin::r#trait::{RingPayload, UpgradeInfo};
+        use std::sync::Arc;
+
+        let bulletin = Arc::new(DummyBulletin::new().await.unwrap());
+        let now = current_unix_time().unwrap();
+        bulletin
+            .set_ring(
+                "ring-1".to_string(),
+                RingPayload {
+                    upgrade_info: UpgradeInfo {
+                        current_version: 0,
+                        next_version: Some(1),
+                        activation_time: Some(now - 1),
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let err = read_ring_for_route(&*bulletin, "ring-1", 0)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("route_version=0"),
+            "missing route_version: {err}"
+        );
+        assert!(
+            err.contains("effective_version=1"),
+            "missing effective_version: {err}"
+        );
+        assert!(
+            err.contains("installed_versions="),
+            "missing installed_versions: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_ring_for_route_accepts_ring_before_activation() {
+        use bulletin::dummy::DummyBulletin;
+        use bulletin::r#trait::{RingPayload, UpgradeInfo};
+        use std::sync::Arc;
+
+        let bulletin = Arc::new(DummyBulletin::new().await.unwrap());
+        let now = current_unix_time().unwrap();
+        bulletin
+            .set_ring(
+                "ring-1".to_string(),
+                RingPayload {
+                    upgrade_info: UpgradeInfo {
+                        current_version: 0,
+                        next_version: Some(1),
+                        activation_time: Some(now + 3600),
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert!(
+            read_ring_for_route(&*bulletin, "ring-1", 0).await.is_ok(),
+            "v0 should be accepted before activation_time"
+        );
+    }
 }

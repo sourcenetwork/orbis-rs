@@ -1001,6 +1001,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "tempfile",
  "tendermint",
  "tendermint-rpc",
  "thiserror 1.0.69",
