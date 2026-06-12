@@ -934,6 +934,7 @@ impl SourceHubClient {
     pub async fn orbis_update_node_info(
         &self,
         node_key: &str,
+        peer_id: Option<String>,
         whitelisted_policy_ids: Vec<String>,
         whitelisted_ring_ids: Vec<String>,
     ) -> Result<BroadcastResult> {
@@ -943,7 +944,7 @@ impl SourceHubClient {
         let msg = MsgUpdateNodeInfo {
             creator: signer.address(),
             node_key: node_key.to_string(),
-            peer_id: None,
+            peer_id,
             whitelisted_policy_ids,
             whitelisted_ring_ids,
             controller_key: None,

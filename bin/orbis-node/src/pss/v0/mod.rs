@@ -145,7 +145,7 @@ where
             .map_err(DkgError::ProtocolError)?;
 
     if ring_payload.ring_pk.is_empty() {
-        return cleanup_pending_fresh_ring_if_due(app_state, entry, &ring_payload);
+        return cleanup_pending_fresh_ring_if_due(app_state, entry, &ring_payload).await;
     }
 
     if !ring_payload_matches_ring_key(ring_pk_str, &ring_payload.ring_pk) {
@@ -253,7 +253,7 @@ where
     }
 }
 
-fn cleanup_pending_fresh_ring_if_due<D>(
+async fn cleanup_pending_fresh_ring_if_due<D>(
     app_state: &Arc<AppState<D>>,
     entry: &RingIndexEntry,
     ring_payload: &RingPayload,
@@ -308,7 +308,7 @@ where
             ))
         })?;
 
-    let _guard = app_state.ring_index_lock.blocking_lock();
+    let _guard = app_state.ring_index_lock.lock().await;
     remove_ring_index_entry(&app_state.local_storage, entry)?;
 
     tracing::warn!(

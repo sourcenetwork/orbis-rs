@@ -27,6 +27,23 @@ struct RingStateSnapshot {
     last_pss: u64,
 }
 
+fn assert_policy_rejection(context: &str, error: &anyhow::Error) {
+    let status = error
+        .downcast_ref::<tonic::Status>()
+        .unwrap_or_else(|| panic!("{context}: expected tonic::Status source, got: {error:#}"));
+    assert_eq!(
+        status.code(),
+        tonic::Code::Unauthenticated,
+        "{context}: unexpected server status: {status}"
+    );
+    assert!(
+        status
+            .message()
+            .contains("Access denied: policy check failed"),
+        "{context}: unexpected server message: {status}"
+    );
+}
+
 /// Docker-based integration test: Run DKG and PRE using Docker Compose
 ///
 /// This test spins up a full integration environment with:
@@ -111,6 +128,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         node2_info.node_key.clone(),
         node3_info.node_key.clone(),
     ];
+    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
     // Step 1: Set up ring governance policy and whitelist nodes
     //
@@ -127,7 +145,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .await
     .expect("controller chain client");
 
-    for node_key in &node_keys {
+    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
         wait_for_node_info_on_chain(
             &controller_client,
             node_key,
@@ -136,7 +154,12 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         )
         .await;
         controller_client
-            .orbis_update_node_info(node_key, vec![policy_id.clone()], vec![])
+            .orbis_update_node_info(
+                node_key,
+                Some(peer_address.clone()),
+                vec![policy_id.clone()],
+                vec![],
+            )
             .await
             .expect("update NodeInfo whitelist");
     }
@@ -504,12 +527,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .await;
 
     let err = pre_result_no_permission.unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("Access denied: policy check failed"),
-        "Expected policy check failure, got: {}",
-        err
-    );
+    assert_policy_rejection("PRE without permission", &err);
 
     // testing timestamp out of bounds failure
     let pre_result_derived_failed_timestamp = cli_tool::do_pre(
@@ -528,12 +546,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .await;
 
     let err = pre_result_derived_failed_timestamp.unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("Access denied: policy check failed"),
-        "Expected timestamp out-of-bounds failure, got: {}",
-        err
-    );
+    assert_policy_rejection("PRE outside the valid timestamp window", &err);
 
     // Test idempotency: store the same prepared secret again
     // This should succeed and return the same object_id (no duplicate post)
@@ -694,12 +707,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .await;
 
     let err = sign_no_access.unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("Access denied: policy check failed"),
-        "Expected policy check failure for unauthorized DID, got: {}",
-        err
-    );
+    assert_policy_rejection("Sign for unauthorized DID", &err);
 
     println!("Sign correctly rejected unauthorized DID!");
 
