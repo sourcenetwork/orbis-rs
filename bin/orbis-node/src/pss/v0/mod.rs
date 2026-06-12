@@ -307,6 +307,8 @@ where
                 e
             ))
         })?;
+
+    let _guard = app_state.ring_index_lock.blocking_lock();
     remove_ring_index_entry(&app_state.local_storage, entry)?;
 
     tracing::warn!(

@@ -80,11 +80,7 @@ pub struct SignResponseManager {
 
 impl SignResponseManager {
     fn key(protocol_version: u64, request_id: &str) -> String {
-        if protocol_version == network::V0.version {
-            request_id.to_string()
-        } else {
-            format!("{protocol_version}:{request_id}")
-        }
+        format!("v{protocol_version}:{request_id}")
     }
 
     pub fn new() -> Self {
@@ -201,7 +197,8 @@ impl SignResponseManager {
     /// Get collected sign responses without consuming the entry.
     /// Prefer `take_responses` when the entry is no longer needed after reading.
     pub async fn get_responses(&self, request_id: &str) -> Option<Vec<SignMessage>> {
-        self.inner.get_responses(request_id).await
+        let key = Self::key(network::V0.version, request_id);
+        self.inner.get_responses(&key).await
     }
 
     /// Take collected sign responses, removing the entry atomically.
@@ -209,7 +206,8 @@ impl SignResponseManager {
     /// Prefer this over `get_responses` + `remove_response` — it acquires a single
     /// write lock and moves the `Vec` out without cloning.
     pub async fn take_responses(&self, request_id: &str) -> Option<Vec<SignMessage>> {
-        self.inner.take_responses(request_id).await
+        let key = Self::key(network::V0.version, request_id);
+        self.inner.take_responses(&key).await
     }
 
     /// Take collected sign responses with their authenticated sender identity.
@@ -662,7 +660,8 @@ mod tests {
         // Backdate the entry to make it look expired to the worker
         {
             let mut nonces = mgr.nonce_states.write().await;
-            if let Some(entry) = nonces.get_mut("exp-1") {
+            let key = SignResponseManager::key(network::V0.version, "exp-1");
+            if let Some(entry) = nonces.get_mut(&key) {
                 entry.created_at =
                     Instant::now() - (SIGN_NONCE_TTL + std::time::Duration::from_secs(10));
             }
@@ -710,10 +709,9 @@ mod tests {
 
         {
             let mut nonces = mgr.nonce_states.write().await;
-            nonces
-                .get_mut("capacity-0")
-                .expect("nonce should exist")
-                .created_at = Instant::now() - SIGN_NONCE_TTL;
+            let key = SignResponseManager::key(network::V0.version, "capacity-0");
+            nonces.get_mut(&key).expect("nonce should exist").created_at =
+                Instant::now() - SIGN_NONCE_TTL;
         }
 
         assert!(
@@ -1107,5 +1105,85 @@ mod tests {
             .consume_nonce_for_sign_request_for_version(1, "nonce-id", COORDINATOR,)
             .await
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn crafted_request_ids_do_not_collide_across_versions() {
+        let mgr = SignResponseManager::new();
+        let expected = [PEER_A.to_string()];
+
+        assert!(
+            mgr.init_response_for_version(0, "1:same-id".into(), &expected)
+                .await
+        );
+        assert!(
+            mgr.init_response_for_version(1, "same-id".into(), &expected)
+                .await
+        );
+        assert!(
+            mgr.store_response_for_version(
+                0,
+                "1:same-id",
+                dummy_sign_response("1:same-id", 1),
+                &peer_bytes(PEER_A),
+            )
+            .await
+        );
+        assert!(
+            mgr.store_response_for_version(
+                1,
+                "same-id",
+                dummy_sign_response("same-id", 1),
+                &peer_bytes(PEER_A),
+            )
+            .await
+        );
+
+        assert_eq!(
+            mgr.take_authenticated_responses_for_version(0, "1:same-id")
+                .await
+                .expect("v0 response entry")
+                .len(),
+            1
+        );
+        assert_eq!(
+            mgr.take_authenticated_responses_for_version(1, "same-id")
+                .await
+                .expect("v1 response entry")
+                .len(),
+            1
+        );
+
+        assert!(
+            mgr.store_nonce_for_version(
+                0,
+                "1:nonce-id".into(),
+                vec![1],
+                "v0-context".into(),
+                COORDINATOR.to_vec(),
+            )
+            .await
+        );
+        assert!(
+            mgr.store_nonce_for_version(
+                1,
+                "nonce-id".into(),
+                vec![2],
+                "v1-context".into(),
+                COORDINATOR.to_vec(),
+            )
+            .await
+        );
+
+        let v0_nonce = mgr
+            .consume_nonce_for_sign_request_for_version(0, "1:nonce-id", COORDINATOR)
+            .await
+            .expect("v0 nonce");
+        let v1_nonce = mgr
+            .consume_nonce_for_sign_request_for_version(1, "nonce-id", COORDINATOR)
+            .await
+            .expect("v1 nonce");
+        assert_eq!(v0_nonce.bytes.as_slice(), &[1]);
+        assert_eq!(v1_nonce.bytes.as_slice(), &[2]);
     }
 }

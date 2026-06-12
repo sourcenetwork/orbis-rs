@@ -19,11 +19,7 @@ pub struct PreResponseManager {
 
 impl PreResponseManager {
     fn key(protocol_version: u64, request_id: &str) -> String {
-        if protocol_version == network::V0.version {
-            request_id.to_string()
-        } else {
-            format!("{protocol_version}:{request_id}")
-        }
+        format!("v{protocol_version}:{request_id}")
     }
 
     pub fn new() -> Self {
@@ -87,7 +83,8 @@ impl PreResponseManager {
     /// Get collected PRE responses without consuming the entry.
     /// Prefer `take_responses` when the entry is no longer needed after reading.
     pub async fn get_responses(&self, request_id: &str) -> Option<Vec<PreMessage>> {
-        self.inner.get_responses(request_id).await
+        let key = Self::key(network::V0.version, request_id);
+        self.inner.get_responses(&key).await
     }
 
     /// Take collected PRE responses, removing the entry atomically.
@@ -95,7 +92,8 @@ impl PreResponseManager {
     /// Prefer this over `get_responses` + `remove_response` — it acquires a single
     /// write lock and moves the `Vec` out without cloning.
     pub async fn take_responses(&self, request_id: &str) -> Option<Vec<PreMessage>> {
-        self.inner.take_responses(request_id).await
+        let key = Self::key(network::V0.version, request_id);
+        self.inner.take_responses(&key).await
     }
 
     /// Take collected PRE responses with their authenticated sender peer.
@@ -442,6 +440,54 @@ mod tests {
             .await
             .expect("v0 entry")
             .is_empty());
+        assert_eq!(
+            mgr.take_authenticated_responses_for_version(1, "same-id")
+                .await
+                .expect("v1 entry")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn crafted_request_ids_do_not_collide_across_versions() {
+        let mgr = PreResponseManager::new();
+        let expected = [PEER_A.to_string()];
+
+        assert!(
+            mgr.init_response_for_version(0, "1:same-id".into(), &expected)
+                .await
+        );
+        assert!(
+            mgr.init_response_for_version(1, "same-id".into(), &expected)
+                .await
+        );
+        assert!(
+            mgr.store_response_for_version(
+                0,
+                "1:same-id",
+                dummy_response("1:same-id", 1),
+                &peer_bytes(PEER_A),
+            )
+            .await
+        );
+        assert!(
+            mgr.store_response_for_version(
+                1,
+                "same-id",
+                dummy_response("same-id", 1),
+                &peer_bytes(PEER_A),
+            )
+            .await
+        );
+
+        assert_eq!(
+            mgr.take_authenticated_responses_for_version(0, "1:same-id")
+                .await
+                .expect("v0 entry")
+                .len(),
+            1
+        );
         assert_eq!(
             mgr.take_authenticated_responses_for_version(1, "same-id")
                 .await
