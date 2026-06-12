@@ -377,6 +377,20 @@ impl IntegrationTestNetworkBuilder {
             let mut f = tempfile::NamedTempFile::new().expect("genesis patch tempfile");
             serde_json::to_writer(&mut f, &serde_json::Value::Object(genesis_patches))
                 .expect("write genesis patch");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let mut permissions = f
+                    .as_file()
+                    .metadata()
+                    .expect("read genesis patch tempfile metadata")
+                    .permissions();
+                permissions.set_mode(0o644);
+                f.as_file()
+                    .set_permissions(permissions)
+                    .expect("make genesis patch tempfile readable by Docker container");
+            }
             Some(f)
         };
 
