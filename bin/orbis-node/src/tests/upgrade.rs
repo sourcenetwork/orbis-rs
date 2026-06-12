@@ -80,13 +80,18 @@ fn assert_server_version_rejection(operation: &str, error: &anyhow::Error) {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_v0_services_rejected_after_ring_upgrade() {
+    // Acquire exclusive Docker access before calculating activation_time. If another workspace
+    // test binary is using the fixed SourceHub ports, waiting for it must not consume this test's
+    // pre-activation window.
+    let network_builder = IntegrationTestNetwork::builder();
+
     // Compute activation_time before build() so it can be baked into genesis.
     // The 120s lead absorbs Docker startup time; the dynamic wait below handles
     // any remaining gap so this test is robust on both warm and cold caches.
     let activation_time = unix_now() + ACTIVATION_LEAD_SECS;
     println!("activation_time={activation_time} (in {ACTIVATION_LEAD_SECS}s from now)");
 
-    let _network = IntegrationTestNetwork::builder()
+    let _network = network_builder
         .with_module_genesis(
             "orbis",
             serde_json::json!({

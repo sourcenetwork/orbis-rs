@@ -1,32 +1,98 @@
 pub mod blockchain;
 
 use std::env;
+use std::fs::{File, OpenOptions};
 use std::process::Command;
 use std::time::Duration;
 
 const DOCKER_COMPOSE_FILE: &str = "docker/docker-compose-sourcehub-test.yml";
 const INTEGRATION_TEST_COMPOSE_FILE: &str = "docker/docker-compose-integration-test.yml";
+const SOURCEHUB_TEST_PROJECT: &str = "orbis-sourcehub-test";
+const INTEGRATION_TEST_PROJECT: &str = "orbis-integration-test";
+const DOCKER_TEST_LOCK_FILE: &str = "orbis-rs-docker-tests.lock";
 pub const SOURCEHUB_RPC_URL: &str = "http://localhost:26657";
 const SOURCEHUB_API_URL: &str = "http://localhost:1317";
 
+fn acquire_docker_test_lock() -> File {
+    let path = env::temp_dir().join(DOCKER_TEST_LOCK_FILE);
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .unwrap_or_else(|error| {
+            panic!(
+                "Failed to open Docker test lock {}: {error}",
+                path.display()
+            )
+        });
+
+    println!("Waiting for exclusive Docker test access...");
+    lock.lock()
+        .unwrap_or_else(|error| panic!("Failed to lock {}: {error}", path.display()));
+    println!("Acquired exclusive Docker test access");
+    lock
+}
+
+fn compose_command(compose_file: &str, project_name: &str) -> Command {
+    let mut command = Command::new("docker");
+    command
+        .args([
+            "compose",
+            "--project-name",
+            project_name,
+            "-f",
+            compose_file,
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..");
+    command
+}
+
+fn report_compose_failure(compose_file: &str, project_name: &str) {
+    eprintln!("Docker Compose startup failed; recent container logs follow:");
+    let _ = compose_command(compose_file, project_name)
+        .args(["logs", "--no-color", "--tail", "200"])
+        .status();
+}
+
+fn stop_compose(compose_file: &str, project_name: &str) {
+    let status = compose_command(compose_file, project_name)
+        .args(["down", "-v", "--remove-orphans"])
+        .status();
+
+    let _ = status.inspect_err(|error| {
+        eprintln!("Failed to stop docker compose: {error}");
+    });
+}
+
 pub struct SourceHubTestContainer {
     compose_file: String,
+    project_name: &'static str,
+    _docker_lock: File,
 }
 
 impl SourceHubTestContainer {
     pub fn new() -> Self {
+        let docker_lock = acquire_docker_test_lock();
         let compose_file = DOCKER_COMPOSE_FILE.to_string();
 
-        // Start the container
-        let status = Command::new("docker")
-            .args(["compose", "-f", &compose_file, "up", "-d"])
-            .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..")
+        let status = compose_command(&compose_file, SOURCEHUB_TEST_PROJECT)
+            .args(["up", "-d"])
             .status()
             .expect("Failed to start docker compose");
 
-        assert!(status.success(), "Failed to start sourcehub container");
+        if !status.success() {
+            report_compose_failure(&compose_file, SOURCEHUB_TEST_PROJECT);
+            stop_compose(&compose_file, SOURCEHUB_TEST_PROJECT);
+            panic!("Failed to start sourcehub container");
+        }
 
-        let container = Self { compose_file };
+        let container = Self {
+            compose_file,
+            project_name: SOURCEHUB_TEST_PROJECT,
+            _docker_lock: docker_lock,
+        };
 
         // Wait for the container to be healthy
         container.wait_for_healthy();
@@ -102,15 +168,7 @@ impl Default for SourceHubTestContainer {
 impl Drop for SourceHubTestContainer {
     fn drop(&mut self) {
         println!("Stopping SourceHub test container...");
-
-        let status = Command::new("docker")
-            .args(["compose", "-f", &self.compose_file, "down", "-v"])
-            .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..")
-            .status();
-
-        let _ = status.inspect_err(|error| {
-            eprintln!("Failed to stop docker compose: {}", error);
-        });
+        stop_compose(&self.compose_file, self.project_name);
     }
 }
 
@@ -132,13 +190,16 @@ pub struct NodeInfo {
 /// `ORBIS_INTEGRATION_CRYPTO=decaf377 cargo test test_cli_calls_dkg_and_pre_endpoint --no-default-features --features integration-test,decaf377`
 pub struct IntegrationTestNetwork {
     compose_file: String,
+    project_name: &'static str,
     _patch_file: Option<tempfile::NamedTempFile>,
+    _docker_lock: File,
 }
 
 /// Builder for `IntegrationTestNetwork` that supports injecting arbitrary genesis module state
 /// into the SourceHub chain before it starts, bypassing keeper validation via `InitGenesis`.
 pub struct IntegrationTestNetworkBuilder {
     genesis_patches: serde_json::Map<String, serde_json::Value>,
+    docker_lock: File,
 }
 
 impl IntegrationTestNetwork {
@@ -155,6 +216,7 @@ impl IntegrationTestNetwork {
     pub fn builder() -> IntegrationTestNetworkBuilder {
         IntegrationTestNetworkBuilder {
             genesis_patches: serde_json::Map::new(),
+            docker_lock: acquire_docker_test_lock(),
         }
     }
 
@@ -272,15 +334,7 @@ impl Default for IntegrationTestNetwork {
 impl Drop for IntegrationTestNetwork {
     fn drop(&mut self) {
         println!("Stopping integration test containers...");
-
-        let status = Command::new("docker")
-            .args(["compose", "-f", &self.compose_file, "down", "-v"])
-            .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..")
-            .status();
-
-        let _ = status.inspect_err(|error| {
-            eprintln!("Failed to stop docker compose: {}", error);
-        });
+        stop_compose(&self.compose_file, self.project_name);
     }
 }
 
@@ -291,6 +345,10 @@ impl IntegrationTestNetworkBuilder {
     }
 
     pub fn build(self) -> IntegrationTestNetwork {
+        let IntegrationTestNetworkBuilder {
+            genesis_patches,
+            docker_lock,
+        } = self;
         let compose_file = INTEGRATION_TEST_COMPOSE_FILE.to_string();
 
         let crypto_feature: Option<&'static str> = if env::var("ORBIS_INTEGRATION_CRYPTO").is_ok() {
@@ -310,20 +368,17 @@ impl IntegrationTestNetworkBuilder {
             }
         };
 
-        let patch_file: Option<tempfile::NamedTempFile> = if self.genesis_patches.is_empty() {
+        let patch_file: Option<tempfile::NamedTempFile> = if genesis_patches.is_empty() {
             None
         } else {
             let mut f = tempfile::NamedTempFile::new().expect("genesis patch tempfile");
-            serde_json::to_writer(&mut f, &serde_json::Value::Object(self.genesis_patches))
+            serde_json::to_writer(&mut f, &serde_json::Value::Object(genesis_patches))
                 .expect("write genesis patch");
             Some(f)
         };
 
-        let args = vec!["compose", "-f", &compose_file, "up", "-d", "--build"];
-        let mut command = Command::new("docker");
-        command
-            .args(&args)
-            .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..");
+        let mut command = compose_command(&compose_file, INTEGRATION_TEST_PROJECT);
+        command.args(["up", "-d", "--build"]);
 
         if let Some(feat) = crypto_feature {
             command.env("ORBIS_INTEGRATION_CRYPTO", feat);
@@ -336,14 +391,17 @@ impl IntegrationTestNetworkBuilder {
 
         let status = command.status().expect("Failed to start docker compose");
 
-        assert!(
-            status.success(),
-            "Failed to start integration test containers"
-        );
+        if !status.success() {
+            report_compose_failure(&compose_file, INTEGRATION_TEST_PROJECT);
+            stop_compose(&compose_file, INTEGRATION_TEST_PROJECT);
+            panic!("Failed to start integration test containers");
+        }
 
         let network = IntegrationTestNetwork {
             compose_file,
+            project_name: INTEGRATION_TEST_PROJECT,
             _patch_file: patch_file,
+            _docker_lock: docker_lock,
         };
         network.wait_for_healthy();
         network
