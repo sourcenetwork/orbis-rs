@@ -3,7 +3,7 @@
 //! This module contains the actual implementation of CLI commands,
 //! separated from main.rs so they can be used in integration tests.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use authn::{create_authenticated_request, JwtSigner};
 use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation, RingPayload};
 use bulletin::sourcehub::SourceHubBulletin;
@@ -36,91 +36,6 @@ struct PreResponse {
     secret: Secret,
 }
 
-fn current_unix_time() -> Result<u64> {
-    Ok(std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| anyhow!("Failed to read system clock: {}", error))?
-        .as_secs())
-}
-
-async fn read_ring_payload(ring_id: &str) -> Result<RingPayload> {
-    let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
-        .await
-        .map_err(|error| anyhow!("Failed to create bulletin client: {}", error))?;
-    let post = bulletin
-        .read(ring_id.to_string(), BulletinKind::Ring)
-        .await
-        .map_err(|error| anyhow!("Failed to read ring {}: {}", ring_id, error))?;
-    RingPayload::try_from(post)
-        .map_err(|error| anyhow!("Failed to parse ring {}: {}", ring_id, error))
-}
-
-async fn resolve_ring_protocol_version(ring_id: &str) -> Result<u64> {
-    let ring = read_ring_payload(ring_id).await?;
-    let effective_version = ring
-        .upgrade_info
-        .effective_version(current_unix_time()?)
-        .map_err(|error| anyhow!("Malformed upgrade state for ring {}: {}", ring_id, error))?;
-    if network::routes_for_version(effective_version).is_none() {
-        return Err(anyhow!(
-            "Ring {} requires protocol version {}, but installed versions are {:?}",
-            ring_id,
-            effective_version,
-            network::SUPPORTED_PROTOCOL_VERSIONS
-        ));
-    }
-    Ok(effective_version)
-}
-
-async fn resolve_document_protocol_version(object_id: &str) -> Result<(String, u64)> {
-    let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
-        .await
-        .map_err(|error| anyhow!("Failed to create bulletin client: {}", error))?;
-    let post = bulletin
-        .read(object_id.to_string(), BulletinKind::Document)
-        .await
-        .map_err(|error| anyhow!("Failed to read document {}: {}", object_id, error))?;
-    let document = bulletin::r#trait::DocumentPayload::try_from(post)
-        .map_err(|error| anyhow!("Failed to parse document {}: {}", object_id, error))?;
-    let version = resolve_ring_protocol_version(&document.ring_id).await?;
-    Ok((document.ring_id, version))
-}
-
-async fn resolve_derivation_protocol_version(derivation_id: &str) -> Result<(String, u64)> {
-    let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
-        .await
-        .map_err(|error| anyhow!("Failed to create bulletin client: {}", error))?;
-    let post = bulletin
-        .read(derivation_id.to_string(), BulletinKind::KeyDerivation)
-        .await
-        .map_err(|error| anyhow!("Failed to read key derivation {}: {}", derivation_id, error))?;
-    let derivation = KeyDerivation::try_from(post).map_err(|error| {
-        anyhow!(
-            "Failed to parse key derivation {}: {}",
-            derivation_id,
-            error
-        )
-    })?;
-    let version = resolve_ring_protocol_version(&derivation.ring_id).await?;
-    Ok((derivation.ring_id, version))
-}
-
-async fn connect_for_version<C>(
-    protocol_version: u64,
-    endpoint: &str,
-    connect: impl std::future::Future<Output = Result<C, tonic::transport::Error>>,
-) -> Result<C> {
-    if protocol_version != 0 {
-        return Err(anyhow!(
-            "protocol version {} is not supported by this client",
-            protocol_version
-        ));
-    }
-    connect
-        .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))
-}
-
 /// Result of a DKG operation
 #[derive(Debug)]
 pub struct DkgResult {
@@ -137,13 +52,9 @@ pub async fn do_dkg(endpoint: String, ring_id: String) -> Result<DkgResult> {
 
     println!("Connecting to {}...", endpoint);
 
-    let protocol_version = resolve_ring_protocol_version(&ring_id).await?;
-    let mut client = connect_for_version(
-        protocol_version,
-        &endpoint,
-        DkgServiceClient::connect(endpoint.clone()),
-    )
-    .await?;
+    let mut client = DkgServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
     let request = proto::v0::dkg::StartDkgRequest {
         ring_id: ring_id.clone(),
@@ -160,7 +71,7 @@ pub async fn do_dkg(endpoint: String, ring_id: String) -> Result<DkgResult> {
     let response = client
         .start_dkg(tonic_request)
         .await
-        .map_err(|e| anyhow!("DKG request failed: {}", e))?;
+        .context("DKG request failed")?;
 
     let response = response.into_inner();
 
@@ -282,13 +193,9 @@ pub async fn store_prepared_secret(
     println!("  Ring ID: {}", ring_id);
     println!();
 
-    let protocol_version = resolve_ring_protocol_version(&ring_id).await?;
-    let mut client = connect_for_version(
-        protocol_version,
-        &endpoint,
-        StoreSecretServiceClient::connect(endpoint.clone()),
-    )
-    .await?;
+    let mut client = StoreSecretServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
     let request = proto::v0::store_secret::StoreSecretRequest {
         encrypted_document: prepared.encrypted_document.clone(),
@@ -333,7 +240,7 @@ pub async fn store_prepared_secret(
     let response = client
         .store_secret(tonic_request)
         .await
-        .map_err(|e| anyhow!("StoreSecret request failed: {}", e))?;
+        .context("StoreSecret request failed")?;
 
     let response = response.into_inner();
 
@@ -456,18 +363,9 @@ pub async fn do_pre(
 
     // Step 2: Send to PRE service for re-encryption
     println!("Step 2: Sending to PRE service for re-encryption...");
-    let (resolved_ring_id, protocol_version) =
-        resolve_document_protocol_version(&object_id).await?;
-    println!(
-        "  Resolved ring {} to protocol version {}",
-        resolved_ring_id, protocol_version
-    );
-    let mut client = connect_for_version(
-        protocol_version,
-        &endpoint,
-        PreServiceClient::connect(endpoint.clone()),
-    )
-    .await?;
+    let mut client = PreServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
     let valid_window = match (valid_window_start, valid_window_end) {
         (Some(start), Some(end)) => Some(proto::v0::pre::TimestampRange { start, end }),
@@ -501,7 +399,7 @@ pub async fn do_pre(
     let response = client
         .start_pre(tonic_request)
         .await
-        .map_err(|e| anyhow!("PRE request failed: {}", e))?;
+        .context("PRE request failed")?;
 
     let response = response.into_inner();
 
@@ -1171,18 +1069,9 @@ pub async fn do_sign(
     println!("  Message length: {} bytes", message.len());
     println!();
 
-    let (resolved_ring_id, protocol_version) =
-        resolve_derivation_protocol_version(&derivation_id).await?;
-    println!(
-        "  Resolved ring {} to protocol version {}",
-        resolved_ring_id, protocol_version
-    );
-    let mut client = connect_for_version(
-        protocol_version,
-        &endpoint,
-        SignServiceClient::connect(endpoint.clone()),
-    )
-    .await?;
+    let mut client = SignServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
     let valid_window = match (valid_window_start, valid_window_end) {
         (Some(start), Some(end)) => Some(proto::v0::sign::TimestampRange { start, end }),
@@ -1209,7 +1098,7 @@ pub async fn do_sign(
     let response = client
         .start_sign(tonic_request)
         .await
-        .map_err(|e| anyhow!("Sign request failed: {}", e))?;
+        .context("Sign request failed")?;
 
     let response = response.into_inner();
 

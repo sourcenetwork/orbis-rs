@@ -31,6 +31,43 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
+fn assert_pre_activation_response<T>(operation: &str, result: &anyhow::Result<T>) {
+    if let Err(error) = result {
+        let message = error.to_string();
+        assert!(
+            !message.contains("Operation is not implemented") && !message.contains("Unimplemented"),
+            "{operation} did not reach the full v0 service: {error}"
+        );
+        assert!(
+            !message.contains("effective_version=1"),
+            "{operation} version-gated too early (before activation_time): {error}"
+        );
+    }
+}
+
+fn assert_server_version_rejection(operation: &str, error: &anyhow::Error) {
+    let status = error
+        .downcast_ref::<tonic::Status>()
+        .unwrap_or_else(|| panic!("{operation}: expected tonic::Status source, got: {error:#}"));
+    assert_eq!(
+        status.code(),
+        tonic::Code::FailedPrecondition,
+        "{operation}: unexpected server status: {status}"
+    );
+
+    let message = status.message();
+    for expected in [
+        "effective_version=1",
+        "installed_versions=[0]",
+        "route_version=0",
+    ] {
+        assert!(
+            message.contains(expected),
+            "{operation}: expected {expected:?} in server error, got: {status}"
+        );
+    }
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn test_v0_services_rejected_after_ring_upgrade() {
@@ -77,6 +114,17 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
         )
         .build();
 
+    crate::helpers::test_helpers::wait_for_nodes_ready(
+        &[
+            IntegrationTestNetwork::NODE1_GRPC,
+            IntegrationTestNetwork::NODE2_GRPC,
+            IntegrationTestNetwork::NODE3_GRPC,
+        ],
+        90,
+        Duration::from_secs(1),
+    )
+    .await;
+
     let endpoint = IntegrationTestNetwork::NODE1_GRPC.to_string();
 
     // do_pre validates reader_pk before the version check — need a real keypair
@@ -94,12 +142,7 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
         );
 
         let dkg_result = cli_tool::do_dkg(endpoint.clone(), RING_ID.to_string()).await;
-        if let Err(ref e) = dkg_result {
-            assert!(
-                !e.to_string().contains("protocol version 1"),
-                "DKG version-gated too early (before activation_time): {e}"
-            );
-        }
+        assert_pre_activation_response("DKG", &dkg_result);
         println!(
             "DKG before activation: {}",
             dkg_result
@@ -117,12 +160,7 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
             None,
         )
         .await;
-        if let Err(ref e) = sign_result {
-            assert!(
-                !e.to_string().contains("protocol version 1"),
-                "Sign version-gated too early (before activation_time): {e}"
-            );
-        }
+        assert_pre_activation_response("Sign", &sign_result);
         println!(
             "Sign before activation: {}",
             sign_result
@@ -145,12 +183,7 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
             false,
         )
         .await;
-        if let Err(ref e) = pre_result {
-            assert!(
-                !e.to_string().contains("protocol version 1"),
-                "PRE version-gated too early (before activation_time): {e}"
-            );
-        }
+        assert_pre_activation_response("PRE", &pre_result);
         println!(
             "PRE before activation: {}",
             pre_result
@@ -183,10 +216,7 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
     let dkg_err = cli_tool::do_dkg(endpoint.clone(), RING_ID.to_string())
         .await
         .expect_err("v0 DKG must refuse a v1 ring after activation");
-    assert!(
-        dkg_err.to_string().contains("protocol version 1"),
-        "DKG: expected 'protocol version 1' in error, got: {dkg_err}"
-    );
+    assert_server_version_rejection("DKG", &dkg_err);
     println!("DKG correctly rejected: {dkg_err}");
 
     let sign_err = cli_tool::do_sign(
@@ -199,10 +229,7 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
     )
     .await
     .expect_err("v0 Sign must refuse a derivation whose ring activated to v1");
-    assert!(
-        sign_err.to_string().contains("protocol version 1"),
-        "Sign: expected 'protocol version 1' in error, got: {sign_err}"
-    );
+    assert_server_version_rejection("Sign", &sign_err);
     println!("Sign correctly rejected: {sign_err}");
 
     let pre_err = cli_tool::do_pre(
@@ -220,10 +247,7 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
     )
     .await
     .expect_err("v0 PRE must refuse a document whose ring activated to v1");
-    assert!(
-        pre_err.to_string().contains("protocol version 1"),
-        "PRE: expected 'protocol version 1' in error, got: {pre_err}"
-    );
+    assert_server_version_rejection("PRE", &pre_err);
     println!("PRE correctly rejected: {pre_err}");
 
     println!("Upgrade integration test passed: v0 flipped to v1 at activation_time.");
