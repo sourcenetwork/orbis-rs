@@ -1,9 +1,10 @@
 services:
   sourcehub:
+    image: orbis-sourcehub-integration
     build:
-      context: https://github.com/sourcenetwork/sourcehub.git#jesse/update-orbis
+      context: .
+      dockerfile: Dockerfile.sourcehub-integration
     entrypoint: ["/bin/sh", "-c"]
-    container_name: sourcehub-integration-test
     command:
       - |
         rm -rf /home/node/.sourcehub/*
@@ -17,9 +18,9 @@ services:
         sourcehubd genesis collect-gentxs --home /home/node/.sourcehub
         exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
     ports:
-      - "26657:26657" # RPC
-      - "1317:1317"   # API
-      - "9090:9090"   # gRPC
+      - "127.0.0.1::26657" # RPC
+      - "127.0.0.1::1317"  # API
+      - "127.0.0.1::9090"  # gRPC
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:26657/health"]
       interval: 5s

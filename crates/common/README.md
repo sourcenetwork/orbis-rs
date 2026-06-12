@@ -21,10 +21,10 @@ Typical wiring: build a **`ChainConfig`** (often via **`ChainConfigBuilder::defa
 
 [`src/lib.rs`](src/lib.rs) also defines:
 
-- **`SourceHubTestContainer`** — Starts `docker/docker-compose-sourcehub-test.yml` from the repo root, waits for RPC health, tears down on drop. Exposes **`SOURCEHUB_RPC_URL`** (`http://localhost:26657`) and REST API URL.
-- **`IntegrationTestNetwork`** — Starts `docker/docker-compose-integration-test.yml` (SourceHub + three orbis nodes). Exposes gRPC ports **50051–50053**, **`ORBIS_INTEGRATION_CRYPTO`** sync with compile-time `bls12-381` / `decaf377` features, and helpers like **`transform_p2p_address`** for container-to-container peer strings.
+- **`SourceHubTestContainer`** — Starts `docker/docker-compose-sourcehub-test.yml` under a unique Compose project, discovers Docker-assigned RPC/REST/gRPC host ports, waits for health, and tears down only its own project. Use `chain_config()` or the URL accessors for connections.
+- **`IntegrationTestNetwork`** — Starts `docker/docker-compose-integration-test.yml` (SourceHub + three orbis nodes) under a unique Compose project and exposes the dynamically assigned SourceHub and node endpoints. **`ORBIS_INTEGRATION_CRYPTO`** remains synchronized with compile-time `bls12-381` / `decaf377` features.
 
-Both require **Docker** and **`curl`** (and **`nc`** for integration tests) on the host.
+Both require **Docker** and **`curl`** on the host. Independent Cargo test processes may run their Docker stacks concurrently because project names and published host ports are isolated.
 
 ## Features
 

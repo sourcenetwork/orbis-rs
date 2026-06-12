@@ -80,9 +80,8 @@ fn assert_server_version_rejection(operation: &str, error: &anyhow::Error) {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_v0_services_rejected_after_ring_upgrade() {
-    // Acquire exclusive Docker access before calculating activation_time. If another workspace
-    // test binary is using the fixed SourceHub ports, waiting for it must not consume this test's
-    // pre-activation window.
+    // Create the builder before calculating activation_time so the genesis patch and
+    // activation schedule are assembled together.
     let network_builder = IntegrationTestNetwork::builder();
 
     // Compute activation_time before build() so it can be baked into genesis.
@@ -91,7 +90,7 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
     let activation_time = unix_now() + ACTIVATION_LEAD_SECS;
     println!("activation_time={activation_time} (in {ACTIVATION_LEAD_SECS}s from now)");
 
-    let _network = network_builder
+    let network = network_builder
         .with_module_genesis(
             "orbis",
             serde_json::json!({
@@ -128,18 +127,11 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
         )
         .build();
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(
-        &[
-            IntegrationTestNetwork::NODE1_GRPC,
-            IntegrationTestNetwork::NODE2_GRPC,
-            IntegrationTestNetwork::NODE3_GRPC,
-        ],
-        90,
-        Duration::from_secs(1),
-    )
-    .await;
+    let endpoints = network.all_endpoints();
+    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
+        .await;
 
-    let endpoint = IntegrationTestNetwork::NODE1_GRPC.to_string();
+    let endpoint = endpoints[0].to_string();
 
     // do_pre validates reader_pk before the version check — need a real keypair
     let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");

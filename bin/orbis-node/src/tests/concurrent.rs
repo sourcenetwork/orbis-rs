@@ -30,7 +30,7 @@ use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, NodeInfo};
 use bulletin::BulletinImpl;
-use common::{blockchain::ChainConfigBuilder, SourceHubTestContainer};
+use common::{blockchain::ChainConfig, SourceHubTestContainer};
 use crypto::{helpers::generate_keypair, CryptoSerialize, DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl};
@@ -73,6 +73,7 @@ struct LiveThreeNodeNetwork {
     policy_id: String,
     /// Compressed pubkeys of alice, bob, charlie (in that order).
     node_keys: Vec<String>,
+    chain_config: ChainConfig,
     /// Keeps the SourceHub Docker container alive via RAII.
     _chain: SourceHubTestContainer,
 }
@@ -87,6 +88,7 @@ struct LiveFourNodeNetwork {
     policy_id: String,
     /// Compressed pubkeys of alice, bob, charlie, non_participant (in that order).
     node_keys: Vec<String>,
+    chain_config: ChainConfig,
     _chain: SourceHubTestContainer,
 }
 
@@ -128,8 +130,9 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
 /// Waits until all three gRPC servers are ready before returning.
 async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveThreeNodeNetwork {
     let chain = SourceHubTestContainer::new();
+    let chain_config = chain.chain_config();
 
-    let policy_id = create_orbis_ring_policy().await;
+    let policy_id = create_orbis_ring_policy(&chain_config).await;
 
     let mut handles: Vec<LiveNodeHandle> = Vec::new();
     let mut node_keys: Vec<String> = Vec::new();
@@ -142,33 +145,25 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
         let local_storage = LocalStorageImpl::new(None, db_path.clone()).expect("local storage");
 
         // Create signing key (stored in local_storage) and fund it via the faucet
-        let signer =
-            create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
-                .expect("create node signing key");
+        let signer = create_and_store_node_key(local_storage.clone(), chain_config.clone())
+            .expect("create node signing key");
         let public_address = signer.address();
         let node_key = signer.public_key_hex();
 
-        cli_tool::fund(
-            public_address.clone(),
-            ChainConfigBuilder::default().build(),
-        )
-        .await
-        .expect("fund node account via faucet");
+        cli_tool::fund(public_address.clone(), chain_config.clone())
+            .await
+            .expect("fund node account via faucet");
 
         // Real bulletin backed by SourceHub (uses the funded signer to post)
         let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-            BulletinImpl::with_signer(
-                ChainConfigBuilder::default(),
-                signer,
-                Some(MIN_NODE_BALANCE),
-            )
-            .await
-            .expect("BulletinImpl with signer"),
+            BulletinImpl::with_signer(chain.chain_config_builder(), signer, Some(MIN_NODE_BALANCE))
+                .await
+                .expect("BulletinImpl with signer"),
         );
 
         // Real authz backed by SourceHub
         let authz: Arc<dyn Authz> = Arc::new(
-            AuthzImpl::new(ChainConfigBuilder::default())
+            AuthzImpl::new(chain.chain_config_builder())
                 .await
                 .expect("AuthzImpl"),
         );
@@ -251,14 +246,16 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
         _charlie: it.next().unwrap(),
         policy_id,
         node_keys,
+        chain_config,
         _chain: chain,
     }
 }
 
 async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFourNodeNetwork {
     let chain = SourceHubTestContainer::new();
+    let chain_config = chain.chain_config();
 
-    let policy_id = create_orbis_ring_policy().await;
+    let policy_id = create_orbis_ring_policy(&chain_config).await;
 
     let mut handles: Vec<LiveNodeHandle> = Vec::new();
     let mut node_keys: Vec<String> = Vec::new();
@@ -270,31 +267,23 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
 
         let local_storage = LocalStorageImpl::new(None, db_path.clone()).expect("local storage");
 
-        let signer =
-            create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
-                .expect("create node signing key");
+        let signer = create_and_store_node_key(local_storage.clone(), chain_config.clone())
+            .expect("create node signing key");
         let public_address = signer.address();
         let node_key = signer.public_key_hex();
 
-        cli_tool::fund(
-            public_address.clone(),
-            ChainConfigBuilder::default().build(),
-        )
-        .await
-        .expect("fund node account via faucet");
+        cli_tool::fund(public_address.clone(), chain_config.clone())
+            .await
+            .expect("fund node account via faucet");
 
         let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-            BulletinImpl::with_signer(
-                ChainConfigBuilder::default(),
-                signer,
-                Some(MIN_NODE_BALANCE),
-            )
-            .await
-            .expect("BulletinImpl with signer"),
+            BulletinImpl::with_signer(chain.chain_config_builder(), signer, Some(MIN_NODE_BALANCE))
+                .await
+                .expect("BulletinImpl with signer"),
         );
 
         let authz: Arc<dyn Authz> = Arc::new(
-            AuthzImpl::new(ChainConfigBuilder::default())
+            AuthzImpl::new(chain.chain_config_builder())
                 .await
                 .expect("AuthzImpl"),
         );
@@ -375,6 +364,7 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
         non_participant: it.next().unwrap(),
         policy_id,
         node_keys,
+        chain_config,
         _chain: chain,
     }
 }
@@ -386,18 +376,19 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
 /// Create a ring on-chain, run DKG, and return `(ring_pk_hex, ring_id)` once
 /// all participant nodes have called FinalizeRing and the chain confirms.
 async fn setup_ring(
+    chain_config: &ChainConfig,
     endpoint: &str,
     node_keys: &[String],
     threshold: u32,
     policy_id: &str,
 ) -> (String, String) {
-    let ring_id = create_ring_on_chain(node_keys, threshold, policy_id, None).await;
+    let ring_id = create_ring_on_chain(chain_config, node_keys, threshold, policy_id, None).await;
 
     cli_tool::do_dkg(endpoint.to_string(), ring_id.clone())
         .await
         .expect("DKG initiation");
 
-    let ring_pk = wait_for_ring_finalized(&ring_id, Duration::from_secs(90)).await;
+    let ring_pk = wait_for_ring_finalized(chain_config, &ring_id, Duration::from_secs(90)).await;
     (ring_pk, ring_id)
 }
 
@@ -419,10 +410,22 @@ async fn test_two_simultaneous_dkg_sessions() {
     let endpoint = net.alice.grpc_endpoint.clone();
 
     // Create two separate rings (different nonces → different ring IDs)
-    let ring_id_1 =
-        create_ring_on_chain(&net.node_keys, 2, &net.policy_id, Some("session-1")).await;
-    let ring_id_2 =
-        create_ring_on_chain(&net.node_keys, 2, &net.policy_id, Some("session-2")).await;
+    let ring_id_1 = create_ring_on_chain(
+        &net.chain_config,
+        &net.node_keys,
+        2,
+        &net.policy_id,
+        Some("session-1"),
+    )
+    .await;
+    let ring_id_2 = create_ring_on_chain(
+        &net.chain_config,
+        &net.node_keys,
+        2,
+        &net.policy_id,
+        Some("session-2"),
+    )
+    .await;
 
     assert_ne!(
         ring_id_1, ring_id_2,
@@ -444,8 +447,8 @@ async fn test_two_simultaneous_dkg_sessions() {
 
     let timeout = Duration::from_secs(90);
     let (pk1, pk2) = tokio::join!(
-        wait_for_ring_finalized(&ring_id_1, timeout),
-        wait_for_ring_finalized(&ring_id_2, timeout),
+        wait_for_ring_finalized(&net.chain_config, &ring_id_1, timeout),
+        wait_for_ring_finalized(&net.chain_config, &ring_id_2, timeout),
     );
 
     assert!(!pk1.is_empty(), "DKG 1 must produce a ring key");
@@ -473,10 +476,19 @@ async fn test_concurrent_pre_requests() {
     let endpoint = net.alice.grpc_endpoint.clone();
 
     // Step 1: DKG → ring
-    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, &net.node_keys, 2, &net.policy_id).await;
+    let (ring_pk_hex, ring_id) = setup_ring(
+        &net.chain_config,
+        &endpoint,
+        &net.node_keys,
+        2,
+        &net.policy_id,
+    )
+    .await;
 
     // Step 2: Store one encrypted secret on the bulletin
-    let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");
+    let policy_id = cli_tool::add_policy_to_chain_with_config(net.chain_config.clone())
+        .await
+        .expect("add policy");
     let resource = "document".to_string();
     let permission = "read".to_string();
     let secret = b"concurrent-pre-plaintext";
@@ -512,15 +524,21 @@ async fn test_concurrent_pre_requests() {
 
     // Step 3: Authz — register the object and grant read access to the test DID
     let did = "pre_reader".to_string();
-    cli_tool::register_object_to_chain(policy_id.clone(), object_id.clone(), resource.clone())
-        .await
-        .expect("register object to chain");
-    cli_tool::set_relationship_on_chain(
+    cli_tool::register_object_to_chain_with_config(
+        policy_id.clone(),
+        object_id.clone(),
+        resource.clone(),
+        net.chain_config.clone(),
+    )
+    .await
+    .expect("register object to chain");
+    cli_tool::set_relationship_on_chain_with_config(
         policy_id.clone(),
         object_id.clone(),
         resource.clone(),
         "reader".to_string(),
         Some(did.clone()),
+        net.chain_config.clone(),
     )
     .await
     .expect("set relationship on chain");
@@ -599,10 +617,19 @@ async fn test_concurrent_sign_requests() {
     let endpoint = net.alice.grpc_endpoint.clone();
 
     // Step 1: DKG → ring
-    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, &net.node_keys, 2, &net.policy_id).await;
+    let (ring_pk_hex, ring_id) = setup_ring(
+        &net.chain_config,
+        &endpoint,
+        &net.node_keys,
+        2,
+        &net.policy_id,
+    )
+    .await;
 
     // Step 2: Add a policy (required as payload metadata; authz enforcement is PRE-only)
-    let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");
+    let policy_id = cli_tool::add_policy_to_chain_with_config(net.chain_config.clone())
+        .await
+        .expect("add policy");
     let resource = "document".to_string();
     let permission = "read".to_string();
 
@@ -727,14 +754,16 @@ async fn test_dkg_non_participant_initiator_completes() {
     let net = setup_live_four_node_network("dkg_non_participant", 51070).await;
 
     // Create a ring with all four nodes as participants (threshold=2)
-    let ring_id = create_ring_on_chain(&net.node_keys, 2, &net.policy_id, None).await;
+    let ring_id =
+        create_ring_on_chain(&net.chain_config, &net.node_keys, 2, &net.policy_id, None).await;
 
     // Initiate DKG from the last node's endpoint (non_participant)
     cli_tool::do_dkg(net.non_participant.grpc_endpoint.clone(), ring_id.clone())
         .await
         .expect("DKG from non_participant initiator");
 
-    let ring_pk_hex = wait_for_ring_finalized(&ring_id, Duration::from_secs(90)).await;
+    let ring_pk_hex =
+        wait_for_ring_finalized(&net.chain_config, &ring_id, Duration::from_secs(90)).await;
 
     async fn assert_has_ring_state(grpc_endpoint: &str, ring_pk_hex: &str) {
         let mut client = InfoServiceClient::connect(grpc_endpoint.to_string())

@@ -3,10 +3,7 @@ use crate::r#trait::{
     Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, RingPayload, UpgradeInfo,
 };
 use common::{
-    blockchain::{
-        acp::Object, ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner,
-        TEST_ACCOUNT_HEX_KEY,
-    },
+    blockchain::{acp::Object, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY},
     SourceHubTestContainer,
 };
 
@@ -99,15 +96,15 @@ fn ring_query_conversion_preserves_upgrade_info() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bulletin_document() {
-    let _container = SourceHubTestContainer::new();
-    let config = ChainConfig::local();
+    let container = SourceHubTestContainer::new();
+    let config = container.chain_config();
 
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
 
     let node_key = signer.public_key_hex();
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(container.chain_config_builder(), signer, None)
         .await
         .unwrap();
 
@@ -173,15 +170,15 @@ async fn test_bulletin_document() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bulletin_ring() {
-    let _container = SourceHubTestContainer::new();
-    let config = ChainConfig::local();
+    let container = SourceHubTestContainer::new();
+    let config = container.chain_config();
 
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
 
     let node_key = signer.public_key_hex();
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(container.chain_config_builder(), signer, None)
         .await
         .unwrap();
 

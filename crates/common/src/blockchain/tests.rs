@@ -12,10 +12,10 @@ use std::sync::Arc;
 #[serial_test::serial]
 async fn test_client_connection() {
     // Spin up SourceHub
-    let _container = SourceHubTestContainer::new();
+    let container = SourceHubTestContainer::new();
 
     // Create config for local container
-    let config = ChainConfig::local();
+    let config = container.chain_config();
 
     // Create client
     let client = SourceHubClient::new(config)
@@ -38,8 +38,8 @@ async fn test_client_connection() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_get_latest_height() {
-    let _container = SourceHubTestContainer::new();
-    let config = ChainConfig::local();
+    let container = SourceHubTestContainer::new();
+    let config = container.chain_config();
     let client = SourceHubClient::new(config)
         .await
         .expect("Failed to create client");
@@ -106,8 +106,8 @@ fn test_fee_calculation() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_concurrent_nonce_management() {
-    let _container = SourceHubTestContainer::new();
-    let config = ChainConfig::local();
+    let container = SourceHubTestContainer::new();
+    let config = container.chain_config();
 
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
@@ -183,8 +183,8 @@ async fn test_concurrent_nonce_management() {
 async fn test_gas_simulation() {
     use crate::blockchain::bank;
 
-    let _container = SourceHubTestContainer::new();
-    let config = ChainConfig::local();
+    let container = SourceHubTestContainer::new();
+    let config = container.chain_config();
 
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");

@@ -3,9 +3,9 @@ use crate::r#trait::Authz;
 use crate::sourcehub::{AccessCheckRequest, ValidWindow};
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
-    ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+    SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
 };
-use common::{blockchain::ChainConfigBuilder, SourceHubTestContainer};
+use common::SourceHubTestContainer;
 use did_key::{generate, Ed25519KeyPair, Fingerprint};
 
 #[test]
@@ -39,9 +39,9 @@ resources:
 #[serial_test::serial]
 async fn test_create_and_query_policy() {
     // 1. Spin up SourceHub container
-    let _container = SourceHubTestContainer::new();
+    let container = SourceHubTestContainer::new();
 
-    let config = ChainConfig::local();
+    let config = container.chain_config();
 
     // 2. Use the known test account key (added to genesis in docker-compose)
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
@@ -84,7 +84,7 @@ async fn test_create_and_query_policy() {
     let policy_id = &policy_ids.ids[0];
 
     // 5. Test SourceHubAuth.get_policy()
-    let auth = SourceHubAuth::new(ChainConfigBuilder::default())
+    let auth = SourceHubAuth::new(container.chain_config_builder())
         .await
         .unwrap();
     let policy = auth
@@ -221,9 +221,9 @@ resources:
 #[serial_test::serial]
 async fn test_complex_policy_permissions() {
     // 1. Spin up SourceHub container
-    let _container = SourceHubTestContainer::new();
+    let container = SourceHubTestContainer::new();
 
-    let config = ChainConfig::local();
+    let config = container.chain_config();
 
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
@@ -343,7 +343,7 @@ async fn test_complex_policy_permissions() {
     assert_eq!(result.code, 0);
 
     // 7. Test permissions using SourceHubAuth
-    let auth = SourceHubAuth::new(ChainConfigBuilder::default())
+    let auth = SourceHubAuth::new(container.chain_config_builder())
         .await
         .unwrap();
 
@@ -458,9 +458,9 @@ async fn test_complex_policy_permissions() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_valid_window_out_of_range() {
-    let _container = SourceHubTestContainer::new();
+    let container = SourceHubTestContainer::new();
 
-    let auth = SourceHubAuth::new(ChainConfigBuilder::default())
+    let auth = SourceHubAuth::new(container.chain_config_builder())
         .await
         .unwrap();
 
@@ -488,9 +488,9 @@ async fn test_valid_window_out_of_range() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_valid_window_in_range() {
-    let _container = SourceHubTestContainer::new();
+    let container = SourceHubTestContainer::new();
 
-    let config = common::blockchain::ChainConfig::local();
+    let config = container.chain_config();
     let signer = common::blockchain::TxSigner::from_hex_key(
         common::blockchain::TEST_ACCOUNT_HEX_KEY,
         config.clone(),
@@ -544,7 +544,7 @@ async fn test_valid_window_in_range() {
         .await
         .expect("Failed to set relationship");
 
-    let auth = SourceHubAuth::new(ChainConfigBuilder::default())
+    let auth = SourceHubAuth::new(container.chain_config_builder())
         .await
         .unwrap();
 

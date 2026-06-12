@@ -568,10 +568,26 @@ resources:
         expr: creator
 "#;
 
+fn chain_config_builder(config: &ChainConfig) -> ChainConfigBuilder {
+    ChainConfigBuilder::default()
+        .chain_id(Some(config.chain_id.clone()))
+        .rpc_url(Some(config.rpc_url.clone()))
+        .rest_url(Some(config.rest_url.clone()))
+        .grpc_url(Some(config.grpc_url.clone()))
+        .account_prefix(Some(config.account_prefix.clone()))
+        .default_gas_limit(Some(config.default_gas_limit))
+        .gas_price(Some(config.gas_price.clone()))
+        .gas_multiplier(Some(config.gas_multiplier))
+}
+
 pub async fn add_policy_to_chain() -> Result<String> {
+    add_policy_to_chain_with_config(ChainConfig::local()).await
+}
+
+pub async fn add_policy_to_chain_with_config(config: ChainConfig) -> Result<String> {
     let client = SourceHubClient::with_signer(
-        ChainConfig::local(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
+        config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
     )
     .await
     .map_err(|e| anyhow!("client builder issue: {}", e))?;
@@ -610,9 +626,18 @@ pub async fn register_object_to_chain(
     object_id: String,
     resource: String,
 ) -> Result<()> {
+    register_object_to_chain_with_config(policy_id, object_id, resource, ChainConfig::local()).await
+}
+
+pub async fn register_object_to_chain_with_config(
+    policy_id: String,
+    object_id: String,
+    resource: String,
+    config: ChainConfig,
+) -> Result<()> {
     let client = SourceHubClient::with_signer(
-        ChainConfig::local(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
+        config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
     )
     .await
     .expect("client builder issue");
@@ -648,9 +673,28 @@ pub async fn set_relationship_on_chain(
     relation: String,
     reader_did_pk: Option<String>,
 ) -> Result<()> {
-    let client = SourceHubClient::with_signer(
+    set_relationship_on_chain_with_config(
+        policy_id,
+        object_id,
+        resource,
+        relation,
+        reader_did_pk,
         ChainConfig::local(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
+    )
+    .await
+}
+
+pub async fn set_relationship_on_chain_with_config(
+    policy_id: String,
+    object_id: String,
+    resource: String,
+    relation: String,
+    reader_did_pk: Option<String>,
+    config: ChainConfig,
+) -> Result<()> {
+    let client = SourceHubClient::with_signer(
+        config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
     )
     .await
     .expect("client builder issue");
@@ -782,10 +826,18 @@ pub async fn add_bulletin_collaborator(
 }
 
 pub async fn create_bulletin_post(kind: BulletinWriteKind, payload: Vec<u8>) -> Result<String> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+    create_bulletin_post_with_config(kind, payload, ChainConfig::local()).await
+}
+
+pub async fn create_bulletin_post_with_config(
+    kind: BulletinWriteKind,
+    payload: Vec<u8>,
+    config: ChainConfig,
+) -> Result<String> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(chain_config_builder(&config), signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -807,10 +859,34 @@ pub async fn update_ring_post_by_acp(
     activation_time: Option<u64>,
     clear_upgrade: bool,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+    update_ring_post_by_acp_with_config(
+        ring_id,
+        new_peer_ids,
+        new_threshold,
+        pss_interval,
+        next_version,
+        activation_time,
+        clear_upgrade,
+        ChainConfig::local(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn update_ring_post_by_acp_with_config(
+    ring_id: String,
+    new_peer_ids: Vec<String>,
+    new_threshold: Option<u32>,
+    pss_interval: Option<u64>,
+    next_version: Option<u64>,
+    activation_time: Option<u64>,
+    clear_upgrade: bool,
+    config: ChainConfig,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let client = SourceHubClient::with_signer(ChainConfig::local(), signer)
+    let client = SourceHubClient::with_signer(config, signer)
         .await
         .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
 
@@ -841,7 +917,15 @@ pub async fn update_ring_post_by_acp(
 
 /// Read a bulletin post by ID
 pub async fn read_bulletin_post(id: String, kind: BulletinKind) -> Result<Vec<u8>> {
-    let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
+    read_bulletin_post_with_config(id, kind, ChainConfig::local()).await
+}
+
+pub async fn read_bulletin_post_with_config(
+    id: String,
+    kind: BulletinKind,
+    config: ChainConfig,
+) -> Result<Vec<u8>> {
+    let bulletin = SourceHubBulletin::new(chain_config_builder(&config))
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -958,7 +1042,11 @@ pub async fn query_ring_state(endpoint: String, ring_pk_hex: String) -> Result<(
 /// Get the current sequence number for an account address.
 /// Useful for verifying if a transaction was broadcast (sequence increments after each tx).
 pub async fn get_account_sequence(address: &str) -> Result<u64> {
-    let client = SourceHubClient::new(ChainConfig::local())
+    get_account_sequence_with_config(address, ChainConfig::local()).await
+}
+
+pub async fn get_account_sequence_with_config(address: &str, config: ChainConfig) -> Result<u64> {
+    let client = SourceHubClient::new(config)
         .await
         .map_err(|e| anyhow!("Failed to create client: {}", e))?;
 
@@ -985,8 +1073,27 @@ pub async fn post_key_derivation(
     resource: String,
     permission: String,
 ) -> Result<(String, String)> {
+    post_key_derivation_with_config(
+        ring_id,
+        derivation,
+        policy_id,
+        resource,
+        permission,
+        ChainConfig::local(),
+    )
+    .await
+}
+
+pub async fn post_key_derivation_with_config(
+    ring_id: String,
+    derivation: String,
+    policy_id: String,
+    resource: String,
+    permission: String,
+    config: ChainConfig,
+) -> Result<(String, String)> {
     // Fetch ring payload from bulletin to get the ring public key
-    let ring_bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
+    let ring_bulletin = SourceHubBulletin::new(chain_config_builder(&config))
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
     let ring_post = ring_bulletin
@@ -1011,10 +1118,10 @@ pub async fn post_key_derivation(
             .map_err(|e| anyhow!("Failed to serialize derived_pk: {}", e))?,
     );
 
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(chain_config_builder(&config), signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 

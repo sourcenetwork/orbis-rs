@@ -40,8 +40,6 @@ jobs:
       run: rustup update stable
     - name: Install protoc
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-    - name: Pull SourceHub image
-      run: docker pull ghcr.io/sourcenetwork/sourcehub:dev
     - name: Run tests
       run: cargo test --features=integration-test,fault-injection --verbose
     - name: Run tests decaf377
