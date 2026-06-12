@@ -2,7 +2,7 @@ use crate::dkg::v0::error::DkgError;
 use crate::helpers::auth::current_unix_time;
 use crate::helpers::helpers::extract_node_part;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bulletin, test_db_path};
-use crate::ring_state::RingIndexEntry;
+use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::{
     dummy::DummyBulletin,
     r#trait::{BulletinPost, NodeInfo, RingPayload},
@@ -447,6 +447,70 @@ async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
             .iter()
             .any(|candidate| candidate.ring_pk_str == local_ring_pk),
         "expired pending fresh DKG RingIndex entry should be removed"
+    );
+
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_pending_fresh_dkg_elapsed_interval_preserves_completed_bundle() {
+    let db_name = "pss_pending_fresh_preserves_bundle";
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+    let local_ring_pk = "pending_fresh_completed_local_ring_pk";
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: String::new(),
+        peer_node_keys: vec![our_hex],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: Some(1),
+        block_number_nonce: 0,
+        policy_id: None,
+    };
+
+    let mut entry = post_ring_and_seed_index_with_local_key(
+        &app_state,
+        &bulletin,
+        &ring_payload,
+        local_ring_pk,
+    )
+    .await;
+    entry.indexed_at_secs = current_unix_time().expect("system clock").saturating_sub(2);
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&vec![&entry]).expect("serialize RingIndex"),
+        )
+        .expect("write RingIndex");
+    RingShareBundle {
+        share_bytes: vec![].into(),
+        public_polynomial: "completed-public-polynomial".to_string(),
+        last_pss: entry.indexed_at_secs,
+    }
+    .save_by_ring_key(&app_state.local_storage, local_ring_pk)
+    .expect("store completed fresh DKG bundle");
+
+    let state_arc = Arc::new(app_state);
+    let result = super::pss_ring(&state_arc, &entry).await;
+
+    assert!(
+        result.is_ok(),
+        "pending fresh reconciliation should preserve completed state, got: {result:?}"
+    );
+    assert!(
+        state_arc
+            .local_storage
+            .contains(LocalStorageKeys::RingKey(local_ring_pk.to_string()))
+            .expect("check RingKey presence"),
+        "completed fresh DKG bundle must remain while bulletin finalization is pending"
+    );
+    assert!(
+        ring_index_entries(&state_arc)
+            .iter()
+            .any(|candidate| candidate.ring_pk_str == local_ring_pk),
+        "completed fresh DKG RingIndex entry must remain while bulletin finalization is pending"
     );
 
     cleanup_db(&db_path);

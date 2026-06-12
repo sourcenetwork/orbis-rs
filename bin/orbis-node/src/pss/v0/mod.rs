@@ -297,18 +297,28 @@ where
         return Ok(());
     }
 
-    // TODO(sourcehub): consider adding a chain tx to expire/delete pending rings on-chain.
-    app_state
+    let _guard = app_state.ring_index_lock.lock().await;
+    let has_local_bundle = app_state
         .local_storage
-        .delete(LocalStorageKeys::RingKey(ring_pk_str.clone()))
+        .contains(LocalStorageKeys::RingKey(ring_pk_str.clone()))
         .map_err(|e| {
             DkgError::Storage(format!(
-                "PSS: failed to delete expired pending fresh DKG bundle: {}",
+                "PSS: failed to check pending fresh DKG bundle: {}",
                 e
             ))
         })?;
 
-    let _guard = app_state.ring_index_lock.lock().await;
+    if has_local_bundle {
+        tracing::warn!(
+            ring_id = %post_id,
+            ring_pk_str = %ring_pk_str,
+            elapsed_secs = elapsed_secs,
+            pss_interval_secs = pss_interval_secs,
+            "PSS: pending fresh DKG has a local share bundle; preserving state while bulletin finalization is pending"
+        );
+        return Ok(());
+    }
+
     remove_ring_index_entry(&app_state.local_storage, entry)?;
 
     tracing::warn!(
@@ -316,7 +326,7 @@ where
         ring_pk_str = %ring_pk_str,
         elapsed_secs = elapsed_secs,
         pss_interval_secs = pss_interval_secs,
-        "PSS: cleaned up expired pending fresh DKG ring locally"
+        "PSS: cleaned up dangling pending fresh DKG index entry"
     );
 
     Ok(())
