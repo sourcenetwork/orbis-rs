@@ -57,13 +57,16 @@ fn report_compose_failure(compose_file: &str, project_name: &str) {
 }
 
 fn stop_compose(compose_file: &str, project_name: &str) {
-    let status = compose_command(compose_file, project_name)
+    match compose_command(compose_file, project_name)
         .args(["down", "-v", "--remove-orphans"])
-        .status();
-
-    let _ = status.inspect_err(|error| {
-        eprintln!("Failed to stop docker compose: {error}");
-    });
+        .status()
+    {
+        Ok(status) if !status.success() => {
+            eprintln!("docker compose down exited with non-zero status: {status}");
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("Failed to stop docker compose: {error}"),
+    }
 }
 
 pub struct SourceHubTestContainer {
