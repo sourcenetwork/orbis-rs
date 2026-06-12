@@ -14,7 +14,7 @@ Every ring on-chain carries an `UpgradeInfo` field with three values:
 
 On every request, both nodes and CLI tools resolve the **effective version**:
 
-```
+```text
 effective_version = next_version  if current_time >= activation_time
                   = current_version  otherwise
 ```

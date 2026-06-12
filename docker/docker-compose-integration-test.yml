@@ -29,10 +29,14 @@ services:
         sourcehubd genesis gentx validator 10000000000uopen --keyring-backend test --chain-id sourcehub-localnet --home /home/node/.sourcehub
         sourcehubd genesis collect-gentxs --home /home/node/.sourcehub
         if [ -s /tmp/genesis-patch.json ]; then
-          jq --argjson patch "$$(cat /tmp/genesis-patch.json)" '.app_state *= $$patch' \
-            /home/node/.sourcehub/config/genesis.json > /tmp/patched-genesis.json \
-            && mv /tmp/patched-genesis.json /home/node/.sourcehub/config/genesis.json
-          echo "Applied genesis patch"
+          if jq --argjson patch "$$(cat /tmp/genesis-patch.json)" '.app_state *= $$patch' \
+            /home/node/.sourcehub/config/genesis.json > /tmp/patched-genesis.json; then
+            mv /tmp/patched-genesis.json /home/node/.sourcehub/config/genesis.json
+            echo "Applied genesis patch"
+          else
+            echo "Invalid GENESIS_PATCH_FILE mounted at /tmp/genesis-patch.json; failed to parse or merge genesis patch" >&2
+            exit 1
+          fi
         fi
         exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
     ports:

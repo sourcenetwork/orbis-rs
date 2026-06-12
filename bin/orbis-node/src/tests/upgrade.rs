@@ -31,6 +31,15 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
+fn assert_before_activation(operation: &str, activation_time: u64) {
+    let now = unix_now();
+    assert!(
+        now < activation_time,
+        "{operation}: pre-activation check missed its window \
+         (current_time={now}, activation_time={activation_time})"
+    );
+}
+
 fn assert_pre_activation_response<T>(operation: &str, result: &anyhow::Result<T>) {
     if let Err(error) = result {
         let message = error.to_string();
@@ -133,69 +142,65 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
     let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize sk"));
 
     // ─── Phase 1: pre-activation — version gate must NOT fire ────────────────
-    // If Docker startup consumed all of ACTIVATION_LEAD_SECS (cold cache, first
-    // run), skip this phase gracefully rather than asserting a stale state.
-    if unix_now() < activation_time {
-        println!(
-            "Phase 1: confirming v0 gate does not fire before activation ({} s remaining)...",
-            activation_time - unix_now()
-        );
+    assert_before_activation("Phase 1", activation_time);
+    println!(
+        "Phase 1: confirming v0 gate does not fire before activation ({} s remaining)...",
+        activation_time - unix_now()
+    );
 
-        let dkg_result = cli_tool::do_dkg(endpoint.clone(), RING_ID.to_string()).await;
-        assert_pre_activation_response("DKG", &dkg_result);
-        println!(
-            "DKG before activation: {}",
-            dkg_result
-                .as_ref()
-                .map(|_| "ok".to_string())
-                .unwrap_or_else(|e| format!("non-version err: {e}"))
-        );
+    assert_before_activation("DKG", activation_time);
+    let dkg_result = cli_tool::do_dkg(endpoint.clone(), RING_ID.to_string()).await;
+    assert_pre_activation_response("DKG", &dkg_result);
+    println!(
+        "DKG before activation: {}",
+        dkg_result
+            .as_ref()
+            .map(|_| "ok".to_string())
+            .unwrap_or_else(|e| format!("non-version err: {e}"))
+    );
 
-        let sign_result = cli_tool::do_sign(
-            endpoint.clone(),
-            b"upgrade-pre-activation".to_vec(),
-            DERIVATION_ID.to_string(),
-            None,
-            None,
-            None,
-        )
-        .await;
-        assert_pre_activation_response("Sign", &sign_result);
-        println!(
-            "Sign before activation: {}",
-            sign_result
-                .as_ref()
-                .map(|_| "ok".to_string())
-                .unwrap_or_else(|e| format!("non-version err: {e}"))
-        );
+    assert_before_activation("Sign", activation_time);
+    let sign_result = cli_tool::do_sign(
+        endpoint.clone(),
+        b"upgrade-pre-activation".to_vec(),
+        DERIVATION_ID.to_string(),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_pre_activation_response("Sign", &sign_result);
+    println!(
+        "Sign before activation: {}",
+        sign_result
+            .as_ref()
+            .map(|_| "ok".to_string())
+            .unwrap_or_else(|e| format!("non-version err: {e}"))
+    );
 
-        let pre_result = cli_tool::do_pre(
-            endpoint.clone(),
-            String::new(),
-            reader_pk_hex.clone(),
-            Some(reader_sk_hex.clone()),
-            DOCUMENT_ID.to_string(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-        )
-        .await;
-        assert_pre_activation_response("PRE", &pre_result);
-        println!(
-            "PRE before activation: {}",
-            pre_result
-                .as_ref()
-                .map(|_| "ok".to_string())
-                .unwrap_or_else(|e| format!("non-version err: {e}"))
-        );
-    } else {
-        println!(
-            "Skipping pre-activation phase: Docker startup consumed the {ACTIVATION_LEAD_SECS}s lead time."
-        );
-    }
+    assert_before_activation("PRE", activation_time);
+    let pre_result = cli_tool::do_pre(
+        endpoint.clone(),
+        String::new(),
+        reader_pk_hex.clone(),
+        Some(reader_sk_hex.clone()),
+        DOCUMENT_ID.to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+    )
+    .await;
+    assert_pre_activation_response("PRE", &pre_result);
+    println!(
+        "PRE before activation: {}",
+        pre_result
+            .as_ref()
+            .map(|_| "ok".to_string())
+            .unwrap_or_else(|e| format!("non-version err: {e}"))
+    );
 
     // ─── Phase 2: wait for activation_time to pass ───────────────────────────
     let now = unix_now();
@@ -208,6 +213,10 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
         );
         sleep(Duration::from_secs(wait_secs)).await;
     }
+    assert!(
+        unix_now() >= activation_time,
+        "post-activation checks started before activation_time"
+    );
     println!("Phase 2 complete: wall clock is now past activation_time.");
 
     // ─── Phase 3: post-activation — all v0 operations must be refused ─────────

@@ -310,35 +310,36 @@ impl IntegrationTestNetworkBuilder {
             }
         };
 
-        if let Some(feat) = crypto_feature {
-            env::set_var("ORBIS_INTEGRATION_CRYPTO", feat);
-        }
-
         let patch_file: Option<tempfile::NamedTempFile> = if self.genesis_patches.is_empty() {
-            env::remove_var("GENESIS_PATCH_FILE");
             None
         } else {
             let mut f = tempfile::NamedTempFile::new().expect("genesis patch tempfile");
             serde_json::to_writer(&mut f, &serde_json::Value::Object(self.genesis_patches))
                 .expect("write genesis patch");
-            env::set_var("GENESIS_PATCH_FILE", f.path());
             Some(f)
         };
 
         let args = vec!["compose", "-f", &compose_file, "up", "-d", "--build"];
-        let status = Command::new("docker")
+        let mut command = Command::new("docker");
+        command
             .args(&args)
-            .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..")
-            .status()
-            .expect("Failed to start docker compose");
+            .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..");
+
+        if let Some(feat) = crypto_feature {
+            command.env("ORBIS_INTEGRATION_CRYPTO", feat);
+        }
+        if let Some(ref patch_file) = patch_file {
+            command.env("GENESIS_PATCH_FILE", patch_file.path());
+        } else {
+            command.env_remove("GENESIS_PATCH_FILE");
+        }
+
+        let status = command.status().expect("Failed to start docker compose");
 
         assert!(
             status.success(),
             "Failed to start integration test containers"
         );
-
-        // GENESIS_PATCH_FILE is only needed during docker compose up; clean up now
-        env::remove_var("GENESIS_PATCH_FILE");
 
         let network = IntegrationTestNetwork {
             compose_file,

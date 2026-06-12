@@ -8,13 +8,13 @@
 
 | Rust module | Proto package | Service(s) |
 |-------------|---------------|------------|
-| `dkg_service` | `dkg_service` | `DkgService` — start DKG |
+| `v0::dkg` | `orbis.v0.dkg` | `DkgService` — start DKG |
 | `pre_service` | `pre_service` | `PreService` — start PRE |
 | `sign_service` | `sign_service` | `SignService` — start threshold signing |
 | `store_secret_service` | `store_secret_service` | `StoreSecretService` — store encrypted secret + proof |
 | `info_service` | `info_service` | `InfoService` — node info, ring state |
 
-Use paths like `proto::dkg_service::dkg_service_client::DkgServiceClient`, `proto::dkg_service::dkg_service_server::DkgServiceServer`, and the generated request/response types.
+Use paths like `proto::v0::dkg::dkg_service_client::DkgServiceClient`, `proto::v0::dkg::dkg_service_server::DkgServiceServer`, and the generated request/response types. The corresponding gRPC method path is `/orbis.v0.dkg.DkgService/StartDkg`.
 
 ## RPC overview
 
