@@ -412,7 +412,7 @@ pub fn installed_versions_label() -> String {
     format!("{:?}", network::SUPPORTED_PROTOCOL_VERSIONS)
 }
 
-fn resolve_ring_protocol_decision(
+pub fn resolve_ring_protocol_decision(
     ring_id: &str,
     ring_payload: &bulletin::r#trait::RingPayload,
 ) -> Result<(&'static network::ProtocolRoutes, u64, String), String> {
@@ -451,14 +451,6 @@ fn resolve_ring_protocol_decision(
     Ok((routes, current_time, activation_time))
 }
 
-/// Capture local Unix time and resolve an installed route for the ring.
-pub(crate) fn resolve_ring_protocol_routes(
-    ring_id: &str,
-    ring_payload: &bulletin::r#trait::RingPayload,
-) -> Result<&'static network::ProtocolRoutes, String> {
-    resolve_ring_protocol_decision(ring_id, ring_payload).map(|(routes, _, _)| routes)
-}
-
 /// Capture local Unix time and validate that a request used the ring's effective route.
 pub fn ensure_ring_protocol_route(
     ring_id: &str,
@@ -494,8 +486,8 @@ pub async fn read_ring_for_protocol(
     String,
 > {
     let ring_payload = read_ring_payload(bulletin, ring_id).await?;
-    let routes = resolve_ring_protocol_routes(ring_id, &ring_payload)?;
-    Ok((ring_payload, routes))
+    let routes = resolve_ring_protocol_decision(ring_id, &ring_payload)?;
+    Ok((ring_payload, routes.0))
 }
 
 async fn read_ring_payload(
@@ -632,7 +624,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let error = resolve_ring_protocol_routes("ring-1", &payload).unwrap_err();
+        let error = resolve_ring_protocol_decision("ring-1", &payload).unwrap_err();
         assert!(error.contains("ring-1"));
         assert!(error.contains("effective_version=1"));
         assert!(error.contains("installed_versions=[0]"));

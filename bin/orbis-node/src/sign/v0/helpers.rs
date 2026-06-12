@@ -1,6 +1,6 @@
 use crate::constants::{MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE};
 use crate::dkg::v0::session_state::{ReshareSignatureReadyKey, SessionStateManager};
-use crate::helpers::helpers::{ensure_ring_protocol_route, resolve_ring_protocol_routes};
+use crate::helpers::helpers::{ensure_ring_protocol_route, resolve_ring_protocol_decision};
 use crate::ring_state::{RingPolyState, RingShareBundle};
 use crate::sign::v0::{
     error::{Result, SignError},
@@ -277,7 +277,7 @@ pub async fn validate_ring_reshare_update_statement(
             SignError::Deserialization(format!("Failed to parse current ring payload: {}", e))
         })?;
     if enforce_protocol {
-        resolve_ring_protocol_routes(&statement.ring_id, &current_payload)
+        resolve_ring_protocol_decision(&statement.ring_id, &current_payload)
             .map_err(SignError::ProtocolError)?;
     }
     let current_ring_hash = ring_payload_reshare_sign_state_sha256_hex(&current_payload);
