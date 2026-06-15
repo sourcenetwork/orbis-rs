@@ -2,12 +2,12 @@ use crate::app_state::AppState;
 use crate::constants::{
     NETWORK_MAX_CONCURRENT_INBOUND_STREAMS, NETWORK_MAX_INBOUND_STREAMS_PER_PEER_PER_SECOND,
 };
-use crate::dkg::coordinator::DkgCoordinator;
+use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::helpers::protocol_handler::GenericProtocolHandler;
-use crate::pre::coordinator::PreCoordinator;
-use crate::sign::coordinator::SignCoordinator;
+use crate::pre::v0::coordinator::PreCoordinator;
+use crate::sign::v0::coordinator::SignCoordinator;
 use network::error::Result as NetworkResult;
-use network::{Router, DKG, REENCRYPT, SIGN};
+use network::Router;
 use std::sync::Arc;
 
 fn apply_ingress_limits(
@@ -34,11 +34,15 @@ where
         + Sync
         + 'static,
 {
-    let dkg_handler = Arc::new(GenericProtocolHandler::new(Arc::new(DkgCoordinator::new(
-        app_state,
-    ))));
     let mut router_builder = apply_ingress_limits(network.create_router_builder()?);
-    router_builder = router_builder.accept(DKG.to_vec(), dkg_handler);
+    for version in network::SUPPORTED_PROTOCOL_VERSIONS {
+        let routes = network::routes_for_version(*version)
+            .expect("supported protocol version must have registered routes");
+        let dkg_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
+            DkgCoordinator::with_routes(app_state.clone(), routes),
+        )));
+        router_builder = router_builder.accept(routes.dkg_alpn.to_vec(), dkg_handler);
+    }
     router_builder.spawn()
 }
 
@@ -71,15 +75,19 @@ where
         + Sync
         + 'static,
 {
-    let dkg_handler = Arc::new(GenericProtocolHandler::new(Arc::new(DkgCoordinator::new(
-        app_state.clone(),
-    ))));
-    let pre_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
-        PreCoordinator::<D, T>::new(app_state),
-    )));
     let mut router_builder = apply_ingress_limits(network.create_router_builder()?);
-    router_builder = router_builder.accept(DKG.to_vec(), dkg_handler);
-    router_builder = router_builder.accept(REENCRYPT.to_vec(), pre_handler);
+    for version in network::SUPPORTED_PROTOCOL_VERSIONS {
+        let routes = network::routes_for_version(*version)
+            .expect("supported protocol version must have registered routes");
+        let dkg_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
+            DkgCoordinator::with_routes(app_state.clone(), routes),
+        )));
+        let pre_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
+            PreCoordinator::<D, T>::with_routes(app_state.clone(), routes),
+        )));
+        router_builder = router_builder.accept(routes.dkg_alpn.to_vec(), dkg_handler);
+        router_builder = router_builder.accept(routes.reencrypt_alpn.to_vec(), pre_handler);
+    }
     router_builder.spawn()
 }
 
@@ -122,18 +130,22 @@ where
         + Sync
         + 'static,
 {
-    let dkg_handler = Arc::new(GenericProtocolHandler::new(Arc::new(DkgCoordinator::new(
-        app_state.clone(),
-    ))));
-    let pre_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
-        PreCoordinator::<D, T>::new(app_state.clone()),
-    )));
-    let sign_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
-        SignCoordinator::<D, S>::new(app_state),
-    )));
     let mut router_builder = apply_ingress_limits(network.create_router_builder()?);
-    router_builder = router_builder.accept(DKG.to_vec(), dkg_handler);
-    router_builder = router_builder.accept(REENCRYPT.to_vec(), pre_handler);
-    router_builder = router_builder.accept(SIGN.to_vec(), sign_handler);
+    for version in network::SUPPORTED_PROTOCOL_VERSIONS {
+        let routes = network::routes_for_version(*version)
+            .expect("supported protocol version must have registered routes");
+        let dkg_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
+            DkgCoordinator::with_routes(app_state.clone(), routes),
+        )));
+        let pre_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
+            PreCoordinator::<D, T>::with_routes(app_state.clone(), routes),
+        )));
+        let sign_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
+            SignCoordinator::<D, S>::with_routes(app_state.clone(), routes),
+        )));
+        router_builder = router_builder.accept(routes.dkg_alpn.to_vec(), dkg_handler);
+        router_builder = router_builder.accept(routes.reencrypt_alpn.to_vec(), pre_handler);
+        router_builder = router_builder.accept(routes.sign_alpn.to_vec(), sign_handler);
+    }
     router_builder.spawn()
 }

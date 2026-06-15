@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package orbis.v0.pre;
+
+service PreService {
+  rpc StartPre(StartPreRequest) returns (StartPreResponse);
+}
+
+message TimestampRange {
+  uint64 start = 1;
+  uint64 end = 2;
+}
+
+message StartPreRequest {
+  // reader public key
+  bytes rdr_pk = 1;
+  // Object Id should be the only one not on bulletin but passed in here
+  string object_id = 2;
+  // Optional derivation path
+  optional bytes derivation = 3;
+  // Optional salt for proof
+  optional string salt = 4;
+  // Optional timestamp range for validity window
+  // TODO: Insecure test code meant to be moved to acp eventually (not in authn either)
+  optional TimestampRange valid_window = 5;
+}
+
+message StartPreResponse {
+  string status = 1;
+  string message = 2;
+  int64 created_at = 3;
+  bytes encrypted_secret = 4;
+}

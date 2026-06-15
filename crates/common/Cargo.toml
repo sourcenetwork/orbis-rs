@@ -18,6 +18,7 @@ base64 = { workspace = true }
 cosmrs = { workspace = true }
 tendermint = { workspace = true }
 tendermint-rpc = { workspace = true }
+tendermint-reqwest = { package = "reqwest", version = "0.11.20", default-features = false, features = ["rustls-tls-native-roots"] }
 reqwest = { workspace = true }
 bip32 = { workspace = true }
 k256 = { workspace = true }
@@ -25,6 +26,7 @@ prost = { workspace = true }
 tonic = { workspace = true }
 rand = { workspace = true }
 backoff = { version = "0.4", features = ["tokio"] }
+tempfile = { workspace = true }
 futures = { workspace = true }
 tokio-tungstenite = { workspace = true }
 

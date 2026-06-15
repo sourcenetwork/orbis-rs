@@ -1,10 +1,9 @@
-use super::SourceHubBulletin;
-use crate::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, RingPayload};
+use super::{ring_to_bulletin_post, SourceHubBulletin};
+use crate::r#trait::{
+    Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, RingPayload, UpgradeInfo,
+};
 use common::{
-    blockchain::{
-        acp::Object, ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner,
-        TEST_ACCOUNT_HEX_KEY,
-    },
+    blockchain::{acp::Object, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY},
     SourceHubTestContainer,
 };
 
@@ -71,18 +70,41 @@ fn test_name() {
     assert_eq!(SourceHubBulletin::name(), "bulletin/sourcehub");
 }
 
+#[test]
+fn ring_query_conversion_preserves_upgrade_info() {
+    let post = ring_to_bulletin_post(common::blockchain::orbis::Ring {
+        id: "ring-1".to_string(),
+        upgrade_info: Some(common::blockchain::orbis::UpgradeInfo {
+            current_version: 1,
+            next_version: Some(2),
+            activation_time: Some(500),
+        }),
+        ..Default::default()
+    })
+    .expect("convert ring");
+    let payload = RingPayload::try_from(post).expect("parse ring payload");
+    assert_eq!(
+        payload.upgrade_info,
+        UpgradeInfo {
+            current_version: 1,
+            next_version: Some(2),
+            activation_time: Some(500),
+        }
+    );
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bulletin_document() {
-    let _container = SourceHubTestContainer::new();
-    let config = ChainConfig::local();
+    let container = SourceHubTestContainer::new();
+    let config = container.chain_config();
 
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
 
     let node_key = signer.public_key_hex();
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(container.chain_config_builder(), signer, None)
         .await
         .unwrap();
 
@@ -102,6 +124,7 @@ async fn test_bulletin_document() {
             None,
             &policy_id,
             Some("document-test".to_string()),
+            0,
         )
         .await
         .unwrap();
@@ -147,15 +170,15 @@ async fn test_bulletin_document() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bulletin_ring() {
-    let _container = SourceHubTestContainer::new();
-    let config = ChainConfig::local();
+    let container = SourceHubTestContainer::new();
+    let config = container.chain_config();
 
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
 
     let node_key = signer.public_key_hex();
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(container.chain_config_builder(), signer, None)
         .await
         .unwrap();
 
@@ -187,6 +210,7 @@ async fn test_bulletin_ring() {
             None,
             &policy_id,
             Some("ring-test".to_string()),
+            0,
         )
         .await
         .unwrap();

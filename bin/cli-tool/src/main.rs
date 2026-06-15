@@ -170,6 +170,15 @@ pub enum SubCommands {
         /// Seconds between automatic PSS refresh ceremonies
         #[clap(long)]
         pss_interval: Option<u64>,
+        /// Protocol epoch to activate
+        #[clap(long, requires = "activation_time", conflicts_with = "clear_upgrade")]
+        next_version: Option<u64>,
+        /// Unix timestamp in seconds at which next_version becomes effective
+        #[clap(long, requires = "next_version", conflicts_with = "clear_upgrade")]
+        activation_time: Option<u64>,
+        /// Cancel the pending protocol upgrade
+        #[clap(long)]
+        clear_upgrade: bool,
     },
     /// Fund an account from the pre funded account
     Fund {
@@ -469,8 +478,20 @@ async fn main() -> Result<()> {
             new_peer_ids,
             new_threshold,
             pss_interval,
+            next_version,
+            activation_time,
+            clear_upgrade,
         } => {
-            update_ring_post_by_acp(id, new_peer_ids, new_threshold, pss_interval).await?;
+            update_ring_post_by_acp(
+                id,
+                new_peer_ids,
+                new_threshold,
+                pss_interval,
+                next_version,
+                activation_time,
+                clear_upgrade,
+            )
+            .await?;
         }
         SubCommands::Fund { address } => {
             fund(address, ChainConfig::local()).await?;

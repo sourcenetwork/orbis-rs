@@ -1,0 +1,17 @@
+FROM golang:1.26.2 AS builder
+ARG SOURCEHUB_REF=f7eaa5db6a14975dcfd929660d1539964353072c
+RUN git init /app \
+    && cd /app \
+    && git remote add origin https://github.com/sourcenetwork/sourcehub.git \
+    && git fetch --depth 1 origin ${SOURCEHUB_REF} \
+    && git checkout --detach FETCH_HEAD
+WORKDIR /app
+RUN --mount=type=cache,target=/root/.cache \
+    go build -o /app/build/sourcehubd ./cmd/sourcehubd
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends jq ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/build/sourcehubd /usr/local/bin/sourcehubd
+RUN useradd --create-home --home-dir /home/node node
+USER node

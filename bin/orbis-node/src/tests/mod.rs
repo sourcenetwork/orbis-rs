@@ -4,3 +4,4 @@ mod concurrent;
 mod fault_injection;
 mod integration;
 mod node;
+mod upgrade;

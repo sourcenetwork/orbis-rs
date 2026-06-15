@@ -3,7 +3,7 @@
 //! This module contains the actual implementation of CLI commands,
 //! separated from main.rs so they can be used in integration tests.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use authn::{create_authenticated_request, JwtSigner};
 use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation, RingPayload};
 use bulletin::sourcehub::SourceHubBulletin;
@@ -20,11 +20,11 @@ use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use proto::dkg_service::dkg_service_client::DkgServiceClient;
 use proto::info_service::info_service_client::InfoServiceClient;
-use proto::pre_service::pre_service_client::PreServiceClient;
-use proto::sign_service::sign_service_client::SignServiceClient;
-use proto::store_secret_service::store_secret_service_client::StoreSecretServiceClient;
+use proto::v0::dkg::dkg_service_client::DkgServiceClient;
+use proto::v0::pre::pre_service_client::PreServiceClient;
+use proto::v0::sign::sign_service_client::SignServiceClient;
+use proto::v0::store_secret::store_secret_service_client::StoreSecretServiceClient;
 use tonic::Request;
 
 /// Response structure from PRE server
@@ -56,7 +56,7 @@ pub async fn do_dkg(endpoint: String, ring_id: String) -> Result<DkgResult> {
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
-    let request = proto::dkg_service::StartDkgRequest {
+    let request = proto::v0::dkg::StartDkgRequest {
         ring_id: ring_id.clone(),
     };
 
@@ -71,7 +71,7 @@ pub async fn do_dkg(endpoint: String, ring_id: String) -> Result<DkgResult> {
     let response = client
         .start_dkg(tonic_request)
         .await
-        .map_err(|e| anyhow!("DKG request failed: {}", e))?;
+        .context("DKG request failed")?;
 
     let response = response.into_inner();
 
@@ -197,7 +197,7 @@ pub async fn store_prepared_secret(
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
-    let request = proto::store_secret_service::StoreSecretRequest {
+    let request = proto::v0::store_secret::StoreSecretRequest {
         encrypted_document: prepared.encrypted_document.clone(),
         enc_cmt: prepared.enc_cmt.clone(),
         ring_id: ring_id.clone(),
@@ -240,7 +240,7 @@ pub async fn store_prepared_secret(
     let response = client
         .store_secret(tonic_request)
         .await
-        .map_err(|e| anyhow!("StoreSecret request failed: {}", e))?;
+        .context("StoreSecret request failed")?;
 
     let response = response.into_inner();
 
@@ -368,11 +368,11 @@ pub async fn do_pre(
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
     let valid_window = match (valid_window_start, valid_window_end) {
-        (Some(start), Some(end)) => Some(proto::pre_service::TimestampRange { start, end }),
+        (Some(start), Some(end)) => Some(proto::v0::pre::TimestampRange { start, end }),
         _ => None,
     };
 
-    let request = proto::pre_service::StartPreRequest {
+    let request = proto::v0::pre::StartPreRequest {
         rdr_pk: reader_pk_bytes.clone(),
         object_id: object_id.clone(),
         derivation: derivation.clone(),
@@ -399,7 +399,7 @@ pub async fn do_pre(
     let response = client
         .start_pre(tonic_request)
         .await
-        .map_err(|e| anyhow!("PRE request failed: {}", e))?;
+        .context("PRE request failed")?;
 
     let response = response.into_inner();
 
@@ -568,10 +568,26 @@ resources:
         expr: creator
 "#;
 
+fn chain_config_builder(config: &ChainConfig) -> ChainConfigBuilder {
+    ChainConfigBuilder::default()
+        .chain_id(Some(config.chain_id.clone()))
+        .rpc_url(Some(config.rpc_url.clone()))
+        .rest_url(Some(config.rest_url.clone()))
+        .grpc_url(Some(config.grpc_url.clone()))
+        .account_prefix(Some(config.account_prefix.clone()))
+        .default_gas_limit(Some(config.default_gas_limit))
+        .gas_price(Some(config.gas_price.clone()))
+        .gas_multiplier(Some(config.gas_multiplier))
+}
+
 pub async fn add_policy_to_chain() -> Result<String> {
+    add_policy_to_chain_with_config(ChainConfig::local()).await
+}
+
+pub async fn add_policy_to_chain_with_config(config: ChainConfig) -> Result<String> {
     let client = SourceHubClient::with_signer(
-        ChainConfig::local(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
+        config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
     )
     .await
     .map_err(|e| anyhow!("client builder issue: {}", e))?;
@@ -610,9 +626,18 @@ pub async fn register_object_to_chain(
     object_id: String,
     resource: String,
 ) -> Result<()> {
+    register_object_to_chain_with_config(policy_id, object_id, resource, ChainConfig::local()).await
+}
+
+pub async fn register_object_to_chain_with_config(
+    policy_id: String,
+    object_id: String,
+    resource: String,
+    config: ChainConfig,
+) -> Result<()> {
     let client = SourceHubClient::with_signer(
-        ChainConfig::local(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
+        config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
     )
     .await
     .expect("client builder issue");
@@ -648,9 +673,28 @@ pub async fn set_relationship_on_chain(
     relation: String,
     reader_did_pk: Option<String>,
 ) -> Result<()> {
-    let client = SourceHubClient::with_signer(
+    set_relationship_on_chain_with_config(
+        policy_id,
+        object_id,
+        resource,
+        relation,
+        reader_did_pk,
         ChainConfig::local(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local()).expect("Tx signer"),
+    )
+    .await
+}
+
+pub async fn set_relationship_on_chain_with_config(
+    policy_id: String,
+    object_id: String,
+    resource: String,
+    relation: String,
+    reader_did_pk: Option<String>,
+    config: ChainConfig,
+) -> Result<()> {
+    let client = SourceHubClient::with_signer(
+        config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
     )
     .await
     .expect("client builder issue");
@@ -782,10 +826,18 @@ pub async fn add_bulletin_collaborator(
 }
 
 pub async fn create_bulletin_post(kind: BulletinWriteKind, payload: Vec<u8>) -> Result<String> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+    create_bulletin_post_with_config(kind, payload, ChainConfig::local()).await
+}
+
+pub async fn create_bulletin_post_with_config(
+    kind: BulletinWriteKind,
+    payload: Vec<u8>,
+    config: ChainConfig,
+) -> Result<String> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(chain_config_builder(&config), signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -803,16 +855,51 @@ pub async fn update_ring_post_by_acp(
     new_peer_ids: Vec<String>,
     new_threshold: Option<u32>,
     pss_interval: Option<u64>,
+    next_version: Option<u64>,
+    activation_time: Option<u64>,
+    clear_upgrade: bool,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+    update_ring_post_by_acp_with_config(
+        ring_id,
+        new_peer_ids,
+        new_threshold,
+        pss_interval,
+        next_version,
+        activation_time,
+        clear_upgrade,
+        ChainConfig::local(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn update_ring_post_by_acp_with_config(
+    ring_id: String,
+    new_peer_ids: Vec<String>,
+    new_threshold: Option<u32>,
+    pss_interval: Option<u64>,
+    next_version: Option<u64>,
+    activation_time: Option<u64>,
+    clear_upgrade: bool,
+    config: ChainConfig,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let client = SourceHubClient::with_signer(ChainConfig::local(), signer)
+    let client = SourceHubClient::with_signer(config, signer)
         .await
         .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
 
     let result = client
-        .orbis_update_ring_by_acp(&ring_id, new_peer_ids, new_threshold, pss_interval)
+        .orbis_update_ring_by_acp(
+            &ring_id,
+            new_peer_ids,
+            new_threshold,
+            pss_interval,
+            next_version,
+            activation_time,
+            clear_upgrade,
+        )
         .await
         .map_err(|e| anyhow!("Failed to update ring: {}", e))?;
 
@@ -830,7 +917,15 @@ pub async fn update_ring_post_by_acp(
 
 /// Read a bulletin post by ID
 pub async fn read_bulletin_post(id: String, kind: BulletinKind) -> Result<Vec<u8>> {
-    let bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
+    read_bulletin_post_with_config(id, kind, ChainConfig::local()).await
+}
+
+pub async fn read_bulletin_post_with_config(
+    id: String,
+    kind: BulletinKind,
+    config: ChainConfig,
+) -> Result<Vec<u8>> {
+    let bulletin = SourceHubBulletin::new(chain_config_builder(&config))
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -882,6 +977,7 @@ pub struct NodeInfoResult {
     pub managed_ring_count: u32,
     /// Compressed secp256k1 pubkey hex — the node's on-chain key in x/orbis NodeInfo.
     pub node_key: String,
+    pub supported_protocol_versions: Vec<u64>,
 }
 
 pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
@@ -903,14 +999,15 @@ pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
         .unwrap_or(proto::info_service::NodeStatus::Unspecified);
 
     let output = format!(
-        "Node Info:\n{}\n  Public Address: {}\n  Peer ID: {}\n  Node Key: {}\n  P2P Address: {}\n  Status: {}\n  Managed Ring Count: {}",
+        "Node Info:\n{}\n  Public Address: {}\n  Peer ID: {}\n  Node Key: {}\n  P2P Address: {}\n  Status: {}\n  Managed Ring Count: {}\n  Supported Protocol Versions: {:?}",
         "=".repeat(60),
         node_info.public_address,
         node_info.peer_id,
         node_info.node_key,
         node_info.p2p_address,
         status.as_str_name(),
-        node_info.managed_ring_count
+        node_info.managed_ring_count,
+        node_info.supported_protocol_versions
     );
 
     println!("{}", output);
@@ -922,6 +1019,7 @@ pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
         status,
         managed_ring_count: node_info.managed_ring_count,
         node_key: node_info.node_key,
+        supported_protocol_versions: node_info.supported_protocol_versions,
     })
 }
 
@@ -944,7 +1042,11 @@ pub async fn query_ring_state(endpoint: String, ring_pk_hex: String) -> Result<(
 /// Get the current sequence number for an account address.
 /// Useful for verifying if a transaction was broadcast (sequence increments after each tx).
 pub async fn get_account_sequence(address: &str) -> Result<u64> {
-    let client = SourceHubClient::new(ChainConfig::local())
+    get_account_sequence_with_config(address, ChainConfig::local()).await
+}
+
+pub async fn get_account_sequence_with_config(address: &str, config: ChainConfig) -> Result<u64> {
+    let client = SourceHubClient::new(config)
         .await
         .map_err(|e| anyhow!("Failed to create client: {}", e))?;
 
@@ -971,8 +1073,27 @@ pub async fn post_key_derivation(
     resource: String,
     permission: String,
 ) -> Result<(String, String)> {
+    post_key_derivation_with_config(
+        ring_id,
+        derivation,
+        policy_id,
+        resource,
+        permission,
+        ChainConfig::local(),
+    )
+    .await
+}
+
+pub async fn post_key_derivation_with_config(
+    ring_id: String,
+    derivation: String,
+    policy_id: String,
+    resource: String,
+    permission: String,
+    config: ChainConfig,
+) -> Result<(String, String)> {
     // Fetch ring payload from bulletin to get the ring public key
-    let ring_bulletin = SourceHubBulletin::new(ChainConfigBuilder::default())
+    let ring_bulletin = SourceHubBulletin::new(chain_config_builder(&config))
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
     let ring_post = ring_bulletin
@@ -997,10 +1118,10 @@ pub async fn post_key_derivation(
             .map_err(|e| anyhow!("Failed to serialize derived_pk: {}", e))?,
     );
 
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(ChainConfigBuilder::default(), signer, None)
+    let bulletin = SourceHubBulletin::with_signer(chain_config_builder(&config), signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -1060,11 +1181,11 @@ pub async fn do_sign(
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
     let valid_window = match (valid_window_start, valid_window_end) {
-        (Some(start), Some(end)) => Some(proto::sign_service::TimestampRange { start, end }),
+        (Some(start), Some(end)) => Some(proto::v0::sign::TimestampRange { start, end }),
         _ => None,
     };
 
-    let request = proto::sign_service::StartSignRequest {
+    let request = proto::v0::sign::StartSignRequest {
         message: message.clone(),
         derivation_id: derivation_id.clone(),
         valid_window,
@@ -1084,7 +1205,7 @@ pub async fn do_sign(
     let response = client
         .start_sign(tonic_request)
         .await
-        .map_err(|e| anyhow!("Sign request failed: {}", e))?;
+        .context("Sign request failed")?;
 
     let response = response.into_inner();
 

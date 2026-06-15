@@ -11,27 +11,39 @@
 # manager or read-only mounted files; see bin/orbis-node/README.md.
 services:
   sourcehub:
+    image: orbis-sourcehub-integration
     build:
-      context: https://github.com/sourcenetwork/sourcehub.git#jesse/Orbis-module
-    container_name: sourcehub-integration-test
+      context: .
+      dockerfile: Dockerfile.sourcehub-integration
     entrypoint: ["/bin/sh", "-c"]
+    volumes:
+      - ${GENESIS_PATCH_FILE:-/dev/null}:/tmp/genesis-patch.json:ro
     command:
       - |
         rm -rf /home/node/.sourcehub/*
         sourcehubd init local-node --chain-id sourcehub-localnet --home /home/node/.sourcehub
         sourcehubd keys add validator --keyring-backend test --home /home/node/.sourcehub
-        # Add a test account with known mnemonic for integration testing
         echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | sourcehubd keys add test --recover --keyring-backend test --home /home/node/.sourcehub
         sourcehubd genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
         sourcehubd genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
         sourcehubd genesis gentx validator 10000000000uopen --keyring-backend test --chain-id sourcehub-localnet --home /home/node/.sourcehub
         sourcehubd genesis collect-gentxs --home /home/node/.sourcehub
+        if [ -s /tmp/genesis-patch.json ]; then
+          if jq --argjson patch "$$(cat /tmp/genesis-patch.json)" '.app_state *= $$patch' \
+            /home/node/.sourcehub/config/genesis.json > /tmp/patched-genesis.json; then
+            mv /tmp/patched-genesis.json /home/node/.sourcehub/config/genesis.json
+            echo "Applied genesis patch"
+          else
+            echo "Invalid GENESIS_PATCH_FILE mounted at /tmp/genesis-patch.json; failed to parse or merge genesis patch" >&2
+            exit 1
+          fi
+        fi
         exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
     ports:
-      - "26657:26657" # RPC
-      - "26656:26656" # P2P
-      - "1317:1317"   # API
-      - "9090:9090"   # gRPC
+      - "127.0.0.1::26657" # RPC
+      - "127.0.0.1::26656" # P2P
+      - "127.0.0.1::1317"  # API
+      - "127.0.0.1::9090"  # gRPC
     networks:
       - orbis-integration-network
     healthcheck:
@@ -48,15 +60,14 @@ services:
       args:
         ENABLE_INTEGRATION_TEST: "true"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
-    container_name: orbis-integration-node-1
     environment:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret1testsecret1
       - RUST_LOG=debug
     command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
-      - "50051:50051"
-      - "9091:9090"
+      - "127.0.0.1::50051"
+      - "127.0.0.1::9090"
     networks:
       - orbis-integration-network
     depends_on:
@@ -76,15 +87,14 @@ services:
       args:
         ENABLE_INTEGRATION_TEST: "true"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
-    container_name: orbis-integration-node-2
     environment:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret2testsecret2
       - RUST_LOG=debug
     command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
-      - "50052:50051"
-      - "9092:9090"
+      - "127.0.0.1::50051"
+      - "127.0.0.1::9090"
     networks:
       - orbis-integration-network
     depends_on:
@@ -104,15 +114,14 @@ services:
       args:
         ENABLE_INTEGRATION_TEST: "true"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
-    container_name: orbis-integration-node-3
     environment:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret3testsecret3
       - RUST_LOG=debug
     command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
-      - "50053:50051"
-      - "9093:9090"
+      - "127.0.0.1::50051"
+      - "127.0.0.1::9090"
     networks:
       - orbis-integration-network
     depends_on:

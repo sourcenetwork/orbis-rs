@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package orbis.v0.info_service;
+
+service InfoService {
+  rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
+  rpc GetRingState(GetRingStateRequest) returns (GetRingStateResponse);
+}
+
+message GetNodeInfoRequest {}
+
+enum NodeStatus {
+  NODE_STATUS_UNSPECIFIED = 0;
+  NODE_STATUS_BOOTSTRAPPING = 1;
+  NODE_STATUS_CONNECTING_TO_CHAIN = 2;
+  NODE_STATUS_WAITING_FOR_FUNDING = 3;
+  NODE_STATUS_FUNDED = 4;
+  NODE_STATUS_READY = 5;
+}
+
+message GetNodeInfoResponse {
+  string public_address = 1;
+  string peer_id = 2;
+  // P2P connection string in format "peer_id@host:port" for node-to-node communication
+  string p2p_address = 3;
+  NodeStatus status = 4;
+  // Number of locally managed ring keys stored in this node's RingIndex.
+  uint32 managed_ring_count = 5;
+  // Compressed secp256k1 public key (hex) used as the on-chain node key in x/orbis NodeInfo.
+  string node_key = 6;
+  // Ring protocol versions installed in this binary.
+  repeated uint64 supported_protocol_versions = 7;
+}
+
+message GetRingStateRequest {
+  string ring_pk_hex = 1;
+}
+
+message GetRingStateResponse {
+  // Hex-encoded current public polynomial (updated after each PSS refresh).
+  string public_polynomial = 1;
+  // Unix timestamp (seconds) of the most recent PSS ceremony, or 0 before first completion.
+  uint64 last_pss = 2;
+}

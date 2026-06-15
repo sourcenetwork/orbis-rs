@@ -1,7 +1,3 @@
-pub mod error;
-pub mod service;
+pub mod v0;
 
-#[cfg(test)]
-mod tests;
-
-pub use service::StoreSecretServiceImpl;
+pub use v0::service::StoreSecretServiceImpl;

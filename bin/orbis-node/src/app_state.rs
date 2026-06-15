@@ -1,6 +1,6 @@
-use crate::dkg::session_state::SessionStateManager;
-use crate::pre::response_state::PreResponseManager;
-use crate::sign::response_state::SignResponseManager;
+use crate::dkg::v0::session_state::SessionStateManager;
+use crate::pre::v0::response_state::PreResponseManager;
+use crate::sign::v0::response_state::SignResponseManager;
 use authz::r#trait::Authz;
 use bulletin::r#trait::Bulletin;
 use crypto::r#trait::Dkg;

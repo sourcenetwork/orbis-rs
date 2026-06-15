@@ -27,6 +27,23 @@ struct RingStateSnapshot {
     last_pss: u64,
 }
 
+fn assert_policy_rejection(context: &str, error: &anyhow::Error) {
+    let status = error
+        .downcast_ref::<tonic::Status>()
+        .unwrap_or_else(|| panic!("{context}: expected tonic::Status source, got: {error:#}"));
+    assert_eq!(
+        status.code(),
+        tonic::Code::Unauthenticated,
+        "{context}: unexpected server status: {status}"
+    );
+    assert!(
+        status
+            .message()
+            .contains("Access denied: policy check failed"),
+        "{context}: unexpected server message: {status}"
+    );
+}
+
 /// Docker-based integration test: Run DKG and PRE using Docker Compose
 ///
 /// This test spins up a full integration environment with:
@@ -47,28 +64,22 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("Starting Docker-based integration test...");
 
     // Start the full integration network (sourcehub + 3 nodes)
-    let _network = IntegrationTestNetwork::new();
+    let network = IntegrationTestNetwork::new();
+    let chain_config = network.chain_config();
+    let endpoints = network.all_endpoints();
 
     // Wait for all nodes to be ready by polling their gRPC endpoints
-    crate::helpers::test_helpers::wait_for_nodes_ready(
-        &[
-            IntegrationTestNetwork::NODE1_GRPC,
-            IntegrationTestNetwork::NODE2_GRPC,
-            IntegrationTestNetwork::NODE3_GRPC,
-        ],
-        90,
-        Duration::from_secs(1),
-    )
-    .await;
+    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
+        .await;
 
     // Query node info from all three nodes to get their peer IDs
-    let node1_info = cli_tool::query_node_info(IntegrationTestNetwork::NODE1_GRPC.to_string())
+    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
         .await
         .expect("Failed to query node1 info");
-    let node2_info = cli_tool::query_node_info(IntegrationTestNetwork::NODE2_GRPC.to_string())
+    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
         .await
         .expect("Failed to query node2 info");
-    let node3_info = cli_tool::query_node_info(IntegrationTestNetwork::NODE3_GRPC.to_string())
+    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
         .await
         .expect("Failed to query node3 info");
     let node1_address = node1_info.public_address.clone();
@@ -81,15 +92,15 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // We need to replace 0.0.0.0 with the container name for Docker networking
     let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
         &node1_info.p2p_address,
-        IntegrationTestNetwork::NODE1_CONTAINER,
+        IntegrationTestNetwork::NODE1_SERVICE,
     );
     let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
         &node2_info.p2p_address,
-        IntegrationTestNetwork::NODE2_CONTAINER,
+        IntegrationTestNetwork::NODE2_SERVICE,
     );
     let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
         &node3_info.p2p_address,
-        IntegrationTestNetwork::NODE3_CONTAINER,
+        IntegrationTestNetwork::NODE3_SERVICE,
     );
 
     println!("Transformed peer addresses for Docker networking:");
@@ -98,11 +109,11 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("  Node 3: {}", peer3_addr);
 
     let threshold = 2u32;
-    let endpoint = IntegrationTestNetwork::NODE1_GRPC.to_string();
+    let endpoint = endpoints[0].to_string();
     let node_endpoints = [
-        IntegrationTestNetwork::NODE1_GRPC.to_string(),
-        IntegrationTestNetwork::NODE2_GRPC.to_string(),
-        IntegrationTestNetwork::NODE3_GRPC.to_string(),
+        endpoints[0].to_string(),
+        endpoints[1].to_string(),
+        endpoints[2].to_string(),
     ];
 
     // Collect on-chain node keys from each node's info endpoint
@@ -111,23 +122,24 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         node2_info.node_key.clone(),
         node3_info.node_key.clone(),
     ];
+    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
     // Step 1: Set up ring governance policy and whitelist nodes
     //
     // The Docker nodes start with empty NodeInfo whitelists. We create a policy,
     // then update each node's NodeInfo (via TEST_ACCOUNT_HEX_KEY which is the
     // configured controller key) to allow DKG for rings under this policy.
-    let policy_id = create_orbis_ring_policy().await;
+    let policy_id = create_orbis_ring_policy(&chain_config).await;
 
     let controller_client = SourceHubClient::with_signer(
-        ChainConfig::local(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
     )
     .await
     .expect("controller chain client");
 
-    for node_key in &node_keys {
+    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
         wait_for_node_info_on_chain(
             &controller_client,
             node_key,
@@ -136,7 +148,12 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         )
         .await;
         controller_client
-            .orbis_update_node_info(node_key, vec![policy_id.clone()], vec![])
+            .orbis_update_node_info(
+                node_key,
+                Some(peer_address.clone()),
+                vec![policy_id.clone()],
+                vec![],
+            )
             .await
             .expect("update NodeInfo whitelist");
     }
@@ -147,8 +164,15 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // intentional — the grace window means pss_interval < 10s always passes the time check
     // immediately, so 5s gives the fresh-DKG index entry enough runway before
     // cleanup_pending_fresh_ring_if_due can fire (it requires elapsed >= pss_interval).
-    let ring_id =
-        create_ring_on_chain_with_pss(&node_keys, threshold, &policy_id, None, Some(5)).await;
+    let ring_id = create_ring_on_chain_with_pss(
+        &chain_config,
+        &node_keys,
+        threshold,
+        &policy_id,
+        None,
+        Some(5),
+    )
+    .await;
 
     println!(
         "Starting DKG with threshold {} and ring {}...",
@@ -167,12 +191,17 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         dkg_result.unwrap().session_id
     );
 
-    let ring_pk_hex = wait_for_ring_finalized(&ring_id, Duration::from_secs(90)).await;
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, &ring_id, Duration::from_secs(90)).await;
 
     // Read the finalized ring payload for use in PSS/reshare assertions
-    let post_payload = cli_tool::read_bulletin_post(ring_id.clone(), BulletinKind::Ring)
-        .await
-        .expect("read ring from bulletin");
+    let post_payload = cli_tool::read_bulletin_post_with_config(
+        ring_id.clone(),
+        BulletinKind::Ring,
+        chain_config.clone(),
+    )
+    .await
+    .expect("read ring from bulletin");
     let dkg_ring_payload: RingPayload =
         serde_json::from_slice(&post_payload).expect("parse RingPayload");
 
@@ -211,7 +240,9 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let valid_window_start = Some(50u64);
     let valid_window_end = Some(150u64);
     let salt = Some("salt".to_string());
-    let policy_id = cli_tool::add_policy_to_chain().await.expect("policy_id");
+    let policy_id = cli_tool::add_policy_to_chain_with_config(chain_config.clone())
+        .await
+        .expect("policy_id");
 
     // ====================================================================
     // Create objects: MANUAL vs SERVICE
@@ -244,9 +275,13 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             timestamp,
         };
         let serialized: Vec<u8> = payload.try_into().expect("serialize payload");
-        cli_tool::create_bulletin_post(BulletinWriteKind::Document, serialized)
-            .await
-            .expect("create_bulletin_post")
+        cli_tool::create_bulletin_post_with_config(
+            BulletinWriteKind::Document,
+            serialized,
+            chain_config.clone(),
+        )
+        .await
+        .expect("create_bulletin_post")
     };
     let secret = b"Hello from StoreSecret!";
 
@@ -279,9 +314,10 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .expect("prepare_secret should succeed");
 
     // Get sequence before first store to verify transaction is broadcast
-    let sequence_before_first = cli_tool::get_account_sequence(&node1_address)
-        .await
-        .expect("get sequence before first store");
+    let sequence_before_first =
+        cli_tool::get_account_sequence_with_config(&node1_address, chain_config.clone())
+            .await
+            .expect("get sequence before first store");
     println!(
         "Node1 sequence before first store: {}",
         sequence_before_first
@@ -325,9 +361,10 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let sequence_after_first = {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            let seq = cli_tool::get_account_sequence(&node1_address)
-                .await
-                .expect("get sequence after first store");
+            let seq =
+                cli_tool::get_account_sequence_with_config(&node1_address, chain_config.clone())
+                    .await
+                    .expect("get sequence after first store");
             if seq > sequence_before_first {
                 break seq;
             }
@@ -344,14 +381,20 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     );
 
     // Read both from bulletin and compare metadata
-    let manual_bytes =
-        cli_tool::read_bulletin_post(object_id_manual.clone(), BulletinKind::Document)
-            .await
-            .expect("read manual post");
-    let service_bytes =
-        cli_tool::read_bulletin_post(object_id_service.clone(), BulletinKind::Document)
-            .await
-            .expect("read service post");
+    let manual_bytes = cli_tool::read_bulletin_post_with_config(
+        object_id_manual.clone(),
+        BulletinKind::Document,
+        chain_config.clone(),
+    )
+    .await
+    .expect("read manual post");
+    let service_bytes = cli_tool::read_bulletin_post_with_config(
+        object_id_service.clone(),
+        BulletinKind::Document,
+        chain_config.clone(),
+    )
+    .await
+    .expect("read service post");
 
     let manual: DocumentPayload = serde_json::from_slice(&manual_bytes).expect("parse manual");
     let service: DocumentPayload = serde_json::from_slice(&service_bytes).expect("parse service");
@@ -385,58 +428,64 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         .expect("BLS signature should verify against ring public key");
 
     // Run PRE to verify full flow works
-    cli_tool::register_object_to_chain(
+    cli_tool::register_object_to_chain_with_config(
         policy_id.clone(),
         object_id_manual.clone(),
         resource.clone(),
+        chain_config.clone(),
     )
     .await
     .expect("register_object_to_chain");
 
-    cli_tool::set_relationship_on_chain(
+    cli_tool::set_relationship_on_chain_with_config(
         policy_id.clone(),
         object_id_manual.clone(),
         resource.clone(),
         relation.clone(),
         Some(did_pk_string.clone()),
+        chain_config.clone(),
     )
     .await
     .expect("set_relationship_on_chain");
 
     // register service-stored encrypted object to chain
-    cli_tool::register_object_to_chain(
+    cli_tool::register_object_to_chain_with_config(
         policy_id.clone(),
         object_id_service.clone(),
         resource.clone(),
+        chain_config.clone(),
     )
     .await
     .expect("register_object_to_chain");
 
-    cli_tool::set_relationship_on_chain(
+    cli_tool::set_relationship_on_chain_with_config(
         policy_id.clone(),
         object_id_service.clone(),
         resource.clone(),
         relation.clone(),
         Some(did_pk_string.clone()),
+        chain_config.clone(),
     )
     .await
     .expect("set_relationship_on_chain");
 
     // register derived encrypted object to chain
-    cli_tool::register_object_to_chain(
+    cli_tool::register_object_to_chain_with_config(
         policy_id.clone(),
         object_id_derived.clone(),
         resource.clone(),
+        chain_config.clone(),
     )
     .await
     .expect("register_object_to_chain");
 
-    cli_tool::set_relationship_on_chain(
+    cli_tool::set_relationship_on_chain_with_config(
         policy_id.clone(),
         object_id_derived.clone(),
         resource.clone(),
         relation,
         Some(did_pk_string.clone()),
+        chain_config.clone(),
     )
     .await
     .expect("set_relationship_on_chain");
@@ -504,12 +553,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .await;
 
     let err = pre_result_no_permission.unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("Access denied: policy check failed"),
-        "Expected policy check failure, got: {}",
-        err
-    );
+    assert_policy_rejection("PRE without permission", &err);
 
     // testing timestamp out of bounds failure
     let pre_result_derived_failed_timestamp = cli_tool::do_pre(
@@ -528,21 +572,17 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .await;
 
     let err = pre_result_derived_failed_timestamp.unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("Access denied: policy check failed"),
-        "Expected timestamp out-of-bounds failure, got: {}",
-        err
-    );
+    assert_policy_rejection("PRE outside the valid timestamp window", &err);
 
     // Test idempotency: store the same prepared secret again
     // This should succeed and return the same object_id (no duplicate post)
     println!("Testing idempotency: storing same secret again...");
 
     // Get sequence before second store
-    let sequence_before_second = cli_tool::get_account_sequence(&node1_address)
-        .await
-        .expect("get sequence before second store");
+    let sequence_before_second =
+        cli_tool::get_account_sequence_with_config(&node1_address, chain_config.clone())
+            .await
+            .expect("get sequence before second store");
     println!(
         "Node1 sequence before second store: {}",
         sequence_before_second
@@ -567,9 +607,10 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let sequence_after_second = {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            let seq = cli_tool::get_account_sequence(&node1_address)
-                .await
-                .expect("get sequence after second store");
+            let seq =
+                cli_tool::get_account_sequence_with_config(&node1_address, chain_config.clone())
+                    .await
+                    .expect("get sequence after second store");
             assert_eq!(
                 seq, sequence_before_second,
                 "Idempotency check: sequence changed unexpectedly (tx was broadcast for duplicate)"
@@ -609,12 +650,13 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let sign_did_pk = "sign_test_did_secret".to_string();
 
     // Post a KeyDerivation to the bulletin (fetches ring PK automatically via ring_id)
-    let (derivation_id, derived_pk_hex) = cli_tool::post_key_derivation(
+    let (derivation_id, derived_pk_hex) = cli_tool::post_key_derivation_with_config(
         ring_id.clone(),
         sign_derivation.clone(),
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
+        chain_config.clone(),
     )
     .await
     .expect("post_key_derivation");
@@ -626,16 +668,22 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     );
 
     // Register derivation_id as an object on the policy and grant access to the DID
-    cli_tool::register_object_to_chain(policy_id.clone(), derivation_id.clone(), resource.clone())
-        .await
-        .expect("register_object_to_chain for derivation_id");
+    cli_tool::register_object_to_chain_with_config(
+        policy_id.clone(),
+        derivation_id.clone(),
+        resource.clone(),
+        chain_config.clone(),
+    )
+    .await
+    .expect("register_object_to_chain for derivation_id");
 
-    cli_tool::set_relationship_on_chain(
+    cli_tool::set_relationship_on_chain_with_config(
         policy_id.clone(),
         derivation_id.clone(),
         resource.clone(),
         "reader".to_string(),
         Some(sign_did_pk.clone()),
+        chain_config.clone(),
     )
     .await
     .expect("set_relationship_on_chain for derivation_id");
@@ -694,12 +742,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     .await;
 
     let err = sign_no_access.unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("Access denied: policy check failed"),
-        "Expected policy check failure for unauthorized DID, got: {}",
-        err
-    );
+    assert_policy_rejection("Sign for unauthorized DID", &err);
 
     println!("Sign correctly rejected unauthorized DID!");
 
@@ -767,16 +810,20 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     )
     .await;
 
-    cli_tool::update_ring_post_by_acp(
+    cli_tool::update_ring_post_by_acp_with_config(
         ring_id.clone(),
         reshare_peer_ids.clone(),
         Some(reshare_threshold),
         dkg_ring_payload.pss_interval,
+        None,
+        None,
+        false,
+        chain_config.clone(),
     )
     .await
     .expect("update ring bulletin post with reshare announcement");
 
-    let announced_payload = read_ring_payload(&ring_id).await;
+    let announced_payload = read_ring_payload(&chain_config, &ring_id).await;
     let announced_new_peer_node_keys = announced_payload
         .new_peer_node_keys
         .as_ref()
@@ -798,6 +845,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     );
 
     let reshared_payload = wait_for_reshare_bulletin_completion(
+        &chain_config,
         &ring_id,
         &ring_pk_hex,
         &reshare_peer_ids,
@@ -941,20 +989,22 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
 
     let object_id_post_refresh = object_response_post_refresh.object_id.clone();
 
-    cli_tool::register_object_to_chain(
+    cli_tool::register_object_to_chain_with_config(
         policy_id.clone(),
         object_id_post_refresh.clone(),
         resource.clone(),
+        chain_config.clone(),
     )
     .await
     .expect("register post-refresh object");
 
-    cli_tool::set_relationship_on_chain(
+    cli_tool::set_relationship_on_chain_with_config(
         policy_id.clone(),
         object_id_post_refresh.clone(),
         resource.clone(),
         "reader".to_string(),
         Some(did_pk_string.clone()),
+        chain_config.clone(),
     )
     .await
     .expect("set_relationship for post-refresh object");
@@ -1056,14 +1106,19 @@ async fn wait_for_node_info_on_chain(
     }
 }
 
-async fn read_ring_payload(ring_id: &str) -> RingPayload {
-    let payload_bytes = cli_tool::read_bulletin_post(ring_id.to_string(), BulletinKind::Ring)
-        .await
-        .expect("read ring payload from bulletin");
+async fn read_ring_payload(chain_config: &ChainConfig, ring_id: &str) -> RingPayload {
+    let payload_bytes = cli_tool::read_bulletin_post_with_config(
+        ring_id.to_string(),
+        BulletinKind::Ring,
+        chain_config.clone(),
+    )
+    .await
+    .expect("read ring payload from bulletin");
     serde_json::from_slice(&payload_bytes).expect("parse RingPayload")
 }
 
 async fn wait_for_reshare_bulletin_completion(
+    chain_config: &ChainConfig,
     ring_id: &str,
     ring_pk_hex: &str,
     expected_peer_ids: &[String],
@@ -1076,32 +1131,37 @@ async fn wait_for_reshare_bulletin_completion(
     let expected_sorted = sorted_peer_ids(expected_peer_ids);
 
     loop {
-        let last_status =
-            match cli_tool::read_bulletin_post(ring_id.to_string(), BulletinKind::Ring).await {
-                Ok(payload_bytes) => match serde_json::from_slice::<RingPayload>(&payload_bytes) {
-                    Ok(payload) => {
-                        let actual_sorted = sorted_peer_ids(&payload.peer_node_keys);
-                        let complete = payload.ring_pk == ring_pk_hex
-                            && actual_sorted == expected_sorted
-                            && payload.threshold == expected_threshold
-                            && payload.new_peer_node_keys.is_none()
-                            && payload.new_threshold.is_none();
-                        let status = format!(
+        let last_status = match cli_tool::read_bulletin_post_with_config(
+            ring_id.to_string(),
+            BulletinKind::Ring,
+            chain_config.clone(),
+        )
+        .await
+        {
+            Ok(payload_bytes) => match serde_json::from_slice::<RingPayload>(&payload_bytes) {
+                Ok(payload) => {
+                    let actual_sorted = sorted_peer_ids(&payload.peer_node_keys);
+                    let complete = payload.ring_pk == ring_pk_hex
+                        && actual_sorted == expected_sorted
+                        && payload.threshold == expected_threshold
+                        && payload.new_peer_node_keys.is_none()
+                        && payload.new_threshold.is_none();
+                    let status = format!(
                         "peer_count={} threshold={} new_peer_node_keys_set={} new_threshold={:?}",
                         payload.peer_node_keys.len(),
                         payload.threshold,
                         payload.new_peer_node_keys.is_some(),
                         payload.new_threshold
                     );
-                        if complete {
-                            return payload;
-                        }
-                        status
+                    if complete {
+                        return payload;
                     }
-                    Err(e) => format!("parse error: {}", e),
-                },
-                Err(e) => e.to_string(),
-            };
+                    status
+                }
+                Err(e) => format!("parse error: {}", e),
+            },
+            Err(e) => e.to_string(),
+        };
 
         let now = Instant::now();
         assert!(

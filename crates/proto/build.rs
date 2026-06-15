@@ -1,10 +1,10 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protos = [
-        "proto/dkg_service.proto",
-        "proto/pre_service.proto",
-        "proto/info_service.proto",
-        "proto/store_secret_service.proto",
-        "proto/sign_service.proto",
+        "proto/v0/dkg_service.proto",
+        "proto/v0/pre_service.proto",
+        "proto/v0/info_service.proto",
+        "proto/v0/store_secret_service.proto",
+        "proto/v0/sign_service.proto",
     ];
 
     for proto in &protos {

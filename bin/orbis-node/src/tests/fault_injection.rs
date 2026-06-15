@@ -10,10 +10,10 @@
 //!   cargo test --bin orbis-node --features "integration-test,fault-injection" \
 //!     -- fault_injection --nocapture
 
-use crate::dkg::service::DkgServiceImpl;
+use crate::dkg::v0::service::DkgServiceImpl;
 use crate::info::InfoServiceImpl;
-use crate::pre::service::PreServiceImpl;
-use crate::sign::service::SignServiceImpl;
+use crate::pre::v0::service::PreServiceImpl;
+use crate::sign::v0::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{
     constants::{
@@ -33,16 +33,15 @@ use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, NodeInfo};
 use bulletin::BulletinImpl;
-use common::{blockchain::ChainConfigBuilder, SourceHubTestContainer};
+use common::{blockchain::ChainConfig, SourceHubTestContainer};
 use crypto::{helpers::generate_keypair, CryptoSerialize, DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{FaultNetwork, FaultNetworkController, Network, NetworkImpl};
 use proto::{
-    dkg_service::dkg_service_server::DkgServiceServer,
     info_service::info_service_server::InfoServiceServer,
-    pre_service::pre_service_server::PreServiceServer,
-    sign_service::sign_service_server::SignServiceServer,
-    store_secret_service::store_secret_service_server::StoreSecretServiceServer,
+    v0::dkg::dkg_service_server::DkgServiceServer, v0::pre::pre_service_server::PreServiceServer,
+    v0::sign::sign_service_server::SignServiceServer,
+    v0::store_secret::store_secret_service_server::StoreSecretServiceServer,
 };
 use std::sync::Arc;
 use tokio::time::Duration;
@@ -81,6 +80,7 @@ struct FaultableThreeNodeNetwork {
     policy_id: String,
     /// Compressed pubkeys of alice, bob, charlie (in that order).
     node_keys: Vec<String>,
+    chain_config: ChainConfig,
     /// Keeps the SourceHub Docker container alive via RAII.
     _chain: SourceHubTestContainer,
 }
@@ -114,8 +114,9 @@ async fn setup_fault_three_node_network(
     base_port: u16,
 ) -> FaultableThreeNodeNetwork {
     let chain = SourceHubTestContainer::new();
+    let chain_config = chain.chain_config();
 
-    let policy_id = create_orbis_ring_policy().await;
+    let policy_id = create_orbis_ring_policy(&chain_config).await;
 
     let mut handles: Vec<FaultableNodeHandle> = Vec::new();
     let mut node_keys: Vec<String> = Vec::new();
@@ -127,31 +128,23 @@ async fn setup_fault_three_node_network(
 
         let local_storage = LocalStorageImpl::new(None, db_path.clone()).expect("local storage");
 
-        let signer =
-            create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
-                .expect("create node signing key");
+        let signer = create_and_store_node_key(local_storage.clone(), chain_config.clone())
+            .expect("create node signing key");
         let public_address = signer.address();
         let node_key = signer.public_key_hex();
 
-        cli_tool::fund(
-            public_address.clone(),
-            ChainConfigBuilder::default().build(),
-        )
-        .await
-        .expect("fund node account via faucet");
+        cli_tool::fund(public_address.clone(), chain_config.clone())
+            .await
+            .expect("fund node account via faucet");
 
         let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-            BulletinImpl::with_signer(
-                ChainConfigBuilder::default(),
-                signer,
-                Some(MIN_NODE_BALANCE),
-            )
-            .await
-            .expect("BulletinImpl with signer"),
+            BulletinImpl::with_signer(chain.chain_config_builder(), signer, Some(MIN_NODE_BALANCE))
+                .await
+                .expect("BulletinImpl with signer"),
         );
 
         let authz: Arc<dyn Authz> = Arc::new(
-            AuthzImpl::new(ChainConfigBuilder::default())
+            AuthzImpl::new(chain.chain_config_builder())
                 .await
                 .expect("AuthzImpl"),
         );
@@ -240,6 +233,7 @@ async fn setup_fault_three_node_network(
         charlie: it.next().unwrap(),
         policy_id,
         node_keys,
+        chain_config,
         _chain: chain,
     }
 }
@@ -247,18 +241,19 @@ async fn setup_fault_three_node_network(
 /// Create a ring on-chain, run DKG, and return `(ring_pk_hex, ring_id)` once
 /// all participant nodes have called FinalizeRing and the chain confirms.
 async fn setup_ring(
+    chain_config: &ChainConfig,
     endpoint: &str,
     node_keys: &[String],
     threshold: u32,
     policy_id: &str,
 ) -> (String, String) {
-    let ring_id = create_ring_on_chain(node_keys, threshold, policy_id, None).await;
+    let ring_id = create_ring_on_chain(chain_config, node_keys, threshold, policy_id, None).await;
 
     cli_tool::do_dkg(endpoint.to_string(), ring_id.clone())
         .await
         .expect("DKG initiation");
 
-    let ring_pk = wait_for_ring_finalized(&ring_id, Duration::from_secs(90)).await;
+    let ring_pk = wait_for_ring_finalized(chain_config, &ring_id, Duration::from_secs(90)).await;
     (ring_pk, ring_id)
 }
 
@@ -279,10 +274,19 @@ async fn test_pre_one_node_down_succeeds() {
     let endpoint = net.alice.grpc_endpoint.clone();
 
     // Step 1: DKG → ring (threshold=2)
-    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, &net.node_keys, 2, &net.policy_id).await;
+    let (ring_pk_hex, ring_id) = setup_ring(
+        &net.chain_config,
+        &endpoint,
+        &net.node_keys,
+        2,
+        &net.policy_id,
+    )
+    .await;
 
     // Step 2: Add policy + prepare + store secret + authz relationship
-    let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");
+    let policy_id = cli_tool::add_policy_to_chain_with_config(net.chain_config.clone())
+        .await
+        .expect("add policy");
     let resource = "document".to_string();
     let permission = "read".to_string();
     let secret = b"fault-pre-one-down-plaintext";
@@ -317,15 +321,21 @@ async fn test_pre_one_node_down_succeeds() {
     let object_id = obj_resp.object_id;
 
     let did = "fault_reader_1".to_string();
-    cli_tool::register_object_to_chain(policy_id.clone(), object_id.clone(), resource.clone())
-        .await
-        .expect("register object to chain");
-    cli_tool::set_relationship_on_chain(
+    cli_tool::register_object_to_chain_with_config(
+        policy_id.clone(),
+        object_id.clone(),
+        resource.clone(),
+        net.chain_config.clone(),
+    )
+    .await
+    .expect("register object to chain");
+    cli_tool::set_relationship_on_chain_with_config(
         policy_id.clone(),
         object_id.clone(),
         resource.clone(),
         "reader".to_string(),
         Some(did.clone()),
+        net.chain_config.clone(),
     )
     .await
     .expect("set relationship on chain");
@@ -383,10 +393,19 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
     let endpoint = net.alice.grpc_endpoint.clone();
 
     // Step 1: DKG → ring (threshold=2)
-    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, &net.node_keys, 2, &net.policy_id).await;
+    let (ring_pk_hex, ring_id) = setup_ring(
+        &net.chain_config,
+        &endpoint,
+        &net.node_keys,
+        2,
+        &net.policy_id,
+    )
+    .await;
 
     // Step 2: Add policy + prepare + store secret + authz relationship
-    let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");
+    let policy_id = cli_tool::add_policy_to_chain_with_config(net.chain_config.clone())
+        .await
+        .expect("add policy");
     let resource = "document".to_string();
     let permission = "read".to_string();
     let secret = b"fault-pre-below-threshold-plaintext";
@@ -421,15 +440,21 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
     let object_id = obj_resp.object_id;
 
     let did = "fault_reader_2".to_string();
-    cli_tool::register_object_to_chain(policy_id.clone(), object_id.clone(), resource.clone())
-        .await
-        .expect("register object to chain");
-    cli_tool::set_relationship_on_chain(
+    cli_tool::register_object_to_chain_with_config(
+        policy_id.clone(),
+        object_id.clone(),
+        resource.clone(),
+        net.chain_config.clone(),
+    )
+    .await
+    .expect("register object to chain");
+    cli_tool::set_relationship_on_chain_with_config(
         policy_id.clone(),
         object_id.clone(),
         resource.clone(),
         "reader".to_string(),
         Some(did.clone()),
+        net.chain_config.clone(),
     )
     .await
     .expect("set relationship on chain");
@@ -494,10 +519,19 @@ async fn test_sign_one_node_down_succeeds() {
     let endpoint = net.alice.grpc_endpoint.clone();
 
     // Step 1: DKG → ring (threshold=2)
-    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, &net.node_keys, 2, &net.policy_id).await;
+    let (ring_pk_hex, ring_id) = setup_ring(
+        &net.chain_config,
+        &endpoint,
+        &net.node_keys,
+        2,
+        &net.policy_id,
+    )
+    .await;
 
     // Step 2: Prepare secret (local, no network needed)
-    let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");
+    let policy_id = cli_tool::add_policy_to_chain_with_config(net.chain_config.clone())
+        .await
+        .expect("add policy");
     let resource = "document".to_string();
     let permission = "read".to_string();
     let secret = b"fault-sign-one-down-secret";
@@ -565,10 +599,19 @@ async fn test_sign_below_threshold_nodes_down_fails_fast() {
     let endpoint = net.alice.grpc_endpoint.clone();
 
     // Step 1: DKG → ring (threshold=2)
-    let (ring_pk_hex, ring_id) = setup_ring(&endpoint, &net.node_keys, 2, &net.policy_id).await;
+    let (ring_pk_hex, ring_id) = setup_ring(
+        &net.chain_config,
+        &endpoint,
+        &net.node_keys,
+        2,
+        &net.policy_id,
+    )
+    .await;
 
     // Step 2: Prepare secret (local)
-    let policy_id = cli_tool::add_policy_to_chain().await.expect("add policy");
+    let policy_id = cli_tool::add_policy_to_chain_with_config(net.chain_config.clone())
+        .await
+        .expect("add policy");
     let resource = "document".to_string();
     let permission = "read".to_string();
     let secret = b"fault-sign-below-threshold-secret";
@@ -640,7 +683,8 @@ async fn test_dkg_fails_when_node_unreachable() {
     let endpoint = net.alice.grpc_endpoint.clone();
 
     // Create the ring on-chain before blocking charlie
-    let ring_id = create_ring_on_chain(&net.node_keys, 2, &net.policy_id, None).await;
+    let ring_id =
+        create_ring_on_chain(&net.chain_config, &net.node_keys, 2, &net.policy_id, None).await;
 
     // Block charlie on alice AND bob so charlie is unreachable for DKG
     let charlie_hex = net.charlie.peer_hex.clone();

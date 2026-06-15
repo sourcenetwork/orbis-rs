@@ -2,7 +2,7 @@ use crate::{
     error::{BulletinError, Result},
     r#trait::{
         Bulletin, BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, KeyDerivation,
-        NodeInfo, RingFinalizationPayload, RingPayload,
+        NodeInfo, RingFinalizationPayload, RingPayload, UpgradeInfo,
     },
 };
 use async_trait::async_trait;
@@ -292,6 +292,15 @@ impl SourceHubBulletin {
 // ============================================================================
 
 fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
+    let upgrade_info = ring.upgrade_info.ok_or_else(|| {
+        BulletinError::ParseError(format!("ring {} is missing upgrade_info", ring.id))
+    })?;
+    if upgrade_info.next_version.is_some() != upgrade_info.activation_time.is_some() {
+        return Err(BulletinError::ParseError(format!(
+            "ring {} has malformed upgrade_info",
+            ring.id
+        )));
+    }
     let payload = RingPayload {
         ring_pk: ring.ring_pk,
         peer_node_keys: ring.peer_node_keys,
@@ -308,6 +317,11 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
             None
         } else {
             Some(ring.policy_id)
+        },
+        upgrade_info: UpgradeInfo {
+            current_version: upgrade_info.current_version,
+            next_version: upgrade_info.next_version,
+            activation_time: upgrade_info.activation_time,
         },
     };
     Ok(BulletinPost {

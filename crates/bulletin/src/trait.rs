@@ -2,6 +2,46 @@ use crate::error::{BulletinError, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+pub struct UpgradeInfo {
+    pub current_version: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Unix timestamp in seconds when `next_version` becomes effective.
+    pub activation_time: Option<u64>,
+}
+
+impl UpgradeInfo {
+    /// Resolve the effective protocol version at a captured Unix timestamp.
+    pub fn effective_version(&self, current_time: u64) -> Result<u64> {
+        match (self.next_version, self.activation_time) {
+            (None, None) => Ok(self.current_version),
+            (Some(next_version), Some(activation_time)) => {
+                if next_version <= self.current_version {
+                    return Err(BulletinError::ParseError(format!(
+                        "next_version {} must be greater than current_version {}",
+                        next_version, self.current_version
+                    )));
+                }
+                if activation_time == 0 {
+                    return Err(BulletinError::ParseError(
+                        "activation_time must be positive".to_string(),
+                    ));
+                }
+                Ok(if current_time >= activation_time {
+                    next_version
+                } else {
+                    self.current_version
+                })
+            }
+            _ => Err(BulletinError::ParseError(
+                "next_version and activation_time must both be set or both be absent".to_string(),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BulletinKind {
     Ring,
@@ -79,6 +119,8 @@ pub struct RingPayload {
     /// If set, the ring is updated externally governed by this policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_id: Option<String>,
+    /// Protocol epoch used by this ring and its optional scheduled successor.
+    pub upgrade_info: UpgradeInfo,
 }
 
 /// Payload for confirming a completed fresh DKG ring.

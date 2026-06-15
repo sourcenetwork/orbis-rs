@@ -15,15 +15,12 @@ pub mod store_secret;
 #[cfg(test)]
 mod tests;
 
-use crate::dkg::service::DkgServiceImpl;
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
     get_network_key_secret, get_password, Args,
 };
 use crate::info::{BootstrapInfoServiceImpl, InfoServiceImpl};
-use crate::pre::service::PreServiceImpl;
-use crate::sign::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use app_state::AppState;
 use authz::r#trait::Authz;
@@ -50,11 +47,11 @@ use crypto::{DkgImpl, PreImpl, SignImpl};
 use tracing::Instrument;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use proto::dkg_service::dkg_service_server::DkgServiceServer;
 use proto::info_service::{info_service_server::InfoServiceServer, NodeStatus};
-use proto::pre_service::pre_service_server::PreServiceServer;
-use proto::sign_service::sign_service_server::SignServiceServer;
-use proto::store_secret_service::store_secret_service_server::StoreSecretServiceServer;
+use proto::v0::dkg::dkg_service_server::DkgServiceServer;
+use proto::v0::pre::pre_service_server::PreServiceServer;
+use proto::v0::sign::sign_service_server::SignServiceServer;
+use proto::v0::store_secret::store_secret_service_server::StoreSecretServiceServer;
 
 /// Configuration for running the node, allowing dependency injection for testing
 pub struct NodeConfig {
@@ -394,27 +391,53 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
         });
     }
 
-    // Initialize services with shared state
-    let dkg_service = DkgServiceImpl::<DkgImpl>::new((*node.app_state).clone());
-    let pre_service = PreServiceImpl::<DkgImpl, PreImpl>::new((*node.app_state).clone());
+    // The info service is version-independent.
     let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
-    let store_secret_service =
-        StoreSecretServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
-    let sign_service = SignServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
 
-    // Start gRPC server
-    let grpc_server = tonic::transport::Server::builder()
+    // Start gRPC server. One set of services is registered per supported protocol version.
+    // When v1 is added: add a `1 => { ... }` arm below and the v1 endpoints appear automatically.
+    let mut grpc_server = tonic::transport::Server::builder()
         .accept_http1(true)
         .concurrency_limit_per_connection(node.grpc_concurrency_limit_per_connection)
         .max_concurrent_streams(Some(node.grpc_max_concurrent_streams))
         .layer(CorsLayer::permissive())
         .layer(GrpcWebLayer::new())
-        .add_service(DkgServiceServer::new(dkg_service))
-        .add_service(PreServiceServer::new(pre_service))
-        .add_service(InfoServiceServer::new(info_service))
-        .add_service(StoreSecretServiceServer::new(store_secret_service))
-        .add_service(SignServiceServer::new(sign_service))
-        .serve(node.grpc_addr);
+        .add_service(InfoServiceServer::new(info_service));
+
+    for &version in network::SUPPORTED_PROTOCOL_VERSIONS {
+        let protocol_routes = network::routes_for_version(version)
+            .expect("supported protocol version must have registered routes");
+        #[allow(clippy::single_match)]
+        match version {
+            0 => {
+                let dkg_service = dkg::v0::service::DkgServiceImpl::<DkgImpl>::with_routes(
+                    (*node.app_state).clone(),
+                    protocol_routes,
+                );
+                let pre_service = pre::v0::service::PreServiceImpl::<DkgImpl, PreImpl>::with_routes(
+                    (*node.app_state).clone(),
+                    protocol_routes,
+                );
+                let store_secret_service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(
+                    (*node.app_state).clone(),
+                    protocol_routes,
+                );
+                let sign_service =
+                    sign::v0::service::SignServiceImpl::<DkgImpl, SignImpl>::with_routes(
+                        (*node.app_state).clone(),
+                        protocol_routes,
+                    );
+                grpc_server = grpc_server
+                    .add_service(DkgServiceServer::new(dkg_service))
+                    .add_service(PreServiceServer::new(pre_service))
+                    .add_service(StoreSecretServiceServer::new(store_secret_service))
+                    .add_service(SignServiceServer::new(sign_service));
+            }
+            _ => {}
+        }
+    }
+
+    let grpc_server = grpc_server.serve(node.grpc_addr);
 
     // Run gRPC server (router runs in background automatically)
     let result = tokio::select! {

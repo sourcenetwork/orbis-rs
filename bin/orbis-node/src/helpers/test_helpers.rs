@@ -329,6 +329,7 @@ fn seed_three_node_dummy_bulletin(
     }
 
     let payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: String::new(),
         peer_node_keys,
         new_peer_node_keys: None,
@@ -954,6 +955,7 @@ pub async fn write_ring_to_bulletin(
     pss_interval: Option<u64>,
 ) {
     let payload = RingPayload {
+        upgrade_info: Default::default(),
         ring_pk: ring_pk.to_string(),
         peer_node_keys,
         new_peer_node_keys: None,
@@ -1099,10 +1101,10 @@ pub async fn wait_for_nodes_ready(
 
 /// Create an orbis ring governance policy as TEST_ACCOUNT_HEX_KEY, register its
 /// own policy ID as a `ring_policy` ACP object, and return the policy ID.
-pub async fn create_orbis_ring_policy() -> String {
+pub async fn create_orbis_ring_policy(chain_config: &ChainConfig) -> String {
     let client = SourceHubClient::with_signer(
-        ChainConfig::local(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
     )
     .await
@@ -1146,16 +1148,18 @@ pub async fn create_orbis_ring_policy() -> String {
 
 /// Create a ring on-chain as TEST_ACCOUNT_HEX_KEY and return its ring_id.
 pub async fn create_ring_on_chain(
+    chain_config: &ChainConfig,
     node_keys: &[String],
     threshold: u32,
     policy_id: &str,
     nonce: Option<&str>,
 ) -> String {
-    create_ring_on_chain_with_pss(node_keys, threshold, policy_id, nonce, None).await
+    create_ring_on_chain_with_pss(chain_config, node_keys, threshold, policy_id, nonce, None).await
 }
 
 /// Create a ring on-chain with an explicit PSS interval. Returns its ring_id.
 pub async fn create_ring_on_chain_with_pss(
+    chain_config: &ChainConfig,
     node_keys: &[String],
     threshold: u32,
     policy_id: &str,
@@ -1163,8 +1167,8 @@ pub async fn create_ring_on_chain_with_pss(
     pss_interval: Option<u64>,
 ) -> String {
     let client = SourceHubClient::with_signer(
-        ChainConfig::local(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
     )
     .await
@@ -1177,6 +1181,7 @@ pub async fn create_ring_on_chain_with_pss(
             pss_interval,
             policy_id,
             nonce.map(String::from),
+            network::V0.version,
         )
         .await
         .expect("create ring on-chain");
@@ -1186,8 +1191,12 @@ pub async fn create_ring_on_chain_with_pss(
 
 /// Poll the chain until the ring is finalized (ring_pk != "") or the timeout expires.
 /// Panics on timeout.
-pub async fn wait_for_ring_finalized(ring_id: &str, timeout: Duration) -> String {
-    let client = SourceHubClient::new(ChainConfig::local())
+pub async fn wait_for_ring_finalized(
+    chain_config: &ChainConfig,
+    ring_id: &str,
+    timeout: Duration,
+) -> String {
+    let client = SourceHubClient::new(chain_config.clone())
         .await
         .expect("chain client for ring polling");
 

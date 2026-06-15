@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package orbis.v0.dkg;
+
+service DkgService {
+  rpc StartDkg(StartDkgRequest) returns (StartDkgResponse);
+}
+
+message StartDkgRequest {
+  string ring_id = 1;  // Pre-created blank ring entry targeted by this DKG
+}
+
+message StartDkgResponse {
+  string session_id = 1;
+  string status = 2;
+  string message = 3;
+  int64 created_at = 4;
+}

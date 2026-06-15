@@ -49,7 +49,7 @@ services:
 
   sourcehub:
     build:
-      context: https://github.com/sourcenetwork/sourcehub.git#jesse/Orbis-module
+      context: https://github.com/sourcenetwork/sourcehub.git#jesse/update-orbis
     volumes:
       - sourcehub-data:/home/node/.sourcehub
     entrypoint: ["/bin/sh", "-c"]

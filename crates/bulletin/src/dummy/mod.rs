@@ -285,6 +285,11 @@ mod tests {
             peer_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
             threshold: 2,
             policy_id: Some("policy-a".to_string()),
+            upgrade_info: crate::r#trait::UpgradeInfo {
+                current_version: 1,
+                next_version: Some(2),
+                activation_time: Some(500),
+            },
             ..Default::default()
         };
         let ring_id = "test-pending-ring".to_string();
@@ -335,6 +340,9 @@ mod tests {
 
         let payload = read_ring_payload(&bulletin, &ring_id).await;
         assert_eq!(payload.ring_pk, "ring-pk");
+        assert_eq!(payload.upgrade_info.current_version, 1);
+        assert_eq!(payload.upgrade_info.next_version, Some(2));
+        assert_eq!(payload.upgrade_info.activation_time, Some(500));
         assert_eq!(bulletin.finalization_count(&ring_id), 2);
     }
 
