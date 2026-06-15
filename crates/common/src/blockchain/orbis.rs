@@ -173,7 +173,7 @@ pub struct MsgCreateRingResponse {
 }
 
 #[derive(Clone, Message)]
-pub struct MsgUpdateRingByAcp {
+pub struct MsgStartRingReshareByAcp {
     #[prost(string, tag = "1")]
     pub creator: String,
     #[prost(string, tag = "2")]
@@ -182,41 +182,125 @@ pub struct MsgUpdateRingByAcp {
     pub new_peer_node_keys: Vec<String>,
     #[prost(uint32, optional, tag = "4")]
     pub new_threshold: Option<u32>,
-    #[prost(uint64, optional, tag = "5")]
-    pub pss_interval: Option<u64>,
-    #[prost(uint64, optional, tag = "6")]
-    pub next_version: Option<u64>,
-    #[prost(uint64, optional, tag = "7")]
-    pub activation_time: Option<u64>,
-    #[prost(bool, tag = "8")]
-    pub clear_upgrade: bool,
 }
 
-impl MsgUpdateRingByAcp {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgUpdateRingByAcp";
+impl MsgStartRingReshareByAcp {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgStartRingReshareByAcp";
 
     pub fn new(
         creator: &str,
         ring_id: &str,
         new_peer_node_keys: Vec<String>,
         new_threshold: Option<u32>,
-        pss_interval: Option<u64>,
-        next_version: Option<u64>,
-        activation_time: Option<u64>,
-        clear_upgrade: bool,
     ) -> Self {
         Self {
             creator: creator.to_string(),
             ring_id: ring_id.to_string(),
             new_peer_node_keys,
             new_threshold,
-            pss_interval,
-            next_version,
-            activation_time,
-            clear_upgrade,
         }
     }
 }
+
+#[derive(Clone, Message)]
+pub struct MsgStartRingReshareByAcpResponse {}
+
+#[derive(Clone, Message)]
+pub struct MsgSetRingPssIntervalByAcp {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub ring_id: String,
+    #[prost(uint64, tag = "3")]
+    pub pss_interval: u64,
+}
+
+impl MsgSetRingPssIntervalByAcp {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgSetRingPssIntervalByAcp";
+
+    pub fn new(creator: &str, ring_id: &str, pss_interval: u64) -> Self {
+        Self {
+            creator: creator.to_string(),
+            ring_id: ring_id.to_string(),
+            pss_interval,
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgSetRingPssIntervalByAcpResponse {}
+
+#[derive(Clone, Message)]
+pub struct MsgDisableRingPssByAcp {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub ring_id: String,
+}
+
+impl MsgDisableRingPssByAcp {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgDisableRingPssByAcp";
+
+    pub fn new(creator: &str, ring_id: &str) -> Self {
+        Self {
+            creator: creator.to_string(),
+            ring_id: ring_id.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgDisableRingPssByAcpResponse {}
+
+#[derive(Clone, Message)]
+pub struct MsgScheduleRingUpgradeByAcp {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub ring_id: String,
+    #[prost(uint64, tag = "3")]
+    pub next_version: u64,
+    #[prost(uint64, tag = "4")]
+    pub activation_time: u64,
+}
+
+impl MsgScheduleRingUpgradeByAcp {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgScheduleRingUpgradeByAcp";
+
+    pub fn new(creator: &str, ring_id: &str, next_version: u64, activation_time: u64) -> Self {
+        Self {
+            creator: creator.to_string(),
+            ring_id: ring_id.to_string(),
+            next_version,
+            activation_time,
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgScheduleRingUpgradeByAcpResponse {}
+
+#[derive(Clone, Message)]
+pub struct MsgCancelRingUpgradeByAcp {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub ring_id: String,
+}
+
+impl MsgCancelRingUpgradeByAcp {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgCancelRingUpgradeByAcp";
+
+    pub fn new(creator: &str, ring_id: &str) -> Self {
+        Self {
+            creator: creator.to_string(),
+            ring_id: ring_id.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgCancelRingUpgradeByAcpResponse {}
 
 #[derive(Clone, Message)]
 pub struct MsgFinalizeRing {
@@ -349,27 +433,124 @@ impl MsgCreateNodeInfo {
 pub struct MsgCreateNodeInfoResponse {}
 
 #[derive(Clone, Message)]
-pub struct MsgUpdateNodeInfo {
+pub struct MsgUpdateNodePeerId {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub node_key: String,
+    #[prost(string, tag = "3")]
+    pub peer_id: String,
+}
+
+impl MsgUpdateNodePeerId {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgUpdateNodePeerId";
+
+    pub fn new(creator: &str, node_key: &str, peer_id: &str) -> Self {
+        Self {
+            creator: creator.to_string(),
+            node_key: node_key.to_string(),
+            peer_id: peer_id.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgUpdateNodePeerIdResponse {}
+
+#[derive(Clone, Message)]
+pub struct MsgTransferNodeController {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub node_key: String,
+    #[prost(string, tag = "3")]
+    pub controller_key: String,
+}
+
+impl MsgTransferNodeController {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgTransferNodeController";
+
+    pub fn new(creator: &str, node_key: &str, controller_key: &str) -> Self {
+        Self {
+            creator: creator.to_string(),
+            node_key: node_key.to_string(),
+            controller_key: controller_key.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgTransferNodeControllerResponse {}
+
+/// For `MsgAddNodeToWhitelist` and `MsgRemoveNodeFromWhitelist` oneof target.
+pub enum WhitelistTarget {
+    PolicyId(String),
+    RingId(String),
+}
+
+#[derive(Clone, Message)]
+pub struct MsgAddNodeToWhitelist {
     #[prost(string, tag = "1")]
     pub creator: String,
     #[prost(string, tag = "2")]
     pub node_key: String,
     #[prost(string, optional, tag = "3")]
-    pub peer_id: Option<String>,
-    #[prost(string, repeated, tag = "4")]
-    pub whitelisted_policy_ids: Vec<String>,
-    #[prost(string, repeated, tag = "5")]
-    pub whitelisted_ring_ids: Vec<String>,
-    #[prost(string, optional, tag = "6")]
-    pub controller_key: Option<String>,
+    pub policy_id: Option<String>,
+    #[prost(string, optional, tag = "4")]
+    pub ring_id: Option<String>,
 }
 
-impl MsgUpdateNodeInfo {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgUpdateNodeInfo";
+impl MsgAddNodeToWhitelist {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgAddNodeToWhitelist";
+
+    pub fn new(creator: &str, node_key: &str, target: WhitelistTarget) -> Self {
+        let (policy_id, ring_id) = match target {
+            WhitelistTarget::PolicyId(id) => (Some(id), None),
+            WhitelistTarget::RingId(id) => (None, Some(id)),
+        };
+        Self {
+            creator: creator.to_string(),
+            node_key: node_key.to_string(),
+            policy_id,
+            ring_id,
+        }
+    }
 }
 
 #[derive(Clone, Message)]
-pub struct MsgUpdateNodeInfoResponse {}
+pub struct MsgAddNodeToWhitelistResponse {}
+
+#[derive(Clone, Message)]
+pub struct MsgRemoveNodeFromWhitelist {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub node_key: String,
+    #[prost(string, optional, tag = "3")]
+    pub policy_id: Option<String>,
+    #[prost(string, optional, tag = "4")]
+    pub ring_id: Option<String>,
+}
+
+impl MsgRemoveNodeFromWhitelist {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgRemoveNodeFromWhitelist";
+
+    pub fn new(creator: &str, node_key: &str, target: WhitelistTarget) -> Self {
+        let (policy_id, ring_id) = match target {
+            WhitelistTarget::PolicyId(id) => (Some(id), None),
+            WhitelistTarget::RingId(id) => (None, Some(id)),
+        };
+        Self {
+            creator: creator.to_string(),
+            node_key: node_key.to_string(),
+            policy_id,
+            ring_id,
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgRemoveNodeFromWhitelistResponse {}
 
 // ============================================================================
 // Query Request/Response Types
@@ -931,57 +1112,157 @@ impl SourceHubClient {
         .await
     }
 
-    pub async fn orbis_update_node_info(
+    pub async fn orbis_start_ring_reshare_by_acp(
         &self,
-        node_key: &str,
-        peer_id: Option<String>,
-        whitelisted_policy_ids: Vec<String>,
-        whitelisted_ring_ids: Vec<String>,
+        ring_id: &str,
+        new_peer_node_keys: Vec<String>,
+        new_threshold: Option<u32>,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
-        let msg = MsgUpdateNodeInfo {
-            creator: signer.address(),
-            node_key: node_key.to_string(),
-            peer_id,
-            whitelisted_policy_ids,
-            whitelisted_ring_ids,
-            controller_key: None,
-        };
+        let msg = MsgStartRingReshareByAcp::new(
+            &signer.address(),
+            ring_id,
+            new_peer_node_keys,
+            new_threshold,
+        );
         self.broadcast_proto_msg_with_gas(
-            MsgUpdateNodeInfo::TYPE_URL,
+            MsgStartRingReshareByAcp::TYPE_URL,
             &msg,
             self.config().gas_multiplier,
         )
         .await
     }
 
-    pub async fn orbis_update_ring_by_acp(
+    pub async fn orbis_set_ring_pss_interval_by_acp(
         &self,
         ring_id: &str,
-        new_peer_node_keys: Vec<String>,
-        new_threshold: Option<u32>,
-        pss_interval: Option<u64>,
-        next_version: Option<u64>,
-        activation_time: Option<u64>,
-        clear_upgrade: bool,
+        pss_interval: u64,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
-        let msg = MsgUpdateRingByAcp::new(
+        let msg = MsgSetRingPssIntervalByAcp::new(&signer.address(), ring_id, pss_interval);
+        self.broadcast_proto_msg_with_gas(
+            MsgSetRingPssIntervalByAcp::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    pub async fn orbis_disable_ring_pss_by_acp(&self, ring_id: &str) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgDisableRingPssByAcp::new(&signer.address(), ring_id);
+        self.broadcast_proto_msg_with_gas(
+            MsgDisableRingPssByAcp::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    pub async fn orbis_schedule_ring_upgrade_by_acp(
+        &self,
+        ring_id: &str,
+        next_version: u64,
+        activation_time: u64,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgScheduleRingUpgradeByAcp::new(
             &signer.address(),
             ring_id,
-            new_peer_node_keys,
-            new_threshold,
-            pss_interval,
             next_version,
             activation_time,
-            clear_upgrade,
         );
         self.broadcast_proto_msg_with_gas(
-            MsgUpdateRingByAcp::TYPE_URL,
+            MsgScheduleRingUpgradeByAcp::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    pub async fn orbis_cancel_ring_upgrade_by_acp(&self, ring_id: &str) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgCancelRingUpgradeByAcp::new(&signer.address(), ring_id);
+        self.broadcast_proto_msg_with_gas(
+            MsgCancelRingUpgradeByAcp::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    pub async fn orbis_update_node_peer_id(
+        &self,
+        node_key: &str,
+        peer_id: &str,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgUpdateNodePeerId::new(&signer.address(), node_key, peer_id);
+        self.broadcast_proto_msg_with_gas(
+            MsgUpdateNodePeerId::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    pub async fn orbis_transfer_node_controller(
+        &self,
+        node_key: &str,
+        controller_key: &str,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgTransferNodeController::new(&signer.address(), node_key, controller_key);
+        self.broadcast_proto_msg_with_gas(
+            MsgTransferNodeController::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    pub async fn orbis_add_node_to_whitelist(
+        &self,
+        node_key: &str,
+        target: WhitelistTarget,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgAddNodeToWhitelist::new(&signer.address(), node_key, target);
+        self.broadcast_proto_msg_with_gas(
+            MsgAddNodeToWhitelist::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    pub async fn orbis_remove_node_from_whitelist(
+        &self,
+        node_key: &str,
+        target: WhitelistTarget,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgRemoveNodeFromWhitelist::new(&signer.address(), node_key, target);
+        self.broadcast_proto_msg_with_gas(
+            MsgRemoveNodeFromWhitelist::TYPE_URL,
             &msg,
             self.config().gas_multiplier,
         )
@@ -1120,8 +1401,8 @@ mod tests {
     use super::{
         decode_store_document_id, decode_store_key_derivation_id, ring_reshare_sign_state_hash,
         MsgCreateRing, MsgFinalizeRing, MsgFinalizeRingReshareByThresholdSignature,
-        MsgStoreDocumentResponse, MsgStoreKeyDerivationResponse, MsgUpdateRingByAcp, Ring,
-        RingReshareSignState, UpgradeInfo,
+        MsgStoreDocumentResponse, MsgStoreKeyDerivationResponse, Ring, RingReshareSignState,
+        UpgradeInfo,
     };
 
     #[test]
@@ -1137,25 +1418,6 @@ mod tests {
 
         let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
         assert_eq!(decoded.pss_interval, Some(0));
-    }
-
-    #[test]
-    fn update_ring_by_acp_wire_fields_match_sourcehub_proto() {
-        let msg = MsgUpdateRingByAcp::new(
-            "c",
-            "r",
-            vec!["p1".to_string(), "p2".to_string()],
-            Some(2),
-            Some(10),
-            Some(1),
-            Some(1000),
-            true,
-        );
-
-        assert_eq!(
-            hex::encode(msg.encode_to_vec()),
-            "0a01631201721a0270311a0270322002280a300138e8074001"
-        );
     }
 
     #[test]

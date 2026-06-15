@@ -4,14 +4,17 @@ use anyhow::Result;
 use bulletin::r#trait::BulletinKind;
 use clap::{Parser, Subcommand};
 pub use commands::{
-    add_bulletin_collaborator, add_policy_to_chain, create_bulletin_post, do_dkg,
+    add_bulletin_collaborator, add_node_to_whitelist, add_policy_to_chain,
+    cancel_ring_upgrade_by_acp, create_bulletin_post, disable_ring_pss_by_acp, do_dkg,
     do_encrypt_secret, do_generate_reader_key, do_pre, do_sign, do_store_secret, fund,
     get_account_sequence, get_latest_ring, list_bulletin_posts, post_key_derivation,
     prepare_secret, query_node_info, query_ring_state, read_bulletin_post,
-    register_bulletin_namespace, register_object_to_chain, set_relationship_on_chain,
-    store_prepared_secret, update_ring_post_by_acp, PreparedSecret, SignResult,
+    register_bulletin_namespace, register_object_to_chain, remove_node_from_whitelist,
+    schedule_ring_upgrade_by_acp, set_relationship_on_chain, set_ring_pss_interval_by_acp,
+    start_ring_reshare_by_acp, store_prepared_secret, transfer_node_controller,
+    update_node_peer_id, PreparedSecret, SignResult,
 };
-use common::blockchain::ChainConfig;
+use common::blockchain::{orbis::WhitelistTarget, ChainConfig};
 
 #[derive(Parser, Debug, Clone)]
 #[clap(version, about = "CLI tool for interacting with an orbis network")]
@@ -156,29 +159,81 @@ pub enum SubCommands {
         #[clap(long)]
         collaborator: String,
     },
-    /// Update a ring via ACP authorization
-    UpdateRingPostByAcp {
-        /// Ring ID to update
+    /// Initiate a committee/threshold reshare for a ring via ACP authorization
+    StartRingReshare {
         #[clap(long)]
-        id: String,
-        /// New peer IDs for reshare (comma-separated)
+        ring_id: String,
+        /// New committee peer node keys (comma-separated)
         #[clap(long, value_delimiter = ',')]
-        new_peer_ids: Vec<String>,
-        /// New threshold for the reshare committee
+        new_peer_node_keys: Vec<String>,
+        /// New threshold (absent means keep current)
         #[clap(long)]
         new_threshold: Option<u32>,
+    },
+    /// Set the PSS refresh interval for a ring via ACP authorization
+    SetRingPssInterval {
+        #[clap(long)]
+        ring_id: String,
         /// Seconds between automatic PSS refresh ceremonies
         #[clap(long)]
-        pss_interval: Option<u64>,
-        /// Protocol epoch to activate
-        #[clap(long, requires = "activation_time", conflicts_with = "clear_upgrade")]
-        next_version: Option<u64>,
-        /// Unix timestamp in seconds at which next_version becomes effective
-        #[clap(long, requires = "next_version", conflicts_with = "clear_upgrade")]
-        activation_time: Option<u64>,
-        /// Cancel the pending protocol upgrade
+        pss_interval: u64,
+    },
+    /// Disable PSS for a ring via ACP authorization
+    DisableRingPss {
         #[clap(long)]
-        clear_upgrade: bool,
+        ring_id: String,
+    },
+    /// Schedule a protocol version upgrade for a ring via ACP authorization
+    ScheduleRingUpgrade {
+        #[clap(long)]
+        ring_id: String,
+        /// Protocol version to activate
+        #[clap(long)]
+        next_version: u64,
+        /// Unix timestamp (seconds) at which the upgrade activates; must be at least 10 minutes in the future
+        #[clap(long)]
+        activation_time: u64,
+    },
+    /// Cancel a pending protocol version upgrade for a ring via ACP authorization
+    CancelRingUpgrade {
+        #[clap(long)]
+        ring_id: String,
+    },
+    /// Update the peer ID of a registered node
+    UpdateNodePeerId {
+        #[clap(long)]
+        node_key: String,
+        #[clap(long)]
+        peer_id: String,
+    },
+    /// Transfer the controller key of a registered node
+    TransferNodeController {
+        #[clap(long)]
+        node_key: String,
+        #[clap(long)]
+        controller_key: String,
+    },
+    /// Add a policy or ring to a node's whitelist
+    AddNodeToWhitelist {
+        #[clap(long)]
+        node_key: String,
+        /// Policy ID to whitelist (mutually exclusive with --ring-id)
+        #[clap(long, conflicts_with = "ring_id")]
+        policy_id: Option<String>,
+        /// Ring ID to whitelist (mutually exclusive with --policy-id)
+        #[clap(long, conflicts_with = "policy_id")]
+        ring_id: Option<String>,
+    },
+    /// Remove a policy or ring from a node's whitelist
+    RemoveNodeFromWhitelist {
+        #[clap(long)]
+        node_key: String,
+        /// Policy ID to remove (mutually exclusive with --ring-id)
+        #[clap(long, conflicts_with = "ring_id")]
+        policy_id: Option<String>,
+        /// Ring ID to remove (mutually exclusive with --policy-id)
+        #[clap(long, conflicts_with = "policy_id")]
+        ring_id: Option<String>,
     },
     /// Fund an account from the pre funded account
     Fund {
@@ -473,25 +528,64 @@ async fn main() -> Result<()> {
         } => {
             add_bulletin_collaborator(namespace, collaborator).await?;
         }
-        SubCommands::UpdateRingPostByAcp {
-            id,
-            new_peer_ids,
+        SubCommands::StartRingReshare {
+            ring_id,
+            new_peer_node_keys,
             new_threshold,
+        } => {
+            start_ring_reshare_by_acp(ring_id, new_peer_node_keys, new_threshold).await?;
+        }
+        SubCommands::SetRingPssInterval {
+            ring_id,
             pss_interval,
+        } => {
+            set_ring_pss_interval_by_acp(ring_id, pss_interval).await?;
+        }
+        SubCommands::DisableRingPss { ring_id } => {
+            disable_ring_pss_by_acp(ring_id).await?;
+        }
+        SubCommands::ScheduleRingUpgrade {
+            ring_id,
             next_version,
             activation_time,
-            clear_upgrade,
         } => {
-            update_ring_post_by_acp(
-                id,
-                new_peer_ids,
-                new_threshold,
-                pss_interval,
-                next_version,
-                activation_time,
-                clear_upgrade,
-            )
-            .await?;
+            schedule_ring_upgrade_by_acp(ring_id, next_version, activation_time).await?;
+        }
+        SubCommands::CancelRingUpgrade { ring_id } => {
+            cancel_ring_upgrade_by_acp(ring_id).await?;
+        }
+        SubCommands::UpdateNodePeerId { node_key, peer_id } => {
+            update_node_peer_id(node_key, peer_id).await?;
+        }
+        SubCommands::TransferNodeController {
+            node_key,
+            controller_key,
+        } => {
+            transfer_node_controller(node_key, controller_key).await?;
+        }
+        SubCommands::AddNodeToWhitelist {
+            node_key,
+            policy_id,
+            ring_id,
+        } => {
+            let target = match (policy_id, ring_id) {
+                (Some(id), _) => WhitelistTarget::PolicyId(id),
+                (_, Some(id)) => WhitelistTarget::RingId(id),
+                _ => return Err(anyhow::anyhow!("Must provide --policy-id or --ring-id")),
+            };
+            add_node_to_whitelist(node_key, target).await?;
+        }
+        SubCommands::RemoveNodeFromWhitelist {
+            node_key,
+            policy_id,
+            ring_id,
+        } => {
+            let target = match (policy_id, ring_id) {
+                (Some(id), _) => WhitelistTarget::PolicyId(id),
+                (_, Some(id)) => WhitelistTarget::RingId(id),
+                _ => return Err(anyhow::anyhow!("Must provide --policy-id or --ring-id")),
+            };
+            remove_node_from_whitelist(node_key, target).await?;
         }
         SubCommands::Fund { address } => {
             fund(address, ChainConfig::local()).await?;

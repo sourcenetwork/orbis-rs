@@ -13,7 +13,9 @@ use bulletin::r#trait::{
     BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, RingPayload,
 };
 use common::{
-    blockchain::{ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY},
+    blockchain::{
+        orbis::WhitelistTarget, ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+    },
     IntegrationTestNetwork,
 };
 use crypto::helpers::generate_keypair;
@@ -148,14 +150,13 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         )
         .await;
         controller_client
-            .orbis_update_node_info(
-                node_key,
-                Some(peer_address.clone()),
-                vec![policy_id.clone()],
-                vec![],
-            )
+            .orbis_update_node_peer_id(node_key, &peer_address)
             .await
-            .expect("update NodeInfo whitelist");
+            .expect("update NodeInfo peer ID");
+        controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::PolicyId(policy_id.clone()))
+            .await
+            .expect("add policy to NodeInfo whitelist");
     }
 
     // Create ring on-chain and trigger DKG.
@@ -810,18 +811,14 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     )
     .await;
 
-    cli_tool::update_ring_post_by_acp_with_config(
+    cli_tool::start_ring_reshare_by_acp_with_config(
         ring_id.clone(),
         reshare_peer_ids.clone(),
         Some(reshare_threshold),
-        dkg_ring_payload.pss_interval,
-        None,
-        None,
-        false,
         chain_config.clone(),
     )
     .await
-    .expect("update ring bulletin post with reshare announcement");
+    .expect("start ring reshare announcement");
 
     let announced_payload = read_ring_payload(&chain_config, &ring_id).await;
     let announced_new_peer_node_keys = announced_payload
