@@ -7,9 +7,12 @@ use prost::Message;
 use reqwest::Client as HttpClient;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::time::Duration;
-use tendermint_rpc::{Client, HttpClient as TendermintClient};
+use tendermint_rpc::{Client, HttpClient as TendermintClient, HttpClientUrl};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
+
+const RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const RPC_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ============================================================================
 // Transaction Polling Constants
@@ -85,7 +88,21 @@ pub struct SourceHubClient {
 impl SourceHubClient {
     /// Create a new client for queries only.
     pub async fn new(config: ChainConfig) -> Result<Self> {
-        let rpc_client = TendermintClient::new(config.rpc_url.as_str())
+        let rpc_url: HttpClientUrl = config
+            .rpc_url
+            .as_str()
+            .try_into()
+            .map_err(|e| BlockchainError::Config(format!("Invalid RPC URL: {}", e)))?;
+        let rpc_http_client = tendermint_reqwest::Client::builder()
+            .timeout(RPC_REQUEST_TIMEOUT)
+            .pool_idle_timeout(RPC_POOL_IDLE_TIMEOUT)
+            .build()
+            .map_err(|e| {
+                BlockchainError::Config(format!("Failed to create RPC HTTP client: {}", e))
+            })?;
+        let rpc_client = TendermintClient::builder(rpc_url)
+            .client(rpc_http_client)
+            .build()
             .map_err(|e| BlockchainError::Config(format!("Failed to create RPC client: {}", e)))?;
 
         let http_client = HttpClient::builder()
@@ -794,4 +811,131 @@ struct GasInfo {
     gas_used: String,
     #[allow(dead_code)]
     gas_wanted: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SourceHubClient, RPC_POOL_IDLE_TIMEOUT};
+    use crate::blockchain::ChainConfig;
+    use serde_json::Value;
+    use std::io;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tendermint_rpc::Client;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::{mpsc, Notify};
+
+    async fn read_http_request(
+        stream: &mut TcpStream,
+        buffer: &mut Vec<u8>,
+    ) -> io::Result<Option<Vec<u8>>> {
+        loop {
+            if let Some(header_end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                let body_start = header_end + 4;
+                let headers = std::str::from_utf8(&buffer[..header_end]).map_err(|error| {
+                    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                })?;
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "missing Content-Length")
+                    })?;
+                let request_end = body_start + content_length;
+                if buffer.len() >= request_end {
+                    let body = buffer[body_start..request_end].to_vec();
+                    buffer.drain(..request_end);
+                    return Ok(Some(body));
+                }
+            }
+
+            let mut chunk = [0u8; 1024];
+            let bytes_read = stream.read(&mut chunk).await?;
+            if bytes_read == 0 {
+                return Ok(None);
+            }
+            buffer.extend_from_slice(&chunk[..bytes_read]);
+        }
+    }
+
+    async fn serve_connection(
+        connection_id: usize,
+        mut stream: TcpStream,
+        request_connections: mpsc::UnboundedSender<usize>,
+    ) -> io::Result<()> {
+        let mut buffer = Vec::new();
+        while let Some(body) = read_http_request(&mut stream, &mut buffer).await? {
+            let request: Value = serde_json::from_slice(&body)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+            let response = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {}
+            })
+            .to_string();
+            let http_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                response.len(),
+                response
+            );
+            stream.write_all(http_response.as_bytes()).await?;
+            request_connections.send(connection_id).map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "request receiver dropped")
+            })?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rpc_client_discards_idle_connections_before_server_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let rpc_url = format!("http://{}", listener.local_addr().unwrap());
+        let (request_connections_tx, mut request_connections_rx) = mpsc::unbounded_channel();
+        let shutdown = Arc::new(Notify::new());
+        let server_shutdown = shutdown.clone();
+
+        let server = tokio::spawn(async move {
+            let mut connection_id = 0;
+            loop {
+                tokio::select! {
+                    _ = server_shutdown.notified() => break,
+                    accepted = listener.accept() => {
+                        let (stream, _) = accepted.unwrap();
+                        connection_id += 1;
+                        let request_connections = request_connections_tx.clone();
+                        tokio::spawn(async move {
+                            serve_connection(connection_id, stream, request_connections)
+                                .await
+                                .unwrap();
+                        });
+                    }
+                }
+            }
+        });
+
+        let config = ChainConfig::builder().rpc_url(Some(rpc_url)).build();
+        let client = SourceHubClient::new(config).await.unwrap();
+
+        client.rpc_client.health().await.unwrap();
+        let first_connection = request_connections_rx.recv().await.unwrap();
+
+        tokio::time::sleep(RPC_POOL_IDLE_TIMEOUT + Duration::from_secs(1)).await;
+
+        client.rpc_client.health().await.unwrap();
+        let second_connection = request_connections_rx.recv().await.unwrap();
+
+        assert_ne!(
+            first_connection, second_connection,
+            "RPC client reused a connection after its configured idle timeout"
+        );
+
+        shutdown.notify_one();
+        server.await.unwrap();
+    }
 }
