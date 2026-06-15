@@ -20,9 +20,9 @@ const DERIVATION_ID: &str = "upgrade-v0-derivation";
 const DOCUMENT_ID: &str = "upgrade-v0-document";
 // Compressed secp256k1 key matching the --node-controller-key in docker-compose
 const NODE_KEY: &str = "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62";
-// Lead between genesis write and activation. Must exceed Docker image build time.
-// Warm-cache CI builds complete in ~60s; 120s gives comfortable margin.
-const ACTIVATION_LEAD_SECS: u64 = 120;
+// Lead between genesis write and activation. This covers Docker image build/startup under
+// full-suite contention; Phase 1 only requires the node's gRPC services, not funding readiness.
+const ACTIVATION_LEAD_SECS: u64 = 180;
 const MIN_PRE_ACTIVATION_SLACK_SECS: u64 = 10;
 
 fn unix_now() -> u64 {
@@ -132,10 +132,10 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
         .build();
 
     let endpoints = network.all_endpoints();
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
-
     let endpoint = endpoints[0].to_string();
+    cli_tool::query_node_info(endpoint.clone())
+        .await
+        .expect("node 1 gRPC services must be available before Phase 1");
 
     // do_pre validates reader_pk before the version check — need a real keypair
     let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
