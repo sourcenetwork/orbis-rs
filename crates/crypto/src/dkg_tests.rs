@@ -64,6 +64,10 @@ where
     generic_tests::test_invalid_threshold(node_factory.clone())?;
     generic_tests::test_share_verification_fails_with_wrong_commitment(
         node_factory.clone(),
+        create_invalid_share.clone(),
+    )?;
+    generic_tests::test_byzantine_share_detected_and_ceremony_aborts(
+        node_factory.clone(),
         create_invalid_share,
     )?;
     generic_tests::test_dkg_refresh(node_factory.clone(), check_zero.clone())?;
