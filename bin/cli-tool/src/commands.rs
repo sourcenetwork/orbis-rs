@@ -9,6 +9,7 @@ use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation
 use bulletin::sourcehub::SourceHubBulletin;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
+    orbis::WhitelistTarget,
     ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::r#trait::{Secret, ThresholdDealer, ThresholdSigner};
@@ -850,68 +851,284 @@ pub async fn create_bulletin_post_with_config(
     Ok(post_id)
 }
 
-pub async fn update_ring_post_by_acp(
+pub async fn start_ring_reshare_by_acp(
     ring_id: String,
-    new_peer_ids: Vec<String>,
+    new_peer_node_keys: Vec<String>,
     new_threshold: Option<u32>,
-    pss_interval: Option<u64>,
-    next_version: Option<u64>,
-    activation_time: Option<u64>,
-    clear_upgrade: bool,
 ) -> Result<()> {
-    update_ring_post_by_acp_with_config(
+    start_ring_reshare_by_acp_with_config(
         ring_id,
-        new_peer_ids,
+        new_peer_node_keys,
         new_threshold,
-        pss_interval,
-        next_version,
-        activation_time,
-        clear_upgrade,
         ChainConfig::local(),
     )
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn update_ring_post_by_acp_with_config(
+pub async fn start_ring_reshare_by_acp_with_config(
     ring_id: String,
-    new_peer_ids: Vec<String>,
+    new_peer_node_keys: Vec<String>,
     new_threshold: Option<u32>,
-    pss_interval: Option<u64>,
-    next_version: Option<u64>,
-    activation_time: Option<u64>,
-    clear_upgrade: bool,
     config: ChainConfig,
 ) -> Result<()> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
-
     let client = SourceHubClient::with_signer(config, signer)
         .await
         .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
-
     let result = client
-        .orbis_update_ring_by_acp(
-            &ring_id,
-            new_peer_ids,
-            new_threshold,
-            pss_interval,
-            next_version,
-            activation_time,
-            clear_upgrade,
-        )
+        .orbis_start_ring_reshare_by_acp(&ring_id, new_peer_node_keys, new_threshold)
         .await
-        .map_err(|e| anyhow!("Failed to update ring: {}", e))?;
-
+        .map_err(|e| anyhow!("Failed to start ring reshare: {}", e))?;
     if result.code != 0 {
         return Err(anyhow!(
-            "Failed to update ring: code {} {}",
+            "Failed to start ring reshare: code {} {}",
             result.code,
             result.log
         ));
     }
+    println!("Started reshare for ring: {}", ring_id);
+    Ok(())
+}
 
-    println!("Updated ring with ID: {}", ring_id);
+pub async fn set_ring_pss_interval_by_acp(ring_id: String, pss_interval: u64) -> Result<()> {
+    set_ring_pss_interval_by_acp_with_config(ring_id, pss_interval, ChainConfig::local()).await
+}
+
+pub async fn set_ring_pss_interval_by_acp_with_config(
+    ring_id: String,
+    pss_interval: u64,
+    config: ChainConfig,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let client = SourceHubClient::with_signer(config, signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+    let result = client
+        .orbis_set_ring_pss_interval_by_acp(&ring_id, pss_interval)
+        .await
+        .map_err(|e| anyhow!("Failed to set PSS interval: {}", e))?;
+    if result.code != 0 {
+        return Err(anyhow!(
+            "Failed to set PSS interval: code {} {}",
+            result.code,
+            result.log
+        ));
+    }
+    println!("Set PSS interval for ring: {}", ring_id);
+    Ok(())
+}
+
+pub async fn disable_ring_pss_by_acp(ring_id: String) -> Result<()> {
+    disable_ring_pss_by_acp_with_config(ring_id, ChainConfig::local()).await
+}
+
+pub async fn disable_ring_pss_by_acp_with_config(
+    ring_id: String,
+    config: ChainConfig,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let client = SourceHubClient::with_signer(config, signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+    let result = client
+        .orbis_disable_ring_pss_by_acp(&ring_id)
+        .await
+        .map_err(|e| anyhow!("Failed to disable PSS: {}", e))?;
+    if result.code != 0 {
+        return Err(anyhow!(
+            "Failed to disable PSS: code {} {}",
+            result.code,
+            result.log
+        ));
+    }
+    println!("Disabled PSS for ring: {}", ring_id);
+    Ok(())
+}
+
+pub async fn schedule_ring_upgrade_by_acp(
+    ring_id: String,
+    next_version: u64,
+    activation_time: u64,
+) -> Result<()> {
+    schedule_ring_upgrade_by_acp_with_config(
+        ring_id,
+        next_version,
+        activation_time,
+        ChainConfig::local(),
+    )
+    .await
+}
+
+pub async fn schedule_ring_upgrade_by_acp_with_config(
+    ring_id: String,
+    next_version: u64,
+    activation_time: u64,
+    config: ChainConfig,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let client = SourceHubClient::with_signer(config, signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+    let result = client
+        .orbis_schedule_ring_upgrade_by_acp(&ring_id, next_version, activation_time)
+        .await
+        .map_err(|e| anyhow!("Failed to schedule ring upgrade: {}", e))?;
+    if result.code != 0 {
+        return Err(anyhow!(
+            "Failed to schedule ring upgrade: code {} {}",
+            result.code,
+            result.log
+        ));
+    }
+    println!("Scheduled upgrade for ring: {}", ring_id);
+    Ok(())
+}
+
+pub async fn cancel_ring_upgrade_by_acp(ring_id: String) -> Result<()> {
+    cancel_ring_upgrade_by_acp_with_config(ring_id, ChainConfig::local()).await
+}
+
+pub async fn cancel_ring_upgrade_by_acp_with_config(
+    ring_id: String,
+    config: ChainConfig,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let client = SourceHubClient::with_signer(config, signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+    let result = client
+        .orbis_cancel_ring_upgrade_by_acp(&ring_id)
+        .await
+        .map_err(|e| anyhow!("Failed to cancel ring upgrade: {}", e))?;
+    if result.code != 0 {
+        return Err(anyhow!(
+            "Failed to cancel ring upgrade: code {} {}",
+            result.code,
+            result.log
+        ));
+    }
+    println!("Cancelled upgrade for ring: {}", ring_id);
+    Ok(())
+}
+
+pub async fn update_node_peer_id(node_key: String, peer_id: String) -> Result<()> {
+    update_node_peer_id_with_config(node_key, peer_id, ChainConfig::local()).await
+}
+
+pub async fn update_node_peer_id_with_config(
+    node_key: String,
+    peer_id: String,
+    config: ChainConfig,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let client = SourceHubClient::with_signer(config, signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+    let result = client
+        .orbis_update_node_peer_id(&node_key, &peer_id)
+        .await
+        .map_err(|e| anyhow!("Failed to update node peer ID: {}", e))?;
+    if result.code != 0 {
+        return Err(anyhow!(
+            "Failed to update node peer ID: code {} {}",
+            result.code,
+            result.log
+        ));
+    }
+    println!("Updated peer ID for node: {}", node_key);
+    Ok(())
+}
+
+pub async fn transfer_node_controller(node_key: String, controller_key: String) -> Result<()> {
+    transfer_node_controller_with_config(node_key, controller_key, ChainConfig::local()).await
+}
+
+pub async fn transfer_node_controller_with_config(
+    node_key: String,
+    controller_key: String,
+    config: ChainConfig,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let client = SourceHubClient::with_signer(config, signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+    let result = client
+        .orbis_transfer_node_controller(&node_key, &controller_key)
+        .await
+        .map_err(|e| anyhow!("Failed to transfer node controller: {}", e))?;
+    if result.code != 0 {
+        return Err(anyhow!(
+            "Failed to transfer node controller: code {} {}",
+            result.code,
+            result.log
+        ));
+    }
+    println!("Transferred controller for node: {}", node_key);
+    Ok(())
+}
+
+pub async fn add_node_to_whitelist(node_key: String, target: WhitelistTarget) -> Result<()> {
+    add_node_to_whitelist_with_config(node_key, target, ChainConfig::local()).await
+}
+
+pub async fn add_node_to_whitelist_with_config(
+    node_key: String,
+    target: WhitelistTarget,
+    config: ChainConfig,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let client = SourceHubClient::with_signer(config, signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+    let result = client
+        .orbis_add_node_to_whitelist(&node_key, target)
+        .await
+        .map_err(|e| anyhow!("Failed to add node to whitelist: {}", e))?;
+    if result.code != 0 {
+        return Err(anyhow!(
+            "Failed to add node to whitelist: code {} {}",
+            result.code,
+            result.log
+        ));
+    }
+    println!("Added node {} to whitelist", node_key);
+    Ok(())
+}
+
+pub async fn remove_node_from_whitelist(node_key: String, target: WhitelistTarget) -> Result<()> {
+    remove_node_from_whitelist_with_config(node_key, target, ChainConfig::local()).await
+}
+
+pub async fn remove_node_from_whitelist_with_config(
+    node_key: String,
+    target: WhitelistTarget,
+    config: ChainConfig,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let client = SourceHubClient::with_signer(config, signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+    let result = client
+        .orbis_remove_node_from_whitelist(&node_key, target)
+        .await
+        .map_err(|e| anyhow!("Failed to remove node from whitelist: {}", e))?;
+    if result.code != 0 {
+        return Err(anyhow!(
+            "Failed to remove node from whitelist: code {} {}",
+            result.code,
+            result.log
+        ));
+    }
+    println!("Removed node {} from whitelist", node_key);
     Ok(())
 }
 
