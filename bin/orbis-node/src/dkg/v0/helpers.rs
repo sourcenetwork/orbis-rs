@@ -708,11 +708,16 @@ pub fn build_reshare_params<S: LocalStorage>(
         }
     };
 
-    let new_idx = in_new.then(|| node_index_in(&sorted_new, our_node_key));
-    let node_id = if in_old {
-        node_index_in(&sorted_old, our_node_key)
+    let new_node_id: Option<u32> = if in_new {
+        Some(node_index_in(&sorted_new, our_node_key)?)
     } else {
-        new_idx.expect("checked in_new above")
+        None
+    };
+    let node_id: u32 = if in_old {
+        node_index_in(&sorted_old, our_node_key)?
+    } else {
+        // Role match above guarantees in_new is true when in_old is false.
+        new_node_id.expect("unreachable: in_new is true when in_old is false")
     };
 
     let old_share = if in_old {
@@ -727,7 +732,6 @@ pub fn build_reshare_params<S: LocalStorage>(
     };
 
     let participating_ids: Vec<u32> = (1..=old_peer_node_keys.len() as u32).collect();
-    let new_node_id = in_new.then(|| node_index_in(&sorted_new, our_node_key));
 
     let params = ReshareParams {
         ring_key: ring_pk_hex.to_string(),
@@ -757,12 +761,17 @@ pub fn in_committee(committee: &[String], our_node_key: &str) -> bool {
 /// `sorted_committee` must already be sorted so that all nodes derive the same
 /// index for the same node key.  Panics if not found — callers must confirm membership
 /// with `in_committee` before calling this.
-pub fn node_index_in(sorted_committee: &[String], our_node_key: &str) -> u32 {
+pub fn node_index_in(sorted_committee: &[String], our_node_key: &str) -> Result<u32> {
     sorted_committee
         .iter()
         .position(|node_key| node_key == our_node_key)
         .map(|i| (i + 1) as u32)
-        .expect("node not found in committee — check in_committee() first")
+        .ok_or_else(|| {
+            DkgError::InvalidInput(format!(
+                "node '{}' not found in sorted committee",
+                our_node_key
+            ))
+        })
 }
 
 /// Returns the effective new committee from a ring payload.

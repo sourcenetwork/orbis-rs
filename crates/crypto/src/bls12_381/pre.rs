@@ -221,12 +221,6 @@ impl ThresholdDealer for ThresholdDealerNode {
         let mut response_bytes = Vec::new();
         response.serialize_compressed(&mut response_bytes)?;
 
-        let proof = EncryptionProof {
-            shared_point: shared_point_bytes.clone(),
-            challenge: challenge_bytes,
-            response: response_bytes,
-        };
-
         // Derive AES key from shared_point
         let aes_key = Self::derive_key_from_point(&shared_point)?;
         let cipher = Aes256Gcm::new(&aes_key.into());
@@ -240,8 +234,13 @@ impl ThresholdDealer for ThresholdDealerNode {
         let mut enc_cmt_bytes = Vec::new();
         enc_cmt.serialize_compressed(&mut enc_cmt_bytes)?;
 
-        // Build AAD using centralized helper for consistency with decryption
         let aad = Self::build_aad(&enc_cmt_bytes, &shared_point_bytes);
+
+        let proof = EncryptionProof {
+            shared_point: shared_point_bytes,
+            challenge: challenge_bytes,
+            response: response_bytes,
+        };
 
         // Encrypt data with AAD to bind ciphertext to commitment and shared point
         let payload = Payload {
