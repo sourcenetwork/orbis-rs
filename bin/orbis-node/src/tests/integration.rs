@@ -149,14 +149,25 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             Duration::from_millis(500),
         )
         .await;
-        controller_client
+        let peer_update = controller_client
             .orbis_update_node_peer_id(node_key, peer_address)
             .await
             .expect("update NodeInfo peer ID");
-        controller_client
+        assert_eq!(
+            peer_update.code, 0,
+            "update NodeInfo peer ID tx failed: {}",
+            peer_update.log
+        );
+
+        let whitelist_update = controller_client
             .orbis_add_node_to_whitelist(node_key, WhitelistTarget::PolicyId(policy_id.clone()))
             .await
             .expect("add policy to NodeInfo whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "add policy to NodeInfo whitelist tx failed: {}",
+            whitelist_update.log
+        );
     }
 
     // Create ring on-chain and trigger DKG.
