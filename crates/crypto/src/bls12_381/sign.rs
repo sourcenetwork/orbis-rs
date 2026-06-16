@@ -21,7 +21,7 @@ use ark_ec::{
 use ark_ff::{field_hashers::DefaultFieldHasher, Field, One, PrimeField as _, Zero};
 use ark_serialize::CanonicalSerialize;
 use ark_std::collections::HashSet;
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use subtle::ConstantTimeEq;
 
 /// Domain separation tag for BLS signatures (IETF standard)
@@ -335,7 +335,7 @@ fn recover_signature(shares: &[PubShare<G2Point>], t: usize, n: usize) -> Result
 /// derivation+metadata inputs. Backward compatible: passing `None` for metadata
 /// yields the same hash as the previous single-argument form.
 fn derive_sign_scalar(derivation: &[u8], metadata: Option<&[u8]>) -> Fr {
-    let mut hasher = Sha256::new();
+    let mut hasher = Sha512::new();
     hasher.update(SIGN_DERIVATION_DOMAIN);
     hasher.update(derivation);
     if let Some(meta) = metadata {

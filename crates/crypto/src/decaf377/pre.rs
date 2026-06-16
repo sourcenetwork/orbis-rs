@@ -16,7 +16,7 @@ use ark_std::{collections::HashSet, vec::Vec};
 use decaf377::{Element, Fq, Fr};
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use subtle::ConstantTimeEq;
 
 const NAME: &str = "elgamal/decaf377";
@@ -480,11 +480,10 @@ impl ThresholdDealerNode {
 
     /// Derive a capability scalar from derivation bytes.
     fn derive_capability_scalar(derivation: &[u8]) -> Fr {
-        let mut hasher = Sha256::new();
+        let mut hasher = Sha512::new();
         hasher.update(DERIVATION_DOMAIN);
         hasher.update(derivation);
-        let hash = hasher.finalize();
-        Fr::from_le_bytes_mod_order(&hash)
+        Fr::from_le_bytes_mod_order(&hasher.finalize())
     }
 
     /// Decompress a point from bytes and validate it's a valid curve point
@@ -700,15 +699,16 @@ impl ThresholdDealerNode {
     /// (xnc_ski, UiHat, HiHat). This prevents proof replay across different
     /// ciphertexts, readers, DKG sessions, or share indices.
     ///
-    /// Re-encryption is entirely off-circuit, so SHA256 is used here.
+    /// Re-encryption is entirely off-circuit, so SHA-512 is used here for
+    /// negligible reduction bias (< 2^-261) when converting to Fr.
     fn hash_reencrypt_proof_points(
         idx: u32,
         rdr_pk: &Element,
         enc_cmt: &Element,
         effective_cmt: &Element,
         proof_points: &[Element],
-    ) -> Result<[u8; 32]> {
-        let mut hasher = Sha256::new();
+    ) -> Result<[u8; 64]> {
+        let mut hasher = Sha512::new();
 
         // Add domain separation to prevent cross-protocol attacks
         hasher.update(PROTOCOL);
@@ -731,7 +731,7 @@ impl ThresholdDealerNode {
         }
 
         let result = hasher.finalize();
-        let mut output = [0u8; 32];
+        let mut output = [0u8; 64];
         output.copy_from_slice(&result);
         Ok(output)
     }

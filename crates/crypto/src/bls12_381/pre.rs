@@ -17,7 +17,7 @@ use ark_serialize::CanonicalSerialize;
 use ark_std::{collections::HashSet, vec::Vec, UniformRand};
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use subtle::ConstantTimeEq;
 
 const NAME: &str = "elgamal/bls12_381";
@@ -518,11 +518,10 @@ impl ThresholdDealerNode {
     /// Uses domain-separated hashing to derive a scalar d = H(DERIVATION_DOMAIN || derivation).
     /// The scalar is used multiplicatively: derived_pk = d * dkg_pk.
     fn derive_capability_scalar(derivation: &[u8]) -> Fr {
-        let mut hasher = Sha256::new();
+        let mut hasher = Sha512::new();
         hasher.update(DERIVATION_DOMAIN);
         hasher.update(derivation);
-        let hash = hasher.finalize();
-        Fr::from_le_bytes_mod_order(&hash)
+        Fr::from_le_bytes_mod_order(&hasher.finalize())
     }
 
     /// Decompress a point from bytes and validate it's a valid curve point
@@ -750,8 +749,8 @@ impl ThresholdDealerNode {
         enc_cmt: &G1Affine,
         effective_cmt: &G1Affine,
         proof_points: &[G1Affine],
-    ) -> Result<[u8; 32]> {
-        let mut hasher = Sha256::new();
+    ) -> Result<[u8; 64]> {
+        let mut hasher = Sha512::new();
 
         // Add domain separation to prevent cross-protocol attacks
         hasher.update(PROTOCOL);
@@ -774,7 +773,7 @@ impl ThresholdDealerNode {
         }
 
         let result = hasher.finalize();
-        let mut output = [0u8; 32];
+        let mut output = [0u8; 64];
         output.copy_from_slice(&result);
 
         Ok(output)
@@ -869,8 +868,8 @@ impl ThresholdDealerNode {
         r1: &G1Affine,
         r2: &G1Affine,
         metadata_option: Option<&[u8; 32]>,
-    ) -> Result<[u8; 32]> {
-        let mut hasher = Sha256::new();
+    ) -> Result<[u8; 64]> {
+        let mut hasher = Sha512::new();
 
         // Add domain separation
         hasher.update(ENCRYPT_PROOF_DOMAIN);
@@ -888,7 +887,7 @@ impl ThresholdDealerNode {
         }
 
         let result = hasher.finalize();
-        let mut output = [0u8; 32];
+        let mut output = [0u8; 64];
         output.copy_from_slice(&result);
 
         Ok(output)
