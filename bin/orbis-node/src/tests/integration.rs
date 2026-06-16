@@ -150,7 +150,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         )
         .await;
         controller_client
-            .orbis_update_node_peer_id(node_key, &peer_address)
+            .orbis_update_node_peer_id(node_key, peer_address)
             .await
             .expect("update NodeInfo peer ID");
         controller_client
