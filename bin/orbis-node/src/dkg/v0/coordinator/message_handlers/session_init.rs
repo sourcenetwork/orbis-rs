@@ -18,7 +18,7 @@ pub(in crate::dkg::v0::coordinator) async fn handle_session_init<D>(
     node_id_assignments: &HashMap<String, u32>,
     token_string: &str,
     kind: &SessionKind,
-    pss_interval: Option<u64>,
+    pss_interval: u64,
     policy_id: Option<String>,
     ring_id: String,
     sender_peer_id: &PeerId,

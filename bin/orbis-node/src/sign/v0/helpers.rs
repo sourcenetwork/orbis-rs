@@ -70,7 +70,6 @@ fn ring_reshare_sign_state_from_payload(payload: &RingPayload) -> RingReshareSig
         threshold: payload.threshold,
         new_peer_node_keys: payload.new_peer_node_keys.clone().unwrap_or_default(),
         new_threshold: payload.new_threshold,
-        pss_interval: None,
         block_number_nonce: payload.block_number_nonce,
         policy_id: payload.policy_id.clone().unwrap_or_default(),
     }
@@ -796,7 +795,7 @@ mod ring_reshare_update_tests {
             new_peer_node_keys,
             new_threshold,
             threshold: 2,
-            pss_interval: Some(30),
+            pss_interval: 30,
             block_number_nonce,
             policy_id: None,
         };
@@ -844,7 +843,7 @@ mod ring_reshare_update_tests {
             new_peer_node_keys: Some(vec!["new-b".to_string(), "new-a".to_string()]),
             new_threshold: Some(1),
             threshold: 2,
-            pss_interval: Some(30),
+            pss_interval: 30,
             block_number_nonce: 9,
             policy_id: Some("policy".to_string()),
         };
@@ -870,13 +869,12 @@ mod ring_reshare_update_tests {
             new_peer_node_keys: Some(vec!["new-a".to_string(), "new-b".to_string()]),
             new_threshold: Some(1),
             threshold: 2,
-            pss_interval: None,
+            pss_interval: 0,
             block_number_nonce: 9,
             policy_id: Some("policy".to_string()),
         };
         let with_pss_interval = RingPayload {
-            upgrade_info: Default::default(),
-            pss_interval: Some(30),
+            pss_interval: 30,
             ..payload.clone()
         };
 
@@ -895,7 +893,7 @@ mod ring_reshare_update_tests {
             new_peer_node_keys: Some(vec!["new-a".to_string(), "new-b".to_string()]),
             new_threshold: Some(1),
             threshold: 2,
-            pss_interval: Some(30),
+            pss_interval: 30,
             block_number_nonce: 9,
             policy_id: Some("policy".to_string()),
         };
@@ -923,7 +921,7 @@ mod ring_reshare_update_tests {
             new_peer_node_keys: Some(vec!["new-a".to_string(), "new-b".to_string()]),
             new_threshold: Some(1),
             threshold: 2,
-            pss_interval: Some(30),
+            pss_interval: 30,
             block_number_nonce: 9,
             policy_id: Some("policy".to_string()),
         };
@@ -933,7 +931,6 @@ mod ring_reshare_update_tests {
             threshold: 1,
             new_peer_node_keys: vec![],
             new_threshold: None,
-            pss_interval: None,
             block_number_nonce: 9,
             policy_id: "policy".to_string(),
         };

@@ -254,7 +254,7 @@ pub struct DkgSessionState<D: Dkg> {
     pub kind: SessionKind,
     /// Seconds between automatic PSS refresh ceremonies for this ring.
     /// Stored here during the session so Phase 4 can write it into `RingPayload`.
-    pub pss_interval: Option<u64>,
+    pub pss_interval: u64,
     /// Optional policy that externally governs ring updates.
     /// Stored here during fresh DKG so Phase 4 can write it into `RingPayload`.
     pub policy_id: Option<String>,
@@ -308,7 +308,7 @@ impl<D: Dkg> DkgSessionState<D> {
             processed_messages: std::collections::HashSet::new(),
             processing_messages: std::collections::HashSet::new(),
             kind: SessionKind::Fresh,
-            pss_interval: None,
+            pss_interval: 0,
             policy_id: None,
             reshare_params: None,
             refresh_health_check_candidate: None,
@@ -913,7 +913,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     /// Store the PSS refresh interval for this session so Phase 4 can persist it.
-    pub async fn set_pss_interval(&self, session_id: &u128, interval: Option<u64>) {
+    pub async fn set_pss_interval(&self, session_id: &u128, interval: u64) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             state.pss_interval = interval;
@@ -1593,7 +1593,7 @@ mod tests {
             state.peer_ids = vec!["old-a".to_string(), "old-b".to_string()];
             state.peer_node_keys = vec!["node-a".to_string(), "node-b".to_string()];
             state.ring_id = "ring-id".to_string();
-            state.pss_interval = Some(60);
+            state.pss_interval = 60;
 
             state.node_id_to_peer_id =
                 HashMap::from([(1, "old-a".to_string()), (2, "old-b".to_string())]);
@@ -1625,7 +1625,7 @@ mod tests {
         assert_eq!(snapshot.0, vec!["old-a", "old-b"]);
         assert_eq!(snapshot.1, vec!["node-a", "node-b"]);
         assert_eq!(snapshot.2, "ring-id");
-        assert_eq!(snapshot.3, Some(60));
+        assert_eq!(snapshot.3, 60);
         assert_eq!(snapshot.4.get(&2), Some(&"old-b".to_string()));
         assert_eq!(snapshot.5.get("old-a"), Some(&1));
         assert_eq!(snapshot.6.get(&1), Some(&"new-a".to_string()));

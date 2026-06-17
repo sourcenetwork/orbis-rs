@@ -255,7 +255,7 @@ async fn test_dkg_followed_by_pss_refresh() {
         kind: SessionKind::Refresh {
             ring_pk_hex: key_string.clone(),
         },
-        pss_interval: None,
+        pss_interval: 86400,
         policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -628,7 +628,7 @@ fn refresh_session_init(ring_pk: &str, peer_node_key: &str, peer_id: &str) -> Dk
         kind: SessionKind::Refresh {
             ring_pk_hex: ring_pk.to_string(),
         },
-        pss_interval: None,
+        pss_interval: 86400,
         policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     }
@@ -655,7 +655,7 @@ async fn test_refresh_accepts_external_sender_when_local_node_in_ring() {
         &dummy_bulletin,
         ring_pk,
         vec![local_node_key.clone()],
-        None,
+        86400,
     )
     .await;
     write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
@@ -706,7 +706,7 @@ async fn test_refresh_rejected_local_node_not_in_ring() {
         &dummy_bulletin,
         ring_pk,
         vec![other_node_key.clone()],
-        None,
+        86400,
     )
     .await;
     write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed
@@ -746,7 +746,7 @@ async fn test_refresh_rejected_too_soon() {
         &dummy_bulletin,
         ring_pk,
         vec![local_node_key.clone()],
-        Some(86400), // 24h interval required
+        86400, // 24h interval required
     )
     .await;
 
@@ -795,7 +795,7 @@ async fn test_refresh_rejected_already_in_progress() {
         &dummy_bulletin,
         ring_pk,
         vec![local_node_key.clone()],
-        None, // time check irrelevant; rejected by in-progress flag
+        86400,
     )
     .await;
     write_last_refresh(&app_state.local_storage, ring_pk, 0); // epoch → enough time has passed

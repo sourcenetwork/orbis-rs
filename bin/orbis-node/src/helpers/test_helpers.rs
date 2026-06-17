@@ -335,7 +335,7 @@ fn seed_three_node_dummy_bulletin(
         new_peer_node_keys: None,
         new_threshold: None,
         threshold: 2,
-        pss_interval: None,
+        pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: Some("test-policy".to_string()),
     };
@@ -952,7 +952,7 @@ pub async fn write_ring_to_bulletin(
     bulletin: &DummyBulletin,
     ring_pk: &str,
     peer_node_keys: Vec<String>,
-    pss_interval: Option<u64>,
+    pss_interval: u64,
 ) {
     let payload = RingPayload {
         upgrade_info: Default::default(),
@@ -1178,7 +1178,7 @@ pub async fn create_ring_on_chain_with_pss(
         .orbis_create_ring_get_id(
             node_keys.to_vec(),
             threshold,
-            pss_interval,
+            pss_interval.unwrap_or(86400),
             policy_id,
             nonce.map(String::from),
             network::V0.version,

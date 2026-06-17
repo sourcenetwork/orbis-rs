@@ -193,7 +193,7 @@ async fn test_start_dkg_fails_on_connection_failure() {
                 new_peer_node_keys: None,
                 new_threshold: None,
                 threshold: 1,
-                pss_interval: None,
+                pss_interval: 86400,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
             },
@@ -588,7 +588,7 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
         ]),
         token_string: "not-a-valid-jwt-token".to_string(), // Invalid JWT
         kind: SessionKind::Fresh,
-        pss_interval: None,
+        pss_interval: 86400,
         policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -647,7 +647,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
                 new_peer_node_keys: None,
                 new_threshold: None,
                 threshold: 3,
-                pss_interval: None,
+                pss_interval: 86400,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
             },
@@ -676,7 +676,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
         ]),
         token_string: token,
         kind: SessionKind::Fresh,
-        pss_interval: None,
+        pss_interval: 86400,
         policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -737,7 +737,7 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
         ]),
         token_string: mismatched_token,
         kind: SessionKind::Fresh,
-        pss_interval: None,
+        pss_interval: 86400,
         policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -797,7 +797,7 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
                 new_peer_node_keys: None,
                 new_threshold: None,
                 threshold: 1,
-                pss_interval: None,
+                pss_interval: 86400,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
             },
@@ -820,7 +820,7 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
         node_id_assignments: std::collections::HashMap::from([(node_key, 1)]),
         token_string: token,
         kind: SessionKind::Fresh,
-        pss_interval: None,
+        pss_interval: 86400,
         policy_id: None,
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -848,7 +848,7 @@ async fn test_fresh_session_init_publishes_complete_state() {
     let node_key = app_state.node_key.clone();
     let local_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let session_id = 222_333u128;
-    let pss_interval = Some(60u64);
+    let pss_interval = 60u64;
 
     bulletin
         .set_ring(

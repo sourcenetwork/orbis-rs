@@ -57,7 +57,7 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         new_peer_node_keys: None,
         new_threshold: None,
         threshold: 1,
-        pss_interval: None,
+        pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
     };
@@ -385,7 +385,7 @@ async fn test_store_secret_idempotent() {
         new_peer_node_keys: None,
         new_threshold: None,
         threshold: 1,
-        pss_interval: None,
+        pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
     };

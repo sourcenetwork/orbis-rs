@@ -920,34 +920,6 @@ pub async fn set_ring_pss_interval_by_acp_with_config(
     Ok(())
 }
 
-pub async fn disable_ring_pss_by_acp(ring_id: String) -> Result<()> {
-    disable_ring_pss_by_acp_with_config(ring_id, ChainConfig::local()).await
-}
-
-pub async fn disable_ring_pss_by_acp_with_config(
-    ring_id: String,
-    config: ChainConfig,
-) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
-        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
-    let client = SourceHubClient::with_signer(config, signer)
-        .await
-        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
-    let result = client
-        .orbis_disable_ring_pss_by_acp(&ring_id)
-        .await
-        .map_err(|e| anyhow!("Failed to disable PSS: {}", e))?;
-    if result.code != 0 {
-        return Err(anyhow!(
-            "Failed to disable PSS: code {} {}",
-            result.code,
-            result.log
-        ));
-    }
-    println!("Disabled PSS for ring: {}", ring_id);
-    Ok(())
-}
-
 pub async fn schedule_ring_upgrade_by_acp(
     ring_id: String,
     next_version: u64,
