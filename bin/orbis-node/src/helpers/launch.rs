@@ -453,7 +453,34 @@ pub fn create_and_store_node_key(
             hex_key
         }
         Ok(None) => {
-            // No key exists, create one
+            // No key exists, create one.
+            //
+            // In integration-test builds, ORBIS_SIGNING_KEY may supply a deterministic
+            // private key hex so the public key is known before the chain starts (needed
+            // for genesis injection).  The env var is absent in production.
+            #[cfg(feature = "integration-test")]
+            if let Ok(env_hex) = std::env::var("ORBIS_SIGNING_KEY") {
+                let env_hex = env_hex.trim().to_string();
+                if !env_hex.is_empty() {
+                    tracing::info!("Using ORBIS_SIGNING_KEY for deterministic signing key");
+                    local_storage
+                        .set_encrypted(
+                            LocalStorageKeys::NodeSigningKey,
+                            Zeroizing::new(env_hex.as_bytes().to_vec()),
+                        )
+                        .map_err(|e| format!("Failed to store signing key: {}", e))?;
+                    let signer = TxSigner::from_hex_key(&env_hex, config).map_err(|e| {
+                        format!("Failed to create signer from ORBIS_SIGNING_KEY: {}", e)
+                    })?;
+                    let public_address = signer.address();
+                    tracing::info!(address = %public_address, "Signing key ready");
+                    let public_key_path = runtime_base_path().join("public_key.txt");
+                    fs::write(&public_key_path, &public_address)
+                        .map_err(|e| format!("Failed to write public key to file: {}", e))?;
+                    return Ok(signer);
+                }
+            }
+
             tracing::info!("No signing key found, generating new one");
             let mut key_bytes = [0u8; 32];
             getrandom::getrandom(&mut key_bytes)

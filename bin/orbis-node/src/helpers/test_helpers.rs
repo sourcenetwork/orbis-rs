@@ -42,7 +42,8 @@ use bulletin::{
 };
 use cli_tool;
 use common::blockchain::{
-    acp::Object, ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+    acp::{Actor, Object, Relationship, Subject, SubjectKind},
+    ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
 };
 use hex;
 use local_storage::{
@@ -1098,6 +1099,97 @@ pub async fn wait_for_nodes_ready(
 // ============================================================================
 // Integration-test chain helpers (new DKG flow)
 // ============================================================================
+
+/// Create an orbis ring governance policy and register both the policy itself
+/// and the given ring as ACP objects, all using the provided `client`.
+///
+/// Using an existing client avoids account-sequence conflicts when the caller
+/// also uses that client for subsequent transactions.
+/// Compute the did:key DID for a secp256k1 compressed public key (hex-encoded).
+/// Format: `did:key:z{base58btc([0xe7, 0x01] + pubkey_bytes)}`
+/// Matches SourceHub `x/acp/did/types.go` `DIDFromPubKey` for secp256k1 keys.
+fn secp256k1_pubkey_to_did(compressed_pubkey_hex: &str) -> String {
+    let pubkey_bytes = hex::decode(compressed_pubkey_hex).expect("invalid compressed pubkey hex");
+    let mut prefixed = vec![0xe7u8, 0x01u8]; // varint(231) = secp256k1-pub multicodec
+    prefixed.extend_from_slice(&pubkey_bytes);
+    format!("did:key:z{}", bs58::encode(&prefixed).into_string())
+}
+
+pub async fn create_ring_governance_with_ring(
+    client: &SourceHubClient,
+    ring_id: &str,
+    operator_pubkeys: &[&str],
+) -> String {
+    let ids_before: std::collections::HashSet<String> = client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids")
+        .ids
+        .into_iter()
+        .collect();
+
+    client
+        .acp_create_policy(ORBIS_RING_POLICY_YAML, 1)
+        .await
+        .expect("create orbis ring policy");
+
+    // Poll until the new policy appears on-chain (confirms it is committed).
+    let policy_id = client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids after create")
+        .ids
+        .into_iter()
+        .find(|id| !ids_before.contains(id))
+        .expect("new policy ID not found");
+
+    client
+        .acp_register_object(
+            &policy_id,
+            Object {
+                resource: "ring_policy".to_string(),
+                id: policy_id.clone(),
+            },
+        )
+        .await
+        .expect("register ring_policy object");
+
+    client
+        .acp_register_object(
+            &policy_id,
+            Object {
+                resource: "ring".to_string(),
+                id: ring_id.to_string(),
+            },
+        )
+        .await
+        .expect("register ring object");
+
+    // Grant each node's DID the `operator` relation so MsgFinalizeRing passes the
+    // SourceHub ACP update_ring permission check (nodes sign with secp256k1 keys,
+    // and SourceHub derives did:key from the on-chain pubkey for the permission lookup).
+    for pubkey_hex in operator_pubkeys {
+        let node_did = secp256k1_pubkey_to_did(pubkey_hex);
+        client
+            .acp_set_relationship(
+                &policy_id,
+                Relationship {
+                    object: Some(Object {
+                        resource: "ring".to_string(),
+                        id: ring_id.to_string(),
+                    }),
+                    relation: "operator".to_string(),
+                    subject: Some(Subject {
+                        kind: Some(SubjectKind::Actor(Actor { id: node_did })),
+                    }),
+                },
+            )
+            .await
+            .expect("grant node operator on ring");
+    }
+
+    policy_id
+}
 
 /// Create an orbis ring governance policy as TEST_ACCOUNT_HEX_KEY, register its
 /// own policy ID as a `ring_policy` ACP object, and return the policy ID.

@@ -245,4 +245,30 @@ mod tests {
 
         assert!(address.starts_with("source1"));
     }
+
+    #[test]
+    fn print_integration_test_node_keys() {
+        // Compute and assert the secp256k1 compressed pubkeys for private keys 1, 2, 3.
+        // These are the fixed keys used by the integration-test docker-compose nodes.
+        let config = ChainConfig::local();
+        for (n, expected) in [
+            (
+                "0000000000000000000000000000000000000000000000000000000000000001",
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000002",
+                "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000003",
+                "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+            ),
+        ] {
+            let signer = TxSigner::from_hex_key(n, config.clone()).unwrap();
+            let got = signer.public_key_hex();
+            println!("privkey={n}\npubkey ={got}");
+            assert_eq!(got, expected, "pubkey mismatch for private key {n}");
+        }
+    }
 }
