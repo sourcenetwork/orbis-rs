@@ -419,6 +419,98 @@ pub mod generic_tests {
         Ok(())
     }
 
+    /// A Byzantine node sends a share whose value does not satisfy its committed polynomial.
+    /// Honest nodes must detect and reject it, and the ceremony must fail rather than
+    /// producing corrupt key material (CRIT-3: there is no threshold-recovery fallback).
+    pub fn test_byzantine_share_detected_and_ceremony_aborts<Node, F, CreateShare>(
+        node_factory: F,
+        create_invalid_share: CreateShare,
+    ) -> Result<()>
+    where
+        Node: TestDkgNode,
+        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PubPoly: Clone,
+        Node::PolynomialCommitment: Clone,
+        Node::ShareValue: Clone + zeroize::Zeroize,
+        F: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>> + Clone,
+        CreateShare: Fn(u32, u32, u128) -> crate::r#trait::DistributedShare<Node::ShareValue>,
+    {
+        use rand_core::{OsRng, RngCore};
+        let mut rng = OsRng;
+        let mut session_id_bytes = [0u8; 16];
+        rng.fill_bytes(&mut session_id_bytes);
+        let session_id = u128::from_le_bytes(session_id_bytes);
+
+        let n = 3;
+        let t = 2;
+
+        let mut node1 = *node_factory(1, t, n, session_id, DkgRole::Standard)?; // Byzantine
+        let mut node2 = *node_factory(2, t, n, session_id, DkgRole::Standard)?;
+        let mut node3 = *node_factory(3, t, n, session_id, DkgRole::Standard)?;
+
+        node1.generate_polynomial(DkgMode::Fresh)?;
+        node2.generate_polynomial(DkgMode::Fresh)?;
+        node3.generate_polynomial(DkgMode::Fresh)?;
+
+        // Broadcast real commitments — Byzantine node does not lie about its commitment.
+        let cmt1 = node1.commitment().clone();
+        let cmt2 = node2.commitment().clone();
+        let cmt3 = node3.commitment().clone();
+
+        node1.receive_commitment(2, cmt2.clone())?;
+        node1.receive_commitment(3, cmt3.clone())?;
+        node2.receive_commitment(1, cmt1.clone())?;
+        node2.receive_commitment(3, cmt3.clone())?;
+        node3.receive_commitment(1, cmt1.clone())?;
+        node3.receive_commitment(2, cmt2.clone())?;
+
+        // Deliver honest shares from nodes 2 and 3.
+        let shares_from_2 = node2.generate_shares()?;
+        let shares_from_3 = node3.generate_shares()?;
+        for s in &shares_from_2 {
+            if s.to_id == 1 {
+                node1.receive_share(s.clone())?;
+            }
+            if s.to_id == 3 {
+                node3.receive_share(s.clone())?;
+            }
+        }
+        for s in &shares_from_3 {
+            if s.to_id == 1 {
+                node1.receive_share(s.clone())?;
+            }
+            if s.to_id == 2 {
+                node2.receive_share(s.clone())?;
+            }
+        }
+
+        // Byzantine node 1 sends wrong share values (produced by create_invalid_share)
+        // that do not verify against its committed polynomial.
+        let bad_for_2 = create_invalid_share(1, 2, session_id);
+        let bad_for_3 = create_invalid_share(1, 3, session_id);
+
+        assert!(
+            node2.receive_share(bad_for_2).is_err(),
+            "node2 must reject Byzantine share from node1"
+        );
+        assert!(
+            node3.receive_share(bad_for_3).is_err(),
+            "node3 must reject Byzantine share from node1"
+        );
+
+        // With node1's contribution missing the honest nodes cannot compute their final share.
+        assert!(
+            node2.compute_secret_share().is_err(),
+            "compute_secret_share must fail for node2 when missing node1's honest share"
+        );
+        assert!(
+            node3.compute_secret_share().is_err(),
+            "compute_secret_share must fail for node3 when missing node1's honest share"
+        );
+
+        Ok(())
+    }
+
     // =========================================================================
     // Refresh and Reshare generic tests
     // =========================================================================

@@ -1,7 +1,7 @@
 use crate::bls12_381::pre::ThresholdDealerNode;
 use crate::r#trait::ThresholdDealer;
 use crate::test_helper::DKGCoordinator;
-use ark_bls12_381::{Fr, G1Projective};
+use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::Group;
 use ark_std::UniformRand;
 use rand_core::OsRng;
@@ -12,7 +12,7 @@ use rand_core::OsRng;
 
 #[test]
 fn test_all_pre() {
-    crate::pre_tests::run_all_tests::<ThresholdDealerNode, _, _, _, _, _, _>(
+    crate::pre_tests::run_all_tests::<ThresholdDealerNode, _, _, _, _, _, _, _>(
         // make_keypair: random (scalar, group element) pair
         || {
             let sk = Fr::rand(&mut OsRng);
@@ -38,6 +38,8 @@ fn test_all_pre() {
             )?;
             coordinator.run_dkg()
         },
+        // make_identity_pk: G1 identity element
+        G1Affine::identity,
     )
     .unwrap();
 }

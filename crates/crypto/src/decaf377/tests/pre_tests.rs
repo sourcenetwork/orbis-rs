@@ -10,7 +10,7 @@ use rand_core::OsRng;
 
 #[test]
 fn test_all_pre() {
-    crate::pre_tests::run_all_tests::<ThresholdDealerNode, _, _, _, _, _, _>(
+    crate::pre_tests::run_all_tests::<ThresholdDealerNode, _, _, _, _, _, _, _>(
         // make_keypair: random (scalar, group element) pair
         || {
             let sk = Fr::rand(&mut OsRng);
@@ -36,6 +36,8 @@ fn test_all_pre() {
             )?;
             coordinator.run_dkg()
         },
+        // make_identity_pk: decaf377 identity element
+        Element::default,
     )
     .unwrap();
 }

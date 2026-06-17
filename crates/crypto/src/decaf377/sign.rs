@@ -23,7 +23,7 @@ use ark_ff::{One, Zero};
 use ark_serialize::CanonicalSerialize;
 use decaf377::{Element, Fr};
 use rand_core::OsRng;
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 
 use super::common::{ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
 
@@ -173,7 +173,7 @@ fn compute_binding_factor(
     msg: &[u8],
     all_commitments: &[(u32, FrostNonceCommitment)],
 ) -> Result<Fr> {
-    let mut hasher = Sha256::new();
+    let mut hasher = Sha512::new();
     hasher.update(FROST_BINDING_DOMAIN);
     hasher.update(participant_id.to_le_bytes());
     hasher.update((msg.len() as u64).to_le_bytes());
@@ -219,7 +219,7 @@ fn compute_group_commitment(
 
 /// Fiat-Shamir challenge: c = H(CHALLENGE_DOMAIN || R || Y || msg)
 fn compute_challenge(r_point: &Element, aggregate_pk: &Element, msg: &[u8]) -> Result<Fr> {
-    let mut hasher = Sha256::new();
+    let mut hasher = Sha512::new();
     hasher.update(FROST_CHALLENGE_DOMAIN);
     let mut r_bytes = Vec::new();
     r_point
@@ -236,13 +236,12 @@ fn compute_challenge(r_point: &Element, aggregate_pk: &Element, msg: &[u8]) -> R
     Ok(fr_from_hash(&hash))
 }
 
-/// Convert a 32-byte hash to an Fr element (reduce mod p)
+/// Convert a SHA-512 digest to an Fr element (reduce mod p).
+///
+/// 512 bits of input gives bias < 2^-261 for decaf377 Fr (251-bit modulus),
+/// which is negligible. Using SHA-256 (256 bits) would give ~1.5% bias.
 fn fr_from_hash(hash: &[u8]) -> Fr {
-    // Interpret as little-endian u256 and reduce mod the field modulus.
-    // decaf377::Fr::from_le_bytes_mod_order handles this correctly.
-    let mut bytes = [0u8; 32];
-    bytes.copy_from_slice(&hash[..32]);
-    Fr::from_le_bytes_mod_order(&bytes)
+    Fr::from_le_bytes_mod_order(hash)
 }
 
 /// Lagrange coefficient: lambda_i = product_{j != i} (x_j / (x_j - x_i)) evaluated at x=0
@@ -547,7 +546,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
 /// derivation+metadata inputs. Backward compatible: passing `None` for metadata
 /// yields the same hash as the previous single-argument form.
 fn derive_sign_scalar(derivation: &[u8], metadata: Option<&[u8]>) -> Fr {
-    let mut hasher = Sha256::new();
+    let mut hasher = Sha512::new();
     hasher.update(SIGN_DERIVATION_DOMAIN);
     hasher.update(derivation);
     if let Some(meta) = metadata {

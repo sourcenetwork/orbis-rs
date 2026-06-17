@@ -26,10 +26,14 @@ use crate::r#trait::{
 };
 
 /// Run all generic PRE tests for a given [`ThresholdDealer`] implementation.
-pub fn run_all_tests<T, SV, PK, PP, MK, MP, RD>(
+///
+/// The `make_identity_pk` closure must return the group identity element for `PK`
+/// (e.g. `G1Affine::identity()` for BLS12-381, `Element::default()` for decaf377).
+pub fn run_all_tests<T, SV, PK, PP, MK, MP, RD, MI>(
     make_keypair: MK,
     make_pub_poly: MP,
     run_dkg: RD,
+    make_identity_pk: MI,
 ) -> Result<()>
 where
     T: ThresholdDealer<
@@ -46,6 +50,7 @@ where
     MK: Fn() -> (SV, PK) + Clone,
     MP: Fn(Vec<PK>) -> PP + Clone,
     RD: Fn(usize, usize) -> Result<(PK, Vec<PriShare<SV>>, PP)> + Clone,
+    MI: Fn() -> PK,
 {
     test_encrypt_decrypt_flow::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_encrypt_decrypt_large_data::<T, SV, PK, PP, _>(make_keypair.clone())?;
@@ -90,9 +95,51 @@ where
         run_dkg.clone(),
     )?;
     test_dkg_encrypt_decrypt_with_derivation_integration::<T, SV, PK, PP, _, _>(
-        make_keypair,
+        make_keypair.clone(),
         run_dkg,
     )?;
+    test_reencrypt_rejects_identity_rdr_pk::<T, SV, PK, PP, _, _>(make_keypair, make_identity_pk)?;
+    Ok(())
+}
+
+/// Verifies that `reencrypt` rejects the group identity element as `rdr_pk`.
+///
+/// A zero `rdr_pk` makes every re-encrypted share equal to the identity, leaking no
+/// key material to the reader while appearing to succeed — the check must reject it
+/// before any computation.
+pub fn test_reencrypt_rejects_identity_rdr_pk<T, SV, PK, PP, MK, MI>(
+    make_keypair: MK,
+    make_identity_pk: MI,
+) -> Result<()>
+where
+    T: ThresholdDealer<
+        ShareValue = SV,
+        PublicKey = PK,
+        PubPoly = PP,
+        Secret = Secret,
+        DistKeyShare = DistKeyShare<SV>,
+        ReencryptReply = ReencryptReply<SV, PK>,
+    >,
+    SV: Clone + zeroize::Zeroize,
+    PK: PartialEq + std::fmt::Debug + Clone,
+    PP: PubPolyTrait<PublicKey = PK>,
+    MK: Fn() -> (SV, PK),
+    MI: Fn() -> PK,
+{
+    let (dkg_sk, dkg_pk) = make_keypair();
+    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, b"test data", None, None)?;
+
+    let share = DistKeyShare {
+        pri_share: PriShare { i: 1, v: dkg_sk },
+    };
+    let dealer = T::new();
+    let identity = make_identity_pk();
+
+    let result = dealer.reencrypt(&share, &encrypted_secret, &identity, None);
+    assert!(
+        result.is_err(),
+        "reencrypt must reject the identity element as rdr_pk"
+    );
     Ok(())
 }
 

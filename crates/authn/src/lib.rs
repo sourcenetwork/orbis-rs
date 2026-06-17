@@ -1,6 +1,7 @@
 pub mod error;
 pub mod jwt_builder;
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use did_key::{resolve, KeyMaterial};
 use error::{AuthNError, Result};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
@@ -166,9 +167,16 @@ where
     // Extract the public key bytes from the resolved DID key
     let public_key_bytes = key.public_key_bytes();
 
-    // Now verify with the actual public key
-    // Ed25519 public keys are 32 bytes raw
-    let decoding_key = DecodingKey::from_ed_der(&public_key_bytes);
+    if public_key_bytes.len() != 32 {
+        return Err(AuthNError::DidError(format!(
+            "Expected 32-byte Ed25519 public key, got {} bytes",
+            public_key_bytes.len()
+        )));
+    }
+
+    // from_ed_components accepts the base64url-encoded raw key x-component (JWK form).
+    let decoding_key = DecodingKey::from_ed_components(&URL_SAFE_NO_PAD.encode(&public_key_bytes))
+        .map_err(|e| AuthNError::JwtError(format!("Failed to build decoding key: {}", e)))?;
     let mut validation = Validation::new(Algorithm::EdDSA);
     validation.validate_exp = false; // We'll check expiration manually
     validation.required_spec_claims.clear();
