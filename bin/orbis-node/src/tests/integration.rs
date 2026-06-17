@@ -150,7 +150,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // Verify the queried node keys match the expected constants so that genesis and
     // runtime agree, then fail fast with a clear message if the docker-compose
     // ORBIS_SIGNING_KEY values have drifted from the constants above.
-    let node_keys = vec![
+    let node_keys = [
         node1_info.node_key.clone(),
         node2_info.node_key.clone(),
         node3_info.node_key.clone(),
