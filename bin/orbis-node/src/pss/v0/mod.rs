@@ -40,14 +40,18 @@ use crate::dkg::v0::helpers::{
 use crate::dkg::v0::messages::{DkgMessage, SessionKind};
 use crate::dkg::v0::session_state::RingPssClaimOutcome;
 use crate::helpers::auth::current_unix_time;
-use crate::helpers::helpers::{extract_node_part, installed_versions_label, validate_all_peer_ids};
+use crate::helpers::helpers::{
+    extract_node_part, installed_versions_label, resolve_ring_protocol_decision,
+    validate_all_peer_ids,
+};
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
     peer_ids_from_routes, resolve_node_routes, NodeRoute,
 };
 use crate::metrics;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
-use bulletin::r#trait::RingPayload;
+use bulletin::error::BulletinError;
+use bulletin::r#trait::{BulletinKind, BulletinWriteKind, RingCancellationPayload, RingPayload};
 use crypto::r#trait::{Dkg, DkgRole};
 use crypto::{GroupAffine, PolynomialCommitmentImpl, PubPolyImpl, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -139,10 +143,30 @@ where
     let post_id = &entry.bulletin_post_id;
     let ring_pk_str = &entry.ring_pk_str;
 
-    let (ring_payload, protocol_routes) =
-        crate::helpers::helpers::read_ring_for_protocol(&*app_state.bulletin, post_id)
-            .await
-            .map_err(DkgError::ProtocolError)?;
+    let ring_post = match app_state
+        .bulletin
+        .read(post_id.clone(), BulletinKind::Ring)
+        .await
+    {
+        Ok(post) => post,
+        Err(BulletinError::NotFound { .. }) => {
+            return cleanup_missing_pending_ring(app_state, entry).await;
+        }
+        Err(error) => {
+            return Err(DkgError::ProtocolError(format!(
+                "failed to read protocol state for ring {}: {}",
+                post_id, error
+            )));
+        }
+    };
+    let ring_payload = RingPayload::try_from(ring_post).map_err(|error| {
+        DkgError::ProtocolError(format!(
+            "malformed ring payload for ring {}: {}",
+            post_id, error
+        ))
+    })?;
+    let (protocol_routes, _, _) =
+        resolve_ring_protocol_decision(post_id, &ring_payload).map_err(DkgError::ProtocolError)?;
 
     if ring_payload.ring_pk.is_empty() {
         return cleanup_pending_fresh_ring_if_due(app_state, entry, &ring_payload).await;
@@ -276,7 +300,6 @@ where
         return Ok(());
     }
 
-    let _guard = app_state.ring_index_lock.lock().await;
     let has_local_bundle = app_state
         .local_storage
         .contains(LocalStorageKeys::RingKey(ring_pk_str.clone()))
@@ -298,6 +321,39 @@ where
         return Ok(());
     }
 
+    let payload = RingCancellationPayload {
+        ring_id: post_id.clone(),
+    };
+    let payload_bytes: Vec<u8> = payload.try_into().map_err(|error| {
+        DkgError::Serialization(format!(
+            "PSS: failed to serialize pending ring cancellation: {}",
+            error
+        ))
+    })?;
+    let _ = app_state
+        .bulletin
+        .post(BulletinWriteKind::CancelPendingRing, payload_bytes)
+        .await
+        .inspect_err(|error| {
+            tracing::warn!(
+                ring_id = %post_id,
+                ring_pk_str = %ring_pk_str,
+                elapsed_secs = elapsed_secs,
+                pss_interval_secs = pss_interval_secs,
+                error = %error,
+                "PSS: failed to cancel stale pending fresh DKG on bulletin; continuing local cleanup"
+            );
+        });
+
+    tracing::warn!(
+        ring_id = %post_id,
+        ring_pk_str = %ring_pk_str,
+        elapsed_secs = elapsed_secs,
+        pss_interval_secs = pss_interval_secs,
+        "PSS: cancelled stale pending fresh DKG on bulletin"
+    );
+
+    let _guard = app_state.ring_index_lock.lock().await;
     remove_ring_index_entry(&app_state.local_storage, entry)?;
 
     tracing::warn!(
@@ -308,6 +364,49 @@ where
         "PSS: cleaned up dangling pending fresh DKG index entry"
     );
 
+    Ok(())
+}
+
+async fn cleanup_missing_pending_ring<D>(
+    app_state: &Arc<AppState<D>>,
+    entry: &RingIndexEntry,
+) -> Result<(), DkgError>
+where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = GroupAffine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    let has_local_bundle = app_state
+        .local_storage
+        .contains(LocalStorageKeys::RingKey(entry.ring_pk_str.clone()))
+        .map_err(|error| {
+            DkgError::Storage(format!(
+                "PSS: failed to check bundle for missing bulletin ring: {}",
+                error
+            ))
+        })?;
+    if has_local_bundle {
+        tracing::warn!(
+            ring_id = %entry.bulletin_post_id,
+            ring_pk_str = %entry.ring_pk_str,
+            "PSS: bulletin ring is missing but a local share bundle exists; preserving local state"
+        );
+        return Ok(());
+    }
+
+    let _guard = app_state.ring_index_lock.lock().await;
+    remove_ring_index_entry(&app_state.local_storage, entry)?;
+    tracing::warn!(
+        ring_id = %entry.bulletin_post_id,
+        ring_pk_str = %entry.ring_pk_str,
+        "PSS: removed dangling local index for a ring already missing from the bulletin"
+    );
     Ok(())
 }
 

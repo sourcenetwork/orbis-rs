@@ -2,7 +2,7 @@ use crate::{
     error::{BulletinError, Result},
     r#trait::{
         Bulletin, BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, KeyDerivation,
-        NodeInfo, RingFinalizationPayload, RingPayload,
+        NodeInfo, RingCancellationPayload, RingFinalizationPayload, RingPayload,
     },
 };
 use async_trait::async_trait;
@@ -21,6 +21,8 @@ pub struct DummyBulletin {
     pending_finalization_ring_pks: Mutex<HashMap<String, String>>,
     /// Successful fresh-DKG finalization confirmations by ring ID.
     finalization_counts: Mutex<HashMap<String, usize>>,
+    /// Test-only failure injection for pending-ring cancellation.
+    fail_pending_ring_cancellations: Mutex<bool>,
 }
 
 #[async_trait]
@@ -32,6 +34,11 @@ impl Bulletin for DummyBulletin {
                     let finalize: RingFinalizationPayload = serde_json::from_slice(&payload)
                         .map_err(|e| BulletinError::ParseError(e.to_string()))?;
                     return self.post_finalized_ring(finalize);
+                }
+                BulletinWriteKind::CancelPendingRing => {
+                    let cancellation: RingCancellationPayload = serde_json::from_slice(&payload)
+                        .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+                    return self.cancel_pending_ring(cancellation);
                 }
                 BulletinWriteKind::NodeInfo => return Err(BulletinError::ParseError(
                     "DummyBulletin cannot derive a NodeInfo id; use set_node_info for test setup"
@@ -113,6 +120,40 @@ impl Bulletin for DummyBulletin {
 }
 
 impl DummyBulletin {
+    fn cancel_pending_ring(&self, cancellation: RingCancellationPayload) -> Result<String> {
+        if *self.fail_pending_ring_cancellations.lock().unwrap() {
+            return Err(BulletinError::ChainError(
+                "injected pending ring cancellation failure".to_string(),
+            ));
+        }
+
+        let mut posts = self.posts.lock().unwrap();
+        let post = posts
+            .get(&cancellation.ring_id)
+            .ok_or_else(|| BulletinError::NotFound {
+                id: cancellation.ring_id.clone(),
+            })?;
+        let payload: RingPayload = serde_json::from_slice(&post.payload)
+            .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        if !payload.ring_pk.is_empty() {
+            return Err(BulletinError::ParseError(format!(
+                "ring {} is already finalized",
+                cancellation.ring_id
+            )));
+        }
+
+        posts.remove(&cancellation.ring_id);
+        self.pending_finalization_ring_pks
+            .lock()
+            .unwrap()
+            .remove(&cancellation.ring_id);
+        self.finalization_counts
+            .lock()
+            .unwrap()
+            .remove(&cancellation.ring_id);
+        Ok(cancellation.ring_id)
+    }
+
     fn post_finalized_ring(&self, finalize: RingFinalizationPayload) -> Result<String> {
         let mut posts = self.posts.lock().unwrap();
         let post = posts
@@ -188,6 +229,7 @@ impl Default for DummyBulletin {
             posts: Mutex::new(HashMap::new()),
             pending_finalization_ring_pks: Mutex::new(HashMap::new()),
             finalization_counts: Mutex::new(HashMap::new()),
+            fail_pending_ring_cancellations: Mutex::new(false),
         }
     }
 }
@@ -271,6 +313,10 @@ impl DummyBulletin {
             .get(ring_id)
             .copied()
             .unwrap_or_default()
+    }
+
+    pub fn set_fail_pending_ring_cancellations(&self, fail: bool) {
+        *self.fail_pending_ring_cancellations.lock().unwrap() = fail;
     }
 }
 
@@ -375,5 +421,44 @@ mod tests {
         assert_eq!(bulletin.finalization_count(&ring_id), 1);
         let payload = read_ring_payload(&bulletin, &ring_id).await;
         assert_eq!(payload.ring_pk, "");
+    }
+
+    #[tokio::test]
+    async fn cancel_pending_ring_deletes_ring_and_finalization_state() {
+        let (bulletin, ring_id) = pending_ring_fixture();
+
+        post_finalized_ring(&bulletin, &ring_id, "ring-pk")
+            .await
+            .expect("record first finalization");
+        assert_eq!(bulletin.finalization_count(&ring_id), 1);
+
+        let cancellation = RingCancellationPayload {
+            ring_id: ring_id.clone(),
+        };
+        let payload_bytes: Vec<u8> = cancellation.try_into().expect("serialize cancellation");
+        let cancelled_id = bulletin
+            .post(BulletinWriteKind::CancelPendingRing, payload_bytes)
+            .await
+            .expect("cancel pending ring");
+        assert_eq!(cancelled_id, ring_id);
+        assert!(matches!(
+            bulletin.read(ring_id.clone(), BulletinKind::Ring).await,
+            Err(BulletinError::NotFound { .. })
+        ));
+        assert_eq!(bulletin.finalization_count(&ring_id), 0);
+
+        let replacement = RingPayload {
+            ring_pk: String::new(),
+            peer_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
+            threshold: 2,
+            ..Default::default()
+        };
+        bulletin
+            .set_ring(ring_id.clone(), replacement)
+            .expect("seed replacement ring");
+        post_finalized_ring(&bulletin, &ring_id, "replacement-pk")
+            .await
+            .expect("old pending ring_pk state should be cleared");
+        assert_eq!(bulletin.finalization_count(&ring_id), 1);
     }
 }

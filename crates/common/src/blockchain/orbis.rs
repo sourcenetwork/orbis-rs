@@ -281,6 +281,28 @@ impl MsgCancelRingUpgradeByAcp {
 pub struct MsgCancelRingUpgradeByAcpResponse {}
 
 #[derive(Clone, Message)]
+pub struct MsgCancelPendingRing {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub ring_id: String,
+}
+
+impl MsgCancelPendingRing {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgCancelPendingRing";
+
+    pub fn new(creator: &str, ring_id: &str) -> Self {
+        Self {
+            creator: creator.to_string(),
+            ring_id: ring_id.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgCancelPendingRingResponse {}
+
+#[derive(Clone, Message)]
 pub struct MsgFinalizeRing {
     #[prost(string, tag = "1")]
     pub creator: String,
@@ -1163,6 +1185,19 @@ impl SourceHubClient {
         .await
     }
 
+    pub async fn orbis_cancel_pending_ring(&self, ring_id: &str) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgCancelPendingRing::new(&signer.address(), ring_id);
+        self.broadcast_proto_msg_with_gas(
+            MsgCancelPendingRing::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
     pub async fn orbis_update_node_peer_id(
         &self,
         node_key: &str,
@@ -1362,9 +1397,9 @@ mod tests {
 
     use super::{
         decode_store_document_id, decode_store_key_derivation_id, ring_reshare_sign_state_hash,
-        MsgCreateRing, MsgFinalizeRing, MsgFinalizeRingReshareByThresholdSignature,
-        MsgStoreDocumentResponse, MsgStoreKeyDerivationResponse, Ring, RingReshareSignState,
-        UpgradeInfo,
+        MsgCancelPendingRing, MsgCreateRing, MsgFinalizeRing,
+        MsgFinalizeRingReshareByThresholdSignature, MsgStoreDocumentResponse,
+        MsgStoreKeyDerivationResponse, Ring, RingReshareSignState, UpgradeInfo,
     };
 
     #[test]
@@ -1380,6 +1415,17 @@ mod tests {
         let msg = MsgFinalizeRing::new("c", "r", "pk");
 
         assert_eq!(hex::encode(msg.encode_to_vec()), "0a01631201721a02706b");
+    }
+
+    #[test]
+    fn cancel_pending_ring_wire_fields_match_sourcehub_proto() {
+        let msg = MsgCancelPendingRing::new("c", "r");
+
+        assert_eq!(
+            MsgCancelPendingRing::TYPE_URL,
+            "/sourcehub.orbis.MsgCancelPendingRing"
+        );
+        assert_eq!(hex::encode(msg.encode_to_vec()), "0a0163120172");
     }
 
     #[test]

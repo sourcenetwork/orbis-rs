@@ -1,6 +1,7 @@
 use super::{ring_to_bulletin_post, SourceHubBulletin};
 use crate::r#trait::{
-    Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, RingPayload, UpgradeInfo,
+    Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, RingCancellationPayload,
+    RingPayload, UpgradeInfo,
 };
 use common::{
     blockchain::{acp::Object, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY},
@@ -231,4 +232,53 @@ async fn test_bulletin_ring() {
 
     let read_payload: RingPayload = created_post.clone().try_into().unwrap();
     assert_eq!(read_payload, payload, "Read payload should match");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_bulletin_cancel_pending_ring() {
+    let container = SourceHubTestContainer::new();
+    let config = container.chain_config();
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+        .expect("Failed to create signer");
+    let node_key = signer.public_key_hex();
+    let bulletin = SourceHubBulletin::with_signer(container.chain_config_builder(), signer, None)
+        .await
+        .unwrap();
+
+    let policy_id = create_orbis_ring_policy(&bulletin.chain_client).await;
+    bulletin
+        .chain_client
+        .orbis_create_node_info("cancel-test-peer-id", &node_key, vec![], vec![])
+        .await
+        .unwrap();
+    let (_, ring_id) = bulletin
+        .chain_client
+        .orbis_create_ring_get_id(
+            vec![node_key],
+            1,
+            86_400,
+            &policy_id,
+            Some("cancel-pending-ring-test".to_string()),
+            0,
+        )
+        .await
+        .unwrap();
+
+    let cancellation = RingCancellationPayload {
+        ring_id: ring_id.clone(),
+    };
+    let payload_bytes: Vec<u8> = cancellation.try_into().unwrap();
+    let cancelled_id = bulletin
+        .post(BulletinWriteKind::CancelPendingRing, payload_bytes)
+        .await
+        .unwrap();
+
+    assert_eq!(cancelled_id, ring_id);
+    assert!(bulletin
+        .chain_client
+        .orbis_read_ring(&ring_id)
+        .await
+        .unwrap()
+        .is_none());
 }

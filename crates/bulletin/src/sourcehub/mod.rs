@@ -2,7 +2,7 @@ use crate::{
     error::{BulletinError, Result},
     r#trait::{
         Bulletin, BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, KeyDerivation,
-        NodeInfo, RingFinalizationPayload, RingPayload, UpgradeInfo,
+        NodeInfo, RingCancellationPayload, RingFinalizationPayload, RingPayload, UpgradeInfo,
     },
 };
 use async_trait::async_trait;
@@ -32,6 +32,17 @@ impl Bulletin for SourceHubBulletin {
                     .map_err(|e| BulletinError::ChainError(e.to_string()))?;
                 check_result(result, "finalize ring")?;
                 Ok(finalize.ring_id)
+            }
+            BulletinWriteKind::CancelPendingRing => {
+                let cancellation: RingCancellationPayload = serde_json::from_slice(&payload)
+                    .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+                let result = self
+                    .chain_client
+                    .orbis_cancel_pending_ring(&cancellation.ring_id)
+                    .await
+                    .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+                check_result(result, "cancel pending ring")?;
+                Ok(cancellation.ring_id)
             }
             BulletinWriteKind::Document => {
                 let doc: DocumentPayload = serde_json::from_slice(&payload)
