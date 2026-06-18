@@ -5,7 +5,11 @@ use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bullet
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::{
     dummy::DummyBulletin,
-    r#trait::{BulletinPost, NodeInfo, RingPayload},
+    error::BulletinError,
+    r#trait::{
+        Bulletin, BulletinKind, BulletinPost, BulletinWriteKind, NodeInfo, RingCancellationPayload,
+        RingPayload,
+    },
 };
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
@@ -448,6 +452,120 @@ async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
             .any(|candidate| candidate.ring_pk_str == local_ring_pk),
         "expired pending fresh DKG RingIndex entry should be removed"
     );
+    assert!(matches!(
+        bulletin
+            .read(entry.bulletin_post_id.clone(), BulletinKind::Ring)
+            .await,
+        Err(BulletinError::NotFound { .. })
+    ));
+
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_pending_fresh_dkg_cancellation_failure_still_cleans_local_state() {
+    let db_name = "pss_pending_fresh_cleanup_chain_failure";
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+    let local_ring_pk = "pending_fresh_chain_failure_local_ring_pk";
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: String::new(),
+        peer_node_keys: vec![our_hex],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 1,
+        block_number_nonce: 0,
+        policy_id: None,
+    };
+
+    let mut entry = post_ring_and_seed_index_with_local_key(
+        &app_state,
+        &bulletin,
+        &ring_payload,
+        local_ring_pk,
+    )
+    .await;
+    entry.indexed_at_secs = current_unix_time().expect("system clock").saturating_sub(2);
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&vec![&entry]).expect("serialize RingIndex"),
+        )
+        .expect("write RingIndex");
+    bulletin.set_fail_pending_ring_cancellations(true);
+
+    let state_arc = Arc::new(app_state);
+    let result = super::pss_ring(&state_arc, &entry).await;
+
+    assert!(
+        result.is_ok(),
+        "best-effort cancellation failure should not block local cleanup: {result:?}"
+    );
+    assert!(
+        !ring_index_entries(&state_arc)
+            .iter()
+            .any(|candidate| candidate.ring_pk_str == local_ring_pk),
+        "failed chain cancellation should still remove the local index entry"
+    );
+    assert!(
+        bulletin
+            .read(entry.bulletin_post_id.clone(), BulletinKind::Ring)
+            .await
+            .is_ok(),
+        "injected cancellation failure should leave the bulletin ring intact"
+    );
+
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_pending_fresh_dkg_missing_bulletin_ring_cleans_local_state() {
+    let db_name = "pss_pending_fresh_cleanup_missing_ring";
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+    let local_ring_pk = "pending_fresh_missing_bulletin_ring_pk";
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: String::new(),
+        peer_node_keys: vec![our_hex],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 86_400,
+        block_number_nonce: 0,
+        policy_id: None,
+    };
+    let entry = post_ring_and_seed_index_with_local_key(
+        &app_state,
+        &bulletin,
+        &ring_payload,
+        local_ring_pk,
+    )
+    .await;
+
+    let cancellation = RingCancellationPayload {
+        ring_id: entry.bulletin_post_id.clone(),
+    };
+    let payload_bytes: Vec<u8> = cancellation.try_into().expect("serialize cancellation");
+    bulletin
+        .post(BulletinWriteKind::CancelPendingRing, payload_bytes)
+        .await
+        .expect("simulate another node cancelling the ring");
+
+    let state_arc = Arc::new(app_state);
+    let result = super::pss_ring(&state_arc, &entry).await;
+
+    assert!(
+        result.is_ok(),
+        "an already-missing bulletin ring should reconcile cleanly: {result:?}"
+    );
+    assert!(
+        !ring_index_entries(&state_arc)
+            .iter()
+            .any(|candidate| candidate.ring_pk_str == local_ring_pk),
+        "bundle-less local index should be removed when another node already cancelled"
+    );
 
     cleanup_db(&db_path);
 }
@@ -511,6 +629,13 @@ async fn test_pending_fresh_dkg_elapsed_interval_preserves_completed_bundle() {
             .iter()
             .any(|candidate| candidate.ring_pk_str == local_ring_pk),
         "completed fresh DKG RingIndex entry must remain while bulletin finalization is pending"
+    );
+    assert!(
+        bulletin
+            .read(entry.bulletin_post_id.clone(), BulletinKind::Ring)
+            .await
+            .is_ok(),
+        "completed local bundle must prevent bulletin cancellation"
     );
 
     cleanup_db(&db_path);
@@ -838,10 +963,10 @@ async fn test_pss_ring_refresh_zero_interval_is_due() {
     cleanup_db(&db_path);
 }
 
-/// When the ring index lists a ring that has no bulletin entry at all,
-/// `pss_ring` should fail closed through the protocol-state guard.
+/// When the ring index lists a bundle-less ring that has no bulletin entry,
+/// `pss_ring` should reconcile the dangling local entry successfully.
 #[tokio::test]
-async fn test_refresh_ring_missing_from_bulletin() {
+async fn test_refresh_ring_missing_from_bulletin_reconciles_local_index() {
     let db_name = "pss_missing_ring";
     let db_path = test_db_path(db_name);
 
@@ -859,12 +984,22 @@ async fn test_refresh_ring_missing_from_bulletin() {
         bulletin_post_id: "ghost_ring".to_string(),
         indexed_at_secs: 0,
     };
-    let result = super::pss_ring(&Arc::new(app_state), &entry).await;
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&vec![&entry]).expect("serialize RingIndex"),
+        )
+        .expect("write RingIndex");
+
+    let state_arc = Arc::new(app_state);
+    let result = super::pss_ring(&state_arc, &entry).await;
     assert!(
-        matches!(result, Err(DkgError::ProtocolError(_))),
-        "Expected ProtocolError for missing ring, got: {:?}",
+        result.is_ok(),
+        "missing bundle-less ring should reconcile successfully, got: {:?}",
         result
     );
+    assert!(ring_index_entries(&state_arc).is_empty());
 
     cleanup_db(&db_path);
 }

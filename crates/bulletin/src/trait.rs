@@ -53,6 +53,7 @@ pub enum BulletinKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BulletinWriteKind {
     Finalize,
+    CancelPendingRing,
     Document,
     KeyDerivation,
     NodeInfo,
@@ -129,6 +130,13 @@ pub struct RingFinalizationPayload {
     pub ring_id: String,
     /// Aggregate public key computed by DKG participants.
     pub ring_pk: String,
+}
+
+/// Payload for cancelling an unfinished fresh DKG ring.
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+pub struct RingCancellationPayload {
+    /// Id of the pending ring to delete.
+    pub ring_id: String,
 }
 
 /// Payload for derivation information derivation_id => payload
@@ -218,6 +226,14 @@ impl TryFrom<RingFinalizationPayload> for Vec<u8> {
     type Error = BulletinError;
 
     fn try_from(payload: RingFinalizationPayload) -> Result<Self> {
+        serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<RingCancellationPayload> for Vec<u8> {
+    type Error = BulletinError;
+
+    fn try_from(payload: RingCancellationPayload) -> Result<Self> {
         serde_json::to_vec(&payload).map_err(|e| BulletinError::ParseError(e.to_string()))
     }
 }
