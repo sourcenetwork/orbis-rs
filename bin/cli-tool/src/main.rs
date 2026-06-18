@@ -5,14 +5,13 @@ use bulletin::r#trait::BulletinKind;
 use clap::{Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_node_to_whitelist, add_policy_to_chain,
-    cancel_ring_upgrade_by_acp, create_bulletin_post, disable_ring_pss_by_acp, do_dkg,
-    do_encrypt_secret, do_generate_reader_key, do_pre, do_sign, do_store_secret, fund,
-    get_account_sequence, get_latest_ring, list_bulletin_posts, post_key_derivation,
-    prepare_secret, query_node_info, query_ring_state, read_bulletin_post,
-    register_bulletin_namespace, register_object_to_chain, remove_node_from_whitelist,
-    schedule_ring_upgrade_by_acp, set_relationship_on_chain, set_ring_pss_interval_by_acp,
-    start_ring_reshare_by_acp, store_prepared_secret, transfer_node_controller,
-    update_node_peer_id, PreparedSecret, SignResult,
+    cancel_ring_upgrade_by_acp, create_bulletin_post, do_dkg, do_encrypt_secret,
+    do_generate_reader_key, do_pre, do_sign, do_store_secret, fund, get_account_sequence,
+    get_latest_ring, list_bulletin_posts, post_key_derivation, prepare_secret, query_node_info,
+    query_ring_state, read_bulletin_post, register_bulletin_namespace, register_object_to_chain,
+    remove_node_from_whitelist, schedule_ring_upgrade_by_acp, set_relationship_on_chain,
+    set_ring_pss_interval_by_acp, start_ring_reshare_by_acp, store_prepared_secret,
+    transfer_node_controller, update_node_peer_id, PreparedSecret, SignResult,
 };
 use common::blockchain::{orbis::WhitelistTarget, ChainConfig};
 
@@ -177,11 +176,6 @@ pub enum SubCommands {
         /// Seconds between automatic PSS refresh ceremonies
         #[clap(long)]
         pss_interval: u64,
-    },
-    /// Disable PSS for a ring via ACP authorization
-    DisableRingPss {
-        #[clap(long)]
-        ring_id: String,
     },
     /// Schedule a protocol version upgrade for a ring via ACP authorization
     ScheduleRingUpgrade {
@@ -540,9 +534,6 @@ async fn main() -> Result<()> {
             pss_interval,
         } => {
             set_ring_pss_interval_by_acp(ring_id, pss_interval).await?;
-        }
-        SubCommands::DisableRingPss { ring_id } => {
-            disable_ring_pss_by_acp(ring_id).await?;
         }
         SubCommands::ScheduleRingUpgrade {
             ring_id,

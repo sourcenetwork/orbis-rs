@@ -68,7 +68,7 @@ fn reshare_session_init(
             new_threshold,
             bulletin_post_id: String::new(),
         },
-        pss_interval: None,
+        pss_interval: 86400,
         policy_id: None,
         ring_id: String::new(),
     }
@@ -190,7 +190,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
         new_peer_node_keys: Some(vec!["00112233".to_string()]),
         new_threshold: Some(1),
         threshold: 2,
-        pss_interval: None,
+        pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
     };
@@ -346,7 +346,7 @@ async fn test_reshare_session_init_rejects_new_receiver_without_node_allowlist()
                 new_peer_node_keys: Some(vec![receiver_node_key.clone()]),
                 new_threshold: Some(1),
                 threshold: 1,
-                pss_interval: None,
+                pss_interval: 86400,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
             },
@@ -370,7 +370,7 @@ async fn test_reshare_session_init_rejects_new_receiver_without_node_allowlist()
             new_threshold: 1,
             bulletin_post_id: post_id,
         },
-        pss_interval: None,
+        pss_interval: 86400,
         policy_id: None,
         ring_id: String::new(),
     };
@@ -488,7 +488,7 @@ async fn test_dealer_phase4_deletes_share_and_ring_index_entry() {
         &dummy_bulletin,
         ring_pk,
         vec!["aabbccdd".to_string()],
-        None,
+        86400,
     )
     .await;
 
@@ -566,7 +566,7 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
         &dummy_bulletin,
         ring_pk,
         vec!["aabbccdd".to_string()],
-        None,
+        86400,
     )
     .await;
 
@@ -645,7 +645,7 @@ async fn write_ring_with_announced_reshare(
         new_peer_node_keys: announced_new_peer_node_keys,
         new_threshold: announced_new_threshold,
         threshold: 2,
-        pss_interval: None,
+        pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
     };
@@ -986,7 +986,7 @@ async fn post_ring_for_validation(
         new_peer_node_keys,
         new_threshold,
         threshold,
-        pss_interval: None,
+        pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
     };
@@ -1329,7 +1329,7 @@ async fn post_reshare_announcement(
         threshold: old_threshold,
         new_peer_node_keys: Some(sorted_new_peer_node_keys.to_vec()),
         new_threshold: Some(new_threshold),
-        pss_interval: None,
+        pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: Some("test-policy".to_string()),
     };
@@ -1425,7 +1425,7 @@ async fn run_reshare_ceremony(
             new_threshold,
             bulletin_post_id: bulletin_post_id.to_string(),
         },
-        pss_interval: None,
+        pss_interval: 86400,
         policy_id: None,
         ring_id: String::new(),
     };

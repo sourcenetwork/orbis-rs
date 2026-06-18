@@ -121,7 +121,7 @@ async fn test_bulletin_document() {
         .orbis_create_ring_get_id(
             vec![node_key],
             1,
-            None,
+            86400,
             &policy_id,
             Some("document-test".to_string()),
             0,
@@ -197,6 +197,7 @@ async fn test_bulletin_ring() {
         ring_pk: String::new(),
         peer_node_keys: peer_node_keys.clone(),
         threshold,
+        pss_interval: 86400,
         policy_id: Some(policy_id.clone()),
         ..Default::default()
     };
@@ -207,7 +208,7 @@ async fn test_bulletin_ring() {
         .orbis_create_ring_get_id(
             peer_node_keys,
             threshold,
-            None,
+            86400,
             &policy_id,
             Some("ring-test".to_string()),
             0,

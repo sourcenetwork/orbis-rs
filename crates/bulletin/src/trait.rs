@@ -108,9 +108,8 @@ pub struct RingPayload {
     /// Threshold of ring
     pub threshold: u32,
     /// Seconds between automatic PSS refresh ceremonies.
-    /// `None` (or absent in JSON) means automatic refresh is disabled for this ring.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pss_interval: Option<u64>,
+    #[serde(default)]
+    pub pss_interval: u64,
     /// Block number of the last threshold-signature update.
     /// Each threshold signature uses this as a nonce. The chain updates it to
     /// the current block number after accepting the signature.

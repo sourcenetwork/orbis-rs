@@ -116,9 +116,7 @@ pub enum DkgMessage {
         /// Session kind: Fresh, Refresh, or Reshare.
         kind: SessionKind,
         /// Seconds between automatic PSS refresh ceremonies for this ring.
-        /// `None` means automatic refresh is disabled; `Some(0)` is present and immediate.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pss_interval: Option<u64>,
+        pss_interval: u64,
         /// Optional policy that externally governs ring updates.
         #[serde(skip_serializing_if = "Option::is_none")]
         policy_id: Option<String>,
@@ -162,7 +160,7 @@ mod tests {
             node_id_assignments: HashMap::new(),
             token_string: "token".to_string(),
             kind: SessionKind::Fresh,
-            pss_interval: None,
+            pss_interval: 86400,
             policy_id: None,
             ring_id: "ring-1".to_string(),
         };
@@ -173,7 +171,6 @@ mod tests {
             .and_then(|v| v.as_object())
             .expect("SessionInit variant payload");
 
-        assert!(!init.contains_key("pss_interval"));
         assert!(!init.contains_key("policy_id"));
         assert_eq!(init.get("kind"), Some(&json!({ "type": "fresh" })));
 

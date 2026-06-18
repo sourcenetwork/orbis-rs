@@ -6,9 +6,7 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
-use crate::helpers::test_helpers::{
-    create_orbis_ring_policy, create_ring_on_chain_with_pss, wait_for_ring_finalized,
-};
+use crate::helpers::test_helpers::wait_for_ring_finalized;
 use bulletin::r#trait::{
     BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, RingPayload,
 };
@@ -22,6 +20,21 @@ use crypto::helpers::generate_keypair;
 use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, PreImpl, SignImpl};
 use tokio::time::{sleep, Duration, Instant};
+
+// Fixed ring id pre-seeded into genesis (bypasses chain minimum pss_interval validation).
+const RING_ID: &str = "integration-test-ring";
+
+// Deterministic ACP policy ID for ORBIS_RING_POLICY_YAML created as the first policy
+// (counter=0) on a fresh SourceHub chain. Computed via acp_core@v0.8.1 id_transformer.go.
+// If the runtime assertion below fails, update this constant with the printed actual value.
+const RING_GOVERNANCE_POLICY_ID: &str =
+    "3199b84b4a6862c40fe2623879dfc36df281a2262898da36f7de65c376a93e05";
+
+// Deterministic secp256k1 signing keys injected via ORBIS_SIGNING_KEY in docker-compose.
+// Private keys 1, 2, 3 → standard G, 2G, 3G compressed public keys.
+const NODE_KEY_1: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+const NODE_KEY_2: &str = "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
+const NODE_KEY_3: &str = "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
 
 #[derive(Clone, Debug)]
 struct RingStateSnapshot {
@@ -65,8 +78,23 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
 
     println!("Starting Docker-based integration test...");
 
-    // Start the full integration network (sourcehub + 3 nodes)
-    let network = IntegrationTestNetwork::new();
+    // Pre-seed the ring into genesis so pss_interval=5 bypasses the chain minimum of 86400.
+    // The ring uses deterministic node signing keys (ORBIS_SIGNING_KEY in docker-compose).
+    let network = IntegrationTestNetwork::builder()
+        .with_module_genesis(
+            "orbis",
+            serde_json::json!({
+                "rings": [{
+                    "id": RING_ID,
+                    "ring_pk": "",
+                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+                    "threshold": 2,
+                    "pss_interval": 5,
+                    "policy_id": RING_GOVERNANCE_POLICY_ID
+                }]
+            }),
+        )
+        .build();
     let chain_config = network.chain_config();
     let endpoints = network.all_endpoints();
 
@@ -118,21 +146,35 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         endpoints[2].to_string(),
     ];
 
-    // Collect on-chain node keys from each node's info endpoint
-    let node_keys = vec![
+    // The ring was pre-seeded into genesis with deterministic node keys (G, 2G, 3G).
+    // Verify the queried node keys match the expected constants so that genesis and
+    // runtime agree, then fail fast with a clear message if the docker-compose
+    // ORBIS_SIGNING_KEY values have drifted from the constants above.
+    let node_keys = [
         node1_info.node_key.clone(),
         node2_info.node_key.clone(),
         node3_info.node_key.clone(),
     ];
+    assert_eq!(
+        node_keys[0], NODE_KEY_1,
+        "node1 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
+    );
+    assert_eq!(
+        node_keys[1], NODE_KEY_2,
+        "node2 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
+    );
+    assert_eq!(
+        node_keys[2], NODE_KEY_3,
+        "node3 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
+    );
+
     let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
-    // Step 1: Set up ring governance policy and whitelist nodes
+    // Step 1: Whitelist nodes and update peer IDs.
     //
-    // The Docker nodes start with empty NodeInfo whitelists. We create a policy,
-    // then update each node's NodeInfo (via TEST_ACCOUNT_HEX_KEY which is the
-    // configured controller key) to allow DKG for rings under this policy.
-    let policy_id = create_orbis_ring_policy(&chain_config).await;
-
+    // The ring is in genesis with pss_interval=5 (bypasses the 86400 minimum).
+    // Nodes are whitelisted by ring_id rather than a policy_id, so no ACP ring
+    // governance policy is needed for DKG authorization.
     let controller_client = SourceHubClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
@@ -140,6 +182,22 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     )
     .await
     .expect("controller chain client");
+
+    // Create ring governance ACP policy and register both the policy and the ring as ACP
+    // objects, all via controller_client so the nonce counter stays in sync with the
+    // subsequent node setup operations. Must be the first CreatePolicy tx (counter=0)
+    // so the returned ID matches RING_GOVERNANCE_POLICY_ID baked into genesis.
+    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
+        &controller_client,
+        RING_ID,
+        &[NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+    )
+    .await;
+    assert_eq!(
+        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+        "ACP policy ID mismatch — acp_core may have changed. \
+         Update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
+    );
 
     for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
         wait_for_node_info_on_chain(
@@ -160,31 +218,19 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         );
 
         let whitelist_update = controller_client
-            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::PolicyId(policy_id.clone()))
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
             .await
-            .expect("add policy to NodeInfo whitelist");
+            .expect("add ring to NodeInfo whitelist");
         assert_eq!(
             whitelist_update.code, 0,
-            "add policy to NodeInfo whitelist tx failed: {}",
+            "add ring to NodeInfo whitelist tx failed: {}",
             whitelist_update.log
         );
     }
 
-    // Create ring on-chain and trigger DKG.
-    // pss_interval = 5s so the PSS scheduler (5s check interval in docker-compose) fires a
-    // refresh shortly after DKG completes. Keep this above PSS_GRACE_PERIOD_SECS (10s) is
-    // intentional — the grace window means pss_interval < 10s always passes the time check
-    // immediately, so 5s gives the fresh-DKG index entry enough runway before
-    // cleanup_pending_fresh_ring_if_due can fire (it requires elapsed >= pss_interval).
-    let ring_id = create_ring_on_chain_with_pss(
-        &chain_config,
-        &node_keys,
-        threshold,
-        &policy_id,
-        None,
-        Some(5),
-    )
-    .await;
+    // Ring is in genesis — no on-chain creation needed.
+    // pss_interval=5 in genesis bypasses the chain-enforced minimum of 86400.
+    let ring_id = RING_ID.to_string();
 
     println!(
         "Starting DKG with threshold {} and ring {}...",

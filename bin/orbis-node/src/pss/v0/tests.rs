@@ -207,7 +207,7 @@ async fn test_refresh_ring_rejects_non_member() {
         new_peer_node_keys: None,
         new_threshold: None,
         threshold: 1,
-        pss_interval: Some(86400),
+        pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
     };
@@ -259,7 +259,7 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
         new_peer_node_keys: None,
         new_threshold: None,
         threshold: 1,
-        pss_interval: Some(1),
+        pss_interval: 1,
         block_number_nonce: 0,
         policy_id: None,
     };
@@ -354,7 +354,7 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
         new_peer_node_keys: None,
         new_threshold: None,
         threshold: 1,
-        pss_interval: Some(1),
+        pss_interval: 1,
         block_number_nonce: 0,
         policy_id: None,
     };
@@ -399,7 +399,7 @@ async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
         new_peer_node_keys: None,
         new_threshold: None,
         threshold: 1,
-        pss_interval: Some(1),
+        pss_interval: 1,
         block_number_nonce: 0,
         policy_id: None,
     };
@@ -464,7 +464,7 @@ async fn test_pending_fresh_dkg_elapsed_interval_preserves_completed_bundle() {
         new_peer_node_keys: None,
         new_threshold: None,
         threshold: 1,
-        pss_interval: Some(1),
+        pss_interval: 1,
         block_number_nonce: 0,
         policy_id: None,
     };
@@ -528,7 +528,7 @@ async fn test_pending_fresh_dkg_before_interval_remains_indexed() {
         new_peer_node_keys: None,
         new_threshold: None,
         threshold: 1,
-        pss_interval: Some(86_400),
+        pss_interval: 86_400,
         block_number_nonce: 0,
         policy_id: None,
     };
@@ -561,56 +561,6 @@ async fn test_pending_fresh_dkg_before_interval_remains_indexed() {
             .iter()
             .any(|candidate| candidate.ring_pk_str == local_ring_pk),
         "not-yet-expired pending fresh DKG RingIndex entry should remain"
-    );
-
-    cleanup_db(&db_path);
-}
-
-#[tokio::test]
-async fn test_pending_fresh_dkg_without_interval_remains_indexed() {
-    let db_name = "pss_pending_fresh_cleanup_no_interval";
-    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
-    let local_ring_pk = "pending_fresh_no_interval_local_ring_pk";
-    let ring_payload = RingPayload {
-        upgrade_info: Default::default(),
-        ring_pk: String::new(),
-        peer_node_keys: vec![our_hex],
-        new_peer_node_keys: None,
-        new_threshold: None,
-        threshold: 1,
-        pss_interval: None,
-        block_number_nonce: 0,
-        policy_id: None,
-    };
-
-    let entry = post_ring_and_seed_index_with_local_key(
-        &app_state,
-        &bulletin,
-        &ring_payload,
-        local_ring_pk,
-    )
-    .await;
-
-    let state_arc = Arc::new(app_state);
-    let result = super::pss_ring(&state_arc, &entry).await;
-
-    assert!(
-        result.is_ok(),
-        "pending fresh DKG without pss_interval should skip cleanup, got: {:?}",
-        result
-    );
-    assert!(
-        !state_arc
-            .local_storage
-            .contains(LocalStorageKeys::RingKey(local_ring_pk.to_string()))
-            .expect("check RingKey presence"),
-        "pending fresh DKG should not require a finalized bundle when pss_interval is absent"
-    );
-    assert!(
-        ring_index_entries(&state_arc)
-            .iter()
-            .any(|candidate| candidate.ring_pk_str == local_ring_pk),
-        "pending fresh DKG RingIndex entry should remain when pss_interval is absent"
     );
 
     cleanup_db(&db_path);
@@ -704,11 +654,11 @@ fn ring_index_entries(app_state: &crate::app_state::AppState<DkgImpl>) -> Vec<Ri
 }
 
 /// When `new_peer_node_keys` is set, `pss_ring` must dispatch to `trigger_reshare`
-/// even when `pss_interval` is absent (which would cause a refresh to skip).
+/// even when `pss_interval` has not yet elapsed (which would cause a refresh to skip).
 ///
 /// The reshare path loads the old share bundle; since none exists the function
 /// returns `Err(Storage(...))`.  That proves we reached `trigger_reshare` rather
-/// than silently returning at the interval gate.
+/// than silently returning at the timing gate.
 #[tokio::test]
 async fn test_pss_ring_reshare_bypasses_interval() {
     let db_name = "pss_reshare_bypasses_interval";
@@ -721,7 +671,7 @@ async fn test_pss_ring_reshare_bypasses_interval() {
         new_peer_node_keys: Some(vec![our_hex.clone()]),
         new_threshold: None,
         threshold: 1,
-        pss_interval: None, // no interval — refresh would skip silently
+        pss_interval: u64::MAX, // interval far out — refresh would skip, but reshare must not
         block_number_nonce: 0,
         policy_id: Some("test-policy".to_string()),
     };
@@ -764,7 +714,7 @@ async fn test_pss_ring_reshare_rejects_new_committee_node_without_allowlist() {
         new_peer_node_keys: Some(vec![our_node_key]),
         new_threshold: Some(1),
         threshold: 1,
-        pss_interval: None,
+        pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: Some("test-policy".to_string()),
     };
@@ -803,7 +753,7 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
         new_peer_node_keys: None, // only threshold change, no new members
         new_threshold: Some(1),
         threshold: 1,
-        pss_interval: None,
+        pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: Some("test-policy".to_string()),
     };
@@ -820,39 +770,45 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
     cleanup_db(&db_path);
 }
 
-/// When neither `new_peer_node_keys` nor `new_threshold` is set, and the ring has
-/// no `pss_interval`, `pss_ring` must skip silently (Ok(())) even when our
-/// node is the initiator.
+/// When neither `new_peer_node_keys` nor `new_threshold` is set, and the ring's
+/// `pss_interval` has not yet elapsed, `pss_ring` must skip refresh silently.
 #[tokio::test]
-async fn test_pss_ring_refresh_skips_without_interval() {
-    let db_name = "pss_refresh_skips_no_interval";
+async fn test_pss_ring_refresh_skips_before_interval_elapsed() {
+    let db_name = "pss_refresh_skips_not_due";
     let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
 
     let ring_payload = RingPayload {
         upgrade_info: Default::default(),
-        ring_pk: "pss_no_interval_pk".to_string(),
+        ring_pk: "pss_not_due_pk".to_string(),
         peer_node_keys: vec![our_hex.clone()],
         new_peer_node_keys: None,
         new_threshold: None,
         threshold: 1,
-        pss_interval: None, // refresh requires pss_interval; without it, must skip
+        pss_interval: u64::MAX, // interval far in the future — refresh must skip
         block_number_nonce: 0,
         policy_id: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+    // Seed a bundle with a recent last_pss so the elapsed check triggers the skip.
+    RingShareBundle {
+        share_bytes: vec![].into(),
+        public_polynomial: "poly".to_string(),
+        last_pss: u64::MAX - 1,
+    }
+    .save_by_ring_key(&app_state.local_storage, &ring_payload.ring_pk)
+    .expect("store bundle");
     let result = super::pss_ring(&Arc::new(app_state), &entry).await;
 
     assert!(
         result.is_ok(),
-        "Expected Ok(()): refresh with no pss_interval must skip silently. Got: {:?}",
+        "Expected Ok(()): refresh not yet due must skip silently. Got: {:?}",
         result
     );
     cleanup_db(&db_path);
 }
 
-/// `pss_interval = Some(0)` is a present interval and should be treated as
-/// immediately due, not skipped like `None`.
+/// `pss_interval = 0` means immediately due — elapsed >= 0 always satisfies the check.
 #[tokio::test]
 async fn test_pss_ring_refresh_zero_interval_is_due() {
     let db_name = "pss_refresh_zero_interval_due";
@@ -865,7 +821,7 @@ async fn test_pss_ring_refresh_zero_interval_is_due() {
         new_peer_node_keys: None,
         new_threshold: None,
         threshold: 1,
-        pss_interval: Some(0),
+        pss_interval: 0,
         block_number_nonce: 0,
         policy_id: None,
     };

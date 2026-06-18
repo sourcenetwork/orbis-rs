@@ -22,8 +22,8 @@
 //! Concurrent starters converge because they derive the same deterministic session ID
 //! from the ring's current public polynomial and the authoritative transition data.
 //!
-//! Rings with `pss_interval = None` are skipped for refresh (reshare is unaffected);
-//! `Some(0)` is a present interval and is due immediately.
+//! All rings carry a `pss_interval` (seconds); `0` means immediately due.
+//! Reshare is always triggered regardless of elapsed time.
 
 #[cfg(test)]
 mod tests;
@@ -159,17 +159,6 @@ where
     let is_reshare =
         ring_payload.new_peer_node_keys.is_some() || ring_payload.new_threshold.is_some();
 
-    // Refresh requires pss_interval to be present; reshare bypasses this check.
-    if !is_reshare {
-        match ring_payload.pss_interval {
-            Some(_) => {}
-            _ => {
-                tracing::debug!(ring_pk_str = %ring_pk_str, "PSS: no pss_interval set, skipping");
-                return Ok(());
-            }
-        }
-    }
-
     if ring_payload.peer_node_keys.is_empty() {
         return Err(DkgError::InvalidInput(format!(
             "PSS: ring {} has an empty committee",
@@ -216,7 +205,7 @@ where
             }
 
             // Refresh: also check that enough time has elapsed since the last ceremony.
-            let pss_interval_secs = ring_payload.pss_interval.unwrap(); // safe: checked above
+            let pss_interval_secs = ring_payload.pss_interval;
             let now_secs = current_unix_time().map_err(DkgError::SystemTime)?;
             let last_refresh_secs =
                 RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk_str)
@@ -271,17 +260,7 @@ where
 {
     let post_id = &entry.bulletin_post_id;
     let ring_pk_str = &entry.ring_pk_str;
-    let pss_interval_secs = match ring_payload.pss_interval {
-        Some(interval) => interval,
-        None => {
-            tracing::debug!(
-                ring_id = %post_id,
-                ring_pk_str = %ring_pk_str,
-                "PSS: pending fresh DKG ring has no pss_interval, skipping local cleanup"
-            );
-            return Ok(());
-        }
-    };
+    let pss_interval_secs = ring_payload.pss_interval;
 
     let now_secs = current_unix_time().map_err(DkgError::SystemTime)?;
     let elapsed_secs = now_secs.saturating_sub(entry.indexed_at_secs);

@@ -32,8 +32,8 @@ pub struct Ring {
     pub new_peer_node_keys: Vec<String>,
     #[prost(uint32, optional, tag = "7")]
     pub new_threshold: Option<u32>,
-    #[prost(uint64, optional, tag = "8")]
-    pub pss_interval: Option<u64>,
+    #[prost(uint64, tag = "8")]
+    pub pss_interval: u64,
     #[prost(uint64, tag = "9")]
     pub block_number_nonce: u64,
     #[prost(string, tag = "10")]
@@ -132,8 +132,8 @@ pub struct MsgCreateRing {
     pub peer_node_keys: Vec<String>,
     #[prost(uint32, tag = "3")]
     pub threshold: u32,
-    #[prost(uint64, optional, tag = "4")]
-    pub pss_interval: Option<u64>,
+    #[prost(uint64, tag = "4")]
+    pub pss_interval: u64,
     #[prost(string, tag = "5")]
     pub policy_id: String,
     #[prost(string, optional, tag = "6")]
@@ -149,7 +149,7 @@ impl MsgCreateRing {
         creator: &str,
         peer_node_keys: Vec<String>,
         threshold: u32,
-        pss_interval: Option<u64>,
+        pss_interval: u64,
         policy_id: &str,
         nonce: Option<String>,
         current_version: u64,
@@ -229,28 +229,6 @@ impl MsgSetRingPssIntervalByAcp {
 
 #[derive(Clone, Message)]
 pub struct MsgSetRingPssIntervalByAcpResponse {}
-
-#[derive(Clone, Message)]
-pub struct MsgDisableRingPssByAcp {
-    #[prost(string, tag = "1")]
-    pub creator: String,
-    #[prost(string, tag = "2")]
-    pub ring_id: String,
-}
-
-impl MsgDisableRingPssByAcp {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgDisableRingPssByAcp";
-
-    pub fn new(creator: &str, ring_id: &str) -> Self {
-        Self {
-            creator: creator.to_string(),
-            ring_id: ring_id.to_string(),
-        }
-    }
-}
-
-#[derive(Clone, Message)]
-pub struct MsgDisableRingPssByAcpResponse {}
 
 #[derive(Clone, Message)]
 pub struct MsgScheduleRingUpgradeByAcp {
@@ -686,8 +664,6 @@ pub struct RingReshareSignState {
     pub new_peer_node_keys: Vec<String>,
     #[prost(uint32, optional, tag = "5")]
     pub new_threshold: Option<u32>,
-    #[prost(uint64, optional, tag = "6")]
-    pub pss_interval: Option<u64>,
     #[prost(uint64, tag = "7")]
     pub block_number_nonce: u64,
     #[prost(string, tag = "8")]
@@ -735,7 +711,6 @@ pub fn ring_reshare_sign_state_hash(state: &RingReshareSignState) -> [u8; 32] {
     let mut canonical = state.clone();
     canonical.peer_node_keys.sort();
     canonical.new_peer_node_keys.sort();
-    canonical.pss_interval = None;
     Sha256::digest(canonical.encode_to_vec()).into()
 }
 
@@ -896,7 +871,7 @@ impl SourceHubClient {
         &self,
         peer_node_keys: Vec<String>,
         threshold: u32,
-        pss_interval: Option<u64>,
+        pss_interval: u64,
         policy_id: &str,
         nonce: Option<String>,
         current_version: u64,
@@ -928,7 +903,7 @@ impl SourceHubClient {
         &self,
         peer_node_keys: Vec<String>,
         threshold: u32,
-        pss_interval: Option<u64>,
+        pss_interval: u64,
         policy_id: &str,
         nonce: Option<String>,
         current_version: u64,
@@ -1146,19 +1121,6 @@ impl SourceHubClient {
         let msg = MsgSetRingPssIntervalByAcp::new(&signer.address(), ring_id, pss_interval);
         self.broadcast_proto_msg_with_gas(
             MsgSetRingPssIntervalByAcp::TYPE_URL,
-            &msg,
-            self.config().gas_multiplier,
-        )
-        .await
-    }
-
-    pub async fn orbis_disable_ring_pss_by_acp(&self, ring_id: &str) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
-        let msg = MsgDisableRingPssByAcp::new(&signer.address(), ring_id);
-        self.broadcast_proto_msg_with_gas(
-            MsgDisableRingPssByAcp::TYPE_URL,
             &msg,
             self.config().gas_multiplier,
         )
@@ -1406,18 +1368,11 @@ mod tests {
     };
 
     #[test]
-    fn create_ring_preserves_present_zero_pss_interval_on_wire() {
-        let msg = MsgCreateRing::new("c", vec!["p1".to_string()], 1, Some(0), "policy", None, 0);
+    fn create_ring_round_trips_pss_interval() {
+        let msg = MsgCreateRing::new("c", vec!["p1".to_string()], 1, 86400, "policy", None, 0);
         let bytes = msg.encode_to_vec();
-
-        assert!(
-            bytes.windows(2).any(|window| window == [0x20, 0x00]),
-            "encoded MsgCreateRing should include optional field 4 with value 0: {}",
-            hex::encode(&bytes)
-        );
-
         let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
-        assert_eq!(decoded.pss_interval, Some(0));
+        assert_eq!(decoded.pss_interval, 86400);
     }
 
     #[test]
@@ -1445,7 +1400,6 @@ mod tests {
             threshold: 2,
             new_peer_node_keys: vec!["node-d".to_string(), "node-c".to_string()],
             new_threshold: Some(1),
-            pss_interval: Some(30),
             block_number_nonce: 9,
             policy_id: "policy".to_string(),
         };
@@ -1458,29 +1412,6 @@ mod tests {
         assert_eq!(
             ring_reshare_sign_state_hash(&state),
             ring_reshare_sign_state_hash(&reordered)
-        );
-    }
-
-    #[test]
-    fn ring_reshare_sign_state_hash_ignores_pss_interval() {
-        let state = RingReshareSignState {
-            ring_pk: "pk".to_string(),
-            peer_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
-            threshold: 2,
-            new_peer_node_keys: vec!["node-c".to_string(), "node-d".to_string()],
-            new_threshold: Some(1),
-            pss_interval: None,
-            block_number_nonce: 9,
-            policy_id: "policy".to_string(),
-        };
-        let with_pss_interval = RingReshareSignState {
-            pss_interval: Some(30),
-            ..state.clone()
-        };
-
-        assert_eq!(
-            ring_reshare_sign_state_hash(&state),
-            ring_reshare_sign_state_hash(&with_pss_interval)
         );
     }
 

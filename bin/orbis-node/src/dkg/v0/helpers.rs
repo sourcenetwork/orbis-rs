@@ -295,8 +295,7 @@ pub async fn validate_reshare_session_init_for_version<S: LocalStorage>(
 /// Checks (in order):
 /// 1. The ring is known (an entry with `ring_pk_str == ring_pk_hex` exists in `RingIndex`).
 /// 2. Enough time has elapsed since the last refresh (`ring_payload.pss_interval`).
-///    If `pss_interval` is `None` the time check is skipped (any time is acceptable);
-///    `Some(0)` is present and therefore requires an existing ring timestamp.
+///    A bundle with a prior timestamp must always exist; `pss_interval = 0` means immediately due.
 ///
 /// Local node membership is **not** checked here — it requires resolving node keys to
 /// P2P peer IDs via NodeInfo bulletin lookups, which is done by the SessionInit
@@ -327,29 +326,27 @@ pub async fn validate_refresh_session_init_for_version<S: LocalStorage>(
         load_ring_payload_by_post_id(ring_pk_hex, post_id, bulletin, protocol_version).await?;
 
     // 2. Verify enough time has elapsed since the last refresh/DKG.
-    //    Only enforced when the ring has a `pss_interval` set.
-    if let Some(pss_interval_secs) = ring_payload.pss_interval {
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
-            .as_secs();
-        // `ring_pk_hex` is aggregate_pk.to_string() — same key the bundle is stored under.
-        // A missing bundle means the ring hasn't completed DKG yet.
-        let last_refresh_secs = RingShareBundle::load_by_ring_key(local_storage, ring_pk_hex)
-            .map(|b| b.last_pss)
-            .map_err(|_| {
-                DkgError::Unauthorized(
-                    "Ring has no refresh timestamp; cannot accept refresh".to_string(),
-                )
-            })?;
-        let elapsed = now_secs.saturating_sub(last_refresh_secs);
-        if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
-            return Err(DkgError::Unauthorized(format!(
-                "Refresh too soon: {}s elapsed, minimum is {}s",
-                elapsed,
-                pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)
-            )));
-        }
+    let pss_interval_secs = ring_payload.pss_interval;
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
+        .as_secs();
+    // `ring_pk_hex` is aggregate_pk.to_string() — same key the bundle is stored under.
+    // A missing bundle means the ring hasn't completed DKG yet.
+    let last_refresh_secs = RingShareBundle::load_by_ring_key(local_storage, ring_pk_hex)
+        .map(|b| b.last_pss)
+        .map_err(|_| {
+            DkgError::Unauthorized(
+                "Ring has no refresh timestamp; cannot accept refresh".to_string(),
+            )
+        })?;
+    let elapsed = now_secs.saturating_sub(last_refresh_secs);
+    if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
+        return Err(DkgError::Unauthorized(format!(
+            "Refresh too soon: {}s elapsed, minimum is {}s",
+            elapsed,
+            pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)
+        )));
     }
 
     Ok(ring_payload)
@@ -418,7 +415,7 @@ pub fn validate_fresh_session_init_params(
     peer_node_keys: &[String],
     threshold: u32,
     total_participants: u32,
-    pss_interval: Option<u64>,
+    pss_interval: u64,
     policy_id: Option<&str>,
     ring_payload: &RingPayload,
 ) -> Result<()> {
@@ -865,7 +862,7 @@ mod tests {
             new_peer_node_keys: None,
             new_threshold: None,
             threshold: 1,
-            pss_interval: None,
+            pss_interval: 86400,
             block_number_nonce: 0,
             policy_id: Some("policy".to_string()),
         }
@@ -879,7 +876,7 @@ mod tests {
             new_peer_node_keys: Some(vec![new_node_key.to_string()]),
             new_threshold: Some(1),
             threshold: 1,
-            pss_interval: None,
+            pss_interval: 86400,
             block_number_nonce: 0,
             policy_id: Some("policy".to_string()),
         }
@@ -928,7 +925,7 @@ mod tests {
             new_peer_node_keys: None,
             new_threshold: None,
             threshold: 1,
-            pss_interval: Some(60),
+            pss_interval: 60,
             block_number_nonce: 0,
             policy_id: Some("policy".to_string()),
         };
@@ -1371,7 +1368,7 @@ mod tests {
             &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string()],
-            Some(86400),
+            86400,
         )
         .await;
         // Intentionally do not write a RingShareBundle.
@@ -1408,7 +1405,7 @@ mod tests {
             &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string()],
-            Some(86400),
+            86400,
         )
         .await;
         let now = SystemTime::now()
@@ -1449,7 +1446,7 @@ mod tests {
             &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string()],
-            Some(86400),
+            86400,
         )
         .await;
         // Timestamp at epoch — elapsed >> interval.
@@ -1470,38 +1467,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_no_pss_interval_skips_time_check() {
-        // When pss_interval is None, time check is skipped — refresh always allowed.
-        let (storage, db_path) = make_storage("helpers_no_interval");
-        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-        let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
-        let ring_pk = "ring_pk_mno";
-        write_ring_to_bulletin(
-            &storage,
-            &dummy_bulletin,
-            ring_pk,
-            vec!["aabbccdd".to_string()],
-            None,
-        )
-        .await;
-        // No RingShareBundle written — would fail if the time check ran.
-        let result = validate_refresh_session_init_for_version(
-            ring_pk,
-            &storage,
-            &bulletin,
-            network::V0.version,
-        )
-        .await;
-        assert!(
-            result.is_ok(),
-            "Expected Ok when pss_interval is None (no time check), got: {:?}",
-            result
-        );
-        cleanup_db(&db_path);
-    }
-
-    #[tokio::test]
     async fn test_zero_pss_interval_requires_existing_timestamp() {
+        // pss_interval = 0 means "immediately due" but still requires a prior timestamp.
         let (storage, db_path) = make_storage("helpers_zero_interval");
         let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let bulletin: Arc<dyn Bulletin + Send + Sync> = dummy_bulletin.clone();
@@ -1511,7 +1478,7 @@ mod tests {
             &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string()],
-            Some(0),
+            0,
         )
         .await;
 
@@ -1524,7 +1491,7 @@ mod tests {
         .await;
         assert!(
             matches!(missing, Err(DkgError::Unauthorized(_))),
-            "Expected missing timestamp to be rejected when pss_interval is Some(0), got: {:?}",
+            "Expected missing timestamp to be rejected when pss_interval is 0, got: {:?}",
             missing
         );
 
@@ -1538,7 +1505,7 @@ mod tests {
         .await;
         assert!(
             result.is_ok(),
-            "Expected Some(0) to be accepted once the ring has a timestamp, got: {:?}",
+            "Expected pss_interval=0 to be accepted once the ring has a timestamp, got: {:?}",
             result
         );
         cleanup_db(&db_path);
@@ -1558,7 +1525,7 @@ mod tests {
             &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string()],
-            Some(pss_interval),
+            pss_interval,
         )
         .await;
         // elapsed = pss_interval - (PSS_GRACE_PERIOD_SECS / 2): inside the grace window.
@@ -1597,7 +1564,7 @@ mod tests {
             &dummy_bulletin,
             ring_pk,
             vec!["aabbccdd".to_string()],
-            Some(pss_interval),
+            pss_interval,
         )
         .await;
         // elapsed = pss_interval - (PSS_GRACE_PERIOD_SECS + 2): safely outside the grace window.
