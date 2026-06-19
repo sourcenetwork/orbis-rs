@@ -291,6 +291,7 @@ pub struct IntegrationTestNetwork {
 pub struct IntegrationTestNetworkBuilder {
     genesis_patches: serde_json::Map<String, serde_json::Value>,
     production_node_build: bool,
+    unsafe_testing_runtime_enabled: bool,
 }
 
 impl IntegrationTestNetwork {
@@ -302,6 +303,7 @@ impl IntegrationTestNetwork {
         IntegrationTestNetworkBuilder {
             genesis_patches: serde_json::Map::new(),
             production_node_build: false,
+            unsafe_testing_runtime_enabled: true,
         }
     }
 
@@ -483,6 +485,14 @@ impl IntegrationTestNetworkBuilder {
     /// the integration-test feature set.
     pub fn with_production_node_build(mut self) -> Self {
         self.production_node_build = true;
+        self.unsafe_testing_runtime_enabled = false;
+        self
+    }
+
+    /// Compile the integration-test feature set, but leave the unsafe testing
+    /// gRPC service disabled at runtime.
+    pub fn with_unsafe_testing_runtime_disabled(mut self) -> Self {
+        self.unsafe_testing_runtime_enabled = false;
         self
     }
 
@@ -490,6 +500,7 @@ impl IntegrationTestNetworkBuilder {
         let IntegrationTestNetworkBuilder {
             genesis_patches,
             production_node_build,
+            unsafe_testing_runtime_enabled,
         } = self;
         let compose_file = INTEGRATION_TEST_COMPOSE_FILE.to_string();
         let project_name = unique_project_name("orbis-integration");
@@ -541,11 +552,19 @@ impl IntegrationTestNetworkBuilder {
             command.env("ORBIS_INTEGRATION_CRYPTO", feat);
         }
         command.env(
-            "ORBIS_ENABLE_INTEGRATION_TEST",
+            "ORBIS_BUILD_INTEGRATION_TEST",
             if production_node_build {
                 "false"
             } else {
                 "true"
+            },
+        );
+        command.env(
+            "ORBIS_ENABLE_INTEGRATION_TEST",
+            if unsafe_testing_runtime_enabled {
+                "true"
+            } else {
+                "false"
             },
         );
         if let Some(ref patch_file) = patch_file {

@@ -411,10 +411,21 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     {
         use proto::unsafe_testing::unsafe_testing_service_server::UnsafeTestingServiceServer;
         use unsafe_testing::service::UnsafeTestingServiceImpl;
-        let unsafe_testing_service =
-            UnsafeTestingServiceImpl::new(node.app_state.local_storage.clone());
-        grpc_server =
-            grpc_server.add_service(UnsafeTestingServiceServer::new(unsafe_testing_service));
+
+        let unsafe_testing_enabled = std::env::var("ORBIS_ENABLE_INTEGRATION_TEST")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "True"))
+            .unwrap_or(false);
+        if unsafe_testing_enabled {
+            tracing::warn!("Unsafe testing gRPC service is enabled");
+            let unsafe_testing_service =
+                UnsafeTestingServiceImpl::new(node.app_state.local_storage.clone());
+            grpc_server =
+                grpc_server.add_service(UnsafeTestingServiceServer::new(unsafe_testing_service));
+        } else {
+            tracing::info!(
+                "Unsafe testing feature is compiled in, but its gRPC service is disabled"
+            );
+        }
     }
 
     for &version in network::SUPPORTED_PROTOCOL_VERSIONS {

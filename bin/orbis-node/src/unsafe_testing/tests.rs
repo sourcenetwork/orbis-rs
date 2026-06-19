@@ -24,6 +24,7 @@ fn service(name: &str) -> (UnsafeTestingServiceImpl, String) {
     (UnsafeTestingServiceImpl::new(storage), path)
 }
 
+
 #[tokio::test]
 async fn plain_get_set_and_missing_get() {
     let (service, path) = service("unsafe_testing_plain_get_set");
@@ -256,6 +257,46 @@ async fn production_docker_nodes_do_not_expose_unsafe_testing_service() {
             error.code(),
             Code::Unimplemented,
             "production node {} returned an unexpected status: {error}",
+            index + 1
+        );
+    }
+}
+
+#[cfg(feature = "integration-test")]
+#[tokio::test]
+#[serial_test::serial]
+async fn unsafe_testing_docker_nodes_require_runtime_opt_in() {
+    let network = common::IntegrationTestNetwork::builder()
+        .with_unsafe_testing_runtime_disabled()
+        .build();
+    let endpoints = network.all_endpoints();
+    crate::helpers::test_helpers::wait_for_nodes_ready(
+        &endpoints,
+        90,
+        std::time::Duration::from_secs(1),
+    )
+    .await;
+
+    for (index, endpoint) in endpoints.iter().enumerate() {
+        let mut client = UnsafeTestingServiceClient::connect((*endpoint).to_string())
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "connect to runtime-disabled node {} unsafe testing client: {error}",
+                    index + 1
+                )
+            });
+        let error = client
+            .get_local_storage(GetLocalStorageRequest {
+                key: Some(key(LocalStorageKeyType::RingIndex, "")),
+                access_mode: LocalStorageAccessMode::Plain as i32,
+            })
+            .await
+            .expect_err("runtime-disabled node unexpectedly exposed unsafe testing service");
+        assert_eq!(
+            error.code(),
+            Code::Unimplemented,
+            "runtime-disabled node {} returned an unexpected status: {error}",
             index + 1
         );
     }
