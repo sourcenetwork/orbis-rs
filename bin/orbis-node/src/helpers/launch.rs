@@ -429,6 +429,15 @@ pub fn resolve_runtime_base_path(configured_path: Option<&Path>) -> PathBuf {
     })
 }
 
+fn local_storage_backend_name() -> String {
+    let storage_name = LocalStorageImpl::name();
+    storage_name
+        .rsplit('/')
+        .next()
+        .unwrap_or(&storage_name)
+        .to_string()
+}
+
 pub fn db_path(runtime_base_path: &Path, name: &str) -> String {
     let db_dir = runtime_base_path.join("dbs");
     // Create the dbs directory if it doesn't exist
@@ -439,7 +448,11 @@ pub fn db_path(runtime_base_path: &Path, name: &str) -> String {
             "Could not create database directory"
         );
     });
-    db_dir.join(format!("{}.redb", name)).display().to_string()
+    let backend = local_storage_backend_name();
+    db_dir
+        .join(format!("{}.{}", name, backend))
+        .display()
+        .to_string()
 }
 
 pub fn create_and_store_node_key(
@@ -603,6 +616,7 @@ mod tests {
             PathBuf::from(path),
             runtime_base_path.join("dbs").join("orbis.redb")
         );
+        assert_eq!(local_storage_backend_name(), "redb");
         assert!(runtime_base_path.join("dbs").is_dir());
     }
 }
