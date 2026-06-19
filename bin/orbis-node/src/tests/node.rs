@@ -86,6 +86,7 @@ async fn make_test_node_config(
             denom: None,
             metrics_addr: None,
             loki_url: None,
+            runtime_base_path: None,
             reshare_interval_secs: 0, // disabled in tests
             node_controller_key: "test-controller-key".to_string(),
             node_peer_id: None,
@@ -112,9 +113,13 @@ async fn make_bootstrap_identity(
 
     let local_storage =
         LocalStorageImpl::new(None, db_path.clone()).expect("Failed to create local storage");
-    let signer =
-        create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build())
-            .expect("Failed to create and store node key");
+    let runtime_base_path = project_root::get_project_root().expect("resolve project root");
+    let signer = create_and_store_node_key(
+        local_storage.clone(),
+        ChainConfigBuilder::default().build(),
+        &runtime_base_path,
+    )
+    .expect("Failed to create and store node key");
     let network: Arc<dyn Network> =
         Arc::new(NetworkImpl::new().await.expect("Failed to create network"));
 
@@ -137,6 +142,7 @@ fn node_info_test_args(
         denom: None,
         metrics_addr: None,
         loki_url: None,
+        runtime_base_path: None,
         reshare_interval_secs: 0,
         node_controller_key: controller_key.to_string(),
         node_peer_id,
@@ -514,6 +520,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             denom: None,
             metrics_addr: None,
             loki_url: None,
+            runtime_base_path: None,
             reshare_interval_secs: 0,
             node_controller_key: "test-controller-key".to_string(),
             node_peer_id: None,
@@ -842,9 +849,11 @@ fn test_create_and_store_node_key() {
         .expect("Failed to create local storage");
 
     let config = ChainConfig::local();
+    let runtime_base_path = project_root::get_project_root().expect("resolve project root");
 
     // First call should create a new key
-    let result = create_and_store_node_key(local_storage.clone(), config.clone());
+    let result =
+        create_and_store_node_key(local_storage.clone(), config.clone(), &runtime_base_path);
     assert!(
         result.is_ok(),
         "Should create key successfully: {:?}",
@@ -860,7 +869,7 @@ fn test_create_and_store_node_key() {
     );
 
     // Second call should return the same address (idempotent)
-    let result2 = create_and_store_node_key(local_storage.clone(), config);
+    let result2 = create_and_store_node_key(local_storage.clone(), config, &runtime_base_path);
     assert!(result2.is_ok(), "Second call should succeed");
 
     let signer2 = result2.unwrap();

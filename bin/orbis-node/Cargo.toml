@@ -57,6 +57,7 @@ crypto = { path = "../../crates/crypto", default-features = false, features = ["
 tokio-stream = "0.1"
 tonic-prost = { workspace = true }
 cli-tool = { path = "../cli-tool", default-features = false }
+tempfile = { workspace = true }
 
 [features]
 default = ["local-storage/redb", "bls12-381", "authz-sourcehub", "bulletin-sourcehub", "network/iroh"]

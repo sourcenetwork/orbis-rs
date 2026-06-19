@@ -47,6 +47,7 @@ From [`helpers/launch.rs`](src/helpers/launch.rs) (`clap` **`Args`**):
 - **`--authz-grpc`**, **`--bulletin-grpc`**, **`--chain-rpc`**, **`--chain-rest`**, **`--denom`** — chain endpoints for authz and bulletin.
 - **`--metrics-addr`** — optional Prometheus scrape HTTP server.
 - **`--loki-url`** — optional Loki log shipping.
+- **`--runtime-base-path`** — base directory for runtime files. Databases are stored under `<PATH>/dbs` and the node public key is written to `<PATH>/public_key.txt`.
 - **`--reshare-interval-secs`** — how often the PSS scheduler wakes to check rings (`0` disables scheduler ticks; ring-level `pss_interval` still comes from bulletin).
 
 Password and node identity: see **`constants`**, **`get_password`**, **`get_network_key_secret`**, **`derive_secret_key_bytes`** in the same module.
@@ -87,6 +88,14 @@ storage and the node network identity key. Treat both as production secrets.
 ```bash
 cargo run -p orbis-node --release
 ```
+
+To explicitly choose where runtime files are stored:
+
+```bash
+cargo run -p orbis-node --release -- --runtime-base-path /var/lib/orbis
+```
+
+When the option is omitted, the node keeps the existing fallback order: Cargo project root, `/data` when available, then the current directory.
 
 Use matching **`crypto`** features with the rest of the workspace when you switch curves (`--no-default-features --features decaf377,...`).
 

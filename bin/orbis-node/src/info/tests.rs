@@ -19,8 +19,13 @@ async fn test_get_node_info_reports_zero_managed_ring_count_without_ring_index()
 
     // Create and store a node signing key so get_node_signer can retrieve it
     let config = ChainConfigBuilder::default().build();
-    create_and_store_node_key(app_state.local_storage.clone(), config.clone())
-        .expect("Failed to create and store node key");
+    let runtime_base_path = project_root::get_project_root().expect("resolve project root");
+    create_and_store_node_key(
+        app_state.local_storage.clone(),
+        config.clone(),
+        &runtime_base_path,
+    )
+    .expect("Failed to create and store node key");
 
     // Create the info service
     let service = InfoServiceImpl::<DkgImpl>::new(app_state);
@@ -65,8 +70,13 @@ async fn test_get_node_info_reports_managed_ring_count_from_ring_index() {
     let app_state = create_test_app_state_default(db_name).await;
 
     let config = ChainConfigBuilder::default().build();
-    create_and_store_node_key(app_state.local_storage.clone(), config.clone())
-        .expect("Failed to create and store node key");
+    let runtime_base_path = project_root::get_project_root().expect("resolve project root");
+    create_and_store_node_key(
+        app_state.local_storage.clone(),
+        config.clone(),
+        &runtime_base_path,
+    )
+    .expect("Failed to create and store node key");
 
     let ring_index = vec![
         RingIndexEntry {

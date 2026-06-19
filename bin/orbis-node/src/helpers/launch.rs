@@ -14,7 +14,7 @@ use local_storage::{
 };
 use network::Network;
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{env, fs};
 use zeroize::Zeroizing;
 
@@ -49,6 +49,9 @@ pub struct Args {
     /// Loki server URL for log aggregation (e.g., "http://localhost:3100")
     #[arg(long)]
     pub loki_url: Option<String>,
+    /// Base directory for runtime files such as databases and the public key
+    #[arg(long)]
+    pub runtime_base_path: Option<PathBuf>,
     /// Interval between when node will check if PSS ceremony is needed.
     /// Set to 0 to disable automatic resharing. Defaults to 86400 (24 hours).
     #[arg(long, default_value_t = crate::constants::DEFAULT_RESHARE_INTERVAL_SECS)]
@@ -413,19 +416,21 @@ impl From<LogLevel> for tracing::Level {
     }
 }
 
-fn runtime_base_path() -> PathBuf {
-    project_root::get_project_root().unwrap_or_else(|_| {
-        let data_dir = PathBuf::from("/data");
-        if data_dir.exists() {
-            data_dir
-        } else {
-            env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        }
+pub fn resolve_runtime_base_path(configured_path: Option<&Path>) -> PathBuf {
+    configured_path.map(Path::to_path_buf).unwrap_or_else(|| {
+        project_root::get_project_root().unwrap_or_else(|_| {
+            let data_dir = PathBuf::from("/data");
+            if data_dir.exists() {
+                data_dir
+            } else {
+                env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            }
+        })
     })
 }
 
-pub fn db_path(name: &str) -> String {
-    let db_dir = runtime_base_path().join("dbs");
+pub fn db_path(runtime_base_path: &Path, name: &str) -> String {
+    let db_dir = runtime_base_path.join("dbs");
     // Create the dbs directory if it doesn't exist
     let _ = std::fs::create_dir_all(&db_dir).inspect_err(|error| {
         tracing::warn!(
@@ -434,14 +439,22 @@ pub fn db_path(name: &str) -> String {
             "Could not create database directory"
         );
     });
-    format!("{}/{}.redb", db_dir.display(), name)
+    db_dir.join(format!("{}.redb", name)).display().to_string()
 }
 
 pub fn create_and_store_node_key(
     local_storage: LocalStorageImpl,
     config: ChainConfig,
+    runtime_base_path: &Path,
 ) -> Result<TxSigner, String> {
-    let public_key_path = runtime_base_path().join("public_key.txt");
+    fs::create_dir_all(runtime_base_path).map_err(|error| {
+        format!(
+            "Failed to create runtime base directory {}: {}",
+            runtime_base_path.display(),
+            error
+        )
+    })?;
+    let public_key_path = runtime_base_path.join("public_key.txt");
 
     // Check if a signing key exists in DB
     let hex_key = match local_storage.get_encrypted(LocalStorageKeys::NodeSigningKey) {
@@ -474,7 +487,6 @@ pub fn create_and_store_node_key(
                     })?;
                     let public_address = signer.address();
                     tracing::info!(address = %public_address, "Signing key ready");
-                    let public_key_path = runtime_base_path().join("public_key.txt");
                     fs::write(&public_key_path, &public_address)
                         .map_err(|e| format!("Failed to write public key to file: {}", e))?;
                     return Ok(signer);
@@ -546,4 +558,51 @@ pub fn get_node_signer(
         .map_err(|e| format!("Failed to parse stored key as UTF-8: {}", e))?;
 
     TxSigner::from_hex_key(&hex_key, config).map_err(|e| format!("Failed to create signer: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parses_runtime_base_path_argument() {
+        let args = Args::try_parse_from([
+            "orbis-node",
+            "--node-controller-key",
+            "controller-key",
+            "--runtime-base-path",
+            "custom/runtime",
+        ])
+        .expect("parse arguments");
+
+        assert_eq!(
+            args.runtime_base_path,
+            Some(PathBuf::from("custom/runtime"))
+        );
+    }
+
+    #[test]
+    fn configured_runtime_base_path_overrides_fallback_detection() {
+        let configured_path = PathBuf::from("custom/runtime");
+
+        assert_eq!(
+            resolve_runtime_base_path(Some(&configured_path)),
+            configured_path
+        );
+    }
+
+    #[test]
+    fn db_path_uses_runtime_base_path_and_creates_database_directory() {
+        let temp_dir = tempfile::tempdir().expect("create temporary directory");
+        let runtime_base_path = temp_dir.path().join("runtime");
+
+        let path = db_path(&runtime_base_path, "orbis");
+
+        assert_eq!(
+            PathBuf::from(path),
+            runtime_base_path.join("dbs").join("orbis.redb")
+        );
+        assert!(runtime_base_path.join("dbs").is_dir());
+    }
 }
