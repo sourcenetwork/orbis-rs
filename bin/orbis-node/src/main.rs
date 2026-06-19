@@ -11,6 +11,8 @@ pub mod pss;
 pub mod ring_state;
 pub mod sign;
 pub mod store_secret;
+#[cfg(feature = "unsafe-testing")]
+pub mod unsafe_testing;
 
 #[cfg(test)]
 mod tests;
@@ -48,6 +50,7 @@ use tracing::Instrument;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use proto::info_service::{info_service_server::InfoServiceServer, NodeStatus};
+
 use proto::v0::dkg::dkg_service_server::DkgServiceServer;
 use proto::v0::pre::pre_service_server::PreServiceServer;
 use proto::v0::sign::sign_service_server::SignServiceServer;
@@ -403,6 +406,16 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
         .layer(CorsLayer::permissive())
         .layer(GrpcWebLayer::new())
         .add_service(InfoServiceServer::new(info_service));
+
+    #[cfg(feature = "unsafe-testing")]
+    {
+        use proto::unsafe_testing::unsafe_testing_service_server::UnsafeTestingServiceServer;
+        use unsafe_testing::service::UnsafeTestingServiceImpl;
+        let unsafe_testing_service =
+            UnsafeTestingServiceImpl::new(node.app_state.local_storage.clone());
+        grpc_server =
+            grpc_server.add_service(UnsafeTestingServiceServer::new(unsafe_testing_service));
+    }
 
     for &version in network::SUPPORTED_PROTOCOL_VERSIONS {
         let protocol_routes = network::routes_for_version(version)

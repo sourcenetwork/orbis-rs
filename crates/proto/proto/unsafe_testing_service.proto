@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package orbis.unsafe_testing;
+
+service UnsafeTestingService {
+  rpc GetLocalStorage(GetLocalStorageRequest) returns (GetLocalStorageResponse);
+  rpc SetLocalStorage(SetLocalStorageRequest) returns (SetLocalStorageResponse);
+  rpc DeleteLocalStorage(DeleteLocalStorageRequest) returns (DeleteLocalStorageResponse);
+}
+
+enum LocalStorageKeyType {
+  LOCAL_STORAGE_KEY_TYPE_UNSPECIFIED = 0;
+  LOCAL_STORAGE_KEY_TYPE_RING_INDEX = 1;
+  LOCAL_STORAGE_KEY_TYPE_RING_KEY = 2;
+  LOCAL_STORAGE_KEY_TYPE_NODE_SECRET_KEY = 3;
+  LOCAL_STORAGE_KEY_TYPE_NODE_SIGNING_KEY = 4;
+}
+
+enum LocalStorageAccessMode {
+  LOCAL_STORAGE_ACCESS_MODE_UNSPECIFIED = 0;
+  LOCAL_STORAGE_ACCESS_MODE_PLAIN = 1;
+  LOCAL_STORAGE_ACCESS_MODE_ENCRYPTED = 2;
+}
+
+message LocalStorageKey {
+  LocalStorageKeyType key_type = 1;
+  string ring_key = 2;
+}
+
+message GetLocalStorageRequest {
+  LocalStorageKey key = 1;
+  LocalStorageAccessMode access_mode = 2;
+}
+
+message GetLocalStorageResponse {
+  bool found = 1;
+  bytes value = 2;
+}
+
+message SetLocalStorageRequest {
+  LocalStorageKey key = 1;
+  LocalStorageAccessMode access_mode = 2;
+  bytes value = 3;
+}
+
+message SetLocalStorageResponse {}
+
+message DeleteLocalStorageRequest {
+  LocalStorageKey key = 1;
+}
+
+message DeleteLocalStorageResponse {
+  bool existed = 1;
+}

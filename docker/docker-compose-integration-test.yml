@@ -58,7 +58,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        ENABLE_INTEGRATION_TEST: "true"
+        ENABLE_INTEGRATION_TEST: "${ORBIS_ENABLE_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
     environment:
       - ORBIS_PASSWORD=testpassword123
@@ -86,7 +86,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        ENABLE_INTEGRATION_TEST: "true"
+        ENABLE_INTEGRATION_TEST: "${ORBIS_ENABLE_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
     environment:
       - ORBIS_PASSWORD=testpassword123
@@ -114,7 +114,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        ENABLE_INTEGRATION_TEST: "true"
+        ENABLE_INTEGRATION_TEST: "${ORBIS_ENABLE_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
     environment:
       - ORBIS_PASSWORD=testpassword123

@@ -2,6 +2,10 @@ pub mod info_service {
     tonic::include_proto!("orbis.v0.info_service");
 }
 
+pub mod unsafe_testing {
+    tonic::include_proto!("orbis.unsafe_testing");
+}
+
 pub mod v0 {
     pub mod dkg {
         tonic::include_proto!("orbis.v0.dkg");

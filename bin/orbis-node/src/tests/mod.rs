@@ -4,4 +4,6 @@ mod concurrent;
 mod fault_injection;
 mod integration;
 mod node;
+#[cfg(feature = "integration-test")]
+mod pending_ring_cancellation;
 mod upgrade;

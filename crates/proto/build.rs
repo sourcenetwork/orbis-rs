@@ -5,6 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "proto/v0/info_service.proto",
         "proto/v0/store_secret_service.proto",
         "proto/v0/sign_service.proto",
+        "proto/unsafe_testing_service.proto",
     ];
 
     for proto in &protos {
