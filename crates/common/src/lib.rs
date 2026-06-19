@@ -290,6 +290,8 @@ pub struct IntegrationTestNetwork {
 /// into the SourceHub chain before it starts, bypassing keeper validation via `InitGenesis`.
 pub struct IntegrationTestNetworkBuilder {
     genesis_patches: serde_json::Map<String, serde_json::Value>,
+    production_node_build: bool,
+    unsafe_testing_runtime_enabled: bool,
 }
 
 impl IntegrationTestNetwork {
@@ -300,6 +302,8 @@ impl IntegrationTestNetwork {
     pub fn builder() -> IntegrationTestNetworkBuilder {
         IntegrationTestNetworkBuilder {
             genesis_patches: serde_json::Map::new(),
+            production_node_build: false,
+            unsafe_testing_runtime_enabled: true,
         }
     }
 
@@ -395,6 +399,36 @@ impl IntegrationTestNetwork {
             .grpc_url(Some(self.sourcehub_grpc_url().to_string()))
     }
 
+    /// Restart the Orbis node containers without rebuilding them or resetting
+    /// their local storage. Docker may reassign ephemeral host ports during a
+    /// restart, so the returned endpoints must replace any previously cached
+    /// node endpoints.
+    pub fn restart_nodes(&self) -> [String; 3] {
+        let status = compose_command(&self.compose_file, &self.project_name)
+            .args(["restart", "node1", "node2", "node3"])
+            .status()
+            .expect("Failed to restart integration test nodes");
+        if !status.success() {
+            report_compose_failure(&self.compose_file, &self.project_name);
+            panic!("Failed to restart integration test nodes");
+        }
+
+        [
+            localhost_url(
+                published_port(&self.compose_file, &self.project_name, "node1", 50051)
+                    .expect("discover restarted node1 endpoint"),
+            ),
+            localhost_url(
+                published_port(&self.compose_file, &self.project_name, "node2", 50051)
+                    .expect("discover restarted node2 endpoint"),
+            ),
+            localhost_url(
+                published_port(&self.compose_file, &self.project_name, "node3", 50051)
+                    .expect("discover restarted node3 endpoint"),
+            ),
+        ]
+    }
+
     /// Transform a p2p_address from local format to Docker inter-container format
     ///
     /// The p2p_address from a container will be like `peer_id@0.0.0.0:12345`
@@ -447,8 +481,27 @@ impl IntegrationTestNetworkBuilder {
         self
     }
 
+    /// Build Docker nodes with the default production feature set instead of
+    /// the integration-test feature set.
+    pub fn with_production_node_build(mut self) -> Self {
+        self.production_node_build = true;
+        self.unsafe_testing_runtime_enabled = false;
+        self
+    }
+
+    /// Compile the integration-test feature set, but leave the unsafe testing
+    /// gRPC service disabled at runtime.
+    pub fn with_unsafe_testing_runtime_disabled(mut self) -> Self {
+        self.unsafe_testing_runtime_enabled = false;
+        self
+    }
+
     pub fn build(self) -> IntegrationTestNetwork {
-        let IntegrationTestNetworkBuilder { genesis_patches } = self;
+        let IntegrationTestNetworkBuilder {
+            genesis_patches,
+            production_node_build,
+            unsafe_testing_runtime_enabled,
+        } = self;
         let compose_file = INTEGRATION_TEST_COMPOSE_FILE.to_string();
         let project_name = unique_project_name("orbis-integration");
 
@@ -498,6 +551,22 @@ impl IntegrationTestNetworkBuilder {
         if let Some(feat) = crypto_feature {
             command.env("ORBIS_INTEGRATION_CRYPTO", feat);
         }
+        command.env(
+            "ORBIS_BUILD_INTEGRATION_TEST",
+            if production_node_build {
+                "false"
+            } else {
+                "true"
+            },
+        );
+        command.env(
+            "ORBIS_ENABLE_INTEGRATION_TEST",
+            if unsafe_testing_runtime_enabled {
+                "true"
+            } else {
+                "false"
+            },
+        );
         if let Some(ref patch_file) = patch_file {
             command.env("GENESIS_PATCH_FILE", patch_file.path());
         } else {
