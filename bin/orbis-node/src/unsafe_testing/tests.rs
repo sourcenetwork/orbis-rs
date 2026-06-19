@@ -24,7 +24,6 @@ fn service(name: &str) -> (UnsafeTestingServiceImpl, String) {
     (UnsafeTestingServiceImpl::new(storage), path)
 }
 
-
 #[tokio::test]
 async fn plain_get_set_and_missing_get() {
     let (service, path) = service("unsafe_testing_plain_get_set");
