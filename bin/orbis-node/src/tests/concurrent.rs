@@ -131,7 +131,11 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
 async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveThreeNodeNetwork {
     let chain = SourceHubTestContainer::new();
     let chain_config = chain.chain_config();
-    let runtime_base_path = project_root::get_project_root().expect("resolve project root");
+    let runtime_base_path = project_root::get_project_root()
+        .expect("resolve project root")
+        .join("target")
+        .join("test-runtime")
+        .join(db_prefix);
 
     let policy_id = create_orbis_ring_policy(&chain_config).await;
 
@@ -260,7 +264,11 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
 async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFourNodeNetwork {
     let chain = SourceHubTestContainer::new();
     let chain_config = chain.chain_config();
-    let runtime_base_path = project_root::get_project_root().expect("resolve project root");
+    let runtime_base_path = project_root::get_project_root()
+        .expect("resolve project root")
+        .join("target")
+        .join("test-runtime")
+        .join(db_prefix);
 
     let policy_id = create_orbis_ring_policy(&chain_config).await;
 
