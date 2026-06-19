@@ -413,7 +413,7 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
         use unsafe_testing::service::UnsafeTestingServiceImpl;
 
         let unsafe_testing_enabled = std::env::var("ORBIS_ENABLE_INTEGRATION_TEST")
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "True"))
+            .map(|value| matches!(value.as_str(), "true"))
             .unwrap_or(false);
         if unsafe_testing_enabled {
             tracing::warn!("Unsafe testing gRPC service is enabled");
