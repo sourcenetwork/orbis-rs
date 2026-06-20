@@ -1,0 +1,136 @@
+name: Publish Docker Image
+
+# Builds the orbis-node integration image (ENABLE_INTEGRATION_TEST=true, decaf377)
+# and pushes a multi-arch manifest (linux/amd64 + linux/arm64) to GHCR. arm64 is
+# built on a native runner rather than QEMU so the Rust compile doesn't crawl.
+#
+# NOTE: needs write packages perms. Repo Settings -> Actions -> General ->
+# Workflow permissions -> "Read and write permissions". First push of a new
+# package also needs the GHCR package set to public if downstream pulls anon.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Tag for the image (defaults to short commit sha)"
+        required: false
+        type: string
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  # build args consumed by docker/Dockerfile
+  ENABLE_INTEGRATION_TEST: "true"
+  CRYPTO_FEATURE: "decaf377"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  meta:
+    name: Resolve tags
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.vars.outputs.image }}
+      tag: ${{ steps.vars.outputs.tag }}
+      sha: ${{ steps.vars.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image name and tags
+        id: vars
+        shell: bash
+        run: |
+          # ghcr wants an all-lowercase path
+          IMAGE=$(echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
+          SHORT_SHA=$(git rev-parse --short "$GITHUB_SHA")
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME#v}"          # v1.2.3 -> 1.2.3
+          elif [[ -n "${{ inputs.image_tag }}" ]]; then
+            TAG="${{ inputs.image_tag }}"
+          else
+            TAG="$SHORT_SHA"
+          fi
+
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: meta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            # swap for a runs-on.com / blacksmith label for a faster compile
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (${{ matrix.arch }})
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          provenance: false
+          tags: ${{ needs.meta.outputs.image }}:${{ needs.meta.outputs.tag }}-${{ matrix.arch }}
+          build-args: |
+            ENABLE_INTEGRATION_TEST=${{ env.ENABLE_INTEGRATION_TEST }}
+            CRYPTO_FEATURE=${{ env.CRYPTO_FEATURE }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+
+  manifest:
+    name: Push multi-arch manifest
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest
+        env:
+          IMAGE: ${{ needs.meta.outputs.image }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          SHA: ${{ needs.meta.outputs.sha }}
+        run: |
+          docker buildx imagetools create \
+            --tag "$IMAGE:$TAG" \
+            --tag "$IMAGE:$TAG-$SHA" \
+            "$IMAGE:$TAG-amd64" \
+            "$IMAGE:$TAG-arm64"
