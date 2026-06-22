@@ -195,8 +195,10 @@ async fn test_dkg_then_pre_end_to_end() {
     println!("\nStep 5: Initiating PRE (proxy re-encryption) to Bob's public key...");
 
     // Create a PRE coordinator using node1's app state
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
 
     // Generate a unique request ID
     let request_id = format!(
@@ -404,8 +406,10 @@ async fn test_pre_with_large_secret() {
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
     let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
@@ -535,8 +539,10 @@ async fn test_pre_fails_with_wrong_key() {
     let (eve_sk, _eve_pk) = PreImpl::generate_keypair();
 
     // PRE to Bob's public key
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
     let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
@@ -664,8 +670,10 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE with invalid token
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
     let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
@@ -803,8 +811,10 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE with token that has WRONG claims (different rdr_pk)
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
     let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
@@ -1092,8 +1102,10 @@ async fn test_pre_fails_with_wrong_derivation() {
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE with CORRECT derivation (re-encryption should work)
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
     let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
@@ -1263,8 +1275,10 @@ async fn test_pre_fails_with_bad_proof() {
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
     let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin with the TAMPERED proof
@@ -1392,7 +1406,10 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
     );
 
     let peer_id = hex::encode(app_state.network.local_peer_id().as_bytes());
-    let coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(Arc::new(app_state.clone()), &::network::V0);
+    let coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(app_state.clone()),
+        &::network::V0,
+    );
     let result = coordinator
         .initiate_reencryption_inner(
             request_id.clone(),

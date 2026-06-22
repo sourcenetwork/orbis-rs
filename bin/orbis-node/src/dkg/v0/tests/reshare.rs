@@ -1431,7 +1431,8 @@ async fn run_reshare_ceremony(
     };
 
     // Process own SessionInit — sets up session state and reshare_params.
-    let coordinator = DkgCoordinator::with_routes(Arc::new(initiator_state.clone()), &::network::V0);
+    let coordinator =
+        DkgCoordinator::with_routes(Arc::new(initiator_state.clone()), &::network::V0);
     coordinator
         .handle_message(init_msg.clone(), initiator_peer_id)
         .await

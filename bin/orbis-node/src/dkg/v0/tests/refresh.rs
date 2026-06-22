@@ -197,7 +197,8 @@ async fn test_dkg_followed_by_pss_refresh() {
         &initiator_bundle.public_polynomial,
     )
     .unwrap();
-    let coordinator = DkgCoordinator::with_routes(Arc::new(initiator_state.clone()), &::network::V0);
+    let coordinator =
+        DkgCoordinator::with_routes(Arc::new(initiator_state.clone()), &::network::V0);
 
     coordinator
         .create_session(
