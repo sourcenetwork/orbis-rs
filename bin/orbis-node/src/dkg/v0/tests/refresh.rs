@@ -197,7 +197,7 @@ async fn test_dkg_followed_by_pss_refresh() {
         &initiator_bundle.public_polynomial,
     )
     .unwrap();
-    let coordinator = DkgCoordinator::new(Arc::new(initiator_state.clone()));
+    let coordinator = DkgCoordinator::with_routes(Arc::new(initiator_state.clone()), &::network::V0);
 
     coordinator
         .create_session(
@@ -395,7 +395,7 @@ async fn test_share_before_commitment_waits_for_commitment() {
     let db_name = "test_share_before_commitment_waits";
     let db_path = test_db_path(db_name);
     let app_state = Arc::new(create_test_app_state_default(db_name).await);
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
 
     let session_id: u128 = 77_777;
     coordinator
@@ -455,7 +455,7 @@ async fn test_share_before_commitment_waits_for_commitment() {
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
 
-    let share_coordinator = DkgCoordinator::new(app_state.clone());
+    let share_coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     let share_sender = sender_peer_id.clone();
     let share_task = tokio::spawn(async move {
         share_coordinator
@@ -509,7 +509,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
     );
 
     // Create the refresh session.
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     coordinator
         .create_session(refresh_session_id, 1, 2, 3, DkgRole::Standard, |_| {})
         .await
@@ -662,7 +662,7 @@ async fn test_refresh_accepts_external_sender_when_local_node_in_ring() {
 
     let sender_bytes = hex::decode("deadbeef").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = refresh_session_init(ring_pk, &local_node_key, &local_peer_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
@@ -713,7 +713,7 @@ async fn test_refresh_rejected_local_node_not_in_ring() {
 
     let sender_bytes = hex::decode("deadbeef").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = refresh_session_init(ring_pk, &other_node_key, &other_peer_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
@@ -759,7 +759,7 @@ async fn test_refresh_rejected_too_soon() {
 
     let sender_bytes = hex::decode(&local_peer_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = refresh_session_init(ring_pk, &local_node_key, &local_peer_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
@@ -814,7 +814,7 @@ async fn test_refresh_rejected_already_in_progress() {
 
     let sender_bytes = hex::decode(&local_peer_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = refresh_session_init(ring_pk, &local_node_key, &local_peer_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;

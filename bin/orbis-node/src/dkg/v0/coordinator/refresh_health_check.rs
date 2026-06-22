@@ -580,7 +580,7 @@ mod tests {
         let db_name = "refresh_health_check_failure_discards_staged_bundle";
         let db_path = test_db_path(db_name);
         let app_state = create_test_app_state_default(db_name).await;
-        let coord = DkgCoordinator::new(Arc::new(app_state));
+        let coord = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
         let session_id = 4242;
         let ring_key = "rollback-ring";
 
@@ -678,7 +678,7 @@ mod tests {
         let db_name = "refresh_health_check_result_before_candidate_is_queued";
         let db_path = test_db_path(db_name);
         let app_state = create_test_app_state_default(db_name).await;
-        let coord = DkgCoordinator::new(Arc::new(app_state));
+        let coord = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
         let session_id = 5151;
 
         coord
@@ -722,7 +722,7 @@ mod tests {
         let db_name = "queued_refresh_health_check_rollback_drains_after_candidate_is_staged";
         let db_path = test_db_path(db_name);
         let app_state = create_test_app_state_default(db_name).await;
-        let coord = DkgCoordinator::new(Arc::new(app_state));
+        let coord = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
         let session_id = 6161;
         let ring_key = "queued-rollback-ring";
 
@@ -814,7 +814,7 @@ mod tests {
         let db_name = "refresh_health_check_result_rejects_invalid_sender_before_queueing";
         let db_path = test_db_path(db_name);
         let app_state = create_test_app_state_default(db_name).await;
-        let coord = DkgCoordinator::new(Arc::new(app_state));
+        let coord = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
         let session_id = 7171;
 
         coord

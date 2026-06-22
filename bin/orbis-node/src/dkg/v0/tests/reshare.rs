@@ -140,7 +140,7 @@ async fn test_reshare_session_init_rejects_unknown_ring() {
     let app_state = Arc::new(
         create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
     );
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     let sender_bytes = hex::decode("aabbccdd").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
@@ -221,7 +221,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
 
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     let msg = reshare_session_init(
         session_ring_pk,
@@ -272,7 +272,7 @@ async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
 
     let sender_bytes = hex::decode("deadbeef").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = reshare_session_init(
         ring_pk,
         vec!["deadbeef".to_string()],
@@ -377,7 +377,7 @@ async fn test_reshare_session_init_rejects_new_receiver_without_node_allowlist()
 
     let sender_bytes = hex::decode(sender_peer_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     match result {
         Err(crate::dkg::v0::error::DkgError::Unauthorized(message)) => {
@@ -447,7 +447,7 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
 
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = reshare_session_init(ring_pk, vec![sender_hex.to_string()], vec![our_hex], 1);
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
@@ -493,7 +493,7 @@ async fn test_dealer_phase4_deletes_share_and_ring_index_entry() {
     .await;
 
     // Create a session where this node acts as a pure Dealer.
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     coordinator
         .create_session(session_id, 1, 1, 3, DkgRole::Dealer, |_| {})
         .await
@@ -570,7 +570,7 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
     )
     .await;
 
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     coordinator
         .create_session(session_id, 1, 1, 3, DkgRole::Dealer, |_| {})
         .await
@@ -706,7 +706,7 @@ async fn test_reshare_session_init_rejects_mismatched_new_peer_node_keys() {
 
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     // Propose a *different* new committee — should be rejected.
     let msg = reshare_session_init(
@@ -760,7 +760,7 @@ async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
 
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     // Propose new_threshold = 1 — does not match announced 2.
     let msg = reshare_session_init(
@@ -822,7 +822,7 @@ async fn test_reshare_session_init_rejects_no_bulletin_announcement() {
 
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     // Propose a *different* committee — must be rejected even though no field is announced.
     let msg = reshare_session_init(
         ring_pk,
@@ -856,7 +856,7 @@ async fn test_reshare_session_init_rejects_empty_new_committee() {
     let app_state = Arc::new(
         create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
     );
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     let sender_bytes = hex::decode("aabbccdd").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
@@ -893,7 +893,7 @@ async fn test_reshare_session_init_rejects_threshold_exceeds_committee_size() {
     let app_state = Arc::new(
         create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
     );
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     let sender_bytes = hex::decode("aabbccdd").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
@@ -931,7 +931,7 @@ async fn test_reshare_session_init_rejects_zero_threshold() {
     let app_state = Arc::new(
         create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
     );
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     let sender_bytes = hex::decode("aabbccdd").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
@@ -1431,7 +1431,7 @@ async fn run_reshare_ceremony(
     };
 
     // Process own SessionInit — sets up session state and reshare_params.
-    let coordinator = DkgCoordinator::new(Arc::new(initiator_state.clone()));
+    let coordinator = DkgCoordinator::with_routes(Arc::new(initiator_state.clone()), &::network::V0);
     coordinator
         .handle_message(init_msg.clone(), initiator_peer_id)
         .await

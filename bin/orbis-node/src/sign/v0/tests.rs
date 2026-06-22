@@ -116,7 +116,7 @@ async fn test_dkg_then_sign_end_to_end() {
 
     // Create a Sign coordinator using node1's app state
     let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+        SignCoordinator::<DkgImpl, SignImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
 
     // Generate a unique request ID
     let request_id = format!(
@@ -332,7 +332,7 @@ async fn test_sign_different_messages() {
             create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id).await;
 
         let sign_coordinator =
-            SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+            SignCoordinator::<DkgImpl, SignImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
 
         let request_id = format!(
             "sign-msg-{}-{}",
@@ -439,7 +439,7 @@ async fn test_sign_fails_wrong_message() {
         create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id).await;
 
     let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+        SignCoordinator::<DkgImpl, SignImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
 
     let request_id = format!(
         "sign-wrong-msg-{}",
@@ -549,7 +549,7 @@ async fn test_sign_response_cleanup() {
     let message = create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id).await;
 
     let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+        SignCoordinator::<DkgImpl, SignImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
 
     let request_id = format!(
         "sign-cleanup-{}",
@@ -649,7 +649,7 @@ async fn test_sign_fails_invalid_bulletin_post() {
     let invalid_message = b"this is not a valid BulletinPost JSON";
 
     let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+        SignCoordinator::<DkgImpl, SignImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
 
     let request_id = format!(
         "sign-invalid-{}",
@@ -760,7 +760,7 @@ async fn test_sign_fails_post_not_on_bulletin() {
         .expect("serialize BulletinPost");
 
     let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+        SignCoordinator::<DkgImpl, SignImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
 
     let request_id = format!(
         "sign-not-posted-{}",
@@ -892,7 +892,7 @@ async fn test_sign_fails_tampered_payload() {
         .expect("serialize BulletinPost");
 
     let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+        SignCoordinator::<DkgImpl, SignImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
 
     let request_id = format!(
         "sign-tampered-{}",
@@ -1006,7 +1006,7 @@ async fn test_sign_fails_invalid_ring_id() {
     let message: Vec<u8> = bulletin_post.try_into().expect("serialize BulletinPost");
 
     let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+        SignCoordinator::<DkgImpl, SignImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
 
     let request_id = format!(
         "sign-invalid-ring-{}",
@@ -1144,7 +1144,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
         .expect("create sign JWT");
 
     let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+        SignCoordinator::<DkgImpl, SignImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
 
     let request_id = format!(
         "sign-policy-{}",
@@ -1285,7 +1285,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
     let key_derivation = setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
 
     let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+        SignCoordinator::<DkgImpl, SignImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
 
     let sign_result = sign_coordinator
         .initiate_signing(
@@ -1386,7 +1386,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
         .expect("create sign JWT");
 
     let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+        SignCoordinator::<DkgImpl, SignImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
 
     let sign_result = sign_coordinator
         .initiate_signing(
@@ -1588,7 +1588,7 @@ async fn test_failed_round_two_consumes_nonce_state() {
             .await
     );
 
-    let coordinator = SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(app_state.clone()));
+    let coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(Arc::new(app_state.clone()), &::network::V0);
     let result = coordinator
         .handle_message(
             SignMessage::SignRequest(SignRequest {
@@ -1669,7 +1669,7 @@ async fn test_sign_policy_fails_wrong_message_digest() {
         .expect("create sign JWT");
 
     let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+        SignCoordinator::<DkgImpl, SignImpl>::with_routes(Arc::new(network.alice.app_state.clone()), &::network::V0);
 
     // But the request sends a different message
     let different_message = b"completely different message".to_vec();

@@ -564,7 +564,7 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
     // Create a node to receive the SessionInit
     let app_state = create_test_app_state_default(db_name).await;
     let app_state = Arc::new(app_state);
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
 
     // Create a SessionInit message with an invalid JWT token
     let session_init = DkgMessage::SessionInit {
@@ -655,7 +655,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
         .expect("seed ring");
 
     let app_state = create_test_app_state_with_bulletin(None, true, bulletin, db_name).await;
-    let coordinator = DkgCoordinator::new(Arc::new(app_state));
+    let coordinator = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
@@ -709,7 +709,7 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
 
     // Create a node to receive the SessionInit
     let app_state = create_test_app_state_default(db_name).await;
-    let coordinator = DkgCoordinator::new(Arc::new(app_state));
+    let coordinator = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
 
     // Create a valid JWT with different peer_ids than what's in SessionInit
     let test_keys = TestKeyPair::new();
@@ -805,7 +805,7 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
         .expect("seed ring");
 
     let app_state = Arc::new(app_state);
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     let peer_ids = vec![local_peer_id_hex.clone()];
     let peer_node_keys = vec![node_key.clone()];
     let token = TestKeyPair::new()
@@ -868,7 +868,7 @@ async fn test_fresh_session_init_publishes_complete_state() {
         .expect("seed fresh ring");
 
     let app_state = Arc::new(app_state);
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     let token = TestKeyPair::new()
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("create JWT");

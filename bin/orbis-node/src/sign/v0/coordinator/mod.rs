@@ -55,12 +55,6 @@ where
     D: Dkg + Clone + 'static,
     S: ThresholdSigner,
 {
-    /// Create a new Sign coordinator for this node
-    #[cfg(test)]
-    pub fn new(app_state: Arc<AppState<D>>) -> Self {
-        Self::with_routes(app_state, &::network::V0)
-    }
-
     pub fn with_routes(
         app_state: Arc<AppState<D>>,
         routes: &'static ::network::ProtocolRoutes,
