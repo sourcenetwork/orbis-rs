@@ -3,8 +3,7 @@ name: Docker Build-Push
 on:
   push:
     branches: 
-     - develop
-     - ci/docker-build
+      - develop
     tags:
       - 'v*.*.*'
 
