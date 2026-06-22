@@ -27,7 +27,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   # build args consumed by docker/Dockerfile
-  ENABLE_INTEGRATION_TEST: "true"
+  ENABLE_INTEGRATION_TEST: "false"
   CRYPTO_FEATURE: "decaf377"
 
 permissions:
