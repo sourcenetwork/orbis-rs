@@ -294,7 +294,7 @@ impl SignResponseManager {
         self.inner.take_responses(&key).await
     }
 
-    async fn store_nonce(
+    pub(crate) async fn store_nonce(
         &self,
         request_id: String,
         bytes: Vec<u8>,
@@ -312,7 +312,7 @@ impl SignResponseManager {
             == NonceStoreOutcome::Stored
     }
 
-    async fn consume_nonce_for_sign_request(
+    pub(crate) async fn consume_nonce_for_sign_request(
         &self,
         request_id: &str,
         coordinator_peer_id: &[u8],
