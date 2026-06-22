@@ -37,13 +37,14 @@ impl<D> DkgServiceImpl<D>
 where
     D: crypto::r#trait::Dkg + Clone + 'static,
 {
-    #[cfg(test)]
-    pub fn new(state: impl Into<Arc<AppState<D>>>) -> Self {
-        Self::with_routes(state.into(), &network::V0)
-    }
-
-    pub fn with_routes(state: Arc<AppState<D>>, routes: &'static network::ProtocolRoutes) -> Self {
-        Self { state, routes }
+    pub fn with_routes(
+        state: impl Into<Arc<AppState<D>>>,
+        routes: &'static network::ProtocolRoutes,
+    ) -> Self {
+        Self {
+            state: state.into(),
+            routes,
+        }
     }
 }
 

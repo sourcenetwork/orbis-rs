@@ -65,7 +65,8 @@ async fn test_dkg_then_sign_end_to_end() {
     println!("\nStep 2: Running DKG protocol...");
 
     // Create node1's service (initiator)
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     // node1 sends StartDkgRequest to initiate the protocol
     let request = StartDkgRequest {
@@ -305,7 +306,8 @@ async fn test_sign_different_messages() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -416,7 +418,8 @@ async fn test_sign_fails_wrong_message() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -531,7 +534,8 @@ async fn test_sign_response_cleanup() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -634,7 +638,8 @@ async fn test_sign_fails_invalid_bulletin_post() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -726,7 +731,8 @@ async fn test_sign_fails_post_not_on_bulletin() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -839,7 +845,8 @@ async fn test_sign_fails_tampered_payload() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -971,7 +978,8 @@ async fn test_sign_fails_invalid_ring_id() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -1120,7 +1128,8 @@ async fn test_dkg_then_sign_policy_end_to_end() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -1274,7 +1283,8 @@ async fn test_sign_policy_fails_invalid_jwt() {
     let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -1372,7 +1382,8 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
     let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -1557,7 +1568,7 @@ async fn test_sign_policy_check_policy_access_expired_valid_window() {
 async fn test_sign_service_rejects_oversized_message() {
     let db_name = "test_sign_service_rejects_oversized_message";
     let app_state = create_test_app_state(None, true, true, db_name).await;
-    let service = SignServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+    let service = SignServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
 
     let oversized_message = vec![0u8; MAX_SIGN_MESSAGE_BYTES + 1];
 
@@ -1659,7 +1670,8 @@ async fn test_sign_policy_fails_wrong_message_digest() {
     let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)

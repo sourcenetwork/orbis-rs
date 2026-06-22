@@ -81,7 +81,8 @@ async fn test_dkg_followed_by_pss_refresh() {
     ]);
 
     // ── Phase A: Run the initial DKG ──────────────────────────────────────────
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)

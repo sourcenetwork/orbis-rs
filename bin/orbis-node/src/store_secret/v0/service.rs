@@ -39,14 +39,12 @@ where
     D: Dkg + Clone + 'static,
     S: crypto::r#trait::ThresholdSigner,
 {
-    #[cfg(test)]
-    pub fn new(state: impl Into<Arc<AppState<D>>>) -> Self {
-        Self::with_routes(state.into(), &network::V0)
-    }
-
-    pub fn with_routes(state: Arc<AppState<D>>, routes: &'static network::ProtocolRoutes) -> Self {
+    pub fn with_routes(
+        state: impl Into<Arc<AppState<D>>>,
+        routes: &'static network::ProtocolRoutes,
+    ) -> Self {
         Self {
-            state,
+            state: state.into(),
             routes,
             _phantom: std::marker::PhantomData,
         }

@@ -87,12 +87,16 @@ struct FaultableThreeNodeNetwork {
 
 /// Build and spawn a gRPC server from an `InitializedNode`.
 fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHandle<()> {
-    let dkg_service = DkgServiceImpl::<DkgImpl>::new((*node.app_state).clone());
-    let pre_service = PreServiceImpl::<DkgImpl, PreImpl>::new((*node.app_state).clone());
+    let dkg_service = DkgServiceImpl::<DkgImpl>::with_routes(node.app_state.clone(), &network::V0);
+    let pre_service =
+        PreServiceImpl::<DkgImpl, PreImpl>::with_routes(node.app_state.clone(), &network::V0);
     let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
-    let store_secret_service =
-        StoreSecretServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
-    let sign_service = SignServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
+    let store_secret_service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(
+        node.app_state.clone(),
+        &network::V0,
+    );
+    let sign_service =
+        SignServiceImpl::<DkgImpl, SignImpl>::with_routes(node.app_state.clone(), &network::V0);
 
     tokio::spawn(async move {
         let _ = tonic::transport::Server::builder()

@@ -36,7 +36,7 @@ async fn dkg_service_rejects_migrated_ring() {
         .unwrap();
 
     let app_state = create_test_app_state_with_bulletin(None, true, bulletin, &db_name).await;
-    let svc = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let svc = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     let token = JwtSigner::new().create_dkg_jwt("ring-1").unwrap();
     let request = create_authenticated_request(

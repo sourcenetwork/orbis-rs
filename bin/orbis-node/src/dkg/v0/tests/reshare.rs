@@ -1578,7 +1578,8 @@ async fn test_reshare_lower_threshold() {
     let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap().clone();
 
     // Phase A: initial DKG (t=2, n=3).
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -1688,7 +1689,8 @@ async fn test_reshare_one_member_rotated() {
     let mut dave = create_extra_test_node(&format!("{}_4", db_name), dummy_bulletin.clone()).await;
 
     // Phase A: DKG with A, B, C (t=2).
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -1806,7 +1808,8 @@ async fn test_reshare_one_old_dealer_offline_completes() {
     let mut dave = create_extra_test_node(&format!("{}_4", db_name), dummy_bulletin.clone()).await;
 
     // Phase A: DKG with A, B, C (t=2).
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -1933,7 +1936,8 @@ async fn test_reshare_expand_committee() {
     let mut dave = create_extra_test_node(&format!("{}_4", db_name), dummy_bulletin.clone()).await;
 
     // Phase A: DKG with A, B, C (t=2).
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -2053,7 +2057,8 @@ async fn test_reshare_shrink_committee() {
     ];
 
     // Phase A: DKG with A, B, C (t=2).
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -2165,7 +2170,8 @@ async fn test_reshare_full_rotation() {
     let mut frank = create_extra_test_node(&format!("{}_6", db_name), dummy_bulletin.clone()).await;
 
     // Phase A: DKG with A, B, C (t=2).
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)

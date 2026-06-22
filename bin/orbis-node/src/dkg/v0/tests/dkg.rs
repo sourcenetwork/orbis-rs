@@ -33,7 +33,7 @@ use crypto::DkgImpl;
 async fn test_start_dkg_empty_participants() {
     let db_path = test_db_path("test_start_dkg_empty_participants");
     let app_state = create_test_app_state_default("test_start_dkg_empty_participants").await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -76,7 +76,8 @@ async fn test_three_nodes_connect() {
     println!("Peer IDs for connection: {:?}", peer_ids);
 
     // Create Alice's service (clone app_state to avoid move)
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     // Alice sends StartDkgRequest with Bob and Charlie's peer IDs
     let request = StartDkgRequest {
@@ -131,7 +132,7 @@ async fn test_start_dkg_ring_not_found() {
     // DummyBulletin has NodeInfo for this node but no ring seeded.
     let app_state =
         create_test_app_state(Some("127.0.0.1:0".to_string()), true, true, db_name).await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
@@ -212,7 +213,7 @@ async fn test_start_dkg_fails_on_connection_failure() {
         .expect("seed NodeInfo for unreachable peer");
 
     let app_state = create_test_app_state_with_bulletin(None, true, bulletin, db_name).await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
@@ -273,7 +274,8 @@ async fn test_start_dkg_succeeds_on_all_connections() {
     println!("Peer IDs for connection: {:?}", peer_ids);
 
     // Create Alice's service
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     // Alice sends StartDkgRequest with all peer IDs (including herself)
     let request = StartDkgRequest {
@@ -442,7 +444,7 @@ async fn test_start_dkg_fails_missing_auth_header() {
     let db_name = "test_start_dkg_fails_missing_auth_header";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -478,7 +480,7 @@ async fn test_start_dkg_fails_malformed_jwt() {
     let db_name = "test_start_dkg_fails_malformed_jwt";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -508,7 +510,7 @@ async fn test_start_dkg_fails_wrong_signature() {
     let db_name = "test_start_dkg_fails_wrong_signature";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
@@ -942,7 +944,7 @@ async fn test_start_dkg_rejects_self_participant_nodeinfo_deny() {
     let token = TestKeyPair::new()
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("create JWT");
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };

@@ -112,7 +112,8 @@ async fn test_dkg_then_pre_end_to_end() {
     println!("\nStep 2: Running DKG protocol...");
 
     // Create node1's service (initiator)
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     // node1 sends StartDkgRequest to initiate the protocol
     let request = StartDkgRequest {
@@ -366,7 +367,8 @@ async fn test_pre_with_large_secret() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -499,7 +501,8 @@ async fn test_pre_fails_with_wrong_key() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -633,7 +636,8 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -775,7 +779,8 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -912,7 +917,7 @@ async fn test_start_pre_fails_missing_auth_header() {
     let db_name = "test_start_pre_fails_missing_auth_header";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
+    let service = PreServiceImpl::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);
 
     let request = StartPreRequest {
         rdr_pk: b"def456".to_vec(),
@@ -953,7 +958,7 @@ async fn test_start_pre_fails_malformed_jwt() {
     let db_name = "test_start_pre_fails_malformed_jwt";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
+    let service = PreServiceImpl::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);
 
     let request = StartPreRequest {
         rdr_pk: b"def456".to_vec(),
@@ -988,7 +993,7 @@ async fn test_start_pre_fails_wrong_signature() {
     let db_name = "test_start_pre_fails_wrong_signature";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
+    let service = PreServiceImpl::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);
 
     let object_id = "object_id_test".to_string();
 
@@ -1059,7 +1064,8 @@ async fn test_pre_fails_with_wrong_derivation() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -1234,7 +1240,8 @@ async fn test_pre_fails_with_bad_proof() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
