@@ -1,8 +1,8 @@
 use crate::app_state::AppState;
 use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
-use crate::helpers::helpers::read_ring_for_route;
-use crate::helpers::helpers::RingConfig;
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
+use crate::helpers::protocol_version::read_ring_for_route;
+use crate::helpers::ring::RingConfig;
 use crate::metrics;
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
@@ -16,7 +16,7 @@ use proto::v0::store_secret::{
 };
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
 /// Implementation of the StoreSecretService
@@ -29,7 +29,7 @@ where
     D: Dkg + Clone + 'static,
     S: crypto::r#trait::ThresholdSigner,
 {
-    pub state: AppState<D>,
+    pub state: Arc<AppState<D>>,
     pub routes: &'static network::ProtocolRoutes,
     _phantom: std::marker::PhantomData<S>,
 }
@@ -39,14 +39,12 @@ where
     D: Dkg + Clone + 'static,
     S: crypto::r#trait::ThresholdSigner,
 {
-    #[cfg(test)]
-    pub fn new(state: AppState<D>) -> Self {
-        Self::with_routes(state, &network::V0)
-    }
-
-    pub fn with_routes(state: AppState<D>, routes: &'static network::ProtocolRoutes) -> Self {
+    pub fn with_routes(
+        state: impl Into<Arc<AppState<D>>>,
+        routes: &'static network::ProtocolRoutes,
+    ) -> Self {
         Self {
-            state,
+            state: state.into(),
             routes,
             _phantom: std::marker::PhantomData,
         }
@@ -77,7 +75,8 @@ where
         &self,
         request: Request<StoreSecretRequest>,
     ) -> Result<Response<StoreSecretResponse>, Status> {
-        let start = Instant::now();
+        let grpc_metrics = metrics::GrpcRequestGuard::new("store_secret", "store_secret");
+        let request_metrics = metrics::track_store_secret_request();
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| StoreSecretError::SystemTime(format!("Failed to get timestamp: {}", e)))?
@@ -189,8 +188,7 @@ where
 
             // Generate random session id
             let session_id: u128 = rand::random();
-            let coordinator =
-                SignCoordinator::<D, S>::with_routes(Arc::new(self.state.clone()), self.routes);
+            let coordinator = SignCoordinator::<D, S>::with_routes(self.state.clone(), self.routes);
             let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
                 .map_err(|e| StoreSecretError::Validation(format!("Invalid ring_pk hex: {}", e)))?;
             let routes = resolve_node_routes(&self.state.bulletin, &ring_payload.peer_node_keys)
@@ -232,7 +230,8 @@ where
             signature = sign_response.signature;
         }
 
-        metrics::record_store_secret_completed(start.elapsed().as_secs_f64());
+        request_metrics.complete();
+        grpc_metrics.success();
 
         Ok(Response::new(StoreSecretResponse {
             status: "success".to_string(),

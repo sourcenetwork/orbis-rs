@@ -24,7 +24,7 @@ pub struct InfoServiceImpl<D>
 where
     D: crypto::r#trait::Dkg + Clone + 'static,
 {
-    pub state: AppState<D>,
+    pub state: Arc<AppState<D>>,
 }
 
 impl<D> InfoServiceImpl<D>
@@ -32,8 +32,10 @@ where
     D: crypto::r#trait::Dkg + Clone + 'static,
 {
     /// Create a new InfoServiceImpl with shared application state
-    pub fn new(state: AppState<D>) -> Self {
-        Self { state }
+    pub fn new(state: impl Into<Arc<AppState<D>>>) -> Self {
+        Self {
+            state: state.into(),
+        }
     }
 }
 

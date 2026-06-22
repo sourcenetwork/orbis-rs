@@ -1,5 +1,4 @@
 use crate::error::{GrpcErrorClassification, GrpcServiceError};
-use crate::metrics;
 use thiserror::Error;
 
 /// DKG (Distributed Key Generation) related errors
@@ -52,6 +51,10 @@ pub enum DkgError {
     /// Node has reached the maximum number of concurrent DKG sessions
     #[error("DKG session limit reached: cannot accept new sessions")]
     MaxSessionsReached,
+
+    /// A DKG ceremony cannot be created without participants.
+    #[error("Invalid DKG participant count: {0}")]
+    InvalidParticipantCount(usize),
 
     /// Node has reached the maximum number of persisted local rings
     #[error("local ring limit reached: node already manages {current} rings (max {max})")]
@@ -110,7 +113,7 @@ impl GrpcServiceError for DkgError {
             DkgError::Unauthorized(_) => {
                 GrpcErrorClassification::new(Code::Unauthenticated, Level::TRACE, false)
             }
-            DkgError::InvalidInput(_) => {
+            DkgError::InvalidInput(_) | DkgError::InvalidParticipantCount(_) => {
                 GrpcErrorClassification::new(Code::InvalidArgument, Level::TRACE, false)
             }
             DkgError::SessionNotFound(_) => {
@@ -148,10 +151,6 @@ impl GrpcServiceError for DkgError {
                 GrpcErrorClassification::new(Code::Internal, Level::ERROR, true)
             }
         }
-    }
-
-    fn record_failure_metric(&self) {
-        metrics::record_dkg_session_failed();
     }
 }
 
@@ -243,6 +242,12 @@ mod tests {
                 DkgError::MaxSessionsReached,
                 Code::ResourceExhausted,
                 Level::WARN,
+                false,
+            ),
+            (
+                DkgError::InvalidParticipantCount(0),
+                Code::InvalidArgument,
+                Level::TRACE,
                 false,
             ),
             (

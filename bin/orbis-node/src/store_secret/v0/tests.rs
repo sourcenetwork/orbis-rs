@@ -66,8 +66,7 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         .set_ring(TEST_RING_ID.to_string(), ring_payload)
         .expect("seed ring");
 
-    let app_state =
-        create_test_app_state_with_bulletin(None, true, Arc::new(bulletin), db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, Arc::new(bulletin), db_name).await;
 
     // Write RingIndexEntry so service can resolve the ring from local storage.
     let ring_index = vec![RingIndexEntry {
@@ -131,7 +130,7 @@ async fn test_store_secret_fails_missing_auth_header() {
     let db_name = "test_store_secret_fails_missing_auth_header";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
 
     let request = create_dummy_request();
 
@@ -166,7 +165,7 @@ async fn test_store_secret_fails_malformed_jwt() {
     let db_name = "test_store_secret_fails_malformed_jwt";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
 
     let request = create_dummy_request();
 
@@ -195,7 +194,7 @@ async fn test_store_secret_fails_claims_mismatch() {
     let db_name = "test_store_secret_fails_claims_mismatch";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
 
     // Create JWT with one ring_id but request with different ring_id
     let test_keys = TestKeyPair::new();
@@ -249,7 +248,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
     let db_name = "test_store_secret_fails_invalid_encrypted_document";
     let db_path = test_db_path(db_name);
     let app_state = create_app_state_with_ring(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
 
     // Use invalid encrypted_document that will fail validation
     let invalid_encrypted_doc = b"not valid json";
@@ -319,7 +318,7 @@ async fn test_store_secret_fails_wrong_signature() {
     let db_name = "test_store_secret_fails_wrong_signature";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
 
     // Create a valid JWT
     let key_pair = TestKeyPair::new();
@@ -396,8 +395,7 @@ async fn test_store_secret_idempotent() {
         .expect("seed ring");
 
     // Create app state with this bulletin
-    let app_state =
-        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
 
     // Write RingIndexEntry so service can resolve the ring.
     let ring_index = vec![RingIndexEntry {
@@ -413,7 +411,7 @@ async fn test_store_secret_idempotent() {
         )
         .unwrap();
 
-    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
 
     // Generate valid encryption proof using ThresholdDealerNode
     let plaintext = b"test secret data";
@@ -547,7 +545,7 @@ async fn test_store_secret_fails_encrypted_document_mismatch() {
     let db_name = "test_store_secret_fails_encrypted_document_mismatch";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
 
     let test_keys = TestKeyPair::new();
     // JWT is created for TEST_ENCRYPTED_DOC

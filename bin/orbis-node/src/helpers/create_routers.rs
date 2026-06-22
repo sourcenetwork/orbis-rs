@@ -18,35 +18,8 @@ fn apply_ingress_limits(
         .max_streams_per_peer_per_second(NETWORK_MAX_INBOUND_STREAMS_PER_PEER_PER_SECOND)
 }
 
-/// Create a router with DKG protocol handler registered
-pub fn create_router_with_dkg_handler<D>(
-    network: &Arc<dyn network::Network>,
-    app_state: Arc<AppState<D>>,
-) -> NetworkResult<Box<dyn Router>>
-where
-    D: crypto::r#trait::Dkg<
-            ShareValue = crypto::ScalarField,
-            PublicKey = crypto::GroupAffine,
-            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
-            PubPoly = crypto::PubPolyImpl,
-        > + Clone
-        + Send
-        + Sync
-        + 'static,
-{
-    let mut router_builder = apply_ingress_limits(network.create_router_builder()?);
-    for version in network::SUPPORTED_PROTOCOL_VERSIONS {
-        let routes = network::routes_for_version(*version)
-            .expect("supported protocol version must have registered routes");
-        let dkg_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
-            DkgCoordinator::with_routes(app_state.clone(), routes),
-        )));
-        router_builder = router_builder.accept(routes.dkg_alpn.to_vec(), dkg_handler);
-    }
-    router_builder.spawn()
-}
-
 /// Create a router with both DKG and PRE protocol handlers
+#[cfg(test)]
 pub fn create_router_with_handlers<D, T>(
     network: &Arc<dyn network::Network>,
     app_state: Arc<AppState<D>>,

@@ -1,5 +1,7 @@
 use crate::constants::SIGN_COLLECTION_TIMEOUT;
-use crate::helpers::helpers::{determine_ring_node_id_from_peer_id, is_self_peer_id, RingConfig};
+use crate::helpers::identity::{determine_ring_node_id_from_peer_id, is_self_peer_id};
+use crate::helpers::response_manager::ResponseInitOutcome;
+use crate::helpers::ring::RingConfig;
 use crate::sign::v0::coordinator::SignCoordinator;
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::messages::{NonceRequest, SignContext, SignMessage};
@@ -62,7 +64,7 @@ where
             .collect();
 
         // Initialize response collection for nonce round using existing SignResponseManager
-        if !self
+        match self
             .app_state
             .sign_response_state
             .init_response_for_version(
@@ -72,9 +74,17 @@ where
             )
             .await
         {
-            return Err(SignError::ProtocolError(
-                "Nonce response limit exceeded".to_string(),
-            ));
+            ResponseInitOutcome::Created => {}
+            ResponseInitOutcome::AlreadyExists => {
+                return Err(SignError::ProtocolError(format!(
+                    "Nonce response state already exists for request {nonce_request_id}"
+                )));
+            }
+            ResponseInitOutcome::LimitReached => {
+                return Err(SignError::ProtocolError(
+                    "Nonce response limit exceeded".to_string(),
+                ));
+            }
         }
 
         let min_needed_from_network = ring.threshold.saturating_sub(all_commitments.len());

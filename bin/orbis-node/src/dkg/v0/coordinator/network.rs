@@ -405,7 +405,6 @@ mod tests {
 
         (
             Arc::new(AppState::<DkgImpl>::new(
-                "127.0.0.1:0".to_string(),
                 "test-node-key".to_string(),
                 network,
                 local_storage,
@@ -422,7 +421,10 @@ mod tests {
         let shared_state = Arc::new(FakeNetworkState::default());
         let (app_state, remote_peer_id) =
             make_fake_app_state("dkg_send_retry_replaces_stream", shared_state.clone()).await;
-        let coordinator = Arc::new(DkgCoordinator::new(app_state.clone()));
+        let coordinator = Arc::new(DkgCoordinator::with_routes(
+            app_state.clone(),
+            &::network::V0,
+        ));
         let session_id = 42_u128;
 
         coordinator
@@ -521,7 +523,10 @@ mod tests {
         let shared_state = Arc::new(FakeNetworkState::default());
         let (app_state, remote_peer_id) =
             make_fake_app_state("dkg_send_stale_session_generation", shared_state.clone()).await;
-        let coordinator = Arc::new(DkgCoordinator::new(app_state.clone()));
+        let coordinator = Arc::new(DkgCoordinator::with_routes(
+            app_state.clone(),
+            &::network::V0,
+        ));
         let session_id = 84_u128;
 
         coordinator

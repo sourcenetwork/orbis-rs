@@ -7,16 +7,16 @@ use crate::dkg::v0::helpers::{
 };
 use crate::dkg::v0::messages::{DkgMessage, SessionKind};
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
-use crate::helpers::helpers::{is_self_peer_id, read_ring_for_route};
+use crate::helpers::identity::is_self_peer_id;
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
     peer_ids_from_routes, resolve_node_routes,
 };
+use crate::helpers::protocol_version::read_ring_for_route;
 use crate::metrics;
 use authn::DkgClaims;
 use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
 use std::sync::Arc;
-use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 /// Implementation of the v0 DkgService.
@@ -29,7 +29,7 @@ pub struct DkgServiceImpl<D>
 where
     D: crypto::r#trait::Dkg + Clone + 'static,
 {
-    pub state: AppState<D>,
+    pub state: Arc<AppState<D>>,
     pub routes: &'static network::ProtocolRoutes,
 }
 
@@ -37,13 +37,14 @@ impl<D> DkgServiceImpl<D>
 where
     D: crypto::r#trait::Dkg + Clone + 'static,
 {
-    #[cfg(test)]
-    pub fn new(state: AppState<D>) -> Self {
-        Self::with_routes(state, &network::V0)
-    }
-
-    pub fn with_routes(state: AppState<D>, routes: &'static network::ProtocolRoutes) -> Self {
-        Self { state, routes }
+    pub fn with_routes(
+        state: impl Into<Arc<AppState<D>>>,
+        routes: &'static network::ProtocolRoutes,
+    ) -> Self {
+        Self {
+            state: state.into(),
+            routes,
+        }
     }
 }
 
@@ -65,18 +66,10 @@ where
         &self,
         request: Request<StartDkgRequest>,
     ) -> Result<Response<StartDkgResponse>, Status> {
-        let start = Instant::now();
+        let grpc_metrics = metrics::GrpcRequestGuard::new("dkg", "start_dkg");
 
         // Get current timestamp (needed for both auth and response)
-        let current_time = current_unix_time().map_err(|e| {
-            metrics::record_grpc_request(
-                "dkg",
-                "start_dkg",
-                "error",
-                start.elapsed().as_secs_f64(),
-            );
-            DkgError::SystemTime(e)
-        })?;
+        let current_time = current_unix_time().map_err(DkgError::SystemTime)?;
 
         // 1. Authenticate: Extract and validate JWT
         let (token_str, token) = extract_and_validate_jwt::<DkgClaims, _>(&request, current_time)
@@ -126,7 +119,7 @@ where
         let session_id: u128 = derive_fresh_dkg_session_id(&ring_id)?;
 
         // Create DKG coordinator (AppState clone is cheap - contains Arc types internally)
-        let coordinator = DkgCoordinator::with_routes(Arc::new(self.state.clone()), self.routes);
+        let coordinator = DkgCoordinator::with_routes(self.state.clone(), self.routes);
 
         let our_peer_id_hex = hex::encode(self.state.network.local_peer_id().as_bytes());
 
@@ -185,12 +178,7 @@ where
                 .session_exists(&session_id)
                 .await
             {
-                metrics::record_grpc_request(
-                    "dkg",
-                    "start_dkg",
-                    "ok",
-                    start.elapsed().as_secs_f64(),
-                );
+                grpc_metrics.success();
                 return Ok(Response::new(StartDkgResponse {
                     session_id: session_id.to_string(),
                     status: "in_progress".to_string(),
@@ -332,8 +320,7 @@ where
             guard.defuse();
         }
 
-        // Record success metric
-        metrics::record_grpc_request("dkg", "start_dkg", "ok", start.elapsed().as_secs_f64());
+        grpc_metrics.success();
 
         Ok(Response::new(response))
     }

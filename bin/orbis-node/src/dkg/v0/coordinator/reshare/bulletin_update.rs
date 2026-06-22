@@ -11,7 +11,7 @@ use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{effective_new_peer_node_keys, peer_node_keys_match};
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::ReshareSignatureReadyKey;
-use crate::helpers::helpers::RingConfig;
+use crate::helpers::ring::RingConfig;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::helpers::{
@@ -293,7 +293,13 @@ where
         .dkg_session_state
         .with_state(&session_id, |state| {
             (1..=new_committee_size as u32)
-                .filter_map(|node_id| state.reshare_new_node_id_to_peer_id.get(&node_id).cloned())
+                .filter_map(|node_id| {
+                    state
+                        .routing
+                        .reshare_new_node_id_to_peer_id
+                        .get(&node_id)
+                        .cloned()
+                })
                 .collect::<Vec<_>>()
         })
         .await

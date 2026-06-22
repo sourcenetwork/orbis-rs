@@ -1,5 +1,11 @@
 # DKG Developer Guide
 
+This guide is the source of truth for the behavior implemented by the current
+Rust node. [`new_dkg_flow.md`](new_dkg_flow.md) is a non-authoritative design
+draft; do not treat draft behavior as implemented unless it is also described
+here and covered by code/tests. The former `PROTOCOL_FLOW.md` was removed
+because it duplicated this guide.
+
 This module implements the node-local side of the DKG protocol. There is no
 central coordinator in the protocol. Each node has a `DkgCoordinator` that
 receives messages, validates them, records local facts, and advances its own

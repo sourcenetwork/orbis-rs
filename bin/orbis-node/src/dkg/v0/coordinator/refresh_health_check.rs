@@ -12,8 +12,8 @@ use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::session_not_found;
 use crate::dkg::v0::messages::DkgMessage;
 use crate::dkg::v0::session_state::{PendingRefreshHealthCheckResult, RefreshHealthCheckCandidate};
-use crate::helpers::helpers::RingConfig;
-use crate::metrics;
+use crate::helpers::identity::is_self_peer_id;
+use crate::helpers::ring::RingConfig;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::helpers::{
@@ -182,7 +182,7 @@ where
     D: CoordinatorDkg,
 {
     for peer_id in peer_ids {
-        if crate::helpers::helpers::is_self_peer_id(&coord.app_state.network, peer_id) {
+        if is_self_peer_id(&coord.app_state.network, peer_id) {
             continue;
         }
 
@@ -459,9 +459,11 @@ where
         .dkg_session_state
         .unmark_ring_pss(&candidate.ring_key)
         .await;
-    coord.remove_session(session_id).await;
-    metrics::record_dkg_session_completed();
-    metrics::record_refresh_session_completed();
+    coord
+        .app_state
+        .dkg_session_state
+        .complete_session(&session_id)
+        .await;
 
     tracing::info!(
         session_id = session_id,
@@ -487,7 +489,6 @@ where
         .unmark_ring_pss(ring_key)
         .await;
     coord.remove_session(session_id).await;
-    metrics::record_refresh_session_failed();
 
     tracing::warn!(
         session_id = session_id,
@@ -579,7 +580,7 @@ mod tests {
         let db_name = "refresh_health_check_failure_discards_staged_bundle";
         let db_path = test_db_path(db_name);
         let app_state = create_test_app_state_default(db_name).await;
-        let coord = DkgCoordinator::new(Arc::new(app_state));
+        let coord = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
         let session_id = 4242;
         let ring_key = "rollback-ring";
 
@@ -677,7 +678,7 @@ mod tests {
         let db_name = "refresh_health_check_result_before_candidate_is_queued";
         let db_path = test_db_path(db_name);
         let app_state = create_test_app_state_default(db_name).await;
-        let coord = DkgCoordinator::new(Arc::new(app_state));
+        let coord = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
         let session_id = 5151;
 
         coord
@@ -721,7 +722,7 @@ mod tests {
         let db_name = "queued_refresh_health_check_rollback_drains_after_candidate_is_staged";
         let db_path = test_db_path(db_name);
         let app_state = create_test_app_state_default(db_name).await;
-        let coord = DkgCoordinator::new(Arc::new(app_state));
+        let coord = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
         let session_id = 6161;
         let ring_key = "queued-rollback-ring";
 
@@ -813,7 +814,7 @@ mod tests {
         let db_name = "refresh_health_check_result_rejects_invalid_sender_before_queueing";
         let db_path = test_db_path(db_name);
         let app_state = create_test_app_state_default(db_name).await;
-        let coord = DkgCoordinator::new(Arc::new(app_state));
+        let coord = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
         let session_id = 7171;
 
         coord

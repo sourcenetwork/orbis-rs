@@ -1,4 +1,5 @@
-use crate::helpers::helpers::read_ring_for_route;
+use crate::helpers::protocol_version::read_ring_for_route;
+use crate::helpers::response_manager::ResponseStoreOutcome;
 use crate::pre::v0::{
     error::{PreError, Result},
     messages::PreMessage,
@@ -173,7 +174,7 @@ pub async fn store_response(
 
     tracing::debug!(
         request_id = %request_id,
-        from_node_id = ?message.from_node_id(),
+        from_node_id = ?message.sender_node_id(),
         sender_peer = %hex::encode(sender_peer_id.as_bytes()),
         "PRE Coordinator: Storing response"
     );
@@ -186,4 +187,5 @@ pub async fn store_response(
             sender_peer_id.as_bytes(),
         )
         .await
+        == ResponseStoreOutcome::Stored
 }

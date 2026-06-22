@@ -1,7 +1,7 @@
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::session_not_found;
 use crate::dkg::v0::messages::{DkgMessage, SessionKind};
-use crate::helpers::helpers::is_self_peer_id;
+use crate::helpers::identity::is_self_peer_id;
 use crypto::r#trait::DkgRole;
 use std::collections::HashSet;
 use std::time::Duration;

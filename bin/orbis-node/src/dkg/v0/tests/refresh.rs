@@ -4,7 +4,7 @@ use crate::dkg::v0::{
     helpers::{derive_refresh_session_id, serialize_commitment_coefficients},
     messages::{DkgMessage, SessionKind},
 };
-use crate::helpers::helpers::extract_node_part;
+use crate::helpers::identity::extract_node_part;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default,
@@ -81,7 +81,8 @@ async fn test_dkg_followed_by_pss_refresh() {
     ]);
 
     // ── Phase A: Run the initial DKG ──────────────────────────────────────────
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -197,7 +198,8 @@ async fn test_dkg_followed_by_pss_refresh() {
         &initiator_bundle.public_polynomial,
     )
     .unwrap();
-    let coordinator = DkgCoordinator::new(Arc::new(initiator_state.clone()));
+    let coordinator =
+        DkgCoordinator::with_routes(Arc::new(initiator_state.clone()), &::network::V0);
 
     coordinator
         .create_session(
@@ -395,7 +397,7 @@ async fn test_share_before_commitment_waits_for_commitment() {
     let db_name = "test_share_before_commitment_waits";
     let db_path = test_db_path(db_name);
     let app_state = Arc::new(create_test_app_state_default(db_name).await);
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
 
     let session_id: u128 = 77_777;
     coordinator
@@ -455,7 +457,7 @@ async fn test_share_before_commitment_waits_for_commitment() {
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
 
-    let share_coordinator = DkgCoordinator::new(app_state.clone());
+    let share_coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     let share_sender = sender_peer_id.clone();
     let share_task = tokio::spawn(async move {
         share_coordinator
@@ -509,7 +511,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
     );
 
     // Create the refresh session.
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     coordinator
         .create_session(refresh_session_id, 1, 2, 3, DkgRole::Standard, |_| {})
         .await
@@ -643,9 +645,8 @@ async fn test_refresh_accepts_external_sender_when_local_node_in_ring() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "ring_pk";
     let local_node_key = app_state.node_key.clone();
@@ -662,7 +663,7 @@ async fn test_refresh_accepts_external_sender_when_local_node_in_ring() {
 
     let sender_bytes = hex::decode("deadbeef").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = refresh_session_init(ring_pk, &local_node_key, &local_peer_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
@@ -683,9 +684,8 @@ async fn test_refresh_rejected_local_node_not_in_ring() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "ring_pk";
     let other_node_key = "other-node-key".to_string();
@@ -713,7 +713,7 @@ async fn test_refresh_rejected_local_node_not_in_ring() {
 
     let sender_bytes = hex::decode("deadbeef").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = refresh_session_init(ring_pk, &other_node_key, &other_peer_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
@@ -734,9 +734,8 @@ async fn test_refresh_rejected_too_soon() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "ring_pk";
     let local_node_key = app_state.node_key.clone();
@@ -759,7 +758,7 @@ async fn test_refresh_rejected_too_soon() {
 
     let sender_bytes = hex::decode(&local_peer_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = refresh_session_init(ring_pk, &local_node_key, &local_peer_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
@@ -783,9 +782,8 @@ async fn test_refresh_rejected_already_in_progress() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "ring_pk";
     let local_node_key = app_state.node_key.clone();
@@ -814,7 +812,7 @@ async fn test_refresh_rejected_already_in_progress() {
 
     let sender_bytes = hex::decode(&local_peer_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = refresh_session_init(ring_pk, &local_node_key, &local_peer_hex);
 
     let result = coordinator.handle_message(msg, &sender_peer_id).await;

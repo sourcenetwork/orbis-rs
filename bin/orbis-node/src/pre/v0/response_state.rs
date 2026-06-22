@@ -5,7 +5,9 @@
 //! and stored here until the threshold is met.
 
 use crate::constants::MAX_PRE_RESPONSES;
-use crate::helpers::response_manager::{AuthenticatedResponse, ResponseManager};
+use crate::helpers::response_manager::{
+    AuthenticatedResponse, ResponseInitOutcome, ResponseManager, ResponseStoreOutcome,
+};
 use crate::pre::v0::messages::PreMessage;
 
 /// PRE Response State Manager
@@ -28,84 +30,31 @@ impl PreResponseManager {
         }
     }
 
-    /// Initialize PRE response collection with the set of expected responders.
-    ///
-    /// `expected_peer_ids` should be the ring's peer_id strings for every node
-    /// that will be contacted (i.e. excluding self). The node part (hex before '@')
-    /// is extracted and stored as the allowlist.
-    ///
-    /// Returns false if the limit is exceeded or if the request_id already exists.
-    pub async fn init_response(&self, request_id: String, expected_peer_ids: &[String]) -> bool {
-        self.init_response_for_version(network::V0.version, request_id, expected_peer_ids)
-            .await
-    }
-
-    pub async fn init_response_for_version(
+    pub(crate) async fn init_response_for_version(
         &self,
         protocol_version: u64,
         request_id: String,
         expected_peer_ids: &[String],
-    ) -> bool {
+    ) -> ResponseInitOutcome {
         self.inner
             .init_response(Self::key(protocol_version, &request_id), expected_peer_ids)
             .await
     }
 
-    /// Store a PRE response, validating the sender against the expected responder set.
-    ///
-    /// The sender is identified by their authenticated network peer_id bytes (not the
-    /// self-reported `from_node_id`). The hex node part is checked against the
-    /// `expected_peers` set — if the sender is not expected (either unknown or already
-    /// responded), the response is rejected.
-    pub async fn store_response(
-        &self,
-        request_id: &str,
-        message: PreMessage,
-        sender_peer_bytes: &[u8],
-    ) -> bool {
-        self.store_response_for_version(network::V0.version, request_id, message, sender_peer_bytes)
-            .await
-    }
-
-    pub async fn store_response_for_version(
+    pub(crate) async fn store_response_for_version(
         &self,
         protocol_version: u64,
         request_id: &str,
         message: PreMessage,
         sender_peer_bytes: &[u8],
-    ) -> bool {
+    ) -> ResponseStoreOutcome {
         let key = Self::key(protocol_version, request_id);
         self.inner
             .store_response(&key, message, sender_peer_bytes)
             .await
     }
 
-    /// Get collected PRE responses without consuming the entry.
-    /// Prefer `take_responses` when the entry is no longer needed after reading.
-    pub async fn get_responses(&self, request_id: &str) -> Option<Vec<PreMessage>> {
-        let key = Self::key(network::V0.version, request_id);
-        self.inner.get_responses(&key).await
-    }
-
-    /// Take collected PRE responses, removing the entry atomically.
-    ///
-    /// Prefer this over `get_responses` + `remove_response` — it acquires a single
-    /// write lock and moves the `Vec` out without cloning.
-    pub async fn take_responses(&self, request_id: &str) -> Option<Vec<PreMessage>> {
-        let key = Self::key(network::V0.version, request_id);
-        self.inner.take_responses(&key).await
-    }
-
-    /// Take collected PRE responses with their authenticated sender peer.
-    pub async fn take_authenticated_responses(
-        &self,
-        request_id: &str,
-    ) -> Option<Vec<AuthenticatedResponse<PreMessage>>> {
-        self.take_authenticated_responses_for_version(network::V0.version, request_id)
-            .await
-    }
-
-    pub async fn take_authenticated_responses_for_version(
+    pub(crate) async fn take_authenticated_responses_for_version(
         &self,
         protocol_version: u64,
         request_id: &str,
@@ -114,26 +63,36 @@ impl PreResponseManager {
         self.inner.take_authenticated_responses(&key).await
     }
 
-    /// Remove PRE response entry (cleanup after completion)
-    pub async fn remove_response(&self, request_id: &str) {
-        self.remove_response_for_version(network::V0.version, request_id)
-            .await
-    }
-
-    pub async fn remove_response_for_version(&self, protocol_version: u64, request_id: &str) {
+    pub(crate) async fn remove_response_for_version(
+        &self,
+        protocol_version: u64,
+        request_id: &str,
+    ) {
         let key = Self::key(protocol_version, request_id);
         self.inner.remove_response(&key).await
-    }
-
-    /// Get the number of pending PRE requests
-    pub async fn pending_count(&self) -> usize {
-        self.inner.pending_count().await
     }
 }
 
 impl Default for PreResponseManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+impl PreResponseManager {
+    pub(crate) async fn pending_count(&self) -> usize {
+        self.inner.pending_count().await
+    }
+
+    pub(crate) async fn get_responses(&self, request_id: &str) -> Option<Vec<PreMessage>> {
+        let key = Self::key(network::V0.version, request_id);
+        self.inner.get_responses(&key).await
+    }
+
+    pub(crate) async fn take_responses(&self, request_id: &str) -> Option<Vec<PreMessage>> {
+        let key = Self::key(network::V0.version, request_id);
+        self.inner.take_responses(&key).await
     }
 }
 
@@ -168,11 +127,15 @@ mod tests {
         let mgr = PreResponseManager::new();
         let expected = vec![PEER_A.to_string(), PEER_B.to_string()];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
+            ResponseInitOutcome::Created
+        );
 
-        mgr.store_response("req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
+        mgr.store_response_for_version(0, "req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
             .await;
-        mgr.store_response("req-1", dummy_response("req-1", 2), &peer_bytes(PEER_B))
+        mgr.store_response_for_version(0, "req-1", dummy_response("req-1", 2), &peer_bytes(PEER_B))
             .await;
 
         let responses = mgr.get_responses("req-1").await.unwrap();
@@ -184,11 +147,20 @@ mod tests {
         let mgr = PreResponseManager::new();
         let expected = vec![PEER_A.to_string(), PEER_B.to_string()];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
+            ResponseInitOutcome::Created
+        );
 
         // Unknown peer tries to respond
-        mgr.store_response("req-1", dummy_response("req-1", 99), &peer_bytes(UNKNOWN))
-            .await;
+        mgr.store_response_for_version(
+            0,
+            "req-1",
+            dummy_response("req-1", 99),
+            &peer_bytes(UNKNOWN),
+        )
+        .await;
 
         let responses = mgr.get_responses("req-1").await.unwrap();
         assert_eq!(responses.len(), 0, "unexpected peer should be rejected");
@@ -199,12 +171,16 @@ mod tests {
         let mgr = PreResponseManager::new();
         let expected = vec![PEER_A.to_string(), PEER_B.to_string()];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
+            ResponseInitOutcome::Created
+        );
 
-        mgr.store_response("req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
+        mgr.store_response_for_version(0, "req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
             .await;
         // Same peer tries again
-        mgr.store_response("req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
+        mgr.store_response_for_version(0, "req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
             .await;
 
         let responses = mgr.get_responses("req-1").await.unwrap();
@@ -214,13 +190,19 @@ mod tests {
             "duplicate from same peer should be rejected"
         );
     }
+
     #[tokio::test]
     async fn test_take_responses_consumes_entry() {
         let mgr = PreResponseManager::new();
         let expected = vec![PEER_A.to_string()];
 
-        assert!(mgr.init_response("req-take".into(), &expected).await);
-        mgr.store_response(
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-take".into(), &expected)
+                .await,
+            ResponseInitOutcome::Created
+        );
+        mgr.store_response_for_version(
+            0,
             "req-take",
             dummy_response("req-take", 1),
             &peer_bytes(PEER_A),
@@ -238,18 +220,23 @@ mod tests {
             "entry must be removed after take_responses"
         );
     }
+
     #[tokio::test]
     async fn test_rejects_peer_impersonating_another_node_id() {
         let mgr = PreResponseManager::new();
         let expected = vec![PEER_A.to_string(), PEER_B.to_string()];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
+            ResponseInitOutcome::Created
+        );
 
         // PEER_A responds legitimately
-        mgr.store_response("req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
+        mgr.store_response_for_version(0, "req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
             .await;
         // PEER_A tries again but claims to be node 2 — still rejected (same peer bytes)
-        mgr.store_response("req-1", dummy_response("req-1", 2), &peer_bytes(PEER_A))
+        mgr.store_response_for_version(0, "req-1", dummy_response("req-1", 2), &peer_bytes(PEER_A))
             .await;
 
         let responses = mgr.get_responses("req-1").await.unwrap();
@@ -269,12 +256,16 @@ mod tests {
             format!("{}@192.168.1.2:4000", PEER_B),
         ];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
+            ResponseInitOutcome::Created
+        );
 
         // Raw peer bytes match the hex node part (before @)
-        mgr.store_response("req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
+        mgr.store_response_for_version(0, "req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
             .await;
-        mgr.store_response("req-1", dummy_response("req-1", 2), &peer_bytes(PEER_B))
+        mgr.store_response_for_version(0, "req-1", dummy_response("req-1", 2), &peer_bytes(PEER_B))
             .await;
 
         let responses = mgr.get_responses("req-1").await.unwrap();
@@ -290,11 +281,15 @@ mod tests {
         let mgr = PreResponseManager::new();
         let expected = vec![PEER_A.to_string()];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
-        mgr.store_response("req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
+            ResponseInitOutcome::Created
+        );
+        mgr.store_response_for_version(0, "req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
             .await;
 
-        mgr.remove_response("req-1").await;
+        mgr.remove_response_for_version(0, "req-1").await;
 
         assert!(
             mgr.get_responses("req-1").await.is_none(),
@@ -307,9 +302,15 @@ mod tests {
         let mgr = PreResponseManager::new();
         let expected = vec![PEER_A.to_string()];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
-        assert!(
-            !mgr.init_response("req-1".into(), &expected).await,
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
+            ResponseInitOutcome::Created
+        );
+        assert_ne!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
+            ResponseInitOutcome::Created,
             "duplicate request_id should be rejected"
         );
     }
@@ -327,8 +328,14 @@ mod tests {
         let e2 = vec![PEER_A.to_string()];
 
         let (r1, r2) = tokio::join!(
-            async move { m1.init_response("req-race".into(), &e1).await },
-            async move { m2.init_response("req-race".into(), &e2).await },
+            async move {
+                m1.init_response_for_version(0, "req-race".into(), &e1)
+                    .await
+            },
+            async move {
+                m2.init_response_for_version(0, "req-race".into(), &e2)
+                    .await
+            },
         );
 
         // The write lock serialises both inits; exactly one must win
@@ -339,9 +346,10 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_take_responses() {
         let mgr = Arc::new(PreResponseManager::new());
-        mgr.init_response("req-take-race".into(), &[PEER_A.to_string()])
+        mgr.init_response_for_version(0, "req-take-race".into(), &[PEER_A.to_string()])
             .await;
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-take-race",
             dummy_response("req-take-race", 1),
             &peer_bytes(PEER_A),
@@ -375,13 +383,26 @@ mod tests {
         let mgr = PreResponseManager::new();
 
         for i in 0..MAX_PRE_RESPONSES {
-            let ok = mgr.init_response(format!("req-{}", i), &[]).await;
-            assert!(ok, "init should succeed for slot {}", i);
+            let ok = mgr
+                .init_response_for_version(0, format!("req-{}", i), &[])
+                .await;
+            assert_eq!(
+                ok,
+                ResponseInitOutcome::Created,
+                "init should succeed for slot {}",
+                i
+            );
         }
 
         // The next one must be rejected
-        let rejected = mgr.init_response("req-over-limit".into(), &[]).await;
-        assert!(!rejected, "init should fail when limit is reached");
+        let rejected = mgr
+            .init_response_for_version(0, "req-over-limit".into(), &[])
+            .await;
+        assert_ne!(
+            rejected,
+            ResponseInitOutcome::Created,
+            "init should fail when limit is reached"
+        );
         assert_eq!(mgr.pending_count().await, MAX_PRE_RESPONSES);
     }
 
@@ -389,20 +410,22 @@ mod tests {
     async fn test_separate_requests_are_isolated() {
         let mgr = PreResponseManager::new();
 
-        assert!(
-            mgr.init_response("req-1".into(), &[PEER_A.to_string()])
-                .await
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &[PEER_A.to_string()])
+                .await,
+            ResponseInitOutcome::Created
         );
-        assert!(
-            mgr.init_response("req-2".into(), &[PEER_B.to_string()])
-                .await
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-2".into(), &[PEER_B.to_string()])
+                .await,
+            ResponseInitOutcome::Created
         );
 
         // PEER_A responds to req-1 (expected)
-        mgr.store_response("req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
+        mgr.store_response_for_version(0, "req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
             .await;
         // PEER_A tries to respond to req-2 (not expected there)
-        mgr.store_response("req-2", dummy_response("req-2", 1), &peer_bytes(PEER_A))
+        mgr.store_response_for_version(0, "req-2", dummy_response("req-2", 1), &peer_bytes(PEER_A))
             .await;
 
         assert_eq!(mgr.get_responses("req-1").await.unwrap().len(), 1);
@@ -420,10 +443,12 @@ mod tests {
         assert!(
             mgr.init_response_for_version(0, "same-id".into(), &expected)
                 .await
+                == ResponseInitOutcome::Created
         );
         assert!(
             mgr.init_response_for_version(1, "same-id".into(), &expected)
                 .await
+                == ResponseInitOutcome::Created
         );
         assert!(
             mgr.store_response_for_version(
@@ -433,6 +458,7 @@ mod tests {
                 &peer_bytes(PEER_A),
             )
             .await
+                == ResponseStoreOutcome::Stored
         );
 
         assert!(mgr
@@ -457,10 +483,12 @@ mod tests {
         assert!(
             mgr.init_response_for_version(0, "1:same-id".into(), &expected)
                 .await
+                == ResponseInitOutcome::Created
         );
         assert!(
             mgr.init_response_for_version(1, "same-id".into(), &expected)
                 .await
+                == ResponseInitOutcome::Created
         );
         assert!(
             mgr.store_response_for_version(
@@ -470,6 +498,7 @@ mod tests {
                 &peer_bytes(PEER_A),
             )
             .await
+                == ResponseStoreOutcome::Stored
         );
         assert!(
             mgr.store_response_for_version(
@@ -479,6 +508,7 @@ mod tests {
                 &peer_bytes(PEER_A),
             )
             .await
+                == ResponseStoreOutcome::Stored
         );
 
         assert_eq!(

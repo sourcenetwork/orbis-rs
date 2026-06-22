@@ -5,7 +5,7 @@ use crate::dkg::v0::{
     messages::{DkgMessage, SessionKind},
 };
 use crate::helpers::create_routers::create_router_with_all_handlers;
-use crate::helpers::helpers::extract_node_part;
+use crate::helpers::identity::extract_node_part;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_with_bulletin,
@@ -137,10 +137,9 @@ async fn test_reshare_session_init_rejects_unknown_ring() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
-    let coordinator = DkgCoordinator::new(app_state);
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     let sender_bytes = hex::decode("aabbccdd").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
@@ -175,9 +174,8 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     use local_storage::r#trait::LocalStorageKeys;
 
@@ -221,7 +219,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
 
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     let msg = reshare_session_init(
         session_ring_pk,
@@ -252,9 +250,8 @@ async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "reshare_ring";
     // Ring contains "aabbccdd"; sender will be "deadbeef" (not a member).
@@ -272,7 +269,7 @@ async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
 
     let sender_bytes = hex::decode("deadbeef").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = reshare_session_init(
         ring_pk,
         vec!["deadbeef".to_string()],
@@ -302,9 +299,8 @@ async fn test_reshare_session_init_rejects_new_receiver_without_node_allowlist()
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "reshare_ring";
     let post_id = "test-reshare-unauthorized-receiver".to_string();
@@ -377,7 +373,7 @@ async fn test_reshare_session_init_rejects_new_receiver_without_node_allowlist()
 
     let sender_bytes = hex::decode(sender_peer_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     match result {
         Err(crate::dkg::v0::error::DkgError::Unauthorized(message)) => {
@@ -413,9 +409,8 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
@@ -447,7 +442,7 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
 
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = reshare_session_init(ring_pk, vec![sender_hex.to_string()], vec![our_hex], 1);
     let result = coordinator.handle_message(msg, &sender_peer_id).await;
     assert!(
@@ -473,9 +468,8 @@ async fn test_dealer_phase4_deletes_share_and_ring_index_entry() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "dealer_phase4_ring";
     // Arbitrary non-colliding session ID for Dealer Phase 4 tests.
@@ -493,7 +487,7 @@ async fn test_dealer_phase4_deletes_share_and_ring_index_entry() {
     .await;
 
     // Create a session where this node acts as a pure Dealer.
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     coordinator
         .create_session(session_id, 1, 1, 3, DkgRole::Dealer, |_| {})
         .await
@@ -552,9 +546,8 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "dealer_phase4_pss_ring";
     // Arbitrary non-colliding session ID for Dealer Phase 4 PSS flag test.
@@ -570,7 +563,7 @@ async fn test_dealer_phase4_unmarks_ring_pss() {
     )
     .await;
 
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     coordinator
         .create_session(session_id, 1, 1, 3, DkgRole::Dealer, |_| {})
         .await
@@ -685,9 +678,8 @@ async fn test_reshare_session_init_rejects_mismatched_new_peer_node_keys() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
@@ -706,7 +698,7 @@ async fn test_reshare_session_init_rejects_mismatched_new_peer_node_keys() {
 
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     // Propose a *different* new committee — should be rejected.
     let msg = reshare_session_init(
@@ -738,9 +730,8 @@ async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
@@ -760,7 +751,7 @@ async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
 
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     // Propose new_threshold = 1 — does not match announced 2.
     let msg = reshare_session_init(
@@ -803,9 +794,8 @@ async fn test_reshare_session_init_rejects_no_bulletin_announcement() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "reshare_ring";
     let sender_hex = "aabbccdd";
@@ -822,7 +812,7 @@ async fn test_reshare_session_init_rejects_no_bulletin_announcement() {
 
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-    let coordinator = DkgCoordinator::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     // Propose a *different* committee — must be rejected even though no field is announced.
     let msg = reshare_session_init(
         ring_pk,
@@ -853,10 +843,9 @@ async fn test_reshare_session_init_rejects_empty_new_committee() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
-    let coordinator = DkgCoordinator::new(app_state);
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     let sender_bytes = hex::decode("aabbccdd").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
@@ -890,10 +879,9 @@ async fn test_reshare_session_init_rejects_threshold_exceeds_committee_size() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
-    let coordinator = DkgCoordinator::new(app_state);
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     let sender_bytes = hex::decode("aabbccdd").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
@@ -928,10 +916,9 @@ async fn test_reshare_session_init_rejects_zero_threshold() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
-    let coordinator = DkgCoordinator::new(app_state);
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
 
     let sender_bytes = hex::decode("aabbccdd").unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
@@ -1029,7 +1016,7 @@ async fn test_validate_reshare_accepts_new_peer_node_keys_fallback_to_current() 
             .expect("Failed to initialize dummy bulletin"),
     );
     let app_state =
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await;
+        create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await;
 
     let ring_pk = "fallback_peers_ring";
     let sender_hex = "aabbccdd";
@@ -1078,7 +1065,7 @@ async fn test_validate_reshare_accepts_new_threshold_fallback_to_current() {
             .expect("Failed to initialize dummy bulletin"),
     );
     let app_state =
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await;
+        create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await;
 
     let ring_pk = "fallback_threshold_ring";
     let sender_hex = "aabbccdd";
@@ -1128,7 +1115,7 @@ async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
             .expect("Failed to initialize dummy bulletin"),
     );
     let app_state =
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await;
+        create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await;
 
     let ring_pk = "fallback_reject_peers_ring";
     let sender_hex = "aabbccdd";
@@ -1180,7 +1167,7 @@ async fn test_validate_reshare_rejects_when_threshold_differs_from_fallback() {
             .expect("Failed to initialize dummy bulletin"),
     );
     let app_state =
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await;
+        create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await;
 
     let ring_pk = "fallback_reject_threshold_ring";
     let sender_hex = "aabbccdd";
@@ -1233,13 +1220,7 @@ async fn test_validate_reshare_rejects_when_threshold_differs_from_fallback() {
 /// Starts a DKG router on the node immediately.
 async fn create_extra_test_node(db_suffix: &str, bulletin: Arc<DummyBulletin>) -> TestNode {
     let bulletin_for_seed = bulletin.clone();
-    let state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
-        true,
-        bulletin,
-        db_suffix,
-    )
-    .await;
+    let state = create_test_app_state_with_bulletin(true, bulletin, db_suffix).await;
 
     let peer_id = state.network.local_peer_id();
     let address = state.network.local_address().expect("extra node address");
@@ -1431,7 +1412,8 @@ async fn run_reshare_ceremony(
     };
 
     // Process own SessionInit — sets up session state and reshare_params.
-    let coordinator = DkgCoordinator::new(Arc::new(initiator_state.clone()));
+    let coordinator =
+        DkgCoordinator::with_routes(Arc::new(initiator_state.clone()), &::network::V0);
     coordinator
         .handle_message(init_msg.clone(), initiator_peer_id)
         .await
@@ -1577,7 +1559,8 @@ async fn test_reshare_lower_threshold() {
     let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap().clone();
 
     // Phase A: initial DKG (t=2, n=3).
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -1687,7 +1670,8 @@ async fn test_reshare_one_member_rotated() {
     let mut dave = create_extra_test_node(&format!("{}_4", db_name), dummy_bulletin.clone()).await;
 
     // Phase A: DKG with A, B, C (t=2).
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -1805,7 +1789,8 @@ async fn test_reshare_one_old_dealer_offline_completes() {
     let mut dave = create_extra_test_node(&format!("{}_4", db_name), dummy_bulletin.clone()).await;
 
     // Phase A: DKG with A, B, C (t=2).
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -1932,7 +1917,8 @@ async fn test_reshare_expand_committee() {
     let mut dave = create_extra_test_node(&format!("{}_4", db_name), dummy_bulletin.clone()).await;
 
     // Phase A: DKG with A, B, C (t=2).
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -2052,7 +2038,8 @@ async fn test_reshare_shrink_committee() {
     ];
 
     // Phase A: DKG with A, B, C (t=2).
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -2164,7 +2151,8 @@ async fn test_reshare_full_rotation() {
     let mut frank = create_extra_test_node(&format!("{}_6", db_name), dummy_bulletin.clone()).await;
 
     // Phase A: DKG with A, B, C (t=2).
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)

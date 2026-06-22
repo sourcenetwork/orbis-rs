@@ -6,9 +6,9 @@ The **`orbis-node`** binary is the **ring node**: it exposes **gRPC** APIs for o
 
 | Layer | What happens here |
 |-------|-------------------|
-| **gRPC (tonic)** | [`proto`](../../crates/proto) services: DKG, PRE, Sign, StoreSecret, Info — see [`src/main.rs`](src/main.rs). |
+| **gRPC (tonic)** | [`proto`](../../crates/proto) services: DKG, PRE, Sign, StoreSecret, Info — see [`src/runtime.rs`](src/runtime.rs). |
 | **P2P (network)** | **`NetworkImpl`** router with ALPN **`DKG`**, **`REENCRYPT`**, **`SIGN`**; per-stream handlers in [`helpers/create_routers.rs`](src/helpers/create_routers.rs). |
-| **Coordinators** | [`dkg/coordinator`](src/dkg/coordinator), [`pre/coordinator`](src/pre/coordinator), [`sign/coordinator`](src/sign/coordinator) — protocol logic on top of **`crypto`**. |
+| **Coordinators** | [`dkg/v0/coordinator`](src/dkg/v0/coordinator), [`pre/v0/coordinator`](src/pre/v0/coordinator), [`sign/v0/coordinator`](src/sign/v0/coordinator) — protocol logic on top of **`crypto`**. |
 | **Shared state** | [`app_state.rs`](src/app_state.rs): **`PeerConnectionPool`**, **`SessionStateManager`**, PRE/Sign response managers, **bulletin** + **authz** + **local storage**. |
 | **PSS** | [`pss/mod.rs`](src/pss/mod.rs) — background scheduler for automatic **refresh** ceremonies (when `reshare_interval_secs` is non-zero and ring bulletin metadata allows it). |
 
@@ -16,7 +16,7 @@ The **`orbis-node`** binary is the **ring node**: it exposes **gRPC** APIs for o
 
 Ingress limits are applied in two places:
 
-- The gRPC server caps per-connection request concurrency and HTTP/2 streams in [`src/main.rs`](src/main.rs).
+- The gRPC server caps per-connection request concurrency and HTTP/2 streams in [`src/runtime.rs`](src/runtime.rs).
 - The P2P router caps inbound concurrent streams per protocol and per-peer stream rate before DKG/PRE/Sign handlers run; values live in [`src/constants.rs`](src/constants.rs).
 
 ## Workspace crates
@@ -80,7 +80,7 @@ storage and the node network identity key. Treat both as production secrets.
 
 ## In-repo docs
 
-- [`src/dkg/PROTOCOL_FLOW.md`](src/dkg/PROTOCOL_FLOW.md) — DKG session flow (when present).
+- [`src/dkg/README.md`](src/dkg/README.md) — implemented DKG, refresh, and reshare flow.
 - **[`src/constants.rs`](src/constants.rs)** — JWT limits, session TTL, network ingress limits, timeouts, limits.
 
 ## Running

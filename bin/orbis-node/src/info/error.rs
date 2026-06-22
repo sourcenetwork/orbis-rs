@@ -11,9 +11,6 @@ pub enum InfoError {
     RingNotFound(String),
 }
 
-/// Result type for DKG operations
-pub type Result<T> = std::result::Result<T, InfoError>;
-
 impl GrpcServiceError for InfoError {
     const SERVICE: &'static str = "info";
 

@@ -2,7 +2,8 @@ use crate::constants::PSS_GRACE_PERIOD_SECS;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::ReshareParams;
-use crate::helpers::helpers::{extract_node_part, read_ring_for_route};
+use crate::helpers::identity::extract_node_part;
+use crate::helpers::protocol_version::read_ring_for_route;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::{BearerToken, DkgClaims};
 use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo, RingPayload};
@@ -115,50 +116,6 @@ pub fn derive_reshare_session_id(
     hash_labeled_bytes(&mut hasher, b"new_threshold", &new_threshold.to_le_bytes());
     let digest = hasher.finalize();
     Ok(u128::from_le_bytes(digest[..16].try_into()?))
-}
-
-/// Load the canonical refresh ring payload from the local RingIndex and bulletin.
-pub async fn load_refresh_ring_payload<S: LocalStorage>(
-    ring_pk_hex: &str,
-    local_storage: &S,
-    bulletin: &Arc<dyn Bulletin + Send + Sync>,
-) -> Result<RingPayload> {
-    let ring_index: Vec<RingIndexEntry> = local_storage
-        .get(LocalStorageKeys::RingIndex)
-        .map_err(|e| DkgError::Storage(format!("Failed to read RingIndex: {}", e)))?
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
-    let entry = ring_index
-        .iter()
-        .find(|e| e.ring_pk_str == ring_pk_hex)
-        .ok_or_else(|| DkgError::Unauthorized(format!("Unknown ring: {}", ring_pk_hex)))?;
-    load_ring_payload_by_post_id(
-        ring_pk_hex,
-        &entry.bulletin_post_id,
-        bulletin,
-        network::V0.version,
-    )
-    .await
-}
-
-/// Load the canonical reshare ring payload, falling back to the wire-provided bulletin
-/// post ID for pure receivers that do not yet have a local RingIndex entry.
-pub async fn load_reshare_ring_payload<S: LocalStorage>(
-    ring_pk_hex: &str,
-    bulletin_post_id: &str,
-    local_storage: &S,
-    bulletin: &Arc<dyn Bulletin + Send + Sync>,
-) -> Result<RingPayload> {
-    let ring_index: Vec<RingIndexEntry> = local_storage
-        .get(LocalStorageKeys::RingIndex)
-        .map_err(|e| DkgError::Storage(format!("Failed to read RingIndex: {}", e)))?
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
-    let entry = ring_index.iter().find(|e| e.ring_pk_str == ring_pk_hex);
-    let resolved_post_id = entry
-        .map(|e| e.bulletin_post_id.as_str())
-        .unwrap_or(bulletin_post_id);
-    load_ring_payload_by_post_id(ring_pk_hex, resolved_post_id, bulletin, network::V0.version).await
 }
 
 async fn load_ring_payload_by_post_id(
@@ -731,7 +688,6 @@ pub fn build_reshare_params<S: LocalStorage>(
     let participating_ids: Vec<u32> = (1..=old_peer_node_keys.len() as u32).collect();
 
     let params = ReshareParams {
-        ring_key: ring_pk_hex.to_string(),
         old_share,
         participating_ids,
         new_threshold: new_threshold as usize,

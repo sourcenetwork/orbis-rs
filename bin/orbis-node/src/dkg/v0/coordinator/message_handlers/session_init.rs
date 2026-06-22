@@ -1,5 +1,5 @@
 use super::*;
-use crate::helpers::helpers::read_ring_for_protocol;
+use crate::helpers::protocol_version::read_ring_for_protocol;
 /// Handle a `DkgMessage::SessionInit`.
 ///
 /// Validates the session kind (Fresh/Refresh/Reshare), assigns this node's role
@@ -479,9 +479,9 @@ where
                     state.kind = init_kind;
                     state.policy_id = init_policy_id;
                     state.pss_interval = pss_interval;
-                    state.peer_ids = init_peer_ids;
-                    state.peer_node_keys = session_peer_node_keys;
-                    state.ring_id = ring_id;
+                    state.routing.peer_ids = init_peer_ids;
+                    state.routing.peer_node_keys = session_peer_node_keys;
+                    state.routing.ring_id = ring_id;
 
                     let mut node_to_peer = HashMap::new();
                     let mut peer_to_node = HashMap::new();
@@ -489,8 +489,8 @@ where
                         node_to_peer.insert(node_id, peer_id.clone());
                         peer_to_node.insert(peer_id, node_id);
                     }
-                    state.node_id_to_peer_id = node_to_peer;
-                    state.peer_id_to_node_id = peer_to_node;
+                    state.routing.node_id_to_peer_id = node_to_peer;
+                    state.routing.peer_id_to_node_id = peer_to_node;
 
                     let mut new_node_to_peer = HashMap::new();
                     let mut new_peer_to_node = HashMap::new();
@@ -498,11 +498,11 @@ where
                         new_node_to_peer.insert(node_id, peer_id.clone());
                         new_peer_to_node.insert(peer_id, node_id);
                     }
-                    state.reshare_new_node_id_to_peer_id = new_node_to_peer;
-                    state.reshare_new_peer_id_to_node_id = new_peer_to_node;
+                    state.routing.reshare_new_node_id_to_peer_id = new_node_to_peer;
+                    state.routing.reshare_new_peer_id_to_node_id = new_peer_to_node;
 
                     if let Some(params) = init_params {
-                        state.reshare_params = Some(params);
+                        state.reshare.params = Some(params);
                     }
                 },
             )

@@ -22,7 +22,7 @@ use tokio::time::{sleep, Duration};
 use tonic::Request;
 use zeroize::Zeroizing;
 
-use crate::helpers::helpers::RingConfig;
+use crate::helpers::ring::RingConfig;
 use crate::pre::v0::error::PreError;
 use crate::pre::v0::helpers::check_policy_access;
 use crate::pre::v0::messages::PreRequestContext;
@@ -112,7 +112,8 @@ async fn test_dkg_then_pre_end_to_end() {
     println!("\nStep 2: Running DKG protocol...");
 
     // Create node1's service (initiator)
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     // node1 sends StartDkgRequest to initiate the protocol
     let request = StartDkgRequest {
@@ -195,8 +196,10 @@ async fn test_dkg_then_pre_end_to_end() {
     println!("\nStep 5: Initiating PRE (proxy re-encryption) to Bob's public key...");
 
     // Create a PRE coordinator using node1's app state
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
 
     // Generate a unique request ID
     let request_id = format!(
@@ -364,7 +367,8 @@ async fn test_pre_with_large_secret() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -404,8 +408,10 @@ async fn test_pre_with_large_secret() {
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
     let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
@@ -495,7 +501,8 @@ async fn test_pre_fails_with_wrong_key() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -535,8 +542,10 @@ async fn test_pre_fails_with_wrong_key() {
     let (eve_sk, _eve_pk) = PreImpl::generate_keypair();
 
     // PRE to Bob's public key
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
     let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
@@ -627,7 +636,8 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -664,8 +674,10 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE with invalid token
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
     let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
@@ -767,7 +779,8 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -803,8 +816,10 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE with token that has WRONG claims (different rdr_pk)
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
     let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
@@ -902,7 +917,7 @@ async fn test_start_pre_fails_missing_auth_header() {
     let db_name = "test_start_pre_fails_missing_auth_header";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
+    let service = PreServiceImpl::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);
 
     let request = StartPreRequest {
         rdr_pk: b"def456".to_vec(),
@@ -943,7 +958,7 @@ async fn test_start_pre_fails_malformed_jwt() {
     let db_name = "test_start_pre_fails_malformed_jwt";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
+    let service = PreServiceImpl::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);
 
     let request = StartPreRequest {
         rdr_pk: b"def456".to_vec(),
@@ -978,7 +993,7 @@ async fn test_start_pre_fails_wrong_signature() {
     let db_name = "test_start_pre_fails_wrong_signature";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = PreServiceImpl::<DkgImpl, PreImpl>::new(app_state);
+    let service = PreServiceImpl::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);
 
     let object_id = "object_id_test".to_string();
 
@@ -1049,7 +1064,8 @@ async fn test_pre_fails_with_wrong_derivation() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -1092,8 +1108,10 @@ async fn test_pre_fails_with_wrong_derivation() {
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE with CORRECT derivation (re-encryption should work)
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
     let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin
@@ -1222,7 +1240,8 @@ async fn test_pre_fails_with_bad_proof() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -1263,8 +1282,10 @@ async fn test_pre_fails_with_bad_proof() {
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
 
     // PRE
-    let pre_coordinator =
-        PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
     let pre_peer_ids = peer_ids.clone();
 
     // Store the document in the bulletin with the TAMPERED proof
@@ -1382,16 +1403,20 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
     let secret_bytes = serde_json::to_vec(&encrypted_secret).expect("serialize secret");
 
     let request_id = "local-share-verify-failure".to_string();
-    assert!(
+    assert_eq!(
         app_state
             .pre_response_state
-            .init_response(request_id.clone(), &[])
+            .init_response_for_version(0, request_id.clone(), &[])
             .await,
+        crate::helpers::response_manager::ResponseInitOutcome::Created,
         "response collection should initialize"
     );
 
     let peer_id = hex::encode(app_state.network.local_peer_id().as_bytes());
-    let coordinator = PreCoordinator::<DkgImpl, PreImpl>::new(Arc::new(app_state.clone()));
+    let coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(app_state.clone()),
+        &::network::V0,
+    );
     let result = coordinator
         .initiate_reencryption_inner(
             request_id.clone(),
@@ -1420,7 +1445,7 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
 
     app_state
         .pre_response_state
-        .remove_response(&request_id)
+        .remove_response_for_version(0, &request_id)
         .await;
 
     match result {

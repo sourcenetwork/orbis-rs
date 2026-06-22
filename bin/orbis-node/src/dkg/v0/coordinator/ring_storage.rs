@@ -2,7 +2,6 @@ use crate::app_state::AppState;
 use crate::constants::MAX_LOCAL_RINGS_PER_NODE;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::helpers::auth::current_unix_time;
-use crate::metrics;
 use crate::ring_state::RingIndexEntry;
 use bulletin::r#trait::{BulletinWriteKind, RingFinalizationPayload};
 use crypto::r#trait::Dkg;
@@ -52,8 +51,11 @@ where
         coord.app_state.dkg_session_state.unmark_ring_pss(key).await;
     }
 
-    coord.remove_session(session_id).await;
-    metrics::record_dkg_session_completed();
+    coord
+        .app_state
+        .dkg_session_state
+        .complete_session(&session_id)
+        .await;
     tracing::info!(
         session_id = session_id,
         "Reshare Dealer: Phase 4 complete (share distribution done, secret deleted)"

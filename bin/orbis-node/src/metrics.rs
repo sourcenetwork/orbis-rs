@@ -10,8 +10,9 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use lazy_static::lazy_static;
 use prometheus::{
-    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec, CounterVec,
-    Encoder, Gauge, GaugeVec, HistogramVec, TextEncoder,
+    register_counter, register_counter_vec, register_gauge, register_gauge_vec,
+    register_histogram_vec, Counter, CounterVec, Encoder, Gauge, GaugeVec, HistogramVec,
+    TextEncoder,
 };
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -70,9 +71,9 @@ lazy_static! {
     )
     .expect("failed to register dkg_messages_total");
 
-    pub static ref DKG_ABANDONED_SESSIONS: Gauge = register_gauge!(
-        "dkg_abandoned_sessions",
-        "Number of DKG sessions abandoned"
+    pub static ref DKG_ABANDONED_SESSIONS_TOTAL: Counter = register_counter!(
+        "dkg_abandoned_sessions_total",
+        "Total number of DKG sessions abandoned"
     )
     .expect("failed to register dkg_abandoned_sessions");
 
@@ -140,9 +141,9 @@ lazy_static! {
     )
     .expect("failed to register sign_messages_total");
 
-    pub static ref SIGN_ABANDONED_STATES: Gauge = register_gauge!(
-        "sign_abandoned_states",
-        "Number of sign states abandoned (expired nonces or stale responses)"
+    pub static ref SIGN_ABANDONED_STATES_TOTAL: Counter = register_counter!(
+        "sign_abandoned_states_total",
+        "Total number of sign states abandoned (expired nonces or stale responses)"
     )
     .expect("failed to register sign_abandoned_states");
 
@@ -220,7 +221,7 @@ pub fn init() {
     lazy_static::initialize(&DKG_ACTIVE_SESSIONS);
     lazy_static::initialize(&DKG_PHASE_DURATION_SECONDS);
     lazy_static::initialize(&DKG_MESSAGES_TOTAL);
-    lazy_static::initialize(&DKG_ABANDONED_SESSIONS);
+    lazy_static::initialize(&DKG_ABANDONED_SESSIONS_TOTAL);
     lazy_static::initialize(&PRE_REQUESTS_TOTAL);
     lazy_static::initialize(&PRE_ACTIVE_REQUESTS);
     lazy_static::initialize(&PRE_REQUEST_DURATION_SECONDS);
@@ -229,7 +230,7 @@ pub fn init() {
     lazy_static::initialize(&SIGN_ACTIVE_REQUESTS);
     lazy_static::initialize(&SIGN_REQUEST_DURATION_SECONDS);
     lazy_static::initialize(&SIGN_MESSAGES_TOTAL);
-    lazy_static::initialize(&SIGN_ABANDONED_STATES);
+    lazy_static::initialize(&SIGN_ABANDONED_STATES_TOTAL);
     lazy_static::initialize(&RESHARE_SESSIONS_TOTAL);
     lazy_static::initialize(&RESHARE_ACTIVE_SESSIONS);
     lazy_static::initialize(&REFRESH_SESSIONS_TOTAL);
@@ -243,30 +244,185 @@ pub fn init() {
 // Helper functions for recording metrics
 // ============================================================================
 
-/// Timer guard for measuring request/operation duration
-pub struct Timer {
+/// Records one gRPC request exactly once, including early-return error paths.
+pub struct GrpcRequestGuard {
+    service: &'static str,
+    method: &'static str,
     start: Instant,
-    histogram: &'static HistogramVec,
-    labels: Vec<String>,
+    finished: bool,
 }
 
-impl Timer {
-    pub fn start(histogram: &'static HistogramVec, labels: Vec<String>) -> Self {
+impl GrpcRequestGuard {
+    pub fn new(service: &'static str, method: &'static str) -> Self {
         Self {
+            service,
+            method,
             start: Instant::now(),
-            histogram,
-            labels,
+            finished: false,
+        }
+    }
+
+    pub fn success(mut self) {
+        record_grpc_request(
+            self.service,
+            self.method,
+            "ok",
+            self.start.elapsed().as_secs_f64(),
+        );
+        self.finished = true;
+    }
+}
+
+impl Drop for GrpcRequestGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            record_grpc_request(
+                self.service,
+                self.method,
+                "error",
+                self.start.elapsed().as_secs_f64(),
+            );
         }
     }
 }
 
-impl Drop for Timer {
-    fn drop(&mut self) {
+/// Owns the active-request gauge for a service request.
+///
+/// Dropping without `complete` records a failure, so cancellation and every
+/// early-return path balance the gauge exactly once.
+pub struct RequestMetricsGuard {
+    total: &'static CounterVec,
+    active: Option<&'static Gauge>,
+    duration: &'static HistogramVec,
+    start: Instant,
+    finished: bool,
+}
+
+impl RequestMetricsGuard {
+    fn new(
+        total: &'static CounterVec,
+        active: Option<&'static Gauge>,
+        duration: &'static HistogramVec,
+    ) -> Self {
+        total.with_label_values(&["started"]).inc();
+        if let Some(active) = active {
+            active.inc();
+        }
+        Self {
+            total,
+            active,
+            duration,
+            start: Instant::now(),
+            finished: false,
+        }
+    }
+
+    pub fn complete(mut self) {
         let duration = self.start.elapsed().as_secs_f64();
-        let label_refs: Vec<&str> = self.labels.iter().map(|s| s.as_str()).collect();
-        self.histogram
-            .with_label_values(&label_refs)
-            .observe(duration);
+        self.total.with_label_values(&["completed"]).inc();
+        if let Some(active) = self.active {
+            active.dec();
+        }
+        self.duration.with_label_values(&[]).observe(duration);
+        self.finished = true;
+    }
+}
+
+impl Drop for RequestMetricsGuard {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.total.with_label_values(&["failed"]).inc();
+        if let Some(active) = self.active {
+            active.dec();
+        }
+    }
+}
+
+pub fn track_pre_request() -> RequestMetricsGuard {
+    RequestMetricsGuard::new(
+        &PRE_REQUESTS_TOTAL,
+        Some(&PRE_ACTIVE_REQUESTS),
+        &PRE_REQUEST_DURATION_SECONDS,
+    )
+}
+
+pub fn track_sign_request() -> RequestMetricsGuard {
+    RequestMetricsGuard::new(
+        &SIGN_REQUESTS_TOTAL,
+        Some(&SIGN_ACTIVE_REQUESTS),
+        &SIGN_REQUEST_DURATION_SECONDS,
+    )
+}
+
+pub fn track_store_secret_request() -> RequestMetricsGuard {
+    RequestMetricsGuard::new(
+        &STORE_SECRET_REQUESTS_TOTAL,
+        None,
+        &STORE_SECRET_REQUEST_DURATION_SECONDS,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DkgCeremonyKind {
+    Fresh,
+    Refresh,
+    Reshare,
+}
+
+/// Owns all active-session gauges for one DKG-backed ceremony.
+pub struct DkgSessionMetricsGuard {
+    kind: DkgCeremonyKind,
+    finished: bool,
+}
+
+impl DkgSessionMetricsGuard {
+    pub fn new(kind: DkgCeremonyKind) -> Self {
+        record_dkg_session_started();
+        match kind {
+            DkgCeremonyKind::Fresh => {}
+            DkgCeremonyKind::Refresh => record_refresh_session_started(),
+            DkgCeremonyKind::Reshare => record_reshare_session_started(),
+        }
+        Self {
+            kind,
+            finished: false,
+        }
+    }
+
+    pub fn complete(mut self) {
+        record_dkg_session_completed();
+        match self.kind {
+            DkgCeremonyKind::Fresh => {}
+            DkgCeremonyKind::Refresh => record_refresh_session_completed(),
+            DkgCeremonyKind::Reshare => record_reshare_session_completed(),
+        }
+        self.finished = true;
+    }
+
+    pub fn abandon(mut self) {
+        record_dkg_session_abandoned();
+        match self.kind {
+            DkgCeremonyKind::Fresh => {}
+            DkgCeremonyKind::Refresh => record_refresh_session_failed(),
+            DkgCeremonyKind::Reshare => record_reshare_session_failed(),
+        }
+        self.finished = true;
+    }
+}
+
+impl Drop for DkgSessionMetricsGuard {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        record_dkg_session_failed();
+        match self.kind {
+            DkgCeremonyKind::Fresh => {}
+            DkgCeremonyKind::Refresh => record_refresh_session_failed(),
+            DkgCeremonyKind::Reshare => record_reshare_session_failed(),
+        }
     }
 }
 
@@ -302,14 +458,7 @@ pub fn record_dkg_session_failed() {
 pub fn record_dkg_session_abandoned() {
     DKG_SESSIONS_TOTAL.with_label_values(&["abandoned"]).inc();
     DKG_ACTIVE_SESSIONS.dec();
-    DKG_ABANDONED_SESSIONS.dec();
-}
-
-/// Record DKG phase duration
-pub fn record_dkg_phase_duration(phase: &str, duration_secs: f64) {
-    DKG_PHASE_DURATION_SECONDS
-        .with_label_values(&[phase])
-        .observe(duration_secs);
+    DKG_ABANDONED_SESSIONS_TOTAL.inc();
 }
 
 /// Record DKG message sent
@@ -326,96 +475,9 @@ pub fn record_dkg_message_received(message_type: &str) {
         .inc();
 }
 
-/// Record PRE request started
-pub fn record_pre_request_started() {
-    PRE_REQUESTS_TOTAL.with_label_values(&["started"]).inc();
-    PRE_ACTIVE_REQUESTS.inc();
-}
-
-/// Record PRE request completed
-pub fn record_pre_request_completed(duration_secs: f64) {
-    PRE_REQUESTS_TOTAL.with_label_values(&["completed"]).inc();
-    PRE_ACTIVE_REQUESTS.dec();
-    PRE_REQUEST_DURATION_SECONDS
-        .with_label_values(&[])
-        .observe(duration_secs);
-}
-
-/// Record PRE request failed
-pub fn record_pre_request_failed() {
-    PRE_REQUESTS_TOTAL.with_label_values(&["failed"]).inc();
-    PRE_ACTIVE_REQUESTS.dec();
-}
-
-/// Record PRE message sent
-pub fn record_pre_message_sent(message_type: &str) {
-    PRE_MESSAGES_TOTAL
-        .with_label_values(&[message_type, "sent"])
-        .inc();
-}
-
-/// Record PRE message received
-pub fn record_pre_message_received(message_type: &str) {
-    PRE_MESSAGES_TOTAL
-        .with_label_values(&[message_type, "received"])
-        .inc();
-}
-
-/// Record Sign request started
-pub fn record_sign_request_started() {
-    SIGN_REQUESTS_TOTAL.with_label_values(&["started"]).inc();
-    SIGN_ACTIVE_REQUESTS.inc();
-}
-
-/// Record Sign request completed
-pub fn record_sign_request_completed(duration_secs: f64) {
-    SIGN_REQUESTS_TOTAL.with_label_values(&["completed"]).inc();
-    SIGN_ACTIVE_REQUESTS.dec();
-    SIGN_REQUEST_DURATION_SECONDS
-        .with_label_values(&[])
-        .observe(duration_secs);
-}
-
-/// Record Sign request failed
-pub fn record_sign_request_failed() {
-    SIGN_REQUESTS_TOTAL.with_label_values(&["failed"]).inc();
-    SIGN_ACTIVE_REQUESTS.dec();
-}
-
-/// Record Sign message sent
-pub fn record_sign_message_sent(message_type: &str) {
-    SIGN_MESSAGES_TOTAL
-        .with_label_values(&[message_type, "sent"])
-        .inc();
-}
-
 /// Record sign state abandoned (expired nonce or stale response entry)
 pub fn record_sign_state_abandoned() {
-    SIGN_ABANDONED_STATES.inc();
-}
-
-/// Record Sign message received
-pub fn record_sign_message_received(message_type: &str) {
-    SIGN_MESSAGES_TOTAL
-        .with_label_values(&[message_type, "received"])
-        .inc();
-}
-
-/// Record StoreSecret request completed
-pub fn record_store_secret_completed(duration_secs: f64) {
-    STORE_SECRET_REQUESTS_TOTAL
-        .with_label_values(&["completed"])
-        .inc();
-    STORE_SECRET_REQUEST_DURATION_SECONDS
-        .with_label_values(&[])
-        .observe(duration_secs);
-}
-
-/// Record StoreSecret request failed
-pub fn record_store_secret_failed() {
-    STORE_SECRET_REQUESTS_TOTAL
-        .with_label_values(&["failed"])
-        .inc();
+    SIGN_ABANDONED_STATES_TOTAL.inc();
 }
 
 /// Record Reshare session started
@@ -532,5 +594,51 @@ pub async fn start_metrics_server(
                     tracing::error!(error = %error, "Error serving metrics connection");
                 });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prometheus::{HistogramOpts, Opts};
+
+    fn request_metrics() -> (&'static CounterVec, &'static Gauge, &'static HistogramVec) {
+        let total = Box::leak(Box::new(
+            CounterVec::new(Opts::new("test_requests_total", "test"), &["status"])
+                .expect("counter"),
+        ));
+        let active = Box::leak(Box::new(
+            Gauge::new("test_active_requests", "test").expect("gauge"),
+        ));
+        let duration = Box::leak(Box::new(
+            HistogramVec::new(
+                HistogramOpts::new("test_request_duration_seconds", "test"),
+                &[],
+            )
+            .expect("histogram"),
+        ));
+        (total, active, duration)
+    }
+
+    #[test]
+    fn request_guard_balances_active_gauge_on_failure() {
+        let (total, active, duration) = request_metrics();
+        let baseline = active.get();
+        {
+            let _guard = RequestMetricsGuard::new(total, Some(active), duration);
+            assert_eq!(active.get(), baseline + 1.0);
+        }
+        assert_eq!(active.get(), baseline);
+        assert_eq!(total.with_label_values(&["failed"]).get(), 1.0);
+    }
+
+    #[test]
+    fn request_guard_balances_active_gauge_on_success() {
+        let (total, active, duration) = request_metrics();
+        let baseline = active.get();
+        RequestMetricsGuard::new(total, Some(active), duration).complete();
+        assert_eq!(active.get(), baseline);
+        assert_eq!(total.with_label_values(&["completed"]).get(), 1.0);
+        assert_eq!(total.with_label_values(&["failed"]).get(), 0.0);
     }
 }

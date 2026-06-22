@@ -106,8 +106,6 @@ pub struct AppState<D>
 where
     D: Dkg + Clone + 'static,
 {
-    /// Server configuration
-    pub config: ServerConfig,
     /// Public key for this node's SourceHub signing key.
     pub node_key: String,
     /// Network for node-to-node communication
@@ -133,19 +131,11 @@ where
     pub peer_connection_pool: Arc<PeerConnectionPool>,
 }
 
-/// Server configuration
-#[derive(Debug, Clone)]
-pub struct ServerConfig {
-    pub bind_address: String,
-}
-
 impl<D> AppState<D>
 where
     D: Dkg + Clone + 'static,
 {
-    /// Create a new AppState instance
     pub fn new(
-        bind_address: String,
         node_key: String,
         network: Arc<dyn Network>,
         local_storage: LocalStorageImpl,
@@ -153,7 +143,6 @@ where
         bulletin: Arc<dyn Bulletin + Send + Sync>,
     ) -> Self {
         Self {
-            config: ServerConfig { bind_address },
             node_key,
             network,
             local_storage,
@@ -174,7 +163,6 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppState")
-            .field("config", &self.config)
             .field("node_key", &self.node_key)
             .field("network", &"<Network>")
             .field("dkg_session_state", &"<SessionStateManager>")

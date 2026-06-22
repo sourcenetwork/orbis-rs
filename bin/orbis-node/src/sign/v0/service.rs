@@ -1,7 +1,8 @@
 use crate::app_state::AppState;
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
-use crate::helpers::helpers::{validate_all_peer_ids, RingConfig};
+use crate::helpers::identity::validate_all_peer_ids;
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
+use crate::helpers::ring::RingConfig;
 use crate::metrics;
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::SignCoordinator;
@@ -17,7 +18,6 @@ use crypto::SigShareInner;
 use crypto::SignaturePoint;
 use proto::v0::sign::{sign_service_server::SignService, StartSignRequest, StartSignResponse};
 use std::sync::Arc;
-use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 /// Implementation of the v0 SignService.
@@ -31,7 +31,7 @@ where
     D: Dkg + Clone + 'static,
     S: ThresholdSigner,
 {
-    pub state: AppState<D>,
+    pub state: Arc<AppState<D>>,
     pub routes: &'static network::ProtocolRoutes,
     _phantom: std::marker::PhantomData<S>,
 }
@@ -41,14 +41,12 @@ where
     D: Dkg + Clone + 'static,
     S: ThresholdSigner,
 {
-    #[cfg(test)]
-    pub fn new(state: AppState<D>) -> Self {
-        Self::with_routes(state, &network::V0)
-    }
-
-    pub fn with_routes(state: AppState<D>, routes: &'static network::ProtocolRoutes) -> Self {
+    pub fn with_routes(
+        state: impl Into<Arc<AppState<D>>>,
+        routes: &'static network::ProtocolRoutes,
+    ) -> Self {
         Self {
-            state,
+            state: state.into(),
             routes,
             _phantom: std::marker::PhantomData,
         }
@@ -79,14 +77,11 @@ where
         &self,
         request: Request<StartSignRequest>,
     ) -> Result<Response<StartSignResponse>, Status> {
-        let start = Instant::now();
+        let grpc_metrics = metrics::GrpcRequestGuard::new("sign", "start_sign");
+        let request_metrics = metrics::track_sign_request();
 
         // get timestamp (needed for JWT validation) ---
-        let current_time = current_unix_time().map_err(|e| {
-            let duration = start.elapsed().as_secs_f64();
-            metrics::record_grpc_request("sign", "start_sign", "error", duration);
-            SignError::RequestTimestamp(e)
-        })?;
+        let current_time = current_unix_time().map_err(SignError::RequestTimestamp)?;
 
         // reject oversized messages before any crypto work ---
         if request.get_ref().message.len() > crate::constants::MAX_SIGN_MESSAGE_BYTES {
@@ -170,9 +165,7 @@ where
         let created_at = current_time as i64;
 
         // Initiate threshold signing (network protocol) ---
-        metrics::record_sign_request_started();
-        let coordinator =
-            SignCoordinator::<D, S>::with_routes(Arc::new(self.state.clone()), self.routes);
+        let coordinator = SignCoordinator::<D, S>::with_routes(self.state.clone(), self.routes);
         let total_participants = peer_ids.len();
         let poly_state =
             RingPolyState::load_from_ring_pk_hex(&self.state.local_storage, &ring_payload.ring_pk)
@@ -207,9 +200,8 @@ where
                 SignError::Deserialization(format!("Failed to parse sign result: {}", e))
             })?;
 
-        let duration = start.elapsed().as_secs_f64();
-        metrics::record_grpc_request("sign", "start_sign", "ok", duration);
-        metrics::record_sign_request_completed(duration);
+        request_metrics.complete();
+        grpc_metrics.success();
 
         Ok(Response::new(StartSignResponse {
             status: "completed".to_string(),

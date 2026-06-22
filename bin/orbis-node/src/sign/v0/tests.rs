@@ -5,7 +5,7 @@
 
 use crate::constants::MAX_SIGN_MESSAGE_BYTES;
 use crate::dkg::v0::service::DkgServiceImpl;
-use crate::helpers::helpers::RingConfig;
+use crate::helpers::ring::RingConfig;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, get_test_ring_post,
     setup_three_node_network_with_sign, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
@@ -65,7 +65,8 @@ async fn test_dkg_then_sign_end_to_end() {
     println!("\nStep 2: Running DKG protocol...");
 
     // Create node1's service (initiator)
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     // node1 sends StartDkgRequest to initiate the protocol
     let request = StartDkgRequest {
@@ -115,8 +116,10 @@ async fn test_dkg_then_sign_end_to_end() {
     println!("\nStep 4: Initiating threshold signing...");
 
     // Create a Sign coordinator using node1's app state
-    let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
 
     // Generate a unique request ID
     let request_id = format!(
@@ -303,7 +306,8 @@ async fn test_sign_different_messages() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -331,8 +335,10 @@ async fn test_sign_different_messages() {
         let message =
             create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id).await;
 
-        let sign_coordinator =
-            SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+        let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+            Arc::new(network.alice.app_state.clone()),
+            &::network::V0,
+        );
 
         let request_id = format!(
             "sign-msg-{}-{}",
@@ -412,7 +418,8 @@ async fn test_sign_fails_wrong_message() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -438,8 +445,10 @@ async fn test_sign_fails_wrong_message() {
     let original_message =
         create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id).await;
 
-    let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
 
     let request_id = format!(
         "sign-wrong-msg-{}",
@@ -525,7 +534,8 @@ async fn test_sign_response_cleanup() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -548,8 +558,10 @@ async fn test_sign_response_cleanup() {
     // Create and post a document, then sign it
     let message = create_test_document_and_post(&network.alice.app_state.bulletin, &ring_id).await;
 
-    let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
 
     let request_id = format!(
         "sign-cleanup-{}",
@@ -626,7 +638,8 @@ async fn test_sign_fails_invalid_bulletin_post() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -648,8 +661,10 @@ async fn test_sign_fails_invalid_bulletin_post() {
     // Try to sign with invalid message (not a valid BulletinPost)
     let invalid_message = b"this is not a valid BulletinPost JSON";
 
-    let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
 
     let request_id = format!(
         "sign-invalid-{}",
@@ -716,7 +731,8 @@ async fn test_sign_fails_post_not_on_bulletin() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -759,8 +775,10 @@ async fn test_sign_fails_post_not_on_bulletin() {
         .try_into()
         .expect("serialize BulletinPost");
 
-    let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
 
     let request_id = format!(
         "sign-not-posted-{}",
@@ -827,7 +845,8 @@ async fn test_sign_fails_tampered_payload() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -891,8 +910,10 @@ async fn test_sign_fails_tampered_payload() {
         .try_into()
         .expect("serialize BulletinPost");
 
-    let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
 
     let request_id = format!(
         "sign-tampered-{}",
@@ -957,7 +978,8 @@ async fn test_sign_fails_invalid_ring_id() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -1005,8 +1027,10 @@ async fn test_sign_fails_invalid_ring_id() {
 
     let message: Vec<u8> = bulletin_post.try_into().expect("serialize BulletinPost");
 
-    let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
 
     let request_id = format!(
         "sign-invalid-ring-{}",
@@ -1104,7 +1128,8 @@ async fn test_dkg_then_sign_policy_end_to_end() {
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -1143,8 +1168,10 @@ async fn test_dkg_then_sign_policy_end_to_end() {
         .create_sign_jwt(POLICY_TEST_DERIVATION_ID, &message)
         .expect("create sign JWT");
 
-    let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
 
     let request_id = format!(
         "sign-policy-{}",
@@ -1256,7 +1283,8 @@ async fn test_sign_policy_fails_invalid_jwt() {
     let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -1284,8 +1312,10 @@ async fn test_sign_policy_fails_invalid_jwt() {
         .expect("requires DummyBulletin");
     let key_derivation = setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
 
-    let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
 
     let sign_result = sign_coordinator
         .initiate_signing(
@@ -1352,7 +1382,8 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
     let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -1385,8 +1416,10 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
         .create_sign_jwt("wrong-derivation-id", b"test message")
         .expect("create sign JWT");
 
-    let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
 
     let sign_result = sign_coordinator
         .initiate_signing(
@@ -1534,8 +1567,8 @@ async fn test_sign_policy_check_policy_access_expired_valid_window() {
 #[tokio::test]
 async fn test_sign_service_rejects_oversized_message() {
     let db_name = "test_sign_service_rejects_oversized_message";
-    let app_state = create_test_app_state(None, true, true, db_name).await;
-    let service = SignServiceImpl::<DkgImpl, SignImpl>::new(app_state);
+    let app_state = create_test_app_state(true, true, db_name).await;
+    let service = SignServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
 
     let oversized_message = vec![0u8; MAX_SIGN_MESSAGE_BYTES + 1];
 
@@ -1571,7 +1604,7 @@ async fn test_sign_service_rejects_oversized_message() {
 async fn test_failed_round_two_consumes_nonce_state() {
     let db_name = "test_failed_round_two_consumes_nonce_state";
     let db_path = test_db_path(db_name);
-    let app_state = create_test_app_state(None, true, true, db_name).await;
+    let app_state = create_test_app_state(true, true, db_name).await;
     let sender_peer_id = app_state.network.local_peer_id().clone();
     let request_id = "failed-round-two";
     let nonce_key = format!("nonce-{request_id}");
@@ -1588,7 +1621,10 @@ async fn test_failed_round_two_consumes_nonce_state() {
             .await
     );
 
-    let coordinator = SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(app_state.clone()));
+    let coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+        Arc::new(app_state.clone()),
+        &::network::V0,
+    );
     let result = coordinator
         .handle_message(
             SignMessage::SignRequest(SignRequest {
@@ -1634,7 +1670,8 @@ async fn test_sign_policy_fails_wrong_message_digest() {
     let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
-    let node1_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
     let test_keys = TestKeyPair::new();
     let token = test_keys
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
@@ -1668,8 +1705,10 @@ async fn test_sign_policy_fails_wrong_message_digest() {
         .create_sign_jwt(POLICY_TEST_DERIVATION_ID, &original_message)
         .expect("create sign JWT");
 
-    let sign_coordinator =
-        SignCoordinator::<DkgImpl, SignImpl>::new(Arc::new(network.alice.app_state.clone()));
+    let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
 
     // But the request sends a different message
     let different_message = b"completely different message".to_vec();

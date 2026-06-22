@@ -4,7 +4,6 @@
 
 use crate::app_state::AppState;
 
-pub const BULLETIN_RING_NAMESPACE: &str = "orbis";
 pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
 
 pub const ORBIS_RING_POLICY_YAML: &str = r#"
@@ -43,8 +42,10 @@ use bulletin::{
 use cli_tool;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
-    ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+    ChainConfig, ChainConfigBuilder, SourceHubClient,
 };
+#[cfg(feature = "integration-test")]
+use common::blockchain::{TxSigner, TEST_ACCOUNT_HEX_KEY};
 use hex;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -59,7 +60,7 @@ use tokio::time::Duration;
 use crypto::{DkgImpl, PreImpl, SignImpl};
 
 // Re-export JWT utilities from authn for test convenience
-pub use authn::{add_auth_header, create_authenticated_request, JwtSigner};
+pub use authn::{create_authenticated_request, JwtSigner};
 
 /// Type alias for backward compatibility - use JwtSigner instead
 pub type TestKeyPair = JwtSigner;
@@ -81,12 +82,11 @@ pub type TestKeyPair = JwtSigner;
 /// ```rust
 /// #[tokio::test]
 /// async fn test_my_feature() {
-///     let app_state = create_test_app_state(None).await;
+///     let app_state = create_test_app_state(true, true, "my_test").await;
 ///     // Use app_state in your test...
 /// }
 /// ```
 pub async fn create_test_app_state(
-    bind_address: Option<String>,
     dummy_authz: bool,
     dummy_bulletin: bool,
     db_name: &str,
@@ -97,21 +97,14 @@ pub async fn create_test_app_state(
                 .await
                 .expect("Failed to initialize dummy bulletin"),
         );
-        create_test_app_state_with_bulletin(bind_address, dummy_authz, bulletin, db_name).await
+        create_test_app_state_with_bulletin(dummy_authz, bulletin, db_name).await
     } else {
         let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
             BulletinImpl::new(ChainConfigBuilder::default())
                 .await
                 .expect("Failed to initialize bulletin"),
         );
-        create_test_app_state_with_bulletin_inner(
-            bind_address,
-            dummy_authz,
-            bulletin,
-            None,
-            db_name,
-        )
-        .await
+        create_test_app_state_with_bulletin_inner(dummy_authz, bulletin, None, db_name).await
     }
 }
 
@@ -119,31 +112,21 @@ pub async fn create_test_app_state(
 ///
 /// Use this when you need multiple nodes to share the same bulletin (e.g., in multi-node tests).
 pub async fn create_test_app_state_with_bulletin(
-    bind_address: Option<String>,
     dummy_authz: bool,
     bulletin: Arc<DummyBulletin>,
     db_name: &str,
 ) -> AppState<DkgImpl> {
     let bulletin_trait: Arc<dyn Bulletin + Send + Sync> = bulletin.clone();
-    create_test_app_state_with_bulletin_inner(
-        bind_address,
-        dummy_authz,
-        bulletin_trait,
-        Some(bulletin),
-        db_name,
-    )
-    .await
+    create_test_app_state_with_bulletin_inner(dummy_authz, bulletin_trait, Some(bulletin), db_name)
+        .await
 }
 
 async fn create_test_app_state_with_bulletin_inner(
-    bind_address: Option<String>,
     dummy_authz: bool,
     bulletin: Arc<dyn Bulletin + Send + Sync>,
     dummy_bulletin: Option<Arc<DummyBulletin>>,
     db_name: &str,
 ) -> AppState<DkgImpl> {
-    let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
-
     // Initialize network for testing — bind to loopback so iroh advertises
     // 127.0.0.1 and same-machine peers can connect without a relay.
     let network: Arc<dyn network::Network> = Arc::new(
@@ -193,15 +176,7 @@ async fn create_test_app_state_with_bulletin_inner(
         )
     }
 
-    // Create AppState with the network (node_id is no longer needed - it's session-specific)
-    AppState::<DkgImpl>::new(
-        bind_address,
-        node_key,
-        network,
-        local_storage,
-        authz,
-        bulletin,
-    )
+    AppState::<DkgImpl>::new(node_key, network, local_storage, authz, bulletin)
 }
 
 /// Create a test AppState with default values
@@ -218,7 +193,7 @@ async fn create_test_app_state_with_bulletin_inner(
 /// }
 /// ```
 pub async fn create_test_app_state_default(db_name: &str) -> AppState<DkgImpl> {
-    create_test_app_state(None, true, true, db_name).await
+    create_test_app_state(true, true, db_name).await
 }
 
 /// Information about a node in a test network
@@ -268,17 +243,6 @@ pub struct ThreeNodeNetwork {
 }
 
 impl ThreeNodeNetwork {
-    /// Get peer IDs for connection (excluding self)
-    ///
-    /// Returns a vector of peer ID strings that can be used in StartDkgRequest.
-    /// The peer IDs are formatted as "node_id@ip:port" for proper addressing.
-    /// This excludes Alice's own peer ID to avoid self-connection errors.
-    pub fn get_peer_ids_for_connection(&self) -> Vec<String> {
-        // The address field contains the formatted "node_id@ip:port" string
-        // Exclude Alice's own peer ID to avoid self-connection
-        vec![self.bob.address.clone(), self.charlie.address.clone()]
-    }
-
     /// Get all peer IDs including Alice (for SessionInit)
     ///
     /// Returns a vector of all peer ID strings including Alice.
@@ -383,21 +347,18 @@ pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> Thr
     );
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
     let alice_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
         true,
         dummy_bulletin.clone(),
         &format!("{}_1", db_name),
     )
     .await;
     let bob_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
         true,
         dummy_bulletin.clone(),
         &format!("{}_2", db_name),
     )
     .await;
     let charlie_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
         true,
         dummy_bulletin.clone(),
         &format!("{}_3", db_name),
@@ -584,7 +545,6 @@ pub async fn setup_three_node_network_with_pre(
 
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
     let alice_state = create_test_app_state_with_bulletin_inner(
-        Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
         dummy_bulletin_arc.clone(),
@@ -592,7 +552,6 @@ pub async fn setup_three_node_network_with_pre(
     )
     .await;
     let bob_state = create_test_app_state_with_bulletin_inner(
-        Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
         dummy_bulletin_arc.clone(),
@@ -600,7 +559,6 @@ pub async fn setup_three_node_network_with_pre(
     )
     .await;
     let charlie_state = create_test_app_state_with_bulletin_inner(
-        Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin,
         dummy_bulletin_arc.clone(),
@@ -785,7 +743,6 @@ pub async fn setup_three_node_network_with_sign(
 
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
     let alice_state = create_test_app_state_with_bulletin_inner(
-        Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
         dummy_bulletin_arc.clone(),
@@ -793,7 +750,6 @@ pub async fn setup_three_node_network_with_sign(
     )
     .await;
     let bob_state = create_test_app_state_with_bulletin_inner(
-        Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
         dummy_bulletin_arc.clone(),
@@ -801,7 +757,6 @@ pub async fn setup_three_node_network_with_sign(
     )
     .await;
     let charlie_state = create_test_app_state_with_bulletin_inner(
-        Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin,
         dummy_bulletin_arc.clone(),
@@ -1193,6 +1148,7 @@ pub async fn create_ring_governance_with_ring(
 
 /// Create an orbis ring governance policy as TEST_ACCOUNT_HEX_KEY, register its
 /// own policy ID as a `ring_policy` ACP object, and return the policy ID.
+#[cfg(feature = "integration-test")]
 pub async fn create_orbis_ring_policy(chain_config: &ChainConfig) -> String {
     let client = SourceHubClient::with_signer(
         chain_config.clone(),
@@ -1239,24 +1195,13 @@ pub async fn create_orbis_ring_policy(chain_config: &ChainConfig) -> String {
 }
 
 /// Create a ring on-chain as TEST_ACCOUNT_HEX_KEY and return its ring_id.
+#[cfg(feature = "integration-test")]
 pub async fn create_ring_on_chain(
     chain_config: &ChainConfig,
     node_keys: &[String],
     threshold: u32,
     policy_id: &str,
     nonce: Option<&str>,
-) -> String {
-    create_ring_on_chain_with_pss(chain_config, node_keys, threshold, policy_id, nonce, None).await
-}
-
-/// Create a ring on-chain with an explicit PSS interval. Returns its ring_id.
-pub async fn create_ring_on_chain_with_pss(
-    chain_config: &ChainConfig,
-    node_keys: &[String],
-    threshold: u32,
-    policy_id: &str,
-    nonce: Option<&str>,
-    pss_interval: Option<u64>,
 ) -> String {
     let client = SourceHubClient::with_signer(
         chain_config.clone(),
@@ -1270,7 +1215,7 @@ pub async fn create_ring_on_chain_with_pss(
         .orbis_create_ring_get_id(
             node_keys.to_vec(),
             threshold,
-            pss_interval.unwrap_or(86400),
+            86400,
             policy_id,
             nonce.map(String::from),
             network::V0.version,

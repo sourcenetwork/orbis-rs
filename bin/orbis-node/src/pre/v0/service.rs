@@ -1,7 +1,8 @@
 use crate::app_state::AppState;
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
-use crate::helpers::helpers::{validate_all_peer_ids, RingConfig};
+use crate::helpers::identity::validate_all_peer_ids;
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
+use crate::helpers::ring::RingConfig;
 use crate::metrics;
 use crate::pre::v0::coordinator::PreCoordinator;
 use crate::pre::v0::error::PreError;
@@ -17,7 +18,6 @@ use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer
 use crypto::PreImpl as ThresholdDealerNode;
 use proto::v0::pre::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
 use std::sync::Arc;
-use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 /// Implementation of the v0 PreService.
@@ -31,7 +31,7 @@ where
     D: Dkg + Clone + 'static,
     T: ThresholdDealer,
 {
-    pub state: AppState<D>,
+    pub state: Arc<AppState<D>>,
     pub routes: &'static network::ProtocolRoutes,
     _phantom: std::marker::PhantomData<T>,
 }
@@ -41,14 +41,12 @@ where
     D: Dkg + Clone + 'static,
     T: ThresholdDealer,
 {
-    #[cfg(test)]
-    pub fn new(state: AppState<D>) -> Self {
-        Self::with_routes(state, &network::V0)
-    }
-
-    pub fn with_routes(state: AppState<D>, routes: &'static network::ProtocolRoutes) -> Self {
+    pub fn with_routes(
+        state: impl Into<Arc<AppState<D>>>,
+        routes: &'static network::ProtocolRoutes,
+    ) -> Self {
         Self {
-            state,
+            state: state.into(),
             routes,
             _phantom: std::marker::PhantomData,
         }
@@ -79,12 +77,11 @@ where
         &self,
         request: Request<StartPreRequest>,
     ) -> Result<Response<StartPreResponse>, Status> {
-        let start = Instant::now();
+        let grpc_metrics = metrics::GrpcRequestGuard::new("pre", "start_pre");
+        let request_metrics = metrics::track_pre_request();
 
         // Get current timestamp (needed for both auth and response)
         let current_time = current_unix_time().map_err(|e| {
-            let duration = start.elapsed().as_secs_f64();
-            metrics::record_grpc_request("pre", "start_pre", "error", duration);
             tracing::error!("Failed to get current unix time: {}", e);
             PreError::SystemTime("Failed to get current timestamp".to_string())
         })?;
@@ -190,9 +187,7 @@ where
         // 4. Create coordinator and initiate reencryption
         // Per-peer connectivity is handled inside the coordinator via JoinSet tasks,
         // allowing threshold-of-n operation when some nodes are unreachable.
-        metrics::record_pre_request_started();
-        let coordinator =
-            PreCoordinator::<D, T>::with_routes(Arc::new(self.state.clone()), self.routes);
+        let coordinator = PreCoordinator::<D, T>::with_routes(self.state.clone(), self.routes);
         let total_participants = peer_ids.len();
         let poly_state = RingPolyState::load(&self.state.local_storage, &ring_pk).map_err(|e| {
             tracing::error!("Failed to load ring polynomial state: {}", e);
@@ -234,10 +229,8 @@ where
             encrypted_secret,
         };
 
-        // Record success metrics
-        let duration = start.elapsed().as_secs_f64();
-        metrics::record_grpc_request("pre", "start_pre", "ok", duration);
-        metrics::record_pre_request_completed(duration);
+        request_metrics.complete();
+        grpc_metrics.success();
 
         Ok(Response::new(response))
     }

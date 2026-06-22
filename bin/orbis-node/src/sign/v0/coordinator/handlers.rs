@@ -2,7 +2,7 @@ use super::SignCoordinator;
 use crate::constants::{
     JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
 };
-use crate::helpers::helpers::read_ring_for_route;
+use crate::helpers::protocol_version::read_ring_for_route;
 use crate::ring_state::RingShareBundle;
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::helpers::{
@@ -13,6 +13,7 @@ use crate::sign::v0::helpers::{
     verify_message_and_get_info_for_version,
 };
 use crate::sign::v0::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
+use crate::sign::v0::response_state::NonceStoreOutcome;
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
 use bulletin::r#trait::{BulletinKind, DocumentPayload};
 use crypto::r#trait::{
@@ -240,7 +241,7 @@ where
             }
         };
 
-        if !self
+        match self
             .app_state
             .sign_response_state
             .store_nonce_for_version(
@@ -252,9 +253,17 @@ where
             )
             .await
         {
-            return Err(SignError::NonceState(
-                "Failed to store nonce state (limit exceeded or duplicate)".to_string(),
-            ));
+            NonceStoreOutcome::Stored => {}
+            NonceStoreOutcome::AlreadyExists => {
+                return Err(SignError::NonceState(format!(
+                    "Nonce state already exists for request {request_id}"
+                )));
+            }
+            NonceStoreOutcome::LimitReached => {
+                return Err(SignError::NonceState(
+                    "Nonce state limit exceeded".to_string(),
+                ));
+            }
         }
 
         Ok(Some(SignMessage::NonceResponse {

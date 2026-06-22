@@ -6,7 +6,7 @@ use crate::dkg::v0::{
     messages::{DkgMessage, SessionKind},
     session_state::{CreateSessionOutcome, DkgMessageType, DkgPhase, SessionStateManager},
 };
-use crate::helpers::helpers::extract_node_part;
+use crate::helpers::identity::extract_node_part;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
@@ -33,7 +33,7 @@ use crypto::DkgImpl;
 async fn test_start_dkg_empty_participants() {
     let db_path = test_db_path("test_start_dkg_empty_participants");
     let app_state = create_test_app_state_default("test_start_dkg_empty_participants").await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -76,7 +76,8 @@ async fn test_three_nodes_connect() {
     println!("Peer IDs for connection: {:?}", peer_ids);
 
     // Create Alice's service (clone app_state to avoid move)
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     // Alice sends StartDkgRequest with Bob and Charlie's peer IDs
     let request = StartDkgRequest {
@@ -129,9 +130,8 @@ async fn test_start_dkg_ring_not_found() {
     let db_path = test_db_path(db_name);
 
     // DummyBulletin has NodeInfo for this node but no ring seeded.
-    let app_state =
-        create_test_app_state(Some("127.0.0.1:0".to_string()), true, true, db_name).await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let app_state = create_test_app_state(true, true, db_name).await;
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
@@ -211,8 +211,8 @@ async fn test_start_dkg_fails_on_connection_failure() {
         )
         .expect("seed NodeInfo for unreachable peer");
 
-    let app_state = create_test_app_state_with_bulletin(None, true, bulletin, db_name).await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let app_state = create_test_app_state_with_bulletin(true, bulletin, db_name).await;
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
@@ -273,7 +273,8 @@ async fn test_start_dkg_succeeds_on_all_connections() {
     println!("Peer IDs for connection: {:?}", peer_ids);
 
     // Create Alice's service
-    let alice_service = DkgServiceImpl::<DkgImpl>::new(network.alice.app_state.clone());
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
 
     // Alice sends StartDkgRequest with all peer IDs (including herself)
     let request = StartDkgRequest {
@@ -442,7 +443,7 @@ async fn test_start_dkg_fails_missing_auth_header() {
     let db_name = "test_start_dkg_fails_missing_auth_header";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -478,7 +479,7 @@ async fn test_start_dkg_fails_malformed_jwt() {
     let db_name = "test_start_dkg_fails_malformed_jwt";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
@@ -508,7 +509,7 @@ async fn test_start_dkg_fails_wrong_signature() {
     let db_name = "test_start_dkg_fails_wrong_signature";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
@@ -564,7 +565,7 @@ async fn test_dkg_session_init_fails_with_invalid_jwt() {
     // Create a node to receive the SessionInit
     let app_state = create_test_app_state_default(db_name).await;
     let app_state = Arc::new(app_state);
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
 
     // Create a SessionInit message with an invalid JWT token
     let session_init = DkgMessage::SessionInit {
@@ -654,8 +655,8 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
         )
         .expect("seed ring");
 
-    let app_state = create_test_app_state_with_bulletin(None, true, bulletin, db_name).await;
-    let coordinator = DkgCoordinator::new(Arc::new(app_state));
+    let app_state = create_test_app_state_with_bulletin(true, bulletin, db_name).await;
+    let coordinator = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
 
     let test_keys = TestKeyPair::new();
     let token = test_keys
@@ -709,7 +710,7 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
 
     // Create a node to receive the SessionInit
     let app_state = create_test_app_state_default(db_name).await;
-    let coordinator = DkgCoordinator::new(Arc::new(app_state));
+    let coordinator = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
 
     // Create a valid JWT with different peer_ids than what's in SessionInit
     let test_keys = TestKeyPair::new();
@@ -774,8 +775,7 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
     let db_path = test_db_path(db_name);
 
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state =
-        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
     let node_key = app_state.node_key.clone();
     let local_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let denied_node_info = NodeInfo {
@@ -805,7 +805,7 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
         .expect("seed ring");
 
     let app_state = Arc::new(app_state);
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     let peer_ids = vec![local_peer_id_hex.clone()];
     let peer_node_keys = vec![node_key.clone()];
     let token = TestKeyPair::new()
@@ -843,8 +843,7 @@ async fn test_fresh_session_init_publishes_complete_state() {
     let db_path = test_db_path(db_name);
 
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state =
-        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
     let node_key = app_state.node_key.clone();
     let local_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let session_id = 222_333u128;
@@ -868,7 +867,7 @@ async fn test_fresh_session_init_publishes_complete_state() {
         .expect("seed fresh ring");
 
     let app_state = Arc::new(app_state);
-    let coordinator = DkgCoordinator::new(app_state.clone());
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     let token = TestKeyPair::new()
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("create JWT");
@@ -896,13 +895,13 @@ async fn test_fresh_session_init_publishes_complete_state() {
         .dkg_session_state
         .with_state(&session_id, |state| {
             (
-                state.peer_ids.clone(),
-                state.peer_node_keys.clone(),
-                state.ring_id.clone(),
+                state.routing.peer_ids.clone(),
+                state.routing.peer_node_keys.clone(),
+                state.routing.ring_id.clone(),
                 state.pss_interval,
                 state.policy_id.clone(),
-                state.node_id_to_peer_id.clone(),
-                state.peer_id_to_node_id.clone(),
+                state.routing.node_id_to_peer_id.clone(),
+                state.routing.peer_id_to_node_id.clone(),
             )
         })
         .await
@@ -925,8 +924,7 @@ async fn test_start_dkg_rejects_self_participant_nodeinfo_deny() {
     let db_path = test_db_path(db_name);
 
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state =
-        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
     let node_key = app_state.node_key.clone();
     let local_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let denied_node_info = NodeInfo {
@@ -942,7 +940,7 @@ async fn test_start_dkg_rejects_self_participant_nodeinfo_deny() {
     let token = TestKeyPair::new()
         .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
         .expect("create JWT");
-    let service = DkgServiceImpl::<DkgImpl>::new(app_state);
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
     let request = StartDkgRequest {
         ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
     };
@@ -1326,6 +1324,7 @@ async fn test_peer_node_mappings_consistent() {
     let node_id = manager
         .with_state(&session_id, |state| {
             state
+                .routing
                 .peer_id_to_node_id
                 .get("bbb@192.168.1.2:4000")
                 .copied()
@@ -1361,6 +1360,7 @@ async fn test_peer_identity_unknown_peer_not_in_mapping() {
     let found = manager
         .with_state(&session_id, |state| {
             state
+                .routing
                 .peer_id_to_node_id
                 .iter()
                 .find(|(peer_id, _)| extract_node_part(peer_id) == unknown_peer_hex)

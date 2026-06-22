@@ -161,12 +161,16 @@ fn spawn_full_test_grpc_server(
     let local_addr = incoming.local_addr().expect("full gRPC local addr");
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-    let dkg_service = DkgServiceImpl::<DkgImpl>::new((*node.app_state).clone());
-    let pre_service = PreServiceImpl::<DkgImpl, PreImpl>::new((*node.app_state).clone());
+    let dkg_service = DkgServiceImpl::<DkgImpl>::with_routes(node.app_state.clone(), &network::V0);
+    let pre_service =
+        PreServiceImpl::<DkgImpl, PreImpl>::with_routes(node.app_state.clone(), &network::V0);
     let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
-    let store_secret_service =
-        StoreSecretServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
-    let sign_service = SignServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
+    let store_secret_service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(
+        node.app_state.clone(),
+        &network::V0,
+    );
+    let sign_service =
+        SignServiceImpl::<DkgImpl, SignImpl>::with_routes(node.app_state.clone(), &network::V0);
 
     let task = tokio::spawn(async move {
         let _ = tonic::transport::Server::builder()
@@ -658,12 +662,6 @@ async fn test_init_node_app_state_configuration() {
     .await;
 
     let node = init_node(config).await.expect("Node initialization failed");
-
-    // Verify AppState configuration
-    assert_eq!(
-        node.app_state.config.bind_address, "127.0.0.1:0",
-        "Bind address should match"
-    );
 
     // Verify no sessions exist initially
     assert_eq!(

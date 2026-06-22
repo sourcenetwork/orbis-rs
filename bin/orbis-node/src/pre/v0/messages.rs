@@ -64,7 +64,7 @@ impl PreMessage {
     }
 
     /// Get the from_node_id for response messages (used for deduplication)
-    pub fn from_node_id(&self) -> Option<u32> {
+    pub fn sender_node_id(&self) -> Option<u32> {
         match self {
             PreMessage::ReencryptResponse { from_node_id, .. } => Some(*from_node_id),
             _ => None,

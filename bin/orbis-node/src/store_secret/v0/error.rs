@@ -1,5 +1,4 @@
 use crate::error::{GrpcErrorClassification, GrpcServiceError};
-use crate::metrics;
 use thiserror::Error;
 
 /// StoreSecret related errors
@@ -36,9 +35,6 @@ pub enum StoreSecretError {
     SystemTime(String),
 }
 
-/// Result type for StoreSecret operations
-pub type Result<T> = std::result::Result<T, StoreSecretError>;
-
 impl GrpcServiceError for StoreSecretError {
     const SERVICE: &'static str = "store_secret";
 
@@ -69,10 +65,6 @@ impl GrpcServiceError for StoreSecretError {
                 GrpcErrorClassification::new(Code::Internal, Level::ERROR, true)
             }
         }
-    }
-
-    fn record_failure_metric(&self) {
-        metrics::record_store_secret_failed();
     }
 }
 
