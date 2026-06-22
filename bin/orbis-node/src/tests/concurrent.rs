@@ -131,6 +131,11 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
 async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveThreeNodeNetwork {
     let chain = SourceHubTestContainer::new();
     let chain_config = chain.chain_config();
+    let runtime_base_path = project_root::get_project_root()
+        .expect("resolve project root")
+        .join("target")
+        .join("test-runtime")
+        .join(db_prefix);
 
     let policy_id = create_orbis_ring_policy(&chain_config).await;
 
@@ -145,8 +150,12 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
         let local_storage = LocalStorageImpl::new(None, db_path.clone()).expect("local storage");
 
         // Create signing key (stored in local_storage) and fund it via the faucet
-        let signer = create_and_store_node_key(local_storage.clone(), chain_config.clone())
-            .expect("create node signing key");
+        let signer = create_and_store_node_key(
+            local_storage.clone(),
+            chain_config.clone(),
+            &runtime_base_path,
+        )
+        .expect("create node signing key");
         let public_address = signer.address();
         let node_key = signer.public_key_hex();
 
@@ -208,6 +217,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
                 denom: None,
                 metrics_addr: None,
                 loki_url: None,
+                runtime_base_path: None,
                 reshare_interval_secs: 0,
                 node_controller_key: node_key.clone(),
                 node_peer_id: None,
@@ -254,6 +264,11 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
 async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFourNodeNetwork {
     let chain = SourceHubTestContainer::new();
     let chain_config = chain.chain_config();
+    let runtime_base_path = project_root::get_project_root()
+        .expect("resolve project root")
+        .join("target")
+        .join("test-runtime")
+        .join(db_prefix);
 
     let policy_id = create_orbis_ring_policy(&chain_config).await;
 
@@ -267,8 +282,12 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
 
         let local_storage = LocalStorageImpl::new(None, db_path.clone()).expect("local storage");
 
-        let signer = create_and_store_node_key(local_storage.clone(), chain_config.clone())
-            .expect("create node signing key");
+        let signer = create_and_store_node_key(
+            local_storage.clone(),
+            chain_config.clone(),
+            &runtime_base_path,
+        )
+        .expect("create node signing key");
         let public_address = signer.address();
         let node_key = signer.public_key_hex();
 
@@ -326,6 +345,7 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
                 denom: None,
                 metrics_addr: None,
                 loki_url: None,
+                runtime_base_path: None,
                 reshare_interval_secs: 0,
                 node_controller_key: node_key.clone(),
                 node_peer_id: None,

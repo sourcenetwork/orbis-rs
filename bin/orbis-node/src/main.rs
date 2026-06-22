@@ -20,7 +20,7 @@ mod tests;
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
-    get_network_key_secret, get_password, Args,
+    get_network_key_secret, get_password, resolve_runtime_base_path, Args,
 };
 use crate::info::{BootstrapInfoServiceImpl, InfoServiceImpl};
 use crate::store_secret::StoreSecretServiceImpl;
@@ -113,6 +113,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing with optional Loki support
     init_tracing(&args)?;
+    let runtime_base_path = resolve_runtime_base_path(args.runtime_base_path.as_deref());
+    tracing::info!(
+        path = %runtime_base_path.display(),
+        "Using runtime base path"
+    );
 
     let root_span = tracing::info_span!(
         "orbis_node",
@@ -135,8 +140,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
         // Get password for encrypting ring key shares
         let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
-        let local_storage = LocalStorageImpl::new(Some(password), db_path("orbis"))
-            .map_err(|e| format!("Failed to create local storage: {}", e))?;
+        let local_storage =
+            LocalStorageImpl::new(Some(password), db_path(&runtime_base_path, "orbis"))
+                .map_err(|e| format!("Failed to create local storage: {}", e))?;
         // Get node secret hex for netwokring
         let node_secret_hex = get_network_key_secret(None, local_storage.clone())
             .map_err(|e| format!("Failed to get node secret: {}", e))?;
@@ -174,8 +180,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .rest_url(args.chain_rest.clone())
             .denom(args.denom.clone());
         let chain_config = bulletin_chain_config.clone().build();
-        let signer = create_and_store_node_key(local_storage.clone(), chain_config)
-            .map_err(|e| format!("Failed to create or store node key: {}", e))?;
+        let signer =
+            create_and_store_node_key(local_storage.clone(), chain_config, &runtime_base_path)
+                .map_err(|e| format!("Failed to create or store node key: {}", e))?;
         let node_key = signer.public_key_hex();
 
         let grpc_addr: SocketAddr = args.addr.parse()?;
