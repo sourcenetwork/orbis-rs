@@ -1,6 +1,6 @@
 use crate::dkg::v0::error::DkgError;
 use crate::helpers::auth::current_unix_time;
-use crate::helpers::helpers::extract_node_part;
+use crate::helpers::identity::extract_node_part;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bulletin, test_db_path};
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::{
@@ -80,7 +80,7 @@ async fn test_scheduler_zero_interval_is_noop() {
 
     let state = Arc::new(app_state);
     // Should return immediately without spawning
-    super::spawn_pss_scheduler(state.clone(), Duration::ZERO);
+    assert!(super::spawn_pss_scheduler(state.clone(), Duration::ZERO).is_none());
 
     // Give the event loop a chance to run any spawned tasks
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -91,6 +91,28 @@ async fn test_scheduler_zero_interval_is_noop() {
         0,
         "No sessions should be created when interval is zero"
     );
+
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn scheduler_shutdown_interrupts_waiting_tick() {
+    let db_name = "pss_scheduler_shutdown";
+    let db_path = test_db_path(db_name);
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let app_state = create_test_app_state_with_bulletin(
+        Some("127.0.0.1:0".to_string()),
+        true,
+        bulletin,
+        db_name,
+    )
+    .await;
+
+    let handle = super::spawn_pss_scheduler(Arc::new(app_state), Duration::from_secs(60))
+        .expect("scheduler should start");
+    tokio::time::timeout(Duration::from_millis(250), handle.shutdown())
+        .await
+        .expect("scheduler shutdown should not wait for the next tick");
 
     cleanup_db(&db_path);
 }

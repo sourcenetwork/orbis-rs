@@ -11,7 +11,10 @@ use crate::constants::{
     MAX_NONCE_STATES, MAX_SIGN_RESPONSES, SIGN_EXPIRATION_CHECK_INTERVAL, SIGN_NONCE_TTL,
     SIGN_RESPONSE_TTL,
 };
-use crate::helpers::response_manager::{AuthenticatedResponse, ExpirationConfig, ResponseManager};
+use crate::helpers::response_manager::{
+    AuthenticatedResponse, ExpirationConfig, ResponseInitOutcome, ResponseManager,
+    ResponseStoreOutcome,
+};
 use crate::metrics;
 use crate::sign::v0::messages::SignMessage;
 use std::collections::HashMap;
@@ -32,6 +35,13 @@ struct NonceEntry {
     /// Authenticated peer that requested the nonce in Round 1.
     coordinator_peer_id: Vec<u8>,
     created_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NonceStoreOutcome {
+    Stored,
+    AlreadyExists,
+    LimitReached,
 }
 
 pub(crate) struct ConsumedNonce {
@@ -142,84 +152,31 @@ impl SignResponseManager {
         before - nonces.len()
     }
 
-    /// Initialize sign response collection with the set of expected responders.
-    ///
-    /// `expected_peer_ids` should be the ring's peer_id strings for every node
-    /// that will be contacted (i.e. excluding self). The node part (hex before '@')
-    /// is extracted and stored as the allowlist.
-    ///
-    /// Returns false if the limit is exceeded or if the request_id already exists.
-    pub async fn init_response(&self, request_id: String, expected_peer_ids: &[String]) -> bool {
-        self.init_response_for_version(network::V0.version, request_id, expected_peer_ids)
-            .await
-    }
-
-    pub async fn init_response_for_version(
+    pub(crate) async fn init_response_for_version(
         &self,
         protocol_version: u64,
         request_id: String,
         expected_peer_ids: &[String],
-    ) -> bool {
+    ) -> ResponseInitOutcome {
         self.inner
             .init_response(Self::key(protocol_version, &request_id), expected_peer_ids)
             .await
     }
 
-    /// Store a sign response, validating the sender against the expected responder set.
-    ///
-    /// The sender is identified by their authenticated network peer_id bytes (not the
-    /// self-reported `from_node_id`). The hex node part is checked against the
-    /// `expected_peers` set — if the sender is not expected (either unknown or already
-    /// responded), the response is rejected.
-    pub async fn store_response(
-        &self,
-        request_id: &str,
-        message: SignMessage,
-        sender_peer_bytes: &[u8],
-    ) -> bool {
-        self.store_response_for_version(network::V0.version, request_id, message, sender_peer_bytes)
-            .await
-    }
-
-    pub async fn store_response_for_version(
+    pub(crate) async fn store_response_for_version(
         &self,
         protocol_version: u64,
         request_id: &str,
         message: SignMessage,
         sender_peer_bytes: &[u8],
-    ) -> bool {
+    ) -> ResponseStoreOutcome {
         let key = Self::key(protocol_version, request_id);
         self.inner
             .store_response(&key, message, sender_peer_bytes)
             .await
     }
 
-    /// Get collected sign responses without consuming the entry.
-    /// Prefer `take_responses` when the entry is no longer needed after reading.
-    pub async fn get_responses(&self, request_id: &str) -> Option<Vec<SignMessage>> {
-        let key = Self::key(network::V0.version, request_id);
-        self.inner.get_responses(&key).await
-    }
-
-    /// Take collected sign responses, removing the entry atomically.
-    ///
-    /// Prefer this over `get_responses` + `remove_response` — it acquires a single
-    /// write lock and moves the `Vec` out without cloning.
-    pub async fn take_responses(&self, request_id: &str) -> Option<Vec<SignMessage>> {
-        let key = Self::key(network::V0.version, request_id);
-        self.inner.take_responses(&key).await
-    }
-
-    /// Take collected sign responses with their authenticated sender identity.
-    pub async fn take_authenticated_responses(
-        &self,
-        request_id: &str,
-    ) -> Option<Vec<AuthenticatedResponse<SignMessage>>> {
-        self.take_authenticated_responses_for_version(network::V0.version, request_id)
-            .await
-    }
-
-    pub async fn take_authenticated_responses_for_version(
+    pub(crate) async fn take_authenticated_responses_for_version(
         &self,
         protocol_version: u64,
         request_id: &str,
@@ -228,20 +185,13 @@ impl SignResponseManager {
         self.inner.take_authenticated_responses(&key).await
     }
 
-    /// Remove sign response entry (cleanup after completion)
-    pub async fn remove_response(&self, request_id: &str) {
-        self.remove_response_for_version(network::V0.version, request_id)
-            .await
-    }
-
-    pub async fn remove_response_for_version(&self, protocol_version: u64, request_id: &str) {
+    pub(crate) async fn remove_response_for_version(
+        &self,
+        protocol_version: u64,
+        request_id: &str,
+    ) {
         let key = Self::key(protocol_version, request_id);
         self.inner.remove_response(&key).await
-    }
-
-    /// Get the number of pending sign requests
-    pub async fn pending_count(&self) -> usize {
-        self.inner.pending_count().await
     }
 
     // ========================================================================
@@ -254,33 +204,14 @@ impl SignResponseManager {
     /// in Round 1 (derivation_id for Policy, "bulletin" for Bulletin). It is verified
     /// after consumption to prevent a coordinator from generating a nonce under
     /// one derivation and spending it under a different one.
-    ///
-    /// Returns false if the limit is exceeded or the key already exists.
-    pub async fn store_nonce(
-        &self,
-        request_id: String,
-        bytes: Vec<u8>,
-        context_key: String,
-        coordinator_peer_id: Vec<u8>,
-    ) -> bool {
-        self.store_nonce_for_version(
-            network::V0.version,
-            request_id,
-            bytes,
-            context_key,
-            coordinator_peer_id,
-        )
-        .await
-    }
-
-    pub async fn store_nonce_for_version(
+    pub(crate) async fn store_nonce_for_version(
         &self,
         protocol_version: u64,
         request_id: String,
         bytes: Vec<u8>,
         context_key: String,
         coordinator_peer_id: Vec<u8>,
-    ) -> bool {
+    ) -> NonceStoreOutcome {
         let request_id = Self::key(protocol_version, &request_id);
         let bytes = Zeroizing::new(bytes);
         let mut states = self.nonce_states.write().await;
@@ -291,14 +222,14 @@ impl SignResponseManager {
                 max = MAX_NONCE_STATES,
                 "Nonce state limit exceeded"
             );
-            return false;
+            return NonceStoreOutcome::LimitReached;
         }
         if states.contains_key(&request_id) {
             tracing::warn!(
                 request_id = %request_id,
                 "Nonce state already exists for request_id"
             );
-            return false;
+            return NonceStoreOutcome::AlreadyExists;
         }
         states.insert(
             request_id,
@@ -309,7 +240,7 @@ impl SignResponseManager {
                 created_at: Instant::now(),
             },
         );
-        true
+        NonceStoreOutcome::Stored
     }
 
     /// Consume signing state as soon as Round 2 arrives from the Round 1 coordinator.
@@ -318,20 +249,6 @@ impl SignResponseManager {
     /// Removing the entry before that fallible work ensures every accepted Round 2
     /// attempt releases its nonce slot, while the peer binding prevents another node
     /// from canceling the coordinator's nonce.
-    #[cfg(test)]
-    pub(crate) async fn consume_nonce_for_sign_request(
-        &self,
-        request_id: &str,
-        coordinator_peer_id: &[u8],
-    ) -> Option<ConsumedNonce> {
-        self.consume_nonce_for_sign_request_for_version(
-            network::V0.version,
-            request_id,
-            coordinator_peer_id,
-        )
-        .await
-    }
-
     pub(crate) async fn consume_nonce_for_sign_request_for_version(
         &self,
         protocol_version: u64,
@@ -358,6 +275,54 @@ impl SignResponseManager {
 impl Default for SignResponseManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+impl SignResponseManager {
+    pub(crate) async fn pending_count(&self) -> usize {
+        self.inner.pending_count().await
+    }
+
+    pub(crate) async fn get_responses(&self, request_id: &str) -> Option<Vec<SignMessage>> {
+        let key = Self::key(network::V0.version, request_id);
+        self.inner.get_responses(&key).await
+    }
+
+    pub(crate) async fn take_responses(&self, request_id: &str) -> Option<Vec<SignMessage>> {
+        let key = Self::key(network::V0.version, request_id);
+        self.inner.take_responses(&key).await
+    }
+
+    async fn store_nonce(
+        &self,
+        request_id: String,
+        bytes: Vec<u8>,
+        context_key: String,
+        coordinator_peer_id: Vec<u8>,
+    ) -> bool {
+        self.store_nonce_for_version(
+            network::V0.version,
+            request_id,
+            bytes,
+            context_key,
+            coordinator_peer_id,
+        )
+        .await
+            == NonceStoreOutcome::Stored
+    }
+
+    async fn consume_nonce_for_sign_request(
+        &self,
+        request_id: &str,
+        coordinator_peer_id: &[u8],
+    ) -> Option<ConsumedNonce> {
+        self.consume_nonce_for_sign_request_for_version(
+            network::V0.version,
+            request_id,
+            coordinator_peer_id,
+        )
+        .await
     }
 }
 
@@ -401,15 +366,20 @@ mod tests {
         let mgr = SignResponseManager::new();
         let expected = vec![PEER_A.to_string(), PEER_B.to_string()];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            ResponseInitOutcome::Created
+        );
 
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-1",
             dummy_sign_response("req-1", 1),
             &peer_bytes(PEER_A),
         )
         .await;
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-1",
             dummy_sign_response("req-1", 2),
             &peer_bytes(PEER_B),
@@ -425,9 +395,13 @@ mod tests {
         let mgr = SignResponseManager::new();
         let expected = vec![PEER_A.to_string(), PEER_B.to_string()];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            ResponseInitOutcome::Created
+        );
 
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-1",
             dummy_sign_response("req-1", 99),
             &peer_bytes(UNKNOWN),
@@ -443,15 +417,20 @@ mod tests {
         let mgr = SignResponseManager::new();
         let expected = vec![PEER_A.to_string(), PEER_B.to_string()];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            ResponseInitOutcome::Created
+        );
 
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-1",
             dummy_sign_response("req-1", 1),
             &peer_bytes(PEER_A),
         )
         .await;
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-1",
             dummy_sign_response("req-1", 1),
             &peer_bytes(PEER_A),
@@ -471,16 +450,21 @@ mod tests {
         let mgr = SignResponseManager::new();
         let expected = vec![PEER_A.to_string(), PEER_B.to_string()];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            ResponseInitOutcome::Created
+        );
 
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-1",
             dummy_sign_response("req-1", 1),
             &peer_bytes(PEER_A),
         )
         .await;
         // Same peer, different claimed node_id — still rejected
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-1",
             dummy_sign_response("req-1", 2),
             &peer_bytes(PEER_A),
@@ -501,14 +485,19 @@ mod tests {
         let expected = vec![PEER_A.to_string(), PEER_B.to_string()];
 
         // Round 1: nonce collection
-        assert!(mgr.init_response("nonce-req-1".into(), &expected).await);
-        mgr.store_response(
+        assert_eq!(
+            mgr.init_response_for_version(0, "nonce-req-1".into(), &expected).await,
+            ResponseInitOutcome::Created
+        );
+        mgr.store_response_for_version(
+            0,
             "nonce-req-1",
             dummy_nonce_response("nonce-req-1", 1),
             &peer_bytes(PEER_A),
         )
         .await;
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "nonce-req-1",
             dummy_nonce_response("nonce-req-1", 2),
             &peer_bytes(PEER_B),
@@ -519,17 +508,22 @@ mod tests {
         assert_eq!(nonce_responses.len(), 2);
 
         // Cleanup nonce round
-        mgr.remove_response("nonce-req-1").await;
+        mgr.remove_response_for_version(0, "nonce-req-1").await;
 
         // Round 2: sign collection — same peers get fresh expected set
-        assert!(mgr.init_response("req-1".into(), &expected).await);
-        mgr.store_response(
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            ResponseInitOutcome::Created
+        );
+        mgr.store_response_for_version(
+            0,
             "req-1",
             dummy_sign_response("req-1", 1),
             &peer_bytes(PEER_A),
         )
         .await;
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-1",
             dummy_sign_response("req-1", 2),
             &peer_bytes(PEER_B),
@@ -548,15 +542,20 @@ mod tests {
             format!("{}@192.168.1.2:4000", PEER_B),
         ];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            ResponseInitOutcome::Created
+        );
 
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-1",
             dummy_sign_response("req-1", 1),
             &peer_bytes(PEER_A),
         )
         .await;
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-1",
             dummy_sign_response("req-1", 2),
             &peer_bytes(PEER_B),
@@ -576,15 +575,19 @@ mod tests {
         let mgr = SignResponseManager::new();
         let expected = vec![PEER_A.to_string()];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
-        mgr.store_response(
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            ResponseInitOutcome::Created
+        );
+        mgr.store_response_for_version(
+            0,
             "req-1",
             dummy_sign_response("req-1", 1),
             &peer_bytes(PEER_A),
         )
         .await;
 
-        mgr.remove_response("req-1").await;
+        mgr.remove_response_for_version(0, "req-1").await;
         assert!(
             mgr.get_responses("req-1").await.is_none(),
             "state should be gone after cleanup"
@@ -596,9 +599,13 @@ mod tests {
         let mgr = SignResponseManager::new();
         let expected = vec![PEER_A.to_string()];
 
-        assert!(mgr.init_response("req-1".into(), &expected).await);
-        assert!(
-            !mgr.init_response("req-1".into(), &expected).await,
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            ResponseInitOutcome::Created
+        );
+        assert_ne!(
+            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            ResponseInitOutcome::Created,
             "duplicate request_id should be rejected"
         );
     }
@@ -607,23 +614,27 @@ mod tests {
     async fn test_separate_requests_are_isolated() {
         let mgr = SignResponseManager::new();
 
-        assert!(
-            mgr.init_response("req-1".into(), &[PEER_A.to_string()])
-                .await
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-1".into(), &[PEER_A.to_string()])
+                .await,
+            ResponseInitOutcome::Created
         );
-        assert!(
-            mgr.init_response("req-2".into(), &[PEER_B.to_string()])
-                .await
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-2".into(), &[PEER_B.to_string()])
+                .await,
+            ResponseInitOutcome::Created
         );
 
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-1",
             dummy_sign_response("req-1", 1),
             &peer_bytes(PEER_A),
         )
         .await;
         // PEER_A not expected in req-2
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-2",
             dummy_sign_response("req-2", 1),
             &peer_bytes(PEER_A),
@@ -731,7 +742,10 @@ mod tests {
         let mgr = SignResponseManager::new();
         let expected = vec![PEER_A.to_string()];
 
-        assert!(mgr.init_response("exp-resp-1".into(), &expected).await);
+        assert_eq!(
+            mgr.init_response_for_version(0, "exp-resp-1".into(), &expected).await,
+            ResponseInitOutcome::Created
+        );
 
         // Backdate the entry via the inner ResponseManager's states field.
         // We access it through the inner manager using a test-only helper.
@@ -764,8 +778,8 @@ mod tests {
         let e2 = vec![PEER_A.to_string()];
 
         let (r1, r2) = tokio::join!(
-            async move { m1.init_response("req-race".into(), &e1).await },
-            async move { m2.init_response("req-race".into(), &e2).await },
+            async move { m1.init_response_for_version(0, "req-race".into(), &e1).await },
+            async move { m2.init_response_for_version(0, "req-race".into(), &e2).await },
         );
 
         assert_ne!(r1, r2, "exactly one concurrent init should succeed");
@@ -775,9 +789,10 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_take_responses() {
         let mgr = Arc::new(SignResponseManager::new());
-        mgr.init_response("req-take-race".into(), &[PEER_A.to_string()])
+        mgr.init_response_for_version(0, "req-take-race".into(), &[PEER_A.to_string()])
             .await;
-        mgr.store_response(
+        mgr.store_response_for_version(
+            0,
             "req-take-race",
             dummy_sign_response("req-take-race", 1),
             &peer_bytes(PEER_A),
@@ -810,12 +825,20 @@ mod tests {
         let mgr = SignResponseManager::new();
 
         for i in 0..MAX_SIGN_RESPONSES {
-            let ok = mgr.init_response(format!("req-{}", i), &[]).await;
-            assert!(ok, "init should succeed for slot {}", i);
+            let ok = mgr
+                .init_response_for_version(0, format!("req-{}", i), &[])
+                .await;
+            assert_eq!(ok, ResponseInitOutcome::Created, "init should succeed for slot {}", i);
         }
 
-        let rejected = mgr.init_response("req-over-limit".into(), &[]).await;
-        assert!(!rejected, "init should fail when limit is reached");
+        let rejected = mgr
+            .init_response_for_version(0, "req-over-limit".into(), &[])
+            .await;
+        assert_ne!(
+            rejected,
+            ResponseInitOutcome::Created,
+            "init should fail when limit is reached"
+        );
         assert_eq!(mgr.pending_count().await, MAX_SIGN_RESPONSES);
     }
 
@@ -1021,9 +1044,10 @@ mod tests {
         );
 
         // Response entries are a completely separate map — should still accept inits
-        assert!(
-            mgr.init_response("resp-while-nonces-full".into(), &[])
-                .await
+        assert_eq!(
+            mgr.init_response_for_version(0, "resp-while-nonces-full".into(), &[])
+                .await,
+            ResponseInitOutcome::Created
         );
         assert_eq!(mgr.pending_count().await, 1);
     }
@@ -1033,8 +1057,12 @@ mod tests {
         let mgr = SignResponseManager::new();
         let expected = vec![PEER_A.to_string()];
 
-        assert!(mgr.init_response("req-take".into(), &expected).await);
-        mgr.store_response(
+        assert_eq!(
+            mgr.init_response_for_version(0, "req-take".into(), &expected).await,
+            ResponseInitOutcome::Created
+        );
+        mgr.store_response_for_version(
+            0,
             "req-take",
             dummy_sign_response("req-take", 1),
             &peer_bytes(PEER_A),
@@ -1060,10 +1088,12 @@ mod tests {
         assert!(
             mgr.init_response_for_version(0, "same-id".into(), &expected)
                 .await
+                == ResponseInitOutcome::Created
         );
         assert!(
             mgr.init_response_for_version(1, "same-id".into(), &expected)
                 .await
+                == ResponseInitOutcome::Created
         );
         assert!(
             mgr.store_response_for_version(
@@ -1073,6 +1103,7 @@ mod tests {
                 &peer_bytes(PEER_A),
             )
             .await
+                == ResponseStoreOutcome::Stored
         );
         assert!(mgr
             .take_authenticated_responses_for_version(0, "same-id")
@@ -1096,6 +1127,7 @@ mod tests {
                 COORDINATOR.to_vec(),
             )
             .await
+                == NonceStoreOutcome::Stored
         );
         assert!(mgr
             .consume_nonce_for_sign_request_for_version(0, "nonce-id", COORDINATOR,)
@@ -1115,10 +1147,12 @@ mod tests {
         assert!(
             mgr.init_response_for_version(0, "1:same-id".into(), &expected)
                 .await
+                == ResponseInitOutcome::Created
         );
         assert!(
             mgr.init_response_for_version(1, "same-id".into(), &expected)
                 .await
+                == ResponseInitOutcome::Created
         );
         assert!(
             mgr.store_response_for_version(
@@ -1128,6 +1162,7 @@ mod tests {
                 &peer_bytes(PEER_A),
             )
             .await
+                == ResponseStoreOutcome::Stored
         );
         assert!(
             mgr.store_response_for_version(
@@ -1137,6 +1172,7 @@ mod tests {
                 &peer_bytes(PEER_A),
             )
             .await
+                == ResponseStoreOutcome::Stored
         );
 
         assert_eq!(
@@ -1163,6 +1199,7 @@ mod tests {
                 COORDINATOR.to_vec(),
             )
             .await
+                == NonceStoreOutcome::Stored
         );
         assert!(
             mgr.store_nonce_for_version(
@@ -1173,6 +1210,7 @@ mod tests {
                 COORDINATOR.to_vec(),
             )
             .await
+                == NonceStoreOutcome::Stored
         );
 
         let v0_nonce = mgr

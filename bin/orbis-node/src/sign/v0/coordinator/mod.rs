@@ -56,6 +56,7 @@ where
     S: ThresholdSigner,
 {
     /// Create a new Sign coordinator for this node
+    #[cfg(test)]
     pub fn new(app_state: Arc<AppState<D>>) -> Self {
         Self::with_routes(app_state, &::network::V0)
     }

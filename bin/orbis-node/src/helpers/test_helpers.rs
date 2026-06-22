@@ -4,7 +4,6 @@
 
 use crate::app_state::AppState;
 
-pub const BULLETIN_RING_NAMESPACE: &str = "orbis";
 pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
 
 pub const ORBIS_RING_POLICY_YAML: &str = r#"
@@ -43,8 +42,10 @@ use bulletin::{
 use cli_tool;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
-    ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+    ChainConfig, ChainConfigBuilder, SourceHubClient,
 };
+#[cfg(feature = "integration-test")]
+use common::blockchain::{TxSigner, TEST_ACCOUNT_HEX_KEY};
 use hex;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -59,7 +60,7 @@ use tokio::time::Duration;
 use crypto::{DkgImpl, PreImpl, SignImpl};
 
 // Re-export JWT utilities from authn for test convenience
-pub use authn::{add_auth_header, create_authenticated_request, JwtSigner};
+pub use authn::{create_authenticated_request, JwtSigner};
 
 /// Type alias for backward compatibility - use JwtSigner instead
 pub type TestKeyPair = JwtSigner;
@@ -268,17 +269,6 @@ pub struct ThreeNodeNetwork {
 }
 
 impl ThreeNodeNetwork {
-    /// Get peer IDs for connection (excluding self)
-    ///
-    /// Returns a vector of peer ID strings that can be used in StartDkgRequest.
-    /// The peer IDs are formatted as "node_id@ip:port" for proper addressing.
-    /// This excludes Alice's own peer ID to avoid self-connection errors.
-    pub fn get_peer_ids_for_connection(&self) -> Vec<String> {
-        // The address field contains the formatted "node_id@ip:port" string
-        // Exclude Alice's own peer ID to avoid self-connection
-        vec![self.bob.address.clone(), self.charlie.address.clone()]
-    }
-
     /// Get all peer IDs including Alice (for SessionInit)
     ///
     /// Returns a vector of all peer ID strings including Alice.
@@ -1193,6 +1183,7 @@ pub async fn create_ring_governance_with_ring(
 
 /// Create an orbis ring governance policy as TEST_ACCOUNT_HEX_KEY, register its
 /// own policy ID as a `ring_policy` ACP object, and return the policy ID.
+#[cfg(feature = "integration-test")]
 pub async fn create_orbis_ring_policy(chain_config: &ChainConfig) -> String {
     let client = SourceHubClient::with_signer(
         chain_config.clone(),
@@ -1239,24 +1230,13 @@ pub async fn create_orbis_ring_policy(chain_config: &ChainConfig) -> String {
 }
 
 /// Create a ring on-chain as TEST_ACCOUNT_HEX_KEY and return its ring_id.
+#[cfg(feature = "integration-test")]
 pub async fn create_ring_on_chain(
     chain_config: &ChainConfig,
     node_keys: &[String],
     threshold: u32,
     policy_id: &str,
     nonce: Option<&str>,
-) -> String {
-    create_ring_on_chain_with_pss(chain_config, node_keys, threshold, policy_id, nonce, None).await
-}
-
-/// Create a ring on-chain with an explicit PSS interval. Returns its ring_id.
-pub async fn create_ring_on_chain_with_pss(
-    chain_config: &ChainConfig,
-    node_keys: &[String],
-    threshold: u32,
-    policy_id: &str,
-    nonce: Option<&str>,
-    pss_interval: Option<u64>,
 ) -> String {
     let client = SourceHubClient::with_signer(
         chain_config.clone(),
@@ -1270,7 +1250,7 @@ pub async fn create_ring_on_chain_with_pss(
         .orbis_create_ring_get_id(
             node_keys.to_vec(),
             threshold,
-            pss_interval.unwrap_or(86400),
+            86400,
             policy_id,
             nonce.map(String::from),
             network::V0.version,

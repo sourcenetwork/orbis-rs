@@ -1,7 +1,10 @@
 use crate::constants::SIGN_COLLECTION_TIMEOUT;
-use crate::helpers::helpers::{
-    determine_ring_node_id_from_peer_id, determine_session_node_id, is_ring_reshare_in_progress,
-    is_self_peer_id, load_ring_pub_poly_and_bundle, RingConfig,
+use crate::helpers::identity::{
+    determine_ring_node_id_from_peer_id, determine_session_node_id, is_self_peer_id,
+};
+use crate::helpers::response_manager::ResponseInitOutcome;
+use crate::helpers::ring::{
+    is_ring_reshare_in_progress, load_ring_pub_poly_and_bundle, RingConfig,
 };
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::v0::error::{Result, SignError};
@@ -76,15 +79,23 @@ where
         // Initialize response collection before calling inner function
         // This allows us to guarantee cleanup regardless of how inner function exits
         let request_id_for_cleanup = request_id.clone();
-        if !self
+        match self
             .app_state
             .sign_response_state
             .init_response_for_version(self.routes.version, request_id.clone(), &expected_peers)
             .await
         {
-            return Err(SignError::ProtocolError(
-                "Sign response limit exceeded, too many pending requests".to_string(),
-            ));
+            ResponseInitOutcome::Created => {}
+            ResponseInitOutcome::AlreadyExists => {
+                return Err(SignError::ProtocolError(format!(
+                    "Sign response state already exists for request {request_id}"
+                )));
+            }
+            ResponseInitOutcome::LimitReached => {
+                return Err(SignError::ProtocolError(
+                    "Sign response limit exceeded, too many pending requests".to_string(),
+                ));
+            }
         }
 
         // Execute inner function and ensure cleanup happens regardless of result

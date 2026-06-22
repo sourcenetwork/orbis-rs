@@ -171,7 +171,7 @@ impl SignMessage {
     }
 
     /// Get the from_node_id for response messages (used for deduplication)
-    pub fn from_node_id(&self) -> Option<u32> {
+    pub fn sender_node_id(&self) -> Option<u32> {
         match self {
             SignMessage::NonceResponse { from_node_id, .. } => Some(*from_node_id),
             SignMessage::SignResponse { from_node_id, .. } => Some(*from_node_id),

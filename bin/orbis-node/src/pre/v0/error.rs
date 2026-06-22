@@ -1,5 +1,4 @@
 use crate::error::{GrpcErrorClassification, GrpcServiceError};
-use crate::metrics;
 use thiserror::Error;
 
 /// PRE (Proxy Re-Encryption) related errors
@@ -144,10 +143,6 @@ impl GrpcServiceError for PreError {
                 GrpcErrorClassification::new(Code::Internal, Level::ERROR, true)
             }
         }
-    }
-
-    fn record_failure_metric(&self) {
-        metrics::record_pre_request_failed();
     }
 }
 

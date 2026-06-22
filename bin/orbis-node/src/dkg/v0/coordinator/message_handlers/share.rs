@@ -40,7 +40,7 @@ where
         .app_state
         .dkg_session_state
         .with_state(&session_id, |state| -> Result<u32> {
-            if let Some(params) = state.reshare_params.as_ref() {
+            if let Some(params) = state.reshare.params.as_ref() {
                 params.new_node_id.ok_or_else(|| {
                     DkgError::ShareVerificationFailed(
                         "Reshare share received but this node is a pure Dealer with no new-committee assignment".to_string(),
@@ -66,7 +66,8 @@ where
         .with_state(&session_id, |state| {
             matches!(state.kind, SessionKind::Reshare { .. })
                 && state
-                    .reshare_selected_dealers
+                    .reshare
+                    .selected_dealers
                     .as_ref()
                     .is_some_and(|selected| !selected.contains(&from_node_id))
         })

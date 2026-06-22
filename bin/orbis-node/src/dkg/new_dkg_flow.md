@@ -1,6 +1,10 @@
 # New DKG Flow
 
-Status: working draft.
+Status: non-authoritative design draft.
+
+For current implemented behavior, use [`README.md`](README.md). This file is
+kept only for future protocol-design discussion; its statements are not runtime
+guarantees and may intentionally differ from the implementation.
 
 This document describes the intended fresh DKG flow against the rebuilt Orbis
 bulletin. The current Rust node and the rebuilt Go bulletin are not expected to

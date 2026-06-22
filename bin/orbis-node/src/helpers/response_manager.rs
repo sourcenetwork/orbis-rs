@@ -5,7 +5,7 @@
 //! This module provides a single generic implementation so the two protocols
 //! share the same logic.
 
-use crate::helpers::helpers::extract_node_part;
+use crate::helpers::identity::extract_node_part;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -24,6 +24,20 @@ pub struct ExpirationConfig {
 pub struct AuthenticatedResponse<M> {
     pub message: M,
     pub sender_peer_hex: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseInitOutcome {
+    Created,
+    AlreadyExists,
+    LimitReached,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseStoreOutcome {
+    Stored,
+    UnexpectedOrDuplicatePeer,
+    MissingRequest,
 }
 
 struct ResponseEntry<M> {
@@ -124,9 +138,11 @@ impl<M: Clone + Send + Sync + 'static> ResponseManager<M> {
     /// `@address` suffix) for every node that will be contacted. The hex node
     /// part (before `@`) is stored as the allowlist.
     ///
-    /// Returns `false` if the entry limit is reached or `request_id` already
-    /// exists (duplicate detection).
-    pub async fn init_response(&self, request_id: String, expected_peer_ids: &[String]) -> bool {
+    pub async fn init_response(
+        &self,
+        request_id: String,
+        expected_peer_ids: &[String],
+    ) -> ResponseInitOutcome {
         let mut map = self.states.write().await;
 
         if map.contains_key(&request_id) {
@@ -135,7 +151,7 @@ impl<M: Clone + Send + Sync + 'static> ResponseManager<M> {
                 "{}: response entry already exists for request_id",
                 self.label,
             );
-            return false;
+            return ResponseInitOutcome::AlreadyExists;
         }
 
         if map.len() >= self.max_entries {
@@ -145,7 +161,7 @@ impl<M: Clone + Send + Sync + 'static> ResponseManager<M> {
                 "{}: response limit exceeded",
                 self.label,
             );
-            return false;
+            return ResponseInitOutcome::LimitReached;
         }
 
         let expected_peers: HashSet<String> = expected_peer_ids
@@ -161,7 +177,7 @@ impl<M: Clone + Send + Sync + 'static> ResponseManager<M> {
                 created_at: Instant::now(),
             },
         );
-        true
+        ResponseInitOutcome::Created
     }
 
     /// Accept a response from `sender_peer_bytes`, rejecting unknown or
@@ -171,7 +187,7 @@ impl<M: Clone + Send + Sync + 'static> ResponseManager<M> {
         request_id: &str,
         message: M,
         sender_peer_bytes: &[u8],
-    ) -> bool {
+    ) -> ResponseStoreOutcome {
         let sender_hex = hex::encode(sender_peer_bytes);
         let mut map = self.states.write().await;
         if let Some(entry) = map.get_mut(request_id) {
@@ -182,20 +198,21 @@ impl<M: Clone + Send + Sync + 'static> ResponseManager<M> {
                     "{}: rejecting response from unexpected or duplicate peer",
                     self.label,
                 );
-                return false;
+                return ResponseStoreOutcome::UnexpectedOrDuplicatePeer;
             }
             entry.responses.push(AuthenticatedResponse {
                 message,
                 sender_peer_hex: sender_hex,
             });
-            return true;
+            return ResponseStoreOutcome::Stored;
         }
-        false
+        ResponseStoreOutcome::MissingRequest
     }
 
     /// Clone the collected responses without consuming the entry.
     ///
     /// Prefer [`take_responses`] when the entry is no longer needed.
+    #[cfg(test)]
     pub async fn get_responses(&self, request_id: &str) -> Option<Vec<M>> {
         let map = self.states.read().await;
         map.get(request_id).map(|entry| {
@@ -208,6 +225,7 @@ impl<M: Clone + Send + Sync + 'static> ResponseManager<M> {
     }
 
     /// Remove the entry and return its responses in a single write lock.
+    #[cfg(test)]
     pub async fn take_responses(&self, request_id: &str) -> Option<Vec<M>> {
         let mut map = self.states.write().await;
         map.remove(request_id).map(|entry| {
@@ -235,6 +253,7 @@ impl<M: Clone + Send + Sync + 'static> ResponseManager<M> {
     }
 
     /// Number of in-flight requests currently tracked.
+    #[cfg(test)]
     pub async fn pending_count(&self) -> usize {
         self.states.read().await.len()
     }

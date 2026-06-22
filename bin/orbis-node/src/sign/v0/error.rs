@@ -1,7 +1,6 @@
 //! Sign (Threshold BLS Signing) related errors
 
 use crate::error::{GrpcErrorClassification, GrpcServiceError};
-use crate::metrics;
 use thiserror::Error;
 
 /// Sign (Threshold BLS Signing) related errors
@@ -159,10 +158,6 @@ impl GrpcServiceError for SignError {
                 GrpcErrorClassification::new(Code::Internal, Level::ERROR, true)
             }
         }
-    }
-
-    fn record_failure_metric(&self) {
-        metrics::record_sign_request_failed();
     }
 }
 

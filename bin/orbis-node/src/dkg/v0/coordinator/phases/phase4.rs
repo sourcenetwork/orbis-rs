@@ -39,11 +39,13 @@ where
                 state.kind.clone(),
                 state.node.role(),
                 state
-                    .reshare_params
+                    .reshare
+                    .params
                     .as_ref()
                     .map(|p| p.new_peer_node_keys.clone()),
                 state
-                    .reshare_params
+                    .reshare
+                    .params
                     .as_ref()
                     .map(|p| p.bulletin_post_id.clone()),
             )
@@ -389,11 +391,11 @@ where
         return Ok(());
     }
 
-    coord.remove_session(session_id).await;
-    metrics::record_dkg_session_completed();
-    if matches!(kind, SessionKind::Refresh { .. }) {
-        metrics::record_refresh_session_completed();
-    }
+    coord
+        .app_state
+        .dkg_session_state
+        .complete_session(&session_id)
+        .await;
 
     tracing::info!(
         session_id = session_id,

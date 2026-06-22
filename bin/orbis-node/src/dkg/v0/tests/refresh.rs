@@ -4,7 +4,7 @@ use crate::dkg::v0::{
     helpers::{derive_refresh_session_id, serialize_commitment_coefficients},
     messages::{DkgMessage, SessionKind},
 };
-use crate::helpers::helpers::extract_node_part;
+use crate::helpers::identity::extract_node_part;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default,

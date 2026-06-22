@@ -11,7 +11,7 @@ use crate::dkg::v0::helpers::{
 };
 use crate::dkg::v0::messages::{DkgMessage, SessionKind};
 use crate::dkg::v0::session_state::RingPssClaimOutcome;
-use crate::helpers::helpers::is_self_peer_id;
+use crate::helpers::identity::is_self_peer_id;
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
     node_key_for_peer, peer_ids_from_routes, resolve_node_routes,

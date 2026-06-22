@@ -1,6 +1,9 @@
 use crate::constants::{MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE};
 use crate::dkg::v0::session_state::{ReshareSignatureReadyKey, SessionStateManager};
-use crate::helpers::helpers::{ensure_ring_protocol_route, resolve_ring_protocol_decision};
+use crate::helpers::protocol_version::{
+    ensure_ring_protocol_route, resolve_ring_protocol_decision,
+};
+use crate::helpers::response_manager::ResponseStoreOutcome;
 use crate::ring_state::{RingPolyState, RingShareBundle};
 use crate::sign::v0::{
     error::{Result, SignError},
@@ -44,19 +47,6 @@ pub fn load_dist_key_share(
         SignError::Deserialization(format!("Failed to deserialize final share: {}", e))
     })?;
     Ok(DistKeyShare { pri_share })
-}
-
-/// Tries to load this node's distributed key share for the given ring public key from local storage.
-///
-/// Returns `None` if the share is absent or on any error. Use this in contexts where
-/// the node's participation is optional (e.g., when this node may not be in the ring).
-pub fn try_load_dist_key_share(
-    local_storage: &impl LocalStorage,
-    ring_pk: &G1Affine,
-) -> Option<DistKeyShare<Fr>> {
-    let bundle = RingShareBundle::load(local_storage, ring_pk).ok()?;
-    let pri_share = bundle.pri_share().ok()?;
-    Some(DistKeyShare { pri_share })
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -599,24 +589,6 @@ pub async fn check_policy_access(
     Ok(())
 }
 
-/// Fetches and deserializes only the `KeyDerivation` from the bulletin.
-///
-/// Use this when the `RingPayload` is not needed, to avoid a second round trip.
-pub async fn fetch_key_derivation(
-    bulletin: &(dyn Bulletin + Send + Sync),
-    derivation_id: &str,
-) -> Result<KeyDerivation> {
-    let object_info = bulletin
-        .read(derivation_id.to_string(), BulletinKind::KeyDerivation)
-        .await
-        .map_err(|e| {
-            SignError::Storage(format!("Failed to read object '{}': {}", derivation_id, e))
-        })?;
-
-    serde_json::from_slice::<KeyDerivation>(&object_info.payload)
-        .map_err(|e| SignError::Deserialization(format!("Failed to parse document payload: {}", e)))
-}
-
 pub async fn fetch_bulletin_payloads_for_version(
     bulletin: &(dyn Bulletin + Send + Sync),
     derivation_id: &str,
@@ -750,7 +722,7 @@ pub async fn store_response(
 
     tracing::debug!(
         request_id = %request_id,
-        from_node_id = ?message.from_node_id(),
+        from_node_id = ?message.sender_node_id(),
         sender_peer = %hex::encode(sender_peer_id.as_bytes()),
         "Sign Coordinator: Storing response"
     );
@@ -763,6 +735,7 @@ pub async fn store_response(
             sender_peer_id.as_bytes(),
         )
         .await
+        == ResponseStoreOutcome::Stored
 }
 
 #[cfg(test)]

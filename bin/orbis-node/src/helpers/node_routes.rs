@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo};
 
-use crate::helpers::helpers::{extract_node_part, validate_peer_id};
+use crate::helpers::identity::{extract_node_part, validate_peer_id};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRoute {
@@ -98,13 +98,6 @@ pub fn node_key_for_peer<'a>(routes: &'a [NodeRoute], sender_peer_hex: &str) -> 
         .iter()
         .find(|route| extract_node_part(&route.peer_id) == sender_peer_hex)
         .map(|route| route.node_key.as_str())
-}
-
-pub fn peer_id_for_node_key<'a>(routes: &'a [NodeRoute], node_key: &str) -> Option<&'a str> {
-    routes
-        .iter()
-        .find(|route| route.node_key == node_key)
-        .map(|route| route.peer_id.as_str())
 }
 
 #[cfg(test)]

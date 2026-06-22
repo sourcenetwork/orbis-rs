@@ -36,9 +36,10 @@ where
             );
 
             let reshare_peer_ids = state
-                .reshare_params
+                .reshare
+                .params
                 .as_ref()
-                .map(|_| state.reshare_new_node_id_to_peer_id.clone());
+                .map(|_| state.routing.reshare_new_node_id_to_peer_id.clone());
             Ok::<_, DkgError>((
                 shares,
                 state.node.node_id(),

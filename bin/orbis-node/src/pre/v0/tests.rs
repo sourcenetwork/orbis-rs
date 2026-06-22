@@ -22,7 +22,7 @@ use tokio::time::{sleep, Duration};
 use tonic::Request;
 use zeroize::Zeroizing;
 
-use crate::helpers::helpers::RingConfig;
+use crate::helpers::ring::RingConfig;
 use crate::pre::v0::error::PreError;
 use crate::pre::v0::helpers::check_policy_access;
 use crate::pre::v0::messages::PreRequestContext;
@@ -1382,11 +1382,12 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
     let secret_bytes = serde_json::to_vec(&encrypted_secret).expect("serialize secret");
 
     let request_id = "local-share-verify-failure".to_string();
-    assert!(
+    assert_eq!(
         app_state
             .pre_response_state
-            .init_response(request_id.clone(), &[])
+            .init_response_for_version(0, request_id.clone(), &[])
             .await,
+        crate::helpers::response_manager::ResponseInitOutcome::Created,
         "response collection should initialize"
     );
 
@@ -1420,7 +1421,7 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
 
     app_state
         .pre_response_state
-        .remove_response(&request_id)
+        .remove_response_for_version(0, &request_id)
         .await;
 
     match result {

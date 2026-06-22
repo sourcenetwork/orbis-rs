@@ -5,7 +5,7 @@ use crate::dkg::v0::{
     messages::{DkgMessage, SessionKind},
 };
 use crate::helpers::create_routers::create_router_with_all_handlers;
-use crate::helpers::helpers::extract_node_part;
+use crate::helpers::identity::extract_node_part;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_with_bulletin,

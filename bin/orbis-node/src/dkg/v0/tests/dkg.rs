@@ -6,7 +6,7 @@ use crate::dkg::v0::{
     messages::{DkgMessage, SessionKind},
     session_state::{CreateSessionOutcome, DkgMessageType, DkgPhase, SessionStateManager},
 };
-use crate::helpers::helpers::extract_node_part;
+use crate::helpers::identity::extract_node_part;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
@@ -896,13 +896,13 @@ async fn test_fresh_session_init_publishes_complete_state() {
         .dkg_session_state
         .with_state(&session_id, |state| {
             (
-                state.peer_ids.clone(),
-                state.peer_node_keys.clone(),
-                state.ring_id.clone(),
+                state.routing.peer_ids.clone(),
+                state.routing.peer_node_keys.clone(),
+                state.routing.ring_id.clone(),
                 state.pss_interval,
                 state.policy_id.clone(),
-                state.node_id_to_peer_id.clone(),
-                state.peer_id_to_node_id.clone(),
+                state.routing.node_id_to_peer_id.clone(),
+                state.routing.peer_id_to_node_id.clone(),
             )
         })
         .await
@@ -1326,6 +1326,7 @@ async fn test_peer_node_mappings_consistent() {
     let node_id = manager
         .with_state(&session_id, |state| {
             state
+                .routing
                 .peer_id_to_node_id
                 .get("bbb@192.168.1.2:4000")
                 .copied()
@@ -1361,6 +1362,7 @@ async fn test_peer_identity_unknown_peer_not_in_mapping() {
     let found = manager
         .with_state(&session_id, |state| {
             state
+                .routing
                 .peer_id_to_node_id
                 .iter()
                 .find(|(peer_id, _)| extract_node_part(peer_id) == unknown_peer_hex)

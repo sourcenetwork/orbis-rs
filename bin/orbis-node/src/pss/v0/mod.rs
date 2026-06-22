@@ -40,15 +40,12 @@ use crate::dkg::v0::helpers::{
 use crate::dkg::v0::messages::{DkgMessage, SessionKind};
 use crate::dkg::v0::session_state::RingPssClaimOutcome;
 use crate::helpers::auth::current_unix_time;
-use crate::helpers::helpers::{
-    extract_node_part, installed_versions_label, resolve_ring_protocol_decision,
-    validate_all_peer_ids,
-};
+use crate::helpers::identity::{extract_node_part, validate_all_peer_ids};
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
     peer_ids_from_routes, resolve_node_routes, NodeRoute,
 };
-use crate::metrics;
+use crate::helpers::protocol_version::{installed_versions_label, resolve_ring_protocol_decision};
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::error::BulletinError;
 use bulletin::r#trait::{BulletinKind, BulletinWriteKind, RingCancellationPayload, RingPayload};
@@ -57,6 +54,20 @@ use crypto::{GroupAffine, PolynomialCommitmentImpl, PubPolyImpl, ScalarField as 
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+
+pub struct PssSchedulerHandle {
+    shutdown_tx: oneshot::Sender<()>,
+    task: JoinHandle<()>,
+}
+
+impl PssSchedulerHandle {
+    pub async fn shutdown(self) {
+        let _ = self.shutdown_tx.send(());
+        let _ = self.task.await;
+    }
+}
 
 /// Spawn a background task that periodically checks rings for due PSS ceremonies.
 ///
@@ -65,7 +76,10 @@ use std::time::Duration;
 /// whether a refresh is actually triggered on that tick; reshare bypasses this check.
 ///
 /// Setting `check_interval` to zero disables the scheduler entirely.
-pub fn spawn_pss_scheduler<D>(app_state: Arc<AppState<D>>, check_interval: Duration)
+pub fn spawn_pss_scheduler<D>(
+    app_state: Arc<AppState<D>>,
+    check_interval: Duration,
+) -> Option<PssSchedulerHandle>
 where
     D: Dkg<
             ShareValue = Fr,
@@ -79,21 +93,30 @@ where
 {
     if check_interval.is_zero() {
         tracing::info!("PSS scheduler disabled (check_interval = 0)");
-        return;
+        return None;
     }
 
-    tokio::spawn(async move {
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(check_interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         ticker.tick().await; // skip the initial immediate tick at t=0
         loop {
-            ticker.tick().await;
-            tracing::debug!("PSS scheduler: tick");
-            let _ = pss_all_rings(&app_state).await.inspect_err(|error| {
-                tracing::error!(error = %error, "PSS scheduler: error");
-            });
+            tokio::select! {
+                _ = &mut shutdown_rx => {
+                    tracing::debug!("PSS scheduler: shutdown requested");
+                    break;
+                }
+                _ = ticker.tick() => {
+                    tracing::debug!("PSS scheduler: tick");
+                    let _ = pss_all_rings(&app_state).await.inspect_err(|error| {
+                        tracing::error!(error = %error, "PSS scheduler: error");
+                    });
+                }
+            }
         }
     });
+    Some(PssSchedulerHandle { shutdown_tx, task })
 }
 
 /// Iterate over every known ring and trigger a PSS ceremony when due.
@@ -572,8 +595,6 @@ where
         }
     }
 
-    metrics::record_refresh_session_started();
-
     coordinator
         .set_peer_ids(&session_id, peer_ids.to_vec())
         .await;
@@ -619,7 +640,6 @@ where
                 .dkg_session_state
                 .remove_session(&session_id)
                 .await;
-            metrics::record_refresh_session_failed();
             return Err(DkgError::NetworkConnection(format!(
                 "PSS: failed to send refresh SessionInit to {}: {}",
                 peer_id_str, e
@@ -635,7 +655,6 @@ where
             .dkg_session_state
             .remove_session(&session_id)
             .await;
-        metrics::record_refresh_session_failed();
         return Err(e);
     }
 
@@ -794,7 +813,7 @@ where
             dkg_role,
             move |state| {
                 state.kind = kind_for_init;
-                state.reshare_params = Some(reshare_params);
+                state.reshare.params = Some(reshare_params);
             },
         )
         .await
@@ -828,8 +847,6 @@ where
             return Err(e);
         }
     }
-
-    metrics::record_reshare_session_started();
 
     app_state
         .dkg_session_state
@@ -902,7 +919,6 @@ where
             .dkg_session_state
             .remove_session(&session_id)
             .await;
-        metrics::record_reshare_session_failed();
         return Err(e);
     }
 

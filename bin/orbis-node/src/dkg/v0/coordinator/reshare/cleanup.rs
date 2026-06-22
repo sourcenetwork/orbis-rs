@@ -5,7 +5,6 @@ use crypto::r#trait::Dkg;
 
 use crate::app_state::AppState;
 use crate::constants::{RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL, RESHARE_BULLETIN_CONFIRM_TIMEOUT};
-use crate::metrics;
 
 pub(in crate::dkg::v0::coordinator) fn spawn_bulletin_finalized_cleanup<D>(
     app_state: Arc<AppState<D>>,
@@ -82,8 +81,6 @@ async fn wait_for_reshare_bulletin_finalized<D>(
     }
     app_state
         .dkg_session_state
-        .remove_session(&session_id)
+        .complete_session(&session_id)
         .await;
-    metrics::record_dkg_session_completed();
-    metrics::record_reshare_session_completed();
 }

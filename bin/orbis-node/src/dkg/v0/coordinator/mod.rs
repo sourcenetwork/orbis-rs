@@ -19,6 +19,7 @@
 //! - [`network`] — peer stream management and message dispatch
 //! - [`phases`] — DKG phase transitions (Phase 1 → 2 → 4)
 
+mod inbound;
 mod message_handlers;
 mod network;
 mod peers;
@@ -30,12 +31,10 @@ mod state_machine;
 mod types;
 
 use crate::app_state::AppState;
-use crate::constants::{DKG_SESSION_WAIT_POLL_INTERVAL, DKG_UNKNOWN_SESSION_MESSAGE_WAIT_TIMEOUT};
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::session_not_found;
 use crate::dkg::v0::messages::DkgMessage;
 use crate::dkg::v0::session_state::{CreateSessionOutcome, DkgMessageType, MessageProcessingClaim};
-use crate::helpers::helpers::extract_node_part;
 use crate::metrics;
 use ::network::PeerId;
 use crypto::r#trait::{Dkg, DkgRole};
@@ -144,6 +143,7 @@ where
         + 'static,
 {
     /// Create a new DKG session manager for this node.
+    #[cfg(test)]
     pub fn new(app_state: Arc<AppState<D>>) -> Self {
         Self::with_routes(app_state, &::network::V0)
     }
@@ -166,39 +166,8 @@ where
         sender_peer_id: &PeerId,
     ) -> Result<Option<DkgMessage>> {
         let session_id = message.session_id();
-
-        // Classify message for dedup and metrics.
-        let (message_type, from_node_id_opt) = match &message {
-            DkgMessage::Commitment { from_node_id, .. } => {
-                (DkgMessageType::Commitment, Some(*from_node_id))
-            }
-            DkgMessage::Share { from_node_id, .. } => (DkgMessageType::Share, Some(*from_node_id)),
-            DkgMessage::Complaint { from_node_id, .. } => {
-                (DkgMessageType::Complaint, Some(*from_node_id))
-            }
-            DkgMessage::ReshareShareAck { .. } => (DkgMessageType::ReshareShareAck, None),
-            DkgMessage::ReshareParticipantSet { from_node_id, .. } => {
-                (DkgMessageType::ReshareParticipantSet, Some(*from_node_id))
-            }
-            DkgMessage::RefreshHealthCheckResult { from_node_id, .. } => (
-                DkgMessageType::RefreshHealthCheckResult,
-                Some(*from_node_id),
-            ),
-            DkgMessage::SessionInit { .. } => (DkgMessageType::SessionInit, None),
-            DkgMessage::Error { .. } => (DkgMessageType::Error, None),
-        };
-
-        let message_type_str = match message_type {
-            DkgMessageType::SessionInit => "session_init",
-            DkgMessageType::Commitment => "commitment",
-            DkgMessageType::Share => "share",
-            DkgMessageType::ReshareShareAck => "reshare_share_ack",
-            DkgMessageType::ReshareParticipantSet => "reshare_participant_set",
-            DkgMessageType::RefreshHealthCheckResult => "refresh_health_check_result",
-            DkgMessageType::Complaint => "complaint",
-            DkgMessageType::Error => "error",
-        };
-        metrics::record_dkg_message_received(message_type_str);
+        let meta = inbound::DkgMessageMeta::from_message(&message);
+        metrics::record_dkg_message_received(meta.metric_label);
 
         if let Some(session_version) = self
             .app_state
@@ -259,233 +228,50 @@ where
             .await;
         }
 
-        // All other messages require the session to exist first.
-        // Wait briefly to handle the race where a commitment arrives before this
-        // node's SessionInit handler has finished.
-        if !self
-            .app_state
-            .dkg_session_state
-            .session_exists(&session_id)
-            .await
-        {
-            let session_state = self.app_state.dkg_session_state.clone();
-            let found =
-                tokio::time::timeout(DKG_UNKNOWN_SESSION_MESSAGE_WAIT_TIMEOUT, async move {
-                    loop {
-                        tokio::time::sleep(DKG_SESSION_WAIT_POLL_INTERVAL).await;
-                        if session_state.session_exists(&session_id).await {
-                            return;
-                        }
+        if let Err(error) = inbound::wait_for_session(self, session_id).await {
+            tracing::warn!(
+                session_id,
+                sender_peer_hex = %hex::encode(sender_peer_id.as_bytes()),
+                message_type = ?meta.message_type,
+                "DKG Coordinator: Rejecting message - session not found on receiver"
+            );
+            return Err(error);
+        }
+        inbound::validate_sender(self, session_id, meta, sender_peer_id).await?;
+
+        let claim_guard: Option<MessageClaimGuard<D>> =
+            if let Some(from_node_id) = meta.dedup_node_id {
+                match self
+                    .app_state
+                    .dkg_session_state
+                    .try_claim_message_processing(&session_id, from_node_id, meta.message_type)
+                    .await
+                {
+                    MessageProcessingClaim::Claimed => Some(MessageClaimGuard::new(
+                        session_id,
+                        from_node_id,
+                        meta.message_type,
+                        self.app_state.clone(),
+                    )),
+                    MessageProcessingClaim::AlreadyProcessed
+                    | MessageProcessingClaim::AlreadyProcessing => {
+                        tracing::debug!(
+                            message_type = ?meta.message_type,
+                            from_node_id = from_node_id,
+                            session_id = session_id,
+                            "DKG Coordinator: Ignoring duplicate message"
+                        );
+                        return Ok(None);
                     }
-                })
-                .await;
-            if found.is_err() {
-                let sender_hex = hex::encode(sender_peer_id.as_bytes());
-                tracing::warn!(
-                    session_id = session_id,
-                    sender_peer_hex = %sender_hex,
-                    message_type = ?message_type,
-                    "DKG Coordinator: Rejecting message - session not found on receiver"
-                );
-                return Err(session_not_found(session_id));
-            }
-        }
-
-        // Validate sender identity for messages that carry node IDs.
-        let sender_hex = hex::encode(sender_peer_id.as_bytes());
-        let sender_check: Option<(u32, bool)> = match &message {
-            DkgMessage::Commitment { from_node_id, .. }
-            | DkgMessage::Share { from_node_id, .. }
-            | DkgMessage::Complaint { from_node_id, .. } => Some((*from_node_id, false)),
-            DkgMessage::ReshareShareAck {
-                receiver_node_id, ..
-            } => Some((*receiver_node_id, true)),
-            DkgMessage::ReshareParticipantSet { from_node_id, .. } => Some((*from_node_id, true)),
-            DkgMessage::RefreshHealthCheckResult { from_node_id, .. } => {
-                Some((*from_node_id, false))
-            }
-            DkgMessage::SessionInit { .. } | DkgMessage::Error { .. } => None,
-        };
-
-        if let Some((claimed_node_id, use_new_committee_map)) = sender_check {
-            let expected_node_id = self
-                .app_state
-                .dkg_session_state
-                .with_state(&session_id, |state| {
-                    let map = if use_new_committee_map {
-                        &state.reshare_new_peer_id_to_node_id
-                    } else {
-                        &state.peer_id_to_node_id
-                    };
-                    map.iter()
-                        .find(|(peer_id, _)| extract_node_part(peer_id) == sender_hex)
-                        .map(|(_, node_id)| *node_id)
-                })
-                .await
-                .flatten();
-
-            match expected_node_id {
-                Some(expected) if expected == claimed_node_id => {}
-                Some(expected) => {
-                    tracing::warn!(
-                        claimed_node_id = claimed_node_id,
-                        expected_node_id = expected,
-                        sender_peer = %sender_hex,
-                        session_id = session_id,
-                        use_new_committee_map = use_new_committee_map,
-                        "DKG Coordinator: Rejecting message - sender identity mismatch"
-                    );
-                    return Err(DkgError::Unauthorized(format!(
-                        "Sender identity mismatch: peer claims node_id={}, but authenticated peer maps to node_id={}",
-                        claimed_node_id, expected
-                    )));
+                    MessageProcessingClaim::MissingSession => {
+                        return Err(session_not_found(session_id))
+                    }
                 }
-                None => {
-                    tracing::warn!(
-                        sender_peer = %sender_hex,
-                        session_id = session_id,
-                        use_new_committee_map = use_new_committee_map,
-                        "DKG Coordinator: Rejecting message - sender peer not found in session"
-                    );
-                    return Err(DkgError::Unauthorized(format!(
-                        "Sender peer {} not found in session peer mappings",
-                        sender_hex
-                    )));
-                }
-            }
-        }
+            } else {
+                None
+            };
 
-        let claim_guard: Option<MessageClaimGuard<D>> = if let Some(from_node_id) = from_node_id_opt
-        {
-            match self
-                .app_state
-                .dkg_session_state
-                .try_claim_message_processing(&session_id, from_node_id, message_type)
-                .await
-            {
-                MessageProcessingClaim::Claimed => Some(MessageClaimGuard::new(
-                    session_id,
-                    from_node_id,
-                    message_type,
-                    self.app_state.clone(),
-                )),
-                MessageProcessingClaim::AlreadyProcessed
-                | MessageProcessingClaim::AlreadyProcessing => {
-                    tracing::debug!(
-                        message_type = ?message_type,
-                        from_node_id = from_node_id,
-                        session_id = session_id,
-                        "DKG Coordinator: Ignoring duplicate message"
-                    );
-                    return Ok(None);
-                }
-                MessageProcessingClaim::MissingSession => {
-                    return Err(session_not_found(session_id))
-                }
-            }
-        } else {
-            None
-        };
-
-        // Dispatch to per-message-type handlers.
-        let response_result: Result<Option<DkgMessage>> = match message {
-            DkgMessage::Commitment {
-                from_node_id,
-                commitment,
-                ..
-            } => {
-                message_handlers::handle_commitment_message(
-                    self,
-                    session_id,
-                    from_node_id,
-                    commitment,
-                )
-                .await
-            }
-            DkgMessage::Share {
-                from_node_id,
-                to_node_id,
-                share_value,
-                nonce,
-                ..
-            } => {
-                message_handlers::handle_share_message(
-                    self,
-                    session_id,
-                    from_node_id,
-                    to_node_id,
-                    share_value,
-                    nonce,
-                )
-                .await
-            }
-            DkgMessage::Complaint {
-                from_node_id,
-                accused_node_id,
-                reason,
-                ..
-            } => {
-                tracing::warn!(
-                    from_node_id = from_node_id,
-                    accused_node_id = accused_node_id,
-                    reason = %reason,
-                    "DKG Coordinator: Received complaint"
-                );
-                Ok(None)
-            }
-            DkgMessage::ReshareShareAck {
-                receiver_node_id,
-                dealer_id,
-                ..
-            } => {
-                message_handlers::handle_reshare_share_ack(
-                    self,
-                    session_id,
-                    receiver_node_id,
-                    dealer_id,
-                )
-                .await
-            }
-            DkgMessage::ReshareParticipantSet {
-                from_node_id,
-                selected_dealer_ids,
-                ..
-            } => {
-                message_handlers::handle_reshare_participant_set(
-                    self,
-                    session_id,
-                    from_node_id,
-                    selected_dealer_ids,
-                )
-                .await
-            }
-            DkgMessage::RefreshHealthCheckResult {
-                from_node_id,
-                statement,
-                signature,
-                ..
-            } => {
-                refresh_health_check::handle_result(
-                    self,
-                    session_id,
-                    from_node_id,
-                    statement,
-                    signature,
-                )
-                .await
-            }
-            DkgMessage::Error { error, .. } => {
-                tracing::error!(
-                    session_id = session_id,
-                    error = %error,
-                    "DKG Coordinator: Received error"
-                );
-                Ok(None)
-            }
-            DkgMessage::SessionInit { .. } => {
-                unreachable!("SessionInit handled above")
-            }
-        };
+        let response_result = inbound::dispatch(self, session_id, message).await;
 
         if let Some(guard) = claim_guard {
             guard.finish(response_result.is_ok()).await;
@@ -516,6 +302,9 @@ where
     where
         F: FnOnce(&mut crate::dkg::v0::session_state::DkgSessionState<D>),
     {
+        if total_nodes == 0 {
+            return Err(DkgError::InvalidParticipantCount(total_nodes));
+        }
         let dkg_node = D::new(node_id, threshold, total_nodes, session_id, role)
             .map_err(|e| DkgError::Crypto(format!("Failed to create DKG node: {}", e)))?;
 
@@ -531,10 +320,12 @@ where
         {
             CreateSessionOutcome::Created => {}
             CreateSessionOutcome::AlreadyExists => return Err(DkgError::SessionAlreadyExists),
+            CreateSessionOutcome::InvalidParticipantCount => {
+                return Err(DkgError::InvalidParticipantCount(total_nodes))
+            }
             CreateSessionOutcome::LimitReached => return Err(DkgError::MaxSessionsReached),
         }
 
-        metrics::record_dkg_session_started();
         Ok(())
     }
 
@@ -623,6 +414,7 @@ where
     /// Phase 4: Compute final secret share and aggregate public key.
     ///
     /// If this node is node_id == 1, also posts the `RingPayload` to the bulletin.
+    #[cfg(test)]
     pub async fn initiate_phase4_completion(&self, session_id: u128) -> Result<()> {
         phases::initiate_phase4_completion(self, session_id).await
     }

@@ -156,14 +156,10 @@ impl std::error::Error for PeerIdValidationError {}
 /// Error type for password retrieval
 #[derive(Debug)]
 pub enum PasswordError {
-    /// Failed to read password file
-    FileReadError(io::Error),
     /// Failed to read from stdin
     StdinError(io::Error),
     /// Password is empty
     EmptyPassword,
-    /// User cancelled the password prompt
-    UserCancelled,
     /// Failed to convert bytes to UTF-8 string
     Utf8Error(std::string::FromUtf8Error),
     /// Failed to generate random bytes
@@ -175,10 +171,8 @@ pub enum PasswordError {
 impl std::fmt::Display for PasswordError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PasswordError::FileReadError(e) => write!(f, "Failed to read password file: {}", e),
             PasswordError::StdinError(e) => write!(f, "Failed to read password from stdin: {}", e),
             PasswordError::EmptyPassword => write!(f, "Password cannot be empty"),
-            PasswordError::UserCancelled => write!(f, "Password entry cancelled by user"),
             PasswordError::Utf8Error(e) => write!(f, "Failed to convert to UTF-8: {}", e),
             PasswordError::RandomGenerationError(e) => {
                 write!(f, "Failed to generate random bytes: {}", e)

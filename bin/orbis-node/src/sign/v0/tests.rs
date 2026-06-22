@@ -5,7 +5,7 @@
 
 use crate::constants::MAX_SIGN_MESSAGE_BYTES;
 use crate::dkg::v0::service::DkgServiceImpl;
-use crate::helpers::helpers::RingConfig;
+use crate::helpers::ring::RingConfig;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, get_test_ring_post,
     setup_three_node_network_with_sign, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,

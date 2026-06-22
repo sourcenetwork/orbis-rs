@@ -5,8 +5,7 @@ use crate::dkg::v0::helpers::{
 };
 use crate::dkg::v0::messages::{DkgMessage, SessionKind};
 use crate::dkg::v0::session_state::{DkgPhase, RefreshHealthCheckCandidate};
-use crate::helpers::helpers::is_self_peer_id;
-use crate::metrics;
+use crate::helpers::identity::is_self_peer_id;
 use crypto::r#trait::{
     CryptoDeserialize, DistKeyShare, DkgRole, PubPoly as PubPolyTrait, PubShare, ThresholdSigner,
 };
@@ -84,7 +83,7 @@ where
                 has_polynomial: !state.node.commitment().coefficients.is_empty(),
                 commitments_received: state.commitments_received,
                 shares_received: state.shares_received,
-                reshare_selected_dealers: state.reshare_selected_dealers.is_some(),
+                reshare_selected_dealers: state.reshare.selected_dealers.is_some(),
                 secret_share_available: evaluates_phase4
                     && state.node.compute_secret_share().is_ok(),
                 aggregate_public_key_available: evaluates_phase4

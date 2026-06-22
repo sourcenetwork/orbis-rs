@@ -20,11 +20,13 @@ use crypto::r#trait::{DistributedShare, Dkg, DkgMode};
 use network::Connection;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 use zeroize::Zeroize;
 
 /// DKG Protocol Phase
@@ -41,8 +43,6 @@ pub enum DkgPhase {
     Phase4Completing,
     /// Phase 4 - Computing final shares
     Phase4Complete,
-    /// Error state
-    Error,
 }
 
 /// Outcome of a `SessionStateManager::create_session` call.
@@ -57,6 +57,8 @@ pub enum CreateSessionOutcome {
     Created,
     /// A concurrent handler already created this session — treat as success.
     AlreadyExists,
+    /// Participant count was zero, so no session was created.
+    InvalidParticipantCount,
     /// `MAX_DKG_SESSIONS` is at capacity; session was NOT created.
     LimitReached,
 }
@@ -129,6 +131,65 @@ pub struct PendingRefreshHealthCheckResult {
     pub signature: Option<String>,
 }
 
+#[derive(Default)]
+pub(crate) struct SessionRoutingState {
+    pub node_id_to_peer_id: HashMap<u32, String>,
+    pub peer_id_to_node_id: HashMap<String, u32>,
+    pub reshare_new_node_id_to_peer_id: HashMap<u32, String>,
+    pub reshare_new_peer_id_to_node_id: HashMap<String, u32>,
+    pub peer_ids: Vec<String>,
+    pub peer_node_keys: Vec<String>,
+    pub ring_id: String,
+}
+
+pub(crate) struct MessageTrackingState<ShareValue: Zeroize> {
+    pub pending_shares_waiting_for_commitment: HashMap<u32, DistributedShare<ShareValue>>,
+    pub processed: HashSet<(u128, u32, DkgMessageType)>,
+    pub processing: HashSet<(u128, u32, DkgMessageType)>,
+}
+
+impl<ShareValue: Zeroize> Default for MessageTrackingState<ShareValue> {
+    fn default() -> Self {
+        Self {
+            pending_shares_waiting_for_commitment: HashMap::new(),
+            processed: HashSet::new(),
+            processing: HashSet::new(),
+        }
+    }
+}
+
+pub(crate) struct ReshareSessionState<ShareValue: Zeroize> {
+    pub params: Option<ReshareParams<ShareValue>>,
+    pub valid_share_dealers: HashSet<u32>,
+    pub share_acks: HashMap<u32, HashSet<u32>>,
+    pub dealer_completion_order: Vec<u32>,
+    pub selected_dealers: Option<Vec<u32>>,
+}
+
+impl<ShareValue: Zeroize> Default for ReshareSessionState<ShareValue> {
+    fn default() -> Self {
+        Self {
+            params: None,
+            valid_share_dealers: HashSet::new(),
+            share_acks: HashMap::new(),
+            dealer_completion_order: Vec::new(),
+            selected_dealers: None,
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct RefreshSessionState {
+    pub candidate: Option<RefreshHealthCheckCandidate>,
+    pub pending_result: Option<PendingRefreshHealthCheckResult>,
+}
+
+#[derive(Default)]
+pub(crate) struct SessionTransportState {
+    pub peer_streams: HashMap<String, Arc<dyn Connection>>,
+    pub peer_send_locks: HashMap<String, Arc<Mutex<()>>>,
+}
+
 /// Reshare-specific parameters stored in session state during an active reshare ceremony.
 ///
 /// Set by the coordinator when a `SessionInit { kind: SessionKind::Reshare { .. } }` is
@@ -137,8 +198,6 @@ pub struct PendingRefreshHealthCheckResult {
 /// `Drop` zeroes `old_share` whenever this struct is dropped — whether at the end of
 /// `generate_polynomial` (via `.take()`), session expiry, or error paths.
 pub struct ReshareParams<ShareValue: Zeroize> {
-    /// Old ring's local-storage key (`aggregate_pk.to_string()`).
-    pub ring_key: String,
     /// This node's current secret share value, pre-loaded from local storage at session
     /// init time.  `None` for pure `Receiver` nodes (they have no old share).
     pub old_share: Option<ShareValue>,
@@ -169,7 +228,6 @@ impl<ShareValue: Zeroize> Drop for ReshareParams<ShareValue> {
 impl<ShareValue: Zeroize + std::fmt::Debug> std::fmt::Debug for ReshareParams<ShareValue> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReshareParams")
-            .field("ring_key", &self.ring_key)
             .field("old_share", &self.old_share.as_ref().map(|_| "<redacted>"))
             .field("participating_ids", &self.participating_ids)
             .field("new_threshold", &self.new_threshold)
@@ -208,46 +266,19 @@ pub struct DkgSessionState<D: Dkg> {
     pub phase: DkgPhase,
     /// When the current phase started (reset on every phase transition)
     pub phase_started_at: Instant,
-    /// Mapping of node IDs to peer IDs for efficient routing
-    pub node_id_to_peer_id: HashMap<u32, String>,
-    /// Mapping of peer IDs to node IDs
-    pub peer_id_to_node_id: HashMap<String, u32>,
-    /// Mapping of new-committee node IDs to peer IDs for reshare-only messages.
-    pub reshare_new_node_id_to_peer_id: HashMap<u32, String>,
-    /// Mapping of new-committee peer IDs to node IDs for reshare-only sender validation.
-    pub reshare_new_peer_id_to_node_id: HashMap<String, u32>,
-    /// List of peer IDs for this session (for sending messages)
-    pub peer_ids: Vec<String>,
-    /// Chain node keys for this session. These are the canonical participant identities.
-    pub peer_node_keys: Vec<String>,
-    /// Pre-created chain ring ID targeted by a fresh DKG session.
-    pub ring_id: String,
+    /// Participant identity and route mappings.
+    pub(crate) routing: SessionRoutingState,
     /// Expected number of participants
+    #[cfg(test)]
     pub total_participants: usize,
     /// Number of commitments received
     pub commitments_received: usize,
     /// Number of shares received
     pub shares_received: usize,
-    /// Reshare-only: old dealers for which this node has a locally verified share.
-    pub reshare_valid_share_dealers: HashSet<u32>,
-    /// Reshare-only: selector state, dealer_id -> new receiver IDs that acked it.
-    pub reshare_share_acks: HashMap<u32, HashSet<u32>>,
-    /// Reshare-only: old dealers ordered by when all new receivers acked them.
-    pub reshare_dealer_completion_order: Vec<u32>,
-    /// Reshare-only: accepted session-wide old-dealer subset.
-    pub reshare_selected_dealers: Option<Vec<u32>>,
-    /// Shares that arrived before the sender's commitment was available locally.
-    ///
-    /// These are replayed when the matching commitment is stored. This keeps a
-    /// reconnect or stream replacement from making share/commitment ordering a
-    /// terminal liveness failure.
-    pub pending_shares_waiting_for_commitment: HashMap<u32, DistributedShare<D::ShareValue>>,
-    /// Processed message IDs for deduplication (session_id, from_node_id, message_type)
-    pub processed_messages: std::collections::HashSet<(u128, u32, DkgMessageType)>,
-    /// Message IDs currently being handled.
-    ///
-    /// Prevents concurrent duplicate deliveries from both entering the crypto layer.
-    pub processing_messages: std::collections::HashSet<(u128, u32, DkgMessageType)>,
+    /// Reshare-only data and selection progress.
+    pub(crate) reshare: ReshareSessionState<D::ShareValue>,
+    /// Message ordering and deduplication state.
+    pub(crate) messages: MessageTrackingState<D::ShareValue>,
     /// What kind of ceremony this session is running (Fresh, Refresh, or Reshare).
     ///
     /// Drives `generate_polynomial` mode selection and Phase 4 storage/bulletin behaviour.
@@ -259,30 +290,17 @@ pub struct DkgSessionState<D: Dkg> {
     /// Stored here during fresh DKG so Phase 4 can write it into `RingPayload`.
     pub policy_id: Option<String>,
     /// Extra parameters required only for Reshare sessions.  `None` for Fresh and Refresh.
-    pub reshare_params: Option<ReshareParams<D::ShareValue>>,
-    /// Staged Refresh bundle. Promoted only after the health-check signature is verified.
-    pub refresh_health_check_candidate: Option<RefreshHealthCheckCandidate>,
-    /// Refresh health-check result received before the staged candidate was available.
-    pub pending_refresh_health_check_result: Option<PendingRefreshHealthCheckResult>,
-    /// Per-peer QUIC streams for this session.
-    ///
-    /// DKG messages to the same peer normally share one stream so local send order
-    /// is preserved where possible. Inbound handlers still queue valid early messages
-    /// because stream replacement and cross-peer delivery can expose dependent state
-    /// out of order.
-    /// Streams are dropped automatically when the session is removed.
-    pub peer_streams: HashMap<String, Arc<dyn Connection>>,
-    /// Per-peer send locks for this session.
-    ///
-    /// Serializes outbound sends to a given peer so a broken cached stream can be
-    /// evicted, replaced, and retried without a concurrent sender racing ahead on a
-    /// fresh stream and violating the intended within-peer ordering.
-    pub peer_send_locks: HashMap<String, Arc<Mutex<()>>>,
+    /// Refresh candidate/result staging.
+    pub(crate) refresh: RefreshSessionState,
+    /// Per-session network streams and send serialization.
+    pub(crate) transport: SessionTransportState,
+    /// Owns active metrics for exactly the lifetime of this ceremony.
+    metrics_guard: Option<metrics::DkgSessionMetricsGuard>,
 }
 
 impl<D: Dkg> DkgSessionState<D> {
     /// Create a new DKG session state with the given DKG node
-    pub fn new(node: D, total_participants: usize, generation: u64) -> Self {
+    pub fn new(node: D, _total_participants: usize, generation: u64) -> Self {
         Self {
             generation,
             node,
@@ -290,31 +308,19 @@ impl<D: Dkg> DkgSessionState<D> {
             protocol_version: network::V0.version,
             phase: DkgPhase::Initializing,
             phase_started_at: Instant::now(),
-            node_id_to_peer_id: HashMap::new(),
-            peer_id_to_node_id: HashMap::new(),
-            reshare_new_node_id_to_peer_id: HashMap::new(),
-            reshare_new_peer_id_to_node_id: HashMap::new(),
-            peer_ids: Vec::new(),
-            peer_node_keys: Vec::new(),
-            ring_id: String::new(),
-            total_participants,
+            routing: SessionRoutingState::default(),
+            #[cfg(test)]
+            total_participants: _total_participants,
             commitments_received: 0,
             shares_received: 0,
-            reshare_valid_share_dealers: HashSet::new(),
-            reshare_share_acks: HashMap::new(),
-            reshare_dealer_completion_order: Vec::new(),
-            reshare_selected_dealers: None,
-            pending_shares_waiting_for_commitment: HashMap::new(),
-            processed_messages: std::collections::HashSet::new(),
-            processing_messages: std::collections::HashSet::new(),
+            reshare: ReshareSessionState::default(),
+            messages: MessageTrackingState::default(),
             kind: SessionKind::Fresh,
             pss_interval: 0,
             policy_id: None,
-            reshare_params: None,
-            refresh_health_check_candidate: None,
-            pending_refresh_health_check_result: None,
-            peer_streams: HashMap::new(),
-            peer_send_locks: HashMap::new(),
+            refresh: RefreshSessionState::default(),
+            transport: SessionTransportState::default(),
+            metrics_guard: None,
         }
     }
 
@@ -330,7 +336,7 @@ impl<D: Dkg> DkgSessionState<D> {
             SessionKind::Fresh => DkgMode::Fresh,
             SessionKind::Refresh { .. } => DkgMode::Refresh,
             SessionKind::Reshare { .. } => {
-                let p = self.reshare_params.as_mut().ok_or_else(|| {
+                let p = self.reshare.params.as_mut().ok_or_else(|| {
                     DkgError::Generic(
                         "Reshare session is missing reshare_params — this is a bug".to_string(),
                     )
@@ -362,22 +368,22 @@ impl<D: Dkg> DkgSessionState<D> {
     /// For Reshare, dealers use `new_threshold` (new committee degree); for all
     /// other kinds the old/current threshold applies.
     pub fn expected_commitment_size(&self) -> usize {
-        if let Some(ref p) = self.reshare_params {
+        if let Some(ref p) = self.reshare.params {
             p.new_threshold
         } else {
             self.node.threshold()
         }
     }
 
-    /// Check if all commitments have been received
+}
+
+#[cfg(test)]
+impl<D: Dkg> DkgSessionState<D> {
     pub fn all_commitments_received(&self) -> bool {
-        // We need commitments from all other nodes (total - 1, excluding self)
         self.commitments_received >= (self.total_participants - 1)
     }
 
-    /// Check if all shares have been received
     pub fn all_shares_received(&self) -> bool {
-        // We need shares from all other nodes (total - 1, excluding self)
         self.shares_received >= (self.total_participants - 1)
     }
 }
@@ -450,6 +456,8 @@ pub struct SessionStateManager<D: Dkg> {
     rings_pss: Arc<RwLock<HashMap<String, u128>>>,
     /// Exact reshare bulletin updates this node is ready to sign.
     reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
+    shutdown_tx: watch::Sender<bool>,
+    background_tasks: StdMutex<Vec<JoinHandle<()>>>,
 }
 
 impl<D: Dkg + 'static> SessionStateManager<D> {
@@ -459,22 +467,32 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let states = Arc::new(RwLock::new(HashMap::new()));
         let rings_pss = Arc::new(RwLock::new(HashMap::new()));
         let reshare_signature_ready = Arc::new(RwLock::new(HashSet::new()));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let mut background_tasks = Vec::new();
 
         // Spawn background cleanup task (handles guard-triggered cleanup)
         let states_clone = states.clone();
         let pss_clone = rings_pss.clone();
         let ready_clone = reshare_signature_ready.clone();
-        tokio::spawn(async move {
-            Self::cleanup_worker(states_clone, cleanup_rx, pss_clone, ready_clone).await;
-        });
+        let cleanup_shutdown = shutdown_rx.clone();
+        background_tasks.push(tokio::spawn(async move {
+            Self::cleanup_worker(
+                states_clone,
+                cleanup_rx,
+                pss_clone,
+                ready_clone,
+                cleanup_shutdown,
+            )
+            .await;
+        }));
 
         // Spawn background expiration task (handles abandoned sessions)
         let states_clone = states.clone();
         let pss_clone = rings_pss.clone();
         let ready_clone = reshare_signature_ready.clone();
-        tokio::spawn(async move {
-            Self::expiration_worker(states_clone, pss_clone, ready_clone).await;
-        });
+        background_tasks.push(tokio::spawn(async move {
+            Self::expiration_worker(states_clone, pss_clone, ready_clone, shutdown_rx).await;
+        }));
 
         Self {
             states,
@@ -482,6 +500,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             next_session_generation: AtomicU64::new(1),
             rings_pss,
             reshare_signature_ready,
+            shutdown_tx,
+            background_tasks: StdMutex::new(background_tasks),
         }
     }
 
@@ -491,8 +511,23 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         mut rx: mpsc::UnboundedReceiver<u128>,
         rings_pss: Arc<RwLock<HashMap<String, u128>>>,
         reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
+        mut shutdown_rx: watch::Receiver<bool>,
     ) {
-        while let Some(session_id) = rx.recv().await {
+        loop {
+            let session_id = tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        break;
+                    }
+                    continue;
+                }
+                session_id = rx.recv() => {
+                    let Some(session_id) = session_id else {
+                        break;
+                    };
+                    session_id
+                }
+            };
             let mut states = states.write().await;
             if let Some(state) = states.remove(&session_id) {
                 // If this was a refresh or reshare session, unblock the ring.
@@ -528,11 +563,20 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states: Arc<RwLock<HashMap<u128, DkgSessionState<D>>>>,
         rings_pss: Arc<RwLock<HashMap<String, u128>>>,
         reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
+        mut shutdown_rx: watch::Receiver<bool>,
     ) {
         let mut interval = tokio::time::interval(SESSION_EXPIRATION_CHECK_INTERVAL);
 
         loop {
-            interval.tick().await;
+            tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        break;
+                    }
+                    continue;
+                }
+                _ = interval.tick() => {}
+            }
 
             let now = Instant::now();
             let mut states = states.write().await;
@@ -557,7 +601,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 }
                 let age = now.duration_since(state.created_at);
                 if age > SESSION_TTL {
-                    metrics::record_dkg_session_abandoned();
                     tracing::warn!(
                         session_id = session_id,
                         age_secs = age.as_secs(),
@@ -572,7 +615,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     _ => DKG_PHASE_TIMEOUT,
                 };
                 if phase_age > phase_timeout {
-                    metrics::record_dkg_session_abandoned();
                     tracing::warn!(
                         session_id = session_id,
                         phase = ?state.phase,
@@ -587,10 +629,14 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             let mut ring_claims_to_clear: Vec<(String, u128)> = Vec::new();
             let mut removed_ids: HashSet<u128> = HashSet::new();
             for session_id in to_remove_ids {
-                if let Some(state) = states.remove(&session_id) {
+                if let Some(mut state) = states.remove(&session_id) {
                     removed_ids.insert(session_id);
-                    if completed_ids.contains(&session_id) {
-                        metrics::record_dkg_session_completed();
+                    if let Some(guard) = state.metrics_guard.take() {
+                        if completed_ids.contains(&session_id) {
+                            guard.complete();
+                        } else {
+                            guard.abandon();
+                        }
                     }
                     if let Some(k) = state.kind.ring_key() {
                         ring_claims_to_clear.push((k.to_string(), session_id));
@@ -662,11 +708,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         self.rings_pss.read().await.contains_key(ring_pk_key)
     }
 
-    /// Returns the active PSS session ID for a ring, if any.
-    pub async fn active_ring_pss_session(&self, ring_pk_key: &str) -> Option<u128> {
-        self.rings_pss.read().await.get(ring_pk_key).copied()
-    }
-
     /// Mark one exact reshare bulletin update as ready to sign.
     pub async fn mark_reshare_signature_ready(&self, key: ReshareSignatureReadyKey) {
         self.reshare_signature_ready.write().await.insert(key);
@@ -698,6 +739,20 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// error paths without manual cleanup code.
     pub fn cleanup_guard(&self, session_id: u128) -> SessionCleanupGuard {
         SessionCleanupGuard::new(self.cleanup_tx.clone(), session_id)
+    }
+
+    /// Stop and join the manager's background cleanup workers.
+    pub async fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+        let tasks = self
+            .background_tasks
+            .lock()
+            .expect("session background task mutex poisoned")
+            .drain(..)
+            .collect::<Vec<_>>();
+        for task in tasks {
+            let _ = task.await;
+        }
     }
 
     /// Execute a function with read-only access to a session state
@@ -751,7 +806,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 session_id = session_id,
                 "Cannot create DKG session with zero participants"
             );
-            return CreateSessionOutcome::AlreadyExists;
+            return CreateSessionOutcome::InvalidParticipantCount;
         }
 
         let mut states = self.states.write().await;
@@ -779,6 +834,12 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let generation = self.next_session_generation.fetch_add(1, Ordering::SeqCst);
         let mut new_state = DkgSessionState::new(node, total_participants, generation);
         init_fn(&mut new_state);
+        let ceremony_kind = match &new_state.kind {
+            SessionKind::Fresh => metrics::DkgCeremonyKind::Fresh,
+            SessionKind::Refresh { .. } => metrics::DkgCeremonyKind::Refresh,
+            SessionKind::Reshare { .. } => metrics::DkgCeremonyKind::Reshare,
+        };
+        new_state.metrics_guard = Some(metrics::DkgSessionMetricsGuard::new(ceremony_kind));
         states.insert(session_id, new_state);
         CreateSessionOutcome::Created
     }
@@ -789,68 +850,24 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states.contains_key(session_id)
     }
 
-    /// Get the current in-memory generation for a session, if it exists.
-    pub async fn get_session_generation(&self, session_id: &u128) -> Option<u64> {
-        let states = self.states.read().await;
-        states.get(session_id).map(|s| s.generation)
-    }
-
-    /// Returns true iff the session currently exists and still has the expected generation.
-    pub async fn session_generation_matches(&self, session_id: &u128, generation: u64) -> bool {
-        let states = self.states.read().await;
-        matches!(states.get(session_id), Some(state) if state.generation == generation)
-    }
-
-    /// Get the number of active sessions
-    pub async fn session_count(&self) -> usize {
-        let states = self.states.read().await;
-        states.len()
-    }
-
     pub async fn set_peer_ids(&self, session_id: &u128, peer_ids: Vec<String>) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
-            state.peer_ids = peer_ids;
+            state.routing.peer_ids = peer_ids;
         }
     }
 
     pub async fn set_peer_node_keys(&self, session_id: &u128, peer_node_keys: Vec<String>) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
-            state.peer_node_keys = peer_node_keys;
+            state.routing.peer_node_keys = peer_node_keys;
         }
     }
 
     pub async fn set_ring_id(&self, session_id: &u128, ring_id: String) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
-            state.ring_id = ring_id;
-        }
-    }
-
-    /// Set the session kind (Fresh / Refresh / Reshare).
-    ///
-    /// Must be called before `initiate_phase1_commitments` so that
-    /// `generate_polynomial` uses the correct `DkgMode`.
-    pub async fn set_session_kind(&self, session_id: &u128, kind: SessionKind) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.kind = kind;
-        }
-    }
-
-    /// Store reshare-specific parameters.
-    ///
-    /// Must be called (for Dealer / DealerReceiver nodes) before Phase 1 so that
-    /// `generate_polynomial` can construct `DkgMode::Reshare`.
-    pub async fn set_reshare_params(
-        &self,
-        session_id: &u128,
-        params: ReshareParams<D::ShareValue>,
-    ) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.reshare_params = Some(params);
+            state.routing.ring_id = ring_id;
         }
     }
 
@@ -862,7 +879,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
-            state.refresh_health_check_candidate = Some(candidate);
+            state.refresh.candidate = Some(candidate);
         }
     }
 
@@ -874,14 +891,14 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let states = self.states.read().await;
         states
             .get(session_id)
-            .and_then(|state| state.refresh_health_check_candidate.clone())
+            .and_then(|state| state.refresh.candidate.clone())
     }
 
     /// Discard any staged refresh bundle for this session.
     pub async fn clear_refresh_health_check_candidate(&self, session_id: &u128) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
-            state.refresh_health_check_candidate = None;
+            state.refresh.candidate = None;
         }
     }
 
@@ -893,10 +910,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> Option<bool> {
         let mut states = self.states.write().await;
         let state = states.get_mut(session_id)?;
-        if state.pending_refresh_health_check_result.is_some() {
+        if state.refresh.pending_result.is_some() {
             return Some(false);
         }
-        state.pending_refresh_health_check_result = Some(result);
+        state.refresh.pending_result = Some(result);
         Some(true)
     }
 
@@ -906,10 +923,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         session_id: &u128,
     ) -> Option<PendingRefreshHealthCheckResult> {
         let mut states = self.states.write().await;
-        states
-            .get_mut(session_id)?
-            .pending_refresh_health_check_result
-            .take()
+        states.get_mut(session_id)?.refresh.pending_result.take()
     }
 
     /// Store the PSS refresh interval for this session so Phase 4 can persist it.
@@ -922,17 +936,19 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
 
     pub async fn get_peer_ids(&self, session_id: &u128) -> Option<Vec<String>> {
         let states = self.states.read().await;
-        states.get(session_id).map(|s| s.peer_ids.clone())
+        states.get(session_id).map(|s| s.routing.peer_ids.clone())
     }
 
     pub async fn get_peer_node_keys(&self, session_id: &u128) -> Option<Vec<String>> {
         let states = self.states.read().await;
-        states.get(session_id).map(|s| s.peer_node_keys.clone())
+        states
+            .get(session_id)
+            .map(|s| s.routing.peer_node_keys.clone())
     }
 
     pub async fn ring_id_for_session(&self, session_id: &u128) -> Option<String> {
         let states = self.states.read().await;
-        states.get(session_id).map(|s| s.ring_id.clone())
+        states.get(session_id).map(|s| s.routing.ring_id.clone())
     }
 
     /// Set node_id to peer_id mappings for efficient routing
@@ -950,8 +966,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 node_to_peer.insert(node_id, peer_id.clone());
                 peer_to_node.insert(peer_id, node_id);
             }
-            state.node_id_to_peer_id = node_to_peer;
-            state.peer_id_to_node_id = peer_to_node;
+            state.routing.node_id_to_peer_id = node_to_peer;
+            state.routing.peer_id_to_node_id = peer_to_node;
         }
     }
 
@@ -969,8 +985,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 node_to_peer.insert(node_id, peer_id.clone());
                 peer_to_node.insert(peer_id, node_id);
             }
-            state.reshare_new_node_id_to_peer_id = node_to_peer;
-            state.reshare_new_peer_id_to_node_id = peer_to_node;
+            state.routing.reshare_new_node_id_to_peer_id = node_to_peer;
+            state.routing.reshare_new_peer_id_to_node_id = peer_to_node;
         }
     }
 
@@ -979,26 +995,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let states = self.states.read().await;
         states
             .get(session_id)?
+            .routing
             .node_id_to_peer_id
             .get(&node_id)
             .cloned()
-    }
-
-    /// Check if a message has already been processed (for deduplication)
-    pub async fn is_message_processed(
-        &self,
-        session_id: &u128,
-        from_node_id: u32,
-        message_type: DkgMessageType,
-    ) -> bool {
-        let states = self.states.read().await;
-        if let Some(state) = states.get(session_id) {
-            state
-                .processed_messages
-                .contains(&(*session_id, from_node_id, message_type))
-        } else {
-            false
-        }
     }
 
     /// Atomically claim a message for processing.
@@ -1014,10 +1014,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         };
 
         let key = (*session_id, from_node_id, message_type);
-        if state.processed_messages.contains(&key) {
+        if state.messages.processed.contains(&key) {
             return MessageProcessingClaim::AlreadyProcessed;
         }
-        if !state.processing_messages.insert(key) {
+        if !state.messages.processing.insert(key) {
             return MessageProcessingClaim::AlreadyProcessing;
         }
         MessageProcessingClaim::Claimed
@@ -1034,9 +1034,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
             let key = (*session_id, from_node_id, message_type);
-            state.processing_messages.remove(&key);
+            state.messages.processing.remove(&key);
             if processed {
-                state.processed_messages.insert(key);
+                state.messages.processed.insert(key);
             }
         }
     }
@@ -1055,12 +1055,14 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let state = states.get_mut(session_id)?;
         let from_node_id = share.from_id;
         if state
+            .messages
             .pending_shares_waiting_for_commitment
             .contains_key(&from_node_id)
         {
             return Some(false);
         }
         state
+            .messages
             .pending_shares_waiting_for_commitment
             .insert(from_node_id, share);
         Some(true)
@@ -1075,23 +1077,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let mut states = self.states.write().await;
         states
             .get_mut(session_id)?
+            .messages
             .pending_shares_waiting_for_commitment
             .remove(&from_node_id)
-    }
-
-    /// Mark a message as processed
-    pub async fn mark_message_processed(
-        &self,
-        session_id: &u128,
-        from_node_id: u32,
-        message_type: DkgMessageType,
-    ) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state
-                .processed_messages
-                .insert((*session_id, from_node_id, message_type));
-        }
     }
 
     pub async fn update_phase(&self, session_id: &u128, phase: DkgPhase) {
@@ -1123,7 +1111,12 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         peer_id: &str,
     ) -> Option<Arc<dyn Connection>> {
         let states = self.states.read().await;
-        states.get(session_id)?.peer_streams.get(peer_id).cloned()
+        states
+            .get(session_id)?
+            .transport
+            .peer_streams
+            .get(peer_id)
+            .cloned()
     }
 
     /// Cache an outbound stream to a peer for this session.
@@ -1135,7 +1128,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
-            state.peer_streams.insert(peer_id, stream);
+            state.transport.peer_streams.insert(peer_id, stream);
         }
     }
 
@@ -1143,7 +1136,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub async fn remove_peer_stream(&self, session_id: &u128, peer_id: &str) {
         let mut states = self.states.write().await;
         if let Some(state) = states.get_mut(session_id) {
-            state.peer_streams.remove(peer_id);
+            state.transport.peer_streams.remove(peer_id);
         }
     }
 
@@ -1156,6 +1149,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let mut states = self.states.write().await;
         let state = states.get_mut(session_id)?;
         let lock = state
+            .transport
             .peer_send_locks
             .entry(peer_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -1173,9 +1167,23 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Per-peer QUIC connections in `peer_connections` are NOT closed — they remain
     /// open in the pool for future sessions.
     pub async fn remove_session(&self, session_id: &u128) {
+        self.remove_session_with_outcome(session_id, false).await;
+    }
+
+    /// Remove a successfully completed session and balance its active metrics.
+    pub async fn complete_session(&self, session_id: &u128) {
+        self.remove_session_with_outcome(session_id, true).await;
+    }
+
+    async fn remove_session_with_outcome(&self, session_id: &u128, completed: bool) {
         let ring_key_to_clear = {
             let mut states = self.states.write().await;
-            if let Some(state) = states.remove(session_id) {
+            if let Some(mut state) = states.remove(session_id) {
+                if completed {
+                    if let Some(guard) = state.metrics_guard.take() {
+                        guard.complete();
+                    }
+                }
                 tracing::debug!(
                     session_id = session_id,
                     "SessionStateManager: Removed session"
@@ -1206,6 +1214,67 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
 impl<D: Dkg + 'static> Default for SessionStateManager<D> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<D: Dkg> Drop for SessionStateManager<D> {
+    fn drop(&mut self) {
+        let _ = self.shutdown_tx.send(true);
+    }
+}
+
+#[cfg(test)]
+impl<D: Dkg + 'static> SessionStateManager<D> {
+    pub async fn active_ring_pss_session(&self, ring_pk_key: &str) -> Option<u128> {
+        self.rings_pss.read().await.get(ring_pk_key).copied()
+    }
+
+    pub async fn get_session_generation(&self, session_id: &u128) -> Option<u64> {
+        let states = self.states.read().await;
+        states.get(session_id).map(|s| s.generation)
+    }
+
+    pub async fn session_count(&self) -> usize {
+        self.states.read().await.len()
+    }
+
+    pub async fn set_session_kind(&self, session_id: &u128, kind: SessionKind) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state.kind = kind;
+        }
+    }
+
+    pub async fn is_message_processed(
+        &self,
+        session_id: &u128,
+        from_node_id: u32,
+        message_type: DkgMessageType,
+    ) -> bool {
+        let states = self.states.read().await;
+        if let Some(state) = states.get(session_id) {
+            state
+                .messages
+                .processed
+                .contains(&(*session_id, from_node_id, message_type))
+        } else {
+            false
+        }
+    }
+
+    pub async fn mark_message_processed(
+        &self,
+        session_id: &u128,
+        from_node_id: u32,
+        message_type: DkgMessageType,
+    ) {
+        let mut states = self.states.write().await;
+        if let Some(state) = states.get_mut(session_id) {
+            state
+                .messages
+                .processed
+                .insert((*session_id, from_node_id, message_type));
+        }
     }
 }
 
@@ -1242,6 +1311,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn background_workers_shutdown_cleanly() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        tokio::time::timeout(std::time::Duration::from_millis(250), mgr.shutdown())
+            .await
+            .expect("background workers should stop promptly");
+        assert!(mgr
+            .background_tasks
+            .lock()
+            .expect("background task mutex")
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn test_create_session_rejects_duplicate_id() {
         let mgr = SessionStateManager::<DkgImpl>::new();
         assert_eq!(
@@ -1263,7 +1345,7 @@ mod tests {
         let ok = mgr.create_session(1, make_node(1), 0, |_| {}).await;
         assert_eq!(
             ok,
-            CreateSessionOutcome::AlreadyExists,
+            CreateSessionOutcome::InvalidParticipantCount,
             "zero participants should be rejected"
         );
         assert_eq!(mgr.session_count().await, 0);
@@ -1590,18 +1672,18 @@ mod tests {
     async fn test_create_session_can_publish_routing_maps_atomically() {
         let mgr = SessionStateManager::<DkgImpl>::new();
         mgr.create_session(5, make_node(1), 3, |state| {
-            state.peer_ids = vec!["old-a".to_string(), "old-b".to_string()];
-            state.peer_node_keys = vec!["node-a".to_string(), "node-b".to_string()];
-            state.ring_id = "ring-id".to_string();
+            state.routing.peer_ids = vec!["old-a".to_string(), "old-b".to_string()];
+            state.routing.peer_node_keys = vec!["node-a".to_string(), "node-b".to_string()];
+            state.routing.ring_id = "ring-id".to_string();
             state.pss_interval = 60;
 
-            state.node_id_to_peer_id =
+            state.routing.node_id_to_peer_id =
                 HashMap::from([(1, "old-a".to_string()), (2, "old-b".to_string())]);
-            state.peer_id_to_node_id =
+            state.routing.peer_id_to_node_id =
                 HashMap::from([("old-a".to_string(), 1), ("old-b".to_string(), 2)]);
-            state.reshare_new_node_id_to_peer_id =
+            state.routing.reshare_new_node_id_to_peer_id =
                 HashMap::from([(1, "new-a".to_string()), (2, "new-b".to_string())]);
-            state.reshare_new_peer_id_to_node_id =
+            state.routing.reshare_new_peer_id_to_node_id =
                 HashMap::from([("new-a".to_string(), 1), ("new-b".to_string(), 2)]);
         })
         .await;
@@ -1609,14 +1691,14 @@ mod tests {
         let snapshot = mgr
             .with_state(&5, |state| {
                 (
-                    state.peer_ids.clone(),
-                    state.peer_node_keys.clone(),
-                    state.ring_id.clone(),
+                    state.routing.peer_ids.clone(),
+                    state.routing.peer_node_keys.clone(),
+                    state.routing.ring_id.clone(),
                     state.pss_interval,
-                    state.node_id_to_peer_id.clone(),
-                    state.peer_id_to_node_id.clone(),
-                    state.reshare_new_node_id_to_peer_id.clone(),
-                    state.reshare_new_peer_id_to_node_id.clone(),
+                    state.routing.node_id_to_peer_id.clone(),
+                    state.routing.peer_id_to_node_id.clone(),
+                    state.routing.reshare_new_node_id_to_peer_id.clone(),
+                    state.routing.reshare_new_peer_id_to_node_id.clone(),
                 )
             })
             .await

@@ -12,8 +12,8 @@ use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::session_not_found;
 use crate::dkg::v0::messages::DkgMessage;
 use crate::dkg::v0::session_state::{PendingRefreshHealthCheckResult, RefreshHealthCheckCandidate};
-use crate::helpers::helpers::RingConfig;
-use crate::metrics;
+use crate::helpers::identity::is_self_peer_id;
+use crate::helpers::ring::RingConfig;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::helpers::{
@@ -182,7 +182,7 @@ where
     D: CoordinatorDkg,
 {
     for peer_id in peer_ids {
-        if crate::helpers::helpers::is_self_peer_id(&coord.app_state.network, peer_id) {
+        if is_self_peer_id(&coord.app_state.network, peer_id) {
             continue;
         }
 
@@ -459,9 +459,11 @@ where
         .dkg_session_state
         .unmark_ring_pss(&candidate.ring_key)
         .await;
-    coord.remove_session(session_id).await;
-    metrics::record_dkg_session_completed();
-    metrics::record_refresh_session_completed();
+    coord
+        .app_state
+        .dkg_session_state
+        .complete_session(&session_id)
+        .await;
 
     tracing::info!(
         session_id = session_id,
@@ -487,7 +489,6 @@ where
         .unmark_ring_pss(ring_key)
         .await;
     coord.remove_session(session_id).await;
-    metrics::record_refresh_session_failed();
 
     tracing::warn!(
         session_id = session_id,
