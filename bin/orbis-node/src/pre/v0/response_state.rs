@@ -128,7 +128,8 @@ mod tests {
         let expected = vec![PEER_A.to_string(), PEER_B.to_string()];
 
         assert_eq!(
-            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
             ResponseInitOutcome::Created
         );
 
@@ -147,7 +148,8 @@ mod tests {
         let expected = vec![PEER_A.to_string(), PEER_B.to_string()];
 
         assert_eq!(
-            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
             ResponseInitOutcome::Created
         );
 
@@ -170,7 +172,8 @@ mod tests {
         let expected = vec![PEER_A.to_string(), PEER_B.to_string()];
 
         assert_eq!(
-            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
             ResponseInitOutcome::Created
         );
 
@@ -194,7 +197,8 @@ mod tests {
         let expected = vec![PEER_A.to_string()];
 
         assert_eq!(
-            mgr.init_response_for_version(0, "req-take".into(), &expected).await,
+            mgr.init_response_for_version(0, "req-take".into(), &expected)
+                .await,
             ResponseInitOutcome::Created
         );
         mgr.store_response_for_version(
@@ -223,7 +227,8 @@ mod tests {
         let expected = vec![PEER_A.to_string(), PEER_B.to_string()];
 
         assert_eq!(
-            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
             ResponseInitOutcome::Created
         );
 
@@ -252,7 +257,8 @@ mod tests {
         ];
 
         assert_eq!(
-            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
             ResponseInitOutcome::Created
         );
 
@@ -276,7 +282,8 @@ mod tests {
         let expected = vec![PEER_A.to_string()];
 
         assert_eq!(
-            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
             ResponseInitOutcome::Created
         );
         mgr.store_response_for_version(0, "req-1", dummy_response("req-1", 1), &peer_bytes(PEER_A))
@@ -296,11 +303,13 @@ mod tests {
         let expected = vec![PEER_A.to_string()];
 
         assert_eq!(
-            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
             ResponseInitOutcome::Created
         );
         assert_ne!(
-            mgr.init_response_for_version(0, "req-1".into(), &expected).await,
+            mgr.init_response_for_version(0, "req-1".into(), &expected)
+                .await,
             ResponseInitOutcome::Created,
             "duplicate request_id should be rejected"
         );
@@ -319,8 +328,14 @@ mod tests {
         let e2 = vec![PEER_A.to_string()];
 
         let (r1, r2) = tokio::join!(
-            async move { m1.init_response_for_version(0, "req-race".into(), &e1).await },
-            async move { m2.init_response_for_version(0, "req-race".into(), &e2).await },
+            async move {
+                m1.init_response_for_version(0, "req-race".into(), &e1)
+                    .await
+            },
+            async move {
+                m2.init_response_for_version(0, "req-race".into(), &e2)
+                    .await
+            },
         );
 
         // The write lock serialises both inits; exactly one must win
@@ -371,7 +386,12 @@ mod tests {
             let ok = mgr
                 .init_response_for_version(0, format!("req-{}", i), &[])
                 .await;
-            assert_eq!(ok, ResponseInitOutcome::Created, "init should succeed for slot {}", i);
+            assert_eq!(
+                ok,
+                ResponseInitOutcome::Created,
+                "init should succeed for slot {}",
+                i
+            );
         }
 
         // The next one must be rejected

@@ -374,7 +374,6 @@ impl<D: Dkg> DkgSessionState<D> {
             self.node.threshold()
         }
     }
-
 }
 
 #[cfg(test)]
