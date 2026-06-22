@@ -460,12 +460,14 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
 
     // Clean shutdown of router
     tracing::info!("Shutting down router");
-    node.router
+    let router_shutdown = node
+        .router
         .shutdown()
         .await
-        .map_err(|e| format!("Failed to shutdown router: {}", e))?;
+        .map_err(|e| format!("Failed to shutdown router: {}", e));
     node.app_state.dkg_session_state.shutdown().await;
 
+    router_shutdown?;
     result?;
 
     Ok(())
@@ -494,7 +496,7 @@ fn init_tracing(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             .init();
 
         // Can't use tracing here since it's not initialized until after init()
-        println!("Loki log shipping enabled: {}", loki_url);
+        println!("Loki log shipping enabled");
     } else {
         tracing_subscriber::registry()
             .with(filter)

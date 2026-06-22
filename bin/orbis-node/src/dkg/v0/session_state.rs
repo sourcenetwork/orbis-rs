@@ -528,7 +528,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 }
             };
             let mut states = states.write().await;
-            if let Some(state) = states.remove(&session_id) {
+            if let Some(mut state) = states.remove(&session_id) {
+                if let Some(guard) = state.metrics_guard.take() {
+                    guard.abandon();
+                }
                 // If this was a refresh or reshare session, unblock the ring.
                 if let Some(ring_key) = state.kind.ring_key() {
                     let mut claims = rings_pss.write().await;
@@ -1178,9 +1181,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let ring_key_to_clear = {
             let mut states = self.states.write().await;
             if let Some(mut state) = states.remove(session_id) {
-                if completed {
-                    if let Some(guard) = state.metrics_guard.take() {
+                if let Some(guard) = state.metrics_guard.take() {
+                    if completed {
                         guard.complete();
+                    } else {
+                        guard.abandon();
                     }
                 }
                 tracing::debug!(

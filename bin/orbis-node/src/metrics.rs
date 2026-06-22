@@ -304,8 +304,8 @@ impl RequestMetricsGuard {
         active: Option<&'static Gauge>,
         duration: &'static HistogramVec,
     ) -> Self {
+        total.with_label_values(&["started"]).inc();
         if let Some(active) = active {
-            total.with_label_values(&["started"]).inc();
             active.inc();
         }
         Self {

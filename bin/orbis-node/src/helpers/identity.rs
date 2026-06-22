@@ -76,7 +76,7 @@ pub fn extract_node_part(peer_id: &str) -> String {
 
 pub fn is_self_peer_id(network: &Arc<dyn Network>, peer_id_str: &str) -> bool {
     let our_peer_id_hex = hex::encode(network.local_peer_id().as_bytes());
-    our_peer_id_hex == extract_node_part(peer_id_str)
+    our_peer_id_hex == extract_node_part(peer_id_str).to_lowercase()
 }
 
 pub fn determine_session_node_id(our_peer_id: &str, all_peer_ids: &[String]) -> Option<u32> {
@@ -97,12 +97,12 @@ pub fn determine_ring_node_id_from_peer_id(peer_id: &str, ring: &RingConfig) -> 
     if ring.peer_node_keys.len() != ring.peer_ids.len() {
         return None;
     }
-    let peer_node_part = extract_node_part(peer_id);
+    let peer_node_part = extract_node_part(peer_id).to_lowercase();
     let node_key = ring
         .peer_node_keys
         .iter()
         .zip(ring.peer_ids.iter())
-        .find(|(_, route)| extract_node_part(route) == peer_node_part)
+        .find(|(_, route)| extract_node_part(route).to_lowercase() == peer_node_part)
         .map(|(node_key, _)| node_key.as_str())?;
     determine_session_node_id(node_key, &ring.peer_node_keys)
 }
