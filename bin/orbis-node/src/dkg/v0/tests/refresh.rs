@@ -645,9 +645,8 @@ async fn test_refresh_accepts_external_sender_when_local_node_in_ring() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "ring_pk";
     let local_node_key = app_state.node_key.clone();
@@ -685,9 +684,8 @@ async fn test_refresh_rejected_local_node_not_in_ring() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "ring_pk";
     let other_node_key = "other-node-key".to_string();
@@ -736,9 +734,8 @@ async fn test_refresh_rejected_too_soon() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "ring_pk";
     let local_node_key = app_state.node_key.clone();
@@ -785,9 +782,8 @@ async fn test_refresh_rejected_already_in_progress() {
             .await
             .expect("Failed to initialize dummy bulletin"),
     );
-    let app_state = Arc::new(
-        create_test_app_state_with_bulletin(None, true, dummy_bulletin.clone(), db_name).await,
-    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "ring_pk";
     let local_node_key = app_state.node_key.clone();

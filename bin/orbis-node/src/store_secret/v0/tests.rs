@@ -66,8 +66,7 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         .set_ring(TEST_RING_ID.to_string(), ring_payload)
         .expect("seed ring");
 
-    let app_state =
-        create_test_app_state_with_bulletin(None, true, Arc::new(bulletin), db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, Arc::new(bulletin), db_name).await;
 
     // Write RingIndexEntry so service can resolve the ring from local storage.
     let ring_index = vec![RingIndexEntry {
@@ -396,8 +395,7 @@ async fn test_store_secret_idempotent() {
         .expect("seed ring");
 
     // Create app state with this bulletin
-    let app_state =
-        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
 
     // Write RingIndexEntry so service can resolve the ring.
     let ring_index = vec![RingIndexEntry {

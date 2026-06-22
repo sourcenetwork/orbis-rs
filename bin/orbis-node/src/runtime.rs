@@ -311,7 +311,6 @@ pub(crate) async fn init_node(
 
     // Create shared application state (needed for router)
     let app_state = AppState::<DkgImpl>::new(
-        config.args.addr.clone(),
         config.node_key.clone(),
         config.network.clone(),
         config.local_storage,

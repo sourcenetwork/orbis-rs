@@ -82,12 +82,11 @@ pub type TestKeyPair = JwtSigner;
 /// ```rust
 /// #[tokio::test]
 /// async fn test_my_feature() {
-///     let app_state = create_test_app_state(None).await;
+///     let app_state = create_test_app_state(true, true, "my_test").await;
 ///     // Use app_state in your test...
 /// }
 /// ```
 pub async fn create_test_app_state(
-    bind_address: Option<String>,
     dummy_authz: bool,
     dummy_bulletin: bool,
     db_name: &str,
@@ -98,21 +97,14 @@ pub async fn create_test_app_state(
                 .await
                 .expect("Failed to initialize dummy bulletin"),
         );
-        create_test_app_state_with_bulletin(bind_address, dummy_authz, bulletin, db_name).await
+        create_test_app_state_with_bulletin(dummy_authz, bulletin, db_name).await
     } else {
         let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
             BulletinImpl::new(ChainConfigBuilder::default())
                 .await
                 .expect("Failed to initialize bulletin"),
         );
-        create_test_app_state_with_bulletin_inner(
-            bind_address,
-            dummy_authz,
-            bulletin,
-            None,
-            db_name,
-        )
-        .await
+        create_test_app_state_with_bulletin_inner(dummy_authz, bulletin, None, db_name).await
     }
 }
 
@@ -120,31 +112,21 @@ pub async fn create_test_app_state(
 ///
 /// Use this when you need multiple nodes to share the same bulletin (e.g., in multi-node tests).
 pub async fn create_test_app_state_with_bulletin(
-    bind_address: Option<String>,
     dummy_authz: bool,
     bulletin: Arc<DummyBulletin>,
     db_name: &str,
 ) -> AppState<DkgImpl> {
     let bulletin_trait: Arc<dyn Bulletin + Send + Sync> = bulletin.clone();
-    create_test_app_state_with_bulletin_inner(
-        bind_address,
-        dummy_authz,
-        bulletin_trait,
-        Some(bulletin),
-        db_name,
-    )
-    .await
+    create_test_app_state_with_bulletin_inner(dummy_authz, bulletin_trait, Some(bulletin), db_name)
+        .await
 }
 
 async fn create_test_app_state_with_bulletin_inner(
-    bind_address: Option<String>,
     dummy_authz: bool,
     bulletin: Arc<dyn Bulletin + Send + Sync>,
     dummy_bulletin: Option<Arc<DummyBulletin>>,
     db_name: &str,
 ) -> AppState<DkgImpl> {
-    let bind_address = bind_address.unwrap_or_else(|| "127.0.0.1:0".to_string());
-
     // Initialize network for testing — bind to loopback so iroh advertises
     // 127.0.0.1 and same-machine peers can connect without a relay.
     let network: Arc<dyn network::Network> = Arc::new(
@@ -194,15 +176,7 @@ async fn create_test_app_state_with_bulletin_inner(
         )
     }
 
-    // Create AppState with the network (node_id is no longer needed - it's session-specific)
-    AppState::<DkgImpl>::new(
-        bind_address,
-        node_key,
-        network,
-        local_storage,
-        authz,
-        bulletin,
-    )
+    AppState::<DkgImpl>::new(node_key, network, local_storage, authz, bulletin)
 }
 
 /// Create a test AppState with default values
@@ -219,7 +193,7 @@ async fn create_test_app_state_with_bulletin_inner(
 /// }
 /// ```
 pub async fn create_test_app_state_default(db_name: &str) -> AppState<DkgImpl> {
-    create_test_app_state(None, true, true, db_name).await
+    create_test_app_state(true, true, db_name).await
 }
 
 /// Information about a node in a test network
@@ -373,21 +347,18 @@ pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> Thr
     );
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
     let alice_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
         true,
         dummy_bulletin.clone(),
         &format!("{}_1", db_name),
     )
     .await;
     let bob_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
         true,
         dummy_bulletin.clone(),
         &format!("{}_2", db_name),
     )
     .await;
     let charlie_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
         true,
         dummy_bulletin.clone(),
         &format!("{}_3", db_name),
@@ -574,7 +545,6 @@ pub async fn setup_three_node_network_with_pre(
 
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
     let alice_state = create_test_app_state_with_bulletin_inner(
-        Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
         dummy_bulletin_arc.clone(),
@@ -582,7 +552,6 @@ pub async fn setup_three_node_network_with_pre(
     )
     .await;
     let bob_state = create_test_app_state_with_bulletin_inner(
-        Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
         dummy_bulletin_arc.clone(),
@@ -590,7 +559,6 @@ pub async fn setup_three_node_network_with_pre(
     )
     .await;
     let charlie_state = create_test_app_state_with_bulletin_inner(
-        Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin,
         dummy_bulletin_arc.clone(),
@@ -775,7 +743,6 @@ pub async fn setup_three_node_network_with_sign(
 
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
     let alice_state = create_test_app_state_with_bulletin_inner(
-        Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
         dummy_bulletin_arc.clone(),
@@ -783,7 +750,6 @@ pub async fn setup_three_node_network_with_sign(
     )
     .await;
     let bob_state = create_test_app_state_with_bulletin_inner(
-        Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin.clone(),
         dummy_bulletin_arc.clone(),
@@ -791,7 +757,6 @@ pub async fn setup_three_node_network_with_sign(
     )
     .await;
     let charlie_state = create_test_app_state_with_bulletin_inner(
-        Some("127.0.0.1:0".to_string()),
         dummy_authz,
         shared_bulletin,
         dummy_bulletin_arc.clone(),

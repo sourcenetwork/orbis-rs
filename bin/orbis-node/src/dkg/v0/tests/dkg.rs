@@ -130,8 +130,7 @@ async fn test_start_dkg_ring_not_found() {
     let db_path = test_db_path(db_name);
 
     // DummyBulletin has NodeInfo for this node but no ring seeded.
-    let app_state =
-        create_test_app_state(Some("127.0.0.1:0".to_string()), true, true, db_name).await;
+    let app_state = create_test_app_state(true, true, db_name).await;
     let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     let test_keys = TestKeyPair::new();
@@ -212,7 +211,7 @@ async fn test_start_dkg_fails_on_connection_failure() {
         )
         .expect("seed NodeInfo for unreachable peer");
 
-    let app_state = create_test_app_state_with_bulletin(None, true, bulletin, db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin, db_name).await;
     let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
 
     let test_keys = TestKeyPair::new();
@@ -656,7 +655,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
         )
         .expect("seed ring");
 
-    let app_state = create_test_app_state_with_bulletin(None, true, bulletin, db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin, db_name).await;
     let coordinator = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
 
     let test_keys = TestKeyPair::new();
@@ -776,8 +775,7 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
     let db_path = test_db_path(db_name);
 
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state =
-        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
     let node_key = app_state.node_key.clone();
     let local_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let denied_node_info = NodeInfo {
@@ -845,8 +843,7 @@ async fn test_fresh_session_init_publishes_complete_state() {
     let db_path = test_db_path(db_name);
 
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state =
-        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
     let node_key = app_state.node_key.clone();
     let local_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let session_id = 222_333u128;
@@ -927,8 +924,7 @@ async fn test_start_dkg_rejects_self_participant_nodeinfo_deny() {
     let db_path = test_db_path(db_name);
 
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state =
-        create_test_app_state_with_bulletin(None, true, bulletin.clone(), db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
     let node_key = app_state.node_key.clone();
     let local_peer_id_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
     let denied_node_info = NodeInfo {

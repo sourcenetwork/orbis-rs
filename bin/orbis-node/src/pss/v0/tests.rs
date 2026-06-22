@@ -31,13 +31,7 @@ async fn make_state_with_ring(
 ) -> (crate::app_state::AppState<DkgImpl>, RingIndexEntry, String) {
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
     let db_path = test_db_path(db_name);
-    let app_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
-        true,
-        bulletin.clone(),
-        db_name,
-    )
-    .await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
 
     let post_id = format!("test-pss-ring-{}", ring_payload.ring_pk);
     bulletin
@@ -70,13 +64,7 @@ async fn test_scheduler_zero_interval_is_noop() {
     let db_path = test_db_path(db_name);
 
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
-        true,
-        bulletin,
-        db_name,
-    )
-    .await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin, db_name).await;
 
     let state = Arc::new(app_state);
     // Should return immediately without spawning
@@ -100,13 +88,7 @@ async fn scheduler_shutdown_interrupts_waiting_tick() {
     let db_name = "pss_scheduler_shutdown";
     let db_path = test_db_path(db_name);
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
-        true,
-        bulletin,
-        db_name,
-    )
-    .await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin, db_name).await;
 
     let handle = super::spawn_pss_scheduler(Arc::new(app_state), Duration::from_secs(60))
         .expect("scheduler should start");
@@ -125,13 +107,7 @@ async fn test_refresh_all_rings_empty_index() {
     let db_path = test_db_path(db_name);
 
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
-        true,
-        bulletin,
-        db_name,
-    )
-    .await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin, db_name).await;
 
     // Local storage has no RingIndex entry
     let result = super::pss_all_rings(&Arc::new(app_state)).await;
@@ -148,13 +124,7 @@ async fn test_refresh_all_rings_rejects_corrupt_index() {
     let db_path = test_db_path(db_name);
 
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
-        true,
-        bulletin,
-        db_name,
-    )
-    .await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin, db_name).await;
 
     app_state
         .local_storage
@@ -183,13 +153,7 @@ async fn test_refresh_all_rings_bulletin_miss_does_not_propagate() {
     let db_path = test_db_path(db_name);
 
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
-        true,
-        bulletin,
-        db_name,
-    )
-    .await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin, db_name).await;
 
     // Seed ring index with a nonexistent ring
     let ring_index = vec![RingIndexEntry {
@@ -324,13 +288,7 @@ async fn test_refresh_ring_bad_bulletin_payload() {
     let db_path = test_db_path(db_name);
 
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
-        true,
-        bulletin.clone(),
-        db_name,
-    )
-    .await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
 
     // Post garbage bytes to the bulletin so deserialization of RingPayload fails.
     let garbage = b"not valid json".to_vec();
@@ -728,13 +686,7 @@ async fn make_initiator_state(
 ) {
     let db_path = test_db_path(db_name);
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
-        true,
-        bulletin.clone(),
-        db_name,
-    )
-    .await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
     let peer_id = hex::encode(app_state.network.local_peer_id().as_bytes());
     let node_key = app_state.node_key.clone();
     bulletin
@@ -993,13 +945,7 @@ async fn test_refresh_ring_missing_from_bulletin_reconciles_local_index() {
     let db_path = test_db_path(db_name);
 
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state = create_test_app_state_with_bulletin(
-        Some("127.0.0.1:0".to_string()),
-        true,
-        bulletin,
-        db_name,
-    )
-    .await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin, db_name).await;
 
     let entry = RingIndexEntry {
         ring_pk_str: "ghost_ring".to_string(),

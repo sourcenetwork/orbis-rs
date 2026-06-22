@@ -663,12 +663,6 @@ async fn test_init_node_app_state_configuration() {
 
     let node = init_node(config).await.expect("Node initialization failed");
 
-    // Verify AppState configuration
-    assert_eq!(
-        node.app_state.config.bind_address, "127.0.0.1:0",
-        "Bind address should match"
-    );
-
     // Verify no sessions exist initially
     assert_eq!(
         node.app_state.dkg_session_state.session_count().await,

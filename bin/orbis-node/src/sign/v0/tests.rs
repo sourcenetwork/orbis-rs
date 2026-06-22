@@ -1567,7 +1567,7 @@ async fn test_sign_policy_check_policy_access_expired_valid_window() {
 #[tokio::test]
 async fn test_sign_service_rejects_oversized_message() {
     let db_name = "test_sign_service_rejects_oversized_message";
-    let app_state = create_test_app_state(None, true, true, db_name).await;
+    let app_state = create_test_app_state(true, true, db_name).await;
     let service = SignServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
 
     let oversized_message = vec![0u8; MAX_SIGN_MESSAGE_BYTES + 1];
@@ -1604,7 +1604,7 @@ async fn test_sign_service_rejects_oversized_message() {
 async fn test_failed_round_two_consumes_nonce_state() {
     let db_name = "test_failed_round_two_consumes_nonce_state";
     let db_path = test_db_path(db_name);
-    let app_state = create_test_app_state(None, true, true, db_name).await;
+    let app_state = create_test_app_state(true, true, db_name).await;
     let sender_peer_id = app_state.network.local_peer_id().clone();
     let request_id = "failed-round-two";
     let nonce_key = format!("nonce-{request_id}");
