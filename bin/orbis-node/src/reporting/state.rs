@@ -1,4 +1,6 @@
 use crate::reporting::error::{ReportingError, Result};
+use crate::reporting::registry::ReportRegistry;
+use crate::reporting::sink::{LogOnlyReportSink, ReportSink};
 use crate::reporting::types::InFlightReportKey;
 use std::collections::HashSet;
 use std::future::Future;
@@ -9,13 +11,29 @@ use tokio::task::JoinHandle;
 const MAX_IN_FLIGHT_REPORTS: usize = 128;
 
 pub struct ReportingState {
+    pub registry: Arc<ReportRegistry>,
+    pub sink: Arc<dyn ReportSink>,
     in_flight: Mutex<HashSet<InFlightReportKey>>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl ReportingState {
     pub fn new() -> Self {
+        Self::with_parts(
+            Arc::new(ReportRegistry::with_defaults()),
+            Arc::new(LogOnlyReportSink),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn with_sink(sink: Arc<dyn ReportSink>) -> Self {
+        Self::with_parts(Arc::new(ReportRegistry::with_defaults()), sink)
+    }
+
+    pub fn with_parts(registry: Arc<ReportRegistry>, sink: Arc<dyn ReportSink>) -> Self {
         Self {
+            registry,
+            sink,
             in_flight: Mutex::new(HashSet::new()),
             tasks: Mutex::new(Vec::new()),
         }

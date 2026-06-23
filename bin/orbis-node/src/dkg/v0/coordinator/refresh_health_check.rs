@@ -14,7 +14,7 @@ use crate::dkg::v0::messages::DkgMessage;
 use crate::dkg::v0::session_state::{PendingRefreshHealthCheckResult, RefreshHealthCheckCandidate};
 use crate::helpers::identity::is_self_peer_id;
 use crate::helpers::ring::RingConfig;
-use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
+use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::helpers::{
     refresh_health_check_message, refresh_health_check_peer_node_keys_sha256,
@@ -121,6 +121,7 @@ where
                 ring_config.clone(),
                 message_to_sign.clone(),
                 sign_context.clone(),
+                SigningOptions::default(),
             )
         },
     )

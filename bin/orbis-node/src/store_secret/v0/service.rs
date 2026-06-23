@@ -5,7 +5,7 @@ use crate::helpers::protocol_version::read_ring_for_route;
 use crate::helpers::ring::RingConfig;
 use crate::metrics;
 use crate::ring_state::RingPolyState;
-use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
+use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::messages::SignContext;
 use crate::store_secret::v0::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
@@ -220,6 +220,7 @@ where
                     SignContext::Bulletin {
                         object_id: object_id.clone(),
                     },
+                    SigningOptions::default(),
                 )
                 .await
                 .map_err(|e| StoreSecretError::Signing(format!("Signing failed: {}", e)))?;

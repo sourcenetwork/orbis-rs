@@ -1,6 +1,7 @@
 use super::error::Result;
 use super::queue_offline_observation;
 use super::sink::ReportSink;
+use super::state::ReportingState;
 use super::types::{OfflineFailureStage, OfflineObservation, SignedReport};
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::helpers::node_routes::resolve_node_routes;
@@ -61,7 +62,7 @@ async fn threshold_signs_offline_report_without_accused_node() {
 
     let (ring, ring_id) = wait_for_finalized_ring(&network).await;
     let sink = Arc::new(MemoryReportSink::default());
-    network.alice.app_state.report_sink = sink.clone();
+    network.alice.app_state.reporting_state = Arc::new(ReportingState::with_sink(sink.clone()));
     if let Some(router) = network.charlie.router.take() {
         router.shutdown().await.unwrap();
     }

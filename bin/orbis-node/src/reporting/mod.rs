@@ -139,7 +139,8 @@ where
 
     let now = current_unix_time()?;
     app_state
-        .report_registry
+        .reporting_state
+        .registry
         .validate(
             &envelope,
             &ReportValidationContext {
@@ -183,7 +184,7 @@ where
     let options = SigningOptions { excluded_node_keys };
     let coordinator = SignCoordinator::<D, SignImpl>::with_routes(app_state.clone(), routes);
     let response = coordinator
-        .initiate_signing_with_options(
+        .initiate_signing(
             format!("report-{report_id}"),
             ring_config,
             message,
@@ -198,7 +199,8 @@ where
         .map_err(|error| ReportingError::Serialization(error.to_string()))?;
 
     app_state
-        .report_sink
+        .reporting_state
+        .sink
         .submit(SignedReport {
             report: envelope,
             report_id,
@@ -221,7 +223,8 @@ where
     let now = current_unix_time()?;
     let canonical = context.envelope.canonical_bytes();
     app_state
-        .report_registry
+        .reporting_state
+        .registry
         .validate(
             &context.envelope,
             &ReportValidationContext {

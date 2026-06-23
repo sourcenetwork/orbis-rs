@@ -43,23 +43,6 @@ where
         ring: RingConfig,
         message: Vec<u8>,
         context: SignContext,
-    ) -> Result<Vec<u8>> {
-        self.initiate_signing_with_options(
-            request_id,
-            ring,
-            message,
-            context,
-            SigningOptions::default(),
-        )
-        .await
-    }
-
-    pub async fn initiate_signing_with_options(
-        &self,
-        request_id: String,
-        ring: RingConfig,
-        message: Vec<u8>,
-        context: SignContext,
         options: SigningOptions,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
