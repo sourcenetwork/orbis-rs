@@ -1,8 +1,8 @@
 use super::error::Result;
-use super::queue_offline_observation;
+use super::queue_report;
 use super::sink::ReportSink;
 use super::state::ReportingState;
-use super::types::{OfflineFailureStage, OfflineObservation, SignedReport};
+use super::types::{OfflineFailureStage, OfflineObservation, ReportObservation, SignedReport};
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::helpers::node_routes::resolve_node_routes;
 use crate::helpers::test_helpers::{
@@ -92,11 +92,13 @@ async fn threshold_signs_offline_report_without_accused_node() {
     };
 
     let app_state = Arc::new(network.alice.app_state.clone());
-    assert!(
-        queue_offline_observation(app_state.clone(), &network::V0, observation)
-            .await
-            .unwrap()
-    );
+    assert!(queue_report(
+        app_state.clone(),
+        &network::V0,
+        ReportObservation::NodeOffline(observation),
+    )
+    .await
+    .unwrap());
     app_state.reporting_state.shutdown().await;
 
     let reports = sink.reports.lock().await;

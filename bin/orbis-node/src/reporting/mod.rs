@@ -7,29 +7,23 @@ pub mod state;
 pub mod types;
 
 use crate::app_state::AppState;
-use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
-use crate::helpers::ring::RingConfig;
 use crate::reporting::error::{ReportingError, Result};
-use crate::reporting::registry::{ReportValidationContext, ReportValidationMode};
-use crate::reporting::types::{
-    ring_state_sha256, InFlightReportKey, NodeOfflineV1, OfflineObservation, ReportEnvelope,
-    ReportSigningContext, SignedReport, NODE_OFFLINE_REPORT_TYPE, NODE_OFFLINE_REPORT_VERSION,
-    REPORT_DOMAIN, REPORT_FRAMEWORK_VERSION, REPORT_TTL_SECS,
+use crate::reporting::registry::{
+    PreparedReport, ReportPreparationContext, ReportValidationContext, ReportValidationMode,
 };
-use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
+use crate::reporting::types::{ReportObservation, ReportSigningContext, SignedReport};
+use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::v0::messages::SignContext;
-use bulletin::r#trait::{BulletinKind, RingPayload};
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crypto::{
     GroupAffine, ScalarField, SigShareInner, SignImpl, SignaturePoint, THRESHOLD_SIGNATURE_SCHEME,
 };
-use std::collections::HashSet;
 use std::sync::Arc;
 
-pub async fn queue_offline_observation<D>(
+pub async fn queue_report<D>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
-    observation: OfflineObservation,
+    observation: ReportObservation,
 ) -> Result<bool>
 where
     D: Dkg<
@@ -52,39 +46,40 @@ where
         + Sync
         + 'static,
 {
-    let key = InFlightReportKey {
-        report_type: NODE_OFFLINE_REPORT_TYPE,
-        ring_id: observation.ring_id.clone(),
-        accused_node_key: observation.accused_node_key.clone(),
-    };
+    let report_type = observation.report_type();
+    let handler = app_state
+        .reporting_state
+        .registry
+        .handler_for_observation(&observation)?;
+    let key = handler.in_flight_key(&observation)?;
     let state = Arc::clone(&app_state.reporting_state);
     let outcome = state
         .spawn(key, async move {
-            if let Err(error) = create_offline_report(app_state, routes, observation).await {
+            if let Err(error) =
+                create_report(app_state, routes, observation, Arc::clone(&handler)).await
+            {
                 crate::metrics::REPORT_ATTEMPTS_TOTAL
-                    .with_label_values(&[NODE_OFFLINE_REPORT_TYPE, "failed"])
+                    .with_label_values(&[report_type, "failed"])
                     .inc();
                 tracing::warn!(error = %error, "Offline report attempt did not complete");
             } else {
                 crate::metrics::REPORT_ATTEMPTS_TOTAL
-                    .with_label_values(&[NODE_OFFLINE_REPORT_TYPE, "signed"])
+                    .with_label_values(&[report_type, "signed"])
                     .inc();
             }
         })
         .await?;
     crate::metrics::REPORT_ATTEMPTS_TOTAL
-        .with_label_values(&[
-            NODE_OFFLINE_REPORT_TYPE,
-            if outcome { "queued" } else { "duplicate" },
-        ])
+        .with_label_values(&[report_type, if outcome { "queued" } else { "duplicate" }])
         .inc();
     Ok(outcome)
 }
 
-async fn create_offline_report<D>(
+async fn create_report<D>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
-    observation: OfflineObservation,
+    observation: ReportObservation,
+    handler: Arc<dyn crate::reporting::registry::ReportHandler>,
 ) -> Result<()>
 where
     D: Dkg<
@@ -107,42 +102,23 @@ where
         + Sync
         + 'static,
 {
-    let ring_post = app_state
-        .bulletin
-        .read(observation.ring_id.clone(), BulletinKind::Ring)
-        .await
-        .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
-    let ring = RingPayload::try_from(ring_post)
-        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
-
-    let payload = NodeOfflineV1 {
-        origin_protocol: observation.origin_protocol,
-        origin_protocol_version: observation.origin_protocol_version,
-        failure_stage: observation.failure_stage,
-    };
-    let envelope = ReportEnvelope {
-        domain: REPORT_DOMAIN.to_string(),
-        framework_version: REPORT_FRAMEWORK_VERSION,
-        report_type: NODE_OFFLINE_REPORT_TYPE.to_string(),
-        report_version: NODE_OFFLINE_REPORT_VERSION,
-        chain_id: app_state.bulletin.chain_id(),
-        ring_id: observation.ring_id.clone(),
-        ring_pk: ring.ring_pk.clone(),
-        ring_state_sha256: ring_state_sha256(&ring),
-        reporter_node_key: app_state.node_key.clone(),
-        accused_node_key: observation.accused_node_key.clone(),
-        accused_peer_id: observation.accused_peer_id,
-        observed_at: observation.observed_at,
-        expires_at: observation.observed_at.saturating_add(REPORT_TTL_SECS),
-        payload: payload.canonical_bytes(),
-    };
+    let prepared = handler
+        .prepare(
+            observation,
+            &ReportPreparationContext {
+                reporter_node_key: app_state.node_key.clone(),
+                bulletin: Arc::clone(&app_state.bulletin),
+                local_storage: app_state.local_storage.clone(),
+            },
+        )
+        .await?;
 
     let now = current_unix_time()?;
     app_state
         .reporting_state
         .registry
         .validate(
-            &envelope,
+            &prepared.envelope,
             &ReportValidationContext {
                 local_node_key: app_state.node_key.clone(),
                 requester_peer_id: None,
@@ -156,42 +132,47 @@ where
         )
         .await?;
 
-    let node_routes = resolve_node_routes(&app_state.bulletin, &ring.peer_node_keys)
-        .await
-        .map_err(ReportingError::InvalidReport)?;
-    let peer_ids = peer_ids_from_routes(&node_routes);
-    let ring_pk_bytes = hex::decode(&ring.ring_pk)
-        .map_err(|error| ReportingError::Serialization(error.to_string()))?;
-    let poly_state = crate::ring_state::RingPolyState::load_from_ring_pk_hex(
-        &app_state.local_storage,
-        &ring.ring_pk,
-    )
-    .map_err(ReportingError::InvalidReport)?;
-    let ring_config = RingConfig {
-        ring_id: observation.ring_id,
-        ring_pk_bytes,
-        peer_ids,
-        peer_node_keys: ring.peer_node_keys,
-        threshold: ring.threshold as usize,
-        total_participants: node_routes.len(),
-        public_polynomial_hex: poly_state.public_polynomial,
-    };
+    sign_and_submit_report(app_state, routes, prepared).await
+}
 
-    let report_id = envelope.report_id();
-    let message = envelope.canonical_bytes();
-    let mut excluded_node_keys = HashSet::new();
-    excluded_node_keys.insert(envelope.accused_node_key.clone());
-    let options = SigningOptions { excluded_node_keys };
+async fn sign_and_submit_report<D>(
+    app_state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    prepared: PreparedReport,
+) -> Result<()>
+where
+    D: Dkg<
+            ShareValue = ScalarField,
+            PublicKey = GroupAffine,
+            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
+            PubPoly = crypto::PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+    SignImpl: ThresholdSigner<
+            ShareValue = ScalarField,
+            PublicKey = GroupAffine,
+            DistKeyShare = DistKeyShare<ScalarField>,
+            PubPoly = D::PubPoly,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
+        > + Send
+        + Sync
+        + 'static,
+{
+    let report_id = prepared.envelope.report_id();
+    let message = prepared.envelope.canonical_bytes();
     let coordinator = SignCoordinator::<D, SignImpl>::with_routes(app_state.clone(), routes);
     let response = coordinator
         .initiate_signing(
             format!("report-{report_id}"),
-            ring_config,
+            prepared.ring_config,
             message,
             SignContext::Report(Box::new(ReportSigningContext {
-                envelope: envelope.clone(),
+                envelope: prepared.envelope.clone(),
             })),
-            options,
+            prepared.signing_options,
         )
         .await
         .map_err(|error| ReportingError::Signing(error.to_string()))?;
@@ -202,7 +183,7 @@ where
         .reporting_state
         .sink
         .submit(SignedReport {
-            report: envelope,
+            report: prepared.envelope,
             report_id,
             signature_scheme: THRESHOLD_SIGNATURE_SCHEME.to_string(),
             signature: sign_response.signature,

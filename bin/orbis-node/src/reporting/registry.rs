@@ -1,15 +1,22 @@
 use crate::app_state::PeerConnectionPool;
 use crate::helpers::identity::extract_node_part;
+use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
+use crate::helpers::ring::RingConfig;
 use crate::reporting::error::{ReportingError, Result};
 use crate::reporting::health::require_peer_offline;
 use crate::reporting::types::{
-    ring_state_sha256, NodeOfflineV1, ReportEnvelope, NODE_OFFLINE_REPORT_TYPE,
-    NODE_OFFLINE_REPORT_VERSION,
+    ring_state_sha256, InFlightReportKey, NodeOfflineV1, OfflineObservation, ReportEnvelope,
+    ReportObservation, NODE_OFFLINE_REPORT_TYPE, NODE_OFFLINE_REPORT_VERSION, REPORT_DOMAIN,
+    REPORT_FRAMEWORK_VERSION, REPORT_TTL_SECS,
 };
+use crate::ring_state::RingPolyState;
+use crate::sign::v0::coordinator::SigningOptions;
 use async_trait::async_trait;
 use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo, RingPayload};
+use local_storage::LocalStorageImpl;
 use network::{Network, PeerId};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,10 +36,28 @@ pub struct ReportValidationContext {
     pub mode: ReportValidationMode,
 }
 
+pub struct ReportPreparationContext {
+    pub reporter_node_key: String,
+    pub bulletin: Arc<dyn Bulletin + Send + Sync>,
+    pub local_storage: LocalStorageImpl,
+}
+
+pub struct PreparedReport {
+    pub envelope: ReportEnvelope,
+    pub ring_config: RingConfig,
+    pub signing_options: SigningOptions,
+}
+
 #[async_trait]
 pub trait ReportHandler: Send + Sync {
     fn report_type(&self) -> &'static str;
     fn report_version(&self) -> u16;
+    fn in_flight_key(&self, observation: &ReportObservation) -> Result<InFlightReportKey>;
+    async fn prepare(
+        &self,
+        observation: ReportObservation,
+        context: &ReportPreparationContext,
+    ) -> Result<PreparedReport>;
     async fn validate(
         &self,
         envelope: &ReportEnvelope,
@@ -70,6 +95,22 @@ impl ReportRegistry {
         handler.validate(envelope, context).await
     }
 
+    pub fn handler_for_observation(
+        &self,
+        observation: &ReportObservation,
+    ) -> Result<Arc<dyn ReportHandler>> {
+        self.handlers
+            .get(&(
+                observation.report_type().to_string(),
+                observation.report_version(),
+            ))
+            .cloned()
+            .ok_or_else(|| ReportingError::UnsupportedReportType {
+                name: observation.report_type().to_string(),
+                version: observation.report_version(),
+            })
+    }
+
     fn handler_for(&self, report_type: &str, report_version: u16) -> Result<&dyn ReportHandler> {
         self.handlers
             .get(&(report_type.to_string(), report_version))
@@ -97,6 +138,65 @@ impl ReportHandler for NodeOfflineHandler {
 
     fn report_version(&self) -> u16 {
         NODE_OFFLINE_REPORT_VERSION
+    }
+
+    fn in_flight_key(&self, observation: &ReportObservation) -> Result<InFlightReportKey> {
+        let observation = Self::node_offline_observation(observation)?;
+        Ok(InFlightReportKey {
+            report_type: self.report_type(),
+            ring_id: observation.ring_id.clone(),
+            subject_key: observation.accused_node_key.clone(),
+        })
+    }
+
+    async fn prepare(
+        &self,
+        observation: ReportObservation,
+        context: &ReportPreparationContext,
+    ) -> Result<PreparedReport> {
+        let observation = match observation {
+            ReportObservation::NodeOffline(observation) => observation,
+        };
+
+        let ring_post = context
+            .bulletin
+            .read(observation.ring_id.clone(), BulletinKind::Ring)
+            .await
+            .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
+        let ring = RingPayload::try_from(ring_post)
+            .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+
+        let envelope = self.build_envelope(
+            &observation,
+            &ring,
+            &context.reporter_node_key,
+            context.bulletin.chain_id(),
+        );
+
+        let node_routes = resolve_node_routes(&context.bulletin, &ring.peer_node_keys)
+            .await
+            .map_err(ReportingError::InvalidReport)?;
+        let peer_ids = peer_ids_from_routes(&node_routes);
+        let ring_pk_bytes = hex::decode(&ring.ring_pk)
+            .map_err(|error| ReportingError::Serialization(error.to_string()))?;
+        let poly_state =
+            RingPolyState::load_from_ring_pk_hex(&context.local_storage, &ring.ring_pk)
+                .map_err(ReportingError::InvalidReport)?;
+        let ring_config = RingConfig {
+            ring_id: observation.ring_id,
+            ring_pk_bytes,
+            peer_ids,
+            peer_node_keys: ring.peer_node_keys,
+            threshold: ring.threshold as usize,
+            total_participants: node_routes.len(),
+            public_polynomial_hex: poly_state.public_polynomial,
+        };
+
+        Ok(PreparedReport {
+            signing_options: self.signing_options(&envelope),
+            envelope,
+            ring_config,
+        })
     }
 
     async fn validate(
@@ -168,6 +268,50 @@ impl ReportHandler for NodeOfflineHandler {
         }
 
         Ok(())
+    }
+}
+
+impl NodeOfflineHandler {
+    fn node_offline_observation(observation: &ReportObservation) -> Result<&OfflineObservation> {
+        match observation {
+            ReportObservation::NodeOffline(observation) => Ok(observation),
+        }
+    }
+
+    fn build_envelope(
+        &self,
+        observation: &OfflineObservation,
+        ring: &RingPayload,
+        reporter_node_key: &str,
+        chain_id: String,
+    ) -> ReportEnvelope {
+        let payload = NodeOfflineV1 {
+            origin_protocol: observation.origin_protocol.clone(),
+            origin_protocol_version: observation.origin_protocol_version,
+            failure_stage: observation.failure_stage,
+        };
+        ReportEnvelope {
+            domain: REPORT_DOMAIN.to_string(),
+            framework_version: REPORT_FRAMEWORK_VERSION,
+            report_type: self.report_type().to_string(),
+            report_version: self.report_version(),
+            chain_id,
+            ring_id: observation.ring_id.clone(),
+            ring_pk: ring.ring_pk.clone(),
+            ring_state_sha256: ring_state_sha256(ring),
+            reporter_node_key: reporter_node_key.to_string(),
+            accused_node_key: observation.accused_node_key.clone(),
+            accused_peer_id: observation.accused_peer_id.clone(),
+            observed_at: observation.observed_at,
+            expires_at: observation.observed_at.saturating_add(REPORT_TTL_SECS),
+            payload: payload.canonical_bytes(),
+        }
+    }
+
+    fn signing_options(&self, envelope: &ReportEnvelope) -> SigningOptions {
+        let mut excluded_node_keys = HashSet::new();
+        excluded_node_keys.insert(envelope.accused_node_key.clone());
+        SigningOptions { excluded_node_keys }
     }
 }
 
@@ -253,8 +397,8 @@ async fn read_node_info(
 mod tests {
     use super::*;
     use crate::reporting::types::{
-        NodeOfflineV1, OfflineFailureStage, REPORT_DOMAIN, REPORT_FRAMEWORK_VERSION,
-        REPORT_TTL_SECS,
+        NodeOfflineV1, OfflineFailureStage, OfflineObservation, ReportObservation, REPORT_DOMAIN,
+        REPORT_FRAMEWORK_VERSION, REPORT_TTL_SECS,
     };
     use bulletin::r#trait::UpgradeInfo;
 
@@ -298,6 +442,49 @@ mod tests {
             }
             .canonical_bytes(),
         }
+    }
+
+    fn offline_observation() -> OfflineObservation {
+        OfflineObservation {
+            ring_id: "ring".to_string(),
+            accused_node_key: "accused".to_string(),
+            accused_peer_id: "aa".repeat(32),
+            origin_protocol: "pre".to_string(),
+            origin_protocol_version: 0,
+            failure_stage: OfflineFailureStage::OpenStream,
+            observed_at: 100,
+        }
+    }
+
+    #[test]
+    fn routes_node_offline_observation_to_handler() {
+        let registry = ReportRegistry::with_defaults();
+        let handler = registry
+            .handler_for_observation(&ReportObservation::NodeOffline(offline_observation()))
+            .unwrap();
+        assert_eq!(handler.report_type(), NODE_OFFLINE_REPORT_TYPE);
+        assert_eq!(handler.report_version(), NODE_OFFLINE_REPORT_VERSION);
+    }
+
+    #[test]
+    fn node_offline_handler_builds_envelope_key_and_signing_options() {
+        let ring = ring_fixture(2);
+        let observation = offline_observation();
+        let handler = NodeOfflineHandler;
+        let report_observation = ReportObservation::NodeOffline(observation.clone());
+
+        let key = handler.in_flight_key(&report_observation).unwrap();
+        assert_eq!(key.report_type, NODE_OFFLINE_REPORT_TYPE);
+        assert_eq!(key.ring_id, "ring");
+        assert_eq!(key.subject_key, "accused");
+
+        let built = handler.build_envelope(&observation, &ring, "reporter", "chain".to_string());
+        assert_eq!(built, envelope(&ring));
+        assert_eq!(built.report_id(), envelope(&ring).report_id());
+
+        let options = handler.signing_options(&built);
+        assert!(options.excluded_node_keys.contains("accused"));
+        assert!(!options.excluded_node_keys.contains("reporter"));
     }
 
     #[test]

@@ -15,44 +15,47 @@ offline.
 ```mermaid
 flowchart TD
     A["Protocol observes a qualifying failure"] --> B["Create normalized observation"]
-    B --> C["Reporting state deduplicates in-flight work"]
-    C --> D["Reread authoritative ring and NodeInfo from bulletin"]
-    D --> E["Build canonical ReportEnvelope"]
-    E --> F["Reporter validates local authority"]
-    F --> G["Start threshold-signing with accused node excluded"]
-    G --> H["Independent signers validate report"]
-    H --> I["Independent signers probe accused node over health ALPN"]
-    I --> J{"Any health probe succeeds?"}
-    J -- "yes" --> K["Reject report"]
-    J -- "no" --> L["Return signature share"]
-    L --> M["Recover threshold signature"]
-    M --> N["Emit SignedReport to ReportSink"]
-    N --> O["V1: log complete artifact; future: submit to SourceHub"]
+    B --> C["Call queue_report(ReportObservation)"]
+    C --> D["Registry routes to report handler"]
+    D --> E["Reporting state deduplicates in-flight work"]
+    E --> F["Handler rereads authoritative ring and NodeInfo"]
+    F --> G["Handler builds PreparedReport"]
+    G --> H["Reporter validates local authority"]
+    H --> I["Generic orchestrator threshold-signs envelope"]
+    I --> J["Independent signers validate report"]
+    J --> K["Independent signers probe accused node over health ALPN"]
+    K --> L{"Any health probe succeeds?"}
+    L -- "yes" --> M["Reject report"]
+    L -- "no" --> N["Return signature share"]
+    N --> O["Recover threshold signature"]
+    O --> P["Emit SignedReport to ReportSink"]
+    P --> Q["V1: log complete artifact; future: submit to SourceHub"]
 ```
 
 ## `node_offline` flow
 
 1. PRE sends requests normally and continues with reachable peers.
 2. If a peer-specific transport failure completes, PRE submits an
-   `OfflineObservation` in the background.
+   `ReportObservation::NodeOffline(OfflineObservation)` through `queue_report`.
 3. The PRE result is not delayed or changed by reporting.
-4. Reporting collapses concurrent duplicates by `(report_type, ring_id,
-   accused_node_key)`.
-5. Reporting rereads the current ring and `NodeInfo` from the bulletin instead
+4. Reporting routes the observation to `NodeOfflineHandler`.
+5. Reporting collapses concurrent duplicates by the handler-owned key:
+   `(report_type, ring_id, subject_key)`.
+6. The handler rereads the current ring and `NodeInfo` from the bulletin instead
    of trusting the PRE call site.
-6. Reporting builds a canonical `ReportEnvelope` and derives
+7. The handler builds a canonical `ReportEnvelope` and derives
    `report_id = SHA256(canonical_report_bytes)`.
-7. The reporter counts as one threshold signer because it directly observed the
+8. The reporter counts as one threshold signer because it directly observed the
    transport failure.
-8. The accused node is excluded from signing, but original MPC node IDs are
+9. The accused node is excluded from signing, but original MPC node IDs are
    preserved.
-9. Other signers independently validate the report and perform three
+10. Other signers independently validate the report and perform three
    challenge/response health probes over at most five seconds.
-10. Any successful probe means the accused node is reachable, so the signer
+11. Any successful probe means the accused node is reachable, so the signer
     rejects the report.
-11. If enough independent peers agree, the coordinator recovers the threshold
+12. If enough independent peers agree, the coordinator recovers the threshold
     signature under the ring key.
-12. The completed `SignedReport` goes to the configured `ReportSink`.
+13. The completed `SignedReport` goes to the configured `ReportSink`.
 
 ## What qualifies as an offline observation
 
@@ -145,11 +148,11 @@ not make the chain define a competing encoding.
 To add another fault path:
 
 1. define a versioned canonical payload in `types.rs`;
-2. add a normalized observation type if needed;
-3. implement a `ReportHandler` for independent validation;
+2. add a normalized observation type and `ReportObservation` variant;
+3. implement a `ReportHandler` that prepares `PreparedReport` and validates it;
 4. register the handler in the default registry;
 5. add a thin adapter at the protocol failure site;
-6. reuse the same signing orchestration and sink path.
+6. call `queue_report` with the new observation variant.
 
 The protocol module should classify and submit observations. It should not own
 report envelopes, health probing, threshold-signing policy, or chain delivery.

@@ -186,11 +186,30 @@ pub struct OfflineObservation {
     pub observed_at: u64,
 }
 
+#[derive(Debug, Clone)]
+pub enum ReportObservation {
+    NodeOffline(OfflineObservation),
+}
+
+impl ReportObservation {
+    pub fn report_type(&self) -> &'static str {
+        match self {
+            Self::NodeOffline(_) => NODE_OFFLINE_REPORT_TYPE,
+        }
+    }
+
+    pub fn report_version(&self) -> u16 {
+        match self {
+            Self::NodeOffline(_) => NODE_OFFLINE_REPORT_VERSION,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InFlightReportKey {
     pub report_type: &'static str,
     pub ring_id: String,
-    pub accused_node_key: String,
+    pub subject_key: String,
 }
 
 pub fn ring_state_sha256(payload: &RingPayload) -> String {

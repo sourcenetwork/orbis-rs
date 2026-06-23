@@ -10,7 +10,8 @@ use crate::helpers::ring::{
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::reporting::observation::offline_observation_from_pre_error;
-use crate::reporting::queue_offline_observation;
+use crate::reporting::queue_report;
+use crate::reporting::types::ReportObservation;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply,
     Secret, ThresholdDealer,
@@ -341,10 +342,10 @@ where
                                 &e,
                                 self.routes.version,
                             ) {
-                                let _ = queue_offline_observation(
+                                let _ = queue_report(
                                     self.app_state.clone(),
                                     self.routes,
-                                    observation,
+                                    ReportObservation::NodeOffline(observation),
                                 )
                                 .await
                                 .inspect_err(|error| {

@@ -97,7 +97,7 @@ mod tests {
         InFlightReportKey {
             report_type: NODE_OFFLINE_REPORT_TYPE,
             ring_id: "ring".to_string(),
-            accused_node_key: "accused".to_string(),
+            subject_key: "accused".to_string(),
         }
     }
 
