@@ -6,6 +6,7 @@ use crate::helpers::response_manager::ResponseInitOutcome;
 use crate::helpers::ring::{
     is_ring_reshare_in_progress, load_ring_pub_poly_and_bundle, RingConfig,
 };
+use crate::sign::v0::coordinator::rounds::queue_sign_offline_report;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::helpers::{serialize_commitments, validate_refresh_health_check_statement};
@@ -382,9 +383,10 @@ where
 
                 set.spawn(async move {
                     let coordinator = SignCoordinator::<D, S>::with_routes(app_state, routes);
-                    coordinator
+                    let result = coordinator
                         .send_request_and_receive_response(&peer_id, request, &req_id)
-                        .await
+                        .await;
+                    (peer_id, result)
                 });
             }
         }
@@ -396,7 +398,7 @@ where
             match tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
                 while let Some(res) = set.join_next().await {
                     match res {
-                        Ok(Ok(Some(response))) => {
+                        Ok((_, Ok(Some(response)))) => {
                             let Some(expected_node_id) =
                                 determine_ring_node_id_from_peer_id(&response.sender_peer_hex, &ring)
                             else {
@@ -424,12 +426,22 @@ where
                                 }
                             }
                         }
-                        Ok(Ok(None)) => {}
-                        Ok(Err(e)) => {
+                        Ok((_, Ok(None))) => {}
+                        Ok((peer_id, Err(e))) => {
                             tracing::warn!(
                                 request_id = %request_id,
+                                peer_id = %peer_id,
                                 error = %e,
                                 "Sign peer request failed"
+                            );
+                            queue_sign_offline_report::<D, S>(
+                                self.app_state.clone(),
+                                self.routes,
+                                &ring,
+                                &peer_id,
+                                &e,
+                                &context,
+                                "sign_share_round",
                             );
                         }
                         Err(e) => {

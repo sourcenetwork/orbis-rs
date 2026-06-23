@@ -16,27 +16,17 @@ use crate::reporting::types::{ReportSigningContext, SignedReport};
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::v0::messages::SignContext;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
-use crypto::{
-    GroupAffine, ScalarField, SigShareInner, SignImpl, SignaturePoint, THRESHOLD_SIGNATURE_SCHEME,
-};
+use crypto::{GroupAffine, ScalarField, SigShareInner, SignaturePoint, THRESHOLD_SIGNATURE_SCHEME};
 use std::sync::Arc;
 
-pub async fn queue_report<D>(
+pub async fn queue_report<D, S>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     observation: ReportObservation,
 ) -> Result<bool>
 where
-    D: Dkg<
-            ShareValue = ScalarField,
-            PublicKey = GroupAffine,
-            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
-            PubPoly = crypto::PubPolyImpl,
-        > + Clone
-        + Send
-        + Sync
-        + 'static,
-    SignImpl: ThresholdSigner<
+    D: Dkg<ShareValue = ScalarField, PublicKey = GroupAffine> + Clone + Send + Sync + 'static,
+    S: ThresholdSigner<
             ShareValue = ScalarField,
             PublicKey = GroupAffine,
             DistKeyShare = DistKeyShare<ScalarField>,
@@ -57,7 +47,7 @@ where
     let outcome = state
         .spawn(key, async move {
             if let Err(error) =
-                create_report(app_state, routes, observation, Arc::clone(&handler)).await
+                create_report::<D, S>(app_state, routes, observation, Arc::clone(&handler)).await
             {
                 crate::metrics::REPORT_ATTEMPTS_TOTAL
                     .with_label_values(&[report_type, "failed"])
@@ -76,23 +66,15 @@ where
     Ok(outcome)
 }
 
-async fn create_report<D>(
+async fn create_report<D, S>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     observation: ReportObservation,
     handler: Arc<dyn crate::reporting::registry::ReportHandler>,
 ) -> Result<()>
 where
-    D: Dkg<
-            ShareValue = ScalarField,
-            PublicKey = GroupAffine,
-            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
-            PubPoly = crypto::PubPolyImpl,
-        > + Clone
-        + Send
-        + Sync
-        + 'static,
-    SignImpl: ThresholdSigner<
+    D: Dkg<ShareValue = ScalarField, PublicKey = GroupAffine> + Clone + Send + Sync + 'static,
+    S: ThresholdSigner<
             ShareValue = ScalarField,
             PublicKey = GroupAffine,
             DistKeyShare = DistKeyShare<ScalarField>,
@@ -133,25 +115,17 @@ where
         )
         .await?;
 
-    sign_and_submit_report(app_state, routes, prepared).await
+    sign_and_submit_report::<D, S>(app_state, routes, prepared).await
 }
 
-async fn sign_and_submit_report<D>(
+async fn sign_and_submit_report<D, S>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     prepared: PreparedReport,
 ) -> Result<()>
 where
-    D: Dkg<
-            ShareValue = ScalarField,
-            PublicKey = GroupAffine,
-            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
-            PubPoly = crypto::PubPolyImpl,
-        > + Clone
-        + Send
-        + Sync
-        + 'static,
-    SignImpl: ThresholdSigner<
+    D: Dkg<ShareValue = ScalarField, PublicKey = GroupAffine> + Clone + Send + Sync + 'static,
+    S: ThresholdSigner<
             ShareValue = ScalarField,
             PublicKey = GroupAffine,
             DistKeyShare = DistKeyShare<ScalarField>,
@@ -164,7 +138,7 @@ where
 {
     let report_id = prepared.envelope.report_id();
     let message = prepared.envelope.canonical_bytes();
-    let coordinator = SignCoordinator::<D, SignImpl>::with_routes(app_state.clone(), routes);
+    let coordinator = SignCoordinator::<D, S>::with_routes(app_state.clone(), routes);
     let response = coordinator
         .initiate_signing(
             format!("report-{report_id}"),

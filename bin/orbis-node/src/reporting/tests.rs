@@ -93,7 +93,7 @@ async fn threshold_signs_offline_report_without_accused_node() {
     };
 
     let app_state = Arc::new(network.alice.app_state.clone());
-    assert!(queue_report(
+    assert!(queue_report::<DkgImpl, SignImpl>(
         app_state.clone(),
         &network::V0,
         ReportObservation::NodeOffline(observation),

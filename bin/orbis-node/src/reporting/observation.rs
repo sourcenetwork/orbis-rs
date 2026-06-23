@@ -4,6 +4,7 @@ use crate::pre::v0::error::PreError;
 use crate::reporting::types::{
     OfflineFailureStage, NODE_OFFLINE_REPORT_TYPE, NODE_OFFLINE_REPORT_VERSION,
 };
+use crate::sign::v0::error::SignError;
 
 #[derive(Debug, Clone)]
 pub struct OfflineObservation {
@@ -53,6 +54,37 @@ pub fn offline_observation_from_pre_error(
         _ => return None,
     };
 
+    offline_observation_from_stage(ring, peer_id, "pre", protocol_version, failure_stage)
+}
+
+pub fn offline_observation_from_sign_error(
+    ring: &RingConfig,
+    peer_id: &str,
+    error: &SignError,
+    protocol_version: u64,
+) -> Option<OfflineObservation> {
+    let failure_stage = match error {
+        SignError::NetworkConnection(_) => OfflineFailureStage::OpenStream,
+        SignError::NetworkCommunication(message) if message.starts_with("Failed to send") => {
+            OfflineFailureStage::Send
+        }
+        SignError::NetworkCommunication(message) if message.starts_with("Failed to receive") => {
+            OfflineFailureStage::Receive
+        }
+        SignError::Timeout(_) => OfflineFailureStage::ResponseTimeout,
+        _ => return None,
+    };
+
+    offline_observation_from_stage(ring, peer_id, "sign", protocol_version, failure_stage)
+}
+
+fn offline_observation_from_stage(
+    ring: &RingConfig,
+    peer_id: &str,
+    origin_protocol: &str,
+    protocol_version: u64,
+    failure_stage: OfflineFailureStage,
+) -> Option<OfflineObservation> {
     let peer_part = extract_node_part(peer_id);
     let accused_node_key = ring
         .peer_node_keys
@@ -70,7 +102,7 @@ pub fn offline_observation_from_pre_error(
         ring_id: ring.ring_id.clone(),
         accused_node_key,
         accused_peer_id: peer_id.to_string(),
-        origin_protocol: "pre".to_string(),
+        origin_protocol: origin_protocol.to_string(),
         origin_protocol_version: protocol_version,
         failure_stage,
         observed_at,
@@ -111,6 +143,22 @@ mod tests {
             &ring,
             &ring.peer_ids[0],
             &PreError::VerificationFailed("bad share".into()),
+            0,
+        )
+        .is_none());
+        let sign_observation = offline_observation_from_sign_error(
+            &ring,
+            &ring.peer_ids[0],
+            &SignError::NetworkCommunication("Failed to receive response".into()),
+            0,
+        )
+        .unwrap();
+        assert_eq!(sign_observation.origin_protocol, "sign");
+        assert_eq!(sign_observation.failure_stage, OfflineFailureStage::Receive);
+        assert!(offline_observation_from_sign_error(
+            &ring,
+            &ring.peer_ids[0],
+            &SignError::VerificationFailed("bad share".into()),
             0,
         )
         .is_none());

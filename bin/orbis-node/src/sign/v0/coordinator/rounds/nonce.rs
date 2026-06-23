@@ -2,6 +2,7 @@ use crate::constants::SIGN_COLLECTION_TIMEOUT;
 use crate::helpers::identity::{determine_ring_node_id_from_peer_id, is_self_peer_id};
 use crate::helpers::response_manager::ResponseInitOutcome;
 use crate::helpers::ring::RingConfig;
+use crate::sign::v0::coordinator::rounds::queue_sign_offline_report;
 use crate::sign::v0::coordinator::{SignCoordinator, SigningOptions};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::messages::{NonceRequest, SignContext, SignMessage};
@@ -116,9 +117,10 @@ where
 
                 set.spawn(async move {
                     let coordinator = SignCoordinator::<D, S>::with_routes(app_state, routes);
-                    coordinator
+                    let result = coordinator
                         .send_request_and_receive_response(&peer_id, nonce_req, &req_id)
-                        .await
+                        .await;
+                    (peer_id, result)
                 });
             }
         }
@@ -132,7 +134,7 @@ where
             match tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
                 while let Some(res) = set.join_next().await {
                     match res {
-                        Ok(Ok(Some(response))) => {
+                        Ok((_, Ok(Some(response)))) => {
                             let Some(expected_node_id) =
                                 determine_ring_node_id_from_peer_id(&response.sender_peer_hex, ring)
                             else {
@@ -154,12 +156,22 @@ where
                                 }
                             }
                         }
-                        Ok(Ok(None)) => {}
-                        Ok(Err(e)) => {
+                        Ok((_, Ok(None))) => {}
+                        Ok((peer_id, Err(e))) => {
                             tracing::warn!(
                                 request_id = %request_id,
+                                peer_id = %peer_id,
                                 error = %e,
                                 "Nonce peer request failed"
+                            );
+                            queue_sign_offline_report::<D, S>(
+                                self.app_state.clone(),
+                                self.routes,
+                                ring,
+                                &peer_id,
+                                &e,
+                                context,
+                                "sign_nonce_round",
                             );
                         }
                         Err(e) => {

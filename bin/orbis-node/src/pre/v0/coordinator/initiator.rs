@@ -341,7 +341,7 @@ where
                                 &e,
                                 self.routes.version,
                             ) {
-                                let _ = queue_report(
+                                let _ = queue_report::<D, SignImpl>(
                                     self.app_state.clone(),
                                     self.routes,
                                     ReportObservation::NodeOffline(observation),
