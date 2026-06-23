@@ -40,7 +40,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
         cargo build --release --bin orbis-node --no-default-features \
             --features "redb,integration-test,${CRYPTO_FEATURE}"; \
     else \
-        cargo build --release --bin orbis-node; \
+        cargo build --release --bin orbis-node --no-default-features \
+            --features "redb,authz-sourcehub,bulletin-sourcehub,iroh,${CRYPTO_FEATURE}"; \
     fi && \
     cp /app/target/release/orbis-node /orbis-node-bin
 
