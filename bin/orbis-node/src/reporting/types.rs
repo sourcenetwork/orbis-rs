@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 pub const REPORT_DOMAIN: &str = "orbis-mpc-fault-report";
 pub const REPORT_FRAMEWORK_VERSION: u16 = 1;
 pub const NODE_OFFLINE_REPORT_TYPE: &str = "node_offline";
-pub const NODE_OFFLINE_REPORT_VERSION: u16 = 1;
+pub const NODE_OFFLINE_REPORT_VERSION: u16 = 2;
 pub const REPORT_TTL_SECS: u64 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,19 +31,49 @@ impl OfflineFailureStage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitteeScope {
+    Current,
+    PendingNew,
+}
+
+impl CommitteeScope {
+    fn tag(self) -> u8 {
+        match self {
+            Self::Current => 1,
+            Self::PendingNew => 2,
+        }
+    }
+
+    fn from_tag(tag: u8) -> Result<Self> {
+        match tag {
+            1 => Ok(Self::Current),
+            2 => Ok(Self::PendingNew),
+            value => Err(ReportingError::InvalidReport(format!(
+                "unknown committee scope {value}"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeOfflineV1 {
+pub struct NodeOffline {
     pub origin_protocol: String,
     pub origin_protocol_version: u64,
     pub failure_stage: OfflineFailureStage,
+    pub accused_committee_scope: CommitteeScope,
+    pub signing_committee_scope: CommitteeScope,
 }
 
-impl NodeOfflineV1 {
+impl NodeOffline {
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_string(&mut out, &self.origin_protocol);
         write_u64(&mut out, self.origin_protocol_version);
         out.push(self.failure_stage.tag());
+        out.push(self.accused_committee_scope.tag());
+        out.push(self.signing_committee_scope.tag());
         out
     }
 
@@ -63,11 +93,17 @@ impl NodeOfflineV1 {
                 )))
             }
         };
+        let accused_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("accused_committee_scope")?)?;
+        let signing_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("signing_committee_scope")?)?;
         decoder.finish()?;
         Ok(Self {
             origin_protocol,
             origin_protocol_version,
             failure_stage,
+            accused_committee_scope,
+            signing_committee_scope,
         })
     }
 }
@@ -349,10 +385,12 @@ mod tests {
             accused_peer_id: "22".repeat(32),
             observed_at: 1_700_000_000,
             expires_at: 1_700_000_120,
-            payload: NodeOfflineV1 {
+            payload: NodeOffline {
                 origin_protocol: "pre".to_string(),
                 origin_protocol_version: 0,
                 failure_stage: OfflineFailureStage::ResponseTimeout,
+                accused_committee_scope: CommitteeScope::Current,
+                signing_committee_scope: CommitteeScope::Current,
             }
             .canonical_bytes(),
         }
@@ -360,13 +398,15 @@ mod tests {
 
     #[test]
     fn offline_payload_round_trips() {
-        let payload = NodeOfflineV1 {
+        let payload = NodeOffline {
             origin_protocol: "pre".to_string(),
             origin_protocol_version: 7,
             failure_stage: OfflineFailureStage::Receive,
+            accused_committee_scope: CommitteeScope::PendingNew,
+            signing_committee_scope: CommitteeScope::Current,
         };
         assert_eq!(
-            NodeOfflineV1::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
+            NodeOffline::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
             payload
         );
     }
@@ -426,7 +466,7 @@ mod tests {
     fn report_encoding_golden_vector() {
         assert_eq!(
             envelope().report_id(),
-            "b2dfb3cfee09f8df7baf1917f1adf863c33d4a4b8e995e7c4a64701720110953"
+            "a84fc8fb6e2613e2cac35ecfa03e578e919aea29d5c8c366928b85ae797ce4c8"
         );
     }
 }

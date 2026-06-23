@@ -3,8 +3,11 @@ mod signing;
 
 use crate::app_state::AppState;
 use crate::helpers::ring::RingConfig;
-use crate::reporting::observation::{offline_observation_from_sign_error, ReportObservation};
+use crate::reporting::observation::{
+    offline_observation_from_sign_error_scoped, ReportObservation,
+};
 use crate::reporting::queue_report;
+use crate::reporting::types::CommitteeScope;
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::messages::SignContext;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
@@ -35,13 +38,20 @@ pub(super) fn queue_sign_offline_report<D, S>(
     // Report signing is the terminal fault-reporting path. If a peer fails
     // while validating or signing a report, do not recursively create reports
     // about report failures.
-    if matches!(context, SignContext::Report(_)) {
-        return;
-    }
-
-    let Some(observation) =
-        offline_observation_from_sign_error(ring, peer_id, error, routes.version)
+    let Some((origin_protocol, accused_scope, signing_scope)) = sign_reporting_scopes(context)
     else {
+        return;
+    };
+
+    let Some(observation) = offline_observation_from_sign_error_scoped(
+        ring,
+        peer_id,
+        error,
+        origin_protocol,
+        routes.version,
+        accused_scope,
+        signing_scope,
+    ) else {
         return;
     };
 
@@ -62,4 +72,28 @@ pub(super) fn queue_sign_offline_report<D, S>(
             );
         }
     });
+}
+
+fn sign_reporting_scopes(
+    context: &SignContext,
+) -> Option<(&'static str, CommitteeScope, CommitteeScope)> {
+    match context {
+        // Report signing is the terminal fault-reporting path. If a peer fails
+        // while validating or signing a report, do not recursively create
+        // reports about report failures.
+        SignContext::Report(_) => None,
+        SignContext::RefreshHealthCheck(_) => Some((
+            "pss_refresh",
+            CommitteeScope::Current,
+            CommitteeScope::Current,
+        )),
+        SignContext::RingReshareUpdate(_) => Some((
+            "pss_reshare",
+            CommitteeScope::PendingNew,
+            CommitteeScope::PendingNew,
+        )),
+        SignContext::Bulletin { .. } | SignContext::Policy(_) => {
+            Some(("sign", CommitteeScope::Current, CommitteeScope::Current))
+        }
+    }
 }

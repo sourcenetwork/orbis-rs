@@ -11,6 +11,8 @@ pub(in crate::dkg::v0::coordinator) trait CoordinatorDkg:
         PolynomialCommitment = PolynomialCommitment,
         PubPoly = PubPoly,
     > + Clone
+    + Send
+    + Sync
     + 'static
 {
 }
@@ -22,6 +24,8 @@ impl<T> CoordinatorDkg for T where
             PolynomialCommitment = PolynomialCommitment,
             PubPoly = PubPoly,
         > + Clone
+        + Send
+        + Sync
         + 'static
 {
 }

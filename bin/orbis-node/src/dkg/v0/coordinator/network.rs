@@ -1,11 +1,20 @@
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::session_not_found;
-use crate::dkg::v0::messages::DkgMessage;
+use crate::dkg::v0::messages::{DkgMessage, SessionKind};
+use crate::helpers::identity::extract_node_part;
+use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::metrics;
-use crypto::r#trait::Dkg;
+use crate::reporting::observation::{
+    offline_failure_stage_from_dkg_error, offline_observation_from_peer_routes, ReportObservation,
+};
+use crate::reporting::queue_report;
+use crate::reporting::types::CommitteeScope as ReportCommitteeScope;
+use crate::ring_state::RingPolyState;
+use bulletin::r#trait::{BulletinKind, RingPayload};
+use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crypto::{
     GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
-    PubPolyImpl as PubPoly, ScalarField as Fr,
+    PubPolyImpl as PubPoly, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint,
 };
 use network::{Connection as NetworkConnection, Message as NetworkMessage};
 use std::sync::Arc;
@@ -38,6 +47,18 @@ where
             PolynomialCommitment = PolynomialCommitment,
             PubPoly = PubPoly,
         > + Clone
+        + Send
+        + Sync
+        + 'static,
+    SignImpl: ThresholdSigner<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            DistKeyShare = DistKeyShare<Fr>,
+            PubPoly = D::PubPoly,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
+        > + Send
+        + Sync
         + 'static,
 {
     if let Some(cached) = coord
@@ -143,7 +164,13 @@ where
         let _guard = send_lock.lock().await;
         ensure_session_generation(coord, sid, session_generation).await?;
 
-        let (stream, was_cached) = get_cached_or_open_stream(coord, sid, peer_id_str).await?;
+        let (stream, was_cached) = match get_cached_or_open_stream(coord, sid, peer_id_str).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                queue_pss_offline_report(coord, sid, peer_id_str, &error);
+                return Err(error);
+            }
+        };
         ensure_session_generation(coord, sid, session_generation).await?;
 
         match send_on_stream(&stream, peer_id_str, &message_data, coord.routes.dkg_alpn).await {
@@ -168,16 +195,22 @@ where
                 session_state.remove_peer_stream(&sid, peer_id_str).await;
                 ensure_session_generation(coord, sid, session_generation).await?;
 
-                let replacement = Arc::from(coord.open_stream_to_peer(peer_id_str).await?);
+                let replacement = match coord.open_stream_to_peer(peer_id_str).await {
+                    Ok(stream) => Arc::from(stream),
+                    Err(error) => {
+                        queue_pss_offline_report(coord, sid, peer_id_str, &error);
+                        return Err(error);
+                    }
+                };
                 ensure_session_generation(coord, sid, session_generation).await?;
-                send_on_stream(
+                if let Err(retry_error) = send_on_stream(
                     &replacement,
                     peer_id_str,
                     &message_data,
                     coord.routes.dkg_alpn,
                 )
                 .await
-                .inspect_err(|retry_error| {
+                {
                     tracing::error!(
                         session_id = sid,
                         peer_id = %peer_id_str,
@@ -185,7 +218,9 @@ where
                         error = %retry_error,
                         "DKG send retry on a fresh stream failed"
                     );
-                })?;
+                    queue_pss_offline_report(coord, sid, peer_id_str, &retry_error);
+                    return Err(retry_error);
+                }
                 ensure_session_generation(coord, sid, session_generation).await?;
                 session_state
                     .store_peer_stream(&sid, peer_id_str.to_string(), replacement)
@@ -206,6 +241,247 @@ where
 
     metrics::record_dkg_message_sent(message_type);
     Ok(())
+}
+
+fn queue_pss_offline_report<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    peer_id: &str,
+    error: &DkgError,
+) where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+    SignImpl: ThresholdSigner<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            DistKeyShare = DistKeyShare<Fr>,
+            PubPoly = D::PubPoly,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
+        > + Send
+        + Sync
+        + 'static,
+{
+    let Some(failure_stage) = offline_failure_stage_from_dkg_error(error) else {
+        return;
+    };
+
+    let app_state = coord.app_state.clone();
+    let routes = coord.routes;
+    let peer_id = peer_id.to_string();
+
+    let _handle = tokio::spawn(async move {
+        let Some((kind, stored_ring_id)) = app_state
+            .dkg_session_state
+            .with_state(&session_id, |state| {
+                (state.kind.clone(), state.routing.ring_id.clone())
+            })
+            .await
+        else {
+            return;
+        };
+
+        let (origin_protocol, ring_id) = match &kind {
+            SessionKind::Fresh => return,
+            SessionKind::Refresh { .. } => ("pss_refresh", stored_ring_id),
+            SessionKind::Reshare {
+                bulletin_post_id, ..
+            } => (
+                "pss_reshare",
+                if stored_ring_id.is_empty() {
+                    bulletin_post_id.clone()
+                } else {
+                    stored_ring_id
+                },
+            ),
+        };
+        if ring_id.is_empty() {
+            tracing::debug!(
+                session_id = session_id,
+                peer_id = %peer_id,
+                "Skipping PSS offline report because session has no authoritative ring ID"
+            );
+            return;
+        }
+
+        let ring_post = match app_state
+            .bulletin
+            .read(ring_id.clone(), BulletinKind::Ring)
+            .await
+        {
+            Ok(post) => post,
+            Err(error) => {
+                tracing::warn!(
+                    session_id = session_id,
+                    ring_id = %ring_id,
+                    peer_id = %peer_id,
+                    error = %error,
+                    "Failed to read ring while queueing PSS offline report"
+                );
+                return;
+            }
+        };
+        let ring = match RingPayload::try_from(ring_post) {
+            Ok(ring) => ring,
+            Err(error) => {
+                tracing::warn!(
+                    session_id = session_id,
+                    ring_id = %ring_id,
+                    peer_id = %peer_id,
+                    error = %error,
+                    "Failed to parse ring while queueing PSS offline report"
+                );
+                return;
+            }
+        };
+
+        let current_routes = match resolve_node_routes(&app_state.bulletin, &ring.peer_node_keys)
+            .await
+        {
+            Ok(routes) => routes,
+            Err(error) => {
+                tracing::warn!(
+                    session_id = session_id,
+                    ring_id = %ring_id,
+                    peer_id = %peer_id,
+                    error = %error,
+                    "Failed to resolve current committee routes while queueing PSS offline report"
+                );
+                return;
+            }
+        };
+        let current_peer_ids = peer_ids_from_routes(&current_routes);
+
+        let pending_node_keys = ring
+            .new_peer_node_keys
+            .clone()
+            .unwrap_or_else(|| ring.peer_node_keys.clone());
+        let pending_peer_ids = if matches!(kind, SessionKind::Reshare { .. }) {
+            match resolve_node_routes(&app_state.bulletin, &pending_node_keys).await {
+                Ok(routes) => peer_ids_from_routes(&routes),
+                Err(error) => {
+                    tracing::warn!(
+                        session_id = session_id,
+                        ring_id = %ring_id,
+                        peer_id = %peer_id,
+                        error = %error,
+                        "Failed to resolve pending-new committee routes while queueing PSS offline report"
+                    );
+                    return;
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        let (accused_scope, accused_peer_ids, accused_node_keys) =
+            if matches!(kind, SessionKind::Reshare { .. })
+                && peer_id_matches_any(&peer_id, &pending_peer_ids)
+            {
+                (
+                    ReportCommitteeScope::PendingNew,
+                    pending_peer_ids.as_slice(),
+                    pending_node_keys.as_slice(),
+                )
+            } else if peer_id_matches_any(&peer_id, &current_peer_ids) {
+                (
+                    ReportCommitteeScope::Current,
+                    current_peer_ids.as_slice(),
+                    ring.peer_node_keys.as_slice(),
+                )
+            } else {
+                tracing::debug!(
+                    session_id = session_id,
+                    ring_id = %ring_id,
+                    peer_id = %peer_id,
+                    "Skipping PSS offline report because failed peer is not in reportable committee"
+                );
+                return;
+            };
+
+        let signing_scope = if ring
+            .peer_node_keys
+            .iter()
+            .any(|node_key| node_key == &app_state.node_key)
+        {
+            ReportCommitteeScope::Current
+        } else if matches!(kind, SessionKind::Reshare { .. })
+            && pending_node_keys
+                .iter()
+                .any(|node_key| node_key == &app_state.node_key)
+        {
+            ReportCommitteeScope::PendingNew
+        } else {
+            tracing::debug!(
+                session_id = session_id,
+                ring_id = %ring_id,
+                peer_id = %peer_id,
+                reporter_node_key = %app_state.node_key,
+                "Skipping PSS offline report because reporter is not in current or pending-new committee"
+            );
+            return;
+        };
+
+        if signing_scope == ReportCommitteeScope::PendingNew {
+            if let Err(error) =
+                RingPolyState::load_from_ring_pk_hex(&app_state.local_storage, &ring.ring_pk)
+            {
+                tracing::debug!(
+                    session_id = session_id,
+                    ring_id = %ring_id,
+                    peer_id = %peer_id,
+                    reporter_node_key = %app_state.node_key,
+                    error = %error,
+                    "Skipping PSS offline report because pending-new reporter has no local reshare bundle yet"
+                );
+                return;
+            }
+        }
+
+        let Some(observation) = offline_observation_from_peer_routes(
+            &ring_id,
+            accused_peer_ids,
+            accused_node_keys,
+            &peer_id,
+            origin_protocol,
+            routes.version,
+            failure_stage,
+            accused_scope,
+            signing_scope,
+        ) else {
+            return;
+        };
+
+        if let Err(error) = queue_report::<D, SignImpl>(
+            app_state,
+            routes,
+            ReportObservation::NodeOffline(observation),
+        )
+        .await
+        {
+            tracing::warn!(
+                session_id = session_id,
+                ring_id = %ring_id,
+                peer_id = %peer_id,
+                error = %error,
+                "Failed to queue PSS offline report observation"
+            );
+        }
+    });
+}
+
+fn peer_id_matches_any(peer_id: &str, candidates: &[String]) -> bool {
+    let peer_part = extract_node_part(peer_id);
+    candidates
+        .iter()
+        .any(|candidate| extract_node_part(candidate) == peer_part)
 }
 
 /// Open a QUIC stream to a peer, evicting and reconnecting the cached connection on failure.

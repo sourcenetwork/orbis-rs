@@ -7,7 +7,7 @@ use crate::reporting::health::require_peer_offline;
 use crate::reporting::observation::{OfflineObservation, ReportObservation};
 use crate::reporting::state::InFlightReportKey;
 use crate::reporting::types::{
-    ring_state_sha256, NodeOfflineV1, ReportEnvelope, NODE_OFFLINE_REPORT_TYPE,
+    ring_state_sha256, CommitteeScope, NodeOffline, ReportEnvelope, NODE_OFFLINE_REPORT_TYPE,
     NODE_OFFLINE_REPORT_VERSION, REPORT_DOMAIN, REPORT_FRAMEWORK_VERSION, REPORT_TTL_SECS,
 };
 use crate::ring_state::RingPolyState;
@@ -131,6 +131,12 @@ impl Default for ReportRegistry {
 
 struct NodeOfflineHandler;
 
+#[derive(Debug, Clone)]
+struct CommitteeView {
+    peer_node_keys: Vec<String>,
+    threshold: u32,
+}
+
 #[async_trait]
 impl ReportHandler for NodeOfflineHandler {
     fn report_type(&self) -> &'static str {
@@ -174,7 +180,8 @@ impl ReportHandler for NodeOfflineHandler {
             context.bulletin.chain_id(),
         );
 
-        let node_routes = resolve_node_routes(&context.bulletin, &ring.peer_node_keys)
+        let signing_committee = committee_for_scope(&ring, observation.signing_committee_scope)?;
+        let node_routes = resolve_node_routes(&context.bulletin, &signing_committee.peer_node_keys)
             .await
             .map_err(ReportingError::InvalidReport)?;
         let peer_ids = peer_ids_from_routes(&node_routes);
@@ -187,8 +194,8 @@ impl ReportHandler for NodeOfflineHandler {
             ring_id: observation.ring_id,
             ring_pk_bytes,
             peer_ids,
-            peer_node_keys: ring.peer_node_keys,
-            threshold: ring.threshold as usize,
+            peer_node_keys: signing_committee.peer_node_keys,
+            threshold: signing_committee.threshold as usize,
             total_participants: node_routes.len(),
             public_polynomial_hex: poly_state.public_polynomial,
         };
@@ -205,7 +212,7 @@ impl ReportHandler for NodeOfflineHandler {
         envelope: &ReportEnvelope,
         context: &ReportValidationContext,
     ) -> Result<()> {
-        let payload = NodeOfflineV1::from_canonical_bytes(&envelope.payload)?;
+        let payload = NodeOffline::from_canonical_bytes(&envelope.payload)?;
         if payload.origin_protocol.trim().is_empty() {
             return Err(ReportingError::InvalidReport(
                 "offline report origin protocol cannot be empty".to_string(),
@@ -236,7 +243,7 @@ impl ReportHandler for NodeOfflineHandler {
             )));
         }
 
-        validate_ring_and_membership(envelope, &ring)?;
+        let signing_committee = validate_ring_and_membership(envelope, &payload, &ring)?;
         validate_node_routes(envelope, context, &ring).await?;
 
         if context.local_node_key == envelope.accused_node_key {
@@ -244,7 +251,7 @@ impl ReportHandler for NodeOfflineHandler {
                 "the accused node cannot sign its own offline report".to_string(),
             ));
         }
-        if !ring
+        if !signing_committee
             .peer_node_keys
             .iter()
             .any(|node_key| node_key == &context.local_node_key)
@@ -286,10 +293,12 @@ impl NodeOfflineHandler {
         reporter_node_key: &str,
         chain_id: String,
     ) -> ReportEnvelope {
-        let payload = NodeOfflineV1 {
+        let payload = NodeOffline {
             origin_protocol: observation.origin_protocol.clone(),
             origin_protocol_version: observation.origin_protocol_version,
             failure_stage: observation.failure_stage,
+            accused_committee_scope: observation.accused_committee_scope,
+            signing_committee_scope: observation.signing_committee_scope,
         };
         ReportEnvelope {
             domain: REPORT_DOMAIN.to_string(),
@@ -316,15 +325,14 @@ impl NodeOfflineHandler {
     }
 }
 
-fn validate_ring_and_membership(envelope: &ReportEnvelope, ring: &RingPayload) -> Result<()> {
+fn validate_ring_and_membership(
+    envelope: &ReportEnvelope,
+    payload: &NodeOffline,
+    ring: &RingPayload,
+) -> Result<CommitteeView> {
     if ring.ring_pk.is_empty() {
         return Err(ReportingError::Unauthorized(
             "offline reports require a finalized ring".to_string(),
-        ));
-    }
-    if ring.new_peer_node_keys.is_some() || ring.new_threshold.is_some() {
-        return Err(ReportingError::Unauthorized(
-            "offline reports are disabled during reshare".to_string(),
         ));
     }
     if ring.ring_pk != envelope.ring_pk {
@@ -337,24 +345,73 @@ fn validate_ring_and_membership(envelope: &ReportEnvelope, ring: &RingPayload) -
             "report ring-state digest is stale".to_string(),
         ));
     }
-    if ring.threshold < 2 {
+    let accused_committee = committee_for_scope(ring, payload.accused_committee_scope)?;
+    let signing_committee = committee_for_scope(ring, payload.signing_committee_scope)?;
+    if signing_committee.threshold < 2 {
         return Err(ReportingError::Unauthorized(
             "offline reporting requires ring threshold >= 2".to_string(),
         ));
     }
-    if ring.threshold as usize > ring.peer_node_keys.len().saturating_sub(1) {
+    if signing_committee.threshold as usize > signing_committee.peer_node_keys.len() {
+        return Err(ReportingError::Unauthorized(
+            "offline reporting threshold exceeds signing committee size".to_string(),
+        ));
+    }
+    if signing_committee
+        .peer_node_keys
+        .iter()
+        .any(|member| member == &envelope.accused_node_key)
+        && signing_committee.threshold as usize
+            > signing_committee.peer_node_keys.len().saturating_sub(1)
+    {
         return Err(ReportingError::Unauthorized(
             "ring threshold cannot be met while excluding the accused node".to_string(),
         ));
     }
-    for node_key in [&envelope.reporter_node_key, &envelope.accused_node_key] {
-        if !ring.peer_node_keys.iter().any(|member| member == node_key) {
-            return Err(ReportingError::Unauthorized(format!(
-                "node {node_key} is not in the report ring"
-            )));
+    if !signing_committee
+        .peer_node_keys
+        .iter()
+        .any(|member| member == &envelope.reporter_node_key)
+    {
+        return Err(ReportingError::Unauthorized(format!(
+            "reporter node {} is not in the signing committee",
+            envelope.reporter_node_key
+        )));
+    }
+    if !accused_committee
+        .peer_node_keys
+        .iter()
+        .any(|member| member == &envelope.accused_node_key)
+    {
+        return Err(ReportingError::Unauthorized(format!(
+            "accused node {} is not in the accused committee",
+            envelope.accused_node_key
+        )));
+    }
+    Ok(signing_committee)
+}
+
+fn committee_for_scope(ring: &RingPayload, scope: CommitteeScope) -> Result<CommitteeView> {
+    match scope {
+        CommitteeScope::Current => Ok(CommitteeView {
+            peer_node_keys: ring.peer_node_keys.clone(),
+            threshold: ring.threshold,
+        }),
+        CommitteeScope::PendingNew => {
+            if ring.new_peer_node_keys.is_none() && ring.new_threshold.is_none() {
+                return Err(ReportingError::Unauthorized(
+                    "pending-new committee scope requires a pending reshare".to_string(),
+                ));
+            }
+            Ok(CommitteeView {
+                peer_node_keys: ring
+                    .new_peer_node_keys
+                    .clone()
+                    .unwrap_or_else(|| ring.peer_node_keys.clone()),
+                threshold: ring.new_threshold.unwrap_or(ring.threshold),
+            })
         }
     }
-    Ok(())
 }
 
 async fn validate_node_routes(
@@ -399,7 +456,7 @@ mod tests {
     use super::*;
     use crate::reporting::observation::{OfflineObservation, ReportObservation};
     use crate::reporting::types::{
-        NodeOfflineV1, OfflineFailureStage, REPORT_DOMAIN, REPORT_FRAMEWORK_VERSION,
+        CommitteeScope, NodeOffline, OfflineFailureStage, REPORT_DOMAIN, REPORT_FRAMEWORK_VERSION,
         REPORT_TTL_SECS,
     };
     use bulletin::r#trait::UpgradeInfo;
@@ -437,13 +494,19 @@ mod tests {
             accused_peer_id: "aa".repeat(32),
             observed_at: 100,
             expires_at: 100 + REPORT_TTL_SECS,
-            payload: NodeOfflineV1 {
+            payload: NodeOffline {
                 origin_protocol: "pre".to_string(),
                 origin_protocol_version: 0,
                 failure_stage: OfflineFailureStage::OpenStream,
+                accused_committee_scope: CommitteeScope::Current,
+                signing_committee_scope: CommitteeScope::Current,
             }
             .canonical_bytes(),
         }
+    }
+
+    fn payload(report: &ReportEnvelope) -> NodeOffline {
+        NodeOffline::from_canonical_bytes(&report.payload).unwrap()
     }
 
     fn offline_observation() -> OfflineObservation {
@@ -454,6 +517,8 @@ mod tests {
             origin_protocol: "pre".to_string(),
             origin_protocol_version: 0,
             failure_stage: OfflineFailureStage::OpenStream,
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
             observed_at: 100,
         }
     }
@@ -492,34 +557,131 @@ mod tests {
     #[test]
     fn rejects_threshold_one() {
         let ring = ring_fixture(1);
-        let error = validate_ring_and_membership(&envelope(&ring), &ring).unwrap_err();
+        let report = envelope(&ring);
+        let error = validate_ring_and_membership(&report, &payload(&report), &ring).unwrap_err();
         assert!(error.to_string().contains("threshold >= 2"));
     }
 
     #[test]
     fn rejects_threshold_that_needs_accused() {
         let ring = ring_fixture(3);
-        let error = validate_ring_and_membership(&envelope(&ring), &ring).unwrap_err();
+        let report = envelope(&ring);
+        let error = validate_ring_and_membership(&report, &payload(&report), &ring).unwrap_err();
         assert!(error.to_string().contains("excluding the accused"));
     }
 
     #[test]
-    fn rejects_pending_reshare_and_stale_digest() {
+    fn accepts_current_scope_during_pending_reshare_and_rejects_stale_digest() {
         let mut ring = ring_fixture(2);
         let report = envelope(&ring);
-        ring.new_threshold = Some(2);
-        assert!(validate_ring_and_membership(&report, &ring).is_err());
+        ring.new_threshold = Some(3);
+        ring.new_peer_node_keys = Some(vec![
+            "reporter".to_string(),
+            "accused".to_string(),
+            "validator".to_string(),
+        ]);
+        let mut scoped_report = report.clone();
+        scoped_report.ring_state_sha256 = ring_state_sha256(&ring);
+        validate_ring_and_membership(&scoped_report, &payload(&scoped_report), &ring).unwrap();
 
         let ring = ring_fixture(2);
         let mut report = envelope(&ring);
         report.ring_state_sha256 = "00".repeat(32);
-        assert!(validate_ring_and_membership(&report, &ring).is_err());
+        assert!(validate_ring_and_membership(&report, &payload(&report), &ring).is_err());
     }
 
     #[test]
     fn accepts_valid_report_shape_against_ring() {
         let ring = ring_fixture(2);
-        validate_ring_and_membership(&envelope(&ring), &ring).unwrap();
+        let report = envelope(&ring);
+        validate_ring_and_membership(&report, &payload(&report), &ring).unwrap();
+    }
+
+    #[test]
+    fn validates_pending_new_accused_and_current_signing_scope() {
+        let mut ring = ring_fixture(2);
+        ring.new_peer_node_keys = Some(vec![
+            "new-a".to_string(),
+            "pending-accused".to_string(),
+            "new-c".to_string(),
+        ]);
+        ring.new_threshold = Some(3);
+
+        let mut report = envelope(&ring);
+        report.ring_state_sha256 = ring_state_sha256(&ring);
+        report.accused_node_key = "pending-accused".to_string();
+        report.payload = NodeOffline {
+            origin_protocol: "pss_reshare".to_string(),
+            origin_protocol_version: 0,
+            failure_stage: OfflineFailureStage::Send,
+            accused_committee_scope: CommitteeScope::PendingNew,
+            signing_committee_scope: CommitteeScope::Current,
+        }
+        .canonical_bytes();
+
+        validate_ring_and_membership(&report, &payload(&report), &ring).unwrap();
+    }
+
+    #[test]
+    fn rejects_reporter_outside_signing_committee() {
+        let mut ring = ring_fixture(2);
+        ring.new_peer_node_keys = Some(vec![
+            "new-a".to_string(),
+            "pending-accused".to_string(),
+            "new-c".to_string(),
+        ]);
+        ring.new_threshold = Some(2);
+
+        let mut report = envelope(&ring);
+        report.ring_state_sha256 = ring_state_sha256(&ring);
+        report.payload = NodeOffline {
+            origin_protocol: "pss_reshare".to_string(),
+            origin_protocol_version: 0,
+            failure_stage: OfflineFailureStage::Send,
+            accused_committee_scope: CommitteeScope::PendingNew,
+            signing_committee_scope: CommitteeScope::PendingNew,
+        }
+        .canonical_bytes();
+
+        let error = validate_ring_and_membership(&report, &payload(&report), &ring).unwrap_err();
+        assert!(error.to_string().contains("signing committee"));
+    }
+
+    #[test]
+    fn excludes_accused_only_when_in_signing_committee_capacity_check() {
+        let mut ring = ring_fixture(3);
+        ring.new_peer_node_keys = Some(vec![
+            "new-a".to_string(),
+            "pending-accused".to_string(),
+            "new-c".to_string(),
+        ]);
+        ring.new_threshold = Some(3);
+
+        let mut report = envelope(&ring);
+        report.ring_state_sha256 = ring_state_sha256(&ring);
+        report.accused_node_key = "pending-accused".to_string();
+        report.payload = NodeOffline {
+            origin_protocol: "pss_reshare".to_string(),
+            origin_protocol_version: 0,
+            failure_stage: OfflineFailureStage::Send,
+            accused_committee_scope: CommitteeScope::PendingNew,
+            signing_committee_scope: CommitteeScope::Current,
+        }
+        .canonical_bytes();
+        validate_ring_and_membership(&report, &payload(&report), &ring).unwrap();
+
+        let mut report = report;
+        report.reporter_node_key = "new-a".to_string();
+        report.payload = NodeOffline {
+            origin_protocol: "pss_reshare".to_string(),
+            origin_protocol_version: 0,
+            failure_stage: OfflineFailureStage::Send,
+            accused_committee_scope: CommitteeScope::PendingNew,
+            signing_committee_scope: CommitteeScope::PendingNew,
+        }
+        .canonical_bytes();
+        let error = validate_ring_and_membership(&report, &payload(&report), &ring).unwrap_err();
+        assert!(error.to_string().contains("excluding the accused"));
     }
 
     #[test]
