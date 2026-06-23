@@ -621,6 +621,7 @@ mod tests {
             dkg_alpn: b"orbis/dkg/1",
             reencrypt_alpn: b"orbis/reencrypt/1",
             sign_alpn: b"orbis/sign/1",
+            reporting_health_alpn: b"orbis/reporting/health/1",
         };
 
         let db_path = test_db_path("dkg_cross_version_continuation");

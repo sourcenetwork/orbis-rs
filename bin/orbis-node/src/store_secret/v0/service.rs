@@ -204,6 +204,7 @@ where
                 StoreSecretError::Storage(format!("Failed to load ring polynomial state: {}", e))
             })?;
             let ring = RingConfig {
+                ring_id: req.ring_id.clone(),
                 ring_pk_bytes,
                 peer_ids,
                 peer_node_keys: ring_payload.peer_node_keys,

@@ -3,6 +3,7 @@ use crate::constants::{
     JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
 };
 use crate::helpers::protocol_version::read_ring_for_route;
+use crate::reporting::validate_signing_report;
 use crate::ring_state::RingShareBundle;
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::helpers::{
@@ -181,6 +182,17 @@ where
                 .map_err(SignError::ProtocolError)?;
                 Some(ring_payload.ring_pk)
             }
+            SignContext::Report(ctx) => Some(
+                validate_signing_report(
+                    &self.app_state,
+                    self.routes,
+                    ctx,
+                    sender_peer_id.clone(),
+                    true,
+                )
+                .await
+                .map_err(|error| SignError::Unauthorized(error.to_string()))?,
+            ),
         };
 
         // Auth passed — load share and generate nonce.
@@ -239,6 +251,7 @@ where
             SignContext::RefreshHealthCheck(ctx) => {
                 refresh_health_check_context_key(&ctx.statement)?
             }
+            SignContext::Report(ctx) => format!("report:{}", ctx.envelope.report_id()),
         };
 
         match self
@@ -408,6 +421,24 @@ where
                 .await?;
                 (ring_pk_hex, None, None)
             }
+            SignContext::Report(ref ctx) => {
+                let canonical = ctx.envelope.canonical_bytes();
+                if canonical != message {
+                    return Err(SignError::Unauthorized(
+                        "fault report message does not match its canonical envelope".to_string(),
+                    ));
+                }
+                let ring_pk_hex = validate_signing_report(
+                    &self.app_state,
+                    self.routes,
+                    ctx,
+                    sender_peer_id.clone(),
+                    !S::INTERACTIVE,
+                )
+                .await
+                .map_err(|error| SignError::Unauthorized(error.to_string()))?;
+                (ring_pk_hex, None, None)
+            }
         };
 
         // Deserialize ring public key and load the share + public polynomial from one
@@ -455,6 +486,7 @@ where
                 SignContext::RefreshHealthCheck(ctx) => {
                     refresh_health_check_context_key(&ctx.statement)?
                 }
+                SignContext::Report(ctx) => format!("report:{}", ctx.envelope.report_id()),
             };
             let consumed_nonce = consumed_nonce
                 .ok_or_else(|| SignError::NonceState("Missing nonce state".into()))?;

@@ -148,6 +148,30 @@ lazy_static! {
     .expect("failed to register sign_abandoned_states");
 
     // ============================================================================
+    // MPC Fault Reporting Metrics
+    // ============================================================================
+
+    pub static ref REPORT_ATTEMPTS_TOTAL: CounterVec = register_counter_vec!(
+        "report_attempts_total",
+        "Total number of MPC fault report attempts",
+        &["report_type", "status"]
+    )
+    .expect("failed to register report_attempts_total");
+
+    pub static ref REPORT_HEALTH_CHECKS_TOTAL: CounterVec = register_counter_vec!(
+        "report_health_checks_total",
+        "Total number of independent report health-check outcomes",
+        &["status"]
+    )
+    .expect("failed to register report_health_checks_total");
+
+    pub static ref REPORT_IN_FLIGHT: Gauge = register_gauge!(
+        "report_in_flight",
+        "Number of MPC fault report workflows currently in flight"
+    )
+    .expect("failed to register report_in_flight");
+
+    // ============================================================================
     // Reshare Protocol Metrics
     // ============================================================================
 
@@ -231,6 +255,9 @@ pub fn init() {
     lazy_static::initialize(&SIGN_REQUEST_DURATION_SECONDS);
     lazy_static::initialize(&SIGN_MESSAGES_TOTAL);
     lazy_static::initialize(&SIGN_ABANDONED_STATES_TOTAL);
+    lazy_static::initialize(&REPORT_ATTEMPTS_TOTAL);
+    lazy_static::initialize(&REPORT_HEALTH_CHECKS_TOTAL);
+    lazy_static::initialize(&REPORT_IN_FLIGHT);
     lazy_static::initialize(&RESHARE_SESSIONS_TOTAL);
     lazy_static::initialize(&RESHARE_ACTIVE_SESSIONS);
     lazy_static::initialize(&REFRESH_SESSIONS_TOTAL);

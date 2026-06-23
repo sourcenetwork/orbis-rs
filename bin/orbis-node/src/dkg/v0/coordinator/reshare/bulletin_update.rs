@@ -123,6 +123,7 @@ where
     let sign_coordinator =
         SignCoordinator::<D, SignImpl>::with_routes(coord.app_state.clone(), coord.routes);
     let ring_config = RingConfig {
+        ring_id: prepared.ring_id.clone(),
         ring_pk_bytes: ring_pk_bytes.to_vec(),
         peer_ids: prepared.new_route_peer_ids,
         peer_node_keys: prepared.sorted_new_peer_node_keys,

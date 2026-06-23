@@ -2,7 +2,7 @@ use crate::constants::SIGN_COLLECTION_TIMEOUT;
 use crate::helpers::identity::{determine_ring_node_id_from_peer_id, is_self_peer_id};
 use crate::helpers::response_manager::ResponseInitOutcome;
 use crate::helpers::ring::RingConfig;
-use crate::sign::v0::coordinator::SignCoordinator;
+use crate::sign::v0::coordinator::{SignCoordinator, SigningOptions};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::messages::{NonceRequest, SignContext, SignMessage};
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
@@ -35,6 +35,7 @@ where
         self_in_list: bool,
         context: &SignContext,
         local_dist_key_share: Option<&DistKeyShare<Fr>>,
+        options: &SigningOptions,
     ) -> Result<(Vec<(u32, S::NonceCommitment)>, Option<S::SigningState>)> {
         let nonce_request_id = format!("nonce-{}", request_id);
         let mut all_commitments: Vec<(u32, S::NonceCommitment)> = Vec::new();
@@ -60,6 +61,7 @@ where
             .peer_ids
             .iter()
             .filter(|pid| !is_self_peer_id(&self.app_state.network, pid))
+            .filter(|pid| !options.excludes_peer(pid, ring))
             .cloned()
             .collect();
 
@@ -94,6 +96,9 @@ where
         if min_needed_from_network > 0 {
             for peer_id_str in &ring.peer_ids {
                 if is_self_peer_id(&self.app_state.network, peer_id_str) {
+                    continue;
+                }
+                if options.excludes_peer(peer_id_str, ring) {
                     continue;
                 }
 

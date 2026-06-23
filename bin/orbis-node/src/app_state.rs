@@ -1,5 +1,8 @@
 use crate::dkg::v0::session_state::SessionStateManager;
 use crate::pre::v0::response_state::PreResponseManager;
+use crate::reporting::registry::ReportRegistry;
+use crate::reporting::sink::{LogOnlyReportSink, ReportSink};
+use crate::reporting::state::ReportingState;
 use crate::sign::v0::response_state::SignResponseManager;
 use authz::r#trait::Authz;
 use bulletin::r#trait::Bulletin;
@@ -129,6 +132,12 @@ where
     pub ring_index_lock: Arc<Mutex<()>>,
     /// Global per-peer, per-protocol connection pool shared across DKG, PRE, and Sign.
     pub peer_connection_pool: Arc<PeerConnectionPool>,
+    /// Independent MPC fault-reporting runtime state.
+    pub reporting_state: Arc<ReportingState>,
+    /// Registry of versioned report validators.
+    pub report_registry: Arc<ReportRegistry>,
+    /// Destination for completed threshold-signed reports.
+    pub report_sink: Arc<dyn ReportSink>,
 }
 
 impl<D> AppState<D>
@@ -153,6 +162,9 @@ where
             bulletin,
             ring_index_lock: Arc::new(Mutex::new(())),
             peer_connection_pool: Arc::new(PeerConnectionPool::new()),
+            reporting_state: Arc::new(ReportingState::new()),
+            report_registry: Arc::new(ReportRegistry::with_defaults()),
+            report_sink: Arc::new(LogOnlyReportSink),
         }
     }
 }
@@ -168,6 +180,7 @@ where
             .field("dkg_session_state", &"<SessionStateManager>")
             .field("pre_response_state", &"<PreResponseManager>")
             .field("sign_response_state", &"<SignResponseManager>")
+            .field("reporting_state", &"<ReportingState>")
             .finish()
     }
 }

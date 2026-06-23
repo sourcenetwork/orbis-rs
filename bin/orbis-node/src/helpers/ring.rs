@@ -6,6 +6,7 @@ use local_storage::r#trait::LocalStorage;
 
 #[derive(Debug, Clone)]
 pub struct RingConfig {
+    pub ring_id: String,
     pub ring_pk_bytes: Vec<u8>,
     pub peer_ids: Vec<String>,
     pub peer_node_keys: Vec<String>,

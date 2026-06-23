@@ -466,6 +466,7 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
         .await
         .map_err(|e| format!("Failed to shutdown router: {}", e));
     node.app_state.dkg_session_state.shutdown().await;
+    node.app_state.reporting_state.shutdown().await;
 
     router_shutdown?;
     result?;

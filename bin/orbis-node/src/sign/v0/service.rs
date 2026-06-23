@@ -173,6 +173,7 @@ where
                     SignError::RingState(format!("Failed to load ring polynomial state: {}", e))
                 })?;
         let ring = RingConfig {
+            ring_id: key_derivation.ring_id.clone(),
             ring_pk_bytes,
             peer_ids,
             peer_node_keys: ring_payload.peer_node_keys,

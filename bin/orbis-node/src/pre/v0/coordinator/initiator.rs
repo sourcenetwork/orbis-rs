@@ -9,15 +9,26 @@ use crate::helpers::ring::{
 };
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
+use crate::reporting::observation::offline_observation_from_pre_error;
+use crate::reporting::queue_offline_observation;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply,
     Secret, ThresholdDealer,
 };
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
+use crypto::{PolynomialCommitmentImpl, PubPolyImpl, SigShareInner, SignImpl, SignaturePoint};
 use std::collections::HashSet;
 impl<D, T> PreCoordinator<D, T>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine> + Clone + Send + Sync + 'static,
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
     T: ThresholdDealer<
             ShareValue = Fr,
             PublicKey = G1Affine,
@@ -25,6 +36,16 @@ where
             Secret = Secret,
             ReencryptReply = ReencryptReply<Fr, G1Affine>,
             PubPoly = D::PubPoly,
+        > + Send
+        + Sync
+        + 'static,
+    SignImpl: crypto::r#trait::ThresholdSigner<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            DistKeyShare = DistKeyShare<Fr>,
+            PubPoly = PubPolyImpl,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
         > + Send
         + Sync
         + 'static,
@@ -307,12 +328,33 @@ where
                             }
                         }
                         Ok((_, Ok(None))) => {}
-                        Ok((_, Err(e))) => {
+                        Ok((peer_id, Err(e))) => {
                             tracing::warn!(
                                 request_id = %request_id,
+                                peer_id = %peer_id,
                                 error = %e,
                                 "PRE peer request failed"
                             );
+                            if let Some(observation) = offline_observation_from_pre_error(
+                                &ring,
+                                &peer_id,
+                                &e,
+                                self.routes.version,
+                            ) {
+                                let _ = queue_offline_observation(
+                                    self.app_state.clone(),
+                                    self.routes,
+                                    observation,
+                                )
+                                .await
+                                .inspect_err(|error| {
+                                    tracing::warn!(
+                                        peer_id = %peer_id,
+                                        error = %error,
+                                        "Failed to queue offline report observation"
+                                    );
+                                });
+                            }
                         }
                         Err(e) => {
                             tracing::error!(error = ?e, "Peer reencrypt task panicked");

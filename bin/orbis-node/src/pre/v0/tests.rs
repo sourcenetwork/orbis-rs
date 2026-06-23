@@ -233,6 +233,7 @@ async fn test_dkg_then_pre_end_to_end() {
         .initiate_reencryption(
             request_id.clone(),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: pre_peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -431,6 +432,7 @@ async fn test_pre_with_large_secret() {
         .initiate_reencryption(
             "large-pre-request".to_string(),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: pre_peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -565,6 +567,7 @@ async fn test_pre_fails_with_wrong_key() {
         .initiate_reencryption(
             "wrong-key-pre-request".to_string(),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: pre_peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -695,6 +698,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         .initiate_reencryption(
             "invalid-token-pre-request".to_string(),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: pre_peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -846,6 +850,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
         .initiate_reencryption(
             "mismatched-claims-pre-request".to_string(),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: pre_peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -1136,6 +1141,7 @@ async fn test_pre_fails_with_wrong_derivation() {
         .initiate_reencryption(
             "correct-derivation-pre-request".to_string(),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: pre_peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -1305,6 +1311,7 @@ async fn test_pre_fails_with_bad_proof() {
         .initiate_reencryption(
             "bad-proof-pre-request".to_string(),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: pre_peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -1421,6 +1428,7 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
         .initiate_reencryption_inner(
             request_id.clone(),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: vec![peer_id],
                 peer_node_keys: vec![app_state.node_key.clone()],

@@ -140,6 +140,7 @@ async fn test_dkg_then_sign_end_to_end() {
         .initiate_signing(
             request_id.clone(),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: sign_peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -353,6 +354,7 @@ async fn test_sign_different_messages() {
             .initiate_signing(
                 request_id,
                 RingConfig {
+                    ring_id: String::new(),
                     ring_pk_bytes: ring_pk_bytes.clone(),
                     peer_ids: peer_ids.clone(),
                     peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -462,6 +464,7 @@ async fn test_sign_fails_wrong_message() {
         .initiate_signing(
             request_id,
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -576,6 +579,7 @@ async fn test_sign_response_cleanup() {
         .initiate_signing(
             request_id.clone(),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -678,6 +682,7 @@ async fn test_sign_fails_invalid_bulletin_post() {
         .initiate_signing(
             request_id,
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -792,6 +797,7 @@ async fn test_sign_fails_post_not_on_bulletin() {
         .initiate_signing(
             request_id,
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -927,6 +933,7 @@ async fn test_sign_fails_tampered_payload() {
         .initiate_signing(
             request_id,
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -1044,6 +1051,7 @@ async fn test_sign_fails_invalid_ring_id() {
         .initiate_signing(
             request_id,
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -1185,6 +1193,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
         .initiate_signing(
             request_id,
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -1327,6 +1336,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
                     .as_millis()
             ),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -1431,6 +1441,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                     .as_millis()
             ),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -1722,6 +1733,7 @@ async fn test_sign_policy_fails_wrong_message_digest() {
                     .as_millis()
             ),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),

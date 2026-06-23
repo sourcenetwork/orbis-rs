@@ -7,6 +7,7 @@ pub struct ProtocolRoutes {
     pub dkg_alpn: &'static [u8],
     pub reencrypt_alpn: &'static [u8],
     pub sign_alpn: &'static [u8],
+    pub reporting_health_alpn: &'static [u8],
 }
 
 /// Version 0 routes. These ALPN identifiers are intentionally unchanged.
@@ -15,6 +16,7 @@ pub const V0: ProtocolRoutes = ProtocolRoutes {
     dkg_alpn: b"orbis/dkg/0",
     reencrypt_alpn: b"orbis/reencrypt/0",
     sign_alpn: b"orbis/sign/0",
+    reporting_health_alpn: b"orbis/reporting/health/0",
 };
 
 /// Protocol versions served by this binary.
@@ -37,6 +39,7 @@ mod tests {
         assert_eq!(V0.dkg_alpn, b"orbis/dkg/0");
         assert_eq!(V0.reencrypt_alpn, b"orbis/reencrypt/0");
         assert_eq!(V0.sign_alpn, b"orbis/sign/0");
+        assert_eq!(V0.reporting_health_alpn, b"orbis/reporting/health/0");
     }
 
     #[test]
