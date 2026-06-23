@@ -9,9 +9,8 @@ use crate::helpers::ring::{
 };
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
-use crate::reporting::observation::offline_observation_from_pre_error;
+use crate::reporting::observation::{offline_observation_from_pre_error, ReportObservation};
 use crate::reporting::queue_report;
-use crate::reporting::types::ReportObservation;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply,
     Secret, ThresholdDealer,

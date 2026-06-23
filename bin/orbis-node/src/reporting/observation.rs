@@ -1,7 +1,39 @@
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::error::PreError;
-use crate::reporting::types::{OfflineFailureStage, OfflineObservation};
+use crate::reporting::types::{
+    OfflineFailureStage, NODE_OFFLINE_REPORT_TYPE, NODE_OFFLINE_REPORT_VERSION,
+};
+
+#[derive(Debug, Clone)]
+pub struct OfflineObservation {
+    pub ring_id: String,
+    pub accused_node_key: String,
+    pub accused_peer_id: String,
+    pub origin_protocol: String,
+    pub origin_protocol_version: u64,
+    pub failure_stage: OfflineFailureStage,
+    pub observed_at: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum ReportObservation {
+    NodeOffline(OfflineObservation),
+}
+
+impl ReportObservation {
+    pub fn report_type(&self) -> &'static str {
+        match self {
+            Self::NodeOffline(_) => NODE_OFFLINE_REPORT_TYPE,
+        }
+    }
+
+    pub fn report_version(&self) -> u16 {
+        match self {
+            Self::NodeOffline(_) => NODE_OFFLINE_REPORT_VERSION,
+        }
+    }
+}
 
 pub fn offline_observation_from_pre_error(
     ring: &RingConfig,

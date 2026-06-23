@@ -1,7 +1,6 @@
 use crate::reporting::error::{ReportingError, Result};
 use crate::reporting::registry::ReportRegistry;
 use crate::reporting::sink::{LogOnlyReportSink, ReportSink};
-use crate::reporting::types::InFlightReportKey;
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
@@ -9,6 +8,13 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 const MAX_IN_FLIGHT_REPORTS: usize = 128;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct InFlightReportKey {
+    pub report_type: &'static str,
+    pub ring_id: String,
+    pub subject_key: String,
+}
 
 pub struct ReportingState {
     pub registry: Arc<ReportRegistry>,

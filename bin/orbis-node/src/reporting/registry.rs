@@ -4,10 +4,11 @@ use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::helpers::ring::RingConfig;
 use crate::reporting::error::{ReportingError, Result};
 use crate::reporting::health::require_peer_offline;
+use crate::reporting::observation::{OfflineObservation, ReportObservation};
+use crate::reporting::state::InFlightReportKey;
 use crate::reporting::types::{
-    ring_state_sha256, InFlightReportKey, NodeOfflineV1, OfflineObservation, ReportEnvelope,
-    ReportObservation, NODE_OFFLINE_REPORT_TYPE, NODE_OFFLINE_REPORT_VERSION, REPORT_DOMAIN,
-    REPORT_FRAMEWORK_VERSION, REPORT_TTL_SECS,
+    ring_state_sha256, NodeOfflineV1, ReportEnvelope, NODE_OFFLINE_REPORT_TYPE,
+    NODE_OFFLINE_REPORT_VERSION, REPORT_DOMAIN, REPORT_FRAMEWORK_VERSION, REPORT_TTL_SECS,
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::SigningOptions;
@@ -396,9 +397,10 @@ async fn read_node_info(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reporting::observation::{OfflineObservation, ReportObservation};
     use crate::reporting::types::{
-        NodeOfflineV1, OfflineFailureStage, OfflineObservation, ReportObservation, REPORT_DOMAIN,
-        REPORT_FRAMEWORK_VERSION, REPORT_TTL_SECS,
+        NodeOfflineV1, OfflineFailureStage, REPORT_DOMAIN, REPORT_FRAMEWORK_VERSION,
+        REPORT_TTL_SECS,
     };
     use bulletin::r#trait::UpgradeInfo;
 

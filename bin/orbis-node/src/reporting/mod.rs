@@ -8,10 +8,11 @@ pub mod types;
 
 use crate::app_state::AppState;
 use crate::reporting::error::{ReportingError, Result};
+use crate::reporting::observation::ReportObservation;
 use crate::reporting::registry::{
     PreparedReport, ReportPreparationContext, ReportValidationContext, ReportValidationMode,
 };
-use crate::reporting::types::{ReportObservation, ReportSigningContext, SignedReport};
+use crate::reporting::types::{ReportSigningContext, SignedReport};
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::v0::messages::SignContext;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};

@@ -1,8 +1,9 @@
 use super::error::Result;
+use super::observation::{OfflineObservation, ReportObservation};
 use super::queue_report;
 use super::sink::ReportSink;
 use super::state::ReportingState;
-use super::types::{OfflineFailureStage, OfflineObservation, ReportObservation, SignedReport};
+use super::types::{OfflineFailureStage, SignedReport};
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::helpers::node_routes::resolve_node_routes;
 use crate::helpers::test_helpers::{
