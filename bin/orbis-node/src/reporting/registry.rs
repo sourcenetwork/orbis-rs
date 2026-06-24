@@ -8,7 +8,7 @@ use crate::reporting::observation::{OfflineObservation, ReportObservation};
 use crate::reporting::state::InFlightReportKey;
 use crate::reporting::types::{
     ring_state_sha256, CommitteeScope, NodeOffline, ReportEnvelope, NODE_OFFLINE_REPORT_TYPE,
-    NODE_OFFLINE_REPORT_VERSION, REPORT_DOMAIN, REPORT_FRAMEWORK_VERSION, REPORT_TTL_SECS,
+    REPORT_DOMAIN, REPORT_TTL_SECS,
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::SigningOptions;
@@ -52,7 +52,6 @@ pub struct PreparedReport {
 #[async_trait]
 pub trait ReportHandler: Send + Sync {
     fn report_type(&self) -> &'static str;
-    fn report_version(&self) -> u16;
     fn in_flight_key(&self, observation: &ReportObservation) -> Result<InFlightReportKey>;
     async fn prepare(
         &self,
@@ -67,7 +66,7 @@ pub trait ReportHandler: Send + Sync {
 }
 
 pub struct ReportRegistry {
-    handlers: HashMap<(String, u16), Arc<dyn ReportHandler>>,
+    handlers: HashMap<String, Arc<dyn ReportHandler>>,
 }
 
 impl ReportRegistry {
@@ -80,10 +79,8 @@ impl ReportRegistry {
     }
 
     pub fn register(&mut self, handler: Arc<dyn ReportHandler>) {
-        self.handlers.insert(
-            (handler.report_type().to_string(), handler.report_version()),
-            handler,
-        );
+        self.handlers
+            .insert(handler.report_type().to_string(), handler);
     }
 
     pub async fn validate(
@@ -92,7 +89,7 @@ impl ReportRegistry {
         context: &ReportValidationContext,
     ) -> Result<()> {
         envelope.validate_shape(context.now)?;
-        let handler = self.handler_for(&envelope.report_type, envelope.report_version)?;
+        let handler = self.handler_for(&envelope.report_type)?;
         handler.validate(envelope, context).await
     }
 
@@ -101,24 +98,19 @@ impl ReportRegistry {
         observation: &ReportObservation,
     ) -> Result<Arc<dyn ReportHandler>> {
         self.handlers
-            .get(&(
-                observation.report_type().to_string(),
-                observation.report_version(),
-            ))
+            .get(observation.report_type())
             .cloned()
             .ok_or_else(|| ReportingError::UnsupportedReportType {
                 name: observation.report_type().to_string(),
-                version: observation.report_version(),
             })
     }
 
-    fn handler_for(&self, report_type: &str, report_version: u16) -> Result<&dyn ReportHandler> {
+    fn handler_for(&self, report_type: &str) -> Result<&dyn ReportHandler> {
         self.handlers
-            .get(&(report_type.to_string(), report_version))
+            .get(report_type)
             .map(Arc::as_ref)
             .ok_or_else(|| ReportingError::UnsupportedReportType {
                 name: report_type.to_string(),
-                version: report_version,
             })
     }
 }
@@ -141,10 +133,6 @@ struct CommitteeView {
 impl ReportHandler for NodeOfflineHandler {
     fn report_type(&self) -> &'static str {
         NODE_OFFLINE_REPORT_TYPE
-    }
-
-    fn report_version(&self) -> u16 {
-        NODE_OFFLINE_REPORT_VERSION
     }
 
     fn in_flight_key(&self, observation: &ReportObservation) -> Result<InFlightReportKey> {
@@ -302,9 +290,7 @@ impl NodeOfflineHandler {
         };
         ReportEnvelope {
             domain: REPORT_DOMAIN.to_string(),
-            framework_version: REPORT_FRAMEWORK_VERSION,
             report_type: self.report_type().to_string(),
-            report_version: self.report_version(),
             chain_id,
             ring_id: observation.ring_id.clone(),
             ring_pk: ring.ring_pk.clone(),
@@ -456,8 +442,7 @@ mod tests {
     use super::*;
     use crate::reporting::observation::{OfflineObservation, ReportObservation};
     use crate::reporting::types::{
-        CommitteeScope, NodeOffline, OfflineFailureStage, REPORT_DOMAIN, REPORT_FRAMEWORK_VERSION,
-        REPORT_TTL_SECS,
+        CommitteeScope, NodeOffline, OfflineFailureStage, REPORT_DOMAIN, REPORT_TTL_SECS,
     };
     use bulletin::r#trait::UpgradeInfo;
 
@@ -482,9 +467,7 @@ mod tests {
     fn envelope(ring: &RingPayload) -> ReportEnvelope {
         ReportEnvelope {
             domain: REPORT_DOMAIN.to_string(),
-            framework_version: REPORT_FRAMEWORK_VERSION,
             report_type: NODE_OFFLINE_REPORT_TYPE.to_string(),
-            report_version: NODE_OFFLINE_REPORT_VERSION,
             chain_id: "chain".to_string(),
             ring_id: "ring".to_string(),
             ring_pk: ring.ring_pk.clone(),
@@ -530,7 +513,6 @@ mod tests {
             .handler_for_observation(&ReportObservation::NodeOffline(offline_observation()))
             .unwrap();
         assert_eq!(handler.report_type(), NODE_OFFLINE_REPORT_TYPE);
-        assert_eq!(handler.report_version(), NODE_OFFLINE_REPORT_VERSION);
     }
 
     #[test]
@@ -688,7 +670,7 @@ mod tests {
     fn rejects_unknown_report_type() {
         let registry = ReportRegistry::with_defaults();
         assert!(matches!(
-            registry.handler_for("future_fault", 1),
+            registry.handler_for("future_fault"),
             Err(ReportingError::UnsupportedReportType { .. })
         ));
     }

@@ -2,9 +2,7 @@ use crate::dkg::v0::error::DkgError;
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::error::PreError;
-use crate::reporting::types::{
-    CommitteeScope, OfflineFailureStage, NODE_OFFLINE_REPORT_TYPE, NODE_OFFLINE_REPORT_VERSION,
-};
+use crate::reporting::types::{CommitteeScope, OfflineFailureStage, NODE_OFFLINE_REPORT_TYPE};
 use crate::sign::v0::error::SignError;
 
 #[derive(Debug, Clone)]
@@ -29,12 +27,6 @@ impl ReportObservation {
     pub fn report_type(&self) -> &'static str {
         match self {
             Self::NodeOffline(_) => NODE_OFFLINE_REPORT_TYPE,
-        }
-    }
-
-    pub fn report_version(&self) -> u16 {
-        match self {
-            Self::NodeOffline(_) => NODE_OFFLINE_REPORT_VERSION,
         }
     }
 }

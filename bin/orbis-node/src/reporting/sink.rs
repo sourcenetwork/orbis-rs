@@ -17,7 +17,6 @@ impl ReportSink for LogOnlyReportSink {
         tracing::warn!(
             report_id = %report.report_id,
             report_type = %report.report.report_type,
-            report_version = report.report.report_version,
             ring_id = %report.report.ring_id,
             reporter_node_key = %report.report.reporter_node_key,
             accused_node_key = %report.report.accused_node_key,

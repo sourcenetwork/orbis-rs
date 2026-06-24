@@ -10,8 +10,8 @@ pub enum ReportingError {
     TargetReachable,
     #[error("report has expired")]
     Expired,
-    #[error("unsupported report type {name} version {version}")]
-    UnsupportedReportType { name: String, version: u16 },
+    #[error("unsupported report type {name}")]
+    UnsupportedReportType { name: String },
     #[error("bulletin error: {0}")]
     Bulletin(String),
     #[error("signing error: {0}")]

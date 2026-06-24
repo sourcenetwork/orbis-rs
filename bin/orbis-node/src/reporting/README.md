@@ -75,7 +75,7 @@ These should not create `node_offline` reports:
 - verification failures;
 - canceled stragglers after PRE already has enough shares.
 
-The payload must stay sanitized. `NodeOfflineV1` records only the originating
+The payload must stay sanitized. `NodeOffline` records only the originating
 protocol/version and normalized failure stage. It must not include JWTs, object
 IDs, ciphertexts, or raw error text.
 
@@ -83,14 +83,14 @@ IDs, ciphertexts, or raw error text.
 
 Before anyone signs, the report handler should verify:
 
-- the envelope domain and framework version are supported;
-- the report type/version is registered;
+- the envelope domain is supported;
+- the report type is registered;
 - the report has not expired;
 - the chain ID matches the configured bulletin;
-- the ring is finalized and no reshare is pending;
+- the ring is finalized;
 - the ring public key and canonical ring-state digest match current bulletin
   state;
-- reporter and accused are distinct current committee members;
+- reporter and accused are distinct members of their declared committee scopes;
 - `NodeInfo` peer IDs match the report;
 - the requester peer matches the reporter `NodeInfo`;
 - the local signer is a current committee member;
@@ -147,7 +147,7 @@ not make the chain define a competing encoding.
 
 To add another fault path:
 
-1. define a versioned canonical payload in `types.rs`;
+1. define a canonical payload in `types.rs`;
 2. add a normalized observation type and `ReportObservation` variant;
 3. implement a `ReportHandler` that prepares `PreparedReport` and validates it;
 4. register the handler in the default registry;

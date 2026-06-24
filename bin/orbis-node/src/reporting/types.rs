@@ -4,9 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const REPORT_DOMAIN: &str = "orbis-mpc-fault-report";
-pub const REPORT_FRAMEWORK_VERSION: u16 = 1;
 pub const NODE_OFFLINE_REPORT_TYPE: &str = "node_offline";
-pub const NODE_OFFLINE_REPORT_VERSION: u16 = 2;
 pub const REPORT_TTL_SECS: u64 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,9 +109,7 @@ impl NodeOffline {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportEnvelope {
     pub domain: String,
-    pub framework_version: u16,
     pub report_type: String,
-    pub report_version: u16,
     pub chain_id: String,
     pub ring_id: String,
     pub ring_pk: String,
@@ -130,9 +126,7 @@ impl ReportEnvelope {
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_string(&mut out, &self.domain);
-        write_u16(&mut out, self.framework_version);
         write_string(&mut out, &self.report_type);
-        write_u16(&mut out, self.report_version);
         write_string(&mut out, &self.chain_id);
         write_string(&mut out, &self.ring_id);
         write_string(&mut out, &self.ring_pk);
@@ -155,12 +149,6 @@ impl ReportEnvelope {
             return Err(ReportingError::InvalidReport(format!(
                 "unexpected domain {}",
                 self.domain
-            )));
-        }
-        if self.framework_version != REPORT_FRAMEWORK_VERSION {
-            return Err(ReportingError::InvalidReport(format!(
-                "unsupported framework version {}",
-                self.framework_version
             )));
         }
         if self.observed_at > self.expires_at
@@ -230,10 +218,6 @@ pub fn canonical_ring_state_bytes(payload: &RingPayload) -> Vec<u8> {
     write_optional_u64(&mut out, payload.upgrade_info.next_version);
     write_optional_u64(&mut out, payload.upgrade_info.activation_time);
     out
-}
-
-fn write_u16(out: &mut Vec<u8>, value: u16) {
-    out.extend_from_slice(&value.to_be_bytes());
 }
 
 fn write_u32(out: &mut Vec<u8>, value: u32) {
@@ -373,9 +357,7 @@ mod tests {
     fn envelope() -> ReportEnvelope {
         ReportEnvelope {
             domain: REPORT_DOMAIN.to_string(),
-            framework_version: REPORT_FRAMEWORK_VERSION,
             report_type: NODE_OFFLINE_REPORT_TYPE.to_string(),
-            report_version: NODE_OFFLINE_REPORT_VERSION,
             chain_id: "sourcehub-test".to_string(),
             ring_id: "ring-1".to_string(),
             ring_pk: "aabb".to_string(),
@@ -466,7 +448,7 @@ mod tests {
     fn report_encoding_golden_vector() {
         assert_eq!(
             envelope().report_id(),
-            "a84fc8fb6e2613e2cac35ecfa03e578e919aea29d5c8c366928b85ae797ce4c8"
+            "55ea1e152ea0b5a0a50b7db6e42b8753b110240851585927da894e3d4ee753bb"
         );
     }
 }
