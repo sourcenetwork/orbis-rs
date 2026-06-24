@@ -1,8 +1,9 @@
 use crate::{
     error::{BulletinError, Result},
     r#trait::{
-        Bulletin, BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, KeyDerivation,
-        NodeInfo, RingCancellationPayload, RingFinalizationPayload, RingPayload, UpgradeInfo,
+        Bulletin, BulletinKind, BulletinPost, BulletinReportSubmission, BulletinWriteKind,
+        DocumentPayload, KeyDerivation, NodeInfo, RingCancellationPayload, RingFinalizationPayload,
+        RingPayload, UpgradeInfo,
     },
 };
 use async_trait::async_trait;
@@ -141,6 +142,31 @@ impl Bulletin for SourceHubBulletin {
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?;
         check_result(result, "finalize ring reshare")
+    }
+
+    async fn submit_report(&self, s: BulletinReportSubmission) -> Result<()> {
+        let result = self
+            .chain_client
+            .orbis_submit_report(
+                s.domain,
+                s.report_type,
+                s.chain_id,
+                s.ring_id,
+                s.ring_pk,
+                s.ring_state_sha256,
+                s.reporter_node_key,
+                s.accused_node_key,
+                s.accused_peer_id,
+                s.observed_at,
+                s.expires_at,
+                s.payload,
+                s.report_id,
+                s.signature_scheme,
+                s.signature,
+            )
+            .await
+            .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+        check_result(result, "submit report")
     }
 
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost> {

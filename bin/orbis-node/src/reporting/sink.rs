@@ -1,31 +1,28 @@
 use crate::reporting::error::{ReportingError, Result};
 use crate::reporting::types::SignedReport;
-use async_trait::async_trait;
+use bulletin::r#trait::{Bulletin, BulletinReportSubmission};
 
-#[async_trait]
-pub trait ReportSink: Send + Sync {
-    async fn submit(&self, report: SignedReport) -> Result<()>;
-}
-
-pub struct LogOnlyReportSink;
-
-#[async_trait]
-impl ReportSink for LogOnlyReportSink {
-    async fn submit(&self, report: SignedReport) -> Result<()> {
-        let signed_report_json = serde_json::to_string(&report)
-            .map_err(|error| ReportingError::Serialization(error.to_string()))?;
-        tracing::warn!(
-            report_id = %report.report_id,
-            report_type = %report.report.report_type,
-            ring_id = %report.report.ring_id,
-            reporter_node_key = %report.report.reporter_node_key,
-            accused_node_key = %report.report.accused_node_key,
-            accused_peer_id = %report.report.accused_peer_id,
-            signature_scheme = %report.signature_scheme,
-            signature = %report.signature,
-            signed_report = %signed_report_json,
-            "Threshold-signed MPC fault report produced; TODO submit this artifact to SourceHub"
-        );
-        Ok(())
-    }
+pub async fn submit(report: SignedReport, bulletin: &(dyn Bulletin + Send + Sync)) -> Result<()> {
+    let signature_bytes = hex::decode(&report.signature)
+        .map_err(|e| ReportingError::Signing(format!("hex decode signature: {e}")))?;
+    bulletin
+        .submit_report(BulletinReportSubmission {
+            domain: report.report.domain,
+            report_type: report.report.report_type,
+            chain_id: report.report.chain_id,
+            ring_id: report.report.ring_id,
+            ring_pk: report.report.ring_pk,
+            ring_state_sha256: report.report.ring_state_sha256,
+            reporter_node_key: report.report.reporter_node_key,
+            accused_node_key: report.report.accused_node_key,
+            accused_peer_id: report.report.accused_peer_id,
+            observed_at: report.report.observed_at,
+            expires_at: report.report.expires_at,
+            payload: report.report.payload,
+            report_id: report.report_id,
+            signature_scheme: report.signature_scheme,
+            signature: signature_bytes,
+        })
+        .await
+        .map_err(|e| ReportingError::Bulletin(e.to_string()))
 }

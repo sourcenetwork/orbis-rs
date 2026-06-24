@@ -552,6 +552,55 @@ impl MsgRemoveNodeFromWhitelist {
 #[derive(Clone, Message)]
 pub struct MsgRemoveNodeFromWhitelistResponse {}
 
+#[derive(Clone, Message)]
+pub struct ReportEnvelopeProto {
+    #[prost(string, tag = "1")]
+    pub domain: String,
+    #[prost(string, tag = "2")]
+    pub report_type: String,
+    #[prost(string, tag = "3")]
+    pub chain_id: String,
+    #[prost(string, tag = "4")]
+    pub ring_id: String,
+    #[prost(string, tag = "5")]
+    pub ring_pk: String,
+    #[prost(string, tag = "6")]
+    pub ring_state_sha256: String,
+    #[prost(string, tag = "7")]
+    pub reporter_node_key: String,
+    #[prost(string, tag = "8")]
+    pub accused_node_key: String,
+    #[prost(string, tag = "9")]
+    pub accused_peer_id: String,
+    #[prost(uint64, tag = "10")]
+    pub observed_at: u64,
+    #[prost(uint64, tag = "11")]
+    pub expires_at: u64,
+    #[prost(bytes = "vec", tag = "12")]
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Message)]
+pub struct MsgSubmitReport {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(message, optional, tag = "2")]
+    pub report: Option<ReportEnvelopeProto>,
+    #[prost(string, tag = "3")]
+    pub report_id: String,
+    #[prost(string, tag = "4")]
+    pub signature_scheme: String,
+    #[prost(bytes = "vec", tag = "5")]
+    pub signature: Vec<u8>,
+}
+
+impl MsgSubmitReport {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgSubmitReport";
+}
+
+#[derive(Clone, Message)]
+pub struct MsgSubmitReportResponse {}
+
 // ============================================================================
 // Query Request/Response Types
 // ============================================================================
@@ -1388,6 +1437,56 @@ impl SourceHubClient {
             BlockchainError::Serialization(format!("Failed to decode node info response: {}", e))
         })?;
         Ok(response.node_info)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn orbis_submit_report(
+        &self,
+        domain: String,
+        report_type: String,
+        chain_id: String,
+        ring_id: String,
+        ring_pk: String,
+        ring_state_sha256: String,
+        reporter_node_key: String,
+        accused_node_key: String,
+        accused_peer_id: String,
+        observed_at: u64,
+        expires_at: u64,
+        payload: Vec<u8>,
+        report_id: String,
+        signature_scheme: String,
+        signature: Vec<u8>,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgSubmitReport {
+            creator: signer.address(),
+            report: Some(ReportEnvelopeProto {
+                domain,
+                report_type,
+                chain_id,
+                ring_id,
+                ring_pk,
+                ring_state_sha256,
+                reporter_node_key,
+                accused_node_key,
+                accused_peer_id,
+                observed_at,
+                expires_at,
+                payload,
+            }),
+            report_id,
+            signature_scheme,
+            signature,
+        };
+        self.broadcast_proto_msg_with_gas(
+            MsgSubmitReport::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
     }
 }
 

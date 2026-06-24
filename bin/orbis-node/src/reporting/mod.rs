@@ -154,16 +154,16 @@ where
     let sign_response: SignResponse = serde_json::from_slice(&response)
         .map_err(|error| ReportingError::Serialization(error.to_string()))?;
 
-    app_state
-        .reporting_state
-        .sink
-        .submit(SignedReport {
+    sink::submit(
+        SignedReport {
             report: prepared.envelope,
             report_id,
             signature_scheme: THRESHOLD_SIGNATURE_SCHEME.to_string(),
             signature: sign_response.signature,
-        })
-        .await
+        },
+        &*app_state.bulletin,
+    )
+    .await
 }
 
 pub async fn validate_signing_report<D>(

@@ -1,8 +1,9 @@
 use crate::{
     error::{BulletinError, Result},
     r#trait::{
-        Bulletin, BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, KeyDerivation,
-        NodeInfo, RingCancellationPayload, RingFinalizationPayload, RingPayload,
+        Bulletin, BulletinKind, BulletinPost, BulletinReportSubmission, BulletinWriteKind,
+        DocumentPayload, KeyDerivation, NodeInfo, RingCancellationPayload, RingFinalizationPayload,
+        RingPayload,
     },
 };
 use async_trait::async_trait;
@@ -23,6 +24,8 @@ pub struct DummyBulletin {
     finalization_counts: Mutex<HashMap<String, usize>>,
     /// Test-only failure injection for pending-ring cancellation.
     fail_pending_ring_cancellations: Mutex<bool>,
+    /// Accumulated fault reports submitted via submit_report() — useful for test assertions.
+    submitted_reports: Mutex<Vec<BulletinReportSubmission>>,
 }
 
 #[async_trait]
@@ -92,6 +95,11 @@ impl Bulletin for DummyBulletin {
             .get(&id)
             .cloned()
             .ok_or(BulletinError::NotFound { id })
+    }
+
+    async fn submit_report(&self, submission: BulletinReportSubmission) -> Result<()> {
+        self.submitted_reports.lock().unwrap().push(submission);
+        Ok(())
     }
 
     fn chain_id(&self) -> String {
@@ -230,6 +238,7 @@ impl Default for DummyBulletin {
             pending_finalization_ring_pks: Mutex::new(HashMap::new()),
             finalization_counts: Mutex::new(HashMap::new()),
             fail_pending_ring_cancellations: Mutex::new(false),
+            submitted_reports: Mutex::new(Vec::new()),
         }
     }
 }
@@ -240,6 +249,11 @@ impl DummyBulletin {
     }
     pub async fn new() -> Result<Self> {
         Ok(DummyBulletin::default())
+    }
+
+    /// Drain and return all fault reports submitted via submit_report().
+    pub fn take_submitted_reports(&self) -> Vec<BulletinReportSubmission> {
+        std::mem::take(&mut *self.submitted_reports.lock().unwrap())
     }
 
     /// Set a post directly (for test setup)
