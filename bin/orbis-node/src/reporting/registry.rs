@@ -284,7 +284,6 @@ impl NodeOfflineHandler {
         let payload = NodeOffline {
             origin_protocol: observation.origin_protocol.clone(),
             origin_protocol_version: observation.origin_protocol_version,
-            failure_stage: observation.failure_stage,
             accused_committee_scope: observation.accused_committee_scope,
             signing_committee_scope: observation.signing_committee_scope,
         };
@@ -441,9 +440,7 @@ async fn read_node_info(
 mod tests {
     use super::*;
     use crate::reporting::observation::{OfflineObservation, ReportObservation};
-    use crate::reporting::types::{
-        CommitteeScope, NodeOffline, OfflineFailureStage, REPORT_DOMAIN, REPORT_TTL_SECS,
-    };
+    use crate::reporting::types::{CommitteeScope, NodeOffline, REPORT_DOMAIN, REPORT_TTL_SECS};
     use bulletin::r#trait::UpgradeInfo;
 
     fn ring_fixture(threshold: u32) -> RingPayload {
@@ -480,7 +477,6 @@ mod tests {
             payload: NodeOffline {
                 origin_protocol: "pre".to_string(),
                 origin_protocol_version: 0,
-                failure_stage: OfflineFailureStage::OpenStream,
                 accused_committee_scope: CommitteeScope::Current,
                 signing_committee_scope: CommitteeScope::Current,
             }
@@ -499,7 +495,6 @@ mod tests {
             accused_peer_id: "aa".repeat(32),
             origin_protocol: "pre".to_string(),
             origin_protocol_version: 0,
-            failure_stage: OfflineFailureStage::OpenStream,
             accused_committee_scope: CommitteeScope::Current,
             signing_committee_scope: CommitteeScope::Current,
             observed_at: 100,
@@ -595,7 +590,6 @@ mod tests {
         report.payload = NodeOffline {
             origin_protocol: "pss_reshare".to_string(),
             origin_protocol_version: 0,
-            failure_stage: OfflineFailureStage::Send,
             accused_committee_scope: CommitteeScope::PendingNew,
             signing_committee_scope: CommitteeScope::Current,
         }
@@ -619,7 +613,6 @@ mod tests {
         report.payload = NodeOffline {
             origin_protocol: "pss_reshare".to_string(),
             origin_protocol_version: 0,
-            failure_stage: OfflineFailureStage::Send,
             accused_committee_scope: CommitteeScope::PendingNew,
             signing_committee_scope: CommitteeScope::PendingNew,
         }
@@ -645,7 +638,6 @@ mod tests {
         report.payload = NodeOffline {
             origin_protocol: "pss_reshare".to_string(),
             origin_protocol_version: 0,
-            failure_stage: OfflineFailureStage::Send,
             accused_committee_scope: CommitteeScope::PendingNew,
             signing_committee_scope: CommitteeScope::Current,
         }
@@ -657,7 +649,6 @@ mod tests {
         report.payload = NodeOffline {
             origin_protocol: "pss_reshare".to_string(),
             origin_protocol_version: 0,
-            failure_stage: OfflineFailureStage::Send,
             accused_committee_scope: CommitteeScope::PendingNew,
             signing_committee_scope: CommitteeScope::PendingNew,
         }

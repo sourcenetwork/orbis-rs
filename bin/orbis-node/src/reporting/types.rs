@@ -9,28 +9,6 @@ pub const REPORT_TTL_SECS: u64 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum OfflineFailureStage {
-    Connect,
-    OpenStream,
-    Send,
-    Receive,
-    ResponseTimeout,
-}
-
-impl OfflineFailureStage {
-    fn tag(self) -> u8 {
-        match self {
-            Self::Connect => 1,
-            Self::OpenStream => 2,
-            Self::Send => 3,
-            Self::Receive => 4,
-            Self::ResponseTimeout => 5,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum CommitteeScope {
     Current,
     PendingNew,
@@ -59,7 +37,6 @@ impl CommitteeScope {
 pub struct NodeOffline {
     pub origin_protocol: String,
     pub origin_protocol_version: u64,
-    pub failure_stage: OfflineFailureStage,
     pub accused_committee_scope: CommitteeScope,
     pub signing_committee_scope: CommitteeScope,
 }
@@ -69,7 +46,6 @@ impl NodeOffline {
         let mut out = Vec::new();
         write_string(&mut out, &self.origin_protocol);
         write_u64(&mut out, self.origin_protocol_version);
-        out.push(self.failure_stage.tag());
         out.push(self.accused_committee_scope.tag());
         out.push(self.signing_committee_scope.tag());
         out
@@ -79,18 +55,6 @@ impl NodeOffline {
         let mut decoder = Decoder::new(bytes);
         let origin_protocol = decoder.read_string("origin_protocol")?;
         let origin_protocol_version = decoder.read_u64("origin_protocol_version")?;
-        let failure_stage = match decoder.read_u8("failure_stage")? {
-            1 => OfflineFailureStage::Connect,
-            2 => OfflineFailureStage::OpenStream,
-            3 => OfflineFailureStage::Send,
-            4 => OfflineFailureStage::Receive,
-            5 => OfflineFailureStage::ResponseTimeout,
-            value => {
-                return Err(ReportingError::InvalidReport(format!(
-                    "unknown offline failure stage {value}"
-                )))
-            }
-        };
         let accused_committee_scope =
             CommitteeScope::from_tag(decoder.read_u8("accused_committee_scope")?)?;
         let signing_committee_scope =
@@ -99,7 +63,6 @@ impl NodeOffline {
         Ok(Self {
             origin_protocol,
             origin_protocol_version,
-            failure_stage,
             accused_committee_scope,
             signing_committee_scope,
         })
@@ -370,7 +333,6 @@ mod tests {
             payload: NodeOffline {
                 origin_protocol: "pre".to_string(),
                 origin_protocol_version: 0,
-                failure_stage: OfflineFailureStage::ResponseTimeout,
                 accused_committee_scope: CommitteeScope::Current,
                 signing_committee_scope: CommitteeScope::Current,
             }
@@ -383,7 +345,6 @@ mod tests {
         let payload = NodeOffline {
             origin_protocol: "pre".to_string(),
             origin_protocol_version: 7,
-            failure_stage: OfflineFailureStage::Receive,
             accused_committee_scope: CommitteeScope::PendingNew,
             signing_committee_scope: CommitteeScope::Current,
         };
@@ -448,7 +409,7 @@ mod tests {
     fn report_encoding_golden_vector() {
         assert_eq!(
             envelope().report_id(),
-            "55ea1e152ea0b5a0a50b7db6e42b8753b110240851585927da894e3d4ee753bb"
+            "dfb170015fd469566dadfedadf6ff110f840e6a1e53b35a2850581bcf74da797"
         );
     }
 }

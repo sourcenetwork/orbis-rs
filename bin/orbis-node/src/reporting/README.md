@@ -76,8 +76,8 @@ These should not create `node_offline` reports:
 - canceled stragglers after PRE already has enough shares.
 
 The payload must stay sanitized. `NodeOffline` records only the originating
-protocol/version and normalized failure stage. It must not include JWTs, object
-IDs, ciphertexts, or raw error text.
+protocol/version and committee scopes. It must not include JWTs, object IDs,
+ciphertexts, raw error text, or transport sub-stage details.
 
 ## Common validation gates
 

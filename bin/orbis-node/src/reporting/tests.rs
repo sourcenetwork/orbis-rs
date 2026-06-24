@@ -3,7 +3,7 @@ use super::observation::{OfflineObservation, ReportObservation};
 use super::queue_report;
 use super::sink::ReportSink;
 use super::state::ReportingState;
-use super::types::{CommitteeScope, OfflineFailureStage, SignedReport};
+use super::types::{CommitteeScope, SignedReport};
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::helpers::node_routes::resolve_node_routes;
 use crate::helpers::test_helpers::{
@@ -88,7 +88,6 @@ async fn threshold_signs_offline_report_without_accused_node() {
         accused_peer_id,
         origin_protocol: "pre".to_string(),
         origin_protocol_version: 0,
-        failure_stage: OfflineFailureStage::ResponseTimeout,
         accused_committee_scope: CommitteeScope::Current,
         signing_committee_scope: CommitteeScope::Current,
         observed_at,

@@ -6,10 +6,10 @@ use crate::helpers::identity::extract_node_part;
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::metrics;
 use crate::reporting::observation::{
-    offline_failure_stage_from_dkg_error, offline_observation_from_peer_routes, ReportObservation,
+    is_reportable_dkg_offline_error, offline_observation_from_peer_routes, ReportObservation,
 };
 use crate::reporting::queue_report;
-use crate::reporting::types::{CommitteeScope as ReportCommitteeScope, OfflineFailureStage};
+use crate::reporting::types::CommitteeScope as ReportCommitteeScope;
 use crate::ring_state::RingPolyState;
 use bulletin::r#trait::{BulletinKind, RingPayload};
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
@@ -270,23 +270,17 @@ fn queue_pss_offline_report<D>(
         + Sync
         + 'static,
 {
-    let Some(failure_stage) = offline_failure_stage_from_dkg_error(error) else {
+    if !is_reportable_dkg_offline_error(error) {
         return;
-    };
+    }
 
     let app_state = coord.app_state.clone();
     let routes = coord.routes;
     let peer_id = peer_id.to_string();
 
     let _handle = tokio::spawn(async move {
-        if let Err(error) = queue_pss_offline_report_task::<D>(
-            app_state,
-            routes,
-            session_id,
-            peer_id.clone(),
-            failure_stage,
-        )
-        .await
+        if let Err(error) =
+            queue_pss_offline_report_task::<D>(app_state, routes, session_id, peer_id.clone()).await
         {
             tracing::warn!(
                 session_id = session_id,
@@ -303,7 +297,6 @@ async fn queue_pss_offline_report_task<D>(
     routes: &'static network::ProtocolRoutes,
     session_id: u128,
     peer_id: String,
-    failure_stage: OfflineFailureStage,
 ) -> Result<()>
 where
     D: Dkg<
@@ -470,7 +463,6 @@ where
         &peer_id,
         origin_protocol,
         routes.version,
-        failure_stage,
         accused_scope,
         signing_scope,
     ) else {
