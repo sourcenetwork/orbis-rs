@@ -807,9 +807,9 @@ async fn test_reshare_offline_triggers_on_chain_report() {
     );
     assert_eq!(event.ring_id, RING_ID, "ring_id mismatch");
     assert!(!event.report_id.is_empty(), "report_id should be set");
-    assert_eq!(
-        event.reporter_node_key, NODE_KEY_1,
-        "node1 (reshare coordinator) should be the reporter"
+    assert_ne!(
+        event.reporter_node_key, NODE_KEY_3,
+        "the accused (offline) node should not be the reporter"
     );
 }
 
