@@ -6,7 +6,7 @@ use crate::helpers::response_manager::ResponseInitOutcome;
 use crate::helpers::ring::{
     is_ring_reshare_in_progress, load_ring_pub_poly_and_bundle, RingConfig,
 };
-use crate::sign::v0::coordinator::rounds::queue_sign_offline_report;
+use crate::sign::v0::coordinator::rounds::{make_sign_drain_observation, queue_sign_offline_report};
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::helpers::{serialize_commitments, validate_refresh_health_check_statement};
@@ -463,8 +463,14 @@ where
             }
         }
 
-        // Cancel any stragglers once we have enough verified shares or stop waiting.
-        drop(set);
+        // Drain remaining peer tasks in the background for post-threshold offline reporting.
+        crate::reporting::spawn_error_drain::<D, S, _, _, _>(
+            set,
+            self.app_state.clone(),
+            self.routes,
+            SIGN_COLLECTION_TIMEOUT,
+            make_sign_drain_observation(ring.clone(), context.clone(), self.routes.version),
+        );
 
         // 3. Collect any responses that were already stored before cancellation and
         // verify the ones we have not counted yet.

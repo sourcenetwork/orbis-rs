@@ -74,6 +74,32 @@ pub(super) fn queue_sign_offline_report<D, S>(
     });
 }
 
+/// Returns a closure suitable for `crate::reporting::spawn_error_drain` that maps
+/// a `(peer_id, SignError)` pair to an optional `ReportObservation`, reusing the same
+/// recursive-report guard as `queue_sign_offline_report`.
+pub(super) fn make_sign_drain_observation(
+    ring: RingConfig,
+    context: SignContext,
+    version: u64,
+) -> impl Fn(String, SignError) -> Option<ReportObservation> {
+    move |peer_id, e| {
+        let Some((origin_protocol, accused_scope, signing_scope)) = sign_reporting_scopes(&context)
+        else {
+            return None;
+        };
+        offline_observation_from_sign_error_scoped(
+            &ring,
+            &peer_id,
+            &e,
+            origin_protocol,
+            version,
+            accused_scope,
+            signing_scope,
+        )
+        .map(ReportObservation::NodeOffline)
+    }
+}
+
 fn sign_reporting_scopes(
     context: &SignContext,
 ) -> Option<(&'static str, CommitteeScope, CommitteeScope)> {

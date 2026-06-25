@@ -2,7 +2,7 @@ use crate::constants::SIGN_COLLECTION_TIMEOUT;
 use crate::helpers::identity::{determine_ring_node_id_from_peer_id, is_self_peer_id};
 use crate::helpers::response_manager::ResponseInitOutcome;
 use crate::helpers::ring::RingConfig;
-use crate::sign::v0::coordinator::rounds::queue_sign_offline_report;
+use crate::sign::v0::coordinator::rounds::{make_sign_drain_observation, queue_sign_offline_report};
 use crate::sign::v0::coordinator::{SignCoordinator, SigningOptions};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::messages::{NonceRequest, SignContext, SignMessage};
@@ -200,8 +200,14 @@ where
             }
         }
 
-        // Cancel any stragglers once we have enough commitments or stop waiting.
-        drop(set);
+        // Drain remaining peer tasks in the background for post-threshold offline reporting.
+        crate::reporting::spawn_error_drain::<D, S, _, _, _>(
+            set,
+            self.app_state.clone(),
+            self.routes,
+            SIGN_COLLECTION_TIMEOUT,
+            make_sign_drain_observation(ring.clone(), context.clone(), self.routes.version),
+        );
 
         // Collect nonce responses, removing the entry atomically (no clone, cleanup implicit)
         let nonce_responses = self

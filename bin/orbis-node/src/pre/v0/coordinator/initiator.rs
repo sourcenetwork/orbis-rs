@@ -375,8 +375,33 @@ where
             }
         }
 
-        // Cancel any stragglers once we have enough verified shares or stop waiting.
-        drop(set);
+        // Drain remaining peer tasks in the background so errors from slow-failing peers
+        // (those whose result wasn't seen before threshold was reached or the timeout fired)
+        // still trigger offline reports.
+        {
+            let drain_ring = ring.clone();
+            let drain_routes = self.routes;
+            crate::reporting::spawn_error_drain::<D, SignImpl, _, _, _>(
+                set,
+                self.app_state.clone(),
+                self.routes,
+                PRE_COLLECTION_TIMEOUT,
+                move |peer_id, e| {
+                    tracing::warn!(
+                        peer_id = %peer_id,
+                        error = %e,
+                        "PRE peer request failed (post-threshold drain)"
+                    );
+                    offline_observation_from_pre_error(
+                        &drain_ring,
+                        &peer_id,
+                        &e,
+                        drain_routes.version,
+                    )
+                    .map(ReportObservation::NodeOffline)
+                },
+            );
+        }
 
         // 6. Collect any responses that were already stored before cancellation and
         // verify the ones we have not counted yet.

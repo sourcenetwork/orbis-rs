@@ -457,6 +457,18 @@ impl IntegrationTestNetwork {
             _ => panic!("Invalid node index: {}", node_index),
         }
     }
+
+    /// Stop a single Docker Compose service by name without removing it.
+    pub fn stop_service(&self, service: &str) {
+        let status = compose_command(&self.compose_file, &self.project_name)
+            .args(["stop", service])
+            .status()
+            .expect("docker compose stop failed");
+        if !status.success() {
+            report_compose_failure(&self.compose_file, &self.project_name);
+            panic!("Failed to stop service {service}");
+        }
+    }
 }
 
 impl Default for IntegrationTestNetwork {

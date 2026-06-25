@@ -18,6 +18,8 @@ use crate::sign::v0::messages::SignContext;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crypto::{GroupAffine, ScalarField, SigShareInner, SignaturePoint, THRESHOLD_SIGNATURE_SCHEME};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::task::JoinSet;
 
 pub async fn queue_report<D, S>(
     app_state: Arc<AppState<D>>,
@@ -64,6 +66,52 @@ where
         .with_label_values(&[report_type, if outcome { "queued" } else { "duplicate" }])
         .inc();
     Ok(outcome)
+}
+
+/// Drain remaining JoinSet tasks in the background so peer errors that arrive
+/// after the collection loop broke early (threshold met) still reach `queue_report`.
+/// Call this instead of `drop(set)` after a JoinSet threshold-collection loop.
+pub fn spawn_error_drain<D, S, T, E, F>(
+    mut set: JoinSet<(String, std::result::Result<T, E>)>,
+    app_state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    timeout: Duration,
+    to_observation: F,
+) where
+    D: Dkg<ShareValue = ScalarField, PublicKey = GroupAffine>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    S: ThresholdSigner<
+            ShareValue = ScalarField,
+            PublicKey = GroupAffine,
+            DistKeyShare = DistKeyShare<ScalarField>,
+            PubPoly = D::PubPoly,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
+        > + Send
+        + Sync
+        + 'static,
+    T: Send + 'static,
+    E: Send + 'static,
+    F: Fn(String, E) -> Option<ReportObservation> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match tokio::time::timeout_at(deadline, set.join_next()).await {
+                Ok(Some(res)) => {
+                    if let Ok((peer_id, Err(e))) = res {
+                        if let Some(obs) = to_observation(peer_id, e) {
+                            let _ = queue_report::<D, S>(app_state.clone(), routes, obs).await;
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+    });
 }
 
 async fn create_report<D, S>(
