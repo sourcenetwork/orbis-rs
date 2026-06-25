@@ -297,8 +297,14 @@ async fn queue_pss_offline_report<D>(
     let peer_id = peer_id.to_string();
 
     let _handle = tokio::spawn(async move {
-        if let Err(error) =
-            queue_pss_offline_report_task::<D>(app_state, routes, peer_id.clone(), kind, stored_ring_id).await
+        if let Err(error) = queue_pss_offline_report_task::<D>(
+            app_state,
+            routes,
+            peer_id.clone(),
+            kind,
+            stored_ring_id,
+        )
+        .await
         {
             tracing::warn!(
                 peer_id = %peer_id,
@@ -337,7 +343,6 @@ where
         + Sync
         + 'static,
 {
-
     let is_reshare = matches!(kind, SessionKind::Reshare { .. });
     let (origin_protocol, ring_id) = match &kind {
         SessionKind::Fresh => return Ok(()),

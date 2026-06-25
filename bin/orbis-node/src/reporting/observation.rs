@@ -195,6 +195,19 @@ mod tests {
     }
 
     #[test]
+    fn peer_not_in_ring_returns_none() {
+        let ring = ring();
+        let unknown_peer = "bb".repeat(32);
+        assert!(offline_observation_from_pre_error(
+            &ring,
+            &unknown_peer,
+            &PreError::NetworkConnection("down".into()),
+            0,
+        )
+        .is_none());
+    }
+
+    #[test]
     fn classifies_only_transport_failures() {
         let ring = ring();
         assert!(offline_observation_from_pre_error(

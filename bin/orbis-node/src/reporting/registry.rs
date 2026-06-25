@@ -665,4 +665,13 @@ mod tests {
             Err(ReportingError::UnsupportedReportType { .. })
         ));
     }
+
+    #[test]
+    fn accused_not_in_accused_committee_is_rejected() {
+        let ring = ring_fixture(2);
+        let mut report = envelope(&ring);
+        report.accused_node_key = "outsider".to_string();
+        let error = validate_ring_and_membership(&report, &payload(&report), &ring).unwrap_err();
+        assert!(error.to_string().contains("accused committee"));
+    }
 }

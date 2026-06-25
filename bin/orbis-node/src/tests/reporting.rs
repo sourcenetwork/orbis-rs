@@ -11,8 +11,8 @@ use crate::helpers::test_helpers::wait_for_ring_finalized;
 use bulletin::r#trait::{BulletinKind, RingPayload};
 use common::{
     blockchain::{
-        events::ReportEventSubscription, orbis::WhitelistTarget, SourceHubClient,
-        TxSigner, TEST_ACCOUNT_HEX_KEY,
+        events::ReportEventSubscription, orbis::WhitelistTarget, SourceHubClient, TxSigner,
+        TEST_ACCOUNT_HEX_KEY,
     },
     IntegrationTestNetwork,
 };
@@ -319,7 +319,10 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         "node3 should be the accused node"
     );
     assert_eq!(sign_event.ring_id, RING_ID, "ring_id mismatch");
-    assert!(!sign_event.report_id.is_empty(), "sign report_id should be set");
+    assert!(
+        !sign_event.report_id.is_empty(),
+        "sign report_id should be set"
+    );
     assert_eq!(
         sign_event.reporter_node_key, NODE_KEY_1,
         "node1 (Sign coordinator) should be the reporter"
@@ -784,7 +787,9 @@ async fn test_reshare_offline_triggers_on_chain_report() {
         "MsgStartRingReshareByAcp returned success but ring's new_peer_node_keys is still None \
          — the reshare was not announced on-chain"
     );
-    println!("Reshare announced on-chain. Waiting for PSS reshare EventReportAccepted (up to 300s)...");
+    println!(
+        "Reshare announced on-chain. Waiting for PSS reshare EventReportAccepted (up to 300s)..."
+    );
 
     // Worst-case path: a refresh session was stuck mid-flight when node3 stopped.
     // That session expires after DKG_PHASE_TIMEOUT (120s) + SESSION_EXPIRATION_CHECK_INTERVAL (60s)

@@ -78,11 +78,7 @@ pub fn spawn_error_drain<D, S, T, E, F>(
     timeout: Duration,
     to_observation: F,
 ) where
-    D: Dkg<ShareValue = ScalarField, PublicKey = GroupAffine>
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    D: Dkg<ShareValue = ScalarField, PublicKey = GroupAffine> + Clone + Send + Sync + 'static,
     S: ThresholdSigner<
             ShareValue = ScalarField,
             PublicKey = GroupAffine,

@@ -123,3 +123,58 @@ fn sign_reporting_scopes(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::sign_reporting_scopes;
+    use crate::reporting::types::{
+        CommitteeScope, NodeOffline, ReportEnvelope, ReportSigningContext,
+        NODE_OFFLINE_REPORT_TYPE, REPORT_DOMAIN, REPORT_TTL_SECS,
+    };
+    use crate::sign::v0::messages::SignContext;
+
+    fn stub_envelope() -> ReportEnvelope {
+        ReportEnvelope {
+            domain: REPORT_DOMAIN.to_string(),
+            report_type: NODE_OFFLINE_REPORT_TYPE.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            reporter_node_key: "reporter".to_string(),
+            accused_node_key: "accused".to_string(),
+            accused_peer_id: "aa".repeat(32),
+            observed_at: 100,
+            expires_at: 100 + REPORT_TTL_SECS,
+            payload: NodeOffline {
+                origin_protocol: "pre".to_string(),
+                origin_protocol_version: 0,
+                accused_committee_scope: CommitteeScope::Current,
+                signing_committee_scope: CommitteeScope::Current,
+            }
+            .canonical_bytes(),
+        }
+    }
+
+    #[test]
+    fn report_sign_context_has_no_reporting_scope() {
+        let ctx = SignContext::Report(Box::new(ReportSigningContext {
+            envelope: stub_envelope(),
+        }));
+        assert!(
+            sign_reporting_scopes(&ctx).is_none(),
+            "SignContext::Report must not trigger recursive offline reporting"
+        );
+    }
+
+    #[test]
+    fn bulletin_and_policy_contexts_use_sign_scope() {
+        let ctx = SignContext::Bulletin {
+            object_id: "x".to_string(),
+        };
+        let (protocol, accused, signing) = sign_reporting_scopes(&ctx).unwrap();
+        assert_eq!(protocol, "sign");
+        assert_eq!(accused, CommitteeScope::Current);
+        assert_eq!(signing, CommitteeScope::Current);
+    }
+}

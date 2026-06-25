@@ -120,6 +120,94 @@ async fn threshold_signs_offline_report_without_accused_node() {
     }
 }
 
+/// When the accused node is still reachable, co-signers run the health probe, confirm
+/// the node is online, and refuse to contribute their signing shares. The report
+/// coordinator (alice) cannot reach signing threshold and the report is never submitted.
+#[tokio::test]
+#[serial_test::serial]
+async fn health_probe_blocks_report_when_accused_node_is_online() {
+    let db_name = "reporting_health_probe_blocks";
+    let db_paths = [
+        test_db_path(&format!("{db_name}_1")),
+        test_db_path(&format!("{db_name}_2")),
+        test_db_path(&format!("{db_name}_3")),
+    ];
+    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+
+    let service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let token = TestKeyPair::new()
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .unwrap();
+    service
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let (ring, ring_id) = wait_for_finalized_ring(&network).await;
+
+    // Charlie is still online — the report about charlie being offline should be blocked.
+    let routes = resolve_node_routes(&network.alice.app_state.bulletin, &ring.peer_node_keys)
+        .await
+        .unwrap();
+    let accused_node_key = network.charlie.app_state.node_key.clone();
+    let accused_peer_id = routes
+        .iter()
+        .find(|route| route.node_key == accused_node_key)
+        .unwrap()
+        .peer_id
+        .clone();
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let observation = OfflineObservation {
+        ring_id,
+        accused_node_key,
+        accused_peer_id,
+        origin_protocol: "pre".to_string(),
+        origin_protocol_version: 0,
+        accused_committee_scope: CommitteeScope::Current,
+        signing_committee_scope: CommitteeScope::Current,
+        observed_at,
+    };
+
+    let app_state = Arc::new(network.alice.app_state.clone());
+    assert!(
+        queue_report::<DkgImpl, SignImpl>(
+            app_state.clone(),
+            &network::V0,
+            ReportObservation::NodeOffline(observation),
+        )
+        .await
+        .unwrap(),
+        "report should be queued (not a duplicate)"
+    );
+    // Wait for the report task to complete (health probe + failed signing attempt).
+    app_state.reporting_state.shutdown().await;
+
+    let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap();
+    let submissions = dummy_bulletin.take_submitted_reports();
+    assert_eq!(
+        submissions.len(),
+        0,
+        "no report should be submitted: bob's health probe finds charlie reachable and refuses to co-sign"
+    );
+
+    network.shutdown_routers().await.unwrap();
+    for path in db_paths {
+        cleanup_db(&path);
+    }
+}
+
 async fn wait_for_finalized_ring(
     network: &crate::helpers::test_helpers::ThreeNodeNetwork,
 ) -> (RingPayload, String) {

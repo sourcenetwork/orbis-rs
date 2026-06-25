@@ -2,7 +2,9 @@ use crate::constants::SIGN_COLLECTION_TIMEOUT;
 use crate::helpers::identity::{determine_ring_node_id_from_peer_id, is_self_peer_id};
 use crate::helpers::response_manager::ResponseInitOutcome;
 use crate::helpers::ring::RingConfig;
-use crate::sign::v0::coordinator::rounds::{make_sign_drain_observation, queue_sign_offline_report};
+use crate::sign::v0::coordinator::rounds::{
+    make_sign_drain_observation, queue_sign_offline_report,
+};
 use crate::sign::v0::coordinator::{SignCoordinator, SigningOptions};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::messages::{NonceRequest, SignContext, SignMessage};

@@ -6,7 +6,9 @@ use crate::helpers::response_manager::ResponseInitOutcome;
 use crate::helpers::ring::{
     is_ring_reshare_in_progress, load_ring_pub_poly_and_bundle, RingConfig,
 };
-use crate::sign::v0::coordinator::rounds::{make_sign_drain_observation, queue_sign_offline_report};
+use crate::sign::v0::coordinator::rounds::{
+    make_sign_drain_observation, queue_sign_offline_report,
+};
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::helpers::{serialize_commitments, validate_refresh_health_check_statement};

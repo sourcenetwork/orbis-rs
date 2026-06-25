@@ -381,6 +381,16 @@ mod tests {
     }
 
     #[test]
+    fn report_validity_window_must_be_exactly_ttl() {
+        let mut report = envelope();
+        report.expires_at = report.observed_at + REPORT_TTL_SECS + 1;
+        assert!(report.validate_shape(report.observed_at).is_err());
+        let mut report = envelope();
+        report.expires_at = report.observed_at + REPORT_TTL_SECS - 1;
+        assert!(report.validate_shape(report.observed_at).is_err());
+    }
+
+    #[test]
     fn ring_state_digest_commits_to_committee_order() {
         let mut a = RingPayload {
             ring_pk: "pk".into(),
