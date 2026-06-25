@@ -168,7 +168,7 @@ where
         let (stream, was_cached) = match get_cached_or_open_stream(coord, sid, peer_id_str).await {
             Ok(stream) => stream,
             Err(error) => {
-                queue_pss_offline_report(coord, sid, peer_id_str, &error);
+                queue_pss_offline_report(coord, sid, peer_id_str, &error).await;
                 return Err(error);
             }
         };
@@ -199,7 +199,7 @@ where
                 let replacement = match coord.open_stream_to_peer(peer_id_str).await {
                     Ok(stream) => Arc::from(stream),
                     Err(error) => {
-                        queue_pss_offline_report(coord, sid, peer_id_str, &error);
+                        queue_pss_offline_report(coord, sid, peer_id_str, &error).await;
                         return Err(error);
                     }
                 };
@@ -219,7 +219,7 @@ where
                         error = %retry_error,
                         "DKG send retry on a fresh stream failed"
                     );
-                    queue_pss_offline_report(coord, sid, peer_id_str, &retry_error);
+                    queue_pss_offline_report(coord, sid, peer_id_str, &retry_error).await;
                     return Err(retry_error);
                 }
                 ensure_session_generation(coord, sid, session_generation).await?;
@@ -244,7 +244,10 @@ where
     Ok(())
 }
 
-fn queue_pss_offline_report<D>(
+// Reads session kind and ring ID while the session still exists, then spawns
+// the actual report work so callers are not blocked on the full reporting pipeline.
+// Must be awaited before the session is removed so the session data can be captured.
+async fn queue_pss_offline_report<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     peer_id: &str,
@@ -274,16 +277,30 @@ fn queue_pss_offline_report<D>(
         return;
     }
 
+    // Capture session data NOW while the session still exists. Callers (e.g.
+    // trigger_refresh) remove the session synchronously after this returns, so a
+    // spawned task that reads session state later would find nothing and silently
+    // skip the report.
+    let Some((kind, stored_ring_id)) = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| {
+            (state.kind.clone(), state.routing.ring_id.clone())
+        })
+        .await
+    else {
+        return;
+    };
+
     let app_state = coord.app_state.clone();
     let routes = coord.routes;
     let peer_id = peer_id.to_string();
 
     let _handle = tokio::spawn(async move {
         if let Err(error) =
-            queue_pss_offline_report_task::<D>(app_state, routes, session_id, peer_id.clone()).await
+            queue_pss_offline_report_task::<D>(app_state, routes, peer_id.clone(), kind, stored_ring_id).await
         {
             tracing::warn!(
-                session_id = session_id,
                 peer_id = %peer_id,
                 error = %error,
                 "Failed to queue PSS offline report observation"
@@ -295,8 +312,9 @@ fn queue_pss_offline_report<D>(
 async fn queue_pss_offline_report_task<D>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
-    session_id: u128,
     peer_id: String,
+    kind: SessionKind,
+    stored_ring_id: String,
 ) -> Result<()>
 where
     D: Dkg<
@@ -319,15 +337,6 @@ where
         + Sync
         + 'static,
 {
-    let Some((kind, stored_ring_id)) = app_state
-        .dkg_session_state
-        .with_state(&session_id, |state| {
-            (state.kind.clone(), state.routing.ring_id.clone())
-        })
-        .await
-    else {
-        return Ok(());
-    };
 
     let is_reshare = matches!(kind, SessionKind::Reshare { .. });
     let (origin_protocol, ring_id) = match &kind {
@@ -346,7 +355,6 @@ where
     };
     if ring_id.is_empty() {
         tracing::debug!(
-            session_id = session_id,
             peer_id = %peer_id,
             "Skipping PSS offline report because session has no authoritative ring ID"
         );
@@ -409,7 +417,6 @@ where
             )
         } else {
             tracing::debug!(
-                session_id = session_id,
                 ring_id = %ring_id,
                 peer_id = %peer_id,
                 "Skipping PSS offline report because failed peer is not in reportable committee"
@@ -431,7 +438,6 @@ where
         ReportCommitteeScope::PendingNew
     } else {
         tracing::debug!(
-            session_id = session_id,
             ring_id = %ring_id,
             peer_id = %peer_id,
             reporter_node_key = %app_state.node_key,
@@ -445,7 +451,6 @@ where
             RingPolyState::load_from_ring_pk_hex(&app_state.local_storage, &ring.ring_pk)
         {
             tracing::debug!(
-                session_id = session_id,
                 ring_id = %ring_id,
                 peer_id = %peer_id,
                 reporter_node_key = %app_state.node_key,
