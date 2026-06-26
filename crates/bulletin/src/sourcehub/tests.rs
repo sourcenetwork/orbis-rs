@@ -202,8 +202,6 @@ async fn test_bulletin_ring() {
         policy_id: Some(policy_id.clone()),
         ..Default::default()
     };
-    let serialized_payload: Vec<u8> = payload.clone().try_into().unwrap();
-
     let (_, ring_id) = bulletin
         .chain_client
         .orbis_create_ring_get_id(
@@ -224,14 +222,15 @@ async fn test_bulletin_ring() {
     println!("Created post ID: {}", created_post.id);
 
     assert_eq!(created_post.id, ring_id);
-    assert_eq!(
-        created_post.payload,
-        serialized_payload.clone(),
-        "Payload should match"
-    );
 
     let read_payload: RingPayload = created_post.clone().try_into().unwrap();
-    assert_eq!(read_payload, payload, "Read payload should match");
+    // demerit_config is populated by the chain from module-default params; accept whatever the
+    // chain set and only verify the fields we control.
+    let expected = RingPayload {
+        demerit_config: read_payload.demerit_config.clone(),
+        ..payload
+    };
+    assert_eq!(read_payload, expected, "Read payload should match");
 }
 
 #[tokio::test]

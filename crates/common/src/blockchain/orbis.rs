@@ -42,6 +42,8 @@ pub struct Ring {
     pub confirmations: Vec<RingConfirmation>,
     #[prost(message, optional, tag = "12")]
     pub upgrade_info: Option<UpgradeInfo>,
+    #[prost(message, optional, tag = "13")]
+    pub demerit_config: Option<DemeritConfig>,
 }
 
 #[derive(Clone, Message)]
@@ -52,6 +54,15 @@ pub struct UpgradeInfo {
     pub next_version: Option<u64>,
     #[prost(uint64, optional, tag = "3")]
     pub activation_time: Option<u64>,
+}
+
+/// Demerit penalty configuration stored on a ring.
+#[derive(Clone, Message)]
+pub struct DemeritConfig {
+    #[prost(uint64, tag = "1")]
+    pub node_offline_demerits: u64,
+    #[prost(uint64, tag = "2")]
+    pub reset_interval_seconds: u64,
 }
 
 /// Fresh-DKG confirmation stored on an unfinalized ring.
@@ -693,6 +704,20 @@ pub struct QueryNodeInfoRequest {
 pub struct QueryNodeInfoResponse {
     #[prost(message, optional, tag = "1")]
     pub node_info: Option<NodeInfo>,
+}
+
+#[derive(Clone, Message)]
+pub struct QueryNodeDemeritsRequest {
+    #[prost(string, tag = "1")]
+    pub ring_id: String,
+    #[prost(string, tag = "2")]
+    pub node_key: String,
+}
+
+#[derive(Clone, Message)]
+pub struct QueryNodeDemeritsResponse {
+    #[prost(uint64, tag = "1")]
+    pub points: u64,
 }
 
 // ============================================================================
@@ -1437,6 +1462,32 @@ impl SourceHubClient {
             BlockchainError::Serialization(format!("Failed to decode node info response: {}", e))
         })?;
         Ok(response.node_info)
+    }
+
+    pub async fn orbis_read_node_demerits(&self, ring_id: &str, node_key: &str) -> Result<u64> {
+        let request = QueryNodeDemeritsRequest {
+            ring_id: ring_id.to_string(),
+            node_key: node_key.to_string(),
+        };
+        let Some(response_bytes) = self
+            .abci_query_optional(
+                "/sourcehub.orbis.Query/NodeDemerits",
+                request.encode_to_vec(),
+                None,
+                false,
+            )
+            .await?
+        else {
+            return Ok(0);
+        };
+        let response =
+            QueryNodeDemeritsResponse::decode(response_bytes.as_slice()).map_err(|e| {
+                BlockchainError::Serialization(format!(
+                    "Failed to decode node demerits response: {}",
+                    e
+                ))
+            })?;
+        Ok(response.points)
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -80,7 +80,11 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
                     "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
                     "threshold": 2,
                     "pss_interval": 5,
-                    "policy_id": RING_GOVERNANCE_POLICY_ID
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "demerit_config": {
+                        "node_offline_demerits": 1,
+                        "reset_interval_seconds": 86400
+                    }
                 }]
             }),
         )

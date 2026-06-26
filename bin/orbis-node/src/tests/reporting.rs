@@ -39,7 +39,11 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
                     "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
                     "threshold": 2,
                     "pss_interval": 5,
-                    "policy_id": RING_GOVERNANCE_POLICY_ID
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "demerit_config": {
+                        "node_offline_demerits": 1,
+                        "reset_interval_seconds": 86400
+                    }
                 }]
             }),
         )
@@ -327,6 +331,18 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         sign_event.reporter_node_key, NODE_KEY_1,
         "node1 (Sign coordinator) should be the reporter"
     );
+
+    // Both the PRE and Sign reports were accepted: node3 should have demerits.
+    println!("Checking node3 demerit points...");
+    let demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
+        .await
+        .expect("query node3 demerits");
+    assert!(
+        demerits > 0,
+        "node3 should have demerits after 2 accepted offline reports, got {demerits}"
+    );
+    println!("node3 demerit points: {demerits}");
 }
 
 async fn wait_for_node_info_on_chain(
@@ -477,7 +493,11 @@ async fn test_refresh_offline_triggers_on_chain_report() {
                     "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
                     "threshold": 2,
                     "pss_interval": 5,
-                    "policy_id": RING_GOVERNANCE_POLICY_ID
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "demerit_config": {
+                        "node_offline_demerits": 1,
+                        "reset_interval_seconds": 86400
+                    }
                 }]
             }),
         )
@@ -617,6 +637,17 @@ async fn test_refresh_offline_triggers_on_chain_report() {
         event.reporter_node_key, NODE_KEY_1,
         "node1 (refresh coordinator) should be the reporter"
     );
+
+    println!("Checking node3 demerit points...");
+    let demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
+        .await
+        .expect("query node3 demerits");
+    assert!(
+        demerits > 0,
+        "node3 should have demerits after accepted offline report, got {demerits}"
+    );
+    println!("node3 demerit points: {demerits}");
 }
 
 #[tokio::test]
@@ -639,7 +670,11 @@ async fn test_reshare_offline_triggers_on_chain_report() {
                     "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
                     "threshold": 2,
                     "pss_interval": 5,
-                    "policy_id": RING_GOVERNANCE_POLICY_ID
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "demerit_config": {
+                        "node_offline_demerits": 1,
+                        "reset_interval_seconds": 86400
+                    }
                 }]
             }),
         )
@@ -816,6 +851,17 @@ async fn test_reshare_offline_triggers_on_chain_report() {
         event.reporter_node_key, NODE_KEY_3,
         "the accused (offline) node should not be the reporter"
     );
+
+    println!("Checking node3 demerit points...");
+    let demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
+        .await
+        .expect("query node3 demerits");
+    assert!(
+        demerits > 0,
+        "node3 should have demerits after accepted offline report, got {demerits}"
+    );
+    println!("node3 demerit points: {demerits}");
 }
 
 /// Poll all 3 node endpoints until every node's `last_pss` timestamp has

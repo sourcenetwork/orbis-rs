@@ -30,7 +30,11 @@ async fn test_stale_pending_dkg_is_cancelled_on_sourcehub() {
                     "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
                     "threshold": 2,
                     "pss_interval": PSS_INTERVAL_SECS,
-                    "policy_id": "integration-test-policy"
+                    "policy_id": "integration-test-policy",
+                    "demerit_config": {
+                        "node_offline_demerits": 1,
+                        "reset_interval_seconds": 86400
+                    }
                 }]
             }),
         )

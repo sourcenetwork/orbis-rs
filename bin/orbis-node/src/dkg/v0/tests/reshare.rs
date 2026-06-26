@@ -191,6 +191,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
+        demerit_config: None,
     };
     let post_id = "test-mismatched-ring-pk".to_string();
     dummy_bulletin
@@ -345,6 +346,7 @@ async fn test_reshare_session_init_rejects_new_receiver_without_node_allowlist()
                 pss_interval: 86400,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
+                demerit_config: None,
             },
         )
         .expect("seed reshare announcement");
@@ -641,6 +643,7 @@ async fn write_ring_with_announced_reshare(
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
+        demerit_config: None,
     };
     let post_id = format!("test-reshare-{ring_pk}");
     bulletin
@@ -976,6 +979,7 @@ async fn post_ring_for_validation(
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
+        demerit_config: None,
     };
     let post_id = format!("test-validation-{ring_pk}");
     bulletin
@@ -1313,6 +1317,7 @@ async fn post_reshare_announcement(
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: Some("test-policy".to_string()),
+        demerit_config: None,
     };
     bulletin
         .set_ring(format!("test-reshare-announcement-{key_string}"), payload)

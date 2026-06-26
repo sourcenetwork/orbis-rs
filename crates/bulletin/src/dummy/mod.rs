@@ -26,6 +26,8 @@ pub struct DummyBulletin {
     fail_pending_ring_cancellations: Mutex<bool>,
     /// Accumulated fault reports submitted via submit_report() — useful for test assertions.
     submitted_reports: Mutex<Vec<BulletinReportSubmission>>,
+    /// Node demerit points by (ring_id, node_key) — for test assertions.
+    node_demerits: Mutex<HashMap<(String, String), u64>>,
 }
 
 #[async_trait]
@@ -239,6 +241,7 @@ impl Default for DummyBulletin {
             finalization_counts: Mutex::new(HashMap::new()),
             fail_pending_ring_cancellations: Mutex::new(false),
             submitted_reports: Mutex::new(Vec::new()),
+            node_demerits: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -331,6 +334,14 @@ impl DummyBulletin {
 
     pub fn set_fail_pending_ring_cancellations(&self, fail: bool) {
         *self.fail_pending_ring_cancellations.lock().unwrap() = fail;
+    }
+
+    /// Set node demerit points directly for test setup.
+    pub fn set_node_demerits(&self, ring_id: &str, node_key: &str, points: u64) {
+        self.node_demerits
+            .lock()
+            .unwrap()
+            .insert((ring_id.to_string(), node_key.to_string()), points);
     }
 }
 

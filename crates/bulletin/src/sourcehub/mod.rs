@@ -2,8 +2,8 @@ use crate::{
     error::{BulletinError, Result},
     r#trait::{
         Bulletin, BulletinKind, BulletinPost, BulletinReportSubmission, BulletinWriteKind,
-        DocumentPayload, KeyDerivation, NodeInfo, RingCancellationPayload, RingFinalizationPayload,
-        RingPayload, UpgradeInfo,
+        DemeritConfig, DocumentPayload, KeyDerivation, NodeInfo, RingCancellationPayload,
+        RingFinalizationPayload, RingPayload, UpgradeInfo,
     },
 };
 use async_trait::async_trait;
@@ -360,6 +360,10 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
             next_version: upgrade_info.next_version,
             activation_time: upgrade_info.activation_time,
         },
+        demerit_config: ring.demerit_config.map(|dc| DemeritConfig {
+            node_offline_demerits: dc.node_offline_demerits,
+            reset_interval_seconds: dc.reset_interval_seconds,
+        }),
     };
     Ok(BulletinPost {
         id: ring.id,

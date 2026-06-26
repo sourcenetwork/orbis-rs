@@ -3,6 +3,12 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+pub struct DemeritConfig {
+    pub node_offline_demerits: u64,
+    pub reset_interval_seconds: u64,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
 pub struct UpgradeInfo {
     pub current_version: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -121,6 +127,9 @@ pub struct RingPayload {
     pub policy_id: Option<String>,
     /// Protocol epoch used by this ring and its optional scheduled successor.
     pub upgrade_info: UpgradeInfo,
+    /// Demerit penalty configuration for this ring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demerit_config: Option<DemeritConfig>,
 }
 
 /// Payload for confirming a completed fresh DKG ring.
