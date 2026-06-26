@@ -1221,6 +1221,7 @@ pub async fn create_ring_on_chain(
             policy_id,
             nonce.map(String::from),
             network::V0.version,
+            None,
         )
         .await
         .expect("create ring on-chain");

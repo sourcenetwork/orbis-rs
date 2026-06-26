@@ -151,6 +151,8 @@ pub struct MsgCreateRing {
     pub nonce: Option<String>,
     #[prost(uint64, tag = "7")]
     pub current_version: u64,
+    #[prost(message, optional, tag = "8")]
+    pub demerit_config: Option<DemeritConfig>,
 }
 
 impl MsgCreateRing {
@@ -164,6 +166,7 @@ impl MsgCreateRing {
         policy_id: &str,
         nonce: Option<String>,
         current_version: u64,
+        demerit_config: Option<DemeritConfig>,
     ) -> Self {
         Self {
             creator: creator.to_string(),
@@ -173,6 +176,7 @@ impl MsgCreateRing {
             policy_id: policy_id.to_string(),
             nonce,
             current_version,
+            demerit_config,
         }
     }
 }
@@ -971,6 +975,7 @@ impl SourceHubClient {
         policy_id: &str,
         nonce: Option<String>,
         current_version: u64,
+        demerit_config: Option<DemeritConfig>,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
@@ -983,6 +988,7 @@ impl SourceHubClient {
             policy_id,
             nonce,
             current_version,
+            demerit_config,
         );
         self.broadcast_proto_msg_with_gas(
             MsgCreateRing::TYPE_URL,
@@ -1003,6 +1009,7 @@ impl SourceHubClient {
         policy_id: &str,
         nonce: Option<String>,
         current_version: u64,
+        demerit_config: Option<DemeritConfig>,
     ) -> Result<(BroadcastResult, String)> {
         let result = self
             .orbis_create_ring(
@@ -1012,6 +1019,7 @@ impl SourceHubClient {
                 policy_id,
                 nonce,
                 current_version,
+                demerit_config,
             )
             .await?;
 
@@ -1469,17 +1477,14 @@ impl SourceHubClient {
             ring_id: ring_id.to_string(),
             node_key: node_key.to_string(),
         };
-        let Some(response_bytes) = self
-            .abci_query_optional(
+        let response_bytes = self
+            .abci_query(
                 "/sourcehub.orbis.Query/NodeDemerits",
                 request.encode_to_vec(),
                 None,
                 false,
             )
-            .await?
-        else {
-            return Ok(0);
-        };
+            .await?;
         let response =
             QueryNodeDemeritsResponse::decode(response_bytes.as_slice()).map_err(|e| {
                 BlockchainError::Serialization(format!(
@@ -1547,17 +1552,81 @@ mod tests {
 
     use super::{
         decode_store_document_id, decode_store_key_derivation_id, ring_reshare_sign_state_hash,
-        MsgCancelPendingRing, MsgCreateRing, MsgFinalizeRing,
+        DemeritConfig, MsgCancelPendingRing, MsgCreateRing, MsgFinalizeRing,
         MsgFinalizeRingReshareByThresholdSignature, MsgStoreDocumentResponse,
-        MsgStoreKeyDerivationResponse, Ring, RingReshareSignState, UpgradeInfo,
+        MsgStoreKeyDerivationResponse, QueryNodeDemeritsRequest, QueryNodeDemeritsResponse, Ring,
+        RingReshareSignState, UpgradeInfo,
     };
 
     #[test]
     fn create_ring_round_trips_pss_interval() {
-        let msg = MsgCreateRing::new("c", vec!["p1".to_string()], 1, 86400, "policy", None, 0);
+        let msg = MsgCreateRing::new(
+            "c",
+            vec!["p1".to_string()],
+            1,
+            86400,
+            "policy",
+            None,
+            0,
+            None,
+        );
         let bytes = msg.encode_to_vec();
         let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
         assert_eq!(decoded.pss_interval, 86400);
+        assert!(decoded.demerit_config.is_none());
+    }
+
+    #[test]
+    fn create_ring_round_trips_demerit_config() {
+        let msg = MsgCreateRing::new(
+            "c",
+            vec!["p1".to_string()],
+            1,
+            86400,
+            "policy",
+            None,
+            0,
+            Some(DemeritConfig {
+                node_offline_demerits: 3,
+                reset_interval_seconds: 42,
+            }),
+        );
+        let bytes = msg.encode_to_vec();
+        let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
+        let config = decoded.demerit_config.expect("demerit_config");
+
+        assert_eq!(config.node_offline_demerits, 3);
+        assert_eq!(config.reset_interval_seconds, 42);
+    }
+
+    #[test]
+    fn ring_demerit_config_round_trips() {
+        let ring = Ring {
+            id: "ring-1".to_string(),
+            demerit_config: Some(DemeritConfig {
+                node_offline_demerits: 5,
+                reset_interval_seconds: 60,
+            }),
+            ..Default::default()
+        };
+        let bytes = ring.encode_to_vec();
+        let decoded = Ring::decode(bytes.as_slice()).expect("decode");
+        let config = decoded.demerit_config.expect("demerit_config");
+
+        assert_eq!(config.node_offline_demerits, 5);
+        assert_eq!(config.reset_interval_seconds, 60);
+    }
+
+    #[test]
+    fn node_demerits_query_wire_fields_match_sourcehub_proto() {
+        let request = QueryNodeDemeritsRequest {
+            ring_id: "r".to_string(),
+            node_key: "n".to_string(),
+        };
+        assert_eq!(hex::encode(request.encode_to_vec()), "0a017212016e");
+
+        let response = QueryNodeDemeritsResponse { points: 7 };
+        assert_eq!(hex::encode(response.encode_to_vec()), "0807");
     }
 
     #[test]

@@ -1,10 +1,13 @@
 use super::{ring_to_bulletin_post, SourceHubBulletin};
 use crate::r#trait::{
-    Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, RingCancellationPayload,
-    RingPayload, UpgradeInfo,
+    Bulletin, BulletinKind, BulletinWriteKind, DemeritConfig, DocumentPayload,
+    RingCancellationPayload, RingPayload, UpgradeInfo,
 };
 use common::{
-    blockchain::{acp::Object, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY},
+    blockchain::{
+        acp::Object, orbis::DemeritConfig as ChainDemeritConfig, BlockchainError, SourceHubClient,
+        TxSigner, TEST_ACCOUNT_HEX_KEY,
+    },
     SourceHubTestContainer,
 };
 
@@ -94,6 +97,32 @@ fn ring_query_conversion_preserves_upgrade_info() {
     );
 }
 
+#[test]
+fn ring_query_conversion_preserves_demerit_config() {
+    let post = ring_to_bulletin_post(common::blockchain::orbis::Ring {
+        id: "ring-1".to_string(),
+        upgrade_info: Some(common::blockchain::orbis::UpgradeInfo {
+            current_version: 0,
+            next_version: None,
+            activation_time: None,
+        }),
+        demerit_config: Some(ChainDemeritConfig {
+            node_offline_demerits: 3,
+            reset_interval_seconds: 42,
+        }),
+        ..Default::default()
+    })
+    .expect("convert ring");
+    let payload = RingPayload::try_from(post).expect("parse ring payload");
+    assert_eq!(
+        payload.demerit_config,
+        Some(DemeritConfig {
+            node_offline_demerits: 3,
+            reset_interval_seconds: 42,
+        })
+    );
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bulletin_document() {
@@ -126,6 +155,7 @@ async fn test_bulletin_document() {
             &policy_id,
             Some("document-test".to_string()),
             0,
+            None,
         )
         .await
         .unwrap();
@@ -211,6 +241,7 @@ async fn test_bulletin_ring() {
             &policy_id,
             Some("ring-test".to_string()),
             0,
+            None,
         )
         .await
         .unwrap();
@@ -231,6 +262,105 @@ async fn test_bulletin_ring() {
         ..payload
     };
     assert_eq!(read_payload, expected, "Read payload should match");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_bulletin_ring_demerit_config_and_node_demerits_query_contract() {
+    let container = SourceHubTestContainer::new();
+    let config = container.chain_config();
+
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+        .expect("Failed to create signer");
+
+    let node_key = signer.public_key_hex();
+
+    let bulletin = SourceHubBulletin::with_signer(container.chain_config_builder(), signer, None)
+        .await
+        .unwrap();
+
+    let policy_id = create_orbis_ring_policy(&bulletin.chain_client).await;
+
+    bulletin
+        .chain_client
+        .orbis_create_node_info("demerit-test-peer-id", &node_key, vec![], vec![])
+        .await
+        .unwrap();
+
+    let (_, default_ring_id) = bulletin
+        .chain_client
+        .orbis_create_ring_get_id(
+            vec![node_key.clone()],
+            1,
+            86400,
+            &policy_id,
+            Some("ring-demerit-default-test".to_string()),
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let default_post = bulletin
+        .read(default_ring_id.clone(), BulletinKind::Ring)
+        .await
+        .unwrap();
+    let default_payload = RingPayload::try_from(default_post).unwrap();
+    assert_eq!(
+        default_payload.demerit_config,
+        Some(DemeritConfig {
+            node_offline_demerits: 1,
+            reset_interval_seconds: 86400,
+        })
+    );
+
+    let empty_score = bulletin
+        .chain_client
+        .orbis_read_node_demerits(&default_ring_id, "unknown-node")
+        .await
+        .expect("query demerits for unknown node on existing ring");
+    assert_eq!(empty_score, 0);
+
+    let missing_ring_err = bulletin
+        .chain_client
+        .orbis_read_node_demerits("missing-ring", &node_key)
+        .await
+        .expect_err("missing ring should not be flattened into a zero score");
+    assert!(
+        matches!(missing_ring_err, BlockchainError::NotFound(_)),
+        "unexpected missing ring error: {missing_ring_err}"
+    );
+
+    let explicit_config = ChainDemeritConfig {
+        node_offline_demerits: 3,
+        reset_interval_seconds: 42,
+    };
+    let (_, explicit_ring_id) = bulletin
+        .chain_client
+        .orbis_create_ring_get_id(
+            vec![node_key],
+            1,
+            86400,
+            &policy_id,
+            Some("ring-demerit-explicit-test".to_string()),
+            0,
+            Some(explicit_config),
+        )
+        .await
+        .unwrap();
+
+    let explicit_post = bulletin
+        .read(explicit_ring_id, BulletinKind::Ring)
+        .await
+        .unwrap();
+    let explicit_payload = RingPayload::try_from(explicit_post).unwrap();
+    assert_eq!(
+        explicit_payload.demerit_config,
+        Some(DemeritConfig {
+            node_offline_demerits: 3,
+            reset_interval_seconds: 42,
+        })
+    );
 }
 
 #[tokio::test]
@@ -260,6 +390,7 @@ async fn test_bulletin_cancel_pending_ring() {
             &policy_id,
             Some("cancel-pending-ring-test".to_string()),
             0,
+            None,
         )
         .await
         .unwrap();

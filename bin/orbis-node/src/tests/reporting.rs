@@ -38,7 +38,7 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
                     "ring_pk": "",
                     "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
                     "threshold": 2,
-                    "pss_interval": 5,
+                    "pss_interval": 86400,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
                     "demerit_config": {
                         "node_offline_demerits": 1,
@@ -338,9 +338,9 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
         .await
         .expect("query node3 demerits");
-    assert!(
-        demerits > 0,
-        "node3 should have demerits after 2 accepted offline reports, got {demerits}"
+    assert_eq!(
+        demerits, 2,
+        "node3 should have exactly 2 demerits after 2 accepted offline reports"
     );
     println!("node3 demerit points: {demerits}");
 }
@@ -495,7 +495,7 @@ async fn test_refresh_offline_triggers_on_chain_report() {
                     "pss_interval": 5,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
                     "demerit_config": {
-                        "node_offline_demerits": 1,
+                        "node_offline_demerits": 3,
                         "reset_interval_seconds": 86400
                     }
                 }]
@@ -644,8 +644,8 @@ async fn test_refresh_offline_triggers_on_chain_report() {
         .await
         .expect("query node3 demerits");
     assert!(
-        demerits > 0,
-        "node3 should have demerits after accepted offline report, got {demerits}"
+        demerits >= 3 && demerits % 3 == 0,
+        "node3 should have demerits in configured increments of 3 after accepted offline report, got {demerits}"
     );
     println!("node3 demerit points: {demerits}");
 }
@@ -858,7 +858,7 @@ async fn test_reshare_offline_triggers_on_chain_report() {
         .await
         .expect("query node3 demerits");
     assert!(
-        demerits > 0,
+        demerits >= 1,
         "node3 should have demerits after accepted offline report, got {demerits}"
     );
     println!("node3 demerit points: {demerits}");
