@@ -443,7 +443,9 @@ async fn read_node_info(
 mod tests {
     use super::*;
     use crate::reporting::v0::observation::{OfflineObservation, ReportObservation};
-    use crate::reporting::v0::types::{CommitteeScope, NodeOffline, REPORT_DOMAIN, REPORT_TTL_SECS};
+    use crate::reporting::v0::types::{
+        CommitteeScope, NodeOffline, REPORT_DOMAIN, REPORT_TTL_SECS,
+    };
     use bulletin::r#trait::UpgradeInfo;
 
     fn ring_fixture(threshold: u32) -> RingPayload {

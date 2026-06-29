@@ -657,11 +657,11 @@ async fn test_refresh_offline_triggers_on_chain_report() {
 async fn test_reshare_offline_triggers_on_chain_report() {
     println!("Starting PSS reshare offline reporting integration test...");
 
-    // pss_interval=5 (bypasses the chain minimum via genesis) so the scheduler fires
-    // quickly after DKG.  We wait 15s below to let 2-3 refresh cycles complete before
-    // stopping node3, ensuring the PSS claim is free when reshare is triggered (a stuck
-    // refresh session holding the claim would delay the reshare until it expires at
-    // DKG_PHASE_TIMEOUT + SESSION_EXPIRATION_CHECK_INTERVAL ≈ 180s).
+    // pss_interval=86400 prevents any PSS refresh from firing during the test window.
+    // After DKG, Phase 4 writes last_pss=now_secs, so elapsed≈0 which is far below
+    // 86400 — the scheduler always skips refresh and never acquires the PSS claim.
+    // Reshare bypasses the pss_interval check entirely, so it still fires immediately
+    // once new_peer_node_keys is announced on-chain.
     let network = IntegrationTestNetwork::builder()
         .with_module_genesis(
             "orbis",
@@ -671,7 +671,7 @@ async fn test_reshare_offline_triggers_on_chain_report() {
                     "ring_pk": "",
                     "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
                     "threshold": 2,
-                    "pss_interval": 5,
+                    "pss_interval": 86400,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
                     "demerit_config": {
                         "node_offline_demerits": 1,
@@ -779,14 +779,6 @@ async fn test_reshare_offline_triggers_on_chain_report() {
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
     );
 
-    // Poll until a PSS refresh has completed on all nodes (last_pss advanced from the
-    // DKG baseline).  A fixed sleep can race: if a refresh is mid-flight when we stop
-    // node3, the PSS claim is held for up to DKG_PHASE_TIMEOUT (120s) +
-    // SESSION_EXPIRATION_CHECK_INTERVAL (60s) = 180s before reshare can fire, which
-    // leaves almost no margin in the 300s report timeout.
-    println!("Waiting for at least one PSS refresh to complete on all 3 nodes...");
-    wait_for_pss_refresh_before_reshare(&endpoints, &ring_pk_hex, Duration::from_secs(120)).await;
-
     // Subscribe before stopping node3 so we don't miss the event.
     println!("Subscribing to report events...");
     let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
@@ -797,13 +789,20 @@ async fn test_reshare_offline_triggers_on_chain_report() {
     println!("Stopping node3 to simulate offline node during PSS reshare...");
     network.stop_service(IntegrationTestNetwork::NODE3_SERVICE);
 
-    // Reshare to {node1, node2}. node3 (current committee) is unreachable →
-    // queue_pss_offline_report fires with origin_protocol="pss_reshare".
-    println!("Triggering ring reshare to [node1, node2]...");
+    // Reshare to {node1, node2, node3} with new_threshold=3 and node3 offline.
+    // Changing threshold (2→3) satisfies the chain's "must change committee or threshold"
+    // check. Node3 cannot ACK any dealer's shares → no dealer ever completes → reshare
+    // DKG stays stuck → ring state never updates → the offline report validates and is
+    // accepted. Signing uses the CURRENT threshold (2), so node1+node2 can co-sign.
+    println!("Triggering ring reshare to [node1, node2, node3] threshold=3 (node3 offline → reshare stuck)...");
     cli_tool::start_ring_reshare_by_acp_with_config(
         RING_ID.to_string(),
-        vec![NODE_KEY_1.to_string(), NODE_KEY_2.to_string()],
-        Some(2u32),
+        vec![
+            NODE_KEY_1.to_string(),
+            NODE_KEY_2.to_string(),
+            NODE_KEY_3.to_string(),
+        ],
+        Some(3u32),
         chain_config.clone(),
     )
     .await
@@ -828,10 +827,6 @@ async fn test_reshare_offline_triggers_on_chain_report() {
         "Reshare announced on-chain. Waiting for PSS reshare EventReportAccepted (up to 300s)..."
     );
 
-    // Worst-case path: a refresh session was stuck mid-flight when node3 stopped.
-    // That session expires after DKG_PHASE_TIMEOUT (120s) + SESSION_EXPIRATION_CHECK_INTERVAL (60s)
-    // = ≤180s, then the next PSS tick triggers reshare which immediately fails on node3.
-    // Add margin for report signing: 300s total.
     let event = sub
         .wait_for_report_accepted(RING_ID, Duration::from_secs(300))
         .await
@@ -864,61 +859,4 @@ async fn test_reshare_offline_triggers_on_chain_report() {
         "node3 should have demerits after accepted offline report, got {demerits}"
     );
     println!("node3 demerit points: {demerits}");
-}
-
-/// Poll all 3 node endpoints until every node's `last_pss` timestamp has
-/// advanced past the DKG baseline (i.e., at least one refresh cycle has
-/// COMPLETED on every node). This guarantees the PSS claim is free before
-/// we stop node3 and trigger reshare.
-async fn wait_for_pss_refresh_before_reshare(
-    endpoints: &[&str; 3],
-    ring_pk_hex: &str,
-    timeout: Duration,
-) {
-    let deadline = tokio::time::Instant::now() + timeout;
-
-    // Capture baseline last_pss on each node right after DKG. Retry until
-    // the ring state is stored (the node might not have finished Phase 4 yet).
-    let mut baselines = [0u64; 3];
-    for (i, endpoint) in endpoints.iter().enumerate() {
-        loop {
-            match cli_tool::query_ring_state(endpoint.to_string(), ring_pk_hex.to_string()).await {
-                Ok((_, last_pss)) => {
-                    baselines[i] = last_pss;
-                    break;
-                }
-                Err(_) => {
-                    assert!(
-                        tokio::time::Instant::now() < deadline,
-                        "node{} ring state not available within {}s after DKG finalization",
-                        i + 1,
-                        timeout.as_secs()
-                    );
-                    sleep(Duration::from_secs(1)).await;
-                }
-            }
-        }
-    }
-
-    loop {
-        let mut all_refreshed = true;
-        for (i, endpoint) in endpoints.iter().enumerate() {
-            match cli_tool::query_ring_state(endpoint.to_string(), ring_pk_hex.to_string()).await {
-                Ok((_, last_pss)) if last_pss > baselines[i] => {}
-                _ => {
-                    all_refreshed = false;
-                }
-            }
-        }
-        if all_refreshed {
-            println!("PSS refresh confirmed on all nodes — PSS claim is free.");
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "PSS refresh did not complete on all nodes within {}s before reshare test",
-            timeout.as_secs()
-        );
-        sleep(Duration::from_secs(2)).await;
-    }
 }
