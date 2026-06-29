@@ -216,7 +216,6 @@ where
     D: Dkg + Clone + Send + Sync + 'static,
 {
     let now = current_unix_time()?;
-    let canonical = context.envelope.canonical_bytes();
     app_state
         .reporting_state
         .registry
@@ -236,11 +235,6 @@ where
             },
         )
         .await?;
-    if canonical.is_empty() {
-        return Err(ReportingError::InvalidReport(
-            "canonical report cannot be empty".to_string(),
-        ));
-    }
     Ok(context.envelope.ring_pk.clone())
 }
 

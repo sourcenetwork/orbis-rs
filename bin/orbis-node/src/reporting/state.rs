@@ -2,8 +2,7 @@ use crate::reporting::error::{ReportingError, Result};
 use crate::reporting::registry::ReportRegistry;
 use std::collections::HashSet;
 use std::future::Future;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 
 const MAX_IN_FLIGHT_REPORTS: usize = 128;
@@ -21,6 +20,24 @@ pub struct ReportingState {
     tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
+// Removes the key and decrements the metric when dropped, whether the task
+// completes normally, panics, or is cancelled.
+struct InFlightGuard {
+    state: Arc<ReportingState>,
+    key: InFlightReportKey,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.state
+            .in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+        crate::metrics::REPORT_IN_FLIGHT.dec();
+    }
+}
+
 impl ReportingState {
     pub fn new() -> Self {
         Self {
@@ -35,7 +52,7 @@ impl ReportingState {
         F: Future<Output = ()> + Send + 'static,
     {
         {
-            let mut in_flight = self.in_flight.lock().await;
+            let mut in_flight = self.in_flight.lock().unwrap();
             if in_flight.contains(&key) {
                 return Ok(false);
             }
@@ -48,24 +65,23 @@ impl ReportingState {
 
         let state = Arc::clone(self);
         let handle = tokio::spawn(async move {
+            let _guard = InFlightGuard { state, key };
             future.await;
-            state.in_flight.lock().await.remove(&key);
-            crate::metrics::REPORT_IN_FLIGHT.dec();
         });
 
-        let mut tasks = self.tasks.lock().await;
+        let mut tasks = self.tasks.lock().unwrap();
         tasks.retain(|task| !task.is_finished());
         tasks.push(handle);
         Ok(true)
     }
 
     #[cfg(test)]
-    pub async fn in_flight_count(&self) -> usize {
-        self.in_flight.lock().await.len()
+    pub fn in_flight_count(&self) -> usize {
+        self.in_flight.lock().unwrap().len()
     }
 
     pub async fn shutdown(&self) {
-        let tasks = std::mem::take(&mut *self.tasks.lock().await);
+        let tasks = std::mem::take(&mut *self.tasks.lock().unwrap());
         for task in tasks {
             let _ = task.await;
         }
@@ -103,10 +119,10 @@ mod tests {
             .await
             .unwrap());
         assert!(!state.spawn(key(), async {}).await.unwrap());
-        assert_eq!(state.in_flight_count().await, 1);
+        assert_eq!(state.in_flight_count(), 1);
         let _ = tx.send(());
         tokio::time::sleep(Duration::from_millis(10)).await;
-        assert_eq!(state.in_flight_count().await, 0);
+        assert_eq!(state.in_flight_count(), 0);
         assert!(state.spawn(key(), async {}).await.unwrap());
         state.shutdown().await;
     }

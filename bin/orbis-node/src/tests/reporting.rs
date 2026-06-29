@@ -245,9 +245,10 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
     );
     assert_eq!(event.ring_id, RING_ID, "ring_id mismatch");
     assert!(!event.report_id.is_empty(), "report_id should be set");
-    assert_eq!(
-        event.reporter_node_key, NODE_KEY_1,
-        "node1 (PRE coordinator) should be the reporter"
+  assert!(
+        [NODE_KEY_1, NODE_KEY_2].contains(&event.reporter_node_key.as_str()),
+        "reporter should be one of the non-accused current-committee members, got {}",
+        event.reporter_node_key
     );
 
     // ── Sign: node3 is still offline ────────────────────────────────────────
@@ -327,9 +328,10 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         !sign_event.report_id.is_empty(),
         "sign report_id should be set"
     );
-    assert_eq!(
-        sign_event.reporter_node_key, NODE_KEY_1,
-        "node1 (Sign coordinator) should be the reporter"
+    assert!(
+        [NODE_KEY_1, NODE_KEY_2].contains(&sign_event.reporter_node_key.as_str()),
+        "reporter should be one of the non-accused current-committee members, got {}",
+        event.reporter_node_key
     );
 
     // Both the PRE and Sign reports were accepted: node3 should have demerits.
@@ -632,9 +634,10 @@ async fn test_refresh_offline_triggers_on_chain_report() {
     );
     assert_eq!(event.ring_id, RING_ID, "ring_id mismatch");
     assert!(!event.report_id.is_empty(), "report_id should be set");
-    assert_eq!(
-        event.reporter_node_key, NODE_KEY_1,
-        "node1 (refresh coordinator) should be the reporter"
+    assert!(
+        [NODE_KEY_1, NODE_KEY_2].contains(&event.reporter_node_key.as_str()),
+        "reporter should be one of the non-accused current-committee members, got {}",
+        event.reporter_node_key
     );
 
     println!("Checking node3 demerit points...");

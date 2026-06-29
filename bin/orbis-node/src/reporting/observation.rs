@@ -141,10 +141,15 @@ pub fn offline_observation_from_peer_routes(
         .find(|(_, route)| extract_node_part(route) == peer_part)
         .map(|(node_key, _)| node_key.clone())?;
 
+    // Subtract a grace period so observed_at is behind the chain's latest block time.
+    // Gas simulation checks observed_at <= block_time; blocks are ~5s apart, so without
+    // this buffer the check fails when the report is submitted before the next block.
+    const CHAIN_BLOCK_GRACE_SECS: u64 = 10;
     let observed_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
-        .as_secs();
+        .as_secs()
+        .saturating_sub(CHAIN_BLOCK_GRACE_SECS);
 
     Some(OfflineObservation {
         ring_id: ring_id.to_string(),

@@ -256,7 +256,6 @@ impl ReportHandler for NodeOfflineHandler {
                 &context.peer_connection_pool,
                 &envelope.accused_peer_id,
                 context.routes,
-                envelope.expires_at,
             )
             .await?;
         }

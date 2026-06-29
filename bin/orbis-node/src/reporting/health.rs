@@ -49,19 +49,10 @@ pub async fn require_peer_offline(
     pool: &Arc<PeerConnectionPool>,
     peer_id: &str,
     routes: &'static network::ProtocolRoutes,
-    report_expires_at: u64,
 ) -> Result<()> {
     let probe = async {
         for attempt in 0..HEALTH_PROBE_ATTEMPTS {
-            if probe_once(
-                network,
-                pool,
-                peer_id,
-                routes.reporting_health_alpn,
-                report_expires_at,
-            )
-            .await
-            {
+            if probe_once(network, pool, peer_id, routes.reporting_health_alpn).await {
                 crate::metrics::REPORT_HEALTH_CHECKS_TOTAL
                     .with_label_values(&["reachable"])
                     .inc();
@@ -88,16 +79,16 @@ async fn probe_once(
     pool: &Arc<PeerConnectionPool>,
     peer_id: &str,
     protocol: &[u8],
-    report_expires_at: u64,
 ) -> bool {
     let nonce: [u8; 32] = rand::random();
     let attempt = async {
+        // Give the challenge a tight per-probe expiry independent of the report TTL.
+        // The nonce already prevents replay; this only guards against very stale deliveries.
+        let expires_at = current_unix_time()
+            .map(|now| now + HEALTH_PROBE_ATTEMPT_TIMEOUT.as_secs())
+            .ok()?;
         let stream = pool.open_stream(network, peer_id, protocol).await.ok()?;
-        let payload = serde_json::to_vec(&HealthMessage::Challenge {
-            nonce,
-            expires_at: report_expires_at,
-        })
-        .ok()?;
+        let payload = serde_json::to_vec(&HealthMessage::Challenge { nonce, expires_at }).ok()?;
         stream.send(Message::new(payload, protocol)).await.ok()?;
         let response = stream.recv().await.ok()?;
         match serde_json::from_slice::<HealthMessage>(&response.data).ok()? {
@@ -157,10 +148,8 @@ mod tests {
             target.bound_addresses()[0]
         );
         let pool = Arc::new(PeerConnectionPool::new());
-        let expires_at = current_unix_time().unwrap() + 30;
 
-        let result =
-            require_peer_offline(&source, &pool, &target_peer, &network::V0, expires_at).await;
+        let result = require_peer_offline(&source, &pool, &target_peer, &network::V0).await;
         assert!(matches!(result, Err(ReportingError::TargetReachable)));
 
         router.shutdown().await.unwrap();
