@@ -3,7 +3,7 @@ use crate::constants::{
     JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
 };
 use crate::helpers::protocol_version::read_ring_for_route;
-use crate::reporting::validate_signing_report;
+use crate::reporting::v0::validate_signing_report;
 use crate::ring_state::RingShareBundle;
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::helpers::{

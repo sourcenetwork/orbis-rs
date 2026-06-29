@@ -9,8 +9,8 @@ use crate::helpers::ring::{
 };
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
-use crate::reporting::observation::{offline_observation_from_pre_error, ReportObservation};
-use crate::reporting::queue_report;
+use crate::reporting::v0::observation::{offline_observation_from_pre_error, ReportObservation};
+use crate::reporting::v0::queue_report;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply,
     Secret, ThresholdDealer,
@@ -381,7 +381,7 @@ where
         {
             let drain_ring = ring.clone();
             let drain_routes = self.routes;
-            crate::reporting::spawn_error_drain::<D, SignImpl, _, _, _>(
+            crate::reporting::v0::spawn_error_drain::<D, SignImpl, _, _, _>(
                 set,
                 self.app_state.clone(),
                 self.routes,

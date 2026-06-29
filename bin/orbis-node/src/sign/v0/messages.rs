@@ -3,7 +3,7 @@
 //! This module defines the message types used for threshold BLS signing
 //! protocol communication between nodes over the network.
 
-use crate::reporting::types::ReportSigningContext;
+use crate::reporting::v0::types::ReportSigningContext;
 use authz::sourcehub::ValidWindow;
 use bulletin::r#trait::KeyDerivation;
 use common::blockchain::orbis::RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN;

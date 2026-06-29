@@ -1,5 +1,5 @@
-use crate::reporting::error::{ReportingError, Result};
-use crate::reporting::types::SignedReport;
+use crate::reporting::v0::error::{ReportingError, Result};
+use crate::reporting::v0::types::SignedReport;
 use bulletin::r#trait::{Bulletin, BulletinReportSubmission};
 
 pub async fn submit(report: SignedReport, bulletin: &(dyn Bulletin + Send + Sync)) -> Result<()> {

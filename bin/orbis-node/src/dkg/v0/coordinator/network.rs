@@ -5,11 +5,11 @@ use crate::dkg::v0::messages::{DkgMessage, SessionKind};
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::metrics;
-use crate::reporting::observation::{
+use crate::reporting::v0::observation::{
     is_reportable_dkg_offline_error, offline_observation_from_peer_routes, ReportObservation,
 };
-use crate::reporting::queue_report;
-use crate::reporting::types::CommitteeScope as ReportCommitteeScope;
+use crate::reporting::v0::queue_report;
+use crate::reporting::v0::types::CommitteeScope as ReportCommitteeScope;
 use crate::ring_state::RingPolyState;
 use bulletin::r#trait::{BulletinKind, RingPayload};
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};

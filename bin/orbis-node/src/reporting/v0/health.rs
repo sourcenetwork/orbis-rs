@@ -1,5 +1,5 @@
 use crate::app_state::PeerConnectionPool;
-use crate::reporting::error::{ReportingError, Result};
+use crate::reporting::v0::error::{ReportingError, Result};
 use async_trait::async_trait;
 use network::{Connection, Message, Network, ProtocolHandler};
 use serde::{Deserialize, Serialize};

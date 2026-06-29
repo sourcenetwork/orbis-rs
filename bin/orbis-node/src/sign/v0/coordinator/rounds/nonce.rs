@@ -203,7 +203,7 @@ where
         }
 
         // Drain remaining peer tasks in the background for post-threshold offline reporting.
-        crate::reporting::spawn_error_drain::<D, S, _, _, _>(
+        crate::reporting::v0::spawn_error_drain::<D, S, _, _, _>(
             set,
             self.app_state.clone(),
             self.routes,

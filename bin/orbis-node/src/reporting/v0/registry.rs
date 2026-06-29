@@ -2,11 +2,11 @@ use crate::app_state::PeerConnectionPool;
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::helpers::ring::RingConfig;
-use crate::reporting::error::{ReportingError, Result};
-use crate::reporting::health::require_peer_offline;
-use crate::reporting::observation::{OfflineObservation, ReportObservation};
-use crate::reporting::state::InFlightReportKey;
-use crate::reporting::types::{
+use crate::reporting::v0::error::{ReportingError, Result};
+use crate::reporting::v0::health::require_peer_offline;
+use crate::reporting::v0::observation::{OfflineObservation, ReportObservation};
+use crate::reporting::v0::state::InFlightReportKey;
+use crate::reporting::v0::types::{
     ring_state_sha256, CommitteeScope, NodeOffline, ReportEnvelope, NODE_OFFLINE_REPORT_TYPE,
     REPORT_DOMAIN, REPORT_TTL_SECS,
 };
@@ -442,8 +442,8 @@ async fn read_node_info(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reporting::observation::{OfflineObservation, ReportObservation};
-    use crate::reporting::types::{CommitteeScope, NodeOffline, REPORT_DOMAIN, REPORT_TTL_SECS};
+    use crate::reporting::v0::observation::{OfflineObservation, ReportObservation};
+    use crate::reporting::v0::types::{CommitteeScope, NodeOffline, REPORT_DOMAIN, REPORT_TTL_SECS};
     use bulletin::r#trait::UpgradeInfo;
 
     fn ring_fixture(threshold: u32) -> RingPayload {

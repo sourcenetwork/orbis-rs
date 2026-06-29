@@ -1,4 +1,4 @@
-use crate::reporting::error::{ReportingError, Result};
+use crate::reporting::v0::error::{ReportingError, Result};
 use bulletin::r#trait::RingPayload;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

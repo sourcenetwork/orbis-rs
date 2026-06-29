@@ -1,6 +1,6 @@
 use crate::dkg::v0::session_state::SessionStateManager;
 use crate::pre::v0::response_state::PreResponseManager;
-use crate::reporting::state::ReportingState;
+use crate::reporting::v0::state::ReportingState;
 use crate::sign::v0::response_state::SignResponseManager;
 use authz::r#trait::Authz;
 use bulletin::r#trait::Bulletin;

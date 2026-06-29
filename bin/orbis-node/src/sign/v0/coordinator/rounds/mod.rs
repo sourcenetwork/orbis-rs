@@ -3,11 +3,11 @@ mod signing;
 
 use crate::app_state::AppState;
 use crate::helpers::ring::RingConfig;
-use crate::reporting::observation::{
+use crate::reporting::v0::observation::{
     offline_observation_from_sign_error_scoped, ReportObservation,
 };
-use crate::reporting::queue_report;
-use crate::reporting::types::CommitteeScope;
+use crate::reporting::v0::queue_report;
+use crate::reporting::v0::types::CommitteeScope;
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::messages::SignContext;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
@@ -74,7 +74,7 @@ pub(super) fn queue_sign_offline_report<D, S>(
     });
 }
 
-/// Returns a closure suitable for `crate::reporting::spawn_error_drain` that maps
+/// Returns a closure suitable for `crate::reporting::v0::spawn_error_drain` that maps
 /// a `(peer_id, SignError)` pair to an optional `ReportObservation`, reusing the same
 /// recursive-report guard as `queue_sign_offline_report`.
 pub(super) fn make_sign_drain_observation(
@@ -124,7 +124,7 @@ fn sign_reporting_scopes(
 #[cfg(test)]
 mod tests {
     use super::sign_reporting_scopes;
-    use crate::reporting::types::{
+    use crate::reporting::v0::types::{
         CommitteeScope, NodeOffline, ReportEnvelope, ReportSigningContext,
         NODE_OFFLINE_REPORT_TYPE, REPORT_DOMAIN, REPORT_TTL_SECS,
     };

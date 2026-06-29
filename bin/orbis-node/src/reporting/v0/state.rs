@@ -1,5 +1,5 @@
-use crate::reporting::error::{ReportingError, Result};
-use crate::reporting::registry::ReportRegistry;
+use crate::reporting::v0::error::{ReportingError, Result};
+use crate::reporting::v0::registry::ReportRegistry;
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -97,7 +97,7 @@ impl Default for ReportingState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reporting::types::NODE_OFFLINE_REPORT_TYPE;
+    use crate::reporting::v0::types::NODE_OFFLINE_REPORT_TYPE;
     use std::time::Duration;
 
     fn key() -> InFlightReportKey {

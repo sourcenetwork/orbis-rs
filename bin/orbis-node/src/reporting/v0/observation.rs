@@ -2,7 +2,7 @@ use crate::dkg::v0::error::DkgError;
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::error::PreError;
-use crate::reporting::types::{CommitteeScope, NODE_OFFLINE_REPORT_TYPE};
+use crate::reporting::v0::types::{CommitteeScope, NODE_OFFLINE_REPORT_TYPE};
 use crate::sign::v0::error::SignError;
 
 #[derive(Debug, Clone)]

@@ -5,7 +5,7 @@ use crate::constants::{
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::helpers::protocol_handler::GenericProtocolHandler;
 use crate::pre::v0::coordinator::PreCoordinator;
-use crate::reporting::health::HealthProtocolHandler;
+use crate::reporting::v0::health::HealthProtocolHandler;
 use crate::sign::v0::coordinator::SignCoordinator;
 use network::error::Result as NetworkResult;
 use network::Router;
