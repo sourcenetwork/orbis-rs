@@ -96,10 +96,24 @@ pub fn spawn_error_drain<D, S, T, E, F>(
     tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + timeout;
         while let Ok(Some(res)) = tokio::time::timeout_at(deadline, set.join_next()).await {
-            if let Ok((peer_id, Err(e))) = res {
-                if let Some(obs) = to_observation(peer_id, e) {
-                    let _ = queue_report::<D, S>(app_state.clone(), routes, obs).await;
+            match res {
+                Ok((peer_id, Err(e))) => {
+                    if let Some(obs) = to_observation(peer_id.clone(), e) {
+                        let _ = queue_report::<D, S>(app_state.clone(), routes, obs)
+                            .await
+                            .inspect_err(|error| {
+                                tracing::warn!(
+                                    peer_id = %peer_id,
+                                    error = %error,
+                                    "Failed to queue offline report observation (post-threshold drain)"
+                                );
+                            });
+                    }
                 }
+                Err(join_err) => {
+                    tracing::error!(error = ?join_err, "Peer task panicked in error drain");
+                }
+                Ok((_, Ok(_))) => {}
             }
         }
     });
@@ -192,6 +206,11 @@ where
         .map_err(|error| ReportingError::Signing(error.to_string()))?;
     let sign_response: SignResponse = serde_json::from_slice(&response)
         .map_err(|error| ReportingError::Serialization(error.to_string()))?;
+    if sign_response.signature.is_empty() {
+        return Err(ReportingError::Signing(
+            "threshold signature response was empty".to_string(),
+        ));
+    }
 
     sink::submit(
         SignedReport {

@@ -28,8 +28,8 @@ flowchart TD
     L -- "yes" --> M["Reject report"]
     L -- "no" --> N["Return signature share"]
     N --> O["Recover threshold signature"]
-    O --> P["Emit SignedReport to ReportSink"]
-    P --> Q["V1: log complete artifact; future: submit to SourceHub"]
+    O --> P["Pass SignedReport to sink::submit"]
+    P --> Q["Submit signed artifact to SourceHub via bulletin.submit_report"]
 ```
 
 ## `node_offline` flow
@@ -137,11 +137,9 @@ report.
 
 ## Report sink
 
-The current sink is log-only. It emits the complete signed artifact and leaves a
-TODO for future SourceHub submission.
-
-The chain should follow the Rust canonical types and golden vectors later; do
-not make the chain define a competing encoding.
+`sink::submit` forwards the completed `SignedReport` to SourceHub by calling
+`bulletin.submit_report`. The canonical encoding and golden vectors are defined
+on the Rust side; the chain should not introduce a competing encoding.
 
 ## Adding a new report type
 

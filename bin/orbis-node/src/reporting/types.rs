@@ -114,6 +114,13 @@ impl ReportEnvelope {
                 self.domain
             )));
         }
+
+        if self.observed_at > now {
+            return Err(ReportingError::InvalidReport(
+                "observed_at cannot be in the future".to_string(),
+            ));
+        }
+
         if self.observed_at > self.expires_at
             || self.expires_at.saturating_sub(self.observed_at) != REPORT_TTL_SECS
         {

@@ -8,6 +8,7 @@ use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, get_test_ring_post,
     setup_three_node_network_with_sign, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
 };
+use crate::ring_state::RingPolyState;
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{CryptoDeserialize, Dkg, ThresholdSigner};
 use crypto::{DkgImpl, SignImpl};
@@ -46,6 +47,7 @@ async fn threshold_signs_offline_report_without_accused_node() {
         .unwrap();
 
     let (ring, ring_id) = wait_for_finalized_ring(&network).await;
+    wait_for_all_nodes_ring_state(&network, &ring.ring_pk).await;
     if let Some(router) = network.charlie.router.take() {
         router.shutdown().await.unwrap();
     }
@@ -153,6 +155,7 @@ async fn health_probe_blocks_report_when_accused_node_is_online() {
         .unwrap();
 
     let (ring, ring_id) = wait_for_finalized_ring(&network).await;
+    wait_for_all_nodes_ring_state(&network, &ring.ring_pk).await;
 
     // Charlie is still online — the report about charlie being offline should be blocked.
     let routes = resolve_node_routes(&network.alice.app_state.bulletin, &ring.peer_node_keys)
@@ -205,6 +208,34 @@ async fn health_probe_blocks_report_when_accused_node_is_online() {
     network.shutdown_routers().await.unwrap();
     for path in db_paths {
         cleanup_db(&path);
+    }
+}
+
+/// Polls each node's local storage until all three have persisted their `RingShareBundle`
+/// for `ring_pk`. This must be called after `wait_for_finalized_ring` because the bulletin
+/// update (which unblocks that helper) races with the concurrent Phase 4 storage writes on
+/// bob and charlie.
+async fn wait_for_all_nodes_ring_state(
+    network: &crate::helpers::test_helpers::ThreeNodeNetwork,
+    ring_pk: &str,
+) {
+    let start = Instant::now();
+    loop {
+        let all_ready = [
+            &network.alice.app_state.local_storage,
+            &network.bob.app_state.local_storage,
+            &network.charlie.app_state.local_storage,
+        ]
+        .iter()
+        .all(|storage| RingPolyState::load_from_ring_pk_hex(*storage, ring_pk).is_ok());
+        if all_ready {
+            return;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "nodes did not persist ring state in time"
+        );
+        sleep(Duration::from_millis(100)).await;
     }
 }
 

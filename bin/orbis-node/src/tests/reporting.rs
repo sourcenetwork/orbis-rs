@@ -245,7 +245,7 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
     );
     assert_eq!(event.ring_id, RING_ID, "ring_id mismatch");
     assert!(!event.report_id.is_empty(), "report_id should be set");
-  assert!(
+    assert!(
         [NODE_KEY_1, NODE_KEY_2].contains(&event.reporter_node_key.as_str()),
         "reporter should be one of the non-accused current-committee members, got {}",
         event.reporter_node_key

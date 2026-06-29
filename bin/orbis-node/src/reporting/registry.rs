@@ -228,6 +228,12 @@ impl ReportHandler for NodeOfflineHandler {
                 context.routes.version, envelope.ring_id
             )));
         }
+        if payload.origin_protocol_version != effective_version {
+            return Err(ReportingError::Unauthorized(format!(
+                "report origin protocol version {} does not match effective ring version {}",
+                payload.origin_protocol_version, effective_version
+            )));
+        }
 
         let signing_committee = validate_ring_and_membership(envelope, &payload, &ring)?;
         validate_node_routes(envelope, context, &ring).await?;

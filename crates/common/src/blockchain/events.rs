@@ -68,6 +68,8 @@ impl BulletinEventSubscription {
             .await
             .map_err(|e| BlockchainError::Rpc(format!("Event subscription failed: {}", e)))?;
 
+        await_subscribe_ack(&mut stream, "orbis-bulletin-events").await?;
+
         Ok(Self { stream })
     }
 
@@ -245,6 +247,8 @@ impl ReportEventSubscription {
             .await
             .map_err(|e| BlockchainError::Rpc(format!("Event subscription failed: {}", e)))?;
 
+        await_subscribe_ack(&mut stream, "orbis-report-events").await?;
+
         Ok(Self { stream })
     }
 
@@ -334,6 +338,37 @@ fn find_report_accepted_event(
 ///
 /// Transforms `http://host:port` to `ws://host:port/websocket`
 /// (and `https://` to `wss://`).
+/// Read and validate the JSON-RPC acknowledgement that CometBFT sends after a subscribe request.
+/// Returns an error if the ack is missing, unreadable, or contains a JSON-RPC error object.
+async fn await_subscribe_ack(stream: &mut EventStream, id: &str) -> Result<()> {
+    match stream.next().await {
+        Some(Ok(Message::Text(payload))) => {
+            let value: Value = serde_json::from_str(&payload).map_err(|e| {
+                BlockchainError::Rpc(format!("Subscribe ack parse error (id={}): {}", id, e))
+            })?;
+            if let Some(err) = value.get("error") {
+                return Err(BlockchainError::Rpc(format!(
+                    "Event subscription rejected by server (id={}): {}",
+                    id, err
+                )));
+            }
+            Ok(())
+        }
+        Some(Ok(_)) => Err(BlockchainError::Rpc(format!(
+            "Unexpected message type in subscribe ack (id={})",
+            id
+        ))),
+        Some(Err(e)) => Err(BlockchainError::Rpc(format!(
+            "WebSocket error reading subscribe ack (id={}): {}",
+            id, e
+        ))),
+        None => Err(BlockchainError::Rpc(format!(
+            "WebSocket closed before subscribe ack (id={})",
+            id
+        ))),
+    }
+}
+
 fn rpc_url_to_ws(rpc_url: &str) -> String {
     let base = rpc_url
         .replace("http://", "ws://")
