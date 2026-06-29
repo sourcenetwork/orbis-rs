@@ -298,7 +298,7 @@ fn find_report_accepted_event(
 
     // Scan for any event that has an accused_node_key attribute (unique to report events).
     // Cosmos SDK typed events JSON-encode string attributes, so strip literal quotes.
-    for (key, _values) in events {
+    for key in events.keys() {
         if !key.ends_with(".accused_node_key") {
             continue;
         }
