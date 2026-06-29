@@ -353,9 +353,8 @@ async fn wait_for_node_info_on_chain(
 ) {
     let deadline = Instant::now() + timeout;
     loop {
-        match client.orbis_read_node_info(node_key).await {
-            Ok(Some(_)) => return,
-            _ => {}
+        if let Ok(Some(_)) = client.orbis_read_node_info(node_key).await {
+            return;
         }
         assert!(
             Instant::now() < deadline,

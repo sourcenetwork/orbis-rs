@@ -95,16 +95,11 @@ pub fn spawn_error_drain<D, S, T, E, F>(
 {
     tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            match tokio::time::timeout_at(deadline, set.join_next()).await {
-                Ok(Some(res)) => {
-                    if let Ok((peer_id, Err(e))) = res {
-                        if let Some(obs) = to_observation(peer_id, e) {
-                            let _ = queue_report::<D, S>(app_state.clone(), routes, obs).await;
-                        }
-                    }
+        while let Ok(Some(res)) = tokio::time::timeout_at(deadline, set.join_next()).await {
+            if let Ok((peer_id, Err(e))) = res {
+                if let Some(obs) = to_observation(peer_id, e) {
+                    let _ = queue_report::<D, S>(app_state.clone(), routes, obs).await;
                 }
-                _ => break,
             }
         }
     });

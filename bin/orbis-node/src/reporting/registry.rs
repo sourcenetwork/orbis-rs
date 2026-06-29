@@ -149,9 +149,7 @@ impl ReportHandler for NodeOfflineHandler {
         observation: ReportObservation,
         context: &ReportPreparationContext,
     ) -> Result<PreparedReport> {
-        let observation = match observation {
-            ReportObservation::NodeOffline(observation) => observation,
-        };
+        let ReportObservation::NodeOffline(observation) = observation;
 
         let ring_post = context
             .bulletin
@@ -644,7 +642,6 @@ mod tests {
         .canonical_bytes();
         validate_ring_and_membership(&report, &payload(&report), &ring).unwrap();
 
-        let mut report = report;
         report.reporter_node_key = "new-a".to_string();
         report.payload = NodeOffline {
             origin_protocol: "pss_reshare".to_string(),

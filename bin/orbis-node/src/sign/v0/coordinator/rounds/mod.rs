@@ -83,10 +83,7 @@ pub(super) fn make_sign_drain_observation(
     version: u64,
 ) -> impl Fn(String, SignError) -> Option<ReportObservation> {
     move |peer_id, e| {
-        let Some((origin_protocol, accused_scope, signing_scope)) = sign_reporting_scopes(&context)
-        else {
-            return None;
-        };
+        let (origin_protocol, accused_scope, signing_scope) = sign_reporting_scopes(&context)?;
         offline_observation_from_sign_error_scoped(
             &ring,
             &peer_id,
