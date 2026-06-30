@@ -81,6 +81,8 @@ ciphertexts, raw error text, or transport sub-stage details.
 
 ## Common validation gates
 
+### orbis-rs signer-side gates
+
 Before anyone signs, the report handler should verify:
 
 - the envelope domain is supported;
@@ -100,6 +102,29 @@ Before anyone signs, the report handler should verify:
 
 This means `t=1` rings cannot report faults, and `t=n` rings cannot report one
 offline member using the existing threshold.
+
+### sourcehub chain-side gates
+
+Independently, before accepting `MsgSubmitReport` and applying demerits, the
+chain re-checks most of the same invariants plus its own replay protection
+(see [Chain-side acceptance](#chain-side-acceptance-sourcehub) above):
+
+- envelope shape and validity-window checks;
+- `report.chain_id` matches the running chain;
+- `report_id` matches the recomputed canonical hash;
+- `report_id` has not already been accepted (artifact replay protection);
+- ring is finalized and `ring_pk`/`ring_state_sha256` are current;
+- `origin_protocol_version` is the ring's effective version at `observed_at`;
+- committee authorization (threshold >= 2, threshold satisfiable excluding
+  the accused, reporter in the signing committee, accused in the accused
+  committee, accused `NodeInfo.peer_id` still matches);
+- session dedupe (`sessionDedupeID` has not already been accepted);
+- threshold signature verifies under `ring.ring_pk`.
+
+The chain does not trust the orbis-rs signers' validation — it re-derives
+everything it can from on-chain state and only takes the threshold signature
+as proof that signers agreed, not as a substitute for re-checking ring/committee
+freshness itself.
 
 ## Signing behavior
 
@@ -140,6 +165,70 @@ report.
 `sink::submit` forwards the completed `SignedReport` to SourceHub by calling
 `bulletin.submit_report`. The canonical encoding and golden vectors are defined
 on the Rust side; the chain should not introduce a competing encoding.
+
+## Chain-side acceptance (sourcehub)
+
+`MsgSubmitReport` is handled by `x/orbis/keeper/SubmitReport`, which delegates to
+`validateSubmittedReport` (`x/orbis/keeper/report.go`) before applying any state
+change:
+
+1. validate envelope shape (domain, non-empty fields, `ring_state_sha256` is
+   32-byte hex, `observed_at <= expires_at`, validity window is exactly the
+   120s `ReportTTLSeconds`, not expired, reporter != accused);
+2. `report.chain_id` matches the running chain;
+3. recompute the canonical message and `report_id` from the envelope and
+   compare against the claimed `report_id` — mismatch is rejected;
+4. `HasAcceptedReport(report_id)` — reject if this exact signed artifact was
+   already accepted;
+5. decode and validate the `node_offline` payload (only known report type
+   today), checking `origin_protocol` is one of `pre`/`sign`/`pss_refresh`/`pss_reshare`;
+6. look up the ring, require it finalized, and require `report.ring_pk` /
+   `report.ring_state_sha256` to match current on-chain ring state exactly
+   (stale ring state is rejected, same as the orbis-rs gate);
+7. check `origin_protocol_version` is the ring's *effective* protocol version
+   for `observed_at` (handles upgrade-boundary timing);
+8. `validateReportCommitteeAuthorization`: resolve the accused/signing
+   committees for their declared scopes (`current` or `pending_new`), require
+   `threshold >= 2`, require the threshold is still satisfiable with the
+   accused excluded, require the reporter is in the signing committee and the
+   accused is in the accused committee, and require the accused's current
+   on-chain `NodeInfo.peer_id` still matches the report's `accused_peer_id`;
+9. **session dedupe** — a second, independent check from `report_id` (see
+   below) — reject if this `(ring, report_type, origin_protocol, accused,
+   session_id)` tuple was already accepted;
+10. verify the threshold signature over the canonical envelope bytes under
+    `ring.ring_pk`.
+
+Only after all of that does the keeper call `IncrementNodeDemerits` and emit
+`EventReportAccepted`.
+
+### Two distinct dedupe keys
+
+- **`report_id`** = `SHA256(canonical envelope bytes)`, where the canonical
+  bytes include every field of the envelope (domain, ids, timestamps,
+  payload, `session_id`, ...). This prevents the literal same signed artifact
+  from being submitted twice.
+- **`sessionDedupeID`** = `SHA256(domain, chain_id, ring_id, report_type,
+  origin_protocol, accused_node_key, session_id)`. This is a coarser key that
+  prevents two *different* reports both claiming to cover the same session
+  from landing (e.g. two honest-but-redundant submissions of the same
+  underlying incident).
+
+Both records are pruned by `EndBlock` once the report's own 120s TTL has
+elapsed. That's safe to do unconditionally: the envelope's own
+`observed_at`/`expires_at` window already makes the report unsubmittable past
+that point regardless of whether the dedupe record still exists, so there's
+no replay gap opened by forgetting it.
+
+## Demerits
+
+`DemeritAmountForReportType` (`x/orbis/keeper/demerits.go`) maps a report type
+to a point value — currently `node_offline` -> `ring.DemeritConfig.NodeOfflineDemerits`.
+`IncrementNodeDemerits` (`x/orbis/keeper/store.go`) then adds that amount to the
+node's running total for `(ring_id, node_key)`. The total lives in a lazily-reset
+window: if the existing window started more than `DemeritConfig.ResetIntervalSeconds`
+ago, it's treated as expired and a fresh window starts at the current point total
+of `amount` rather than continuing to accumulate indefinitely.
 
 ## Adding a new report type
 
