@@ -618,6 +618,30 @@ impl MsgSubmitReport {
 #[derive(Clone, Message)]
 pub struct MsgSubmitReportResponse {}
 
+/// Typed request for [`OrbisChainClient::orbis_submit_report`].
+///
+/// Using a struct prevents silent swaps between the several adjacent `String`
+/// fields (`session_id`, `report_id`, `signature_scheme`) that would not be
+/// caught by the compiler with positional arguments.
+pub struct SubmitReportRequest {
+    pub domain: String,
+    pub report_type: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub reporter_node_key: String,
+    pub accused_node_key: String,
+    pub accused_peer_id: String,
+    pub observed_at: u64,
+    pub expires_at: u64,
+    pub payload: Vec<u8>,
+    pub session_id: String,
+    pub report_id: String,
+    pub signature_scheme: String,
+    pub signature: Vec<u8>,
+}
+
 // ============================================================================
 // Query Request/Response Types
 // ============================================================================
@@ -1497,49 +1521,30 @@ impl SourceHubClient {
         Ok(response.points)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn orbis_submit_report(
-        &self,
-        domain: String,
-        report_type: String,
-        chain_id: String,
-        ring_id: String,
-        ring_pk: String,
-        ring_state_sha256: String,
-        reporter_node_key: String,
-        accused_node_key: String,
-        accused_peer_id: String,
-        observed_at: u64,
-        expires_at: u64,
-        payload: Vec<u8>,
-        session_id: String,
-        report_id: String,
-        signature_scheme: String,
-        signature: Vec<u8>,
-    ) -> Result<BroadcastResult> {
+    pub async fn orbis_submit_report(&self, req: SubmitReportRequest) -> Result<BroadcastResult> {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
         let msg = MsgSubmitReport {
             creator: signer.address(),
             report: Some(ReportEnvelopeProto {
-                domain,
-                report_type,
-                chain_id,
-                ring_id,
-                ring_pk,
-                ring_state_sha256,
-                reporter_node_key,
-                accused_node_key,
-                accused_peer_id,
-                observed_at,
-                expires_at,
-                payload,
-                session_id,
+                domain: req.domain,
+                report_type: req.report_type,
+                chain_id: req.chain_id,
+                ring_id: req.ring_id,
+                ring_pk: req.ring_pk,
+                ring_state_sha256: req.ring_state_sha256,
+                reporter_node_key: req.reporter_node_key,
+                accused_node_key: req.accused_node_key,
+                accused_peer_id: req.accused_peer_id,
+                observed_at: req.observed_at,
+                expires_at: req.expires_at,
+                payload: req.payload,
+                session_id: req.session_id,
             }),
-            report_id,
-            signature_scheme,
-            signature,
+            report_id: req.report_id,
+            signature_scheme: req.signature_scheme,
+            signature: req.signature,
         };
         self.broadcast_proto_msg_with_gas(
             MsgSubmitReport::TYPE_URL,

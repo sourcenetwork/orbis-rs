@@ -8,7 +8,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use common::blockchain::{
-    orbis::{self, generate_document_id, generate_key_derivation_id},
+    orbis::{self, generate_document_id, generate_key_derivation_id, SubmitReportRequest},
     BlockchainError, ChainConfigBuilder, SourceHubClient, TxSigner,
 };
 
@@ -147,24 +147,24 @@ impl Bulletin for SourceHubBulletin {
     async fn submit_report(&self, s: BulletinReportSubmission) -> Result<()> {
         let result = self
             .chain_client
-            .orbis_submit_report(
-                s.domain,
-                s.report_type,
-                s.chain_id,
-                s.ring_id,
-                s.ring_pk,
-                s.ring_state_sha256,
-                s.reporter_node_key,
-                s.accused_node_key,
-                s.accused_peer_id,
-                s.observed_at,
-                s.expires_at,
-                s.payload,
-                s.session_id,
-                s.report_id,
-                s.signature_scheme,
-                s.signature,
-            )
+            .orbis_submit_report(SubmitReportRequest {
+                domain: s.domain,
+                report_type: s.report_type,
+                chain_id: s.chain_id,
+                ring_id: s.ring_id,
+                ring_pk: s.ring_pk,
+                ring_state_sha256: s.ring_state_sha256,
+                reporter_node_key: s.reporter_node_key,
+                accused_node_key: s.accused_node_key,
+                accused_peer_id: s.accused_peer_id,
+                observed_at: s.observed_at,
+                expires_at: s.expires_at,
+                payload: s.payload,
+                session_id: s.session_id,
+                report_id: s.report_id,
+                signature_scheme: s.signature_scheme,
+                signature: s.signature,
+            })
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?;
         check_result(result, "submit report")
