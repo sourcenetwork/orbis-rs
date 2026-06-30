@@ -75,6 +75,7 @@ async fn threshold_signs_offline_report_without_accused_node() {
         accused_committee_scope: CommitteeScope::Current,
         signing_committee_scope: CommitteeScope::Current,
         observed_at,
+        session_id: "reporting-test-session".to_string(),
     };
 
     let app_state = Arc::new(network.alice.app_state.clone());
@@ -106,6 +107,7 @@ async fn threshold_signs_offline_report_without_accused_node() {
         observed_at: submission.observed_at,
         expires_at: submission.expires_at,
         payload: submission.payload.clone(),
+        session_id: submission.session_id.clone(),
     };
     let message = envelope.canonical_bytes();
     let ring_pk_bytes = hex::decode(&ring.ring_pk).unwrap();
@@ -181,6 +183,7 @@ async fn health_probe_blocks_report_when_accused_node_is_online() {
         accused_committee_scope: CommitteeScope::Current,
         signing_committee_scope: CommitteeScope::Current,
         observed_at,
+        session_id: "health-reject-session".to_string(),
     };
 
     let app_state = Arc::new(network.alice.app_state.clone());

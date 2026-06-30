@@ -295,6 +295,7 @@ pub struct BulletinReportSubmission {
     pub observed_at: u64,
     pub expires_at: u64,
     pub payload: Vec<u8>,
+    pub session_id: String,
     pub report_id: String,
     pub signature_scheme: String,
     pub signature: Vec<u8>,

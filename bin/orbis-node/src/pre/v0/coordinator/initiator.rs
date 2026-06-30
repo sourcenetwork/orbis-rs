@@ -340,6 +340,7 @@ where
                                 &peer_id,
                                 &e,
                                 self.routes.version,
+                                &request_id,
                             ) {
                                 let _ = queue_report::<D, SignImpl>(
                                     self.app_state.clone(),
@@ -381,6 +382,7 @@ where
         {
             let drain_ring = ring.clone();
             let drain_routes = self.routes;
+            let drain_session_id = request_id.clone();
             crate::reporting::v0::spawn_error_drain::<D, SignImpl, _, _, _>(
                 set,
                 self.app_state.clone(),
@@ -397,6 +399,7 @@ where
                         &peer_id,
                         &e,
                         drain_routes.version,
+                        &drain_session_id,
                     )
                     .map(ReportObservation::NodeOffline)
                 },

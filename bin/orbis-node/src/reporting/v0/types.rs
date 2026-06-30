@@ -83,6 +83,7 @@ pub struct ReportEnvelope {
     pub observed_at: u64,
     pub expires_at: u64,
     pub payload: Vec<u8>,
+    pub session_id: String,
 }
 
 impl ReportEnvelope {
@@ -100,6 +101,7 @@ impl ReportEnvelope {
         write_u64(&mut out, self.observed_at);
         write_u64(&mut out, self.expires_at);
         write_bytes(&mut out, &self.payload);
+        write_string(&mut out, &self.session_id);
         out
     }
 
@@ -140,6 +142,7 @@ impl ReportEnvelope {
             ("reporter_node_key", self.reporter_node_key.as_str()),
             ("accused_node_key", self.accused_node_key.as_str()),
             ("accused_peer_id", self.accused_peer_id.as_str()),
+            ("session_id", self.session_id.as_str()),
         ] {
             if value.is_empty() {
                 return Err(ReportingError::InvalidReport(format!(
@@ -344,6 +347,7 @@ mod tests {
                 signing_committee_scope: CommitteeScope::Current,
             }
             .canonical_bytes(),
+            session_id: "pre-request-1".to_string(),
         }
     }
 
@@ -367,6 +371,10 @@ mod tests {
         assert_eq!(report.report_id(), report.report_id());
         let mut changed = report.clone();
         changed.domain = "different-domain".to_string();
+        assert_ne!(report.report_id(), changed.report_id());
+
+        let mut changed = report.clone();
+        changed.session_id = "pre-request-2".to_string();
         assert_ne!(report.report_id(), changed.report_id());
     }
 
@@ -426,7 +434,7 @@ mod tests {
     fn report_encoding_golden_vector() {
         assert_eq!(
             envelope().report_id(),
-            "dfb170015fd469566dadfedadf6ff110f840e6a1e53b35a2850581bcf74da797"
+            "80b0f43ae215dd88a6e635de00207cd549c2492bb2086b22ceceda73a4de65f3"
         );
     }
 }

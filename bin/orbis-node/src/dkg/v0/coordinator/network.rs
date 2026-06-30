@@ -295,6 +295,7 @@ async fn queue_pss_offline_report<D>(
     let app_state = coord.app_state.clone();
     let routes = coord.routes;
     let peer_id = peer_id.to_string();
+    let report_session_id = session_id.to_string();
 
     let _handle = tokio::spawn(async move {
         if let Err(error) = queue_pss_offline_report_task::<D>(
@@ -303,6 +304,7 @@ async fn queue_pss_offline_report<D>(
             peer_id.clone(),
             kind,
             stored_ring_id,
+            report_session_id,
         )
         .await
         {
@@ -321,6 +323,7 @@ async fn queue_pss_offline_report_task<D>(
     peer_id: String,
     kind: SessionKind,
     stored_ring_id: String,
+    session_id: String,
 ) -> Result<()>
 where
     D: Dkg<
@@ -475,6 +478,7 @@ where
         routes.version,
         accused_scope,
         signing_scope,
+        &session_id,
     ) else {
         return Ok(());
     };

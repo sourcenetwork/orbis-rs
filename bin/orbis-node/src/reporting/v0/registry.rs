@@ -303,6 +303,7 @@ impl NodeOfflineHandler {
             observed_at: observation.observed_at,
             expires_at: observation.observed_at.saturating_add(REPORT_TTL_SECS),
             payload: payload.canonical_bytes(),
+            session_id: observation.session_id.clone(),
         }
     }
 
@@ -486,6 +487,7 @@ mod tests {
                 signing_committee_scope: CommitteeScope::Current,
             }
             .canonical_bytes(),
+            session_id: "session-1".to_string(),
         }
     }
 
@@ -503,6 +505,7 @@ mod tests {
             accused_committee_scope: CommitteeScope::Current,
             signing_committee_scope: CommitteeScope::Current,
             observed_at: 100,
+            session_id: "session-1".to_string(),
         }
     }
 

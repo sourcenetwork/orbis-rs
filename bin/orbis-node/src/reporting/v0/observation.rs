@@ -15,6 +15,7 @@ pub struct OfflineObservation {
     pub accused_committee_scope: CommitteeScope,
     pub signing_committee_scope: CommitteeScope,
     pub observed_at: u64,
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +36,7 @@ pub fn offline_observation_from_pre_error(
     peer_id: &str,
     error: &PreError,
     protocol_version: u64,
+    session_id: &str,
 ) -> Option<OfflineObservation> {
     if !is_reportable_pre_offline_error(error) {
         return None;
@@ -47,6 +49,7 @@ pub fn offline_observation_from_pre_error(
         protocol_version,
         CommitteeScope::Current,
         CommitteeScope::Current,
+        session_id,
     )
 }
 
@@ -56,6 +59,7 @@ pub fn offline_observation_from_sign_error(
     peer_id: &str,
     error: &SignError,
     protocol_version: u64,
+    session_id: &str,
 ) -> Option<OfflineObservation> {
     if !is_reportable_sign_offline_error(error) {
         return None;
@@ -68,6 +72,7 @@ pub fn offline_observation_from_sign_error(
         protocol_version,
         CommitteeScope::Current,
         CommitteeScope::Current,
+        session_id,
     )
 }
 
@@ -79,6 +84,7 @@ pub fn offline_observation_from_sign_error_scoped(
     protocol_version: u64,
     accused_committee_scope: CommitteeScope,
     signing_committee_scope: CommitteeScope,
+    session_id: &str,
 ) -> Option<OfflineObservation> {
     if !is_reportable_sign_offline_error(error) {
         return None;
@@ -91,6 +97,7 @@ pub fn offline_observation_from_sign_error_scoped(
         protocol_version,
         accused_committee_scope,
         signing_committee_scope,
+        session_id,
     )
 }
 
@@ -133,6 +140,7 @@ pub fn offline_observation_from_peer_routes(
     protocol_version: u64,
     accused_committee_scope: CommitteeScope,
     signing_committee_scope: CommitteeScope,
+    session_id: &str,
 ) -> Option<OfflineObservation> {
     let peer_part = extract_node_part(peer_id);
     let accused_node_key = peer_node_keys
@@ -160,6 +168,7 @@ pub fn offline_observation_from_peer_routes(
         accused_committee_scope,
         signing_committee_scope,
         observed_at,
+        session_id: session_id.to_string(),
     })
 }
 
@@ -170,6 +179,7 @@ fn offline_observation_from_ring_config(
     protocol_version: u64,
     accused_committee_scope: CommitteeScope,
     signing_committee_scope: CommitteeScope,
+    session_id: &str,
 ) -> Option<OfflineObservation> {
     offline_observation_from_peer_routes(
         &ring.ring_id,
@@ -180,6 +190,7 @@ fn offline_observation_from_ring_config(
         protocol_version,
         accused_committee_scope,
         signing_committee_scope,
+        session_id,
     )
 }
 
@@ -208,6 +219,7 @@ mod tests {
             &unknown_peer,
             &PreError::NetworkConnection("down".into()),
             0,
+            "pre-request-1",
         )
         .is_none());
     }
@@ -215,18 +227,21 @@ mod tests {
     #[test]
     fn classifies_only_transport_failures() {
         let ring = ring();
-        assert!(offline_observation_from_pre_error(
+        let pre_observation = offline_observation_from_pre_error(
             &ring,
             &ring.peer_ids[0],
             &PreError::Timeout("timeout".into()),
             0,
+            "pre-request-1",
         )
-        .is_some());
+        .unwrap();
+        assert_eq!(pre_observation.session_id, "pre-request-1");
         assert!(offline_observation_from_pre_error(
             &ring,
             &ring.peer_ids[0],
             &PreError::VerificationFailed("bad share".into()),
             0,
+            "pre-request-1",
         )
         .is_none());
         let sign_observation = offline_observation_from_sign_error(
@@ -234,9 +249,11 @@ mod tests {
             &ring.peer_ids[0],
             &SignError::NetworkCommunication("Failed to receive response".into()),
             0,
+            "sign-request-1",
         )
         .unwrap();
         assert_eq!(sign_observation.origin_protocol, "sign");
+        assert_eq!(sign_observation.session_id, "sign-request-1");
         assert_eq!(
             sign_observation.accused_committee_scope,
             CommitteeScope::Current
@@ -250,6 +267,7 @@ mod tests {
             &ring.peer_ids[0],
             &SignError::VerificationFailed("bad share".into()),
             0,
+            "sign-request-1",
         )
         .is_none());
         assert!(is_reportable_dkg_offline_error(
@@ -261,5 +279,25 @@ mod tests {
         assert!(!is_reportable_dkg_offline_error(&DkgError::ProtocolError(
             "bad".into()
         )));
+    }
+
+    #[test]
+    fn peer_route_observation_preserves_session_id() {
+        let ring = ring();
+        let observation = offline_observation_from_peer_routes(
+            &ring.ring_id,
+            &ring.peer_ids,
+            &ring.peer_node_keys,
+            &ring.peer_ids[0],
+            "pss_refresh",
+            7,
+            CommitteeScope::Current,
+            CommitteeScope::Current,
+            "pss-session-1",
+        )
+        .unwrap();
+
+        assert_eq!(observation.origin_protocol, "pss_refresh");
+        assert_eq!(observation.session_id, "pss-session-1");
     }
 }

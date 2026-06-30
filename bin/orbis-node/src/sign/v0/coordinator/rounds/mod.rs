@@ -20,6 +20,7 @@ pub(super) fn queue_sign_offline_report<D, S>(
     ring: &RingConfig,
     peer_id: &str,
     error: &SignError,
+    session_id: &str,
     context: &SignContext,
     source: &'static str,
 ) where
@@ -51,6 +52,7 @@ pub(super) fn queue_sign_offline_report<D, S>(
         routes.version,
         accused_scope,
         signing_scope,
+        session_id,
     ) else {
         return;
     };
@@ -80,6 +82,7 @@ pub(super) fn queue_sign_offline_report<D, S>(
 pub(super) fn make_sign_drain_observation(
     ring: RingConfig,
     context: SignContext,
+    session_id: String,
     version: u64,
 ) -> impl Fn(String, SignError) -> Option<ReportObservation> {
     move |peer_id, e| {
@@ -92,6 +95,7 @@ pub(super) fn make_sign_drain_observation(
             version,
             accused_scope,
             signing_scope,
+            &session_id,
         )
         .map(ReportObservation::NodeOffline)
     }
@@ -123,11 +127,14 @@ fn sign_reporting_scopes(
 
 #[cfg(test)]
 mod tests {
-    use super::sign_reporting_scopes;
+    use super::{make_sign_drain_observation, sign_reporting_scopes};
+    use crate::helpers::ring::RingConfig;
+    use crate::reporting::v0::observation::ReportObservation;
     use crate::reporting::v0::types::{
         CommitteeScope, NodeOffline, ReportEnvelope, ReportSigningContext,
         NODE_OFFLINE_REPORT_TYPE, REPORT_DOMAIN, REPORT_TTL_SECS,
     };
+    use crate::sign::v0::error::SignError;
     use crate::sign::v0::messages::SignContext;
 
     fn stub_envelope() -> ReportEnvelope {
@@ -150,6 +157,7 @@ mod tests {
                 signing_committee_scope: CommitteeScope::Current,
             }
             .canonical_bytes(),
+            session_id: "session-1".to_string(),
         }
     }
 
@@ -173,5 +181,32 @@ mod tests {
         assert_eq!(protocol, "sign");
         assert_eq!(accused, CommitteeScope::Current);
         assert_eq!(signing, CommitteeScope::Current);
+    }
+
+    #[test]
+    fn sign_drain_observation_uses_request_id_as_session_id() {
+        let ring = RingConfig {
+            ring_id: "ring".to_string(),
+            ring_pk_bytes: Vec::new(),
+            peer_ids: vec!["aa".repeat(32)],
+            peer_node_keys: vec!["accused".to_string()],
+            threshold: 1,
+            total_participants: 1,
+            public_polynomial_hex: String::new(),
+        };
+        let to_observation = make_sign_drain_observation(
+            ring,
+            SignContext::Bulletin {
+                object_id: "object".to_string(),
+            },
+            "sign-request-1".to_string(),
+            7,
+        );
+
+        let ReportObservation::NodeOffline(observation) =
+            to_observation("aa".repeat(32), SignError::Timeout("timeout".to_string())).unwrap();
+
+        assert_eq!(observation.origin_protocol, "sign");
+        assert_eq!(observation.session_id, "sign-request-1");
     }
 }

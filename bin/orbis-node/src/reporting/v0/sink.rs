@@ -19,6 +19,7 @@ pub async fn submit(report: SignedReport, bulletin: &(dyn Bulletin + Send + Sync
             observed_at: report.report.observed_at,
             expires_at: report.report.expires_at,
             payload: report.report.payload,
+            session_id: report.report.session_id,
             report_id: report.report_id,
             signature_scheme: report.signature_scheme,
             signature: signature_bytes,

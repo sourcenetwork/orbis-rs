@@ -442,6 +442,7 @@ where
                                 &ring,
                                 &peer_id,
                                 &e,
+                                &request_id,
                                 &context,
                                 "sign_share_round",
                             );
@@ -471,7 +472,12 @@ where
             self.app_state.clone(),
             self.routes,
             SIGN_COLLECTION_TIMEOUT,
-            make_sign_drain_observation(ring.clone(), context.clone(), self.routes.version),
+            make_sign_drain_observation(
+                ring.clone(),
+                context.clone(),
+                request_id.clone(),
+                self.routes.version,
+            ),
         );
 
         // 3. Collect any responses that were already stored before cancellation and

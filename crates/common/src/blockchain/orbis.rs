@@ -593,6 +593,8 @@ pub struct ReportEnvelopeProto {
     pub expires_at: u64,
     #[prost(bytes = "vec", tag = "12")]
     pub payload: Vec<u8>,
+    #[prost(string, tag = "13")]
+    pub session_id: String,
 }
 
 #[derive(Clone, Message)]
@@ -1510,6 +1512,7 @@ impl SourceHubClient {
         observed_at: u64,
         expires_at: u64,
         payload: Vec<u8>,
+        session_id: String,
         report_id: String,
         signature_scheme: String,
         signature: Vec<u8>,
@@ -1532,6 +1535,7 @@ impl SourceHubClient {
                 observed_at,
                 expires_at,
                 payload,
+                session_id,
             }),
             report_id,
             signature_scheme,

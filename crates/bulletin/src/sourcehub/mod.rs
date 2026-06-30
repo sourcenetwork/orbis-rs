@@ -160,6 +160,7 @@ impl Bulletin for SourceHubBulletin {
                 s.observed_at,
                 s.expires_at,
                 s.payload,
+                s.session_id,
                 s.report_id,
                 s.signature_scheme,
                 s.signature,
