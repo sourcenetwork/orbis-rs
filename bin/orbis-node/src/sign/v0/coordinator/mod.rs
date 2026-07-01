@@ -22,6 +22,7 @@ mod verification;
 use crate::app_state::AppState;
 use crypto::r#trait::{Dkg, ThresholdSigner};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Response structure containing the recovered signature
@@ -29,6 +30,29 @@ use std::sync::Arc;
 pub struct SignResponse {
     /// Recovered signature as hex string
     pub signature: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SigningOptions {
+    pub excluded_node_keys: HashSet<String>,
+}
+
+impl SigningOptions {
+    pub(crate) fn excludes_peer(
+        &self,
+        peer_id: &str,
+        ring: &crate::helpers::ring::RingConfig,
+    ) -> bool {
+        ring.peer_node_keys
+            .iter()
+            .zip(ring.peer_ids.iter())
+            .find(|(_, route)| {
+                crate::helpers::identity::extract_node_part(route)
+                    == crate::helpers::identity::extract_node_part(peer_id)
+            })
+            .map(|(node_key, _)| self.excluded_node_keys.contains(node_key))
+            .unwrap_or(false)
+    }
 }
 
 /// Sign Coordinator
@@ -64,5 +88,30 @@ where
             routes,
             _phantom: std::marker::PhantomData,
         }
+    }
+}
+
+#[cfg(test)]
+mod signing_options_tests {
+    use super::SigningOptions;
+    use crate::helpers::ring::RingConfig;
+    use std::collections::HashSet;
+
+    #[test]
+    fn exclusion_maps_peer_route_to_node_key() {
+        let ring = RingConfig {
+            ring_id: "ring".to_string(),
+            ring_pk_bytes: vec![],
+            peer_ids: vec!["aa".repeat(32), "bb".repeat(32)],
+            peer_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
+            threshold: 1,
+            total_participants: 2,
+            public_polynomial_hex: String::new(),
+        };
+        let options = SigningOptions {
+            excluded_node_keys: HashSet::from(["node-b".to_string()]),
+        };
+        assert!(!options.excludes_peer(&ring.peer_ids[0], &ring));
+        assert!(options.excludes_peer(&ring.peer_ids[1], &ring));
     }
 }

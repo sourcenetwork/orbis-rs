@@ -42,6 +42,8 @@ pub struct Ring {
     pub confirmations: Vec<RingConfirmation>,
     #[prost(message, optional, tag = "12")]
     pub upgrade_info: Option<UpgradeInfo>,
+    #[prost(message, optional, tag = "13")]
+    pub demerit_config: Option<DemeritConfig>,
 }
 
 #[derive(Clone, Message)]
@@ -52,6 +54,15 @@ pub struct UpgradeInfo {
     pub next_version: Option<u64>,
     #[prost(uint64, optional, tag = "3")]
     pub activation_time: Option<u64>,
+}
+
+/// Demerit penalty configuration stored on a ring.
+#[derive(Clone, Message)]
+pub struct DemeritConfig {
+    #[prost(uint64, tag = "1")]
+    pub node_offline_demerits: u64,
+    #[prost(uint64, tag = "2")]
+    pub reset_interval_seconds: u64,
 }
 
 /// Fresh-DKG confirmation stored on an unfinalized ring.
@@ -140,6 +151,8 @@ pub struct MsgCreateRing {
     pub nonce: Option<String>,
     #[prost(uint64, tag = "7")]
     pub current_version: u64,
+    #[prost(message, optional, tag = "8")]
+    pub demerit_config: Option<DemeritConfig>,
 }
 
 impl MsgCreateRing {
@@ -153,6 +166,7 @@ impl MsgCreateRing {
         policy_id: &str,
         nonce: Option<String>,
         current_version: u64,
+        demerit_config: Option<DemeritConfig>,
     ) -> Self {
         Self {
             creator: creator.to_string(),
@@ -162,6 +176,7 @@ impl MsgCreateRing {
             policy_id: policy_id.to_string(),
             nonce,
             current_version,
+            demerit_config,
         }
     }
 }
@@ -552,6 +567,81 @@ impl MsgRemoveNodeFromWhitelist {
 #[derive(Clone, Message)]
 pub struct MsgRemoveNodeFromWhitelistResponse {}
 
+#[derive(Clone, Message)]
+pub struct ReportEnvelopeProto {
+    #[prost(string, tag = "1")]
+    pub domain: String,
+    #[prost(string, tag = "2")]
+    pub report_type: String,
+    #[prost(string, tag = "3")]
+    pub chain_id: String,
+    #[prost(string, tag = "4")]
+    pub ring_id: String,
+    #[prost(string, tag = "5")]
+    pub ring_pk: String,
+    #[prost(string, tag = "6")]
+    pub ring_state_sha256: String,
+    #[prost(string, tag = "7")]
+    pub reporter_node_key: String,
+    #[prost(string, tag = "8")]
+    pub accused_node_key: String,
+    #[prost(string, tag = "9")]
+    pub accused_peer_id: String,
+    #[prost(uint64, tag = "10")]
+    pub observed_at: u64,
+    #[prost(uint64, tag = "11")]
+    pub expires_at: u64,
+    #[prost(bytes = "vec", tag = "12")]
+    pub payload: Vec<u8>,
+    #[prost(string, tag = "13")]
+    pub session_id: String,
+}
+
+#[derive(Clone, Message)]
+pub struct MsgSubmitReport {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(message, optional, tag = "2")]
+    pub report: Option<ReportEnvelopeProto>,
+    #[prost(string, tag = "3")]
+    pub report_id: String,
+    #[prost(string, tag = "4")]
+    pub signature_scheme: String,
+    #[prost(bytes = "vec", tag = "5")]
+    pub signature: Vec<u8>,
+}
+
+impl MsgSubmitReport {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgSubmitReport";
+}
+
+#[derive(Clone, Message)]
+pub struct MsgSubmitReportResponse {}
+
+/// Typed request for [`OrbisChainClient::orbis_submit_report`].
+///
+/// Using a struct prevents silent swaps between the several adjacent `String`
+/// fields (`session_id`, `report_id`, `signature_scheme`) that would not be
+/// caught by the compiler with positional arguments.
+pub struct SubmitReportRequest {
+    pub domain: String,
+    pub report_type: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub reporter_node_key: String,
+    pub accused_node_key: String,
+    pub accused_peer_id: String,
+    pub observed_at: u64,
+    pub expires_at: u64,
+    pub payload: Vec<u8>,
+    pub session_id: String,
+    pub report_id: String,
+    pub signature_scheme: String,
+    pub signature: Vec<u8>,
+}
+
 // ============================================================================
 // Query Request/Response Types
 // ============================================================================
@@ -644,6 +734,20 @@ pub struct QueryNodeInfoRequest {
 pub struct QueryNodeInfoResponse {
     #[prost(message, optional, tag = "1")]
     pub node_info: Option<NodeInfo>,
+}
+
+#[derive(Clone, Message)]
+pub struct QueryNodeDemeritsRequest {
+    #[prost(string, tag = "1")]
+    pub ring_id: String,
+    #[prost(string, tag = "2")]
+    pub node_key: String,
+}
+
+#[derive(Clone, Message)]
+pub struct QueryNodeDemeritsResponse {
+    #[prost(uint64, tag = "1")]
+    pub points: u64,
 }
 
 // ============================================================================
@@ -897,6 +1001,7 @@ impl SourceHubClient {
         policy_id: &str,
         nonce: Option<String>,
         current_version: u64,
+        demerit_config: Option<DemeritConfig>,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
@@ -909,6 +1014,7 @@ impl SourceHubClient {
             policy_id,
             nonce,
             current_version,
+            demerit_config,
         );
         self.broadcast_proto_msg_with_gas(
             MsgCreateRing::TYPE_URL,
@@ -929,6 +1035,7 @@ impl SourceHubClient {
         policy_id: &str,
         nonce: Option<String>,
         current_version: u64,
+        demerit_config: Option<DemeritConfig>,
     ) -> Result<(BroadcastResult, String)> {
         let result = self
             .orbis_create_ring(
@@ -938,6 +1045,7 @@ impl SourceHubClient {
                 policy_id,
                 nonce,
                 current_version,
+                demerit_config,
             )
             .await?;
 
@@ -1389,6 +1497,62 @@ impl SourceHubClient {
         })?;
         Ok(response.node_info)
     }
+
+    pub async fn orbis_read_node_demerits(&self, ring_id: &str, node_key: &str) -> Result<u64> {
+        let request = QueryNodeDemeritsRequest {
+            ring_id: ring_id.to_string(),
+            node_key: node_key.to_string(),
+        };
+        let response_bytes = self
+            .abci_query(
+                "/sourcehub.orbis.Query/NodeDemerits",
+                request.encode_to_vec(),
+                None,
+                false,
+            )
+            .await?;
+        let response =
+            QueryNodeDemeritsResponse::decode(response_bytes.as_slice()).map_err(|e| {
+                BlockchainError::Serialization(format!(
+                    "Failed to decode node demerits response: {}",
+                    e
+                ))
+            })?;
+        Ok(response.points)
+    }
+
+    pub async fn orbis_submit_report(&self, req: SubmitReportRequest) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgSubmitReport {
+            creator: signer.address(),
+            report: Some(ReportEnvelopeProto {
+                domain: req.domain,
+                report_type: req.report_type,
+                chain_id: req.chain_id,
+                ring_id: req.ring_id,
+                ring_pk: req.ring_pk,
+                ring_state_sha256: req.ring_state_sha256,
+                reporter_node_key: req.reporter_node_key,
+                accused_node_key: req.accused_node_key,
+                accused_peer_id: req.accused_peer_id,
+                observed_at: req.observed_at,
+                expires_at: req.expires_at,
+                payload: req.payload,
+                session_id: req.session_id,
+            }),
+            report_id: req.report_id,
+            signature_scheme: req.signature_scheme,
+            signature: req.signature,
+        };
+        self.broadcast_proto_msg_with_gas(
+            MsgSubmitReport::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -1397,17 +1561,81 @@ mod tests {
 
     use super::{
         decode_store_document_id, decode_store_key_derivation_id, ring_reshare_sign_state_hash,
-        MsgCancelPendingRing, MsgCreateRing, MsgFinalizeRing,
+        DemeritConfig, MsgCancelPendingRing, MsgCreateRing, MsgFinalizeRing,
         MsgFinalizeRingReshareByThresholdSignature, MsgStoreDocumentResponse,
-        MsgStoreKeyDerivationResponse, Ring, RingReshareSignState, UpgradeInfo,
+        MsgStoreKeyDerivationResponse, QueryNodeDemeritsRequest, QueryNodeDemeritsResponse, Ring,
+        RingReshareSignState, UpgradeInfo,
     };
 
     #[test]
     fn create_ring_round_trips_pss_interval() {
-        let msg = MsgCreateRing::new("c", vec!["p1".to_string()], 1, 86400, "policy", None, 0);
+        let msg = MsgCreateRing::new(
+            "c",
+            vec!["p1".to_string()],
+            1,
+            86400,
+            "policy",
+            None,
+            0,
+            None,
+        );
         let bytes = msg.encode_to_vec();
         let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
         assert_eq!(decoded.pss_interval, 86400);
+        assert!(decoded.demerit_config.is_none());
+    }
+
+    #[test]
+    fn create_ring_round_trips_demerit_config() {
+        let msg = MsgCreateRing::new(
+            "c",
+            vec!["p1".to_string()],
+            1,
+            86400,
+            "policy",
+            None,
+            0,
+            Some(DemeritConfig {
+                node_offline_demerits: 3,
+                reset_interval_seconds: 42,
+            }),
+        );
+        let bytes = msg.encode_to_vec();
+        let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
+        let config = decoded.demerit_config.expect("demerit_config");
+
+        assert_eq!(config.node_offline_demerits, 3);
+        assert_eq!(config.reset_interval_seconds, 42);
+    }
+
+    #[test]
+    fn ring_demerit_config_round_trips() {
+        let ring = Ring {
+            id: "ring-1".to_string(),
+            demerit_config: Some(DemeritConfig {
+                node_offline_demerits: 5,
+                reset_interval_seconds: 60,
+            }),
+            ..Default::default()
+        };
+        let bytes = ring.encode_to_vec();
+        let decoded = Ring::decode(bytes.as_slice()).expect("decode");
+        let config = decoded.demerit_config.expect("demerit_config");
+
+        assert_eq!(config.node_offline_demerits, 5);
+        assert_eq!(config.reset_interval_seconds, 60);
+    }
+
+    #[test]
+    fn node_demerits_query_wire_fields_match_sourcehub_proto() {
+        let request = QueryNodeDemeritsRequest {
+            ring_id: "r".to_string(),
+            node_key: "n".to_string(),
+        };
+        assert_eq!(hex::encode(request.encode_to_vec()), "0a017212016e");
+
+        let response = QueryNodeDemeritsResponse { points: 7 };
+        assert_eq!(hex::encode(response.encode_to_vec()), "0807");
     }
 
     #[test]

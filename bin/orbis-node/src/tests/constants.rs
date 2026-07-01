@@ -1,0 +1,10 @@
+/// Deterministic secp256k1 signing keys injected via ORBIS_SIGNING_KEY in docker-compose.
+/// Private keys 1, 2, 3 → standard G, 2G, 3G compressed public keys.
+pub const NODE_KEY_1: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+pub const NODE_KEY_2: &str = "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
+pub const NODE_KEY_3: &str = "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
+
+/// Deterministic ACP policy ID for ORBIS_RING_POLICY_YAML created as the first policy
+/// (counter=0) on a fresh SourceHub chain. Computed via acp_core@v0.8.1 id_transformer.go.
+pub const RING_GOVERNANCE_POLICY_ID: &str =
+    "3199b84b4a6862c40fe2623879dfc36df281a2262898da36f7de65c376a93e05";

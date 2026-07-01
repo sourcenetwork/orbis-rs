@@ -5,6 +5,7 @@ use crate::constants::{
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::helpers::protocol_handler::GenericProtocolHandler;
 use crate::pre::v0::coordinator::PreCoordinator;
+use crate::reporting::v0::health::HealthProtocolHandler;
 use crate::sign::v0::coordinator::SignCoordinator;
 use network::error::Result as NetworkResult;
 use network::Router;
@@ -58,8 +59,11 @@ where
         let pre_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
             PreCoordinator::<D, T>::with_routes(app_state.clone(), routes),
         )));
+        let health_handler = Arc::new(HealthProtocolHandler);
         router_builder = router_builder.accept(routes.dkg_alpn.to_vec(), dkg_handler);
         router_builder = router_builder.accept(routes.reencrypt_alpn.to_vec(), pre_handler);
+        router_builder =
+            router_builder.accept(routes.reporting_health_alpn.to_vec(), health_handler);
     }
     router_builder.spawn()
 }
@@ -116,9 +120,12 @@ where
         let sign_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
             SignCoordinator::<D, S>::with_routes(app_state.clone(), routes),
         )));
+        let health_handler = Arc::new(HealthProtocolHandler);
         router_builder = router_builder.accept(routes.dkg_alpn.to_vec(), dkg_handler);
         router_builder = router_builder.accept(routes.reencrypt_alpn.to_vec(), pre_handler);
         router_builder = router_builder.accept(routes.sign_alpn.to_vec(), sign_handler);
+        router_builder =
+            router_builder.accept(routes.reporting_health_alpn.to_vec(), health_handler);
     }
     router_builder.spawn()
 }

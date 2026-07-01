@@ -3,6 +3,7 @@
 //! This module defines the message types used for threshold BLS signing
 //! protocol communication between nodes over the network.
 
+use crate::reporting::v0::types::ReportSigningContext;
 use authz::sourcehub::ValidWindow;
 use bulletin::r#trait::KeyDerivation;
 use common::blockchain::orbis::RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN;
@@ -105,6 +106,9 @@ pub enum SignContext {
     /// PSS refresh health check. Responders validate the canonical statement
     /// against their staged refreshed bundle and sign only this domain.
     RefreshHealthCheck(Box<RefreshHealthCheckContext>),
+    /// MPC fault report. Responders independently validate the report type and
+    /// perform any report-specific checks before contributing a signature share.
+    Report(Box<ReportSigningContext>),
 }
 
 /// Wire message sent from the coordinator to each ring node requesting a nonce commitment

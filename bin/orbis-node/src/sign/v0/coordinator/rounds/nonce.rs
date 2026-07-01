@@ -2,7 +2,10 @@ use crate::constants::SIGN_COLLECTION_TIMEOUT;
 use crate::helpers::identity::{determine_ring_node_id_from_peer_id, is_self_peer_id};
 use crate::helpers::response_manager::ResponseInitOutcome;
 use crate::helpers::ring::RingConfig;
-use crate::sign::v0::coordinator::SignCoordinator;
+use crate::sign::v0::coordinator::rounds::{
+    make_sign_drain_observation, queue_sign_offline_report,
+};
+use crate::sign::v0::coordinator::{SignCoordinator, SigningOptions};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::messages::{NonceRequest, SignContext, SignMessage};
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
@@ -35,6 +38,7 @@ where
         self_in_list: bool,
         context: &SignContext,
         local_dist_key_share: Option<&DistKeyShare<Fr>>,
+        options: &SigningOptions,
     ) -> Result<(Vec<(u32, S::NonceCommitment)>, Option<S::SigningState>)> {
         let nonce_request_id = format!("nonce-{}", request_id);
         let mut all_commitments: Vec<(u32, S::NonceCommitment)> = Vec::new();
@@ -60,6 +64,7 @@ where
             .peer_ids
             .iter()
             .filter(|pid| !is_self_peer_id(&self.app_state.network, pid))
+            .filter(|pid| !options.excludes_peer(pid, ring))
             .cloned()
             .collect();
 
@@ -96,6 +101,9 @@ where
                 if is_self_peer_id(&self.app_state.network, peer_id_str) {
                     continue;
                 }
+                if options.excludes_peer(peer_id_str, ring) {
+                    continue;
+                }
 
                 let nonce_req = SignMessage::NonceRequest(NonceRequest {
                     request_id: nonce_request_id.clone(),
@@ -111,9 +119,10 @@ where
 
                 set.spawn(async move {
                     let coordinator = SignCoordinator::<D, S>::with_routes(app_state, routes);
-                    coordinator
+                    let result = coordinator
                         .send_request_and_receive_response(&peer_id, nonce_req, &req_id)
-                        .await
+                        .await;
+                    (peer_id, result)
                 });
             }
         }
@@ -127,7 +136,7 @@ where
             match tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
                 while let Some(res) = set.join_next().await {
                     match res {
-                        Ok(Ok(Some(response))) => {
+                        Ok((_, Ok(Some(response)))) => {
                             let Some(expected_node_id) =
                                 determine_ring_node_id_from_peer_id(&response.sender_peer_hex, ring)
                             else {
@@ -149,12 +158,23 @@ where
                                 }
                             }
                         }
-                        Ok(Ok(None)) => {}
-                        Ok(Err(e)) => {
+                        Ok((_, Ok(None))) => {}
+                        Ok((peer_id, Err(e))) => {
                             tracing::warn!(
                                 request_id = %request_id,
+                                peer_id = %peer_id,
                                 error = %e,
                                 "Nonce peer request failed"
+                            );
+                            queue_sign_offline_report::<D, S>(
+                                self.app_state.clone(),
+                                self.routes,
+                                ring,
+                                &peer_id,
+                                &e,
+                                request_id,
+                                context,
+                                "sign_nonce_round",
                             );
                         }
                         Err(e) => {
@@ -183,8 +203,19 @@ where
             }
         }
 
-        // Cancel any stragglers once we have enough commitments or stop waiting.
-        drop(set);
+        // Drain remaining peer tasks in the background for post-threshold offline reporting.
+        crate::reporting::v0::spawn_error_drain::<D, S, _, _, _>(
+            set,
+            self.app_state.clone(),
+            self.routes,
+            SIGN_COLLECTION_TIMEOUT,
+            make_sign_drain_observation(
+                ring.clone(),
+                context.clone(),
+                request_id.to_string(),
+                self.routes.version,
+            ),
+        );
 
         // Collect nonce responses, removing the entry atomically (no clone, cleanup implicit)
         let nonce_responses = self

@@ -113,6 +113,7 @@ mod tests {
 
     fn ring(peer_node_keys: &[&str], peer_ids: &[&str]) -> RingConfig {
         RingConfig {
+            ring_id: "ring".to_string(),
             ring_pk_bytes: vec![],
             peer_ids: peer_ids.iter().map(|value| (*value).to_string()).collect(),
             peer_node_keys: peer_node_keys

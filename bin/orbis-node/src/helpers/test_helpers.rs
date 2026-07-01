@@ -303,6 +303,7 @@ fn seed_three_node_dummy_bulletin(
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: Some("test-policy".to_string()),
+        demerit_config: None,
     };
     dummy_bulletin
         .set_ring(TEST_FRESH_DKG_RING_ID.to_string(), payload)
@@ -920,6 +921,7 @@ pub async fn write_ring_to_bulletin(
         pss_interval,
         block_number_nonce: 0,
         policy_id: None,
+        demerit_config: None,
     };
     let post_id = format!("test-ring-{ring_pk}");
     bulletin
@@ -1219,6 +1221,7 @@ pub async fn create_ring_on_chain(
             policy_id,
             nonce.map(String::from),
             network::V0.version,
+            None,
         )
         .await
         .expect("create ring on-chain");

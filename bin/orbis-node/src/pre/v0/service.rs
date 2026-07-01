@@ -56,8 +56,12 @@ where
 #[tonic::async_trait]
 impl<D, T> PreService for PreServiceImpl<D, T>
 where
-    D: Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
-        + Clone
+    D: Dkg<
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
+            PubPoly = crypto::PubPolyImpl,
+        > + Clone
         + Send
         + Sync
         + 'static,
@@ -194,6 +198,7 @@ where
             PreError::RingState("Failed to load ring polynomial state".to_string())
         })?;
         let ring = RingConfig {
+            ring_id: document_payload.ring_id.clone(),
             ring_pk_bytes,
             peer_ids,
             peer_node_keys: ring_payload.peer_node_keys,

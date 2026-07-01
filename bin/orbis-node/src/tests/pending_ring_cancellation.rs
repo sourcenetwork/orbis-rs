@@ -15,9 +15,7 @@ use tokio::time::{sleep, Duration, Instant};
 const RING_ID: &str = "integration-test-stale-pending-ring";
 const PSS_INTERVAL_SECS: u64 = 30;
 
-const NODE_KEY_1: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-const NODE_KEY_2: &str = "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
-const NODE_KEY_3: &str = "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
+use super::constants::{NODE_KEY_1, NODE_KEY_2, NODE_KEY_3};
 
 #[tokio::test]
 #[serial_test::serial]
@@ -32,7 +30,11 @@ async fn test_stale_pending_dkg_is_cancelled_on_sourcehub() {
                     "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
                     "threshold": 2,
                     "pss_interval": PSS_INTERVAL_SECS,
-                    "policy_id": "integration-test-policy"
+                    "policy_id": "integration-test-policy",
+                    "demerit_config": {
+                        "node_offline_demerits": 1,
+                        "reset_interval_seconds": 86400
+                    }
                 }]
             }),
         )

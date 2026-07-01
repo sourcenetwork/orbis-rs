@@ -11,7 +11,7 @@ use crate::helpers::test_helpers::{
     setup_three_node_network_with_sign, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
 };
 use crate::ring_state::RingPolyState;
-use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
+use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::helpers::check_policy_access;
 use crate::sign::v0::messages::{PolicyContext, SignContext};
@@ -140,6 +140,7 @@ async fn test_dkg_then_sign_end_to_end() {
         .initiate_signing(
             request_id.clone(),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: sign_peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -156,6 +157,7 @@ async fn test_dkg_then_sign_end_to_end() {
             SignContext::Bulletin {
                 object_id: bulletin_object_id(&message),
             },
+            SigningOptions::default(),
         )
         .await
         .expect("Signing should succeed");
@@ -353,6 +355,7 @@ async fn test_sign_different_messages() {
             .initiate_signing(
                 request_id,
                 RingConfig {
+                    ring_id: String::new(),
                     ring_pk_bytes: ring_pk_bytes.clone(),
                     peer_ids: peer_ids.clone(),
                     peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -369,6 +372,7 @@ async fn test_sign_different_messages() {
                 SignContext::Bulletin {
                     object_id: bulletin_object_id(&message),
                 },
+                SigningOptions::default(),
             )
             .await
             .expect("Signing should succeed");
@@ -462,6 +466,7 @@ async fn test_sign_fails_wrong_message() {
         .initiate_signing(
             request_id,
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -478,6 +483,7 @@ async fn test_sign_fails_wrong_message() {
             SignContext::Bulletin {
                 object_id: bulletin_object_id(&original_message),
             },
+            SigningOptions::default(),
         )
         .await
         .expect("Signing should succeed");
@@ -576,6 +582,7 @@ async fn test_sign_response_cleanup() {
         .initiate_signing(
             request_id.clone(),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -590,6 +597,7 @@ async fn test_sign_response_cleanup() {
             },
             message,
             SignContext::Bulletin { object_id },
+            SigningOptions::default(),
         )
         .await
         .expect("Signing should succeed");
@@ -678,6 +686,7 @@ async fn test_sign_fails_invalid_bulletin_post() {
         .initiate_signing(
             request_id,
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -694,6 +703,7 @@ async fn test_sign_fails_invalid_bulletin_post() {
             SignContext::Bulletin {
                 object_id: "invalid-bulletin-post".to_string(),
             },
+            SigningOptions::default(),
         )
         .await;
 
@@ -792,6 +802,7 @@ async fn test_sign_fails_post_not_on_bulletin() {
         .initiate_signing(
             request_id,
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -808,6 +819,7 @@ async fn test_sign_fails_post_not_on_bulletin() {
             SignContext::Bulletin {
                 object_id: "fake_post_id_that_doesnt_exist".to_string(),
             },
+            SigningOptions::default(),
         )
         .await;
 
@@ -927,6 +939,7 @@ async fn test_sign_fails_tampered_payload() {
         .initiate_signing(
             request_id,
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -941,6 +954,7 @@ async fn test_sign_fails_tampered_payload() {
             },
             tampered_message,
             SignContext::Bulletin { object_id: post_id },
+            SigningOptions::default(),
         )
         .await;
 
@@ -1044,6 +1058,7 @@ async fn test_sign_fails_invalid_ring_id() {
         .initiate_signing(
             request_id,
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -1058,6 +1073,7 @@ async fn test_sign_fails_invalid_ring_id() {
             },
             message,
             SignContext::Bulletin { object_id: post_id },
+            SigningOptions::default(),
         )
         .await;
 
@@ -1185,6 +1201,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
         .initiate_signing(
             request_id,
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -1204,6 +1221,7 @@ async fn test_dkg_then_sign_policy_end_to_end() {
                 valid_window: None,
                 key_derivation,
             })),
+            SigningOptions::default(),
         )
         .await
         .expect("Policy signing should succeed");
@@ -1327,6 +1345,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
                     .as_millis()
             ),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -1346,6 +1365,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
                 valid_window: None,
                 key_derivation,
             })),
+            SigningOptions::default(),
         )
         .await;
 
@@ -1431,6 +1451,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                     .as_millis()
             ),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -1450,6 +1471,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                 valid_window: None,
                 key_derivation,
             })),
+            SigningOptions::default(),
         )
         .await;
 
@@ -1722,6 +1744,7 @@ async fn test_sign_policy_fails_wrong_message_digest() {
                     .as_millis()
             ),
             RingConfig {
+                ring_id: String::new(),
                 ring_pk_bytes,
                 peer_ids: peer_ids.clone(),
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -1741,6 +1764,7 @@ async fn test_sign_policy_fails_wrong_message_digest() {
                 valid_window: None,
                 key_derivation,
             })),
+            SigningOptions::default(),
         )
         .await;
 

@@ -5,7 +5,7 @@ use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::helpers::ring::RingConfig;
 use crate::metrics;
 use crate::ring_state::RingPolyState;
-use crate::sign::v0::coordinator::SignCoordinator;
+use crate::sign::v0::coordinator::{SignCoordinator, SigningOptions};
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::helpers::{
     check_policy_access, fetch_bulletin_payloads_for_version, validate_sign_claims,
@@ -173,6 +173,7 @@ where
                     SignError::RingState(format!("Failed to load ring polynomial state: {}", e))
                 })?;
         let ring = RingConfig {
+            ring_id: key_derivation.ring_id.clone(),
             ring_pk_bytes,
             peer_ids,
             peer_node_keys: ring_payload.peer_node_keys,
@@ -192,6 +193,7 @@ where
                     valid_window,
                     key_derivation,
                 })),
+                SigningOptions::default(),
             )
             .await?;
 

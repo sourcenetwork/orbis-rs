@@ -353,7 +353,10 @@ where
         peer_id_str: &str,
         message: DkgMessage,
         session_id: Option<u128>,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        D: Send + Sync,
+    {
         network::send_message_to_peer(self, peer_id_str, message, session_id).await
     }
 

@@ -6,7 +6,10 @@ use crate::helpers::response_manager::ResponseInitOutcome;
 use crate::helpers::ring::{
     is_ring_reshare_in_progress, load_ring_pub_poly_and_bundle, RingConfig,
 };
-use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
+use crate::sign::v0::coordinator::rounds::{
+    make_sign_drain_observation, queue_sign_offline_report,
+};
+use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::helpers::{serialize_commitments, validate_refresh_health_check_statement};
 use crate::sign::v0::messages::{SignContext, SignMessage, SignRequest};
@@ -43,22 +46,29 @@ where
         ring: RingConfig,
         message: Vec<u8>,
         context: SignContext,
+        options: SigningOptions,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
         let node_id_opt = determine_session_node_id(&self.app_state.node_key, &ring.peer_node_keys);
 
         // self_in_list derived from node_id - guarantees consistency
-        let self_in_list = node_id_opt.is_some();
+        let self_in_list = node_id_opt.is_some()
+            && !options
+                .excluded_node_keys
+                .contains(&self.app_state.node_key);
 
         // 0 is a safe sentinel: DKG node_ids are 1-indexed, so 0 means "external requester"
         let node_id = node_id_opt.unwrap_or(0);
 
         // Count how many peers we'll actually contact (excluding self)
-        let actual_peer_count = if self_in_list {
-            ring.peer_ids.len() - 1
-        } else {
-            ring.peer_ids.len()
-        };
+        let actual_peer_count = ring
+            .peer_ids
+            .iter()
+            .filter(|peer_id| {
+                !options.excludes_peer(peer_id, &ring)
+                    && !is_self_peer_id(&self.app_state.network, peer_id)
+            })
+            .count();
 
         tracing::info!(
             request_id = %request_id,
@@ -73,6 +83,7 @@ where
             .peer_ids
             .iter()
             .filter(|pid| !is_self_peer_id(&self.app_state.network, pid))
+            .filter(|pid| !options.excludes_peer(pid, &ring))
             .cloned()
             .collect();
 
@@ -108,6 +119,7 @@ where
                 self_in_list,
                 actual_peer_count,
                 context,
+                options,
             )
             .await;
 
@@ -134,6 +146,7 @@ where
         self_in_list: bool,
         actual_peer_count: usize,
         context: SignContext,
+        options: SigningOptions,
     ) -> Result<Vec<u8>> {
         // 1. Load the public polynomial and (when self_in_list) the local dist_key_share
         //    from a SINGLE atomic read of RingShareBundle — same TOCTOU fix as PRE.
@@ -225,6 +238,7 @@ where
             }
             SignContext::RingReshareUpdate(_) => (None, None),
             SignContext::RefreshHealthCheck(_) => (None, None),
+            SignContext::Report(_) => (None, None),
         };
 
         // =====================================================================
@@ -238,6 +252,7 @@ where
                 self_in_list,
                 &context,
                 local_dist_key_share.as_ref(),
+                &options,
             )
             .await?
         } else {
@@ -334,6 +349,13 @@ where
                     );
                     continue;
                 }
+                if options.excludes_peer(peer_id_str, &ring) {
+                    tracing::debug!(
+                        peer_id = %peer_id_str,
+                        "Skipping peer excluded from signing"
+                    );
+                    continue;
+                }
                 if S::INTERACTIVE {
                     let peer_node_id = determine_ring_node_id_from_peer_id(peer_id_str, &ring);
                     if !peer_node_id
@@ -363,9 +385,10 @@ where
 
                 set.spawn(async move {
                     let coordinator = SignCoordinator::<D, S>::with_routes(app_state, routes);
-                    coordinator
+                    let result = coordinator
                         .send_request_and_receive_response(&peer_id, request, &req_id)
-                        .await
+                        .await;
+                    (peer_id, result)
                 });
             }
         }
@@ -377,7 +400,7 @@ where
             match tokio::time::timeout(SIGN_COLLECTION_TIMEOUT, async {
                 while let Some(res) = set.join_next().await {
                     match res {
-                        Ok(Ok(Some(response))) => {
+                        Ok((_, Ok(Some(response)))) => {
                             let Some(expected_node_id) =
                                 determine_ring_node_id_from_peer_id(&response.sender_peer_hex, &ring)
                             else {
@@ -405,12 +428,23 @@ where
                                 }
                             }
                         }
-                        Ok(Ok(None)) => {}
-                        Ok(Err(e)) => {
+                        Ok((_, Ok(None))) => {}
+                        Ok((peer_id, Err(e))) => {
                             tracing::warn!(
                                 request_id = %request_id,
+                                peer_id = %peer_id,
                                 error = %e,
                                 "Sign peer request failed"
+                            );
+                            queue_sign_offline_report::<D, S>(
+                                self.app_state.clone(),
+                                self.routes,
+                                &ring,
+                                &peer_id,
+                                &e,
+                                &request_id,
+                                &context,
+                                "sign_share_round",
                             );
                         }
                         Err(e) => {
@@ -432,8 +466,19 @@ where
             }
         }
 
-        // Cancel any stragglers once we have enough verified shares or stop waiting.
-        drop(set);
+        // Drain remaining peer tasks in the background for post-threshold offline reporting.
+        crate::reporting::v0::spawn_error_drain::<D, S, _, _, _>(
+            set,
+            self.app_state.clone(),
+            self.routes,
+            SIGN_COLLECTION_TIMEOUT,
+            make_sign_drain_observation(
+                ring.clone(),
+                context.clone(),
+                request_id.clone(),
+                self.routes.version,
+            ),
+        );
 
         // 3. Collect any responses that were already stored before cancellation and
         // verify the ones we have not counted yet.

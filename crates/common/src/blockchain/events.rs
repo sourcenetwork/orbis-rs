@@ -68,6 +68,8 @@ impl BulletinEventSubscription {
             .await
             .map_err(|e| BlockchainError::Rpc(format!("Event subscription failed: {}", e)))?;
 
+        await_subscribe_ack(&mut stream, "orbis-bulletin-events").await?;
+
         Ok(Self { stream })
     }
 
@@ -207,10 +209,166 @@ fn find_artifact_event(
     None
 }
 
+/// Data extracted from an on-chain report accepted event.
+#[derive(Debug, Clone)]
+pub struct ReportAcceptedEvent {
+    pub report_id: String,
+    pub ring_id: String,
+    pub report_type: String,
+    pub reporter_node_key: String,
+    pub accused_node_key: String,
+}
+
+/// A pre-established WebSocket subscription for report accepted events.
+///
+/// Create this BEFORE the operation that will produce the event, then call
+/// [`wait_for_report_accepted`] to block until the chain emits the event.
+pub struct ReportEventSubscription {
+    stream: EventStream,
+}
+
+impl ReportEventSubscription {
+    pub async fn connect(rpc_url: &str) -> Result<Self> {
+        let ws_url = rpc_url_to_ws(rpc_url);
+
+        let (mut stream, _) = connect_async(ws_url.as_str())
+            .await
+            .map_err(|e| BlockchainError::Rpc(format!("WebSocket connection failed: {}", e)))?;
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "subscribe",
+            "id": "orbis-report-events",
+            "params": { "query": "tm.event='Tx'" }
+        });
+
+        stream
+            .send(Message::Text(request.to_string().into()))
+            .await
+            .map_err(|e| BlockchainError::Rpc(format!("Event subscription failed: {}", e)))?;
+
+        await_subscribe_ack(&mut stream, "orbis-report-events").await?;
+
+        Ok(Self { stream })
+    }
+
+    pub async fn wait_for_report_accepted(
+        mut self,
+        ring_id: &str,
+        timeout: Duration,
+    ) -> Result<ReportAcceptedEvent> {
+        let result = tokio::time::timeout(timeout, self.wait_for_report_inner(ring_id)).await;
+        let _ = self.stream.close(None).await;
+
+        result.map_err(|_| {
+            BlockchainError::Timeout(format!(
+                "Timed out waiting for report accepted event for ring '{}'",
+                ring_id,
+            ))
+        })?
+    }
+
+    async fn wait_for_report_inner(&mut self, ring_id: &str) -> Result<ReportAcceptedEvent> {
+        while let Some(message_result) = self.stream.next().await {
+            let message = message_result
+                .map_err(|e| BlockchainError::Rpc(format!("Event stream error: {}", e)))?;
+
+            let events = match message {
+                Message::Text(payload) => extract_events(payload.as_str()),
+                Message::Binary(payload) => {
+                    std::str::from_utf8(&payload).ok().and_then(extract_events)
+                }
+                Message::Close(_) => break,
+                _ => None,
+            };
+
+            if let Some(event) = find_report_accepted_event(&events, ring_id) {
+                return Ok(event);
+            }
+        }
+
+        Err(BlockchainError::Rpc(
+            "Event subscription ended unexpectedly".to_string(),
+        ))
+    }
+}
+
+/// Scan the flattened event attributes map for a report accepted event matching the given ring_id.
+fn find_report_accepted_event(
+    events: &Option<BTreeMap<String, Vec<String>>>,
+    ring_id: &str,
+) -> Option<ReportAcceptedEvent> {
+    let events = events.as_ref()?;
+
+    // Scan for any event that has an accused_node_key attribute (unique to report events).
+    // Cosmos SDK typed events JSON-encode string attributes, so strip literal quotes.
+    for key in events.keys() {
+        if !key.ends_with(".accused_node_key") {
+            continue;
+        }
+
+        let event_type = key.strip_suffix(".accused_node_key")?;
+
+        let get_first = |attr: &str| -> String {
+            events
+                .get(&format!("{}.{}", event_type, attr))
+                .and_then(|v| v.first())
+                .map(|v| v.trim_matches('"').to_string())
+                .unwrap_or_default()
+        };
+
+        let event_ring_id = get_first("ring_id");
+        if event_ring_id != ring_id {
+            continue;
+        }
+
+        return Some(ReportAcceptedEvent {
+            report_id: get_first("report_id"),
+            ring_id: event_ring_id,
+            report_type: get_first("report_type"),
+            reporter_node_key: get_first("reporter_node_key"),
+            accused_node_key: get_first("accused_node_key"),
+        });
+    }
+
+    None
+}
+
 /// Convert an HTTP RPC URL to a WebSocket URL.
 ///
 /// Transforms `http://host:port` to `ws://host:port/websocket`
 /// (and `https://` to `wss://`).
+/// Read and validate the JSON-RPC acknowledgement that CometBFT sends after a subscribe request.
+/// Returns an error if the ack is missing, unreadable, or contains a JSON-RPC error object.
+async fn await_subscribe_ack(stream: &mut EventStream, id: &str) -> Result<()> {
+    match stream.next().await {
+        Some(Ok(Message::Text(payload))) => {
+            let value: Value = serde_json::from_str(&payload).map_err(|e| {
+                BlockchainError::Rpc(format!("Subscribe ack parse error (id={}): {}", id, e))
+            })?;
+            if let Some(err) = value.get("error") {
+                return Err(BlockchainError::Rpc(format!(
+                    "Event subscription rejected by server (id={}): {}",
+                    id, err
+                )));
+            }
+            Ok(())
+        }
+        Some(Ok(_)) => Err(BlockchainError::Rpc(format!(
+            "Unexpected message type in subscribe ack (id={})",
+            id
+        ))),
+        Some(Err(e)) => Err(BlockchainError::Rpc(format!(
+            "WebSocket error reading subscribe ack (id={}): {}",
+            id, e
+        ))),
+        None => Err(BlockchainError::Rpc(format!(
+            "WebSocket closed before subscribe ack (id={})",
+            id
+        ))),
+    }
+}
+
 fn rpc_url_to_ws(rpc_url: &str) -> String {
     let base = rpc_url
         .replace("http://", "ws://")

@@ -3,6 +3,12 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+pub struct DemeritConfig {
+    pub node_offline_demerits: u64,
+    pub reset_interval_seconds: u64,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
 pub struct UpgradeInfo {
     pub current_version: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -121,6 +127,9 @@ pub struct RingPayload {
     pub policy_id: Option<String>,
     /// Protocol epoch used by this ring and its optional scheduled successor.
     pub upgrade_info: UpgradeInfo,
+    /// Demerit penalty configuration for this ring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demerit_config: Option<DemeritConfig>,
 }
 
 /// Payload for confirming a completed fresh DKG ring.
@@ -270,6 +279,28 @@ impl TryFrom<NodeInfo> for Vec<u8> {
     }
 }
 
+/// All fields required to submit a threshold-signed MPC fault report to the chain.
+/// Signature must be raw bytes (hex-decoded by the caller before constructing this).
+#[derive(Clone, Debug)]
+pub struct BulletinReportSubmission {
+    pub domain: String,
+    pub report_type: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub reporter_node_key: String,
+    pub accused_node_key: String,
+    pub accused_peer_id: String,
+    pub observed_at: u64,
+    pub expires_at: u64,
+    pub payload: Vec<u8>,
+    pub session_id: String,
+    pub report_id: String,
+    pub signature_scheme: String,
+    pub signature: Vec<u8>,
+}
+
 #[async_trait]
 pub trait Bulletin {
     /// Post a typed Orbis object.
@@ -278,6 +309,8 @@ pub trait Bulletin {
     async fn update(&self, id: String, signature_scheme: String, signature: Vec<u8>) -> Result<()>;
     /// Read a typed Orbis object.
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost>;
+    /// Submit a threshold-signed MPC fault report to the chain.
+    async fn submit_report(&self, submission: BulletinReportSubmission) -> Result<()>;
     /// Chain ID used when building chain-bound signing statements.
     fn chain_id(&self) -> String;
     /// Serialize the canonical sign bytes for a ring reshare finalization sign doc.

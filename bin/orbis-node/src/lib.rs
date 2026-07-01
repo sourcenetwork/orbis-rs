@@ -7,6 +7,7 @@ mod info;
 mod metrics;
 mod pre;
 mod pss;
+mod reporting;
 mod ring_state;
 mod runtime;
 mod sign;

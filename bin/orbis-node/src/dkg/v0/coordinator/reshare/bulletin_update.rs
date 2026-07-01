@@ -12,7 +12,7 @@ use crate::dkg::v0::helpers::{effective_new_peer_node_keys, peer_node_keys_match
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::ReshareSignatureReadyKey;
 use crate::helpers::ring::RingConfig;
-use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
+use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::helpers::{
     finalized_ring_payload_reshare_sign_state_sha256_hex,
@@ -123,6 +123,7 @@ where
     let sign_coordinator =
         SignCoordinator::<D, SignImpl>::with_routes(coord.app_state.clone(), coord.routes);
     let ring_config = RingConfig {
+        ring_id: prepared.ring_id.clone(),
         ring_pk_bytes: ring_pk_bytes.to_vec(),
         peer_ids: prepared.new_route_peer_ids,
         peer_node_keys: prepared.sorted_new_peer_node_keys,
@@ -142,6 +143,7 @@ where
                 ring_config.clone(),
                 message_to_sign.clone(),
                 sign_context.clone(),
+                SigningOptions::default(),
             )
         },
     )

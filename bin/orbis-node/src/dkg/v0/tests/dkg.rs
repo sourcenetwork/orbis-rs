@@ -196,6 +196,7 @@ async fn test_start_dkg_fails_on_connection_failure() {
                 pss_interval: 86400,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
+                demerit_config: None,
             },
         )
         .expect("seed ring");
@@ -651,6 +652,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
                 pss_interval: 86400,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
+                demerit_config: None,
             },
         )
         .expect("seed ring");
@@ -800,6 +802,7 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
                 pss_interval: 86400,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
+                demerit_config: None,
             },
         )
         .expect("seed ring");
@@ -862,6 +865,7 @@ async fn test_fresh_session_init_publishes_complete_state() {
                 pss_interval,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
+                demerit_config: None,
             },
         )
         .expect("seed fresh ring");

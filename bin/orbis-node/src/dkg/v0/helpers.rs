@@ -821,6 +821,7 @@ mod tests {
             pss_interval: 86400,
             block_number_nonce: 0,
             policy_id: Some("policy".to_string()),
+            demerit_config: None,
         }
     }
 
@@ -835,6 +836,7 @@ mod tests {
             pss_interval: 86400,
             block_number_nonce: 0,
             policy_id: Some("policy".to_string()),
+            demerit_config: None,
         }
     }
 
@@ -884,6 +886,7 @@ mod tests {
             pss_interval: 60,
             block_number_nonce: 0,
             policy_id: Some("policy".to_string()),
+            demerit_config: None,
         };
         seed_node_info(
             &dummy_bulletin,

@@ -9,15 +9,26 @@ use crate::helpers::ring::{
 };
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
+use crate::reporting::v0::observation::{offline_observation_from_pre_error, ReportObservation};
+use crate::reporting::v0::queue_report;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply,
     Secret, ThresholdDealer,
 };
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
+use crypto::{PolynomialCommitmentImpl, PubPolyImpl, SigShareInner, SignImpl, SignaturePoint};
 use std::collections::HashSet;
 impl<D, T> PreCoordinator<D, T>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine> + Clone + Send + Sync + 'static,
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
     T: ThresholdDealer<
             ShareValue = Fr,
             PublicKey = G1Affine,
@@ -25,6 +36,16 @@ where
             Secret = Secret,
             ReencryptReply = ReencryptReply<Fr, G1Affine>,
             PubPoly = D::PubPoly,
+        > + Send
+        + Sync
+        + 'static,
+    SignImpl: crypto::r#trait::ThresholdSigner<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            DistKeyShare = DistKeyShare<Fr>,
+            PubPoly = PubPolyImpl,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
         > + Send
         + Sync
         + 'static,
@@ -307,12 +328,34 @@ where
                             }
                         }
                         Ok((_, Ok(None))) => {}
-                        Ok((_, Err(e))) => {
+                        Ok((peer_id, Err(e))) => {
                             tracing::warn!(
                                 request_id = %request_id,
+                                peer_id = %peer_id,
                                 error = %e,
                                 "PRE peer request failed"
                             );
+                            if let Some(observation) = offline_observation_from_pre_error(
+                                &ring,
+                                &peer_id,
+                                &e,
+                                self.routes.version,
+                                &request_id,
+                            ) {
+                                let _ = queue_report::<D, SignImpl>(
+                                    self.app_state.clone(),
+                                    self.routes,
+                                    ReportObservation::NodeOffline(observation),
+                                )
+                                .await
+                                .inspect_err(|error| {
+                                    tracing::warn!(
+                                        peer_id = %peer_id,
+                                        error = %error,
+                                        "Failed to queue offline report observation"
+                                    );
+                                });
+                            }
                         }
                         Err(e) => {
                             tracing::error!(error = ?e, "Peer reencrypt task panicked");
@@ -333,8 +376,35 @@ where
             }
         }
 
-        // Cancel any stragglers once we have enough verified shares or stop waiting.
-        drop(set);
+        // Drain remaining peer tasks in the background so errors from slow-failing peers
+        // (those whose result wasn't seen before threshold was reached or the timeout fired)
+        // still trigger offline reports.
+        {
+            let drain_ring = ring.clone();
+            let drain_routes = self.routes;
+            let drain_session_id = request_id.clone();
+            crate::reporting::v0::spawn_error_drain::<D, SignImpl, _, _, _>(
+                set,
+                self.app_state.clone(),
+                self.routes,
+                PRE_COLLECTION_TIMEOUT,
+                move |peer_id, e| {
+                    tracing::warn!(
+                        peer_id = %peer_id,
+                        error = %e,
+                        "PRE peer request failed (post-threshold drain)"
+                    );
+                    offline_observation_from_pre_error(
+                        &drain_ring,
+                        &peer_id,
+                        &e,
+                        drain_routes.version,
+                        &drain_session_id,
+                    )
+                    .map(ReportObservation::NodeOffline)
+                },
+            );
+        }
 
         // 6. Collect any responses that were already stored before cancellation and
         // verify the ones we have not counted yet.

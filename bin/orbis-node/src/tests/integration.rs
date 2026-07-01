@@ -24,17 +24,7 @@ use tokio::time::{sleep, Duration, Instant};
 // Fixed ring id pre-seeded into genesis (bypasses chain minimum pss_interval validation).
 const RING_ID: &str = "integration-test-ring";
 
-// Deterministic ACP policy ID for ORBIS_RING_POLICY_YAML created as the first policy
-// (counter=0) on a fresh SourceHub chain. Computed via acp_core@v0.8.1 id_transformer.go.
-// If the runtime assertion below fails, update this constant with the printed actual value.
-const RING_GOVERNANCE_POLICY_ID: &str =
-    "3199b84b4a6862c40fe2623879dfc36df281a2262898da36f7de65c376a93e05";
-
-// Deterministic secp256k1 signing keys injected via ORBIS_SIGNING_KEY in docker-compose.
-// Private keys 1, 2, 3 → standard G, 2G, 3G compressed public keys.
-const NODE_KEY_1: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-const NODE_KEY_2: &str = "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
-const NODE_KEY_3: &str = "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
+use super::constants::{NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, RING_GOVERNANCE_POLICY_ID};
 
 #[derive(Clone, Debug)]
 struct RingStateSnapshot {
@@ -90,7 +80,11 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
                     "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
                     "threshold": 2,
                     "pss_interval": 5,
-                    "policy_id": RING_GOVERNANCE_POLICY_ID
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "demerit_config": {
+                        "node_offline_demerits": 1,
+                        "reset_interval_seconds": 86400
+                    }
                 }]
             }),
         )
