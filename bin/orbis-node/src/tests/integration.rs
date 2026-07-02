@@ -81,9 +81,13 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
                     "threshold": 2,
                     "pss_interval": 5,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "demerit_config": {
-                        "node_offline_demerits": 1,
-                        "reset_interval_seconds": 86400
+                    "reporting": {
+                        "demerit_config": {
+                            "node_offline_demerits": 1,
+                            "reset_interval_seconds": 86400
+                        },
+                        "backup_node_keys": [],
+                        "kick_threshold": 3
                     }
                 }]
             }),

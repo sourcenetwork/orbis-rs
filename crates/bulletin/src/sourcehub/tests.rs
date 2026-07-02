@@ -1,12 +1,13 @@
 use super::{ring_to_bulletin_post, SourceHubBulletin};
 use crate::r#trait::{
-    Bulletin, BulletinKind, BulletinWriteKind, DemeritConfig, DocumentPayload,
+    Bulletin, BulletinKind, BulletinWriteKind, DemeritConfig, DocumentPayload, ReportingConfig,
     RingCancellationPayload, RingPayload, UpgradeInfo,
 };
 use common::{
     blockchain::{
-        acp::Object, orbis::DemeritConfig as ChainDemeritConfig, BlockchainError, SourceHubClient,
-        TxSigner, TEST_ACCOUNT_HEX_KEY,
+        acp::Object, orbis::DemeritConfig as ChainDemeritConfig,
+        orbis::ReportingConfig as ChainReportingConfig, BlockchainError, SourceHubClient, TxSigner,
+        TEST_ACCOUNT_HEX_KEY,
     },
     SourceHubTestContainer,
 };
@@ -98,7 +99,7 @@ fn ring_query_conversion_preserves_upgrade_info() {
 }
 
 #[test]
-fn ring_query_conversion_preserves_demerit_config() {
+fn ring_query_conversion_preserves_reporting_config() {
     let post = ring_to_bulletin_post(common::blockchain::orbis::Ring {
         id: "ring-1".to_string(),
         upgrade_info: Some(common::blockchain::orbis::UpgradeInfo {
@@ -106,20 +107,28 @@ fn ring_query_conversion_preserves_demerit_config() {
             next_version: None,
             activation_time: None,
         }),
-        demerit_config: Some(ChainDemeritConfig {
-            node_offline_demerits: 3,
-            reset_interval_seconds: 42,
+        reporting: Some(ChainReportingConfig {
+            demerit_config: Some(ChainDemeritConfig {
+                node_offline_demerits: 3,
+                reset_interval_seconds: 42,
+            }),
+            backup_node_keys: vec!["backup-2".to_string(), "backup-1".to_string()],
+            kick_threshold: 4,
         }),
         ..Default::default()
     })
     .expect("convert ring");
     let payload = RingPayload::try_from(post).expect("parse ring payload");
     assert_eq!(
-        payload.demerit_config,
-        Some(DemeritConfig {
-            node_offline_demerits: 3,
-            reset_interval_seconds: 42,
-        })
+        payload.reporting,
+        ReportingConfig {
+            demerit_config: DemeritConfig {
+                node_offline_demerits: 3,
+                reset_interval_seconds: 42,
+            },
+            backup_node_keys: vec!["backup-2".to_string(), "backup-1".to_string()],
+            kick_threshold: 4,
+        }
     );
 }
 
@@ -255,10 +264,10 @@ async fn test_bulletin_ring() {
     assert_eq!(created_post.id, ring_id);
 
     let read_payload: RingPayload = created_post.clone().try_into().unwrap();
-    // demerit_config is populated by the chain from module-default params; accept whatever the
-    // chain set and only verify the fields we control.
+    // reporting is populated by the chain from module-default params; accept whatever the chain
+    // set and only verify the fields we control.
     let expected = RingPayload {
-        demerit_config: read_payload.demerit_config.clone(),
+        reporting: read_payload.reporting.clone(),
         ..payload
     };
     assert_eq!(read_payload, expected, "Read payload should match");
@@ -266,7 +275,7 @@ async fn test_bulletin_ring() {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn test_bulletin_ring_demerit_config_and_node_demerits_query_contract() {
+async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() {
     let container = SourceHubTestContainer::new();
     let config = container.chain_config();
 
@@ -307,11 +316,15 @@ async fn test_bulletin_ring_demerit_config_and_node_demerits_query_contract() {
         .unwrap();
     let default_payload = RingPayload::try_from(default_post).unwrap();
     assert_eq!(
-        default_payload.demerit_config,
-        Some(DemeritConfig {
-            node_offline_demerits: 1,
-            reset_interval_seconds: 86400,
-        })
+        default_payload.reporting,
+        ReportingConfig {
+            demerit_config: DemeritConfig {
+                node_offline_demerits: 1,
+                reset_interval_seconds: 86400,
+            },
+            backup_node_keys: Vec::new(),
+            kick_threshold: 3,
+        }
     );
 
     let empty_score = bulletin
@@ -331,9 +344,22 @@ async fn test_bulletin_ring_demerit_config_and_node_demerits_query_contract() {
         "unexpected missing ring error: {missing_ring_err}"
     );
 
-    let explicit_config = ChainDemeritConfig {
-        node_offline_demerits: 3,
-        reset_interval_seconds: 42,
+    // The chain validates backup node keys as 33-byte compressed secp256k1
+    // public keys, so derive real ones from fixed private keys.
+    let backup_key_1 = TxSigner::from_hex_key(&"11".repeat(32), config.clone())
+        .expect("backup signer 1")
+        .public_key_hex();
+    let backup_key_2 = TxSigner::from_hex_key(&"22".repeat(32), config.clone())
+        .expect("backup signer 2")
+        .public_key_hex();
+
+    let explicit_reporting = ChainReportingConfig {
+        demerit_config: Some(ChainDemeritConfig {
+            node_offline_demerits: 3,
+            reset_interval_seconds: 42,
+        }),
+        backup_node_keys: vec![backup_key_2.clone(), backup_key_1.clone()],
+        kick_threshold: 4,
     };
     let (_, explicit_ring_id) = bulletin
         .chain_client
@@ -344,7 +370,7 @@ async fn test_bulletin_ring_demerit_config_and_node_demerits_query_contract() {
             &policy_id,
             Some("ring-demerit-explicit-test".to_string()),
             0,
-            Some(explicit_config),
+            Some(explicit_reporting),
         )
         .await
         .unwrap();
@@ -355,11 +381,15 @@ async fn test_bulletin_ring_demerit_config_and_node_demerits_query_contract() {
         .unwrap();
     let explicit_payload = RingPayload::try_from(explicit_post).unwrap();
     assert_eq!(
-        explicit_payload.demerit_config,
-        Some(DemeritConfig {
-            node_offline_demerits: 3,
-            reset_interval_seconds: 42,
-        })
+        explicit_payload.reporting,
+        ReportingConfig {
+            demerit_config: DemeritConfig {
+                node_offline_demerits: 3,
+                reset_interval_seconds: 42,
+            },
+            backup_node_keys: vec![backup_key_2, backup_key_1],
+            kick_threshold: 4,
+        }
     );
 }
 

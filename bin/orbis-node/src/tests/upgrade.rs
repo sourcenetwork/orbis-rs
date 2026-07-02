@@ -109,9 +109,13 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
                         "next_version": 1,
                         "activation_time": activation_time
                     },
-                    "demerit_config": {
-                        "node_offline_demerits": 1,
-                        "reset_interval_seconds": 86400
+                    "reporting": {
+                        "demerit_config": {
+                            "node_offline_demerits": 1,
+                            "reset_interval_seconds": 86400
+                        },
+                        "backup_node_keys": [],
+                        "kick_threshold": 3
                     }
                 }],
                 "key_derivations": [{

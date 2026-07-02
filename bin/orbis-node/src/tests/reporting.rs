@@ -40,9 +40,13 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
                     "threshold": 2,
                     "pss_interval": 86400,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "demerit_config": {
-                        "node_offline_demerits": 1,
-                        "reset_interval_seconds": 86400
+                    "reporting": {
+                        "demerit_config": {
+                            "node_offline_demerits": 1,
+                            "reset_interval_seconds": 86400
+                        },
+                        "backup_node_keys": [],
+                        "kick_threshold": 3
                     }
                 }]
             }),
@@ -495,9 +499,13 @@ async fn test_refresh_offline_triggers_on_chain_report() {
                     "threshold": 2,
                     "pss_interval": 5,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "demerit_config": {
-                        "node_offline_demerits": 3,
-                        "reset_interval_seconds": 86400
+                    "reporting": {
+                        "demerit_config": {
+                            "node_offline_demerits": 3,
+                            "reset_interval_seconds": 86400
+                        },
+                        "backup_node_keys": [],
+                        "kick_threshold": 3
                     }
                 }]
             }),
@@ -673,9 +681,13 @@ async fn test_reshare_offline_triggers_on_chain_report() {
                     "threshold": 2,
                     "pss_interval": 86400,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "demerit_config": {
-                        "node_offline_demerits": 1,
-                        "reset_interval_seconds": 86400
+                    "reporting": {
+                        "demerit_config": {
+                            "node_offline_demerits": 1,
+                            "reset_interval_seconds": 86400
+                        },
+                        "backup_node_keys": [],
+                        "kick_threshold": 3
                     }
                 }]
             }),

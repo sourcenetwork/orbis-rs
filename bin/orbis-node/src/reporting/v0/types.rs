@@ -190,6 +190,7 @@ pub fn canonical_ring_state_bytes(payload: &RingPayload) -> Vec<u8> {
     write_u64(&mut out, payload.upgrade_info.current_version);
     write_optional_u64(&mut out, payload.upgrade_info.next_version);
     write_optional_u64(&mut out, payload.upgrade_info.activation_time);
+    write_reporting_config(&mut out, &payload.reporting);
     out
 }
 
@@ -215,6 +216,17 @@ fn write_string_vec(out: &mut Vec<u8>, values: &[String]) {
     for value in values {
         write_string(out, value);
     }
+}
+
+fn write_demerit_config(out: &mut Vec<u8>, value: &bulletin::r#trait::DemeritConfig) {
+    write_u64(out, value.node_offline_demerits);
+    write_u64(out, value.reset_interval_seconds);
+}
+
+fn write_reporting_config(out: &mut Vec<u8>, value: &bulletin::r#trait::ReportingConfig) {
+    write_demerit_config(out, &value.demerit_config);
+    write_string_vec(out, &value.backup_node_keys);
+    write_u64(out, value.kick_threshold);
 }
 
 fn write_optional_string(out: &mut Vec<u8>, value: Option<&str>) {
