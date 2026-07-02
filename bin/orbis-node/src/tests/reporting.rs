@@ -12,7 +12,7 @@ use bulletin::r#trait::{BulletinKind, RingPayload};
 use common::{
     blockchain::{
         events::ReportEventSubscription, orbis::WhitelistTarget, SourceHubClient, TxSigner,
-        TEST_ACCOUNT_HEX_KEY,
+        TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
     },
     IntegrationTestNetwork,
 };
@@ -22,7 +22,9 @@ use tokio::time::{sleep, Duration, Instant};
 
 const RING_ID: &str = "reporting-test-ring";
 
-use super::constants::{NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, RING_GOVERNANCE_POLICY_ID};
+use super::constants::{
+    NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, NODE_KEY_4, RING_GOVERNANCE_POLICY_ID,
+};
 
 #[tokio::test]
 #[serial_test::serial]
@@ -871,4 +873,331 @@ async fn test_reshare_offline_triggers_on_chain_report() {
         "node3 should have demerits after accepted offline report, got {demerits}"
     );
     println!("node3 demerit points: {demerits}");
+}
+
+/// Verifies the on-chain kick + backup-node promotion flow: node3 starts with
+/// kick_threshold - 1 demerits seeded in genesis, a single accepted offline report
+/// pushes it over the threshold, and the chain schedules an auto-reshare that swaps
+/// node3 out for the backup node in the ring's `new_peer_node_keys`.
+///
+/// Reshare completion is out of scope: NODE_KEY_4 has no running node, so the test
+/// asserts the announced pending committee, not the finalized one.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_report_kick_promotes_backup_node() {
+    println!("Starting backup-node promotion integration test...");
+
+    // Demerits reset once reset_interval_seconds elapse after window_started_at, so
+    // anchor the seeded window at test start to keep the seed live for the whole run.
+    let window_started_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_secs();
+
+    let network = IntegrationTestNetwork::builder()
+        .with_module_genesis(
+            "orbis",
+            serde_json::json!({
+                "rings": [{
+                    "id": RING_ID,
+                    "ring_pk": "",
+                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+                    "threshold": 2,
+                    "pss_interval": 86400,
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "reporting": {
+                        "demerit_config": {
+                            "node_offline_demerits": 1,
+                            "reset_interval_seconds": 86400
+                        },
+                        "backup_node_keys": [NODE_KEY_4],
+                        "kick_threshold": 3
+                    }
+                }],
+                // The backup node has no running container; seed its NodeInfo so the
+                // chain considers it eligible for promotion (registered + whitelisted).
+                "node_infos": [{
+                    "node_key": NODE_KEY_4,
+                    "node_info": {
+                        "peer_id": "backup-node-4-peer-id",
+                        "controller_key": TEST_ACCOUNT_PUBKEY_HEX,
+                        "whitelisted_policy_ids": [],
+                        "whitelisted_ring_ids": [RING_ID]
+                    }
+                }],
+                // Seed node3 at kick_threshold - 1 so a single accepted report kicks it.
+                "node_demerits": [{
+                    "ring_id": RING_ID,
+                    "node_key": NODE_KEY_3,
+                    "points": 2,
+                    "window_started_at": window_started_at
+                }]
+            }),
+        )
+        .build();
+
+    let chain_config = network.chain_config();
+    let endpoints = network.all_endpoints();
+    let endpoint = endpoints[0].to_string();
+
+    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
+        .await;
+
+    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
+        .await
+        .expect("query node1 info");
+    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
+        .await
+        .expect("query node2 info");
+    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
+        .await
+        .expect("query node3 info");
+
+    assert_eq!(node1_info.node_key, NODE_KEY_1, "node1 key mismatch");
+    assert_eq!(node2_info.node_key, NODE_KEY_2, "node2 key mismatch");
+    assert_eq!(node3_info.node_key, NODE_KEY_3, "node3 key mismatch");
+
+    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node1_info.p2p_address,
+        IntegrationTestNetwork::NODE1_SERVICE,
+    );
+    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node2_info.p2p_address,
+        IntegrationTestNetwork::NODE2_SERVICE,
+    );
+    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node3_info.p2p_address,
+        IntegrationTestNetwork::NODE3_SERVICE,
+    );
+
+    let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
+    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
+
+    let controller_client = SourceHubClient::with_signer(
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
+    // Sanity check: the genesis-seeded demerits for node3 are visible on-chain.
+    let seeded_demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
+        .await
+        .expect("query seeded node3 demerits");
+    assert_eq!(
+        seeded_demerits, 2,
+        "genesis should seed node3 with kick_threshold - 1 demerits"
+    );
+
+    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
+        &controller_client,
+        RING_ID,
+        &node_keys,
+    )
+    .await;
+    assert_eq!(
+        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+        "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
+    );
+
+    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
+        wait_for_node_info_on_chain(
+            &controller_client,
+            node_key,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
+
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
+    }
+
+    println!("Starting DKG for ring {RING_ID}...");
+    cli_tool::do_dkg(endpoint.clone(), RING_ID.to_string())
+        .await
+        .expect("DKG should succeed");
+
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, Duration::from_secs(90)).await;
+    println!(
+        "DKG finalized. Ring PK: {}...",
+        &ring_pk_hex[..40.min(ring_pk_hex.len())]
+    );
+
+    // Set up ACP policy and a secret so PRE has something to decrypt.
+    let resource = "document".to_string();
+    let permission = "read".to_string();
+    let did_pk_string = "backup-kick-test-did".to_string();
+    let policy_id = cli_tool::add_policy_to_chain_with_config(chain_config.clone())
+        .await
+        .expect("add policy");
+
+    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
+    let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize sk"));
+    let reader_pk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize pk"));
+
+    let prepared = cli_tool::prepare_secret(
+        b"backup-kick-test-secret",
+        &ring_pk_hex,
+        None,
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+        None,
+        None,
+        None,
+    )
+    .expect("prepare_secret");
+
+    let store_result = store_secret_with_retry(
+        endpoint.clone(),
+        &prepared,
+        RING_ID.to_string(),
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+        Some(did_pk_string.clone()),
+    )
+    .await;
+    let object_id = store_result.object_id.clone();
+
+    cli_tool::register_object_to_chain_with_config(
+        policy_id.clone(),
+        object_id.clone(),
+        resource.clone(),
+        chain_config.clone(),
+    )
+    .await
+    .expect("register object");
+
+    cli_tool::set_relationship_on_chain_with_config(
+        policy_id.clone(),
+        object_id.clone(),
+        resource.clone(),
+        "reader".to_string(),
+        Some(did_pk_string.clone()),
+        chain_config.clone(),
+    )
+    .await
+    .expect("set relationship");
+
+    // Subscribe before stopping node3 to avoid missing the event.
+    println!("Subscribing to report events...");
+    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+        .await
+        .expect("connect report event subscription");
+
+    // Stop node3 to trigger an offline observation during PRE.
+    println!("Stopping node3 to simulate offline node...");
+    network.stop_service(IntegrationTestNetwork::NODE3_SERVICE);
+
+    // PRE succeeds with 2/3 shares (threshold=2) and fires an offline report for node3.
+    println!("Triggering PRE (expects success with node3 offline)...");
+    let _plaintext = pre_with_retry(
+        endpoint.clone(),
+        ring_pk_hex.clone(),
+        reader_pk_hex.clone(),
+        reader_sk_hex.clone(),
+        object_id.clone(),
+        did_pk_string.clone(),
+    )
+    .await;
+    println!("PRE succeeded (2/3 shares collected).");
+
+    println!("Waiting for EventReportAccepted on chain (up to 120s)...");
+    let event = sub
+        .wait_for_report_accepted(RING_ID, Duration::from_secs(120))
+        .await
+        .expect("EventReportAccepted should be emitted");
+
+    println!(
+        "Report accepted on chain: report_id={} accused={}",
+        event.report_id, event.accused_node_key
+    );
+
+    assert_eq!(event.report_type, "node_offline", "unexpected report_type");
+    assert_eq!(
+        event.accused_node_key, NODE_KEY_3,
+        "node3 should be the accused node"
+    );
+    assert_eq!(event.ring_id, RING_ID, "ring_id mismatch");
+
+    // The kick happens in the same tx as the threshold-crossing report; poll briefly
+    // for the auto-reshare announcement to land in queryable state.
+    println!("Waiting for auto-reshare announcement on the ring...");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let ring = loop {
+        let ring = controller_client
+            .orbis_read_ring(RING_ID)
+            .await
+            .expect("read ring")
+            .expect("ring should exist");
+        if !ring.new_peer_node_keys.is_empty() {
+            break ring;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "ring never announced new_peer_node_keys after the kick-threshold report"
+        );
+        sleep(Duration::from_secs(1)).await;
+    };
+
+    // The chain stores the pending committee in canonical (sorted) order.
+    let mut expected_committee = vec![
+        NODE_KEY_1.to_string(),
+        NODE_KEY_2.to_string(),
+        NODE_KEY_4.to_string(),
+    ];
+    expected_committee.sort();
+    assert_eq!(
+        ring.new_peer_node_keys, expected_committee,
+        "pending committee should swap node3 out for the backup node"
+    );
+    assert!(
+        !ring.new_peer_node_keys.contains(&NODE_KEY_3.to_string()),
+        "kicked node3 must not be in the pending committee"
+    );
+    assert!(
+        ring.peer_node_keys.contains(&NODE_KEY_3.to_string()),
+        "active committee is unchanged until the reshare finalizes"
+    );
+    assert!(
+        ring.new_threshold.is_none(),
+        "auto-reshare must not change the threshold"
+    );
+    let reporting = ring.reporting.expect("ring reporting config");
+    assert!(
+        !reporting.backup_node_keys.contains(&NODE_KEY_4.to_string()),
+        "promoted backup key should be consumed from backup_node_keys"
+    );
+
+    println!("Checking node3 demerit points...");
+    let demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
+        .await
+        .expect("query node3 demerits");
+    assert!(
+        demerits >= 3,
+        "node3 demerits should be at least kick_threshold (3), got {demerits}"
+    );
+    println!("node3 demerit points: {demerits} — backup promotion verified.");
 }

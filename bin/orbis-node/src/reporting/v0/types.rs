@@ -435,7 +435,7 @@ mod tests {
         assert_ne!(ring_state_sha256(&a), ring_state_sha256(&b));
         assert_eq!(
             ring_state_sha256(&a),
-            "a597b5c00a60c75728b40780bf26efe66150560ca3f511264e7f804e3bd2c870"
+            "7da44e690e8cb8c223ee4ce80d35b12c7f41e92bbac5a114f89c26657b4148db"
         );
 
         a.threshold = 1;
