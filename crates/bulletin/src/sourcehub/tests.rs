@@ -345,13 +345,33 @@ async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() 
     );
 
     // The chain validates backup node keys as 33-byte compressed secp256k1
-    // public keys, so derive real ones from fixed private keys.
-    let backup_key_1 = TxSigner::from_hex_key(&"11".repeat(32), config.clone())
-        .expect("backup signer 1")
-        .public_key_hex();
-    let backup_key_2 = TxSigner::from_hex_key(&"22".repeat(32), config.clone())
-        .expect("backup signer 2")
-        .public_key_hex();
+    // public keys with registered node info. NodeInfo is keyed by the tx
+    // signer's pubkey, so fund each backup account and register from it.
+    let backup_signer_1 =
+        TxSigner::from_hex_key(&"11".repeat(32), config.clone()).expect("backup signer 1");
+    let backup_signer_2 =
+        TxSigner::from_hex_key(&"22".repeat(32), config.clone()).expect("backup signer 2");
+    let backup_key_1 = backup_signer_1.public_key_hex();
+    let backup_key_2 = backup_signer_2.public_key_hex();
+
+    for (peer_id, signer) in [
+        ("backup-peer-1", backup_signer_1),
+        ("backup-peer-2", backup_signer_2),
+    ] {
+        bulletin
+            .chain_client
+            .transfer(&signer.address(), 1_000_000, "uopen")
+            .await
+            .expect("fund backup account");
+        let backup_key = signer.public_key_hex();
+        let backup_client = SourceHubClient::with_signer(config.clone(), signer)
+            .await
+            .expect("backup client");
+        backup_client
+            .orbis_create_node_info(peer_id, &backup_key, vec![], vec![])
+            .await
+            .expect("register backup node info");
+    }
 
     let explicit_reporting = ChainReportingConfig {
         demerit_config: Some(ChainDemeritConfig {

@@ -6,6 +6,7 @@ pub const NODE_KEY_3: &str = "02f9308a019258c31049344f85f89d5229b531c845836f99b0
 
 /// Private key 4 → 4G compressed public key. No running node uses this key; it serves
 /// as a backup node key for the report-kick promotion test.
+#[cfg(feature = "integration-test")]
 pub const NODE_KEY_4: &str = "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13";
 
 /// Deterministic ACP policy ID for ORBIS_RING_POLICY_YAML created as the first policy
