@@ -22,9 +22,7 @@ use tokio::time::{sleep, Duration, Instant};
 
 const RING_ID: &str = "reporting-test-ring";
 
-use super::constants::{
-    NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, NODE_KEY_4, RING_GOVERNANCE_POLICY_ID,
-};
+use super::constants::{NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, NODE_KEY_4, RING_GOVERNANCE_POLICY_ID};
 
 #[tokio::test]
 #[serial_test::serial]
