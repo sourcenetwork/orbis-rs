@@ -48,6 +48,7 @@ pub enum PreMessage {
         share: Vec<u8>,     // Serialized PubShare<G1Affine>
         challenge: Vec<u8>, // Serialized Fr (for NIZK proof)
         proof: Vec<u8>,     // Serialized Fr (for NIZK proof)
+        response_signature: Vec<u8>,
     },
     /// Error message
     Error { request_id: String, error: String },

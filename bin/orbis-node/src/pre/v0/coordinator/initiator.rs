@@ -1,16 +1,20 @@
+use super::verification::{PeerResponseVerification, PreResponseReportContext};
 use super::{PreCoordinator, PreResponse};
 use crate::constants::PRE_COLLECTION_TIMEOUT;
 use crate::helpers::identity::{
-    determine_ring_node_id_from_peer_id, determine_session_node_id, is_self_peer_id,
+    determine_ring_node_id_from_peer_id, determine_session_node_id, extract_node_part,
+    is_self_peer_id,
 };
 use crate::helpers::response_manager::ResponseInitOutcome;
 use crate::helpers::ring::{
     is_ring_reshare_in_progress, load_ring_pub_poly_and_bundle, RingConfig,
 };
 use crate::pre::v0::error::{PreError, Result};
+use crate::pre::v0::helpers::fetch_bulletin_payloads_for_version;
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::reporting::v0::observation::{offline_observation_from_pre_error, ReportObservation};
 use crate::reporting::v0::queue_report;
+use crate::reporting::v0::types::ring_state_sha256;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply,
     Secret, ThresholdDealer,
@@ -18,6 +22,7 @@ use crypto::r#trait::{
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use crypto::{PolynomialCommitmentImpl, PubPolyImpl, SigShareInner, SignImpl, SignaturePoint};
 use std::collections::HashSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 impl<D, T> PreCoordinator<D, T>
 where
     D: Dkg<
@@ -202,6 +207,38 @@ where
             PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e))
         })?;
 
+        let report_binding = match fetch_bulletin_payloads_for_version(
+            &*self.app_state.bulletin,
+            &ctx.object_id,
+            self.routes.version,
+        )
+        .await
+        {
+            Ok((document_payload, ring_payload)) => {
+                const CHAIN_BLOCK_GRACE_SECS: u64 = 10;
+                let observed_at = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| PreError::SystemTime(format!("Failed to get timestamp: {}", e)))?
+                    .as_secs()
+                    .saturating_sub(CHAIN_BLOCK_GRACE_SECS);
+                Some(PreReportBinding {
+                    chain_id: self.app_state.bulletin.chain_id(),
+                    ring_id: document_payload.ring_id,
+                    ring_pk: ring_payload.ring_pk.clone(),
+                    ring_state_sha256: ring_state_sha256(&ring_payload),
+                    observed_at,
+                })
+            }
+            Err(error) => {
+                tracing::debug!(
+                    object_id = %ctx.object_id,
+                    error = %error,
+                    "PRE Coordinator: invalid-proof reporting disabled because report ring context could not be loaded"
+                );
+                None
+            }
+        };
+
         let dealer = T::new();
         let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
         let mut seen_node_ids: HashSet<u32> = HashSet::new();
@@ -310,21 +347,68 @@ where
                                 );
                                 continue;
                             };
-                            if let Some(share) = Self::verify_peer_response(
+                            let Some(report_binding) = report_binding.as_ref() else {
+                                tracing::warn!(
+                                    peer_id = %peer_id,
+                                    "PRE Coordinator: rejecting signed response because report ring context is unavailable"
+                                );
+                                continue;
+                            };
+                            let Some(accused_node_key) = node_key_for_peer(&ring, &peer_id) else {
+                                tracing::error!(
+                                    peer_id = %peer_id,
+                                    "PRE Coordinator: accepted response from peer without node key"
+                                );
+                                continue;
+                            };
+                            let report_context = PreResponseReportContext {
+                                chain_id: &report_binding.chain_id,
+                                ring_id: &report_binding.ring_id,
+                                ring_pk: &report_binding.ring_pk,
+                                ring_state_sha256: &report_binding.ring_state_sha256,
+                                protocol_version: self.routes.version,
+                                request_id: &request_id,
+                                accused_node_key,
+                                accused_peer_id: &peer_id,
+                                object_id: &ctx.object_id,
+                                rdr_pk: &ctx.rdr_pk_bytes,
+                                derivation: ctx.derivation.as_deref(),
+                                observed_at: report_binding.observed_at,
+                            };
+                            match Self::verify_peer_response(
                                 &dealer,
                                 response,
                                 &rdr_pk,
                                 &pub_poly,
                                 &enc_cmt,
                                 ctx.derivation.as_deref(),
-                                Some(expected_node_id),
+                                expected_node_id,
+                                &report_context,
                                 &mut seen_node_ids,
                             ) {
-                                verified_shares.push(share);
-                                successful_responses += 1;
-                                if successful_responses >= min_needed_from_network {
-                                    break;
+                                PeerResponseVerification::Verified(share) => {
+                                    verified_shares.push(share);
+                                    successful_responses += 1;
+                                    if successful_responses >= min_needed_from_network {
+                                        break;
+                                    }
                                 }
+                                PeerResponseVerification::InvalidProof(observation) => {
+                                    let _ = queue_report::<D, SignImpl>(
+                                        self.app_state.clone(),
+                                        self.routes,
+                                        ReportObservation::PreInvalidReencryptionProof(observation),
+                                    )
+                                    .await
+                                    .inspect_err(|error| {
+                                        tracing::warn!(
+                                            peer_id = %peer_id,
+                                            error = %error,
+                                            "Failed to queue PRE invalid-proof report observation"
+                                        );
+                                    });
+                                }
+                                PeerResponseVerification::Rejected => {}
                             }
                         }
                         Ok((_, Ok(None))) => {}
@@ -427,17 +511,64 @@ where
                 );
                 continue;
             };
-            if let Some(share) = Self::verify_peer_response(
+            let Some(report_binding) = report_binding.as_ref() else {
+                tracing::warn!(
+                    sender_peer = %response.sender_peer_hex,
+                    "PRE Coordinator: rejecting stored signed response because report ring context is unavailable"
+                );
+                continue;
+            };
+            let Some(accused_node_key) = node_key_for_peer(&ring, &response.sender_peer_hex) else {
+                tracing::error!(
+                    sender_peer = %response.sender_peer_hex,
+                    "PRE Coordinator: stored response from peer without node key"
+                );
+                continue;
+            };
+            let report_context = PreResponseReportContext {
+                chain_id: &report_binding.chain_id,
+                ring_id: &report_binding.ring_id,
+                ring_pk: &report_binding.ring_pk,
+                ring_state_sha256: &report_binding.ring_state_sha256,
+                protocol_version: self.routes.version,
+                request_id: &request_id,
+                accused_node_key,
+                accused_peer_id: &response.sender_peer_hex,
+                object_id: &ctx.object_id,
+                rdr_pk: &ctx.rdr_pk_bytes,
+                derivation: ctx.derivation.as_deref(),
+                observed_at: report_binding.observed_at,
+            };
+            match Self::verify_peer_response(
                 &dealer,
                 response.message,
                 &rdr_pk,
                 &pub_poly,
                 &enc_cmt,
                 ctx.derivation.as_deref(),
-                Some(expected_node_id),
+                expected_node_id,
+                &report_context,
                 &mut seen_node_ids,
             ) {
-                verified_shares.push(share);
+                PeerResponseVerification::Verified(share) => {
+                    verified_shares.push(share);
+                }
+                PeerResponseVerification::InvalidProof(observation) => {
+                    let _ = queue_report::<D, SignImpl>(
+                        self.app_state.clone(),
+                        self.routes,
+                        ReportObservation::PreInvalidReencryptionProof(observation),
+                    )
+                    .await
+                    .inspect_err(|error| {
+                        tracing::warn!(
+                            sender_peer = %response.sender_peer_hex,
+                            error = %error,
+                            "Failed to queue PRE invalid-proof report observation"
+                        );
+                    });
+                }
+                PeerResponseVerification::Rejected => {}
             }
         }
 
@@ -497,4 +628,21 @@ where
 
         Ok(response_bytes)
     }
+}
+
+struct PreReportBinding {
+    chain_id: String,
+    ring_id: String,
+    ring_pk: String,
+    ring_state_sha256: String,
+    observed_at: u64,
+}
+
+fn node_key_for_peer<'a>(ring: &'a RingConfig, peer_id: &str) -> Option<&'a str> {
+    let peer_node_part = extract_node_part(peer_id).to_lowercase();
+    ring.peer_node_keys
+        .iter()
+        .zip(ring.peer_ids.iter())
+        .find(|(_, route)| extract_node_part(route).to_lowercase() == peer_node_part)
+        .map(|(node_key, _)| node_key.as_str())
 }

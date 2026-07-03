@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 
 pub const REPORT_DOMAIN: &str = "orbis-mpc-fault-report";
 pub const NODE_OFFLINE_REPORT_TYPE: &str = "node_offline";
+pub const PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE: &str = "pre_invalid_reencryption_proof";
+pub const PRE_REENCRYPT_RESPONSE_DOMAIN: &str = "orbis-pre-reencrypt-response-v1";
 pub const REPORT_TTL_SECS: u64 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +67,115 @@ impl NodeOffline {
             origin_protocol_version,
             accused_committee_scope,
             signing_committee_scope,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreReencryptResponseStatement {
+    pub domain: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub protocol_version: u64,
+    pub request_id: String,
+    pub responder_node_key: String,
+    pub object_id: String,
+    pub rdr_pk: Vec<u8>,
+    pub derivation: Option<Vec<u8>>,
+    pub from_node_id: u32,
+    pub share: Vec<u8>,
+    pub challenge: Vec<u8>,
+    pub proof: Vec<u8>,
+    pub crypto_backend: String,
+}
+
+impl PreReencryptResponseStatement {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_string(&mut out, &self.domain);
+        write_string(&mut out, &self.chain_id);
+        write_string(&mut out, &self.ring_id);
+        write_string(&mut out, &self.ring_pk);
+        write_string(&mut out, &self.ring_state_sha256);
+        write_u64(&mut out, self.protocol_version);
+        write_string(&mut out, &self.request_id);
+        write_string(&mut out, &self.responder_node_key);
+        write_string(&mut out, &self.object_id);
+        write_bytes(&mut out, &self.rdr_pk);
+        write_optional_bytes(&mut out, self.derivation.as_deref());
+        write_u32(&mut out, self.from_node_id);
+        write_bytes(&mut out, &self.share);
+        write_bytes(&mut out, &self.challenge);
+        write_bytes(&mut out, &self.proof);
+        write_string(&mut out, &self.crypto_backend);
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let domain = decoder.read_string("domain")?;
+        let chain_id = decoder.read_string("chain_id")?;
+        let ring_id = decoder.read_string("ring_id")?;
+        let ring_pk = decoder.read_string("ring_pk")?;
+        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
+        let protocol_version = decoder.read_u64("protocol_version")?;
+        let request_id = decoder.read_string("request_id")?;
+        let responder_node_key = decoder.read_string("responder_node_key")?;
+        let object_id = decoder.read_string("object_id")?;
+        let rdr_pk = decoder.read_bytes("rdr_pk")?;
+        let derivation = decoder.read_optional_bytes("derivation")?;
+        let from_node_id = decoder.read_u32("from_node_id")?;
+        let share = decoder.read_bytes("share")?;
+        let challenge = decoder.read_bytes("challenge")?;
+        let proof = decoder.read_bytes("proof")?;
+        let crypto_backend = decoder.read_string("crypto_backend")?;
+        decoder.finish()?;
+        Ok(Self {
+            domain,
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            protocol_version,
+            request_id,
+            responder_node_key,
+            object_id,
+            rdr_pk,
+            derivation,
+            from_node_id,
+            share,
+            challenge,
+            proof,
+            crypto_backend,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreInvalidReencryptionProof {
+    pub statement: PreReencryptResponseStatement,
+    pub response_signature: Vec<u8>,
+}
+
+impl PreInvalidReencryptionProof {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_bytes(&mut out, &self.statement.canonical_bytes());
+        write_bytes(&mut out, &self.response_signature);
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let statement_bytes = decoder.read_bytes("statement")?;
+        let response_signature = decoder.read_bytes("response_signature")?;
+        decoder.finish()?;
+        let statement = PreReencryptResponseStatement::from_canonical_bytes(&statement_bytes)?;
+        Ok(Self {
+            statement,
+            response_signature,
         })
     }
 }
@@ -239,6 +350,16 @@ fn write_optional_string(out: &mut Vec<u8>, value: Option<&str>) {
     }
 }
 
+fn write_optional_bytes(out: &mut Vec<u8>, value: Option<&[u8]>) {
+    match value {
+        Some(value) => {
+            out.push(1);
+            write_bytes(out, value);
+        }
+        None => out.push(0),
+    }
+}
+
 fn write_optional_string_vec(out: &mut Vec<u8>, value: Option<&[String]>) {
     match value {
         Some(value) => {
@@ -324,6 +445,27 @@ impl<'a> Decoder<'a> {
             .map_err(|_| ReportingError::InvalidReport(format!("{label} is not utf-8")))
     }
 
+    fn read_bytes(&mut self, label: &str) -> Result<Vec<u8>> {
+        let len = self.read_u32(&format!("{label}_length"))? as usize;
+        let end = self.cursor.saturating_add(len);
+        let bytes = self
+            .bytes
+            .get(self.cursor..end)
+            .ok_or_else(|| ReportingError::InvalidReport(format!("truncated {label}")))?;
+        self.cursor = end;
+        Ok(bytes.to_vec())
+    }
+
+    fn read_optional_bytes(&mut self, label: &str) -> Result<Option<Vec<u8>>> {
+        match self.read_u8(&format!("{label}_present"))? {
+            0 => Ok(None),
+            1 => self.read_bytes(label).map(Some),
+            value => Err(ReportingError::InvalidReport(format!(
+                "invalid optional {label} tag {value}"
+            ))),
+        }
+    }
+
     fn finish(&self) -> Result<()> {
         if self.cursor != self.bytes.len() {
             return Err(ReportingError::InvalidReport(
@@ -373,6 +515,54 @@ mod tests {
         };
         assert_eq!(
             NodeOffline::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
+            payload
+        );
+    }
+
+    fn pre_statement() -> PreReencryptResponseStatement {
+        PreReencryptResponseStatement {
+            domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "pre-request-1".to_string(),
+            responder_node_key: "accused".to_string(),
+            object_id: "object-1".to_string(),
+            rdr_pk: vec![1, 2, 3],
+            derivation: Some(vec![4, 5, 6]),
+            from_node_id: 2,
+            share: vec![7, 8],
+            challenge: vec![9, 10],
+            proof: vec![11, 12],
+            crypto_backend: "elgamal/test".to_string(),
+        }
+    }
+
+    #[test]
+    fn pre_response_statement_round_trips_and_is_domain_separated() {
+        let statement = pre_statement();
+        assert_eq!(
+            PreReencryptResponseStatement::from_canonical_bytes(&statement.canonical_bytes())
+                .unwrap(),
+            statement
+        );
+
+        let mut changed = pre_statement();
+        changed.domain = "other".to_string();
+        assert_ne!(pre_statement().canonical_bytes(), changed.canonical_bytes());
+    }
+
+    #[test]
+    fn pre_invalid_proof_payload_round_trips() {
+        let payload = PreInvalidReencryptionProof {
+            statement: pre_statement(),
+            response_signature: vec![42; 64],
+        };
+
+        assert_eq!(
+            PreInvalidReencryptionProof::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
             payload
         );
     }

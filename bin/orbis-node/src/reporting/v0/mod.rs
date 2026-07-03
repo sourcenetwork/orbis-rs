@@ -161,6 +161,7 @@ where
                 network: Arc::clone(&app_state.network),
                 peer_connection_pool: Arc::clone(&app_state.peer_connection_pool),
                 bulletin: Arc::clone(&app_state.bulletin),
+                local_storage: app_state.local_storage.clone(),
                 routes,
                 now,
                 mode: ReportValidationMode::ReporterObservation,
@@ -246,6 +247,7 @@ where
                 network: Arc::clone(&app_state.network),
                 peer_connection_pool: Arc::clone(&app_state.peer_connection_pool),
                 bulletin: Arc::clone(&app_state.bulletin),
+                local_storage: app_state.local_storage.clone(),
                 routes,
                 now,
                 mode: ReportValidationMode::IndependentSigner {

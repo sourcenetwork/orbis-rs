@@ -204,7 +204,10 @@ mod tests {
         );
 
         let ReportObservation::NodeOffline(observation) =
-            to_observation("aa".repeat(32), SignError::Timeout("timeout".to_string())).unwrap();
+            to_observation("aa".repeat(32), SignError::Timeout("timeout".to_string())).unwrap()
+        else {
+            panic!("expected node_offline observation");
+        };
 
         assert_eq!(observation.origin_protocol, "sign");
         assert_eq!(observation.session_id, "sign-request-1");

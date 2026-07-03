@@ -40,12 +40,12 @@ use bulletin::{
     BulletinImpl,
 };
 use cli_tool;
+#[cfg(feature = "integration-test")]
+use common::blockchain::TEST_ACCOUNT_HEX_KEY;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
-    ChainConfig, ChainConfigBuilder, SourceHubClient,
+    ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner,
 };
-#[cfg(feature = "integration-test")]
-use common::blockchain::{TxSigner, TEST_ACCOUNT_HEX_KEY};
 use hex;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -55,6 +55,7 @@ use network::{NetworkImpl, Router};
 use proto::info_service::NodeStatus;
 use std::{fs, sync::Arc};
 use tokio::time::Duration;
+use zeroize::Zeroizing;
 
 // Concrete crypto implementations for tests (selected via crypto crate features)
 use crypto::{DkgImpl, PreImpl, SignImpl};
@@ -141,7 +142,23 @@ async fn create_test_app_state_with_bulletin_inner(
     let local_storage =
         LocalStorageImpl::new(None, test_db_path(db_name)).expect("Failed to create local storage");
     let local_peer_id_hex = hex::encode(network.local_peer_id().as_bytes());
-    let test_node_key = format!("test-node-key-{}", local_peer_id_hex);
+    let mut node_signing_key = [0u8; 32];
+    loop {
+        getrandom::getrandom(&mut node_signing_key).expect("generate test node signing key");
+        if TxSigner::new(&node_signing_key, ChainConfig::local()).is_ok() {
+            break;
+        }
+    }
+    let node_signing_key_hex = hex::encode(node_signing_key);
+    local_storage
+        .set_encrypted(
+            LocalStorageKeys::NodeSigningKey,
+            Zeroizing::new(node_signing_key_hex.as_bytes().to_vec()),
+        )
+        .expect("store test node signing key");
+    let test_node_key = TxSigner::from_hex_key(&node_signing_key_hex, ChainConfig::local())
+        .expect("test node signer")
+        .public_key_hex();
     let node_info = NodeInfo {
         peer_id: local_peer_id_hex,
         controller_key: "test-controller-key".to_string(),

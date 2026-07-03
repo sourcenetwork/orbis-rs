@@ -2,7 +2,10 @@ use crate::dkg::v0::error::DkgError;
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::error::PreError;
-use crate::reporting::v0::types::{CommitteeScope, NODE_OFFLINE_REPORT_TYPE};
+use crate::reporting::v0::types::{
+    CommitteeScope, PreInvalidReencryptionProof, NODE_OFFLINE_REPORT_TYPE,
+    PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE,
+};
 use crate::sign::v0::error::SignError;
 
 #[derive(Debug, Clone)]
@@ -19,14 +22,25 @@ pub struct OfflineObservation {
 }
 
 #[derive(Debug, Clone)]
+pub struct PreInvalidReencryptionProofObservation {
+    pub ring_id: String,
+    pub accused_node_key: String,
+    pub accused_peer_id: String,
+    pub observed_at: u64,
+    pub evidence: PreInvalidReencryptionProof,
+}
+
+#[derive(Debug, Clone)]
 pub enum ReportObservation {
     NodeOffline(OfflineObservation),
+    PreInvalidReencryptionProof(PreInvalidReencryptionProofObservation),
 }
 
 impl ReportObservation {
     pub fn report_type(&self) -> &'static str {
         match self {
             Self::NodeOffline(_) => NODE_OFFLINE_REPORT_TYPE,
+            Self::PreInvalidReencryptionProof(_) => PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE,
         }
     }
 }

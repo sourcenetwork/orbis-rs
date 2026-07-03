@@ -20,7 +20,7 @@ mod signer;
 pub use client::{AccountInfo, BroadcastResult, SourceHubClient};
 pub use config::{ChainConfig, ChainConfigBuilder, GasPrice};
 pub use error::{BlockchainError, Result};
-pub use signer::TxSigner;
+pub use signer::{sign_node_message_with_hex_key, verify_node_message, TxSigner};
 
 #[cfg(test)]
 pub mod tests;
