@@ -33,7 +33,7 @@ pub struct PreInvalidReencryptionProofObservation {
 #[derive(Debug, Clone)]
 pub enum ReportObservation {
     NodeOffline(OfflineObservation),
-    PreInvalidReencryptionProof(PreInvalidReencryptionProofObservation),
+    PreInvalidReencryptionProof(Box<PreInvalidReencryptionProofObservation>),
 }
 
 impl ReportObservation {

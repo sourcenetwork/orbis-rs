@@ -271,7 +271,7 @@ async fn threshold_signs_pre_invalid_proof_report_without_accused_node() {
     assert!(queue_report::<DkgImpl, SignImpl>(
         app_state.clone(),
         &network::V0,
-        ReportObservation::PreInvalidReencryptionProof(observation),
+        ReportObservation::PreInvalidReencryptionProof(Box::new(observation)),
     )
     .await
     .unwrap());

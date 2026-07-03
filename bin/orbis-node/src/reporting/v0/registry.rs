@@ -190,7 +190,7 @@ impl ReportHandler for NodeOfflineHandler {
             RingPolyState::load_from_ring_pk_hex(&context.local_storage, &ring.ring_pk)
                 .map_err(ReportingError::InvalidReport)?;
         let ring_config = RingConfig {
-            ring_id: observation.ring_id,
+            ring_id: observation.ring_id.clone(),
             ring_pk_bytes,
             peer_ids,
             peer_node_keys: signing_committee.peer_node_keys,
@@ -385,7 +385,7 @@ impl ReportHandler for PreInvalidReencryptionProofHandler {
             RingPolyState::load_from_ring_pk_hex(&context.local_storage, &ring.ring_pk)
                 .map_err(ReportingError::InvalidReport)?;
         let ring_config = RingConfig {
-            ring_id: observation.ring_id,
+            ring_id: observation.ring_id.clone(),
             ring_pk_bytes,
             peer_ids,
             peer_node_keys: signing_committee.peer_node_keys,
@@ -478,7 +478,7 @@ impl PreInvalidReencryptionProofHandler {
         observation: &ReportObservation,
     ) -> Result<&PreInvalidReencryptionProofObservation> {
         match observation {
-            ReportObservation::PreInvalidReencryptionProof(observation) => Ok(observation),
+            ReportObservation::PreInvalidReencryptionProof(observation) => Ok(observation.as_ref()),
             _ => Err(ReportingError::InvalidReport(
                 "pre_invalid_reencryption_proof handler received the wrong observation type"
                     .to_string(),
@@ -919,9 +919,9 @@ mod tests {
     fn routes_pre_invalid_proof_observation_to_handler() {
         let registry = ReportRegistry::with_defaults();
         let handler = registry
-            .handler_for_observation(&ReportObservation::PreInvalidReencryptionProof(
+            .handler_for_observation(&ReportObservation::PreInvalidReencryptionProof(Box::new(
                 pre_invalid_observation(),
-            ))
+            )))
             .unwrap();
         assert_eq!(
             handler.report_type(),
@@ -956,7 +956,7 @@ mod tests {
         let observation = pre_invalid_observation();
         let handler = PreInvalidReencryptionProofHandler;
         let report_observation =
-            ReportObservation::PreInvalidReencryptionProof(observation.clone());
+            ReportObservation::PreInvalidReencryptionProof(Box::new(observation.clone()));
 
         let key = handler.in_flight_key(&report_observation).unwrap();
         assert_eq!(key.report_type, PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE);

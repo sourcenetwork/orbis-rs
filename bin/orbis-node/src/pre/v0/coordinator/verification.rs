@@ -28,7 +28,7 @@ pub(crate) struct PreResponseReportContext<'a> {
 
 pub(crate) enum PeerResponseVerification<PublicKey> {
     Verified(PubShare<PublicKey>),
-    InvalidProof(PreInvalidReencryptionProofObservation),
+    InvalidProof(Box<PreInvalidReencryptionProofObservation>),
     Rejected,
 }
 
@@ -170,7 +170,7 @@ where
                 "PRE Coordinator: Failed to verify share"
             );
             seen_node_ids.insert(reply.share.i);
-            return PeerResponseVerification::InvalidProof(
+            return PeerResponseVerification::InvalidProof(Box::new(
                 PreInvalidReencryptionProofObservation {
                     ring_id: report_context.ring_id.to_string(),
                     accused_node_key: report_context.accused_node_key.to_string(),
@@ -181,7 +181,7 @@ where
                         response_signature,
                     },
                 },
-            );
+            ));
         }
 
         tracing::debug!(
