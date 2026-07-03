@@ -24,7 +24,9 @@ use tokio::time::{sleep, Duration, Instant};
 // Fixed ring id pre-seeded into genesis (bypasses chain minimum pss_interval validation).
 const RING_ID: &str = "integration-test-ring";
 
-use super::constants::{NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, RING_GOVERNANCE_POLICY_ID};
+use super::constants::{
+    reporting_genesis_json, NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, RING_GOVERNANCE_POLICY_ID,
+};
 
 #[derive(Clone, Debug)]
 struct RingStateSnapshot {
@@ -81,10 +83,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
                     "threshold": 2,
                     "pss_interval": 5,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "demerit_config": {
-                        "node_offline_demerits": 1,
-                        "reset_interval_seconds": 86400
-                    }
+                    "reporting": reporting_genesis_json(1, &[])
                 }]
             }),
         )

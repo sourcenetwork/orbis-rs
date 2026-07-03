@@ -2,8 +2,8 @@ use crate::{
     error::{BulletinError, Result},
     r#trait::{
         Bulletin, BulletinKind, BulletinPost, BulletinReportSubmission, BulletinWriteKind,
-        DemeritConfig, DocumentPayload, KeyDerivation, NodeInfo, RingCancellationPayload,
-        RingFinalizationPayload, RingPayload, UpgradeInfo,
+        DemeritConfig, DocumentPayload, KeyDerivation, NodeInfo, ReportingConfig,
+        RingCancellationPayload, RingFinalizationPayload, RingPayload, UpgradeInfo,
     },
 };
 use async_trait::async_trait;
@@ -361,10 +361,21 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
             next_version: upgrade_info.next_version,
             activation_time: upgrade_info.activation_time,
         },
-        demerit_config: ring.demerit_config.map(|dc| DemeritConfig {
-            node_offline_demerits: dc.node_offline_demerits,
-            reset_interval_seconds: dc.reset_interval_seconds,
-        }),
+        // Nil chain config falls back to defaults that mirror the chain's module params;
+        // see the DEFAULT_* constants in crate::trait.
+        reporting: ring
+            .reporting
+            .map_or_else(ReportingConfig::default, |reporting| ReportingConfig {
+                demerit_config: reporting.demerit_config.map_or_else(
+                    DemeritConfig::default,
+                    |dc| DemeritConfig {
+                        node_offline_demerits: dc.node_offline_demerits,
+                        reset_interval_seconds: dc.reset_interval_seconds,
+                    },
+                ),
+                backup_node_keys: reporting.backup_node_keys,
+                kick_threshold: reporting.kick_threshold,
+            }),
     };
     Ok(BulletinPost {
         id: ring.id,

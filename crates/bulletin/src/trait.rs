@@ -2,10 +2,51 @@ use crate::error::{BulletinError, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+// Fallbacks used when the chain returns a ring without reporting config. They must mirror
+// the sourcehub orbis module's default reporting params: the substituted values feed the
+// canonical ring-state hash, so a divergence would have nodes reporting against config the
+// chain never stored.
+pub const DEFAULT_NODE_OFFLINE_DEMERITS: u64 = 1;
+pub const DEFAULT_DEMERIT_RESET_INTERVAL_SECONDS: u64 = 86_400;
+pub const DEFAULT_REPORTING_KICK_THRESHOLD: u64 = 3;
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct DemeritConfig {
     pub node_offline_demerits: u64,
     pub reset_interval_seconds: u64,
+}
+
+impl Default for DemeritConfig {
+    fn default() -> Self {
+        Self {
+            node_offline_demerits: DEFAULT_NODE_OFFLINE_DEMERITS,
+            reset_interval_seconds: DEFAULT_DEMERIT_RESET_INTERVAL_SECONDS,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub struct ReportingConfig {
+    #[serde(default)]
+    pub demerit_config: DemeritConfig,
+    #[serde(default)]
+    pub backup_node_keys: Vec<String>,
+    #[serde(default = "default_reporting_kick_threshold")]
+    pub kick_threshold: u64,
+}
+
+impl Default for ReportingConfig {
+    fn default() -> Self {
+        Self {
+            demerit_config: DemeritConfig::default(),
+            backup_node_keys: Vec::new(),
+            kick_threshold: DEFAULT_REPORTING_KICK_THRESHOLD,
+        }
+    }
+}
+
+fn default_reporting_kick_threshold() -> u64 {
+    DEFAULT_REPORTING_KICK_THRESHOLD
 }
 
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
@@ -127,9 +168,9 @@ pub struct RingPayload {
     pub policy_id: Option<String>,
     /// Protocol epoch used by this ring and its optional scheduled successor.
     pub upgrade_info: UpgradeInfo,
-    /// Demerit penalty configuration for this ring.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub demerit_config: Option<DemeritConfig>,
+    /// Fault-report policy and automatic replacement settings for this ring.
+    #[serde(default)]
+    pub reporting: ReportingConfig,
 }
 
 /// Payload for confirming a completed fresh DKG ring.

@@ -60,7 +60,7 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
-        demerit_config: None,
+        reporting: Default::default(),
     };
 
     bulletin
@@ -388,7 +388,7 @@ async fn test_store_secret_idempotent() {
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
-        demerit_config: None,
+        reporting: Default::default(),
     };
 
     let ring_id = "test-store-secret-valid-ring".to_string();

@@ -43,7 +43,7 @@ pub struct Ring {
     #[prost(message, optional, tag = "12")]
     pub upgrade_info: Option<UpgradeInfo>,
     #[prost(message, optional, tag = "13")]
-    pub demerit_config: Option<DemeritConfig>,
+    pub reporting: Option<ReportingConfig>,
 }
 
 #[derive(Clone, Message)]
@@ -63,6 +63,17 @@ pub struct DemeritConfig {
     pub node_offline_demerits: u64,
     #[prost(uint64, tag = "2")]
     pub reset_interval_seconds: u64,
+}
+
+/// Fault-report policy and automatic replacement settings stored on a ring.
+#[derive(Clone, Message)]
+pub struct ReportingConfig {
+    #[prost(message, optional, tag = "1")]
+    pub demerit_config: Option<DemeritConfig>,
+    #[prost(string, repeated, tag = "2")]
+    pub backup_node_keys: Vec<String>,
+    #[prost(uint64, tag = "3")]
+    pub kick_threshold: u64,
 }
 
 /// Fresh-DKG confirmation stored on an unfinalized ring.
@@ -152,7 +163,7 @@ pub struct MsgCreateRing {
     #[prost(uint64, tag = "7")]
     pub current_version: u64,
     #[prost(message, optional, tag = "8")]
-    pub demerit_config: Option<DemeritConfig>,
+    pub reporting: Option<ReportingConfig>,
 }
 
 impl MsgCreateRing {
@@ -166,7 +177,7 @@ impl MsgCreateRing {
         policy_id: &str,
         nonce: Option<String>,
         current_version: u64,
-        demerit_config: Option<DemeritConfig>,
+        reporting: Option<ReportingConfig>,
     ) -> Self {
         Self {
             creator: creator.to_string(),
@@ -176,7 +187,7 @@ impl MsgCreateRing {
             policy_id: policy_id.to_string(),
             nonce,
             current_version,
-            demerit_config,
+            reporting,
         }
     }
 }
@@ -244,6 +255,31 @@ impl MsgSetRingPssIntervalByAcp {
 
 #[derive(Clone, Message)]
 pub struct MsgSetRingPssIntervalByAcpResponse {}
+
+#[derive(Clone, Message)]
+pub struct MsgSetRingReportingByAcp {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub ring_id: String,
+    #[prost(message, optional, tag = "3")]
+    pub reporting: Option<ReportingConfig>,
+}
+
+impl MsgSetRingReportingByAcp {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgSetRingReportingByAcp";
+
+    pub fn new(creator: &str, ring_id: &str, reporting: ReportingConfig) -> Self {
+        Self {
+            creator: creator.to_string(),
+            ring_id: ring_id.to_string(),
+            reporting: Some(reporting),
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgSetRingReportingByAcpResponse {}
 
 #[derive(Clone, Message)]
 pub struct MsgScheduleRingUpgradeByAcp {
@@ -1001,7 +1037,7 @@ impl SourceHubClient {
         policy_id: &str,
         nonce: Option<String>,
         current_version: u64,
-        demerit_config: Option<DemeritConfig>,
+        reporting: Option<ReportingConfig>,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
@@ -1014,7 +1050,7 @@ impl SourceHubClient {
             policy_id,
             nonce,
             current_version,
-            demerit_config,
+            reporting,
         );
         self.broadcast_proto_msg_with_gas(
             MsgCreateRing::TYPE_URL,
@@ -1035,7 +1071,7 @@ impl SourceHubClient {
         policy_id: &str,
         nonce: Option<String>,
         current_version: u64,
-        demerit_config: Option<DemeritConfig>,
+        reporting: Option<ReportingConfig>,
     ) -> Result<(BroadcastResult, String)> {
         let result = self
             .orbis_create_ring(
@@ -1045,7 +1081,7 @@ impl SourceHubClient {
                 policy_id,
                 nonce,
                 current_version,
-                demerit_config,
+                reporting,
             )
             .await?;
 
@@ -1251,6 +1287,23 @@ impl SourceHubClient {
         let msg = MsgSetRingPssIntervalByAcp::new(&signer.address(), ring_id, pss_interval);
         self.broadcast_proto_msg_with_gas(
             MsgSetRingPssIntervalByAcp::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    pub async fn orbis_set_ring_reporting_by_acp(
+        &self,
+        ring_id: &str,
+        reporting: ReportingConfig,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgSetRingReportingByAcp::new(&signer.address(), ring_id, reporting);
+        self.broadcast_proto_msg_with_gas(
+            MsgSetRingReportingByAcp::TYPE_URL,
             &msg,
             self.config().gas_multiplier,
         )
@@ -1563,8 +1616,8 @@ mod tests {
         decode_store_document_id, decode_store_key_derivation_id, ring_reshare_sign_state_hash,
         DemeritConfig, MsgCancelPendingRing, MsgCreateRing, MsgFinalizeRing,
         MsgFinalizeRingReshareByThresholdSignature, MsgStoreDocumentResponse,
-        MsgStoreKeyDerivationResponse, QueryNodeDemeritsRequest, QueryNodeDemeritsResponse, Ring,
-        RingReshareSignState, UpgradeInfo,
+        MsgStoreKeyDerivationResponse, QueryNodeDemeritsRequest, QueryNodeDemeritsResponse,
+        ReportingConfig, Ring, RingReshareSignState, UpgradeInfo,
     };
 
     #[test]
@@ -1582,11 +1635,11 @@ mod tests {
         let bytes = msg.encode_to_vec();
         let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
         assert_eq!(decoded.pss_interval, 86400);
-        assert!(decoded.demerit_config.is_none());
+        assert!(decoded.reporting.is_none());
     }
 
     #[test]
-    fn create_ring_round_trips_demerit_config() {
+    fn create_ring_round_trips_reporting_config() {
         let msg = MsgCreateRing::new(
             "c",
             vec!["p1".to_string()],
@@ -1595,35 +1648,52 @@ mod tests {
             "policy",
             None,
             0,
-            Some(DemeritConfig {
-                node_offline_demerits: 3,
-                reset_interval_seconds: 42,
+            Some(ReportingConfig {
+                demerit_config: Some(DemeritConfig {
+                    node_offline_demerits: 3,
+                    reset_interval_seconds: 42,
+                }),
+                backup_node_keys: vec!["backup-2".to_string(), "backup-1".to_string()],
+                kick_threshold: 4,
             }),
         );
         let bytes = msg.encode_to_vec();
         let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
-        let config = decoded.demerit_config.expect("demerit_config");
+        let reporting = decoded.reporting.expect("reporting");
+        let config = reporting.demerit_config.expect("demerit_config");
 
         assert_eq!(config.node_offline_demerits, 3);
         assert_eq!(config.reset_interval_seconds, 42);
+        assert_eq!(
+            reporting.backup_node_keys,
+            vec!["backup-2".to_string(), "backup-1".to_string()]
+        );
+        assert_eq!(reporting.kick_threshold, 4);
     }
 
     #[test]
-    fn ring_demerit_config_round_trips() {
+    fn ring_reporting_config_round_trips() {
         let ring = Ring {
             id: "ring-1".to_string(),
-            demerit_config: Some(DemeritConfig {
-                node_offline_demerits: 5,
-                reset_interval_seconds: 60,
+            reporting: Some(ReportingConfig {
+                demerit_config: Some(DemeritConfig {
+                    node_offline_demerits: 5,
+                    reset_interval_seconds: 60,
+                }),
+                backup_node_keys: vec!["backup-a".to_string()],
+                kick_threshold: 6,
             }),
             ..Default::default()
         };
         let bytes = ring.encode_to_vec();
         let decoded = Ring::decode(bytes.as_slice()).expect("decode");
-        let config = decoded.demerit_config.expect("demerit_config");
+        let reporting = decoded.reporting.expect("reporting");
+        let config = reporting.demerit_config.expect("demerit_config");
 
         assert_eq!(config.node_offline_demerits, 5);
         assert_eq!(config.reset_interval_seconds, 60);
+        assert_eq!(reporting.backup_node_keys, vec!["backup-a".to_string()]);
+        assert_eq!(reporting.kick_threshold, 6);
     }
 
     #[test]
