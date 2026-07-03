@@ -1019,11 +1019,7 @@ mod tests {
 
         // Stale evidence: older than the report TTL is permanently unreportable.
         assert!(matches!(
-            validate_pre_evidence_timing(
-                now - REPORT_TTL_SECS - 1,
-                now - REPORT_TTL_SECS - 1,
-                now
-            ),
+            validate_pre_evidence_timing(now - REPORT_TTL_SECS - 1, now - REPORT_TTL_SECS - 1, now),
             Err(ReportingError::Expired)
         ));
 
