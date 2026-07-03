@@ -8,7 +8,7 @@ use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_ring_post,
     setup_three_node_network_with_pre, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
 };
-use crate::pre::v0::coordinator::{PreCoordinator, PreResponse};
+use crate::pre::v0::coordinator::{PreCoordinator, PreReportBinding, PreResponse};
 use crate::pre::v0::service::PreServiceImpl;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, DocumentPayload, RingPayload};
 use crypto::r#trait::{
@@ -74,6 +74,17 @@ async fn setup_document_in_bulletin(
         .post(BulletinWriteKind::Document, document_payload_bytes)
         .await
         .expect("store document")
+}
+
+/// Build the invalid-proof report binding the same way the service layer does,
+/// from the ring post stored in the dummy bulletin.
+fn test_report_binding(
+    dummy_bulletin: &DummyBulletin,
+    ring_payload: &RingPayload,
+) -> PreReportBinding {
+    let ring_post = get_test_ring_post(dummy_bulletin);
+    PreReportBinding::from_ring(dummy_bulletin.chain_id(), ring_post.id, ring_payload)
+        .expect("report binding")
 }
 
 /// End-to-end test: DKG → Alice encrypts → PRE to Bob → Bob decrypts
@@ -255,6 +266,7 @@ async fn test_dkg_then_pre_end_to_end() {
                 salt: None,
                 valid_window: None,
             },
+            test_report_binding(dummy_bulletin, &ring_payload),
         )
         .await
         .expect("PRE should succeed");
@@ -454,6 +466,7 @@ async fn test_pre_with_large_secret() {
                 salt: None,
                 valid_window: None,
             },
+            test_report_binding(dummy_bulletin, &ring_payload),
         )
         .await
         .expect("PRE should succeed");
@@ -589,6 +602,7 @@ async fn test_pre_fails_with_wrong_key() {
                 salt: None,
                 valid_window: None,
             },
+            test_report_binding(dummy_bulletin, &ring_payload),
         )
         .await
         .expect("PRE should succeed");
@@ -720,6 +734,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 salt: None,
                 valid_window: None,
             },
+            test_report_binding(dummy_bulletin, &ring_payload),
         )
         .await;
 
@@ -872,6 +887,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 salt: None,
                 valid_window: None,
             },
+            test_report_binding(dummy_bulletin, &ring_payload),
         )
         .await;
 
@@ -1163,6 +1179,7 @@ async fn test_pre_fails_with_wrong_derivation() {
                 salt: None,
                 valid_window: None,
             },
+            test_report_binding(dummy_bulletin, &ring_payload),
         )
         .await
         .expect("PRE with correct derivation should succeed");
@@ -1333,6 +1350,7 @@ async fn test_pre_fails_with_bad_proof() {
                 salt: None,
                 valid_window: None,
             },
+            test_report_binding(dummy_bulletin, &ring_payload),
         )
         .await;
 
@@ -1448,6 +1466,13 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
                 salt: None,
                 valid_window: None,
             },
+            PreReportBinding::new(
+                "test-chain".to_string(),
+                "local-verify-failure-ring".to_string(),
+                String::new(),
+                String::new(),
+            )
+            .expect("report binding"),
         )
         .await;
 

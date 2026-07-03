@@ -4,7 +4,7 @@ use crate::helpers::identity::validate_all_peer_ids;
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::helpers::ring::RingConfig;
 use crate::metrics;
-use crate::pre::v0::coordinator::PreCoordinator;
+use crate::pre::v0::coordinator::{PreCoordinator, PreReportBinding};
 use crate::pre::v0::error::PreError;
 use crate::pre::v0::helpers::{
     check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads_for_version,
@@ -197,6 +197,14 @@ where
             tracing::error!("Failed to load ring polynomial state: {}", e);
             PreError::RingState("Failed to load ring polynomial state".to_string())
         })?;
+        // Chain/ring binding for invalid-proof reporting, taken from the same
+        // payloads that authorized this request (must be built before
+        // `ring_payload.peer_node_keys` is moved into the RingConfig).
+        let report_binding = PreReportBinding::from_ring(
+            self.state.bulletin.chain_id(),
+            document_payload.ring_id.clone(),
+            &ring_payload,
+        )?;
         let ring = RingConfig {
             ring_id: document_payload.ring_id.clone(),
             ring_pk_bytes,
@@ -215,7 +223,7 @@ where
             valid_window,
         };
         let result = coordinator
-            .initiate_reencryption(request_id, ring, secret_bytes, ctx)
+            .initiate_reencryption(request_id, ring, secret_bytes, ctx, report_binding)
             .await?;
 
         // 6. Parse result as PreResponse and encode as JSON

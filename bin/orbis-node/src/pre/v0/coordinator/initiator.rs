@@ -10,11 +10,11 @@ use crate::helpers::ring::{
     is_ring_reshare_in_progress, load_ring_pub_poly_and_bundle, RingConfig,
 };
 use crate::pre::v0::error::{PreError, Result};
-use crate::pre::v0::helpers::fetch_bulletin_payloads_for_version;
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::reporting::v0::observation::{offline_observation_from_pre_error, ReportObservation};
 use crate::reporting::v0::queue_report;
 use crate::reporting::v0::types::ring_state_sha256;
+use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply,
     Secret, ThresholdDealer,
@@ -61,13 +61,16 @@ where
     /// verifies them, and recovers the reencrypted commitment.
     ///
     /// Ring information is read from the bulletin by the service layer and
-    /// provided via `ring`. Request auth and object identity are in `ctx`.
+    /// provided via `ring`; the chain/ring binding for invalid-proof reports
+    /// comes from the same payload fetch via `report_binding`. Request auth
+    /// and object identity are in `ctx`.
     pub async fn initiate_reencryption(
         &self,
         request_id: String,
         ring: RingConfig,
         secret_bytes: Vec<u8>,
         ctx: PreRequestContext,
+        report_binding: PreReportBinding,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
         let node_id_opt = determine_session_node_id(&self.app_state.node_key, &ring.peer_node_keys);
@@ -133,6 +136,7 @@ where
                 self_in_list,
                 actual_peer_count,
                 ctx,
+                report_binding,
             )
             .await;
 
@@ -150,6 +154,7 @@ where
     ///
     /// This is separated so that cleanup can be guaranteed by the outer function.
     /// Assumes init_pre_response has already been called.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn initiate_reencryption_inner(
         &self,
         request_id: String,
@@ -159,6 +164,7 @@ where
         self_in_list: bool,
         actual_peer_count: usize,
         ctx: PreRequestContext,
+        report_binding: PreReportBinding,
     ) -> Result<Vec<u8>> {
         // 1. Load the public polynomial and (when self_in_list) the local share bundle
         //    from a SINGLE atomic read of RingShareBundle.
@@ -206,38 +212,6 @@ where
         let enc_cmt = <D::PublicKey>::from_bytes(&secret.enc_cmt[..]).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e))
         })?;
-
-        let report_binding = match fetch_bulletin_payloads_for_version(
-            &*self.app_state.bulletin,
-            &ctx.object_id,
-            self.routes.version,
-        )
-        .await
-        {
-            Ok((document_payload, ring_payload)) => {
-                const CHAIN_BLOCK_GRACE_SECS: u64 = 10;
-                let observed_at = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(|e| PreError::SystemTime(format!("Failed to get timestamp: {}", e)))?
-                    .as_secs()
-                    .saturating_sub(CHAIN_BLOCK_GRACE_SECS);
-                Some(PreReportBinding {
-                    chain_id: self.app_state.bulletin.chain_id(),
-                    ring_id: document_payload.ring_id,
-                    ring_pk: ring_payload.ring_pk.clone(),
-                    ring_state_sha256: ring_state_sha256(&ring_payload),
-                    observed_at,
-                })
-            }
-            Err(error) => {
-                tracing::debug!(
-                    object_id = %ctx.object_id,
-                    error = %error,
-                    "PRE Coordinator: invalid-proof reporting disabled because report ring context could not be loaded"
-                );
-                None
-            }
-        };
 
         let dealer = T::new();
         let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
@@ -347,13 +321,6 @@ where
                                 );
                                 continue;
                             };
-                            let Some(report_binding) = report_binding.as_ref() else {
-                                tracing::warn!(
-                                    peer_id = %peer_id,
-                                    "PRE Coordinator: rejecting signed response because report ring context is unavailable"
-                                );
-                                continue;
-                            };
                             let Some(accused_node_key) = node_key_for_peer(&ring, &peer_id) else {
                                 tracing::error!(
                                     peer_id = %peer_id,
@@ -460,35 +427,25 @@ where
             }
         }
 
-        // Drain remaining peer tasks in the background so errors from slow-failing peers
-        // (those whose result wasn't seen before threshold was reached or the timeout fired)
-        // still trigger offline reports.
-        {
-            let drain_ring = ring.clone();
-            let drain_routes = self.routes;
-            let drain_session_id = request_id.clone();
-            crate::reporting::v0::spawn_error_drain::<D, SignImpl, _, _, _>(
-                set,
-                self.app_state.clone(),
-                self.routes,
-                PRE_COLLECTION_TIMEOUT,
-                move |peer_id, e| {
-                    tracing::warn!(
-                        peer_id = %peer_id,
-                        error = %e,
-                        "PRE peer request failed (post-threshold drain)"
-                    );
-                    offline_observation_from_pre_error(
-                        &drain_ring,
-                        &peer_id,
-                        &e,
-                        drain_routes.version,
-                        &drain_session_id,
-                    )
-                    .map(ReportObservation::NodeOffline)
-                },
-            );
-        }
+        // Drain remaining peer tasks in the background so results that arrive after
+        // the collection loop broke early (threshold met or timeout) still trigger
+        // reports: transport errors map to offline observations, and signed responses
+        // whose proofs fail verification map to invalid-proof observations. Without
+        // the latter, a bad proof that loses the race against threshold completion —
+        // the common case in a healthy ring — would go unreported.
+        self.spawn_response_drain(
+            set,
+            ring.clone(),
+            report_binding.clone(),
+            request_id.clone(),
+            ctx.object_id.clone(),
+            ctx.rdr_pk_bytes.clone(),
+            ctx.derivation.clone(),
+            rdr_pk.clone(),
+            pub_poly.clone(),
+            enc_cmt.clone(),
+            seen_node_ids.clone(),
+        );
 
         // 6. Collect any responses that were already stored before cancellation and
         // verify the ones we have not counted yet.
@@ -508,13 +465,6 @@ where
                 tracing::error!(
                     sender_peer = %response.sender_peer_hex,
                     "PRE Coordinator: stored response from peer outside ring"
-                );
-                continue;
-            };
-            let Some(report_binding) = report_binding.as_ref() else {
-                tracing::warn!(
-                    sender_peer = %response.sender_peer_hex,
-                    "PRE Coordinator: rejecting stored signed response because report ring context is unavailable"
                 );
                 continue;
             };
@@ -628,14 +578,191 @@ where
 
         Ok(response_bytes)
     }
+
+    /// Drain remaining peer tasks in the background so results that arrive
+    /// after the collection loop broke early still reach `queue_report`:
+    /// transport errors become offline observations and signed responses that
+    /// fail proof verification become invalid-proof observations. Verified
+    /// shares arriving here are simply logged — the request already completed.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_response_drain(
+        &self,
+        mut set: tokio::task::JoinSet<(String, Result<Option<PreMessage>>)>,
+        ring: RingConfig,
+        report_binding: PreReportBinding,
+        request_id: String,
+        object_id: String,
+        rdr_pk_bytes: Vec<u8>,
+        derivation: Option<Vec<u8>>,
+        rdr_pk: D::PublicKey,
+        pub_poly: D::PubPoly,
+        enc_cmt: D::PublicKey,
+        mut seen_node_ids: HashSet<u32>,
+    ) {
+        let app_state = self.app_state.clone();
+        let routes = self.routes;
+        tokio::spawn(async move {
+            let dealer = T::new();
+            let deadline = tokio::time::Instant::now() + PRE_COLLECTION_TIMEOUT;
+            while let Ok(Some(res)) = tokio::time::timeout_at(deadline, set.join_next()).await {
+                match res {
+                    Ok((peer_id, Ok(Some(response)))) => {
+                        let Some(expected_node_id) =
+                            determine_ring_node_id_from_peer_id(&peer_id, &ring)
+                        else {
+                            tracing::error!(
+                                peer_id = %peer_id,
+                                "PRE Coordinator: late response from peer outside ring"
+                            );
+                            continue;
+                        };
+                        let Some(accused_node_key) = node_key_for_peer(&ring, &peer_id) else {
+                            tracing::error!(
+                                peer_id = %peer_id,
+                                "PRE Coordinator: late response from peer without node key"
+                            );
+                            continue;
+                        };
+                        let report_context = PreResponseReportContext {
+                            chain_id: &report_binding.chain_id,
+                            ring_id: &report_binding.ring_id,
+                            ring_pk: &report_binding.ring_pk,
+                            ring_state_sha256: &report_binding.ring_state_sha256,
+                            protocol_version: routes.version,
+                            request_id: &request_id,
+                            accused_node_key,
+                            accused_peer_id: &peer_id,
+                            object_id: &object_id,
+                            rdr_pk: &rdr_pk_bytes,
+                            derivation: derivation.as_deref(),
+                            observed_at: report_binding.observed_at,
+                        };
+                        match Self::verify_peer_response(
+                            &dealer,
+                            response,
+                            &rdr_pk,
+                            &pub_poly,
+                            &enc_cmt,
+                            derivation.as_deref(),
+                            expected_node_id,
+                            &report_context,
+                            &mut seen_node_ids,
+                        ) {
+                            PeerResponseVerification::InvalidProof(observation) => {
+                                let _ = queue_report::<D, SignImpl>(
+                                    app_state.clone(),
+                                    routes,
+                                    ReportObservation::PreInvalidReencryptionProof(observation),
+                                )
+                                .await
+                                .inspect_err(|error| {
+                                    tracing::warn!(
+                                        peer_id = %peer_id,
+                                        error = %error,
+                                        "Failed to queue PRE invalid-proof report observation (post-threshold drain)"
+                                    );
+                                });
+                            }
+                            PeerResponseVerification::Verified(_) => {
+                                tracing::debug!(
+                                    peer_id = %peer_id,
+                                    "PRE Coordinator: valid share arrived after collection completed"
+                                );
+                            }
+                            PeerResponseVerification::Rejected => {}
+                        }
+                    }
+                    Ok((peer_id, Err(e))) => {
+                        tracing::warn!(
+                            peer_id = %peer_id,
+                            error = %e,
+                            "PRE peer request failed (post-threshold drain)"
+                        );
+                        if let Some(observation) = offline_observation_from_pre_error(
+                            &ring,
+                            &peer_id,
+                            &e,
+                            routes.version,
+                            &request_id,
+                        ) {
+                            let _ = queue_report::<D, SignImpl>(
+                                app_state.clone(),
+                                routes,
+                                ReportObservation::NodeOffline(observation),
+                            )
+                            .await
+                            .inspect_err(|error| {
+                                tracing::warn!(
+                                    peer_id = %peer_id,
+                                    error = %error,
+                                    "Failed to queue offline report observation (post-threshold drain)"
+                                );
+                            });
+                        }
+                    }
+                    Ok((_, Ok(None))) => {}
+                    Err(join_err) => {
+                        tracing::error!(
+                            error = ?join_err,
+                            "Peer reencrypt task panicked in response drain"
+                        );
+                    }
+                }
+            }
+        });
+    }
 }
 
-struct PreReportBinding {
+/// Chain/ring context an invalid-proof report needs, captured from the same
+/// bulletin payloads the service layer fetched to authorize the PRE request.
+#[derive(Clone)]
+pub(crate) struct PreReportBinding {
     chain_id: String,
     ring_id: String,
     ring_pk: String,
     ring_state_sha256: String,
     observed_at: u64,
+}
+
+impl PreReportBinding {
+    pub(crate) fn new(
+        chain_id: String,
+        ring_id: String,
+        ring_pk: String,
+        ring_state_sha256: String,
+    ) -> Result<Self> {
+        // Backdate observed_at so the report's `observed_at <= block_time` check
+        // passes gas simulation against ~5s blocks (same rule as offline reports).
+        const CHAIN_BLOCK_GRACE_SECS: u64 = 10;
+        let observed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| PreError::SystemTime(format!("Failed to get timestamp: {}", e)))?
+            .as_secs()
+            .saturating_sub(CHAIN_BLOCK_GRACE_SECS);
+        Ok(Self {
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            observed_at,
+        })
+    }
+
+    /// Build the binding from the ring payload the caller already fetched.
+    /// `ring_id` is the document's ring id (the value responders bind into
+    /// their signed response statements).
+    pub(crate) fn from_ring(
+        chain_id: String,
+        ring_id: String,
+        ring_payload: &RingPayload,
+    ) -> Result<Self> {
+        Self::new(
+            chain_id,
+            ring_id,
+            ring_payload.ring_pk.clone(),
+            ring_state_sha256(ring_payload),
+        )
+    }
 }
 
 fn node_key_for_peer<'a>(ring: &'a RingConfig, peer_id: &str) -> Option<&'a str> {

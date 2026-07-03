@@ -43,7 +43,7 @@ const BUNDLE_VERSION: u8 = 0x01;
 impl RingShareBundle {
     /// Serialize to the binary wire format into a `Zeroizing` buffer so the
     /// plaintext containing `share_bytes` is wiped when the buffer is dropped.
-    fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
+    pub(crate) fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
         let poly_bytes = self.public_polynomial.as_bytes();
         // 1 (version) + 4 (share len prefix) + share + 4 (poly len prefix) + poly + 8 (last_pss)
         let capacity = 1 + 4 + self.share_bytes.len() + 4 + poly_bytes.len() + 8;
@@ -60,7 +60,7 @@ impl RingShareBundle {
     }
 
     /// Deserialize from the binary wire format.
-    fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         if bytes.is_empty() {
             return Err("RingShareBundle: empty buffer".to_string());
         }

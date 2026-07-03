@@ -469,6 +469,24 @@ impl IntegrationTestNetwork {
             panic!("Failed to stop service {service}");
         }
     }
+
+    /// Start a previously stopped Docker Compose service without recreating it,
+    /// preserving its local storage. Docker may reassign the ephemeral host port,
+    /// so the returned gRPC endpoint must replace any previously cached one.
+    pub fn start_service(&self, service: &str) -> String {
+        let status = compose_command(&self.compose_file, &self.project_name)
+            .args(["start", service])
+            .status()
+            .expect("docker compose start failed");
+        if !status.success() {
+            report_compose_failure(&self.compose_file, &self.project_name);
+            panic!("Failed to start service {service}");
+        }
+        localhost_url(
+            published_port(&self.compose_file, &self.project_name, service, 50051)
+                .unwrap_or_else(|_| panic!("discover restarted {service} endpoint")),
+        )
+    }
 }
 
 impl Default for IntegrationTestNetwork {

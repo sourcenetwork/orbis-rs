@@ -3,11 +3,15 @@
 //! Spins up a full Docker Compose environment, stops node3, then verifies that:
 //! 1. PRE succeeds with 2/3 shares and an offline report for node3 is accepted on SourceHub.
 //! 2. Sign (node3 still offline) succeeds with 2/3 shares and a second report is accepted.
+//! 3. node3 restarts with a corrupted ring share; PRE still succeeds and a
+//!    pre_invalid_reencryption_proof report for node3 is accepted (requires
+//!    chain-side support for the report type).
 //!
 //! Run with:
 //!   cargo test --features integration-test test_pre_offline_triggers_on_chain_report -- --nocapture
 
 use crate::helpers::test_helpers::wait_for_ring_finalized;
+use crate::ring_state::RingShareBundle;
 use bulletin::r#trait::{BulletinKind, RingPayload};
 use common::{
     blockchain::{
@@ -17,8 +21,15 @@ use common::{
     IntegrationTestNetwork,
 };
 use crypto::helpers::generate_keypair;
+use crypto::r#trait::{CryptoDeserialize, Dkg, PriShare};
 use crypto::CryptoSerialize;
+use crypto::{DkgImpl, ScalarField};
+use proto::unsafe_testing::{
+    unsafe_testing_service_client::UnsafeTestingServiceClient, GetLocalStorageRequest,
+    LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType, SetLocalStorageRequest,
+};
 use tokio::time::{sleep, Duration, Instant};
+use zeroize::Zeroizing;
 
 const RING_ID: &str = "reporting-test-ring";
 
@@ -43,7 +54,10 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
                     "threshold": 2,
                     "pss_interval": 86400,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": reporting_genesis_json(1, &[])
+                    // kick_threshold=10: this test accumulates three accepted reports
+                    // against node3 (PRE offline, Sign offline, PRE invalid proof) and
+                    // must not trigger the auto-kick reshare mid-test.
+                    "reporting": reporting_genesis_json(1, &[], 10)
                 }]
             }),
         )
@@ -345,6 +359,124 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         "node3 should have exactly 2 demerits after 2 accepted offline reports"
     );
     println!("node3 demerit points: {demerits}");
+
+    // ── PRE invalid proof: node3 comes back with a corrupted share ──────────
+    println!("Restarting node3...");
+    let node3_endpoint = network.start_service(IntegrationTestNetwork::NODE3_SERVICE);
+    crate::helpers::test_helpers::wait_for_nodes_ready(
+        &[node3_endpoint.as_str()],
+        90,
+        Duration::from_secs(1),
+    )
+    .await;
+
+    // Corrupt node3's stored ring share: bump the secret scalar by one. Its
+    // reencryptions stay well-formed and honestly signed, but the NIZK proof no
+    // longer verifies against the ring polynomial — exactly the misbehavior the
+    // pre_invalid_reencryption_proof report type accuses.
+    let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring pk hex");
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("parse ring pk");
+    let storage_key = LocalStorageKey {
+        key_type: LocalStorageKeyType::RingKey as i32,
+        ring_key: aggregate_pk.to_string(),
+    };
+    let mut unsafe_client = UnsafeTestingServiceClient::connect(node3_endpoint.clone())
+        .await
+        .expect("connect unsafe-testing client to node3");
+    let stored = unsafe_client
+        .get_local_storage(GetLocalStorageRequest {
+            key: Some(storage_key.clone()),
+            access_mode: LocalStorageAccessMode::Encrypted as i32,
+        })
+        .await
+        .expect("read node3 ring share bundle")
+        .into_inner();
+    assert!(stored.found, "node3 ring share bundle should exist");
+    let bundle = RingShareBundle::from_bytes(&stored.value).expect("parse ring share bundle");
+    let pri_share = bundle.pri_share().expect("deserialize node3 share");
+    let corrupted_share = PriShare {
+        i: pri_share.i,
+        v: pri_share.v + ScalarField::from(1u64),
+    };
+    let corrupted_bundle = RingShareBundle {
+        share_bytes: Zeroizing::new(
+            CryptoSerialize::to_bytes(&corrupted_share).expect("serialize corrupted share"),
+        ),
+        public_polynomial: bundle.public_polynomial.clone(),
+        last_pss: bundle.last_pss,
+    };
+    unsafe_client
+        .set_local_storage(SetLocalStorageRequest {
+            key: Some(storage_key),
+            access_mode: LocalStorageAccessMode::Encrypted as i32,
+            value: corrupted_bundle.to_bytes().to_vec(),
+        })
+        .await
+        .expect("store corrupted ring share bundle");
+    println!("node3 ring share corrupted.");
+
+    // Fresh subscription for the invalid-proof report.
+    let invalid_proof_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+        .await
+        .expect("connect invalid-proof report event subscription");
+
+    // PRE still succeeds (node1 self-share + node2), while node3's signed
+    // response carries a proof that fails verification and gets reported —
+    // inline if it races ahead of threshold, otherwise via the response drain.
+    println!("Triggering PRE (expects success with node3 submitting an invalid proof)...");
+    let _plaintext = pre_with_retry(
+        endpoint.clone(),
+        ring_pk_hex.clone(),
+        reader_pk_hex.clone(),
+        reader_sk_hex.clone(),
+        object_id.clone(),
+        did_pk_string.clone(),
+    )
+    .await;
+    println!("PRE succeeded (node3's invalid share ignored).");
+
+    println!("Waiting for invalid-proof EventReportAccepted on chain (up to 120s)...");
+    let invalid_proof_event = invalid_proof_sub
+        .wait_for_report_accepted(RING_ID, Duration::from_secs(120))
+        .await
+        .expect("invalid-proof EventReportAccepted should be emitted");
+
+    println!(
+        "Invalid-proof report accepted: report_id={} accused={}",
+        invalid_proof_event.report_id, invalid_proof_event.accused_node_key
+    );
+
+    assert_eq!(
+        invalid_proof_event.report_type, "pre_invalid_reencryption_proof",
+        "unexpected report_type"
+    );
+    assert_eq!(
+        invalid_proof_event.accused_node_key, NODE_KEY_3,
+        "node3 should be the accused node"
+    );
+    assert_eq!(invalid_proof_event.ring_id, RING_ID, "ring_id mismatch");
+    assert!(
+        !invalid_proof_event.report_id.is_empty(),
+        "invalid-proof report_id should be set"
+    );
+    assert!(
+        [NODE_KEY_1, NODE_KEY_2].contains(&invalid_proof_event.reporter_node_key.as_str()),
+        "reporter should be one of the non-accused current-committee members, got {}",
+        invalid_proof_event.reporter_node_key
+    );
+
+    // Three accepted reports total: two node_offline + one invalid proof.
+    println!("Checking node3 demerit points after invalid-proof report...");
+    let demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
+        .await
+        .expect("query node3 demerits");
+    assert_eq!(
+        demerits, 3,
+        "node3 should have exactly 3 demerits after the invalid-proof report"
+    );
+    println!("node3 demerit points after invalid-proof report: {demerits}");
 }
 
 async fn wait_for_node_info_on_chain(
@@ -495,7 +627,7 @@ async fn test_refresh_offline_triggers_on_chain_report() {
                     "threshold": 2,
                     "pss_interval": 5,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": reporting_genesis_json(3, &[])
+                    "reporting": reporting_genesis_json(3, &[], 3)
                 }]
             }),
         )
@@ -670,7 +802,7 @@ async fn test_reshare_offline_triggers_on_chain_report() {
                     "threshold": 2,
                     "pss_interval": 86400,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": reporting_genesis_json(1, &[])
+                    "reporting": reporting_genesis_json(1, &[], 3)
                 }]
             }),
         )
@@ -885,7 +1017,7 @@ async fn test_report_kick_promotes_backup_node() {
                     "threshold": 2,
                     "pss_interval": 86400,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": reporting_genesis_json(1, &[NODE_KEY_4])
+                    "reporting": reporting_genesis_json(1, &[NODE_KEY_4], 3)
                 }],
                 // The backup node has no running container; seed its NodeInfo so the
                 // chain considers it eligible for promotion (registered + whitelisted).
