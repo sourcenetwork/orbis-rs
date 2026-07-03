@@ -361,6 +361,8 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
             next_version: upgrade_info.next_version,
             activation_time: upgrade_info.activation_time,
         },
+        // Nil chain config falls back to defaults that mirror the chain's module params;
+        // see the DEFAULT_* constants in crate::trait.
         reporting: ring
             .reporting
             .map_or_else(ReportingConfig::default, |reporting| ReportingConfig {

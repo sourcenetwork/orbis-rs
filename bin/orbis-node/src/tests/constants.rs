@@ -13,3 +13,19 @@ pub const NODE_KEY_4: &str = "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee07584
 /// (counter=0) on a fresh SourceHub chain. Computed via acp_core@v0.8.1 id_transformer.go.
 pub const RING_GOVERNANCE_POLICY_ID: &str =
     "3199b84b4a6862c40fe2623879dfc36df281a2262898da36f7de65c376a93e05";
+
+/// Genesis `reporting` blob for ring seeding; only `node_offline_demerits`
+/// and `backup_node_keys` vary across tests.
+pub fn reporting_genesis_json(
+    node_offline_demerits: u64,
+    backup_node_keys: &[&str],
+) -> serde_json::Value {
+    serde_json::json!({
+        "demerit_config": {
+            "node_offline_demerits": node_offline_demerits,
+            "reset_interval_seconds": 86400
+        },
+        "backup_node_keys": backup_node_keys,
+        "kick_threshold": 3
+    })
+}

@@ -10,6 +10,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::constants::reporting_genesis_json;
 use common::IntegrationTestNetwork;
 use crypto::helpers::generate_keypair;
 use crypto::CryptoSerialize;
@@ -109,14 +110,7 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
                         "next_version": 1,
                         "activation_time": activation_time
                     },
-                    "reporting": {
-                        "demerit_config": {
-                            "node_offline_demerits": 1,
-                            "reset_interval_seconds": 86400
-                        },
-                        "backup_node_keys": [],
-                        "kick_threshold": 3
-                    }
+                    "reporting": reporting_genesis_json(1, &[])
                 }],
                 "key_derivations": [{
                     "id": DERIVATION_ID,

@@ -22,7 +22,10 @@ use tokio::time::{sleep, Duration, Instant};
 
 const RING_ID: &str = "reporting-test-ring";
 
-use super::constants::{NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, NODE_KEY_4, RING_GOVERNANCE_POLICY_ID};
+use super::constants::{
+    reporting_genesis_json, NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, NODE_KEY_4,
+    RING_GOVERNANCE_POLICY_ID,
+};
 
 #[tokio::test]
 #[serial_test::serial]
@@ -40,14 +43,7 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
                     "threshold": 2,
                     "pss_interval": 86400,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": {
-                        "demerit_config": {
-                            "node_offline_demerits": 1,
-                            "reset_interval_seconds": 86400
-                        },
-                        "backup_node_keys": [],
-                        "kick_threshold": 3
-                    }
+                    "reporting": reporting_genesis_json(1, &[])
                 }]
             }),
         )
@@ -499,14 +495,7 @@ async fn test_refresh_offline_triggers_on_chain_report() {
                     "threshold": 2,
                     "pss_interval": 5,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": {
-                        "demerit_config": {
-                            "node_offline_demerits": 3,
-                            "reset_interval_seconds": 86400
-                        },
-                        "backup_node_keys": [],
-                        "kick_threshold": 3
-                    }
+                    "reporting": reporting_genesis_json(3, &[])
                 }]
             }),
         )
@@ -681,14 +670,7 @@ async fn test_reshare_offline_triggers_on_chain_report() {
                     "threshold": 2,
                     "pss_interval": 86400,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": {
-                        "demerit_config": {
-                            "node_offline_demerits": 1,
-                            "reset_interval_seconds": 86400
-                        },
-                        "backup_node_keys": [],
-                        "kick_threshold": 3
-                    }
+                    "reporting": reporting_genesis_json(1, &[])
                 }]
             }),
         )
@@ -903,14 +885,7 @@ async fn test_report_kick_promotes_backup_node() {
                     "threshold": 2,
                     "pss_interval": 86400,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": {
-                        "demerit_config": {
-                            "node_offline_demerits": 1,
-                            "reset_interval_seconds": 86400
-                        },
-                        "backup_node_keys": [NODE_KEY_4],
-                        "kick_threshold": 3
-                    }
+                    "reporting": reporting_genesis_json(1, &[NODE_KEY_4])
                 }],
                 // The backup node has no running container; seed its NodeInfo so the
                 // chain considers it eligible for promotion (registered + whitelisted).

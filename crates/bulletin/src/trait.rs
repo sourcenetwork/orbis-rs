@@ -2,6 +2,10 @@ use crate::error::{BulletinError, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+// Fallbacks used when the chain returns a ring without reporting config. They must mirror
+// the sourcehub orbis module's default reporting params: the substituted values feed the
+// canonical ring-state hash, so a divergence would have nodes reporting against config the
+// chain never stored.
 pub const DEFAULT_NODE_OFFLINE_DEMERITS: u64 = 1;
 pub const DEFAULT_DEMERIT_RESET_INTERVAL_SECONDS: u64 = 86_400;
 pub const DEFAULT_REPORTING_KICK_THRESHOLD: u64 = 3;
