@@ -8,6 +8,17 @@ pub const NODE_OFFLINE_REPORT_TYPE: &str = "node_offline";
 pub const PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE: &str = "pre_invalid_reencryption_proof";
 pub const PRE_REENCRYPT_RESPONSE_DOMAIN: &str = "orbis-pre-reencrypt-response-v1";
 pub const REPORT_TTL_SECS: u64 = 120;
+/// Forward tolerance when checking `PreReencryptResponseStatement::signed_at`
+/// against a local clock — a statement timestamped further in the future than
+/// this is rejected.
+pub const PRE_RESPONSE_MAX_CLOCK_SKEW_SECS: u64 = 60;
+/// Maximum |observed_at - signed_at| allowed between a report envelope and the
+/// evidence statement it carries. Anchoring the envelope to the evidence makes
+/// the envelope's fixed `observed_at + REPORT_TTL_SECS` expiry double as the
+/// evidence expiry, so the chain's existing expiry check bounds how long the
+/// evidence stays submittable. Covers observed_at backdating (10s), responder
+/// handling time, and clock skew.
+pub const PRE_RESPONSE_OBSERVED_AT_SLACK_SECS: u64 = 90;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -80,6 +91,10 @@ pub struct PreReencryptResponseStatement {
     pub ring_state_sha256: String,
     pub protocol_version: u64,
     pub request_id: String,
+    /// Unix seconds at which the responder produced and signed this statement.
+    /// Evidence older than [`REPORT_TTL_SECS`] is unreportable — this is what
+    /// stops one signed bad response from being re-reported indefinitely.
+    pub signed_at: u64,
     pub responder_node_key: String,
     pub object_id: String,
     pub rdr_pk: Vec<u8>,
@@ -92,6 +107,8 @@ pub struct PreReencryptResponseStatement {
 }
 
 impl PreReencryptResponseStatement {
+    /// Field order is the canonical wire contract — the chain-side (Go)
+    /// decoder must read fields in exactly this order.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_string(&mut out, &self.domain);
@@ -101,6 +118,7 @@ impl PreReencryptResponseStatement {
         write_string(&mut out, &self.ring_state_sha256);
         write_u64(&mut out, self.protocol_version);
         write_string(&mut out, &self.request_id);
+        write_u64(&mut out, self.signed_at);
         write_string(&mut out, &self.responder_node_key);
         write_string(&mut out, &self.object_id);
         write_bytes(&mut out, &self.rdr_pk);
@@ -122,6 +140,7 @@ impl PreReencryptResponseStatement {
         let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
         let protocol_version = decoder.read_u64("protocol_version")?;
         let request_id = decoder.read_string("request_id")?;
+        let signed_at = decoder.read_u64("signed_at")?;
         let responder_node_key = decoder.read_string("responder_node_key")?;
         let object_id = decoder.read_string("object_id")?;
         let rdr_pk = decoder.read_bytes("rdr_pk")?;
@@ -140,6 +159,7 @@ impl PreReencryptResponseStatement {
             ring_state_sha256,
             protocol_version,
             request_id,
+            signed_at,
             responder_node_key,
             object_id,
             rdr_pk,
@@ -528,6 +548,7 @@ mod tests {
             ring_state_sha256: "11".repeat(32),
             protocol_version: 7,
             request_id: "pre-request-1".to_string(),
+            signed_at: 1_700_000_000,
             responder_node_key: "accused".to_string(),
             object_id: "object-1".to_string(),
             rdr_pk: vec![1, 2, 3],

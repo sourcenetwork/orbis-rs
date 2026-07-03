@@ -3,6 +3,7 @@ use crate::pre::v0::messages::PreMessage;
 use crate::reporting::v0::observation::PreInvalidReencryptionProofObservation;
 use crate::reporting::v0::types::{
     PreInvalidReencryptionProof, PreReencryptResponseStatement, PRE_REENCRYPT_RESPONSE_DOMAIN,
+    PRE_RESPONSE_MAX_CLOCK_SKEW_SECS, REPORT_TTL_SECS,
 };
 use common::blockchain::verify_node_message;
 use crypto::r#trait::{
@@ -10,6 +11,7 @@ use crypto::r#trait::{
 };
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use std::collections::HashSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) struct PreResponseReportContext<'a> {
     pub chain_id: &'a str,
@@ -62,6 +64,7 @@ where
             share: share_bytes,
             challenge: challenge_bytes,
             proof: proof_bytes,
+            signed_at,
             response_signature,
             ..
         } = response
@@ -82,6 +85,27 @@ where
             return PeerResponseVerification::Rejected;
         }
 
+        // Reject responses timestamped outside the plausible window before doing
+        // any crypto: evidence older than the report TTL could never be reported,
+        // and a future timestamp would let the responder pre-sign evidence that
+        // stays reportable later. A responder gaming this check only excludes
+        // itself — the response is dropped like an unsigned one.
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if signed_at > now.saturating_add(PRE_RESPONSE_MAX_CLOCK_SKEW_SECS)
+            || now.saturating_sub(signed_at) > REPORT_TTL_SECS
+        {
+            tracing::warn!(
+                from_node_id = from_node_id,
+                signed_at = signed_at,
+                now = now,
+                "PRE Coordinator: rejecting response with implausible signed_at"
+            );
+            return PeerResponseVerification::Rejected;
+        }
+
         let statement = PreReencryptResponseStatement {
             domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
             chain_id: report_context.chain_id.to_string(),
@@ -90,6 +114,7 @@ where
             ring_state_sha256: report_context.ring_state_sha256.to_string(),
             protocol_version: report_context.protocol_version,
             request_id: report_context.request_id.to_string(),
+            signed_at,
             responder_node_key: report_context.accused_node_key.to_string(),
             object_id: report_context.object_id.to_string(),
             rdr_pk: report_context.rdr_pk.to_vec(),
@@ -274,12 +299,21 @@ mod tests {
         }
     }
 
+    fn unix_now() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn signed_response(
         fixture: &VerifyFixture,
         share: Vec<u8>,
         challenge: Vec<u8>,
         proof: Vec<u8>,
         from_node_id: u32,
+        signed_at: u64,
         signature_valid: bool,
     ) -> PreMessage {
         let statement = PreReencryptResponseStatement {
@@ -290,6 +324,7 @@ mod tests {
             ring_state_sha256: fixture.ring_state_sha256.clone(),
             protocol_version: 0,
             request_id: fixture.request_id.clone(),
+            signed_at,
             responder_node_key: fixture.responder_node_key.clone(),
             object_id: fixture.object_id.clone(),
             rdr_pk: CryptoSerialize::to_bytes(&fixture.rdr_pk).unwrap(),
@@ -313,6 +348,7 @@ mod tests {
             share,
             challenge,
             proof,
+            signed_at,
             response_signature,
         }
     }
@@ -350,6 +386,7 @@ mod tests {
             fixture.challenge.clone(),
             fixture.valid_proof.clone(),
             fixture.from_node_id,
+            unix_now(),
             false,
         );
         assert!(matches!(
@@ -375,6 +412,7 @@ mod tests {
             fixture.challenge.clone(),
             fixture.valid_proof.clone(),
             fixture.from_node_id + 1,
+            unix_now(),
             true,
         );
         assert!(matches!(
@@ -400,6 +438,7 @@ mod tests {
             fixture.challenge.clone(),
             fixture.valid_proof.clone(),
             fixture.from_node_id,
+            unix_now(),
             true,
         );
         assert!(matches!(
@@ -419,12 +458,14 @@ mod tests {
         assert!(seen.is_empty());
 
         let mut seen = HashSet::new();
+        let now = unix_now();
         let invalid_proof = signed_response(
             &fixture,
             fixture.share.clone(),
             fixture.challenge.clone(),
             fixture.invalid_proof.clone(),
             fixture.from_node_id,
+            now,
             true,
         );
         let result = PreCoordinator::<DkgImpl, PreImpl>::verify_peer_response(
@@ -444,6 +485,70 @@ mod tests {
         assert_eq!(observation.ring_id, "ring");
         assert_eq!(observation.accused_node_key, fixture.responder_node_key);
         assert_eq!(observation.evidence.statement.proof, fixture.invalid_proof);
+        assert_eq!(observation.evidence.statement.signed_at, now);
         assert!(seen.contains(&fixture.from_node_id));
+    }
+
+    #[test]
+    fn responses_with_implausible_signed_at_are_rejected_even_with_valid_signatures() {
+        let fixture = verify_fixture();
+        let rdr_pk_bytes = CryptoSerialize::to_bytes(&fixture.rdr_pk).unwrap();
+        let context = report_context(&fixture, &rdr_pk_bytes);
+
+        // Future timestamp beyond the skew allowance: correctly signed, valid
+        // proof — still rejected, so pre-signed future evidence can't be minted.
+        let mut seen = HashSet::new();
+        let future = signed_response(
+            &fixture,
+            fixture.share.clone(),
+            fixture.challenge.clone(),
+            fixture.valid_proof.clone(),
+            fixture.from_node_id,
+            unix_now() + PRE_RESPONSE_MAX_CLOCK_SKEW_SECS + 240,
+            true,
+        );
+        assert!(matches!(
+            PreCoordinator::<DkgImpl, PreImpl>::verify_peer_response(
+                &fixture.dealer,
+                future,
+                &fixture.rdr_pk,
+                &fixture.pub_poly,
+                &fixture.enc_cmt,
+                None,
+                fixture.from_node_id,
+                &context,
+                &mut seen,
+            ),
+            PeerResponseVerification::Rejected
+        ));
+        assert!(seen.is_empty());
+
+        // Stale timestamp: a signed invalid proof older than the report TTL is
+        // rejected instead of becoming a (never-signable) report observation.
+        let mut seen = HashSet::new();
+        let stale = signed_response(
+            &fixture,
+            fixture.share.clone(),
+            fixture.challenge.clone(),
+            fixture.invalid_proof.clone(),
+            fixture.from_node_id,
+            unix_now() - REPORT_TTL_SECS - 240,
+            true,
+        );
+        assert!(matches!(
+            PreCoordinator::<DkgImpl, PreImpl>::verify_peer_response(
+                &fixture.dealer,
+                stale,
+                &fixture.rdr_pk,
+                &fixture.pub_poly,
+                &fixture.enc_cmt,
+                None,
+                fixture.from_node_id,
+                &context,
+                &mut seen,
+            ),
+            PeerResponseVerification::Rejected
+        ));
+        assert!(seen.is_empty());
     }
 }

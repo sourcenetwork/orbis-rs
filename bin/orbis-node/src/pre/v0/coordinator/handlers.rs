@@ -176,6 +176,10 @@ where
         let proof_bytes = CryptoSerialize::to_bytes(&reply.proof)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize proof: {}", e)))?;
 
+        let signed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| PreError::SystemTime(format!("Failed to get timestamp: {}", e)))?
+            .as_secs();
         let statement = PreReencryptResponseStatement {
             domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
             chain_id: self.app_state.bulletin.chain_id(),
@@ -184,6 +188,7 @@ where
             ring_state_sha256: ring_state_sha256(&ring_payload),
             protocol_version: self.routes.version,
             request_id: request_id.clone(),
+            signed_at,
             responder_node_key: self.app_state.node_key.clone(),
             object_id: ctx.object_id.clone(),
             rdr_pk: ctx.rdr_pk_bytes.clone(),
@@ -214,6 +219,7 @@ where
             share: share_bytes,
             challenge: challenge_bytes,
             proof: proof_bytes,
+            signed_at,
             response_signature,
         };
 

@@ -224,6 +224,10 @@ async fn threshold_signs_pre_invalid_proof_report_without_accused_node() {
         .unwrap()
         .peer_id
         .clone();
+    let signed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let statement = PreReencryptResponseStatement {
         domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
         chain_id: network.alice.app_state.bulletin.chain_id(),
@@ -232,6 +236,7 @@ async fn threshold_signs_pre_invalid_proof_report_without_accused_node() {
         ring_state_sha256: ring_state_sha256(&ring),
         protocol_version: network::V0.version,
         request_id: request_id.clone(),
+        signed_at,
         responder_node_key: accused_node_key.clone(),
         object_id,
         rdr_pk: rdr_pk_bytes,

@@ -110,6 +110,7 @@ mod tests {
             share: vec![1, 2, 3],
             challenge: vec![4, 5, 6],
             proof: vec![7, 8, 9],
+            signed_at: 1_700_000_000,
             response_signature: vec![10, 11, 12],
         }
     }
