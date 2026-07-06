@@ -362,7 +362,7 @@ where
                                     let _ = queue_report::<D, SignImpl>(
                                         self.app_state.clone(),
                                         self.routes,
-                                        ReportObservation::PreInvalidReencryptionProof(observation),
+                                        ReportObservation::InvalidCryptoResponse(observation),
                                     )
                                     .await
                                     .inspect_err(|error| {
@@ -504,7 +504,7 @@ where
                     let _ = queue_report::<D, SignImpl>(
                         self.app_state.clone(),
                         self.routes,
-                        ReportObservation::PreInvalidReencryptionProof(observation),
+                        ReportObservation::InvalidCryptoResponse(observation),
                     )
                     .await
                     .inspect_err(|error| {
@@ -648,7 +648,7 @@ where
                                 let _ = queue_report::<D, SignImpl>(
                                     app_state.clone(),
                                     routes,
-                                    ReportObservation::PreInvalidReencryptionProof(observation),
+                                    ReportObservation::InvalidCryptoResponse(observation),
                                 )
                                 .await
                                 .inspect_err(|error| {

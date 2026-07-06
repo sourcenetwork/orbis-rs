@@ -157,6 +157,11 @@ pub enum SignMessage {
         from_node_id: u32,
         /// Serialized signature share
         sig_share: Vec<u8>,
+        /// Unix seconds at which the responder produced and signed the response
+        /// evidence statement.
+        signed_at: u64,
+        /// Node-key signature over the canonical Sign response statement.
+        response_signature: Vec<u8>,
     },
     /// Error message
     Error { request_id: String, error: String },

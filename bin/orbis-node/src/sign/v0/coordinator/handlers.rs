@@ -4,7 +4,12 @@ use crate::constants::{
 };
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::reporting::v0::validate_signing_report;
-use crate::ring_state::RingShareBundle;
+use crate::reporting::v0::types::{
+    ring_state_sha256, CommitteeScope, InvalidCryptoResponse, NodeOffline, ReportEnvelope,
+    SignResponseStatement, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
+    SIGN_RESPONSE_DOMAIN,
+};
+use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments,
@@ -16,13 +21,44 @@ use crate::sign::v0::helpers::{
 use crate::sign::v0::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
 use crate::sign::v0::response_state::NonceStoreOutcome;
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
-use bulletin::r#trait::{BulletinKind, DocumentPayload};
+use bulletin::r#trait::{BulletinKind, DocumentPayload, RingPayload};
+use common::blockchain::sign_node_message_with_hex_key;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PubShare, ThresholdSigner,
 };
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignaturePoint};
+use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::PeerId;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Clone, Debug)]
+struct SignResponseReportBinding {
+    ring_id: String,
+    ring_pk: String,
+    ring_state_sha256: String,
+    origin_protocol: &'static str,
+    accused_committee_scope: CommitteeScope,
+    signing_committee_scope: CommitteeScope,
+}
+
+impl SignResponseReportBinding {
+    fn from_ring(
+        ring_id: String,
+        ring: &RingPayload,
+        origin_protocol: &'static str,
+        accused_committee_scope: CommitteeScope,
+        signing_committee_scope: CommitteeScope,
+    ) -> Self {
+        Self {
+            ring_id,
+            ring_pk: ring.ring_pk.clone(),
+            ring_state_sha256: ring_state_sha256(ring),
+            origin_protocol,
+            accused_committee_scope,
+            signing_committee_scope,
+        }
+    }
+}
 impl<D, S> SignCoordinator<D, S>
 where
     D: Dkg<ShareValue = Fr, PublicKey = G1Affine> + Clone + Send + Sync + 'static,
@@ -37,6 +73,111 @@ where
         + Sync
         + 'static,
 {
+    async fn read_ring_payload_unchecked(&self, ring_id: &str) -> Result<RingPayload> {
+        let post = self
+            .app_state
+            .bulletin
+            .read(ring_id.to_string(), BulletinKind::Ring)
+            .await
+            .map_err(|error| {
+                SignError::VerificationFailed(format!(
+                    "Failed to read ring bulletin post '{}': {}",
+                    ring_id, error
+                ))
+            })?;
+        serde_json::from_slice(&post.payload)
+            .map_err(|error| SignError::Deserialization(format!("Failed to parse RingPayload: {}", error)))
+    }
+
+    async fn read_document_payload(&self, object_id: &str) -> Result<DocumentPayload> {
+        let post = self
+            .app_state
+            .bulletin
+            .read(object_id.to_string(), BulletinKind::Document)
+            .await
+            .map_err(|error| {
+                SignError::VerificationFailed(format!(
+                    "Failed to read signing object '{}': {}",
+                    object_id, error
+                ))
+            })?;
+        serde_json::from_slice(&post.payload).map_err(|error| {
+            SignError::Deserialization(format!(
+                "Failed to parse signing document '{}': {}",
+                object_id, error
+            ))
+        })
+    }
+
+    async fn read_ring_payload_for_ring_pk_hex(
+        &self,
+        ring_pk_hex: &str,
+    ) -> Result<(String, RingPayload)> {
+        let ring_pk_bytes = hex::decode(ring_pk_hex).map_err(|error| {
+            SignError::Deserialization(format!("Failed to decode ring_pk hex: {}", error))
+        })?;
+        let ring_pk = decode_ring_pk_bytes(&ring_pk_bytes)?;
+        let ring_key = ring_pk.to_string();
+        let index_bytes = self
+            .app_state
+            .local_storage
+            .get(LocalStorageKeys::RingIndex)
+            .map_err(|error| SignError::Storage(format!("Failed to read RingIndex: {}", error)))?
+            .ok_or_else(|| SignError::Storage("RingIndex is not configured".to_string()))?;
+        let ring_index: Vec<RingIndexEntry> = serde_json::from_slice(&index_bytes)
+            .map_err(|error| SignError::Storage(format!("Failed to parse RingIndex: {}", error)))?;
+        let entry = ring_index
+            .iter()
+            .find(|entry| entry.ring_pk_str == ring_key || entry.ring_pk_str == ring_pk_hex)
+            .ok_or_else(|| {
+                SignError::Storage(format!(
+                    "RingIndex has no entry for ring_pk {}",
+                    ring_pk_hex
+                ))
+            })?;
+        let ring = self
+            .read_ring_payload_unchecked(&entry.bulletin_post_id)
+            .await?;
+        Ok((entry.bulletin_post_id.clone(), ring))
+    }
+
+    fn report_signing_scope_from_envelope(envelope: &ReportEnvelope) -> Result<CommitteeScope> {
+        match envelope.report_type.as_str() {
+            NODE_OFFLINE_REPORT_TYPE => {
+                let payload = NodeOffline::from_canonical_bytes(&envelope.payload)
+                    .map_err(|error| SignError::Unauthorized(error.to_string()))?;
+                Ok(payload.signing_committee_scope)
+            }
+            INVALID_CRYPTO_RESPONSE_REPORT_TYPE => {
+                let evidence = InvalidCryptoResponse::from_canonical_bytes(&envelope.payload)
+                    .map_err(|error| SignError::Unauthorized(error.to_string()))?;
+                Ok(match evidence {
+                    InvalidCryptoResponse::Pre { .. } => CommitteeScope::Current,
+                    InvalidCryptoResponse::Sign { statement, .. } => {
+                        statement.signing_committee_scope
+                    }
+                })
+            }
+            _ => Ok(CommitteeScope::Current),
+        }
+    }
+
+    fn sign_node_response_statement(&self, statement: &SignResponseStatement) -> Result<Vec<u8>> {
+        let signing_key = self
+            .app_state
+            .local_storage
+            .get_encrypted(LocalStorageKeys::NodeSigningKey)
+            .map_err(|error| {
+                SignError::Storage(format!("Failed to read node signing key: {}", error))
+            })?
+            .ok_or_else(|| SignError::Storage("Node signing key is not configured".to_string()))?;
+        let signing_key_hex = String::from_utf8(signing_key.to_vec()).map_err(|error| {
+            SignError::Storage(format!("Stored node signing key is not UTF-8: {}", error))
+        })?;
+        sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes())
+            .map_err(|error| SignError::Crypto(format!("Failed to sign Sign response: {}", error)))
+    }
+
     /// Handle an incoming Sign message
     ///
     /// Routes the message to the appropriate handler based on message type.
@@ -335,9 +476,9 @@ where
             )));
         }
 
-        // Resolve ring info and auth based on pathway
-        let (ring_pk_hex, derivation, metadata) = match context {
-            SignContext::Bulletin { ref object_id } => {
+        // Resolve ring info and auth based on pathway.
+        let (ring_pk_hex, derivation, metadata, report_binding) = match &context {
+            SignContext::Bulletin { object_id } => {
                 // Message is a BulletinPost; on-chain existence is the authorization.
                 // Signs from root key: no derivation, no metadata.
                 let (ring_pk_hex, _) = verify_message_and_get_info_for_version::<D>(
@@ -349,9 +490,20 @@ where
                     self.routes.version,
                 )
                 .await?;
-                (ring_pk_hex, None, None)
+                let document_payload = self.read_document_payload(object_id).await?;
+                let ring_payload = self
+                    .read_ring_payload_unchecked(&document_payload.ring_id)
+                    .await?;
+                let report_binding = SignResponseReportBinding::from_ring(
+                    document_payload.ring_id,
+                    &ring_payload,
+                    "sign",
+                    CommitteeScope::Current,
+                    CommitteeScope::Current,
+                );
+                (ring_pk_hex, None, None, Some(report_binding))
             }
-            SignContext::Policy(ref ctx) => {
+            SignContext::Policy(ctx) => {
                 let (token_string, derivation_id, valid_window) =
                     (&ctx.token_string, &ctx.derivation_id, &ctx.valid_window);
                 // Always re-validate JWT (pure crypto, no IO)
@@ -399,9 +551,9 @@ where
                     &key_derivation.permission,
                 ));
 
-                (ring_payload.ring_pk, derivation, metadata)
+                (ring_payload.ring_pk, derivation, metadata, None)
             }
-            SignContext::RingReshareUpdate(ref ctx) => {
+            SignContext::RingReshareUpdate(ctx) => {
                 let ring_pk_hex = validate_ring_reshare_update_statement(
                     &*self.app_state.bulletin,
                     &self.app_state.dkg_session_state,
@@ -410,18 +562,37 @@ where
                     false,
                 )
                 .await?;
-                (ring_pk_hex, None, None)
+                let ring_payload = self
+                    .read_ring_payload_unchecked(&ctx.statement.ring_id)
+                    .await?;
+                let report_binding = SignResponseReportBinding::from_ring(
+                    ctx.statement.ring_id.clone(),
+                    &ring_payload,
+                    "pss_reshare",
+                    CommitteeScope::PendingNew,
+                    CommitteeScope::PendingNew,
+                );
+                (ring_pk_hex, None, None, Some(report_binding))
             }
-            SignContext::RefreshHealthCheck(ref ctx) => {
+            SignContext::RefreshHealthCheck(ctx) => {
                 let (ring_pk_hex, _) = validate_refresh_health_check_statement(
                     &self.app_state.dkg_session_state,
                     &ctx.statement,
                     Some(&message),
                 )
                 .await?;
-                (ring_pk_hex, None, None)
+                let (ring_id, ring_payload) =
+                    self.read_ring_payload_for_ring_pk_hex(&ring_pk_hex).await?;
+                let report_binding = SignResponseReportBinding::from_ring(
+                    ring_id,
+                    &ring_payload,
+                    "pss_refresh",
+                    CommitteeScope::Current,
+                    CommitteeScope::Current,
+                );
+                (ring_pk_hex, None, None, Some(report_binding))
             }
-            SignContext::Report(ref ctx) => {
+            SignContext::Report(ctx) => {
                 let canonical = ctx.envelope.canonical_bytes();
                 if canonical != message {
                     return Err(SignError::Unauthorized(
@@ -437,7 +608,16 @@ where
                 )
                 .await
                 .map_err(|error| SignError::Unauthorized(error.to_string()))?;
-                (ring_pk_hex, None, None)
+                let signing_scope = Self::report_signing_scope_from_envelope(&ctx.envelope)?;
+                let report_binding = SignResponseReportBinding {
+                    ring_id: ctx.envelope.ring_id.clone(),
+                    ring_pk: ctx.envelope.ring_pk.clone(),
+                    ring_state_sha256: ctx.envelope.ring_state_sha256.clone(),
+                    origin_protocol: "report",
+                    accused_committee_scope: signing_scope,
+                    signing_committee_scope: signing_scope,
+                };
+                (ring_pk_hex, None, None, Some(report_binding))
             }
         };
 
@@ -524,11 +704,45 @@ where
             SignError::Serialization(format!("Failed to serialize signature share: {}", e))
         })?;
 
+        let (signed_at, response_signature) = if let Some(binding) = report_binding {
+            let signed_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
+                .as_secs();
+            let statement = SignResponseStatement {
+                domain: SIGN_RESPONSE_DOMAIN.to_string(),
+                chain_id: self.app_state.bulletin.chain_id(),
+                ring_id: binding.ring_id,
+                ring_pk: binding.ring_pk,
+                ring_state_sha256: binding.ring_state_sha256,
+                protocol_version: self.routes.version,
+                request_id: request_id.clone(),
+                signed_at,
+                responder_node_key: self.app_state.node_key.clone(),
+                origin_protocol: binding.origin_protocol.to_string(),
+                accused_committee_scope: binding.accused_committee_scope,
+                signing_committee_scope: binding.signing_committee_scope,
+                from_node_id: node_id,
+                message: message.clone(),
+                signing_commitments: all_commitments_bytes.clone(),
+                derivation: derivation.clone(),
+                metadata: metadata.clone(),
+                sig_share: sig_share_bytes.clone(),
+                crypto_backend: S::name(),
+            };
+            let response_signature = self.sign_node_response_statement(&statement)?;
+            (signed_at, response_signature)
+        } else {
+            (0, Vec::new())
+        };
+
         // 9. Create response message
         let response = SignMessage::SignResponse {
             request_id: request_id.clone(),
             from_node_id: node_id,
             sig_share: sig_share_bytes,
+            signed_at,
+            response_signature,
         };
 
         tracing::debug!(

@@ -6,19 +6,106 @@ use crate::helpers::response_manager::ResponseInitOutcome;
 use crate::helpers::ring::{
     is_ring_reshare_in_progress, load_ring_pub_poly_and_bundle, RingConfig,
 };
+use crate::reporting::v0::observation::{InvalidCryptoResponseObservation, ReportObservation};
+use crate::reporting::v0::queue_report;
+use crate::reporting::v0::types::{
+    ring_state_sha256, CommitteeScope, InvalidCryptoResponse, NodeOffline, ReportEnvelope,
+    INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
+};
+use crate::ring_state::RingIndexEntry;
 use crate::sign::v0::coordinator::rounds::{
     make_sign_drain_observation, queue_sign_offline_report,
+};
+use crate::sign::v0::coordinator::verification::{
+    PeerSignatureVerification, SignResponseReportContext,
 };
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::helpers::{serialize_commitments, validate_refresh_health_check_statement};
 use crate::sign::v0::messages::{SignContext, SignMessage, SignRequest};
+use bulletin::r#trait::{BulletinKind, DocumentPayload, RingPayload};
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PubPoly as PubPolyTrait, PubShare,
     ThresholdSigner,
 };
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignaturePoint};
+use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::collections::HashSet;
+
+#[derive(Clone, Debug)]
+struct SignResponseReportContextBase {
+    chain_id: String,
+    ring_id: String,
+    ring_pk: String,
+    ring_state_sha256: String,
+    protocol_version: u64,
+    request_id: String,
+    origin_protocol: String,
+    accused_committee_scope: CommitteeScope,
+    signing_committee_scope: CommitteeScope,
+    message: Vec<u8>,
+    signing_commitments: Vec<u8>,
+    derivation: Option<Vec<u8>>,
+    metadata: Option<Vec<u8>>,
+}
+
+impl SignResponseReportContextBase {
+    fn from_ring(
+        chain_id: String,
+        ring_id: String,
+        ring: &RingPayload,
+        protocol_version: u64,
+        request_id: String,
+        origin_protocol: &'static str,
+        accused_committee_scope: CommitteeScope,
+        signing_committee_scope: CommitteeScope,
+        message: Vec<u8>,
+        signing_commitments: Vec<u8>,
+        derivation: Option<Vec<u8>>,
+        metadata: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            chain_id,
+            ring_id,
+            ring_pk: ring.ring_pk.clone(),
+            ring_state_sha256: ring_state_sha256(ring),
+            protocol_version,
+            request_id,
+            origin_protocol: origin_protocol.to_string(),
+            accused_committee_scope,
+            signing_committee_scope,
+            message,
+            signing_commitments,
+            derivation,
+            metadata,
+        }
+    }
+
+    fn for_peer(
+        &self,
+        ring: &RingConfig,
+        node_id: u32,
+        accused_peer_id: String,
+    ) -> Option<SignResponseReportContext> {
+        Some(SignResponseReportContext {
+            chain_id: self.chain_id.clone(),
+            ring_id: self.ring_id.clone(),
+            ring_pk: self.ring_pk.clone(),
+            ring_state_sha256: self.ring_state_sha256.clone(),
+            protocol_version: self.protocol_version,
+            request_id: self.request_id.clone(),
+            accused_node_key: node_key_for_session_node_id(node_id, &ring.peer_node_keys)?,
+            accused_peer_id,
+            origin_protocol: self.origin_protocol.clone(),
+            accused_committee_scope: self.accused_committee_scope,
+            signing_committee_scope: self.signing_committee_scope,
+            message: self.message.clone(),
+            signing_commitments: self.signing_commitments.clone(),
+            derivation: self.derivation.clone(),
+            metadata: self.metadata.clone(),
+        })
+    }
+}
 impl<D, S> SignCoordinator<D, S>
 where
     D: Dkg<ShareValue = Fr, PublicKey = G1Affine> + Clone + Send + Sync + 'static,
@@ -131,6 +218,231 @@ where
             .await;
 
         result
+    }
+
+    async fn read_ring_payload_unchecked_for_sign_report(
+        &self,
+        ring_id: &str,
+    ) -> Result<RingPayload> {
+        let post = self
+            .app_state
+            .bulletin
+            .read(ring_id.to_string(), BulletinKind::Ring)
+            .await
+            .map_err(|error| {
+                SignError::VerificationFailed(format!(
+                    "Failed to read ring bulletin post '{}': {}",
+                    ring_id, error
+                ))
+            })?;
+        serde_json::from_slice(&post.payload)
+            .map_err(|error| SignError::Deserialization(format!("Failed to parse RingPayload: {}", error)))
+    }
+
+    async fn read_document_payload_for_sign_report(
+        &self,
+        object_id: &str,
+    ) -> Result<DocumentPayload> {
+        let post = self
+            .app_state
+            .bulletin
+            .read(object_id.to_string(), BulletinKind::Document)
+            .await
+            .map_err(|error| {
+                SignError::VerificationFailed(format!(
+                    "Failed to read signing object '{}': {}",
+                    object_id, error
+                ))
+            })?;
+        serde_json::from_slice(&post.payload).map_err(|error| {
+            SignError::Deserialization(format!(
+                "Failed to parse signing document '{}': {}",
+                object_id, error
+            ))
+        })
+    }
+
+    async fn read_ring_payload_for_ring_pk_hex_for_sign_report(
+        &self,
+        ring_pk_hex: &str,
+    ) -> Result<(String, RingPayload)> {
+        let ring_pk_bytes = hex::decode(ring_pk_hex).map_err(|error| {
+            SignError::Deserialization(format!("Failed to decode ring_pk hex: {}", error))
+        })?;
+        let ring_pk = G1Affine::from_bytes(&ring_pk_bytes).map_err(|error| {
+            SignError::Deserialization(format!("Failed to deserialize ring public key: {}", error))
+        })?;
+        let ring_key = ring_pk.to_string();
+        let index_bytes = self
+            .app_state
+            .local_storage
+            .get(LocalStorageKeys::RingIndex)
+            .map_err(|error| SignError::Storage(format!("Failed to read RingIndex: {}", error)))?
+            .ok_or_else(|| SignError::Storage("RingIndex is not configured".to_string()))?;
+        let ring_index: Vec<RingIndexEntry> = serde_json::from_slice(&index_bytes)
+            .map_err(|error| SignError::Storage(format!("Failed to parse RingIndex: {}", error)))?;
+        let entry = ring_index
+            .iter()
+            .find(|entry| entry.ring_pk_str == ring_key || entry.ring_pk_str == ring_pk_hex)
+            .ok_or_else(|| {
+                SignError::Storage(format!(
+                    "RingIndex has no entry for ring_pk {}",
+                    ring_pk_hex
+                ))
+            })?;
+        let ring = self
+            .read_ring_payload_unchecked_for_sign_report(&entry.bulletin_post_id)
+            .await?;
+        Ok((entry.bulletin_post_id.clone(), ring))
+    }
+
+    fn report_signing_scope_from_envelope_for_sign_report(
+        envelope: &ReportEnvelope,
+    ) -> Result<CommitteeScope> {
+        match envelope.report_type.as_str() {
+            NODE_OFFLINE_REPORT_TYPE => {
+                let payload = NodeOffline::from_canonical_bytes(&envelope.payload)
+                    .map_err(|error| SignError::Unauthorized(error.to_string()))?;
+                Ok(payload.signing_committee_scope)
+            }
+            INVALID_CRYPTO_RESPONSE_REPORT_TYPE => {
+                let evidence = InvalidCryptoResponse::from_canonical_bytes(&envelope.payload)
+                    .map_err(|error| SignError::Unauthorized(error.to_string()))?;
+                Ok(match evidence {
+                    InvalidCryptoResponse::Pre { .. } => CommitteeScope::Current,
+                    InvalidCryptoResponse::Sign { statement, .. } => {
+                        statement.signing_committee_scope
+                    }
+                })
+            }
+            _ => Ok(CommitteeScope::Current),
+        }
+    }
+
+    async fn sign_response_report_context_base(
+        &self,
+        context: &SignContext,
+        request_id: &str,
+        message: &[u8],
+        signing_commitments: &[u8],
+        derivation: Option<&[u8]>,
+        metadata: Option<&[u8]>,
+    ) -> Result<Option<SignResponseReportContextBase>> {
+        let chain_id = self.app_state.bulletin.chain_id();
+        let version = self.routes.version;
+        let request_id = request_id.to_string();
+        let message = message.to_vec();
+        let signing_commitments = signing_commitments.to_vec();
+        let derivation = derivation.map(ToOwned::to_owned);
+        let metadata = metadata.map(ToOwned::to_owned);
+
+        match context {
+            SignContext::Policy(_) => Ok(None),
+            SignContext::Bulletin { object_id } => {
+                let document = self
+                    .read_document_payload_for_sign_report(object_id)
+                    .await?;
+                let ring = self
+                    .read_ring_payload_unchecked_for_sign_report(&document.ring_id)
+                    .await?;
+                Ok(Some(SignResponseReportContextBase::from_ring(
+                    chain_id,
+                    document.ring_id,
+                    &ring,
+                    version,
+                    request_id,
+                    "sign",
+                    CommitteeScope::Current,
+                    CommitteeScope::Current,
+                    message,
+                    signing_commitments,
+                    derivation,
+                    metadata,
+                )))
+            }
+            SignContext::RingReshareUpdate(ctx) => {
+                let ring = self
+                    .read_ring_payload_unchecked_for_sign_report(&ctx.statement.ring_id)
+                    .await?;
+                Ok(Some(SignResponseReportContextBase::from_ring(
+                    chain_id,
+                    ctx.statement.ring_id.clone(),
+                    &ring,
+                    version,
+                    request_id,
+                    "pss_reshare",
+                    CommitteeScope::PendingNew,
+                    CommitteeScope::PendingNew,
+                    message,
+                    signing_commitments,
+                    derivation,
+                    metadata,
+                )))
+            }
+            SignContext::RefreshHealthCheck(ctx) => {
+                let (ring_id, ring) = self
+                    .read_ring_payload_for_ring_pk_hex_for_sign_report(&ctx.statement.ring_pk)
+                    .await?;
+                Ok(Some(SignResponseReportContextBase::from_ring(
+                    chain_id,
+                    ring_id,
+                    &ring,
+                    version,
+                    request_id,
+                    "pss_refresh",
+                    CommitteeScope::Current,
+                    CommitteeScope::Current,
+                    message,
+                    signing_commitments,
+                    derivation,
+                    metadata,
+                )))
+            }
+            SignContext::Report(ctx) => {
+                let signing_scope =
+                    Self::report_signing_scope_from_envelope_for_sign_report(&ctx.envelope)?;
+                Ok(Some(SignResponseReportContextBase {
+                    chain_id,
+                    ring_id: ctx.envelope.ring_id.clone(),
+                    ring_pk: ctx.envelope.ring_pk.clone(),
+                    ring_state_sha256: ctx.envelope.ring_state_sha256.clone(),
+                    protocol_version: version,
+                    request_id,
+                    origin_protocol: "report".to_string(),
+                    accused_committee_scope: signing_scope,
+                    signing_committee_scope: signing_scope,
+                    message,
+                    signing_commitments,
+                    derivation,
+                    metadata,
+                }))
+            }
+        }
+    }
+
+    fn queue_sign_invalid_crypto_report(
+        &self,
+        observation: Box<InvalidCryptoResponseObservation>,
+        peer_id: &str,
+    ) {
+        let app_state = self.app_state.clone();
+        let routes = self.routes;
+        let peer_id = peer_id.to_string();
+        let _handle = tokio::spawn(async move {
+            if let Err(error) = queue_report::<D, S>(
+                app_state,
+                routes,
+                ReportObservation::InvalidCryptoResponse(observation),
+            )
+            .await
+            {
+                tracing::warn!(
+                    peer_id = %peer_id,
+                    error = %error,
+                    "Failed to queue sign invalid_crypto_response report observation"
+                );
+            }
+        });
     }
 
     /// Inner implementation of initiate_signing
@@ -277,6 +589,16 @@ where
         // bound to this participant list, so the recovery step must use the same
         // list that responders signed over.
         let all_commitments_bytes = serialize_commitments::<S>(&signing_commitments)?;
+        let sign_report_context_base = self
+            .sign_response_report_context_base(
+                &context,
+                &request_id,
+                &message,
+                &all_commitments_bytes,
+                derivation.as_deref(),
+                metadata.as_deref(),
+            )
+            .await?;
 
         // =====================================================================
         // ROUND 2: Collect signature shares
@@ -410,7 +732,13 @@ where
                                 );
                                 continue;
                             };
-                            if let Some(share) = Self::verify_peer_signature_response(
+                            let sender_peer_hex = response.sender_peer_hex.clone();
+                            let report_context = sign_report_context_base
+                                .as_ref()
+                                .and_then(|base| {
+                                    base.for_peer(&ring, expected_node_id, sender_peer_hex.clone())
+                                });
+                            match Self::verify_peer_signature_response(
                                 &signer,
                                 response.message,
                                 &message,
@@ -419,13 +747,23 @@ where
                                 derivation.as_deref(),
                                 metadata.as_deref(),
                                 expected_node_id,
+                                report_context.as_ref(),
                                 &mut seen_node_ids,
                             ) {
-                                verified_shares.push(share);
-                                successful_responses += 1;
-                                if successful_responses >= min_needed_from_network {
-                                    break;
+                                PeerSignatureVerification::Verified(share) => {
+                                    verified_shares.push(share);
+                                    successful_responses += 1;
+                                    if successful_responses >= min_needed_from_network {
+                                        break;
+                                    }
                                 }
+                                PeerSignatureVerification::InvalidCrypto(observation) => {
+                                    self.queue_sign_invalid_crypto_report(
+                                        observation,
+                                        &sender_peer_hex,
+                                    );
+                                }
+                                PeerSignatureVerification::Rejected => {}
                             }
                         }
                         Ok((_, Ok(None))) => {}
@@ -501,7 +839,11 @@ where
                 );
                 continue;
             };
-            if let Some(share) = Self::verify_peer_signature_response(
+            let sender_peer_hex = response.sender_peer_hex.clone();
+            let report_context = sign_report_context_base
+                .as_ref()
+                .and_then(|base| base.for_peer(&ring, expected_node_id, sender_peer_hex.clone()));
+            match Self::verify_peer_signature_response(
                 &signer,
                 response.message,
                 &message,
@@ -510,9 +852,14 @@ where
                 derivation.as_deref(),
                 metadata.as_deref(),
                 expected_node_id,
+                report_context.as_ref(),
                 &mut seen_node_ids,
             ) {
-                verified_shares.push(share);
+                PeerSignatureVerification::Verified(share) => verified_shares.push(share),
+                PeerSignatureVerification::InvalidCrypto(observation) => {
+                    self.queue_sign_invalid_crypto_report(observation, &sender_peer_hex);
+                }
+                PeerSignatureVerification::Rejected => {}
             }
         }
 
@@ -588,4 +935,14 @@ where
 
         Ok(response_bytes)
     }
+}
+
+fn node_key_for_session_node_id(node_id: u32, peer_node_keys: &[String]) -> Option<String> {
+    if node_id == 0 {
+        return None;
+    }
+    let mut sorted = peer_node_keys.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    sorted.get(node_id as usize - 1).cloned()
 }

@@ -1,11 +1,9 @@
 use super::error::Result;
-use super::observation::{
-    OfflineObservation, PreInvalidReencryptionProofObservation, ReportObservation,
-};
+use super::observation::{InvalidCryptoResponseObservation, OfflineObservation, ReportObservation};
 use super::queue_report;
 use super::types::{
-    ring_state_sha256, CommitteeScope, PreInvalidReencryptionProof, PreReencryptResponseStatement,
-    ReportEnvelope, CHAIN_BLOCK_GRACE_SECS, PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE,
+    ring_state_sha256, CommitteeScope, InvalidCryptoResponse, PreReencryptResponseStatement,
+    ReportEnvelope, CHAIN_BLOCK_GRACE_SECS, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
     PRE_REENCRYPT_RESPONSE_DOMAIN,
 };
 use crate::dkg::v0::service::DkgServiceImpl;
@@ -137,8 +135,8 @@ async fn threshold_signs_offline_report_without_accused_node() {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn threshold_signs_pre_invalid_proof_report_without_accused_node() {
-    let db_name = "reporting_pre_invalid_proof_signature";
+async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
+    let db_name = "reporting_invalid_crypto_pre_signature";
     let db_paths = [
         test_db_path(&format!("{db_name}_1")),
         test_db_path(&format!("{db_name}_2")),
@@ -260,12 +258,12 @@ async fn threshold_signs_pre_invalid_proof_report_without_accused_node() {
         sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes()).unwrap();
     // The envelope must be anchored to the evidence: observed_at == signed_at - grace.
     let observed_at = signed_at - CHAIN_BLOCK_GRACE_SECS;
-    let observation = PreInvalidReencryptionProofObservation {
+    let observation = InvalidCryptoResponseObservation {
         ring_id: ring_id.clone(),
         accused_node_key: accused_node_key.clone(),
         accused_peer_id: accused_peer_id.clone(),
         observed_at,
-        evidence: PreInvalidReencryptionProof {
+        evidence: InvalidCryptoResponse::Pre {
             statement,
             response_signature,
         },
@@ -275,7 +273,7 @@ async fn threshold_signs_pre_invalid_proof_report_without_accused_node() {
     assert!(queue_report::<DkgImpl, SignImpl>(
         app_state.clone(),
         &network::V0,
-        ReportObservation::PreInvalidReencryptionProof(Box::new(observation)),
+        ReportObservation::InvalidCryptoResponse(Box::new(observation)),
     )
     .await
     .unwrap());
@@ -290,7 +288,7 @@ async fn threshold_signs_pre_invalid_proof_report_without_accused_node() {
     let submission = &submissions[0];
     assert_eq!(
         submission.report_type,
-        PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE
+        INVALID_CRYPTO_RESPONSE_REPORT_TYPE
     );
     assert_eq!(submission.accused_node_key, accused_node_key);
     assert_eq!(submission.accused_peer_id, accused_peer_id);

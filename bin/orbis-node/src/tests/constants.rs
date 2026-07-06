@@ -26,7 +26,7 @@ pub fn reporting_genesis_json(
             "node_offline_demerits": node_offline_demerits,
             // Same weight as node_offline; tests that need a different
             // invalid-proof weight can grow a dedicated parameter.
-            "pre_invalid_proof_demerits": node_offline_demerits,
+            "invalid_crypto_response_demerits": node_offline_demerits,
             "reset_interval_seconds": 86400
         },
         "backup_node_keys": backup_node_keys,

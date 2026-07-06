@@ -6,21 +6,23 @@ use crate::pre::v0::helpers::deserialize_secret;
 use crate::reporting::v0::error::{ReportingError, Result};
 use crate::reporting::v0::health::require_peer_offline;
 use crate::reporting::v0::observation::{
-    OfflineObservation, PreInvalidReencryptionProofObservation, ReportObservation,
+    InvalidCryptoResponseObservation, OfflineObservation, ReportObservation,
 };
 use crate::reporting::v0::state::InFlightReportKey;
 use crate::reporting::v0::types::{
-    ring_state_sha256, CommitteeScope, NodeOffline, PreInvalidReencryptionProof, ReportEnvelope,
-    CHAIN_BLOCK_GRACE_SECS, NODE_OFFLINE_REPORT_TYPE, PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE,
-    PRE_REENCRYPT_RESPONSE_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS,
+    ring_state_sha256, CommitteeScope, InvalidCryptoResponse, NodeOffline, ReportEnvelope,
+    SignResponseStatement, CHAIN_BLOCK_GRACE_SECS, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
+    NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS,
+    SIGN_RESPONSE_DOMAIN, PreReencryptResponseStatement
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::SigningOptions;
+use crate::sign::v0::helpers::deserialize_commitments;
 use async_trait::async_trait;
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, NodeInfo, RingPayload};
 use common::blockchain::verify_node_message;
-use crypto::r#trait::{CryptoDeserialize, PubShare, ReencryptReply, ThresholdDealer};
-use crypto::{GroupAffine, PreImpl, PubPolyImpl, ScalarField};
+use crypto::r#trait::{CryptoDeserialize, PubShare, ReencryptReply, ThresholdDealer, ThresholdSigner};
+use crypto::{GroupAffine, PreImpl, PubPolyImpl, ScalarField, SigShareInner, SignImpl};
 use local_storage::LocalStorageImpl;
 use network::{Network, PeerId};
 use std::collections::HashMap;
@@ -83,7 +85,7 @@ impl ReportRegistry {
             handlers: HashMap::new(),
         };
         registry.register(Arc::new(NodeOfflineHandler));
-        registry.register(Arc::new(PreInvalidReencryptionProofHandler));
+        registry.register(Arc::new(InvalidCryptoResponseHandler));
         registry
     }
 
@@ -287,12 +289,12 @@ impl NodeOfflineHandler {
     }
 }
 
-struct PreInvalidReencryptionProofHandler;
+struct InvalidCryptoResponseHandler;
 
 #[async_trait]
-impl ReportHandler for PreInvalidReencryptionProofHandler {
+impl ReportHandler for InvalidCryptoResponseHandler {
     fn report_type(&self) -> &'static str {
-        PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE
+        INVALID_CRYPTO_RESPONSE_REPORT_TYPE
     }
 
     fn in_flight_key(&self, observation: &ReportObservation) -> Result<InFlightReportKey> {
@@ -309,10 +311,9 @@ impl ReportHandler for PreInvalidReencryptionProofHandler {
         observation: ReportObservation,
         context: &ReportPreparationContext,
     ) -> Result<PreparedReport> {
-        let ReportObservation::PreInvalidReencryptionProof(observation) = observation else {
+        let ReportObservation::InvalidCryptoResponse(observation) = observation else {
             return Err(ReportingError::InvalidReport(
-                "pre_invalid_reencryption_proof handler received the wrong observation type"
-                    .to_string(),
+                "invalid_crypto_response handler received the wrong observation type".to_string(),
             ));
         };
 
@@ -339,8 +340,7 @@ impl ReportHandler for PreInvalidReencryptionProofHandler {
         envelope: &ReportEnvelope,
         context: &ReportValidationContext,
     ) -> Result<()> {
-        let evidence = PreInvalidReencryptionProof::from_canonical_bytes(&envelope.payload)?;
-        let statement = &evidence.statement;
+        let evidence = InvalidCryptoResponse::from_canonical_bytes(&envelope.payload)?;
 
         let ring_post = context
             .bulletin
@@ -350,8 +350,33 @@ impl ReportHandler for PreInvalidReencryptionProofHandler {
         let ring = RingPayload::try_from(ring_post)
             .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
 
-        validate_pre_invalid_statement_shape(envelope, &evidence, context, &ring)?;
+        match &evidence {
+            InvalidCryptoResponse::Pre {
+                statement,
+                response_signature,
+            } => self
+                .validate_pre_evidence(envelope, context, &ring, statement, response_signature)
+                .await,
+            InvalidCryptoResponse::Sign {
+                statement,
+                response_signature,
+            } => self
+                .validate_sign_evidence(envelope, context, &ring, statement, response_signature)
+                .await,
+        }
+    }
+}
 
+impl InvalidCryptoResponseHandler {
+    async fn validate_pre_evidence(
+        &self,
+        envelope: &ReportEnvelope,
+        context: &ReportValidationContext,
+        ring: &RingPayload,
+        statement: &crate::reporting::v0::types::PreReencryptResponseStatement,
+        response_signature: &[u8],
+    ) -> Result<()> {
+        validate_pre_invalid_statement_shape(envelope, statement, response_signature, context)?;
         let effective_version =
             validate_report_route_version_at_observed_at(envelope, &ring, context.routes.version)?;
         if statement.protocol_version != effective_version {
@@ -388,7 +413,7 @@ impl ReportHandler for PreInvalidReencryptionProofHandler {
         verify_node_message(
             &envelope.accused_node_key,
             &statement.canonical_bytes(),
-            &evidence.response_signature,
+            response_signature,
         )
         .map_err(|error| {
             ReportingError::Unauthorized(format!("invalid PRE response signature: {}", error))
@@ -396,24 +421,77 @@ impl ReportHandler for PreInvalidReencryptionProofHandler {
 
         require_pre_proof_verification_failure(statement, context).await
     }
-}
 
-impl PreInvalidReencryptionProofHandler {
+    async fn validate_sign_evidence(
+        &self,
+        envelope: &ReportEnvelope,
+        context: &ReportValidationContext,
+        ring: &RingPayload,
+        statement: &SignResponseStatement,
+        response_signature: &[u8],
+    ) -> Result<()> {
+        validate_sign_response_statement_shape(envelope, statement, response_signature, context)?;
+
+        let effective_version =
+            validate_report_route_version_at_observed_at(envelope, &ring, context.routes.version)?;
+        if statement.protocol_version != effective_version {
+            return Err(ReportingError::Unauthorized(format!(
+                "Sign response protocol version {} does not match effective ring version {}",
+                statement.protocol_version, effective_version
+            )));
+        }
+
+        let signing_committee = validate_ring_and_membership_for_scopes(
+            envelope,
+            ring,
+            statement.accused_committee_scope,
+            statement.signing_committee_scope,
+            "Sign invalid-response",
+        )?;
+        validate_node_routes(envelope, context, &ring).await?;
+        validate_local_signer(envelope, context, &signing_committee, "Sign invalid-response")?;
+
+        let accused_committee = committee_for_scope(ring, statement.accused_committee_scope)?;
+        let expected_node_id =
+            determine_session_node_id(&envelope.accused_node_key, &accused_committee.peer_node_keys)
+                .ok_or_else(|| {
+                    ReportingError::Unauthorized(
+                        "accused node is not in the Sign response node-id map".to_string(),
+                    )
+                })?;
+        if statement.from_node_id != expected_node_id {
+            return Err(ReportingError::Unauthorized(format!(
+                "Sign response from_node_id {} does not match accused node_id {}",
+                statement.from_node_id, expected_node_id
+            )));
+        }
+
+        verify_node_message(
+            &envelope.accused_node_key,
+            &statement.canonical_bytes(),
+            response_signature,
+        )
+        .map_err(|error| {
+            ReportingError::Unauthorized(format!("invalid Sign response signature: {}", error))
+        })?;
+
+        require_sign_share_verification_failure(statement, context)
+    }
+
     fn observation(
         observation: &ReportObservation,
-    ) -> Result<&PreInvalidReencryptionProofObservation> {
+    ) -> Result<&InvalidCryptoResponseObservation> {
         match observation {
-            ReportObservation::PreInvalidReencryptionProof(observation) => Ok(observation.as_ref()),
+            ReportObservation::InvalidCryptoResponse(observation) => Ok(observation.as_ref()),
             _ => Err(ReportingError::InvalidReport(
-                "pre_invalid_reencryption_proof handler received the wrong observation type"
-                    .to_string(),
+                "invalid_crypto_response handler received the wrong observation type".to_string(),
             )),
         }
     }
 
     fn build_envelope(
         &self,
-        observation: &PreInvalidReencryptionProofObservation,
+        observation: &InvalidCryptoResponseObservation,
         ring: &RingPayload,
         reporter_node_key: &str,
         chain_id: String,
@@ -431,7 +509,7 @@ impl PreInvalidReencryptionProofHandler {
             observed_at: observation.observed_at,
             expires_at: observation.observed_at.saturating_add(REPORT_TTL_SECS),
             payload: observation.evidence.canonical_bytes(),
-            session_id: observation.evidence.statement.request_id.clone(),
+            session_id: observation.evidence.request_id().to_string(),
         }
     }
 
@@ -657,11 +735,10 @@ fn validate_local_signer(
 
 fn validate_pre_invalid_statement_shape(
     envelope: &ReportEnvelope,
-    evidence: &PreInvalidReencryptionProof,
+    statement: &PreReencryptResponseStatement,
+    response_signature: &[u8],
     context: &ReportValidationContext,
-    _ring: &RingPayload,
 ) -> Result<()> {
-    let statement = &evidence.statement;
     if statement.domain != PRE_REENCRYPT_RESPONSE_DOMAIN {
         return Err(ReportingError::InvalidReport(format!(
             "unexpected PRE response domain {}",
@@ -704,12 +781,86 @@ fn validate_pre_invalid_statement_shape(
             PreImpl::name()
         )));
     }
-    if evidence.response_signature.is_empty() {
+    if response_signature.is_empty() {
         return Err(ReportingError::InvalidReport(
             "PRE response signature cannot be empty".to_string(),
         ));
     }
     Ok(())
+}
+
+fn validate_sign_response_statement_shape(
+    envelope: &ReportEnvelope,
+    statement: &SignResponseStatement,
+    response_signature: &[u8],
+    context: &ReportValidationContext,
+) -> Result<()> {
+    if statement.domain != SIGN_RESPONSE_DOMAIN {
+        return Err(ReportingError::InvalidReport(format!(
+            "unexpected Sign response domain {}",
+            statement.domain
+        )));
+    }
+    if statement.chain_id != envelope.chain_id || envelope.chain_id != context.bulletin.chain_id() {
+        return Err(ReportingError::Unauthorized(
+            "Sign response chain ID does not match report chain ID".to_string(),
+        ));
+    }
+    if statement.ring_id != envelope.ring_id
+        || statement.ring_pk != envelope.ring_pk
+        || statement.ring_state_sha256 != envelope.ring_state_sha256
+    {
+        return Err(ReportingError::Unauthorized(
+            "Sign response ring binding does not match report envelope".to_string(),
+        ));
+    }
+    if statement.request_id != envelope.session_id {
+        return Err(ReportingError::Unauthorized(
+            "Sign response request_id does not match report session_id".to_string(),
+        ));
+    }
+    validate_pre_evidence_anchor(statement.signed_at, envelope.observed_at)?;
+    if statement.responder_node_key != envelope.accused_node_key {
+        return Err(ReportingError::Unauthorized(
+            "Sign response responder does not match accused node".to_string(),
+        ));
+    }
+    if !is_valid_invalid_crypto_sign_origin(&statement.origin_protocol) {
+        return Err(ReportingError::InvalidReport(format!(
+            "unsupported Sign response origin protocol {}",
+            statement.origin_protocol
+        )));
+    }
+    if statement.crypto_backend != SignImpl::name() {
+        return Err(ReportingError::Unauthorized(format!(
+            "Sign response crypto backend {} does not match local backend {}",
+            statement.crypto_backend,
+            SignImpl::name()
+        )));
+    }
+    if statement.message.is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "Sign response message cannot be empty".to_string(),
+        ));
+    }
+    if statement.sig_share.is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "Sign response sig_share cannot be empty".to_string(),
+        ));
+    }
+    if response_signature.is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "Sign response signature cannot be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_valid_invalid_crypto_sign_origin(origin_protocol: &str) -> bool {
+    matches!(
+        origin_protocol,
+        "sign" | "pss_refresh" | "pss_reshare" | "report"
+    )
 }
 
 /// Pin the envelope to the evidence: `observed_at == signed_at - grace`.
@@ -725,6 +876,47 @@ fn validate_pre_evidence_anchor(signed_at: u64, observed_at: u64) -> Result<()> 
         ));
     }
     Ok(())
+}
+
+fn require_sign_share_verification_failure(
+    statement: &SignResponseStatement,
+    context: &ReportValidationContext,
+) -> Result<()> {
+    let poly_state =
+        RingPolyState::load_from_ring_pk_hex(&context.local_storage, &statement.ring_pk)
+            .map_err(ReportingError::InvalidReport)?;
+    let pub_poly_bytes = hex::decode(&poly_state.public_polynomial)
+        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+    let pub_poly = PubPolyImpl::from_bytes(&pub_poly_bytes).map_err(|error| {
+        ReportingError::InvalidReport(format!("failed to deserialize public polynomial: {error}"))
+    })?;
+    let sig_share_v = SigShareInner::from_bytes(&statement.sig_share).map_err(|error| {
+        ReportingError::InvalidReport(format!("failed to deserialize Sign sig_share: {error}"))
+    })?;
+    let sig_share = PubShare {
+        i: statement.from_node_id,
+        v: sig_share_v,
+    };
+    let signing_commitments =
+        deserialize_commitments::<SignImpl>(&statement.signing_commitments).map_err(|error| {
+            ReportingError::InvalidReport(format!(
+                "failed to deserialize Sign commitments: {error}"
+            ))
+        })?;
+    let signer = SignImpl::new();
+    match signer.verify_share(
+        &statement.message,
+        &pub_poly,
+        &sig_share,
+        &signing_commitments,
+        statement.derivation.as_deref(),
+        statement.metadata.as_deref(),
+    ) {
+        Ok(()) => Err(ReportingError::Unauthorized(
+            "reported Sign share verifies successfully".to_string(),
+        )),
+        Err(_) => Ok(()),
+    }
 }
 
 async fn require_pre_proof_verification_failure(
@@ -808,10 +1000,12 @@ async fn read_node_info(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reporting::v0::observation::{OfflineObservation, ReportObservation};
+    use crate::reporting::v0::observation::{
+        InvalidCryptoResponseObservation, OfflineObservation, ReportObservation,
+    };
     use crate::reporting::v0::types::{
-        CommitteeScope, NodeOffline, PreInvalidReencryptionProof, PreReencryptResponseStatement,
-        PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, REPORT_DOMAIN,
+        CommitteeScope, InvalidCryptoResponse, NodeOffline, PreReencryptResponseStatement,
+        INVALID_CRYPTO_RESPONSE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, REPORT_DOMAIN,
         REPORT_TTL_SECS,
     };
     use bulletin::r#trait::UpgradeInfo;
@@ -876,13 +1070,13 @@ mod tests {
         }
     }
 
-    fn pre_invalid_observation() -> PreInvalidReencryptionProofObservation {
-        PreInvalidReencryptionProofObservation {
+    fn pre_invalid_observation() -> InvalidCryptoResponseObservation {
+        InvalidCryptoResponseObservation {
             ring_id: "ring".to_string(),
             accused_node_key: "accused".to_string(),
             accused_peer_id: "aa".repeat(32),
             observed_at: 100,
-            evidence: PreInvalidReencryptionProof {
+            evidence: InvalidCryptoResponse::Pre {
                 statement: PreReencryptResponseStatement {
                     domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
                     chain_id: "chain".to_string(),
@@ -920,14 +1114,11 @@ mod tests {
     fn routes_pre_invalid_proof_observation_to_handler() {
         let registry = ReportRegistry::with_defaults();
         let handler = registry
-            .handler_for_observation(&ReportObservation::PreInvalidReencryptionProof(Box::new(
+            .handler_for_observation(&ReportObservation::InvalidCryptoResponse(Box::new(
                 pre_invalid_observation(),
             )))
             .unwrap();
-        assert_eq!(
-            handler.report_type(),
-            PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE
-        );
+        assert_eq!(handler.report_type(), INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
     }
 
     #[test]
@@ -955,19 +1146,19 @@ mod tests {
     fn pre_invalid_handler_builds_envelope_key_and_signing_options() {
         let ring = ring_fixture(2);
         let observation = pre_invalid_observation();
-        let handler = PreInvalidReencryptionProofHandler;
+        let handler = InvalidCryptoResponseHandler;
         let report_observation =
-            ReportObservation::PreInvalidReencryptionProof(Box::new(observation.clone()));
+            ReportObservation::InvalidCryptoResponse(Box::new(observation.clone()));
 
         let key = handler.in_flight_key(&report_observation).unwrap();
-        assert_eq!(key.report_type, PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE);
+        assert_eq!(key.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
         assert_eq!(key.ring_id, "ring");
         assert_eq!(key.subject_key, "accused");
 
         let built = handler.build_envelope(&observation, &ring, "reporter", "chain".to_string());
         assert_eq!(
             built.report_type,
-            PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE
+            INVALID_CRYPTO_RESPONSE_REPORT_TYPE
         );
         assert_eq!(built.session_id, "pre-request-1");
         assert_eq!(built.payload, observation.evidence.canonical_bytes());

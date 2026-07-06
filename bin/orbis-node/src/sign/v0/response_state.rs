@@ -338,6 +338,8 @@ mod tests {
             request_id: request_id.to_string(),
             from_node_id,
             sig_share: vec![1, 2, 3],
+            signed_at: 1_700_000_000,
+            response_signature: vec![4; 64],
         }
     }
 

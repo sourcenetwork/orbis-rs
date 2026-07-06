@@ -5,11 +5,12 @@ use sha2::{Digest, Sha256};
 
 pub const REPORT_DOMAIN: &str = "orbis-mpc-fault-report";
 pub const NODE_OFFLINE_REPORT_TYPE: &str = "node_offline";
-pub const PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE: &str = "pre_invalid_reencryption_proof";
+pub const INVALID_CRYPTO_RESPONSE_REPORT_TYPE: &str = "invalid_crypto_response";
 pub const PRE_REENCRYPT_RESPONSE_DOMAIN: &str = "orbis-pre-reencrypt-response-v1";
+pub const SIGN_RESPONSE_DOMAIN: &str = "orbis-sign-response-v1";
 pub const REPORT_TTL_SECS: u64 = 120;
 /// Reporters backdate `observed_at` by this so the `observed_at <= block_time`
-/// check passes gas simulation against ~5s blocks. pre_invalid_reencryption_proof
+/// check passes gas simulation against ~5s blocks. invalid_crypto_response
 /// envelopes are pinned to their evidence via
 /// `observed_at == signed_at - CHAIN_BLOCK_GRACE_SECS`, which makes the
 /// envelope's fixed `observed_at + REPORT_TTL_SECS` expiry double as the
@@ -171,29 +172,166 @@ impl PreReencryptResponseStatement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PreInvalidReencryptionProof {
-    pub statement: PreReencryptResponseStatement,
-    pub response_signature: Vec<u8>,
+pub struct SignResponseStatement {
+    pub domain: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub protocol_version: u64,
+    pub request_id: String,
+    /// Unix seconds at which the responder produced and signed this statement.
+    pub signed_at: u64,
+    pub responder_node_key: String,
+    pub origin_protocol: String,
+    pub accused_committee_scope: CommitteeScope,
+    pub signing_committee_scope: CommitteeScope,
+    pub from_node_id: u32,
+    pub message: Vec<u8>,
+    pub signing_commitments: Vec<u8>,
+    pub derivation: Option<Vec<u8>>,
+    pub metadata: Option<Vec<u8>>,
+    pub sig_share: Vec<u8>,
+    pub crypto_backend: String,
 }
 
-impl PreInvalidReencryptionProof {
+impl SignResponseStatement {
+    /// Field order is the canonical wire contract — the chain-side (Go)
+    /// decoder must read fields in exactly this order.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        write_bytes(&mut out, &self.statement.canonical_bytes());
-        write_bytes(&mut out, &self.response_signature);
+        write_string(&mut out, &self.domain);
+        write_string(&mut out, &self.chain_id);
+        write_string(&mut out, &self.ring_id);
+        write_string(&mut out, &self.ring_pk);
+        write_string(&mut out, &self.ring_state_sha256);
+        write_u64(&mut out, self.protocol_version);
+        write_string(&mut out, &self.request_id);
+        write_u64(&mut out, self.signed_at);
+        write_string(&mut out, &self.responder_node_key);
+        write_string(&mut out, &self.origin_protocol);
+        out.push(self.accused_committee_scope.tag());
+        out.push(self.signing_committee_scope.tag());
+        write_u32(&mut out, self.from_node_id);
+        write_bytes(&mut out, &self.message);
+        write_bytes(&mut out, &self.signing_commitments);
+        write_optional_bytes(&mut out, self.derivation.as_deref());
+        write_optional_bytes(&mut out, self.metadata.as_deref());
+        write_bytes(&mut out, &self.sig_share);
+        write_string(&mut out, &self.crypto_backend);
         out
     }
 
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
         let mut decoder = Decoder::new(bytes);
+        let domain = decoder.read_string("domain")?;
+        let chain_id = decoder.read_string("chain_id")?;
+        let ring_id = decoder.read_string("ring_id")?;
+        let ring_pk = decoder.read_string("ring_pk")?;
+        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
+        let protocol_version = decoder.read_u64("protocol_version")?;
+        let request_id = decoder.read_string("request_id")?;
+        let signed_at = decoder.read_u64("signed_at")?;
+        let responder_node_key = decoder.read_string("responder_node_key")?;
+        let origin_protocol = decoder.read_string("origin_protocol")?;
+        let accused_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("accused_committee_scope")?)?;
+        let signing_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("signing_committee_scope")?)?;
+        let from_node_id = decoder.read_u32("from_node_id")?;
+        let message = decoder.read_bytes("message")?;
+        let signing_commitments = decoder.read_bytes("signing_commitments")?;
+        let derivation = decoder.read_optional_bytes("derivation")?;
+        let metadata = decoder.read_optional_bytes("metadata")?;
+        let sig_share = decoder.read_bytes("sig_share")?;
+        let crypto_backend = decoder.read_string("crypto_backend")?;
+        decoder.finish()?;
+        Ok(Self {
+            domain,
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            protocol_version,
+            request_id,
+            signed_at,
+            responder_node_key,
+            origin_protocol,
+            accused_committee_scope,
+            signing_committee_scope,
+            from_node_id,
+            message,
+            signing_commitments,
+            derivation,
+            metadata,
+            sig_share,
+            crypto_backend,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InvalidCryptoResponse {
+    Pre {
+        statement: PreReencryptResponseStatement,
+        response_signature: Vec<u8>,
+    },
+    Sign {
+        statement: SignResponseStatement,
+        response_signature: Vec<u8>,
+    },
+}
+
+impl InvalidCryptoResponse {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        match self {
+            Self::Pre {
+                statement,
+                response_signature,
+            } => {
+                write_string(&mut out, "pre");
+                write_bytes(&mut out, &statement.canonical_bytes());
+                write_bytes(&mut out, response_signature);
+            }
+            Self::Sign {
+                statement,
+                response_signature,
+            } => {
+                write_string(&mut out, "sign");
+                write_bytes(&mut out, &statement.canonical_bytes());
+                write_bytes(&mut out, response_signature);
+            }
+        }
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let evidence_kind = decoder.read_string("evidence_kind")?;
         let statement_bytes = decoder.read_bytes("statement")?;
         let response_signature = decoder.read_bytes("response_signature")?;
         decoder.finish()?;
-        let statement = PreReencryptResponseStatement::from_canonical_bytes(&statement_bytes)?;
-        Ok(Self {
-            statement,
-            response_signature,
-        })
+        match evidence_kind.as_str() {
+            "pre" => Ok(Self::Pre {
+                statement: PreReencryptResponseStatement::from_canonical_bytes(&statement_bytes)?,
+                response_signature,
+            }),
+            "sign" => Ok(Self::Sign {
+                statement: SignResponseStatement::from_canonical_bytes(&statement_bytes)?,
+                response_signature,
+            }),
+            value => Err(ReportingError::InvalidReport(format!(
+                "unsupported invalid crypto evidence kind {value}"
+            ))),
+        }
+    }
+
+    pub fn request_id(&self) -> &str {
+        match self {
+            Self::Pre { statement, .. } => &statement.request_id,
+            Self::Sign { statement, .. } => &statement.request_id,
+        }
     }
 }
 
@@ -348,7 +486,7 @@ fn write_string_vec(out: &mut Vec<u8>, values: &[String]) {
 
 fn write_demerit_config(out: &mut Vec<u8>, value: &bulletin::r#trait::DemeritConfig) {
     write_u64(out, value.node_offline_demerits);
-    write_u64(out, value.pre_invalid_proof_demerits);
+    write_u64(out, value.invalid_crypto_response_demerits);
     write_u64(out, value.reset_interval_seconds);
 }
 
@@ -574,14 +712,47 @@ mod tests {
     }
 
     #[test]
-    fn pre_invalid_proof_payload_round_trips() {
-        let payload = PreInvalidReencryptionProof {
+    fn invalid_crypto_response_pre_payload_round_trips() {
+        let payload = InvalidCryptoResponse::Pre {
             statement: pre_statement(),
             response_signature: vec![42; 64],
         };
 
         assert_eq!(
-            PreInvalidReencryptionProof::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
+            InvalidCryptoResponse::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn invalid_crypto_response_sign_payload_round_trips() {
+        let payload = InvalidCryptoResponse::Sign {
+            statement: SignResponseStatement {
+                domain: SIGN_RESPONSE_DOMAIN.to_string(),
+                chain_id: "sourcehub-test".to_string(),
+                ring_id: "ring-1".to_string(),
+                ring_pk: "aabb".to_string(),
+                ring_state_sha256: "11".repeat(32),
+                protocol_version: 7,
+                request_id: "sign-request-1".to_string(),
+                signed_at: 1_700_000_000 + CHAIN_BLOCK_GRACE_SECS,
+                responder_node_key: "accused".to_string(),
+                origin_protocol: "sign".to_string(),
+                accused_committee_scope: CommitteeScope::Current,
+                signing_committee_scope: CommitteeScope::Current,
+                from_node_id: 2,
+                message: vec![1, 2, 3],
+                signing_commitments: vec![4, 5],
+                derivation: None,
+                metadata: Some(vec![6, 7]),
+                sig_share: vec![8, 9],
+                crypto_backend: "threshold-bls-g2".to_string(),
+            },
+            response_signature: vec![42; 64],
+        };
+
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
             payload
         );
     }

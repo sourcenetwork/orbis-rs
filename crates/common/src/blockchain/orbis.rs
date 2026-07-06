@@ -64,7 +64,7 @@ pub struct DemeritConfig {
     #[prost(uint64, tag = "2")]
     pub reset_interval_seconds: u64,
     #[prost(uint64, tag = "3")]
-    pub pre_invalid_proof_demerits: u64,
+    pub invalid_crypto_response_demerits: u64,
 }
 
 /// Fault-report policy and automatic replacement settings stored on a ring.
@@ -1654,7 +1654,7 @@ mod tests {
                 demerit_config: Some(DemeritConfig {
                     node_offline_demerits: 3,
                     reset_interval_seconds: 42,
-                    pre_invalid_proof_demerits: 7,
+                    invalid_crypto_response_demerits: 7,
                 }),
                 backup_node_keys: vec!["backup-2".to_string(), "backup-1".to_string()],
                 kick_threshold: 4,
@@ -1667,7 +1667,7 @@ mod tests {
 
         assert_eq!(config.node_offline_demerits, 3);
         assert_eq!(config.reset_interval_seconds, 42);
-        assert_eq!(config.pre_invalid_proof_demerits, 7);
+        assert_eq!(config.invalid_crypto_response_demerits, 7);
         assert_eq!(
             reporting.backup_node_keys,
             vec!["backup-2".to_string(), "backup-1".to_string()]
@@ -1683,7 +1683,7 @@ mod tests {
                 demerit_config: Some(DemeritConfig {
                     node_offline_demerits: 5,
                     reset_interval_seconds: 60,
-                    pre_invalid_proof_demerits: 2,
+                    invalid_crypto_response_demerits: 2,
                 }),
                 backup_node_keys: vec!["backup-a".to_string()],
                 kick_threshold: 6,

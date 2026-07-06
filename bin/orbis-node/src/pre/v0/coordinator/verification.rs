@@ -1,8 +1,8 @@
 use super::PreCoordinator;
 use crate::pre::v0::messages::PreMessage;
-use crate::reporting::v0::observation::PreInvalidReencryptionProofObservation;
+use crate::reporting::v0::observation::InvalidCryptoResponseObservation;
 use crate::reporting::v0::types::{
-    PreInvalidReencryptionProof, PreReencryptResponseStatement, CHAIN_BLOCK_GRACE_SECS,
+    InvalidCryptoResponse, PreReencryptResponseStatement, CHAIN_BLOCK_GRACE_SECS,
     PRE_REENCRYPT_RESPONSE_DOMAIN, REPORT_TTL_SECS,
 };
 use common::blockchain::verify_node_message;
@@ -29,7 +29,7 @@ pub(crate) struct PreResponseReportContext<'a> {
 
 pub(crate) enum PeerResponseVerification<PublicKey> {
     Verified(PubShare<PublicKey>),
-    InvalidProof(Box<PreInvalidReencryptionProofObservation>),
+    InvalidProof(Box<InvalidCryptoResponseObservation>),
     Rejected,
 }
 
@@ -195,7 +195,7 @@ where
             );
             seen_node_ids.insert(reply.share.i);
             return PeerResponseVerification::InvalidProof(Box::new(
-                PreInvalidReencryptionProofObservation {
+                InvalidCryptoResponseObservation {
                     ring_id: report_context.ring_id.to_string(),
                     accused_node_key: report_context.accused_node_key.to_string(),
                     accused_peer_id: report_context.accused_peer_id.to_string(),
@@ -203,7 +203,7 @@ where
                     // chain require observed_at == signed_at - grace, which
                     // makes the envelope's fixed TTL expiry the evidence expiry.
                     observed_at: signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
-                    evidence: PreInvalidReencryptionProof {
+                    evidence: InvalidCryptoResponse::Pre {
                         statement,
                         response_signature,
                     },
