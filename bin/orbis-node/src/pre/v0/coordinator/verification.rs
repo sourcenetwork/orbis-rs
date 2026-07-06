@@ -2,8 +2,8 @@ use super::PreCoordinator;
 use crate::pre::v0::messages::PreMessage;
 use crate::reporting::v0::observation::PreInvalidReencryptionProofObservation;
 use crate::reporting::v0::types::{
-    PreInvalidReencryptionProof, PreReencryptResponseStatement, PRE_REENCRYPT_RESPONSE_DOMAIN,
-    PRE_RESPONSE_MAX_CLOCK_SKEW_SECS, REPORT_TTL_SECS,
+    PreInvalidReencryptionProof, PreReencryptResponseStatement, CHAIN_BLOCK_GRACE_SECS,
+    PRE_REENCRYPT_RESPONSE_DOMAIN, REPORT_TTL_SECS,
 };
 use common::blockchain::verify_node_message;
 use crypto::r#trait::{
@@ -25,7 +25,6 @@ pub(crate) struct PreResponseReportContext<'a> {
     pub object_id: &'a str,
     pub rdr_pk: &'a [u8],
     pub derivation: Option<&'a [u8]>,
-    pub observed_at: u64,
 }
 
 pub(crate) enum PeerResponseVerification<PublicKey> {
@@ -94,7 +93,7 @@ where
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        if signed_at > now.saturating_add(PRE_RESPONSE_MAX_CLOCK_SKEW_SECS)
+        if signed_at > now.saturating_add(CHAIN_BLOCK_GRACE_SECS)
             || now.saturating_sub(signed_at) > REPORT_TTL_SECS
         {
             tracing::warn!(
@@ -200,7 +199,10 @@ where
                     ring_id: report_context.ring_id.to_string(),
                     accused_node_key: report_context.accused_node_key.to_string(),
                     accused_peer_id: report_context.accused_peer_id.to_string(),
-                    observed_at: report_context.observed_at,
+                    // Pin the envelope to the evidence: validators and the
+                    // chain require observed_at == signed_at - grace, which
+                    // makes the envelope's fixed TTL expiry the evidence expiry.
+                    observed_at: signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
                     evidence: PreInvalidReencryptionProof {
                         statement,
                         response_signature,
@@ -369,7 +371,6 @@ mod tests {
             object_id: &fixture.object_id,
             rdr_pk: rdr_pk_bytes,
             derivation: None,
-            observed_at: 100,
         }
     }
 
@@ -486,6 +487,11 @@ mod tests {
         assert_eq!(observation.accused_node_key, fixture.responder_node_key);
         assert_eq!(observation.evidence.statement.proof, fixture.invalid_proof);
         assert_eq!(observation.evidence.statement.signed_at, now);
+        assert_eq!(
+            observation.observed_at,
+            now - CHAIN_BLOCK_GRACE_SECS,
+            "observation must anchor the envelope to the evidence timestamp"
+        );
         assert!(seen.contains(&fixture.from_node_id));
     }
 
@@ -504,7 +510,7 @@ mod tests {
             fixture.challenge.clone(),
             fixture.valid_proof.clone(),
             fixture.from_node_id,
-            unix_now() + PRE_RESPONSE_MAX_CLOCK_SKEW_SECS + 240,
+            unix_now() + CHAIN_BLOCK_GRACE_SECS + 240,
             true,
         );
         assert!(matches!(

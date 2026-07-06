@@ -11,9 +11,8 @@ use crate::reporting::v0::observation::{
 use crate::reporting::v0::state::InFlightReportKey;
 use crate::reporting::v0::types::{
     ring_state_sha256, CommitteeScope, NodeOffline, PreInvalidReencryptionProof, ReportEnvelope,
-    NODE_OFFLINE_REPORT_TYPE, PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE,
-    PRE_REENCRYPT_RESPONSE_DOMAIN, PRE_RESPONSE_MAX_CLOCK_SKEW_SECS,
-    PRE_RESPONSE_OBSERVED_AT_SLACK_SECS, REPORT_DOMAIN, REPORT_TTL_SECS,
+    CHAIN_BLOCK_GRACE_SECS, NODE_OFFLINE_REPORT_TYPE, PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE,
+    PRE_REENCRYPT_RESPONSE_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS,
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::SigningOptions;
@@ -703,7 +702,7 @@ fn validate_pre_invalid_statement_shape(
             "PRE response request_id does not match report session_id".to_string(),
         ));
     }
-    validate_pre_evidence_timing(statement.signed_at, envelope.observed_at, context.now)?;
+    validate_pre_evidence_anchor(statement.signed_at, envelope.observed_at)?;
     if statement.responder_node_key != envelope.accused_node_key {
         return Err(ReportingError::Unauthorized(
             "PRE response responder does not match accused node".to_string(),
@@ -729,24 +728,14 @@ fn validate_pre_invalid_statement_shape(
     Ok(())
 }
 
-/// Evidence freshness: a signed response is reportable for at most
-/// REPORT_TTL_SECS after the responder produced it. Without this, one signed
-/// bad response could be re-wrapped in fresh envelopes and re-reported
-/// indefinitely once the chain prunes its dedupe records. The envelope is also
-/// anchored to the evidence: expires_at is forced to observed_at +
-/// REPORT_TTL_SECS, so with observed_at pinned near signed_at the chain's
-/// existing envelope-expiry check bounds how long this evidence stays
-/// submittable.
-fn validate_pre_evidence_timing(signed_at: u64, observed_at: u64, now: u64) -> Result<()> {
-    if signed_at > now.saturating_add(PRE_RESPONSE_MAX_CLOCK_SKEW_SECS) {
-        return Err(ReportingError::Unauthorized(
-            "PRE response timestamp is in the future".to_string(),
-        ));
-    }
-    if now.saturating_sub(signed_at) > REPORT_TTL_SECS {
-        return Err(ReportingError::Expired);
-    }
-    if observed_at.abs_diff(signed_at) > PRE_RESPONSE_OBSERVED_AT_SLACK_SECS {
+/// Pin the envelope to the evidence: `observed_at == signed_at - grace`.
+/// The envelope's fixed `observed_at + REPORT_TTL_SECS` expiry then doubles as
+/// the evidence expiry, so the shared shape checks (`observed_at <= now`,
+/// `now <= expires_at`) bound how long one signed bad response stays
+/// reportable — without this, it could be re-wrapped in fresh envelopes and
+/// re-reported indefinitely once the chain prunes its dedupe records.
+fn validate_pre_evidence_anchor(signed_at: u64, observed_at: u64) -> Result<()> {
+    if signed_at < CHAIN_BLOCK_GRACE_SECS || observed_at != signed_at - CHAIN_BLOCK_GRACE_SECS {
         return Err(ReportingError::Unauthorized(
             "report envelope is not anchored to the evidence timestamp".to_string(),
         ));
@@ -1005,33 +994,25 @@ mod tests {
     }
 
     #[test]
-    fn pre_evidence_timing_enforces_freshness_and_envelope_anchor() {
-        let now = 1_700_000_000u64;
+    fn pre_evidence_anchor_requires_exact_backdated_observed_at() {
+        let signed_at = 1_700_000_000u64;
+        let anchored = signed_at - CHAIN_BLOCK_GRACE_SECS;
 
-        // Fresh evidence with an anchored envelope passes.
-        validate_pre_evidence_timing(now - 5, now - 15, now).unwrap();
+        validate_pre_evidence_anchor(signed_at, anchored).unwrap();
 
-        // Future timestamp beyond the skew allowance.
+        // Any drift decouples the envelope's expires_at from the evidence age,
+        // which would let one signed bad response be re-reported after the
+        // chain prunes its dedupe records.
+        for observed_at in [anchored - 1, anchored + 1, signed_at, 0] {
+            assert!(matches!(
+                validate_pre_evidence_anchor(signed_at, observed_at),
+                Err(ReportingError::Unauthorized(_))
+            ));
+        }
+
+        // signed_at below the grace can never be anchored.
         assert!(matches!(
-            validate_pre_evidence_timing(now + PRE_RESPONSE_MAX_CLOCK_SKEW_SECS + 1, now, now),
-            Err(ReportingError::Unauthorized(_))
-        ));
-
-        // Stale evidence: older than the report TTL is permanently unreportable.
-        assert!(matches!(
-            validate_pre_evidence_timing(now - REPORT_TTL_SECS - 1, now - REPORT_TTL_SECS - 1, now),
-            Err(ReportingError::Expired)
-        ));
-
-        // Envelope not anchored to the evidence: observed_at (and therefore
-        // expires_at) drifting away from signed_at would decouple the chain's
-        // envelope-expiry check from the evidence age.
-        assert!(matches!(
-            validate_pre_evidence_timing(
-                now - 5,
-                now - 5 - PRE_RESPONSE_OBSERVED_AT_SLACK_SECS - 1,
-                now
-            ),
+            validate_pre_evidence_anchor(CHAIN_BLOCK_GRACE_SECS - 1, 0),
             Err(ReportingError::Unauthorized(_))
         ));
     }

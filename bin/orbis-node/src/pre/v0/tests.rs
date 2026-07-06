@@ -84,7 +84,6 @@ fn test_report_binding(
 ) -> PreReportBinding {
     let ring_post = get_test_ring_post(dummy_bulletin);
     PreReportBinding::from_ring(dummy_bulletin.chain_id(), ring_post.id, ring_payload)
-        .expect("report binding")
 }
 
 /// End-to-end test: DKG → Alice encrypts → PRE to Bob → Bob decrypts
@@ -1471,8 +1470,7 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
                 "local-verify-failure-ring".to_string(),
                 String::new(),
                 String::new(),
-            )
-            .expect("report binding"),
+            ),
         )
         .await;
 

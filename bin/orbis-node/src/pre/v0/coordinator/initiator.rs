@@ -22,7 +22,6 @@ use crypto::r#trait::{
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use crypto::{PolynomialCommitmentImpl, PubPolyImpl, SigShareInner, SignImpl, SignaturePoint};
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 impl<D, T> PreCoordinator<D, T>
 where
     D: Dkg<
@@ -340,7 +339,6 @@ where
                                 object_id: &ctx.object_id,
                                 rdr_pk: &ctx.rdr_pk_bytes,
                                 derivation: ctx.derivation.as_deref(),
-                                observed_at: report_binding.observed_at,
                             };
                             match Self::verify_peer_response(
                                 &dealer,
@@ -487,7 +485,6 @@ where
                 object_id: &ctx.object_id,
                 rdr_pk: &ctx.rdr_pk_bytes,
                 derivation: ctx.derivation.as_deref(),
-                observed_at: report_binding.observed_at,
             };
             match Self::verify_peer_response(
                 &dealer,
@@ -635,7 +632,6 @@ where
                             object_id: &object_id,
                             rdr_pk: &rdr_pk_bytes,
                             derivation: derivation.as_deref(),
-                            observed_at: report_binding.observed_at,
                         };
                         match Self::verify_peer_response(
                             &dealer,
@@ -715,13 +711,14 @@ where
 
 /// Chain/ring context an invalid-proof report needs, captured from the same
 /// bulletin payloads the service layer fetched to authorize the PRE request.
+/// (Report envelope timing derives from the evidence's own `signed_at`, so no
+/// timestamp is captured here.)
 #[derive(Clone)]
 pub(crate) struct PreReportBinding {
     chain_id: String,
     ring_id: String,
     ring_pk: String,
     ring_state_sha256: String,
-    observed_at: u64,
 }
 
 impl PreReportBinding {
@@ -730,32 +727,19 @@ impl PreReportBinding {
         ring_id: String,
         ring_pk: String,
         ring_state_sha256: String,
-    ) -> Result<Self> {
-        // Backdate observed_at so the report's `observed_at <= block_time` check
-        // passes gas simulation against ~5s blocks (same rule as offline reports).
-        const CHAIN_BLOCK_GRACE_SECS: u64 = 10;
-        let observed_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| PreError::SystemTime(format!("Failed to get timestamp: {}", e)))?
-            .as_secs()
-            .saturating_sub(CHAIN_BLOCK_GRACE_SECS);
-        Ok(Self {
+    ) -> Self {
+        Self {
             chain_id,
             ring_id,
             ring_pk,
             ring_state_sha256,
-            observed_at,
-        })
+        }
     }
 
     /// Build the binding from the ring payload the caller already fetched.
     /// `ring_id` is the document's ring id (the value responders bind into
     /// their signed response statements).
-    pub(crate) fn from_ring(
-        chain_id: String,
-        ring_id: String,
-        ring_payload: &RingPayload,
-    ) -> Result<Self> {
+    pub(crate) fn from_ring(chain_id: String, ring_id: String, ring_payload: &RingPayload) -> Self {
         Self::new(
             chain_id,
             ring_id,

@@ -204,7 +204,7 @@ where
             self.state.bulletin.chain_id(),
             document_payload.ring_id.clone(),
             &ring_payload,
-        )?;
+        );
         let ring = RingConfig {
             ring_id: document_payload.ring_id.clone(),
             ring_pk_bytes,

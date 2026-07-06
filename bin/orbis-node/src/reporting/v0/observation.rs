@@ -3,7 +3,7 @@ use crate::helpers::identity::extract_node_part;
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::error::PreError;
 use crate::reporting::v0::types::{
-    CommitteeScope, PreInvalidReencryptionProof, NODE_OFFLINE_REPORT_TYPE,
+    CommitteeScope, PreInvalidReencryptionProof, CHAIN_BLOCK_GRACE_SECS, NODE_OFFLINE_REPORT_TYPE,
     PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE,
 };
 use crate::sign::v0::error::SignError;
@@ -166,7 +166,6 @@ pub fn offline_observation_from_peer_routes(
     // Subtract a grace period so observed_at is behind the chain's latest block time.
     // Gas simulation checks observed_at <= block_time; blocks are ~5s apart, so without
     // this buffer the check fails when the report is submitted before the next block.
-    const CHAIN_BLOCK_GRACE_SECS: u64 = 10;
     let observed_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?

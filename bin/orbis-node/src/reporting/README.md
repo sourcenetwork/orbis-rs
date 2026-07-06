@@ -71,13 +71,61 @@ These should not create `node_offline` reports:
 
 - peer application errors;
 - malformed responses;
-- invalid shares;
-- verification failures;
+- invalid shares / verification failures (these create
+  `pre_invalid_reencryption_proof` reports instead — see below);
 - canceled stragglers after PRE already has enough shares.
 
 The payload must stay sanitized. `NodeOffline` records only the originating
 protocol/version and committee scopes. It must not include JWTs, object IDs,
 ciphertexts, raw error text, or transport sub-stage details.
+
+## `pre_invalid_reencryption_proof` flow
+
+A PRE responder signs every `ReencryptResponse` with its secp256k1 chain key
+(`NodeSigningKey`; the ring-registered `node_key` is exactly that key's
+compressed public key hex). The signature covers a canonical
+`PreReencryptResponseStatement`: domain tag (`orbis-pre-reencrypt-response-v1`),
+chain_id, ring_id, ring_pk, ring_state_sha256, protocol_version, request_id,
+`signed_at` (unix seconds at response time), responder_node_key, object_id,
+rdr_pk, optional derivation, from_node_id, share, challenge, proof, and the
+crypto backend name. The coordinator rebuilds the statement from its own
+context, so any disagreement (or a missing/forged signature) rejects the
+response outright — a share is only usable if it is fully attributable.
+
+When a signature-valid response fails `dealer.verify()` (the NIZK does not
+verify against the ring polynomial), the coordinator queues a
+`pre_invalid_reencryption_proof` observation carrying the signed statement as
+evidence — inline during collection, or via the response drain if the result
+arrives after threshold. Deserialization failures stay unreported (corruption
+in transit is not misbehavior), and a stale/future `signed_at` rejects the
+response the same way a bad signature does.
+
+Signer-side validation (no health probe for this type):
+
+- statement↔envelope binding: chain_id, ring_id, ring_pk, ring_state digest,
+  `request_id == session_id`, `responder_node_key == accused_node_key`;
+- accused node-id mapping: `from_node_id` must equal the accused's canonical
+  DKG index in the current ring;
+- evidence signature: secp256k1 verify under `accused_node_key`;
+- **evidence anchor**: `observed_at == signed_at - CHAIN_BLOCK_GRACE_SECS`
+  (exactly). This pins the envelope's fixed `observed_at + REPORT_TTL_SECS`
+  expiry to the evidence's age, so the shared shape checks already reject
+  stale or future evidence and the chain's plain TTL dedupe records provably
+  outlive any resubmission of the same evidence — one accepted report per
+  (request, accused), ever, with no extra retention rules;
+- re-verification: fetch the document by object_id from the bulletin
+  (authoritative enc_cmt), load the local `RingPolyState` polynomial, and run
+  `verify()` on the evidence — if the proof actually verifies, refuse to sign
+  (anti-framing gate).
+
+Notes: `session_id` is the PRE `request_id`, so chain session-dedupe yields
+per-request demerits ("keep submitting invalid proofs, keep getting
+demerited"). Demerit weight is the ring's `pre_invalid_proof_demerits`
+(DemeritConfig; feeds the cross-repo ring-state digest). The
+`response_signature`/`signed_at` wire fields are mandatory — all ring nodes
+must upgrade together. A node whose shares went stale (e.g. it missed a PSS
+refresh) produces honestly-signed proofs that fail verification and will be
+demerited; like `node_offline`, the report attributes fault, not intent.
 
 ## Common validation gates
 

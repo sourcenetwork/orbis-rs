@@ -8,17 +8,14 @@ pub const NODE_OFFLINE_REPORT_TYPE: &str = "node_offline";
 pub const PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE: &str = "pre_invalid_reencryption_proof";
 pub const PRE_REENCRYPT_RESPONSE_DOMAIN: &str = "orbis-pre-reencrypt-response-v1";
 pub const REPORT_TTL_SECS: u64 = 120;
-/// Forward tolerance when checking `PreReencryptResponseStatement::signed_at`
-/// against a local clock — a statement timestamped further in the future than
-/// this is rejected.
-pub const PRE_RESPONSE_MAX_CLOCK_SKEW_SECS: u64 = 60;
-/// Maximum |observed_at - signed_at| allowed between a report envelope and the
-/// evidence statement it carries. Anchoring the envelope to the evidence makes
-/// the envelope's fixed `observed_at + REPORT_TTL_SECS` expiry double as the
-/// evidence expiry, so the chain's existing expiry check bounds how long the
-/// evidence stays submittable. Covers observed_at backdating (10s), responder
-/// handling time, and clock skew.
-pub const PRE_RESPONSE_OBSERVED_AT_SLACK_SECS: u64 = 90;
+/// Reporters backdate `observed_at` by this so the `observed_at <= block_time`
+/// check passes gas simulation against ~5s blocks. pre_invalid_reencryption_proof
+/// envelopes are pinned to their evidence via
+/// `observed_at == signed_at - CHAIN_BLOCK_GRACE_SECS`, which makes the
+/// envelope's fixed `observed_at + REPORT_TTL_SECS` expiry double as the
+/// evidence expiry — a plain TTL dedupe record on chain then always outlives
+/// any resubmission of the same evidence.
+pub const CHAIN_BLOCK_GRACE_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -351,6 +348,7 @@ fn write_string_vec(out: &mut Vec<u8>, values: &[String]) {
 
 fn write_demerit_config(out: &mut Vec<u8>, value: &bulletin::r#trait::DemeritConfig) {
     write_u64(out, value.node_offline_demerits);
+    write_u64(out, value.pre_invalid_proof_demerits);
     write_u64(out, value.reset_interval_seconds);
 }
 
@@ -548,7 +546,7 @@ mod tests {
             ring_state_sha256: "11".repeat(32),
             protocol_version: 7,
             request_id: "pre-request-1".to_string(),
-            signed_at: 1_700_000_000,
+            signed_at: 1_700_000_000 + CHAIN_BLOCK_GRACE_SECS,
             responder_node_key: "accused".to_string(),
             object_id: "object-1".to_string(),
             rdr_pk: vec![1, 2, 3],
@@ -646,7 +644,7 @@ mod tests {
         assert_ne!(ring_state_sha256(&a), ring_state_sha256(&b));
         assert_eq!(
             ring_state_sha256(&a),
-            "7da44e690e8cb8c223ee4ce80d35b12c7f41e92bbac5a114f89c26657b4148db"
+            "f6561137d2827315c438a8e0608cdf86748e7e7d0aa4b741dedc065f536c7861"
         );
 
         a.threshold = 1;

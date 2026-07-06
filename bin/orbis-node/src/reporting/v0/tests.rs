@@ -5,7 +5,8 @@ use super::observation::{
 use super::queue_report;
 use super::types::{
     ring_state_sha256, CommitteeScope, PreInvalidReencryptionProof, PreReencryptResponseStatement,
-    ReportEnvelope, PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN,
+    ReportEnvelope, CHAIN_BLOCK_GRACE_SECS, PRE_INVALID_REENCRYPTION_PROOF_REPORT_TYPE,
+    PRE_REENCRYPT_RESPONSE_DOMAIN,
 };
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::helpers::node_routes::resolve_node_routes;
@@ -257,10 +258,8 @@ async fn threshold_signs_pre_invalid_proof_report_without_accused_node() {
     let signing_key_hex = String::from_utf8(signing_key.to_vec()).unwrap();
     let response_signature =
         sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes()).unwrap();
-    let observed_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    // The envelope must be anchored to the evidence: observed_at == signed_at - grace.
+    let observed_at = signed_at - CHAIN_BLOCK_GRACE_SECS;
     let observation = PreInvalidReencryptionProofObservation {
         ring_id: ring_id.clone(),
         accused_node_key: accused_node_key.clone(),

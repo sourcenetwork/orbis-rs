@@ -1,14 +1,11 @@
-//! Docker-based integration test: PRE and Sign offline fault reports submitted on-chain.
+//! Docker-based integration tests for report submission on-chain.
 //!
-//! Spins up a full Docker Compose environment, stops node3, then verifies that:
-//! 1. PRE succeeds with 2/3 shares and an offline report for node3 is accepted on SourceHub.
-//! 2. Sign (node3 still offline) succeeds with 2/3 shares and a second report is accepted.
-//! 3. node3 restarts with a corrupted ring share; PRE still succeeds and a
-//!    pre_invalid_reencryption_proof report for node3 is accepted (requires
-//!    chain-side support for the report type).
+//! Offline reporting and invalid-proof reporting are kept in separate tests so
+//! each fault path has its own isolated setup and assertions.
 //!
 //! Run with:
-//!   cargo test --features integration-test test_pre_offline_triggers_on_chain_report -- --nocapture
+//!   cargo test -p orbis-node --features integration-test test_pre_and_sign_offline_triggers_on_chain_report -- --nocapture
+//!   cargo test -p orbis-node --features integration-test test_pre_invalid_reencryption_proof_triggers_on_chain_report -- --nocapture
 
 use crate::helpers::test_helpers::wait_for_ring_finalized;
 use crate::ring_state::RingShareBundle;
@@ -54,9 +51,8 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
                     "threshold": 2,
                     "pss_interval": 86400,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    // kick_threshold=10: this test accumulates three accepted reports
-                    // against node3 (PRE offline, Sign offline, PRE invalid proof) and
-                    // must not trigger the auto-kick reshare mid-test.
+                    // kick_threshold=10: this test accumulates two accepted offline
+                    // reports against node3 and must not trigger the auto-kick reshare.
                     "reporting": reporting_genesis_json(1, &[], 10)
                 }]
             }),
@@ -345,7 +341,7 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
     assert!(
         [NODE_KEY_1, NODE_KEY_2].contains(&sign_event.reporter_node_key.as_str()),
         "reporter should be one of the non-accused current-committee members, got {}",
-        event.reporter_node_key
+        sign_event.reporter_node_key
     );
 
     // Both the PRE and Sign reports were accepted: node3 should have demerits.
@@ -359,16 +355,184 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         "node3 should have exactly 2 demerits after 2 accepted offline reports"
     );
     println!("node3 demerit points: {demerits}");
+}
 
-    // ── PRE invalid proof: node3 comes back with a corrupted share ──────────
-    println!("Restarting node3...");
-    let node3_endpoint = network.start_service(IntegrationTestNetwork::NODE3_SERVICE);
-    crate::helpers::test_helpers::wait_for_nodes_ready(
-        &[node3_endpoint.as_str()],
-        90,
-        Duration::from_secs(1),
+#[tokio::test]
+#[serial_test::serial]
+async fn test_pre_invalid_reencryption_proof_triggers_on_chain_report() {
+    println!("Starting PRE invalid-proof reporting integration test...");
+
+    let network = IntegrationTestNetwork::builder()
+        .with_module_genesis(
+            "orbis",
+            serde_json::json!({
+                "rings": [{
+                    "id": RING_ID,
+                    "ring_pk": "",
+                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+                    "threshold": 2,
+                    "pss_interval": 86400,
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "reporting": reporting_genesis_json(1, &[], 3)
+                }]
+            }),
+        )
+        .build();
+
+    let chain_config = network.chain_config();
+    let endpoints = network.all_endpoints();
+    let endpoint = endpoints[0].to_string();
+    let node3_endpoint = endpoints[2].to_string();
+
+    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
+        .await;
+
+    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
+        .await
+        .expect("query node1 info");
+    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
+        .await
+        .expect("query node2 info");
+    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
+        .await
+        .expect("query node3 info");
+
+    assert_eq!(node1_info.node_key, NODE_KEY_1, "node1 key mismatch");
+    assert_eq!(node2_info.node_key, NODE_KEY_2, "node2 key mismatch");
+    assert_eq!(node3_info.node_key, NODE_KEY_3, "node3 key mismatch");
+
+    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node1_info.p2p_address,
+        IntegrationTestNetwork::NODE1_SERVICE,
+    );
+    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node2_info.p2p_address,
+        IntegrationTestNetwork::NODE2_SERVICE,
+    );
+    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node3_info.p2p_address,
+        IntegrationTestNetwork::NODE3_SERVICE,
+    );
+
+    let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
+    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
+
+    let controller_client = SourceHubClient::with_signer(
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
+    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
+        &controller_client,
+        RING_ID,
+        &node_keys,
     )
     .await;
+    assert_eq!(
+        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+        "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
+    );
+
+    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
+        wait_for_node_info_on_chain(
+            &controller_client,
+            node_key,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
+
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
+    }
+
+    println!("Starting DKG for ring {RING_ID}...");
+    cli_tool::do_dkg(endpoint.clone(), RING_ID.to_string())
+        .await
+        .expect("DKG should succeed");
+
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, Duration::from_secs(90)).await;
+    println!(
+        "DKG finalized. Ring PK: {}...",
+        &ring_pk_hex[..40.min(ring_pk_hex.len())]
+    );
+
+    // Set up ACP policy and a secret so PRE has something to decrypt.
+    let resource = "document".to_string();
+    let permission = "read".to_string();
+    let did_pk_string = "invalid-proof-report-test-did".to_string();
+    let policy_id = cli_tool::add_policy_to_chain_with_config(chain_config.clone())
+        .await
+        .expect("add policy");
+
+    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
+    let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize sk"));
+    let reader_pk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize pk"));
+
+    let prepared = cli_tool::prepare_secret(
+        b"invalid-proof-report-test-secret",
+        &ring_pk_hex,
+        None,
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+        None,
+        None,
+        None,
+    )
+    .expect("prepare_secret");
+
+    let store_result = store_secret_with_retry(
+        endpoint.clone(),
+        &prepared,
+        RING_ID.to_string(),
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+        Some(did_pk_string.clone()),
+    )
+    .await;
+    let object_id = store_result.object_id.clone();
+
+    cli_tool::register_object_to_chain_with_config(
+        policy_id.clone(),
+        object_id.clone(),
+        resource.clone(),
+        chain_config.clone(),
+    )
+    .await
+    .expect("register object");
+
+    cli_tool::set_relationship_on_chain_with_config(
+        policy_id.clone(),
+        object_id.clone(),
+        resource.clone(),
+        "reader".to_string(),
+        Some(did_pk_string.clone()),
+        chain_config.clone(),
+    )
+    .await
+    .expect("set relationship");
 
     // Corrupt node3's stored ring share: bump the secret scalar by one. Its
     // reencryptions stay well-formed and honestly signed, but the NIZK proof no
@@ -381,7 +545,7 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         key_type: LocalStorageKeyType::RingKey as i32,
         ring_key: aggregate_pk.to_string(),
     };
-    let mut unsafe_client = UnsafeTestingServiceClient::connect(node3_endpoint.clone())
+    let mut unsafe_client = UnsafeTestingServiceClient::connect(node3_endpoint)
         .await
         .expect("connect unsafe-testing client to node3");
     let stored = unsafe_client
@@ -416,7 +580,6 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         .expect("store corrupted ring share bundle");
     println!("node3 ring share corrupted.");
 
-    // Fresh subscription for the invalid-proof report.
     let invalid_proof_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
         .await
         .expect("connect invalid-proof report event subscription");
@@ -466,15 +629,14 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         invalid_proof_event.reporter_node_key
     );
 
-    // Three accepted reports total: two node_offline + one invalid proof.
     println!("Checking node3 demerit points after invalid-proof report...");
     let demerits = controller_client
         .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
         .await
         .expect("query node3 demerits");
     assert_eq!(
-        demerits, 3,
-        "node3 should have exactly 3 demerits after the invalid-proof report"
+        demerits, 1,
+        "node3 should have exactly 1 demerit after the invalid-proof report"
     );
     println!("node3 demerit points after invalid-proof report: {demerits}");
 }

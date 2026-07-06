@@ -111,6 +111,7 @@ fn ring_query_conversion_preserves_reporting_config() {
             demerit_config: Some(ChainDemeritConfig {
                 node_offline_demerits: 3,
                 reset_interval_seconds: 42,
+                pre_invalid_proof_demerits: 7,
             }),
             backup_node_keys: vec!["backup-2".to_string(), "backup-1".to_string()],
             kick_threshold: 4,
@@ -125,6 +126,7 @@ fn ring_query_conversion_preserves_reporting_config() {
             demerit_config: DemeritConfig {
                 node_offline_demerits: 3,
                 reset_interval_seconds: 42,
+                pre_invalid_proof_demerits: 7,
             },
             backup_node_keys: vec!["backup-2".to_string(), "backup-1".to_string()],
             kick_threshold: 4,
@@ -321,6 +323,7 @@ async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() 
             demerit_config: DemeritConfig {
                 node_offline_demerits: 1,
                 reset_interval_seconds: 86400,
+                pre_invalid_proof_demerits: 1,
             },
             backup_node_keys: Vec::new(),
             kick_threshold: 3,
@@ -377,6 +380,7 @@ async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() 
         demerit_config: Some(ChainDemeritConfig {
             node_offline_demerits: 3,
             reset_interval_seconds: 42,
+            pre_invalid_proof_demerits: 7,
         }),
         backup_node_keys: vec![backup_key_2.clone(), backup_key_1.clone()],
         kick_threshold: 4,
@@ -406,6 +410,7 @@ async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() 
             demerit_config: DemeritConfig {
                 node_offline_demerits: 3,
                 reset_interval_seconds: 42,
+                pre_invalid_proof_demerits: 7,
             },
             backup_node_keys: vec![backup_key_2, backup_key_1],
             kick_threshold: 4,
