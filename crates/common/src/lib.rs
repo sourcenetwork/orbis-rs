@@ -483,8 +483,11 @@ impl IntegrationTestNetwork {
             panic!("Failed to start service {service}");
         }
         localhost_url(
-            published_port(&self.compose_file, &self.project_name, service, 50051)
-                .unwrap_or_else(|_| panic!("discover restarted {service} endpoint")),
+            published_port(&self.compose_file, &self.project_name, service, 50051).unwrap_or_else(
+                |error| {
+                    panic!("failed to discover {service} endpoint after starting service: {error}")
+                },
+            ),
         )
     }
 }

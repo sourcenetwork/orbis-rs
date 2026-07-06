@@ -164,13 +164,12 @@ impl ReportHandler for NodeOfflineHandler {
             ));
         };
 
-        let ring_post = context
-            .bulletin
-            .read(observation.ring_id.clone(), BulletinKind::Ring)
-            .await
-            .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
-        let ring = RingPayload::try_from(ring_post)
-            .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+        let (ring, ring_config) = build_signing_ring_config(
+            &observation.ring_id,
+            observation.signing_committee_scope,
+            context,
+        )
+        .await?;
 
         let envelope = self.build_envelope(
             &observation,
@@ -178,26 +177,6 @@ impl ReportHandler for NodeOfflineHandler {
             &context.reporter_node_key,
             context.bulletin.chain_id(),
         );
-
-        let signing_committee = committee_for_scope(&ring, observation.signing_committee_scope)?;
-        let node_routes = resolve_node_routes(&context.bulletin, &signing_committee.peer_node_keys)
-            .await
-            .map_err(ReportingError::InvalidReport)?;
-        let peer_ids = peer_ids_from_routes(&node_routes);
-        let ring_pk_bytes = hex::decode(&ring.ring_pk)
-            .map_err(|error| ReportingError::Serialization(error.to_string()))?;
-        let poly_state =
-            RingPolyState::load_from_ring_pk_hex(&context.local_storage, &ring.ring_pk)
-                .map_err(ReportingError::InvalidReport)?;
-        let ring_config = RingConfig {
-            ring_id: observation.ring_id.clone(),
-            ring_pk_bytes,
-            peer_ids,
-            peer_node_keys: signing_committee.peer_node_keys,
-            threshold: signing_committee.threshold as usize,
-            total_participants: node_routes.len(),
-            public_polynomial_hex: poly_state.public_polynomial,
-        };
 
         Ok(PreparedReport {
             signing_options: self.signing_options(&envelope),
@@ -242,21 +221,7 @@ impl ReportHandler for NodeOfflineHandler {
 
         let signing_committee = validate_ring_and_membership(envelope, &payload, &ring)?;
         validate_node_routes(envelope, context, &ring).await?;
-
-        if context.local_node_key == envelope.accused_node_key {
-            return Err(ReportingError::Unauthorized(
-                "the accused node cannot sign its own offline report".to_string(),
-            ));
-        }
-        if !signing_committee
-            .peer_node_keys
-            .iter()
-            .any(|node_key| node_key == &context.local_node_key)
-        {
-            return Err(ReportingError::Unauthorized(
-                "local signer is not in the report ring".to_string(),
-            ));
-        }
+        validate_local_signer(envelope, context, &signing_committee, "offline")?;
 
         if let ReportValidationMode::IndependentSigner {
             perform_health_probe: true,
@@ -351,13 +316,9 @@ impl ReportHandler for PreInvalidReencryptionProofHandler {
             ));
         };
 
-        let ring_post = context
-            .bulletin
-            .read(observation.ring_id.clone(), BulletinKind::Ring)
-            .await
-            .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
-        let ring = RingPayload::try_from(ring_post)
-            .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+        let (ring, ring_config) =
+            build_signing_ring_config(&observation.ring_id, CommitteeScope::Current, context)
+                .await?;
 
         let envelope = self.build_envelope(
             &observation,
@@ -365,26 +326,6 @@ impl ReportHandler for PreInvalidReencryptionProofHandler {
             &context.reporter_node_key,
             context.bulletin.chain_id(),
         );
-
-        let signing_committee = committee_for_scope(&ring, CommitteeScope::Current)?;
-        let node_routes = resolve_node_routes(&context.bulletin, &signing_committee.peer_node_keys)
-            .await
-            .map_err(ReportingError::InvalidReport)?;
-        let peer_ids = peer_ids_from_routes(&node_routes);
-        let ring_pk_bytes = hex::decode(&ring.ring_pk)
-            .map_err(|error| ReportingError::Serialization(error.to_string()))?;
-        let poly_state =
-            RingPolyState::load_from_ring_pk_hex(&context.local_storage, &ring.ring_pk)
-                .map_err(ReportingError::InvalidReport)?;
-        let ring_config = RingConfig {
-            ring_id: observation.ring_id.clone(),
-            ring_pk_bytes,
-            peer_ids,
-            peer_node_keys: signing_committee.peer_node_keys,
-            threshold: signing_committee.threshold as usize,
-            total_participants: node_routes.len(),
-            public_polynomial_hex: poly_state.public_polynomial,
-        };
 
         Ok(PreparedReport {
             signing_options: self.signing_options(&envelope),
@@ -499,6 +440,41 @@ impl PreInvalidReencryptionProofHandler {
         excluded_node_keys.insert(envelope.accused_node_key.clone());
         SigningOptions { excluded_node_keys }
     }
+}
+
+async fn build_signing_ring_config(
+    ring_id: &str,
+    signing_committee_scope: CommitteeScope,
+    context: &ReportPreparationContext,
+) -> Result<(RingPayload, RingConfig)> {
+    let ring_post = context
+        .bulletin
+        .read(ring_id.to_string(), BulletinKind::Ring)
+        .await
+        .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
+    let ring = RingPayload::try_from(ring_post)
+        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+
+    let signing_committee = committee_for_scope(&ring, signing_committee_scope)?;
+    let node_routes = resolve_node_routes(&context.bulletin, &signing_committee.peer_node_keys)
+        .await
+        .map_err(ReportingError::InvalidReport)?;
+    let peer_ids = peer_ids_from_routes(&node_routes);
+    let ring_pk_bytes = hex::decode(&ring.ring_pk)
+        .map_err(|error| ReportingError::Serialization(error.to_string()))?;
+    let poly_state = RingPolyState::load_from_ring_pk_hex(&context.local_storage, &ring.ring_pk)
+        .map_err(ReportingError::InvalidReport)?;
+    let ring_config = RingConfig {
+        ring_id: ring_id.to_string(),
+        ring_pk_bytes,
+        peer_ids,
+        peer_node_keys: signing_committee.peer_node_keys,
+        threshold: signing_committee.threshold as usize,
+        total_participants: node_routes.len(),
+        public_polynomial_hex: poly_state.public_polynomial,
+    };
+
+    Ok((ring, ring_config))
 }
 
 fn validate_ring_and_membership(
