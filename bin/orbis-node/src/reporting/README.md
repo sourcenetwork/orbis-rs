@@ -5,10 +5,11 @@ as PRE, DKG, PSS, and signing should only submit normalized observations here;
 report construction, validation, threshold signing, and delivery should stay in
 this module.
 
-The first supported report type is `node_offline`. It is intentionally small:
-PRE can keep serving the user while reporting tries, in the background, to
-produce a threshold-signed artifact proving that a committee member appears
-offline.
+Supported report types are `node_offline` and
+`pre_invalid_reencryption_proof`. They are intentionally small: protocols can
+keep serving the user while reporting tries, in the background, to produce a
+threshold-signed artifact proving that a committee member appears offline or
+returned an attributable invalid PRE proof.
 
 ## High-level flow
 
@@ -228,8 +229,10 @@ change:
    compare against the claimed `report_id` — mismatch is rejected;
 4. `HasAcceptedReport(report_id)` — reject if this exact signed artifact was
    already accepted;
-5. decode and validate the `node_offline` payload (only known report type
-   today), checking `origin_protocol` is one of `pre`/`sign`/`pss_refresh`/`pss_reshare`;
+5. decode and validate the report payload: `node_offline` checks
+   `origin_protocol` is one of `pre`/`sign`/`pss_refresh`/`pss_reshare`, while
+   `pre_invalid_reencryption_proof` binds the signed PRE response statement to
+   the envelope;
 6. look up the ring, require it finalized, and require `report.ring_pk` /
    `report.ring_state_sha256` to match current on-chain ring state exactly
    (stale ring state is rejected, same as the orbis-rs gate);
@@ -270,8 +273,11 @@ no replay gap opened by forgetting it.
 
 ## Demerits
 
-`DemeritAmountForReportType` (`x/orbis/keeper/demerits.go`) maps a report type
-to a point value — currently `node_offline` -> `ring.DemeritConfig.NodeOfflineDemerits`.
+`DemeritAmountForReportType` (`x/orbis/keeper/demerits.go`) maps each report
+type to a point value: `node_offline` uses
+`ring.DemeritConfig.NodeOfflineDemerits`, and
+`pre_invalid_reencryption_proof` uses
+`ring.DemeritConfig.PreInvalidProofDemerits`.
 `IncrementNodeDemerits` (`x/orbis/keeper/store.go`) then adds that amount to the
 node's running total for `(ring_id, node_key)`. The total lives in a lazily-reset
 window: if the existing window started more than `DemeritConfig.ResetIntervalSeconds`

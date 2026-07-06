@@ -231,16 +231,8 @@ impl ReportHandler for NodeOfflineHandler {
                 "report chain ID does not match the configured bulletin".to_string(),
             ));
         }
-        let effective_version = ring
-            .upgrade_info
-            .effective_version(context.now)
-            .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
-        if effective_version != context.routes.version {
-            return Err(ReportingError::Unauthorized(format!(
-                "report protocol version {} is not effective for ring {}",
-                context.routes.version, envelope.ring_id
-            )));
-        }
+        let effective_version =
+            validate_report_route_version_at_observed_at(envelope, &ring, context.routes.version)?;
         if payload.origin_protocol_version != effective_version {
             return Err(ReportingError::Unauthorized(format!(
                 "report origin protocol version {} does not match effective ring version {}",
@@ -419,16 +411,8 @@ impl ReportHandler for PreInvalidReencryptionProofHandler {
 
         validate_pre_invalid_statement_shape(envelope, &evidence, context, &ring)?;
 
-        let effective_version = ring
-            .upgrade_info
-            .effective_version(context.now)
-            .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
-        if effective_version != context.routes.version {
-            return Err(ReportingError::Unauthorized(format!(
-                "report protocol version {} is not effective for ring {}",
-                context.routes.version, envelope.ring_id
-            )));
-        }
+        let effective_version =
+            validate_report_route_version_at_observed_at(envelope, &ring, context.routes.version)?;
         if statement.protocol_version != effective_version {
             return Err(ReportingError::Unauthorized(format!(
                 "PRE response protocol version {} does not match effective ring version {}",
@@ -529,6 +513,30 @@ fn validate_ring_and_membership(
         payload.signing_committee_scope,
         "offline",
     )
+}
+
+fn report_effective_version_at_observed_at(
+    envelope: &ReportEnvelope,
+    ring: &RingPayload,
+) -> Result<u64> {
+    ring.upgrade_info
+        .effective_version(envelope.observed_at)
+        .map_err(|error| ReportingError::InvalidReport(error.to_string()))
+}
+
+fn validate_report_route_version_at_observed_at(
+    envelope: &ReportEnvelope,
+    ring: &RingPayload,
+    route_version: u64,
+) -> Result<u64> {
+    let effective_version = report_effective_version_at_observed_at(envelope, ring)?;
+    if effective_version != route_version {
+        return Err(ReportingError::Unauthorized(format!(
+            "report protocol version {} is not effective for ring {}",
+            route_version, envelope.ring_id
+        )));
+    }
+    Ok(effective_version)
 }
 
 fn validate_ring_and_membership_for_scopes(
@@ -1015,6 +1023,33 @@ mod tests {
             validate_pre_evidence_anchor(CHAIN_BLOCK_GRACE_SECS - 1, 0),
             Err(ReportingError::Unauthorized(_))
         ));
+    }
+
+    #[test]
+    fn report_protocol_version_is_resolved_at_observed_at() {
+        let mut ring = ring_fixture(2);
+        ring.upgrade_info = UpgradeInfo {
+            current_version: 0,
+            next_version: Some(1),
+            activation_time: Some(110),
+        };
+        let mut report = envelope(&ring);
+        report.observed_at = 100;
+
+        assert_eq!(
+            validate_report_route_version_at_observed_at(&report, &ring, 0).unwrap(),
+            0
+        );
+        assert!(matches!(
+            validate_report_route_version_at_observed_at(&report, &ring, 1),
+            Err(ReportingError::Unauthorized(_))
+        ));
+
+        report.observed_at = 110;
+        assert_eq!(
+            validate_report_route_version_at_observed_at(&report, &ring, 1).unwrap(),
+            1
+        );
     }
 
     #[test]
