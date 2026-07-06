@@ -485,8 +485,11 @@ mod tests {
         };
         assert_eq!(observation.ring_id, "ring");
         assert_eq!(observation.accused_node_key, fixture.responder_node_key);
-        assert_eq!(observation.evidence.statement.proof, fixture.invalid_proof);
-        assert_eq!(observation.evidence.statement.signed_at, now);
+        let InvalidCryptoResponse::Pre { statement, .. } = &observation.evidence else {
+            panic!("PRE observation must carry PRE evidence");
+        };
+        assert_eq!(statement.proof, fixture.invalid_proof);
+        assert_eq!(statement.signed_at, now);
         assert_eq!(
             observation.observed_at,
             now - CHAIN_BLOCK_GRACE_SECS,

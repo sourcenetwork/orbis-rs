@@ -286,10 +286,7 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         .take_submitted_reports();
     assert_eq!(submissions.len(), 1);
     let submission = &submissions[0];
-    assert_eq!(
-        submission.report_type,
-        INVALID_CRYPTO_RESPONSE_REPORT_TYPE
-    );
+    assert_eq!(submission.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
     assert_eq!(submission.accused_node_key, accused_node_key);
     assert_eq!(submission.accused_peer_id, accused_peer_id);
     assert_eq!(submission.session_id, request_id);

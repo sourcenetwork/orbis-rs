@@ -10,10 +10,10 @@ use crate::reporting::v0::observation::{
 };
 use crate::reporting::v0::state::InFlightReportKey;
 use crate::reporting::v0::types::{
-    ring_state_sha256, CommitteeScope, InvalidCryptoResponse, NodeOffline, ReportEnvelope,
-    SignResponseStatement, CHAIN_BLOCK_GRACE_SECS, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
-    NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS,
-    SIGN_RESPONSE_DOMAIN, PreReencryptResponseStatement
+    ring_state_sha256, CommitteeScope, InvalidCryptoResponse, NodeOffline,
+    PreReencryptResponseStatement, ReportEnvelope, SignResponseStatement, CHAIN_BLOCK_GRACE_SECS,
+    INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN,
+    REPORT_DOMAIN, REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN,
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::SigningOptions;
@@ -21,7 +21,9 @@ use crate::sign::v0::helpers::deserialize_commitments;
 use async_trait::async_trait;
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, NodeInfo, RingPayload};
 use common::blockchain::verify_node_message;
-use crypto::r#trait::{CryptoDeserialize, PubShare, ReencryptReply, ThresholdDealer, ThresholdSigner};
+use crypto::r#trait::{
+    CryptoDeserialize, PubShare, ReencryptReply, ThresholdDealer, ThresholdSigner,
+};
 use crypto::{GroupAffine, PreImpl, PubPolyImpl, ScalarField, SigShareInner, SignImpl};
 use local_storage::LocalStorageImpl;
 use network::{Network, PeerId};
@@ -354,15 +356,17 @@ impl ReportHandler for InvalidCryptoResponseHandler {
             InvalidCryptoResponse::Pre {
                 statement,
                 response_signature,
-            } => self
-                .validate_pre_evidence(envelope, context, &ring, statement, response_signature)
-                .await,
+            } => {
+                self.validate_pre_evidence(envelope, context, &ring, statement, response_signature)
+                    .await
+            }
             InvalidCryptoResponse::Sign {
                 statement,
                 response_signature,
-            } => self
-                .validate_sign_evidence(envelope, context, &ring, statement, response_signature)
-                .await,
+            } => {
+                self.validate_sign_evidence(envelope, context, &ring, statement, response_signature)
+                    .await
+            }
         }
     }
 }
@@ -449,16 +453,23 @@ impl InvalidCryptoResponseHandler {
             "Sign invalid-response",
         )?;
         validate_node_routes(envelope, context, &ring).await?;
-        validate_local_signer(envelope, context, &signing_committee, "Sign invalid-response")?;
+        validate_local_signer(
+            envelope,
+            context,
+            &signing_committee,
+            "Sign invalid-response",
+        )?;
 
         let accused_committee = committee_for_scope(ring, statement.accused_committee_scope)?;
-        let expected_node_id =
-            determine_session_node_id(&envelope.accused_node_key, &accused_committee.peer_node_keys)
-                .ok_or_else(|| {
-                    ReportingError::Unauthorized(
-                        "accused node is not in the Sign response node-id map".to_string(),
-                    )
-                })?;
+        let expected_node_id = determine_session_node_id(
+            &envelope.accused_node_key,
+            &accused_committee.peer_node_keys,
+        )
+        .ok_or_else(|| {
+            ReportingError::Unauthorized(
+                "accused node is not in the Sign response node-id map".to_string(),
+            )
+        })?;
         if statement.from_node_id != expected_node_id {
             return Err(ReportingError::Unauthorized(format!(
                 "Sign response from_node_id {} does not match accused node_id {}",
@@ -478,9 +489,7 @@ impl InvalidCryptoResponseHandler {
         require_sign_share_verification_failure(statement, context)
     }
 
-    fn observation(
-        observation: &ReportObservation,
-    ) -> Result<&InvalidCryptoResponseObservation> {
+    fn observation(observation: &ReportObservation) -> Result<&InvalidCryptoResponseObservation> {
         match observation {
             ReportObservation::InvalidCryptoResponse(observation) => Ok(observation.as_ref()),
             _ => Err(ReportingError::InvalidReport(
@@ -897,12 +906,10 @@ fn require_sign_share_verification_failure(
         i: statement.from_node_id,
         v: sig_share_v,
     };
-    let signing_commitments =
-        deserialize_commitments::<SignImpl>(&statement.signing_commitments).map_err(|error| {
-            ReportingError::InvalidReport(format!(
-                "failed to deserialize Sign commitments: {error}"
-            ))
-        })?;
+    let signing_commitments = deserialize_commitments::<SignImpl>(&statement.signing_commitments)
+        .map_err(|error| {
+        ReportingError::InvalidReport(format!("failed to deserialize Sign commitments: {error}"))
+    })?;
     let signer = SignImpl::new();
     match signer.verify_share(
         &statement.message,
@@ -1156,10 +1163,7 @@ mod tests {
         assert_eq!(key.subject_key, "accused");
 
         let built = handler.build_envelope(&observation, &ring, "reporter", "chain".to_string());
-        assert_eq!(
-            built.report_type,
-            INVALID_CRYPTO_RESPONSE_REPORT_TYPE
-        );
+        assert_eq!(built.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
         assert_eq!(built.session_id, "pre-request-1");
         assert_eq!(built.payload, observation.evidence.canonical_bytes());
 

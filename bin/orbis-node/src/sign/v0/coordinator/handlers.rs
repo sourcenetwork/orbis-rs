@@ -3,12 +3,12 @@ use crate::constants::{
     JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
 };
 use crate::helpers::protocol_version::read_ring_for_route;
-use crate::reporting::v0::validate_signing_report;
 use crate::reporting::v0::types::{
     ring_state_sha256, CommitteeScope, InvalidCryptoResponse, NodeOffline, ReportEnvelope,
     SignResponseStatement, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
     SIGN_RESPONSE_DOMAIN,
 };
+use crate::reporting::v0::validate_signing_report;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::helpers::{
@@ -85,8 +85,9 @@ where
                     ring_id, error
                 ))
             })?;
-        serde_json::from_slice(&post.payload)
-            .map_err(|error| SignError::Deserialization(format!("Failed to parse RingPayload: {}", error)))
+        serde_json::from_slice(&post.payload).map_err(|error| {
+            SignError::Deserialization(format!("Failed to parse RingPayload: {}", error))
+        })
     }
 
     async fn read_document_payload(&self, object_id: &str) -> Result<DocumentPayload> {

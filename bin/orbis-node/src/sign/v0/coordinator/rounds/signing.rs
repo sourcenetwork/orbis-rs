@@ -235,8 +235,9 @@ where
                     ring_id, error
                 ))
             })?;
-        serde_json::from_slice(&post.payload)
-            .map_err(|error| SignError::Deserialization(format!("Failed to parse RingPayload: {}", error)))
+        serde_json::from_slice(&post.payload).map_err(|error| {
+            SignError::Deserialization(format!("Failed to parse RingPayload: {}", error))
+        })
     }
 
     async fn read_document_payload_for_sign_report(
