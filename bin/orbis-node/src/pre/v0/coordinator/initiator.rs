@@ -439,9 +439,9 @@ where
             ctx.object_id.clone(),
             ctx.rdr_pk_bytes.clone(),
             ctx.derivation.clone(),
-            rdr_pk.clone(),
+            rdr_pk,
             pub_poly.clone(),
-            enc_cmt.clone(),
+            enc_cmt,
             seen_node_ids.clone(),
         );
 
