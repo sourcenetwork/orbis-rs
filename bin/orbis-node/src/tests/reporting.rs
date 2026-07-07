@@ -611,7 +611,7 @@ async fn test_pre_invalid_reencryption_proof_triggers_on_chain_report() {
     );
 
     assert_eq!(
-        invalid_proof_event.report_type, "pre_invalid_reencryption_proof",
+        invalid_proof_event.report_type, "invalid_crypto_response",
         "unexpected report_type"
     );
     assert_eq!(
