@@ -304,7 +304,11 @@ impl ReportHandler for InvalidCryptoResponseHandler {
         Ok(InFlightReportKey {
             report_type: self.report_type(),
             ring_id: observation.ring_id.clone(),
-            subject_key: observation.accused_node_key.clone(),
+            subject_key: format!(
+                "{}:{}",
+                observation.accused_node_key,
+                observation.evidence.request_id()
+            ),
         })
     }
 
@@ -1012,8 +1016,8 @@ mod tests {
     };
     use crate::reporting::v0::types::{
         CommitteeScope, InvalidCryptoResponse, NodeOffline, PreReencryptResponseStatement,
-        INVALID_CRYPTO_RESPONSE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, REPORT_DOMAIN,
-        REPORT_TTL_SECS,
+        SignResponseStatement, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN,
+        REPORT_DOMAIN, REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN,
     };
     use bulletin::r#trait::UpgradeInfo;
 
@@ -1108,6 +1112,39 @@ mod tests {
         }
     }
 
+    fn sign_invalid_observation() -> InvalidCryptoResponseObservation {
+        InvalidCryptoResponseObservation {
+            ring_id: "ring".to_string(),
+            accused_node_key: "accused".to_string(),
+            accused_peer_id: "aa".repeat(32),
+            observed_at: 100,
+            evidence: InvalidCryptoResponse::Sign {
+                statement: SignResponseStatement {
+                    domain: SIGN_RESPONSE_DOMAIN.to_string(),
+                    chain_id: "chain".to_string(),
+                    ring_id: "ring".to_string(),
+                    ring_pk: "pk".to_string(),
+                    ring_state_sha256: "00".repeat(32),
+                    protocol_version: 0,
+                    request_id: "sign-request-1".to_string(),
+                    signed_at: 110,
+                    responder_node_key: "accused".to_string(),
+                    origin_protocol: "sign".to_string(),
+                    accused_committee_scope: CommitteeScope::Current,
+                    signing_committee_scope: CommitteeScope::Current,
+                    from_node_id: 2,
+                    message: vec![1],
+                    signing_commitments: Vec::new(),
+                    derivation: None,
+                    metadata: None,
+                    sig_share: vec![2],
+                    crypto_backend: "threshold-sign/test".to_string(),
+                },
+                response_signature: vec![5; 64],
+            },
+        }
+    }
+
     #[test]
     fn routes_node_offline_observation_to_handler() {
         let registry = ReportRegistry::with_defaults();
@@ -1160,7 +1197,7 @@ mod tests {
         let key = handler.in_flight_key(&report_observation).unwrap();
         assert_eq!(key.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
         assert_eq!(key.ring_id, "ring");
-        assert_eq!(key.subject_key, "accused");
+        assert_eq!(key.subject_key, "accused:pre-request-1");
 
         let built = handler.build_envelope(&observation, &ring, "reporter", "chain".to_string());
         assert_eq!(built.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
@@ -1170,6 +1207,20 @@ mod tests {
         let options = handler.signing_options(&built);
         assert!(options.excluded_node_keys.contains("accused"));
         assert!(!options.excluded_node_keys.contains("reporter"));
+    }
+
+    #[test]
+    fn invalid_crypto_in_flight_key_includes_evidence_request_id() {
+        let handler = InvalidCryptoResponseHandler;
+        let pre = ReportObservation::InvalidCryptoResponse(Box::new(pre_invalid_observation()));
+        let sign = ReportObservation::InvalidCryptoResponse(Box::new(sign_invalid_observation()));
+
+        let pre_key = handler.in_flight_key(&pre).unwrap();
+        let sign_key = handler.in_flight_key(&sign).unwrap();
+
+        assert_ne!(pre_key, sign_key);
+        assert_eq!(pre_key.subject_key, "accused:pre-request-1");
+        assert_eq!(sign_key.subject_key, "accused:sign-request-1");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use super::SignCoordinator;
 use crate::constants::PEER_RESPONSE_TIMEOUT;
+use crate::helpers::response_manager::ResponseStoreOutcome;
 use crate::sign::v0::error::{Result, SignError};
-use crate::sign::v0::helpers::store_response;
 use crate::sign::v0::messages::SignMessage;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignaturePoint};
@@ -108,47 +108,59 @@ where
         let authenticated_peer_hex = hex::encode(authenticated_peer_id.as_bytes());
         match response {
             response @ SignMessage::NonceResponse { .. } if expects_nonce_response => {
-                let accepted = store_response(
-                    self.routes.version,
-                    response.clone(),
-                    &authenticated_peer_id,
-                    &self.app_state.sign_response_state,
-                )
-                .await;
-                if accepted {
-                    Ok(Some(AuthenticatedSignMessage {
-                        message: response,
-                        sender_peer_hex: authenticated_peer_hex,
-                    }))
-                } else {
-                    tracing::warn!(
-                        peer = %peer_id_str,
-                        authenticated_peer = %authenticated_peer_hex,
-                        "Sign Coordinator: rejecting fast-path nonce response from unexpected or duplicate peer"
-                    );
-                    Ok(None)
+                match self
+                    .app_state
+                    .sign_response_state
+                    .store_response_for_version(
+                        self.routes.version,
+                        response.request_id(),
+                        response.clone(),
+                        authenticated_peer_id.as_bytes(),
+                    )
+                    .await
+                {
+                    ResponseStoreOutcome::Stored | ResponseStoreOutcome::MissingRequest => {
+                        Ok(Some(AuthenticatedSignMessage {
+                            message: response,
+                            sender_peer_hex: authenticated_peer_hex,
+                        }))
+                    }
+                    ResponseStoreOutcome::UnexpectedOrDuplicatePeer => {
+                        tracing::warn!(
+                            peer = %peer_id_str,
+                            authenticated_peer = %authenticated_peer_hex,
+                            "Sign Coordinator: rejecting fast-path nonce response from unexpected or duplicate peer"
+                        );
+                        Ok(None)
+                    }
                 }
             }
             response @ SignMessage::SignResponse { .. } if !expects_nonce_response => {
-                let accepted = store_response(
-                    self.routes.version,
-                    response.clone(),
-                    &authenticated_peer_id,
-                    &self.app_state.sign_response_state,
-                )
-                .await;
-                if accepted {
-                    Ok(Some(AuthenticatedSignMessage {
-                        message: response,
-                        sender_peer_hex: authenticated_peer_hex,
-                    }))
-                } else {
-                    tracing::warn!(
-                        peer = %peer_id_str,
-                        authenticated_peer = %authenticated_peer_hex,
-                        "Sign Coordinator: rejecting fast-path signature response from unexpected or duplicate peer"
-                    );
-                    Ok(None)
+                match self
+                    .app_state
+                    .sign_response_state
+                    .store_response_for_version(
+                        self.routes.version,
+                        response.request_id(),
+                        response.clone(),
+                        authenticated_peer_id.as_bytes(),
+                    )
+                    .await
+                {
+                    ResponseStoreOutcome::Stored | ResponseStoreOutcome::MissingRequest => {
+                        Ok(Some(AuthenticatedSignMessage {
+                            message: response,
+                            sender_peer_hex: authenticated_peer_hex,
+                        }))
+                    }
+                    ResponseStoreOutcome::UnexpectedOrDuplicatePeer => {
+                        tracing::warn!(
+                            peer = %peer_id_str,
+                            authenticated_peer = %authenticated_peer_hex,
+                            "Sign Coordinator: rejecting fast-path signature response from unexpected or duplicate peer"
+                        );
+                        Ok(None)
+                    }
                 }
             }
             SignMessage::Error { error, .. } => {

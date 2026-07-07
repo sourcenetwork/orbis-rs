@@ -1,11 +1,14 @@
 //! Docker-based integration tests for report submission on-chain.
 //!
-//! Offline reporting and invalid-proof reporting are kept in separate tests so
+//! Offline reporting and invalid-crypto reporting are kept in separate tests so
 //! each fault path has its own isolated setup and assertions.
 //!
 //! Run with:
 //!   cargo test -p orbis-node --features integration-test test_pre_and_sign_offline_triggers_on_chain_report -- --nocapture
-//!   cargo test -p orbis-node --features integration-test test_pre_invalid_reencryption_proof_triggers_on_chain_report -- --nocapture
+//!   cargo test -p orbis-node --features integration-test test_invalid_crypto_response_triggers_on_chain_report -- --nocapture
+//!
+//! FROST variant (builds the node containers with decaf377 automatically):
+//!   cargo test -p orbis-node --no-default-features --features "redb,integration-test,decaf377" test_frost_invalid_sign_share_triggers_on_chain_report -- --nocapture
 
 use crate::helpers::test_helpers::wait_for_ring_finalized;
 use crate::ring_state::RingShareBundle;
@@ -359,8 +362,8 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn test_pre_invalid_reencryption_proof_triggers_on_chain_report() {
-    println!("Starting PRE invalid-proof reporting integration test...");
+async fn test_invalid_crypto_response_triggers_on_chain_report() {
+    println!("Starting invalid-crypto reporting integration test...");
 
     let network = IntegrationTestNetwork::builder()
         .with_module_genesis(
@@ -535,9 +538,9 @@ async fn test_pre_invalid_reencryption_proof_triggers_on_chain_report() {
     .expect("set relationship");
 
     // Corrupt node3's stored ring share: bump the secret scalar by one. Its
-    // reencryptions stay well-formed and honestly signed, but the NIZK proof no
-    // longer verifies against the ring polynomial — exactly the misbehavior the
-    // pre_invalid_reencryption_proof report type accuses.
+    // reencryptions and signature shares stay well-formed and honestly signed,
+    // but neither verifies against the ring polynomial — exactly the
+    // misbehavior the invalid_crypto_response report type accuses.
     let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring pk hex");
     let aggregate_pk =
         <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("parse ring pk");
@@ -639,6 +642,392 @@ async fn test_pre_invalid_reencryption_proof_triggers_on_chain_report() {
         "node3 should have exactly 1 demerit after the invalid-proof report"
     );
     println!("node3 demerit points after invalid-proof report: {demerits}");
+
+    // ── Sign: the corrupted share also breaks node3's signature shares ──────
+    // Storing a second secret with proof triggers a ring threshold signature
+    // over the bulletin document (SignContext::Bulletin) — the CLI-reachable
+    // sign path that produces invalid-crypto evidence (policy/JWT signing is
+    // deliberately unreportable). The sign still succeeds with node1 + node2,
+    // while node3's signed response carries a sig share that fails
+    // verification and gets reported — inline if it races ahead of threshold,
+    // otherwise via the sign response drain. Note: this section relies on the
+    // default non-interactive BLS backend, where every ring peer receives a
+    // sign request; FROST's threshold-sized signing set would deterministically
+    // exclude node3.
+    println!("Subscribing to report events for Sign...");
+    let sign_report_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+        .await
+        .expect("connect sign invalid-crypto report event subscription");
+
+    let sign_prepared = cli_tool::prepare_secret(
+        b"invalid-crypto-sign-report-test-secret",
+        &ring_pk_hex,
+        None,
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+        None,
+        None,
+        None,
+    )
+    .expect("prepare_secret for sign");
+
+    println!("Triggering Sign via store-with-proof (expects success with node3 submitting an invalid share)...");
+    let _sign_store = store_secret_with_retry(
+        endpoint.clone(),
+        &sign_prepared,
+        RING_ID.to_string(),
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+        Some(did_pk_string.clone()),
+    )
+    .await;
+    println!("Store with proof succeeded (node3's invalid sig share ignored).");
+
+    println!("Waiting for Sign invalid-crypto EventReportAccepted on chain (up to 120s)...");
+    let sign_event = sign_report_sub
+        .wait_for_report_accepted(RING_ID, Duration::from_secs(120))
+        .await
+        .expect("Sign invalid-crypto EventReportAccepted should be emitted");
+
+    println!(
+        "Sign invalid-crypto report accepted: report_id={} accused={}",
+        sign_event.report_id, sign_event.accused_node_key
+    );
+
+    assert_eq!(
+        sign_event.report_type, "invalid_crypto_response",
+        "unexpected sign report_type"
+    );
+    assert_eq!(
+        sign_event.accused_node_key, NODE_KEY_3,
+        "node3 should be the accused node"
+    );
+    assert_eq!(sign_event.ring_id, RING_ID, "ring_id mismatch");
+    assert!(
+        !sign_event.report_id.is_empty(),
+        "sign report_id should be set"
+    );
+    assert_ne!(
+        sign_event.report_id, invalid_proof_event.report_id,
+        "sign report must be distinct from the PRE report"
+    );
+    assert!(
+        [NODE_KEY_1, NODE_KEY_2].contains(&sign_event.reporter_node_key.as_str()),
+        "reporter should be one of the non-accused current-committee members, got {}",
+        sign_event.reporter_node_key
+    );
+
+    println!("Checking node3 demerit points after Sign invalid-crypto report...");
+    let demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
+        .await
+        .expect("query node3 demerits");
+    assert_eq!(
+        demerits, 2,
+        "node3 should have exactly 2 demerits after the PRE and Sign invalid-crypto reports"
+    );
+    println!("node3 demerit points after Sign invalid-crypto report: {demerits}");
+}
+
+/// FROST-only variant of the Sign invalid-crypto test. Under decaf377 the
+/// signing set is exactly threshold-sized and chosen from whichever nonces
+/// arrive first, so a corrupted node is only exercised when the nonce race
+/// selects it — and when it IS selected, FROST cannot recover the signature
+/// (shares are bound to the commitment set), so the sign fails outright
+/// instead of succeeding around the bad node like BLS does.
+///
+/// The test embraces both properties: it corrupts node2 (the favourite of the
+/// sorted, self-preferring selection), fires single store-with-proof attempts
+/// until one fails — the failure itself is the signal that node2 was selected
+/// and its bad share observed — then asserts the invalid-crypto report landed
+/// on chain with exactly one demerit. A 3-of-3 ring would make selection
+/// deterministic but could never report: the ring must be able to
+/// threshold-sign the report envelope without the accused (the chain enforces
+/// threshold <= peers - 1 when the accused sits in the signing committee).
+#[cfg(feature = "decaf377")]
+#[tokio::test]
+#[serial_test::serial]
+async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
+    println!("Starting FROST invalid sign-share reporting integration test...");
+
+    let network = IntegrationTestNetwork::builder()
+        .with_module_genesis(
+            "orbis",
+            serde_json::json!({
+                "rings": [{
+                    "id": RING_ID,
+                    "ring_pk": "",
+                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+                    "threshold": 2,
+                    "pss_interval": 86400,
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "reporting": reporting_genesis_json(1, &[], 3)
+                }]
+            }),
+        )
+        .build();
+
+    let chain_config = network.chain_config();
+    let endpoints = network.all_endpoints();
+    let endpoint = endpoints[0].to_string();
+    let node2_endpoint = endpoints[1].to_string();
+
+    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
+        .await;
+
+    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
+        .await
+        .expect("query node1 info");
+    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
+        .await
+        .expect("query node2 info");
+    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
+        .await
+        .expect("query node3 info");
+
+    assert_eq!(node1_info.node_key, NODE_KEY_1, "node1 key mismatch");
+    assert_eq!(node2_info.node_key, NODE_KEY_2, "node2 key mismatch");
+    assert_eq!(node3_info.node_key, NODE_KEY_3, "node3 key mismatch");
+
+    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node1_info.p2p_address,
+        IntegrationTestNetwork::NODE1_SERVICE,
+    );
+    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node2_info.p2p_address,
+        IntegrationTestNetwork::NODE2_SERVICE,
+    );
+    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node3_info.p2p_address,
+        IntegrationTestNetwork::NODE3_SERVICE,
+    );
+
+    let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
+    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
+
+    let controller_client = SourceHubClient::with_signer(
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
+    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
+        &controller_client,
+        RING_ID,
+        &node_keys,
+    )
+    .await;
+    assert_eq!(
+        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+        "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
+    );
+
+    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
+        wait_for_node_info_on_chain(
+            &controller_client,
+            node_key,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
+
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
+    }
+
+    println!("Starting DKG for ring {RING_ID}...");
+    cli_tool::do_dkg(endpoint.clone(), RING_ID.to_string())
+        .await
+        .expect("DKG should succeed");
+
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, Duration::from_secs(90)).await;
+    println!(
+        "DKG finalized. Ring PK: {}...",
+        &ring_pk_hex[..40.min(ring_pk_hex.len())]
+    );
+
+    let resource = "document".to_string();
+    let permission = "read".to_string();
+    let did_pk_string = "frost-invalid-sign-report-test-did".to_string();
+    let policy_id = cli_tool::add_policy_to_chain_with_config(chain_config.clone())
+        .await
+        .expect("add policy");
+
+    let prepared = cli_tool::prepare_secret(
+        b"frost-invalid-sign-report-test-secret",
+        &ring_pk_hex,
+        None,
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+        None,
+        None,
+        None,
+    )
+    .expect("prepare_secret");
+
+    // Baseline: store-with-proof must succeed while all shares are honest.
+    // This both proves 3-node FROST signing works and warms every connection
+    // so a later single-shot failure can only mean the corrupted share.
+    println!("Baseline store-with-proof (all nodes honest)...");
+    store_secret_with_retry(
+        endpoint.clone(),
+        &prepared,
+        RING_ID.to_string(),
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+        Some(did_pk_string.clone()),
+    )
+    .await;
+    println!("Baseline store succeeded.");
+
+    // Corrupt node2's stored ring share (see the invalid-crypto test above for
+    // the mechanics). Node2, not node3: the FROST selection prefers self plus
+    // the lowest node IDs, so node2 is the likeliest network pick.
+    let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring pk hex");
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("parse ring pk");
+    let storage_key = LocalStorageKey {
+        key_type: LocalStorageKeyType::RingKey as i32,
+        ring_key: aggregate_pk.to_string(),
+    };
+    let mut unsafe_client = UnsafeTestingServiceClient::connect(node2_endpoint)
+        .await
+        .expect("connect unsafe-testing client to node2");
+    let stored = unsafe_client
+        .get_local_storage(GetLocalStorageRequest {
+            key: Some(storage_key.clone()),
+            access_mode: LocalStorageAccessMode::Encrypted as i32,
+        })
+        .await
+        .expect("read node2 ring share bundle")
+        .into_inner();
+    assert!(stored.found, "node2 ring share bundle should exist");
+    let bundle = RingShareBundle::from_bytes(&stored.value).expect("parse ring share bundle");
+    let pri_share = bundle.pri_share().expect("deserialize node2 share");
+    let corrupted_share = PriShare {
+        i: pri_share.i,
+        v: pri_share.v + ScalarField::from(1u64),
+    };
+    let corrupted_bundle = RingShareBundle {
+        share_bytes: Zeroizing::new(
+            CryptoSerialize::to_bytes(&corrupted_share).expect("serialize corrupted share"),
+        ),
+        public_polynomial: bundle.public_polynomial.clone(),
+        last_pss: bundle.last_pss,
+    };
+    unsafe_client
+        .set_local_storage(SetLocalStorageRequest {
+            key: Some(storage_key),
+            access_mode: LocalStorageAccessMode::Encrypted as i32,
+            value: corrupted_bundle.to_bytes().to_vec(),
+        })
+        .await
+        .expect("store corrupted ring share bundle");
+    println!("node2 ring share corrupted.");
+
+    let report_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+        .await
+        .expect("connect report event subscription");
+
+    // Fire single-shot store attempts. Each attempt runs a fresh FROST round:
+    // if the nonce race selects node3, the sign succeeds and nothing is
+    // reported; once it selects node2, its bad share is observed (queued for
+    // reporting) and the sign fails with InsufficientShares. Break on the
+    // first failure so exactly one report is minted (demerits stay at 1).
+    let mut sign_failed = false;
+    for attempt in 1..=10usize {
+        match cli_tool::store_prepared_secret(
+            endpoint.clone(),
+            &prepared,
+            RING_ID.to_string(),
+            policy_id.clone(),
+            resource.clone(),
+            permission.clone(),
+            Some(did_pk_string.clone()),
+            true,
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(_) => {
+                println!(
+                    "attempt {attempt}: FROST set skipped corrupted node2 (sign succeeded); retrying..."
+                );
+                sleep(Duration::from_secs(1)).await;
+            }
+            Err(e) => {
+                println!("attempt {attempt}: sign failed with corrupted node2 selected: {e}");
+                sign_failed = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        sign_failed,
+        "corrupted node2 was never selected into the FROST signing set in 10 attempts"
+    );
+
+    println!("Waiting for invalid-crypto EventReportAccepted on chain (up to 120s)...");
+    let event = report_sub
+        .wait_for_report_accepted(RING_ID, Duration::from_secs(120))
+        .await
+        .expect("invalid-crypto EventReportAccepted should be emitted");
+
+    println!(
+        "Invalid-crypto report accepted: report_id={} accused={}",
+        event.report_id, event.accused_node_key
+    );
+
+    assert_eq!(
+        event.report_type, "invalid_crypto_response",
+        "unexpected report_type"
+    );
+    assert_eq!(
+        event.accused_node_key, NODE_KEY_2,
+        "node2 should be the accused node"
+    );
+    assert_eq!(event.ring_id, RING_ID, "ring_id mismatch");
+    assert!(!event.report_id.is_empty(), "report_id should be set");
+    assert!(
+        [NODE_KEY_1, NODE_KEY_3].contains(&event.reporter_node_key.as_str()),
+        "reporter should be one of the non-accused current-committee members, got {}",
+        event.reporter_node_key
+    );
+
+    println!("Checking node2 demerit points...");
+    let demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_2)
+        .await
+        .expect("query node2 demerits");
+    assert_eq!(
+        demerits, 1,
+        "node2 should have exactly 1 demerit: attempts stop at the first failed sign"
+    );
+    println!("node2 demerit points: {demerits}");
 }
 
 async fn wait_for_node_info_on_chain(

@@ -13,9 +13,8 @@ use crate::reporting::v0::types::{
     INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
 };
 use crate::ring_state::RingIndexEntry;
-use crate::sign::v0::coordinator::rounds::{
-    make_sign_drain_observation, queue_sign_offline_report,
-};
+use crate::sign::v0::coordinator::network::AuthenticatedSignMessage;
+use crate::sign::v0::coordinator::rounds::queue_sign_offline_report;
 use crate::sign::v0::coordinator::verification::{
     PeerSignatureVerification, SignResponseReportContext,
 };
@@ -446,6 +445,109 @@ where
         });
     }
 
+    /// Drain remaining peer tasks in the background so results that arrive
+    /// after the collection loop broke early still reach `queue_report`:
+    /// transport errors become offline observations and signed responses whose
+    /// sig-shares fail verification become invalid-crypto observations. Verified
+    /// shares arriving here are simply logged — the request already completed.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_response_drain(
+        &self,
+        mut set: tokio::task::JoinSet<(String, Result<Option<AuthenticatedSignMessage>>)>,
+        ring: RingConfig,
+        sign_report_context_base: Option<SignResponseReportContextBase>,
+        context: SignContext,
+        request_id: String,
+        message: Vec<u8>,
+        pub_poly: D::PubPoly,
+        signing_commitments: Vec<(u32, S::NonceCommitment)>,
+        derivation: Option<Vec<u8>>,
+        metadata: Option<Vec<u8>>,
+        mut seen_node_ids: HashSet<u32>,
+    ) {
+        let app_state = self.app_state.clone();
+        let routes = self.routes;
+        tokio::spawn(async move {
+            let signer = S::new();
+            let deadline = tokio::time::Instant::now() + SIGN_COLLECTION_TIMEOUT;
+            while let Ok(Some(res)) = tokio::time::timeout_at(deadline, set.join_next()).await {
+                match res {
+                    Ok((_, Ok(Some(response)))) => {
+                        let Some(expected_node_id) =
+                            determine_ring_node_id_from_peer_id(&response.sender_peer_hex, &ring)
+                        else {
+                            tracing::error!(
+                                sender_peer = %response.sender_peer_hex,
+                                "Sign Coordinator: late response from peer outside ring"
+                            );
+                            continue;
+                        };
+                        let sender_peer_hex = response.sender_peer_hex.clone();
+                        let report_context = sign_report_context_base.as_ref().and_then(|base| {
+                            base.for_peer(&ring, expected_node_id, sender_peer_hex.clone())
+                        });
+                        match Self::verify_peer_signature_response(
+                            &signer,
+                            response.message,
+                            &message,
+                            &pub_poly,
+                            &signing_commitments,
+                            derivation.as_deref(),
+                            metadata.as_deref(),
+                            expected_node_id,
+                            report_context.as_ref(),
+                            &mut seen_node_ids,
+                        ) {
+                            PeerSignatureVerification::InvalidCrypto(observation) => {
+                                let _ = queue_report::<D, S>(
+                                    app_state.clone(),
+                                    routes,
+                                    ReportObservation::InvalidCryptoResponse(observation),
+                                )
+                                .await
+                                .inspect_err(|error| {
+                                    tracing::warn!(
+                                        peer_id = %sender_peer_hex,
+                                        error = %error,
+                                        "Failed to queue sign invalid_crypto_response report observation (post-threshold drain)"
+                                    );
+                                });
+                            }
+                            PeerSignatureVerification::Verified(_) => {
+                                tracing::debug!(
+                                    peer_id = %sender_peer_hex,
+                                    "Sign Coordinator: valid share arrived after collection completed"
+                                );
+                            }
+                            PeerSignatureVerification::Rejected => {}
+                        }
+                    }
+                    Ok((peer_id, Err(e))) => {
+                        tracing::warn!(
+                            peer_id = %peer_id,
+                            error = %e,
+                            "Sign peer request failed (post-threshold drain)"
+                        );
+                        queue_sign_offline_report::<D, S>(
+                            app_state.clone(),
+                            routes,
+                            &ring,
+                            &peer_id,
+                            &e,
+                            &request_id,
+                            &context,
+                            "sign_share_round_drain",
+                        );
+                    }
+                    Ok((_, Ok(None))) => {}
+                    Err(join_err) => {
+                        tracing::error!(error = ?join_err, "Peer sign task panicked in response drain");
+                    }
+                }
+            }
+        });
+    }
+
     /// Inner implementation of initiate_signing
     ///
     /// This is separated so that cleanup can be guaranteed by the outer function.
@@ -805,18 +907,24 @@ where
             }
         }
 
-        // Drain remaining peer tasks in the background for post-threshold offline reporting.
-        crate::reporting::v0::spawn_error_drain::<D, S, _, _, _>(
+        // Drain remaining peer tasks in the background so results that arrive after
+        // the collection loop broke early (threshold met or timeout) still trigger
+        // reports: transport errors map to offline observations, and signed responses
+        // whose sig-shares fail verification map to invalid-crypto observations.
+        // Without the latter, a bad share that loses the race against threshold
+        // completion — the common case in a healthy ring — would go unreported.
+        self.spawn_response_drain(
             set,
-            self.app_state.clone(),
-            self.routes,
-            SIGN_COLLECTION_TIMEOUT,
-            make_sign_drain_observation(
-                ring.clone(),
-                context.clone(),
-                request_id.clone(),
-                self.routes.version,
-            ),
+            ring.clone(),
+            sign_report_context_base.clone(),
+            context.clone(),
+            request_id.clone(),
+            message.clone(),
+            pub_poly.clone(),
+            signing_commitments.clone(),
+            derivation.clone(),
+            metadata.clone(),
+            seen_node_ids.clone(),
         );
 
         // 3. Collect any responses that were already stored before cancellation and
