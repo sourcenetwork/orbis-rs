@@ -382,7 +382,7 @@ impl InvalidCryptoResponseHandler {
     ) -> Result<()> {
         validate_pre_invalid_statement_shape(envelope, statement, response_signature, context)?;
         let effective_version =
-            validate_report_route_version_at_observed_at(envelope, &ring, context.routes.version)?;
+            validate_report_route_version_at_observed_at(envelope, ring, context.routes.version)?;
         if statement.protocol_version != effective_version {
             return Err(ReportingError::Unauthorized(format!(
                 "PRE response protocol version {} does not match effective ring version {}",
@@ -392,12 +392,12 @@ impl InvalidCryptoResponseHandler {
 
         let signing_committee = validate_ring_and_membership_for_scopes(
             envelope,
-            &ring,
+            ring,
             CommitteeScope::Current,
             CommitteeScope::Current,
             "PRE invalid-proof",
         )?;
-        validate_node_routes(envelope, context, &ring).await?;
+        validate_node_routes(envelope, context, ring).await?;
         validate_local_signer(envelope, context, &signing_committee, "PRE invalid-proof")?;
 
         let expected_node_id =
@@ -437,7 +437,7 @@ impl InvalidCryptoResponseHandler {
         validate_sign_response_statement_shape(envelope, statement, response_signature, context)?;
 
         let effective_version =
-            validate_report_route_version_at_observed_at(envelope, &ring, context.routes.version)?;
+            validate_report_route_version_at_observed_at(envelope, ring, context.routes.version)?;
         if statement.protocol_version != effective_version {
             return Err(ReportingError::Unauthorized(format!(
                 "Sign response protocol version {} does not match effective ring version {}",
@@ -452,7 +452,7 @@ impl InvalidCryptoResponseHandler {
             statement.signing_committee_scope,
             "Sign invalid-response",
         )?;
-        validate_node_routes(envelope, context, &ring).await?;
+        validate_node_routes(envelope, context, ring).await?;
         validate_local_signer(
             envelope,
             context,
