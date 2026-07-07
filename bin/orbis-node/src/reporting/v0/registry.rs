@@ -10,10 +10,11 @@ use crate::reporting::v0::observation::{
 };
 use crate::reporting::v0::state::InFlightReportKey;
 use crate::reporting::v0::types::{
-    ring_state_sha256, CommitteeScope, InvalidCryptoResponse, NodeOffline,
+    ring_state_sha256, CommitteeScope, DkgShareStatement, InvalidCryptoResponse, NodeOffline,
     PreReencryptResponseStatement, ReportEnvelope, SignResponseStatement, CHAIN_BLOCK_GRACE_SECS,
-    INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN,
-    REPORT_DOMAIN, REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN,
+    DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
+    NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS,
+    SIGN_RESPONSE_DOMAIN,
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::SigningOptions;
@@ -22,9 +23,13 @@ use async_trait::async_trait;
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, NodeInfo, RingPayload};
 use common::blockchain::verify_node_message;
 use crypto::r#trait::{
-    CryptoDeserialize, PubShare, ReencryptReply, ThresholdDealer, ThresholdSigner,
+    CryptoDeserialize, Dkg, PolynomialCommitment as PolynomialCommitmentTrait, PubShare,
+    ReencryptReply, ThresholdDealer, ThresholdSigner,
 };
-use crypto::{GroupAffine, PreImpl, PubPolyImpl, ScalarField, SigShareInner, SignImpl};
+use crypto::{
+    DkgImpl, GroupAffine, PolynomialCommitmentImpl, PreImpl, PubPolyImpl, ScalarField,
+    SigShareInner, SignImpl, GROUP_POINT_SIZE,
+};
 use local_storage::LocalStorageImpl;
 use network::{Network, PeerId};
 use std::collections::HashMap;
@@ -323,9 +328,12 @@ impl ReportHandler for InvalidCryptoResponseHandler {
             ));
         };
 
-        let (ring, ring_config) =
-            build_signing_ring_config(&observation.ring_id, CommitteeScope::Current, context)
-                .await?;
+        let (ring, ring_config) = build_signing_ring_config(
+            &observation.ring_id,
+            observation.evidence.signing_committee_scope(),
+            context,
+        )
+        .await?;
 
         let envelope = self.build_envelope(
             &observation,
@@ -370,6 +378,19 @@ impl ReportHandler for InvalidCryptoResponseHandler {
             } => {
                 self.validate_sign_evidence(envelope, context, &ring, statement, response_signature)
                     .await
+            }
+            InvalidCryptoResponse::DkgShare {
+                statement,
+                response_signature,
+            } => {
+                self.validate_dkg_share_evidence(
+                    envelope,
+                    context,
+                    &ring,
+                    statement,
+                    response_signature,
+                )
+                .await
             }
         }
     }
@@ -491,6 +512,93 @@ impl InvalidCryptoResponseHandler {
         })?;
 
         require_sign_share_verification_failure(statement, context)
+    }
+
+    async fn validate_dkg_share_evidence(
+        &self,
+        envelope: &ReportEnvelope,
+        context: &ReportValidationContext,
+        ring: &RingPayload,
+        statement: &DkgShareStatement,
+        response_signature: &[u8],
+    ) -> Result<()> {
+        validate_dkg_share_statement_shape(envelope, statement, response_signature, context)?;
+
+        let effective_version =
+            validate_report_route_version_at_observed_at(envelope, ring, context.routes.version)?;
+        if statement.protocol_version != effective_version {
+            return Err(ReportingError::Unauthorized(format!(
+                "DKG share protocol version {} does not match effective ring version {}",
+                statement.protocol_version, effective_version
+            )));
+        }
+
+        let signing_committee = validate_ring_and_membership_for_scopes(
+            envelope,
+            ring,
+            statement.accused_committee_scope,
+            statement.signing_committee_scope,
+            "DKG invalid-share",
+        )?;
+        validate_node_routes(envelope, context, ring).await?;
+        validate_local_signer(envelope, context, &signing_committee, "DKG invalid-share")?;
+
+        let accused_committee = committee_for_scope(ring, statement.accused_committee_scope)?;
+        let expected_from_node_id = determine_session_node_id(
+            &envelope.accused_node_key,
+            &accused_committee.peer_node_keys,
+        )
+        .ok_or_else(|| {
+            ReportingError::Unauthorized(
+                "accused node is not in the DKG share node-id map".to_string(),
+            )
+        })?;
+        if statement.from_node_id != expected_from_node_id {
+            return Err(ReportingError::Unauthorized(format!(
+                "DKG share from_node_id {} does not match accused node_id {}",
+                statement.from_node_id, expected_from_node_id
+            )));
+        }
+
+        let receiver_committee = if statement.origin_protocol == "pss_reshare" {
+            committee_for_scope(ring, CommitteeScope::PendingNew)?
+        } else {
+            committee_for_scope(ring, CommitteeScope::Current)?
+        };
+        let expected_receiver_node_key = receiver_committee
+            .peer_node_keys
+            .get(statement.to_node_id.saturating_sub(1) as usize)
+            .ok_or_else(|| {
+                ReportingError::Unauthorized(format!(
+                    "DKG share to_node_id {} is outside the receiver committee",
+                    statement.to_node_id
+                ))
+            })?;
+        if &statement.receiver_node_key != expected_receiver_node_key {
+            return Err(ReportingError::Unauthorized(
+                "DKG share receiver node key does not match to_node_id".to_string(),
+            ));
+        }
+
+        verify_node_message(
+            &envelope.accused_node_key,
+            &statement.commitment_statement.canonical_bytes(),
+            &statement.commitment_signature,
+        )
+        .map_err(|error| {
+            ReportingError::Unauthorized(format!("invalid DKG commitment signature: {}", error))
+        })?;
+
+        verify_node_message(
+            &envelope.accused_node_key,
+            &statement.canonical_bytes(),
+            response_signature,
+        )
+        .map_err(|error| {
+            ReportingError::Unauthorized(format!("invalid DKG share signature: {}", error))
+        })?;
+
+        require_dkg_share_verification_failure(statement)
     }
 
     fn observation(observation: &ReportObservation) -> Result<&InvalidCryptoResponseObservation> {
@@ -869,11 +977,144 @@ fn validate_sign_response_statement_shape(
     Ok(())
 }
 
+fn validate_dkg_share_statement_shape(
+    envelope: &ReportEnvelope,
+    statement: &DkgShareStatement,
+    response_signature: &[u8],
+    context: &ReportValidationContext,
+) -> Result<()> {
+    if statement.domain != DKG_SHARE_DOMAIN {
+        return Err(ReportingError::InvalidReport(format!(
+            "unexpected DKG share domain {}",
+            statement.domain
+        )));
+    }
+    if statement.chain_id != envelope.chain_id || envelope.chain_id != context.bulletin.chain_id() {
+        return Err(ReportingError::Unauthorized(
+            "DKG share chain ID does not match report chain ID".to_string(),
+        ));
+    }
+    if statement.ring_id != envelope.ring_id
+        || statement.ring_pk != envelope.ring_pk
+        || statement.ring_state_sha256 != envelope.ring_state_sha256
+    {
+        return Err(ReportingError::Unauthorized(
+            "DKG share ring binding does not match report envelope".to_string(),
+        ));
+    }
+    if statement.request_id != envelope.session_id {
+        return Err(ReportingError::Unauthorized(
+            "DKG share request_id does not match report session_id".to_string(),
+        ));
+    }
+    validate_pre_evidence_anchor(statement.signed_at, envelope.observed_at)?;
+    if statement.responder_node_key != envelope.accused_node_key {
+        return Err(ReportingError::Unauthorized(
+            "DKG share responder does not match accused node".to_string(),
+        ));
+    }
+    if !is_valid_invalid_crypto_dkg_origin(&statement.origin_protocol) {
+        return Err(ReportingError::InvalidReport(format!(
+            "unsupported DKG share origin protocol {}",
+            statement.origin_protocol
+        )));
+    }
+    if statement.accused_committee_scope != CommitteeScope::Current
+        || statement.signing_committee_scope != CommitteeScope::Current
+    {
+        return Err(ReportingError::Unauthorized(
+            "DKG share reports must use current accused and signing scopes".to_string(),
+        ));
+    }
+    if statement.from_node_id == 0 || statement.to_node_id == 0 {
+        return Err(ReportingError::InvalidReport(
+            "DKG share node IDs must be non-zero".to_string(),
+        ));
+    }
+    if statement.receiver_node_key.trim().is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "DKG share receiver_node_key cannot be empty".to_string(),
+        ));
+    }
+    if statement.crypto_backend != DkgImpl::name() {
+        return Err(ReportingError::Unauthorized(format!(
+            "DKG share crypto backend {} does not match local backend {}",
+            statement.crypto_backend,
+            DkgImpl::name()
+        )));
+    }
+    if statement.share_value.is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "DKG share value cannot be empty".to_string(),
+        ));
+    }
+    if statement.commitment_signature.is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "DKG commitment signature cannot be empty".to_string(),
+        ));
+    }
+    if response_signature.is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "DKG share signature cannot be empty".to_string(),
+        ));
+    }
+    validate_dkg_commitment_statement_shape(statement)
+}
+
+fn validate_dkg_commitment_statement_shape(statement: &DkgShareStatement) -> Result<()> {
+    let commitment = &statement.commitment_statement;
+    if commitment.domain != DKG_COMMITMENT_DOMAIN {
+        return Err(ReportingError::InvalidReport(format!(
+            "unexpected DKG commitment domain {}",
+            commitment.domain
+        )));
+    }
+    if commitment.chain_id != statement.chain_id
+        || commitment.ring_id != statement.ring_id
+        || commitment.ring_pk != statement.ring_pk
+        || commitment.ring_state_sha256 != statement.ring_state_sha256
+        || commitment.protocol_version != statement.protocol_version
+        || commitment.request_id != statement.request_id
+        || commitment.responder_node_key != statement.responder_node_key
+        || commitment.origin_protocol != statement.origin_protocol
+        || commitment.accused_committee_scope != statement.accused_committee_scope
+        || commitment.signing_committee_scope != statement.signing_committee_scope
+        || commitment.from_node_id != statement.from_node_id
+        || commitment.crypto_backend != statement.crypto_backend
+    {
+        return Err(ReportingError::Unauthorized(
+            "DKG commitment binding does not match DKG share statement".to_string(),
+        ));
+    }
+    if commitment.signed_at > statement.signed_at {
+        return Err(ReportingError::Unauthorized(
+            "DKG commitment was signed after the DKG share".to_string(),
+        ));
+    }
+    if commitment.commitment.is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "DKG commitment cannot be empty".to_string(),
+        ));
+    }
+    if !commitment.commitment.len().is_multiple_of(GROUP_POINT_SIZE) {
+        return Err(ReportingError::InvalidReport(format!(
+            "DKG commitment length {} is not a multiple of {}",
+            commitment.commitment.len(),
+            GROUP_POINT_SIZE
+        )));
+    }
+    Ok(())
+}
+
 fn is_valid_invalid_crypto_sign_origin(origin_protocol: &str) -> bool {
     matches!(
         origin_protocol,
         "sign" | "pss_refresh" | "pss_reshare" | "report"
     )
+}
+
+fn is_valid_invalid_crypto_dkg_origin(origin_protocol: &str) -> bool {
+    matches!(origin_protocol, "pss_refresh" | "pss_reshare")
 }
 
 /// Pin the envelope to the evidence: `observed_at == signed_at - grace`.
@@ -928,6 +1169,47 @@ fn require_sign_share_verification_failure(
         )),
         Err(_) => Ok(()),
     }
+}
+
+fn require_dkg_share_verification_failure(statement: &DkgShareStatement) -> Result<()> {
+    let commitment = deserialize_wire_dkg_commitment(&statement.commitment_statement.commitment)
+        .map_err(|error| {
+            ReportingError::InvalidReport(format!("failed to deserialize DKG commitment: {error}"))
+        })?;
+    let share_value = ScalarField::from_bytes(&statement.share_value).map_err(|error| {
+        ReportingError::InvalidReport(format!("failed to deserialize DKG share value: {error}"))
+    })?;
+
+    if commitment.verify_share(statement.to_node_id, &share_value) {
+        return Err(ReportingError::Unauthorized(
+            "reported DKG share verifies successfully".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn deserialize_wire_dkg_commitment(
+    bytes: &[u8],
+) -> std::result::Result<PolynomialCommitmentImpl, String> {
+    if bytes.is_empty() {
+        return Err("commitment cannot be empty".to_string());
+    }
+    if !bytes.len().is_multiple_of(GROUP_POINT_SIZE) {
+        return Err(format!(
+            "commitment length {} is not a multiple of {}",
+            bytes.len(),
+            GROUP_POINT_SIZE
+        ));
+    }
+
+    let mut coefficients = Vec::with_capacity(bytes.len() / GROUP_POINT_SIZE);
+    for (index, chunk) in bytes.chunks_exact(GROUP_POINT_SIZE).enumerate() {
+        let coeff = GroupAffine::from_bytes(chunk)
+            .map_err(|error| format!("coefficient {index}: {error}"))?;
+        coefficients.push(coeff);
+    }
+
+    Ok(PolynomialCommitmentImpl { coefficients })
 }
 
 async fn require_pre_proof_verification_failure(
@@ -1011,15 +1293,18 @@ async fn read_node_info(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dkg::v0::helpers::serialize_commitment_coefficients;
     use crate::reporting::v0::observation::{
         InvalidCryptoResponseObservation, OfflineObservation, ReportObservation,
     };
     use crate::reporting::v0::types::{
-        CommitteeScope, InvalidCryptoResponse, NodeOffline, PreReencryptResponseStatement,
-        SignResponseStatement, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN,
+        CommitteeScope, DkgCommitmentStatement, DkgShareStatement, InvalidCryptoResponse,
+        NodeOffline, PreReencryptResponseStatement, SignResponseStatement, DKG_COMMITMENT_DOMAIN,
+        DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN,
         REPORT_DOMAIN, REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN,
     };
     use bulletin::r#trait::UpgradeInfo;
+    use crypto::r#trait::{CryptoSerialize, DkgMode, DkgRole};
 
     fn ring_fixture(threshold: u32) -> RingPayload {
         RingPayload {
@@ -1145,6 +1430,80 @@ mod tests {
         }
     }
 
+    fn dkg_share_statement(mutate_share: bool) -> DkgShareStatement {
+        let ring = ring_fixture(2);
+        let mut dealer = DkgImpl::new(2, 2, 3, 7, DkgRole::Standard).unwrap();
+        dealer.generate_polynomial(DkgMode::Fresh).unwrap();
+        let commitment =
+            serialize_commitment_coefficients(&dealer.commitment().coefficients).unwrap();
+        let share = dealer
+            .generate_shares()
+            .unwrap()
+            .into_iter()
+            .find(|share| share.to_id == 1)
+            .unwrap();
+        let mut share_value = <ScalarField as CryptoSerialize>::to_bytes(&share.value).unwrap();
+        if mutate_share {
+            let mut bad_share = ScalarField::from_bytes(&share_value).unwrap();
+            bad_share += ScalarField::from(1u64);
+            share_value = <ScalarField as CryptoSerialize>::to_bytes(&bad_share).unwrap();
+        }
+        let signed_at = CHAIN_BLOCK_GRACE_SECS + 100;
+        let commitment_statement = DkgCommitmentStatement {
+            domain: DKG_COMMITMENT_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: ring.ring_pk.clone(),
+            ring_state_sha256: ring_state_sha256(&ring),
+            protocol_version: 0,
+            request_id: "dkg-session-1".to_string(),
+            signed_at: signed_at - 1,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id: 2,
+            commitment,
+            crypto_backend: DkgImpl::name(),
+        };
+        DkgShareStatement {
+            domain: DKG_SHARE_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: ring.ring_pk.clone(),
+            ring_state_sha256: ring_state_sha256(&ring),
+            protocol_version: 0,
+            request_id: "dkg-session-1".to_string(),
+            signed_at,
+            responder_node_key: "accused".to_string(),
+            receiver_node_key: "reporter".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id: 2,
+            to_node_id: share.to_id,
+            commitment_statement,
+            commitment_signature: vec![7; 64],
+            share_value,
+            nonce: share.nonce,
+            crypto_backend: DkgImpl::name(),
+        }
+    }
+
+    fn dkg_invalid_observation() -> InvalidCryptoResponseObservation {
+        let statement = dkg_share_statement(true);
+        InvalidCryptoResponseObservation {
+            ring_id: "ring".to_string(),
+            accused_node_key: "accused".to_string(),
+            accused_peer_id: "aa".repeat(32),
+            observed_at: statement.signed_at - CHAIN_BLOCK_GRACE_SECS,
+            evidence: InvalidCryptoResponse::DkgShare {
+                statement,
+                response_signature: vec![9; 64],
+            },
+        }
+    }
+
     #[test]
     fn routes_node_offline_observation_to_handler() {
         let registry = ReportRegistry::with_defaults();
@@ -1210,6 +1569,30 @@ mod tests {
     }
 
     #[test]
+    fn dkg_invalid_handler_builds_envelope_from_share_evidence() {
+        let ring = ring_fixture(2);
+        let observation = dkg_invalid_observation();
+        let handler = InvalidCryptoResponseHandler;
+        let report_observation =
+            ReportObservation::InvalidCryptoResponse(Box::new(observation.clone()));
+
+        let key = handler.in_flight_key(&report_observation).unwrap();
+        assert_eq!(key.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
+        assert_eq!(key.ring_id, "ring");
+        assert_eq!(key.subject_key, "accused:dkg-session-1");
+
+        let built = handler.build_envelope(&observation, &ring, "reporter", "chain".to_string());
+        assert_eq!(built.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
+        assert_eq!(built.session_id, "dkg-session-1");
+        assert_eq!(built.payload, observation.evidence.canonical_bytes());
+        assert_eq!(built.observed_at, observation.observed_at);
+
+        let options = handler.signing_options(&built);
+        assert!(options.excluded_node_keys.contains("accused"));
+        assert!(!options.excluded_node_keys.contains("reporter"));
+    }
+
+    #[test]
     fn invalid_crypto_in_flight_key_includes_evidence_request_id() {
         let handler = InvalidCryptoResponseHandler;
         let pre = ReportObservation::InvalidCryptoResponse(Box::new(pre_invalid_observation()));
@@ -1245,6 +1628,64 @@ mod tests {
             validate_pre_evidence_anchor(CHAIN_BLOCK_GRACE_SECS - 1, 0),
             Err(ReportingError::Unauthorized(_))
         ));
+    }
+
+    #[test]
+    fn dkg_share_crypto_failure_is_required() {
+        let bad = dkg_share_statement(true);
+        require_dkg_share_verification_failure(&bad).unwrap();
+
+        let good = dkg_share_statement(false);
+        let error = require_dkg_share_verification_failure(&good).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("reported DKG share verifies successfully"));
+    }
+
+    #[tokio::test]
+    async fn dkg_share_shape_rejects_wrong_origin() {
+        let db_name = "registry_dkg_share_shape_rejects_wrong_origin";
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+        let chain_id = app_state.bulletin.chain_id();
+        let ring = ring_fixture(2);
+        let mut envelope = InvalidCryptoResponseHandler.build_envelope(
+            &dkg_invalid_observation(),
+            &ring,
+            "reporter",
+            chain_id.clone(),
+        );
+        let mut statement = dkg_share_statement(true);
+        statement.chain_id = chain_id.clone();
+        statement.commitment_statement.chain_id = chain_id;
+        statement.origin_protocol = "fresh_dkg".to_string();
+        statement.commitment_statement.origin_protocol = "fresh_dkg".to_string();
+        envelope.payload = InvalidCryptoResponse::DkgShare {
+            statement: statement.clone(),
+            response_signature: vec![9; 64],
+        }
+        .canonical_bytes();
+
+        let error = validate_dkg_share_statement_shape(
+            &envelope,
+            &statement,
+            &[9; 64],
+            &ReportValidationContext {
+                local_node_key: app_state.node_key.clone(),
+                requester_peer_id: None,
+                network: app_state.network.clone(),
+                peer_connection_pool: app_state.peer_connection_pool.clone(),
+                bulletin: app_state.bulletin.clone(),
+                local_storage: app_state.local_storage.clone(),
+                routes: &network::V0,
+                now: envelope.observed_at,
+                mode: ReportValidationMode::ReporterObservation,
+            },
+        )
+        .unwrap_err();
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        assert!(error.to_string().contains("unsupported DKG share origin"));
     }
 
     #[test]

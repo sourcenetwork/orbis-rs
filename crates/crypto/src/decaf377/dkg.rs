@@ -69,6 +69,10 @@ impl Dkg for DKGNode {
     type PubPoly = PubPoly;
     type PolynomialCommitment = PolynomialCommitment;
 
+    fn name() -> String {
+        "dkg/decaf377".to_string()
+    }
+
     fn new(
         id: u32,
         threshold: usize,

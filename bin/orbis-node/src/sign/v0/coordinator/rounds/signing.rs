@@ -308,12 +308,7 @@ where
             INVALID_CRYPTO_RESPONSE_REPORT_TYPE => {
                 let evidence = InvalidCryptoResponse::from_canonical_bytes(&envelope.payload)
                     .map_err(|error| SignError::Unauthorized(error.to_string()))?;
-                Ok(match evidence {
-                    InvalidCryptoResponse::Pre { .. } => CommitteeScope::Current,
-                    InvalidCryptoResponse::Sign { statement, .. } => {
-                        statement.signing_committee_scope
-                    }
-                })
+                Ok(evidence.signing_committee_scope())
             }
             _ => Ok(CommitteeScope::Current),
         }

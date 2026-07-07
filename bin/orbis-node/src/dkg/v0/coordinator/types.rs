@@ -4,7 +4,7 @@ use crypto::{
     PubPolyImpl as PubPoly, ScalarField as Fr,
 };
 
-pub(in crate::dkg::v0::coordinator) trait CoordinatorDkg:
+pub trait CoordinatorDkg:
     Dkg<
         ShareValue = Fr,
         PublicKey = G1Affine,

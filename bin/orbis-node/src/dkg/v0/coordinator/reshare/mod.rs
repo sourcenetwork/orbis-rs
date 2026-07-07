@@ -15,6 +15,6 @@ const RESHARE_PARTICIPANT_SET_SEND_ATTEMPTS: usize = 3;
 const RESHARE_PARTICIPANT_SET_RETRY_DELAY: Duration = Duration::from_millis(100);
 const RESHARE_SHARE_ACK_RETRY_DELAY: Duration = Duration::from_millis(500);
 
-pub(in crate::dkg::v0::coordinator) mod bulletin_update;
-pub(in crate::dkg::v0::coordinator) mod cleanup;
-pub(in crate::dkg::v0::coordinator) mod selection;
+pub mod bulletin_update;
+pub mod cleanup;
+pub mod selection;

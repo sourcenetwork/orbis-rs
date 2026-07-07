@@ -544,6 +544,10 @@ where
     }
 
     let coordinator = DkgCoordinator::with_routes(app_state.clone(), protocol_routes);
+    let init_peer_ids = peer_ids.to_vec();
+    let init_peer_node_keys = ring_payload.peer_node_keys.clone();
+    let init_node_id_to_peer_id = node_id_to_peer_id.clone();
+    let init_ring_id = post_id.clone();
 
     match coordinator
         .create_session(
@@ -560,6 +564,18 @@ where
                         ring_pk_hex: ring_pk_str,
                     };
                     state.pss_interval = pss_interval;
+                    state.routing.peer_ids = init_peer_ids;
+                    state.routing.peer_node_keys = init_peer_node_keys;
+                    state.routing.ring_id = init_ring_id;
+
+                    let mut node_to_peer = std::collections::HashMap::new();
+                    let mut peer_to_node = std::collections::HashMap::new();
+                    for (node_id, peer_id) in init_node_id_to_peer_id {
+                        node_to_peer.insert(node_id, peer_id.clone());
+                        peer_to_node.insert(peer_id, node_id);
+                    }
+                    state.routing.node_id_to_peer_id = node_to_peer;
+                    state.routing.peer_id_to_node_id = peer_to_node;
                 }
             },
         )
@@ -804,6 +820,16 @@ where
     }
 
     let kind_for_init = kind.clone();
+    let init_new_route_peer_ids = new_route_peer_ids.clone();
+    let init_new_peer_node_keys = new_peer_node_keys.clone();
+    let init_ring_id = post_id.clone();
+    let init_old_node_id_to_peer_id = old_node_id_to_peer_id.clone();
+    let pss_interval = ring_payload.pss_interval;
+    let new_node_id_assignments = canonical_node_id_assignments_from_node_keys(&new_peer_node_keys)
+        .map_err(DkgError::InvalidInput)?;
+    let init_new_node_id_to_peer_id =
+        node_id_to_peer_id_from_routes(&new_routes, &new_node_id_assignments)
+            .map_err(DkgError::InvalidInput)?;
     match coordinator
         .create_session(
             session_id,
@@ -814,6 +840,28 @@ where
             move |state| {
                 state.kind = kind_for_init;
                 state.reshare.params = Some(reshare_params);
+                state.pss_interval = pss_interval;
+                state.routing.peer_ids = init_new_route_peer_ids;
+                state.routing.peer_node_keys = init_new_peer_node_keys;
+                state.routing.ring_id = init_ring_id;
+
+                let mut node_to_peer = std::collections::HashMap::new();
+                let mut peer_to_node = std::collections::HashMap::new();
+                for (node_id, peer_id) in init_old_node_id_to_peer_id {
+                    node_to_peer.insert(node_id, peer_id.clone());
+                    peer_to_node.insert(peer_id, node_id);
+                }
+                state.routing.node_id_to_peer_id = node_to_peer;
+                state.routing.peer_id_to_node_id = peer_to_node;
+
+                let mut new_node_to_peer = std::collections::HashMap::new();
+                let mut new_peer_to_node = std::collections::HashMap::new();
+                for (node_id, peer_id) in init_new_node_id_to_peer_id {
+                    new_node_to_peer.insert(node_id, peer_id.clone());
+                    new_peer_to_node.insert(peer_id, node_id);
+                }
+                state.routing.reshare_new_node_id_to_peer_id = new_node_to_peer;
+                state.routing.reshare_new_peer_id_to_node_id = new_peer_to_node;
             },
         )
         .await
@@ -871,8 +919,6 @@ where
         .set_node_peer_mappings(&session_id, old_node_id_to_peer_id.clone())
         .await;
 
-    let new_node_id_assignments = canonical_node_id_assignments_from_node_keys(&new_peer_node_keys)
-        .map_err(DkgError::InvalidInput)?;
     let new_node_id_to_peer_id =
         node_id_to_peer_id_from_routes(&new_routes, &new_node_id_assignments)
             .map_err(DkgError::InvalidInput)?;

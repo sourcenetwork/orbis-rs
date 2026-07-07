@@ -12,7 +12,7 @@ use crate::constants::{
     SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
 };
 use crate::dkg::v0::error::DkgError;
-use crate::dkg::v0::messages::SessionKind;
+use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
 use crate::metrics;
 use crate::ring_state::RingShareBundle;
 use crate::sign::v0::messages::RefreshHealthCheckStatement;
@@ -79,6 +79,7 @@ pub enum RingPssClaimOutcome {
 pub enum DkgMessageType {
     Commitment,
     Share,
+    DkgInvalidShareEvidence,
     ReshareShareAck,
     ReshareParticipantSet,
     RefreshHealthCheckResult,
@@ -143,7 +144,7 @@ pub(crate) struct SessionRoutingState {
 }
 
 pub(crate) struct MessageTrackingState<ShareValue: Zeroize> {
-    pub pending_shares_waiting_for_commitment: HashMap<u32, DistributedShare<ShareValue>>,
+    pub pending_shares_waiting_for_commitment: HashMap<u32, PendingDkgShare<ShareValue>>,
     pub processed: HashSet<(u128, u32, DkgMessageType)>,
     pub processing: HashSet<(u128, u32, DkgMessageType)>,
 }
@@ -156,6 +157,12 @@ impl<ShareValue: Zeroize> Default for MessageTrackingState<ShareValue> {
             processing: HashSet::new(),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PendingDkgShare<ShareValue: Zeroize> {
+    pub share: DistributedShare<ShareValue>,
+    pub report_evidence: Option<SignedDkgShare>,
 }
 
 pub(crate) struct ReshareSessionState<ShareValue: Zeroize> {
@@ -279,6 +286,8 @@ pub struct DkgSessionState<D: Dkg> {
     pub(crate) reshare: ReshareSessionState<D::ShareValue>,
     /// Message ordering and deduplication state.
     pub(crate) messages: MessageTrackingState<D::ShareValue>,
+    /// This node's signed commitment evidence for Refresh/Reshare share reports.
+    pub(crate) local_signed_commitment: Option<SignedDkgCommitment>,
     /// What kind of ceremony this session is running (Fresh, Refresh, or Reshare).
     ///
     /// Drives `generate_polynomial` mode selection and Phase 4 storage/bulletin behaviour.
@@ -315,6 +324,7 @@ impl<D: Dkg> DkgSessionState<D> {
             shares_received: 0,
             reshare: ReshareSessionState::default(),
             messages: MessageTrackingState::default(),
+            local_signed_commitment: None,
             kind: SessionKind::Fresh,
             pss_interval: 0,
             policy_id: None,
@@ -1052,6 +1062,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         &self,
         session_id: &u128,
         share: DistributedShare<D::ShareValue>,
+        report_evidence: Option<SignedDkgShare>,
     ) -> Option<bool> {
         let mut states = self.states.write().await;
         let state = states.get_mut(session_id)?;
@@ -1063,10 +1074,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         {
             return Some(false);
         }
-        state
-            .messages
-            .pending_shares_waiting_for_commitment
-            .insert(from_node_id, share);
+        state.messages.pending_shares_waiting_for_commitment.insert(
+            from_node_id,
+            PendingDkgShare {
+                share,
+                report_evidence,
+            },
+        );
         Some(true)
     }
 
@@ -1075,7 +1089,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         &self,
         session_id: &u128,
         from_node_id: u32,
-    ) -> Option<DistributedShare<D::ShareValue>> {
+    ) -> Option<PendingDkgShare<D::ShareValue>> {
         let mut states = self.states.write().await;
         states
             .get_mut(session_id)?
@@ -1602,12 +1616,12 @@ mod tests {
         };
 
         assert_eq!(
-            mgr.store_pending_share_waiting_for_commitment(&3, share.clone())
+            mgr.store_pending_share_waiting_for_commitment(&3, share.clone(), None)
                 .await,
             Some(true)
         );
         assert_eq!(
-            mgr.store_pending_share_waiting_for_commitment(&3, share)
+            mgr.store_pending_share_waiting_for_commitment(&3, share, None)
                 .await,
             Some(false),
             "a duplicate early share from the same sender should not replace the first"
@@ -1617,8 +1631,8 @@ mod tests {
             .take_pending_share_waiting_for_commitment(&3, 2)
             .await
             .expect("pending share should be present");
-        assert_eq!(drained.from_id, 2);
-        assert_eq!(drained.to_id, 1);
+        assert_eq!(drained.share.from_id, 2);
+        assert_eq!(drained.share.to_id, 1);
         assert!(
             mgr.take_pending_share_waiting_for_commitment(&3, 2)
                 .await

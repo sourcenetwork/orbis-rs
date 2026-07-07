@@ -19,6 +19,7 @@
 //! - [`network`] — peer stream management and message dispatch
 //! - [`phases`] — DKG phase transitions (Phase 1 → 2 → 4)
 
+mod evidence;
 mod inbound;
 mod message_handlers;
 mod network;
@@ -37,10 +38,10 @@ use crate::dkg::v0::messages::DkgMessage;
 use crate::dkg::v0::session_state::{CreateSessionOutcome, DkgMessageType, MessageProcessingClaim};
 use crate::metrics;
 use ::network::PeerId;
-use crypto::r#trait::{Dkg, DkgRole};
+use crypto::r#trait::{DistKeyShare, Dkg, DkgRole, PubShare, ThresholdSigner};
 use crypto::{
     GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
-    PubPolyImpl as PubPoly, ScalarField as Fr,
+    PubPolyImpl as PubPoly, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint,
 };
 use std::sync::Arc;
 
@@ -128,8 +129,8 @@ pub struct DkgCoordinator<D>
 where
     D: Dkg + Clone + 'static,
 {
-    pub(in crate::dkg::v0::coordinator) app_state: Arc<AppState<D>>,
-    pub(in crate::dkg::v0::coordinator) routes: &'static ::network::ProtocolRoutes,
+    pub app_state: Arc<AppState<D>>,
+    pub routes: &'static ::network::ProtocolRoutes,
 }
 
 impl<D> DkgCoordinator<D>
@@ -158,7 +159,19 @@ where
         &self,
         message: DkgMessage,
         sender_peer_id: &PeerId,
-    ) -> Result<Option<DkgMessage>> {
+    ) -> Result<Option<DkgMessage>>
+    where
+        SignImpl: ThresholdSigner<
+                ShareValue = Fr,
+                PublicKey = G1Affine,
+                DistKeyShare = DistKeyShare<Fr>,
+                PubPoly = D::PubPoly,
+                Signature = SignaturePoint,
+                SigShare = PubShare<SigShareInner>,
+            > + Send
+            + Sync
+            + 'static,
+    {
         let session_id = message.session_id();
         let meta = inbound::DkgMessageMeta::from_message(&message);
         metrics::record_dkg_message_received(meta.metric_label);
@@ -324,7 +337,7 @@ where
     }
 
     /// Remove a DKG session from state.
-    pub(in crate::dkg::v0::coordinator) async fn remove_session(&self, session_id: u128) {
+    pub async fn remove_session(&self, session_id: u128) {
         self.app_state
             .dkg_session_state
             .remove_session(&session_id)
@@ -361,7 +374,7 @@ where
     }
 
     /// Open a QUIC stream to a peer, evicting and reconnecting the cached connection on failure.
-    pub(in crate::dkg::v0::coordinator) async fn open_stream_to_peer(
+    pub async fn open_stream_to_peer(
         &self,
         peer_id_str: &str,
     ) -> Result<Box<dyn ::network::Connection>> {

@@ -1,15 +1,12 @@
 use super::*;
 
-pub(in crate::dkg::v0::coordinator) async fn check_and_trigger_phase4<D>(
-    coord: &DkgCoordinator<D>,
-    session_id: u128,
-) -> Result<()>
+pub async fn check_and_trigger_phase4<D>(coord: &DkgCoordinator<D>, session_id: u128) -> Result<()>
 where
     D: CoordinatorDkg,
 {
     drive_event(coord, session_id, DkgEvent::ReadinessChanged, None).await
 }
-pub(in crate::dkg::v0::coordinator) async fn initiate_phase4_completion<D>(
+pub async fn initiate_phase4_completion<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
 ) -> Result<()>

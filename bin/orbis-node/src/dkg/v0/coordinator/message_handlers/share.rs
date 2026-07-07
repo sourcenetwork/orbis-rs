@@ -1,21 +1,37 @@
 use super::*;
+use crate::dkg::v0::coordinator::evidence::{
+    queue_or_relay_invalid_share, share_evidence_proves_failure, verify_share_evidence,
+};
 use crypto::error::CryptoError;
+use crypto::r#trait::{DistKeyShare, PubShare, ThresholdSigner};
+use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint};
 
 /// Handle a `DkgMessage::Share`.
 ///
 /// Validates the share is addressed to this node, deserializes it, passes it to the
 /// crypto layer for verification against the sender's commitment, then checks whether
 /// Phase 2 is complete.
-pub(in crate::dkg::v0::coordinator) async fn handle_share_message<D>(
+pub async fn handle_share_message<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     from_node_id: u32,
     to_node_id: u32,
     share_value: Vec<u8>,
     nonce: [u8; 16],
+    report_evidence: Option<SignedDkgShare>,
 ) -> Result<Option<DkgMessage>>
 where
     D: CoordinatorDkg,
+    SignImpl: ThresholdSigner<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            DistKeyShare = DistKeyShare<Fr>,
+            PubPoly = D::PubPoly,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
+        > + Send
+        + Sync
+        + 'static,
 {
     if share_value.is_empty() {
         return Err(DkgError::ShareVerificationFailed(
@@ -93,6 +109,16 @@ where
         nonce,
         session_id,
     };
+    let report_evidence = verify_share_evidence(
+        coord,
+        session_id,
+        from_node_id,
+        to_node_id,
+        &share_value,
+        nonce,
+        report_evidence,
+    )
+    .await?;
 
     match try_receive_share(coord, session_id, share.clone()).await? {
         Ok(()) => {
@@ -102,7 +128,7 @@ where
             let inserted = coord
                 .app_state
                 .dkg_session_state
-                .store_pending_share_waiting_for_commitment(&session_id, share)
+                .store_pending_share_waiting_for_commitment(&session_id, share, report_evidence)
                 .await
                 .ok_or_else(|| session_not_found(session_id))?;
 
@@ -115,6 +141,19 @@ where
             );
         }
         Err(e) => {
+            if let Some(report_evidence) = report_evidence {
+                if share_evidence_proves_failure(&report_evidence) {
+                    queue_or_relay_invalid_share(coord, session_id, report_evidence).await?;
+                    tracing::warn!(
+                        from_node_id = from_node_id,
+                        to_node_id = to_node_id,
+                        session_id = session_id,
+                        error = %e,
+                        "DKG Coordinator: queued invalid_crypto_response report for bad DKG share"
+                    );
+                    return Ok(None);
+                }
+            }
             return Err(DkgError::ShareVerificationFailed(format!(
                 "Failed to receive share: {}",
                 e
@@ -129,19 +168,45 @@ pub(super) async fn receive_and_record_share<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     share: DistributedShare<D::ShareValue>,
+    report_evidence: Option<SignedDkgShare>,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
+    SignImpl: ThresholdSigner<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            DistKeyShare = DistKeyShare<Fr>,
+            PubPoly = D::PubPoly,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
+        > + Send
+        + Sync
+        + 'static,
 {
     let from_node_id = share.from_id;
     let to_node_id = share.to_id;
 
     match try_receive_share(coord, session_id, share).await? {
         Ok(()) => record_accepted_share(coord, session_id, from_node_id, to_node_id).await,
-        Err(e) => Err(DkgError::ShareVerificationFailed(format!(
-            "Failed to receive share: {}",
-            e
-        ))),
+        Err(e) => {
+            if let Some(report_evidence) = report_evidence {
+                if share_evidence_proves_failure(&report_evidence) {
+                    queue_or_relay_invalid_share(coord, session_id, report_evidence).await?;
+                    tracing::warn!(
+                        from_node_id = from_node_id,
+                        to_node_id = to_node_id,
+                        session_id = session_id,
+                        error = %e,
+                        "DKG Coordinator: queued invalid_crypto_response report for pending bad DKG share"
+                    );
+                    return Ok(());
+                }
+            }
+            Err(DkgError::ShareVerificationFailed(format!(
+                "Failed to receive share: {}",
+                e
+            )))
+        }
     }
 }
 

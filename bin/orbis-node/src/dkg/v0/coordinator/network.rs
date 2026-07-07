@@ -145,6 +145,7 @@ where
         DkgMessage::SessionInit { .. } => "session_init",
         DkgMessage::Commitment { .. } => "commitment",
         DkgMessage::Share { .. } => "share",
+        DkgMessage::DkgInvalidShareEvidence { .. } => "dkg_invalid_share_evidence",
         DkgMessage::ReshareShareAck { .. } => "reshare_share_ack",
         DkgMessage::ReshareParticipantSet { .. } => "reshare_participant_set",
         DkgMessage::RefreshHealthCheckResult { .. } => "refresh_health_check_result",
@@ -751,6 +752,7 @@ mod tests {
                             session_id,
                             from_node_id: 1,
                             commitment: vec![1],
+                            report_evidence: None,
                         },
                         Some(session_id),
                     )
@@ -773,6 +775,7 @@ mod tests {
                             session_id,
                             from_node_id: 1,
                             commitment: vec![2],
+                            report_evidence: None,
                         },
                         Some(session_id),
                     )
@@ -853,6 +856,7 @@ mod tests {
                             session_id,
                             from_node_id: 1,
                             commitment: vec![9],
+                            report_evidence: None,
                         },
                         Some(session_id),
                     )
@@ -947,6 +951,7 @@ mod tests {
                     session_id,
                     from_node_id: 1,
                     commitment: vec![1],
+                    report_evidence: None,
                 },
                 &PeerId::new(remote_peer_id.into_bytes()),
             )

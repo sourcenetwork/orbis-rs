@@ -6,7 +6,7 @@ use crypto::r#trait::Dkg;
 use crate::app_state::AppState;
 use crate::constants::{RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL, RESHARE_BULLETIN_CONFIRM_TIMEOUT};
 
-pub(in crate::dkg::v0::coordinator) fn spawn_bulletin_finalized_cleanup<D>(
+pub fn spawn_bulletin_finalized_cleanup<D>(
     app_state: Arc<AppState<D>>,
     ring_key: Option<String>,
     session_id: u128,

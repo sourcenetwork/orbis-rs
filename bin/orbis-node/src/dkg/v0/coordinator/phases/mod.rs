@@ -25,15 +25,11 @@ mod phase1;
 mod phase2;
 mod phase4;
 
-pub(in crate::dkg::v0::coordinator) use phase1::{
-    check_and_trigger_phase2, initiate_phase1_commitments,
-};
-pub(in crate::dkg::v0::coordinator) use phase2::initiate_phase2_shares;
-pub(in crate::dkg::v0::coordinator) use phase4::{
-    check_and_trigger_phase4, initiate_phase4_completion,
-};
+pub use phase1::{check_and_trigger_phase2, initiate_phase1_commitments};
+pub use phase2::initiate_phase2_shares;
+pub use phase4::{check_and_trigger_phase4, initiate_phase4_completion};
 
-pub(in crate::dkg::v0::coordinator) async fn drive_event<D>(
+pub async fn drive_event<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     event: DkgEvent,
@@ -47,7 +43,7 @@ where
     execute_commands(coord, session_id, transition.commands, peer_ids).await
 }
 
-pub(in crate::dkg::v0::coordinator) async fn drive_post_phase2_event<D>(
+pub async fn drive_post_phase2_event<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     event: DkgEvent,

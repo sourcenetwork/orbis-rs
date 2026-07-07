@@ -30,7 +30,7 @@ use super::DkgCoordinator;
 const REFRESH_HEALTH_CHECK_RESULT_SEND_ATTEMPTS: usize = 3;
 const REFRESH_HEALTH_CHECK_RESULT_RETRY_DELAY: Duration = Duration::from_millis(250);
 
-pub(in crate::dkg::v0::coordinator) async fn run_selector<D>(
+pub async fn run_selector<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     ring_pk_bytes: &[u8],
@@ -238,7 +238,7 @@ fn is_retryable_refresh_health_check_error(error: &SignError) -> bool {
     )
 }
 
-pub(in crate::dkg::v0::coordinator) async fn handle_result<D>(
+pub async fn handle_result<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     from_node_id: u32,
@@ -252,7 +252,7 @@ where
     Ok(None)
 }
 
-pub(in crate::dkg::v0::coordinator) async fn apply_pending_result_if_present<D>(
+pub async fn apply_pending_result_if_present<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
 ) -> Result<()>

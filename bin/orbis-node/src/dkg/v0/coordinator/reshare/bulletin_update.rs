@@ -37,7 +37,7 @@ struct PreparedReshareUpdate {
     chain_id: String,
 }
 
-pub(in crate::dkg::v0::coordinator) async fn update_bulletin_if_selector<D>(
+pub async fn update_bulletin_if_selector<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     kind: &SessionKind,

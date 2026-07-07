@@ -1,18 +1,33 @@
 use super::*;
-
+use crate::dkg::v0::coordinator::evidence::{
+    build_commitment_evidence, verify_commitment_evidence,
+};
+use crypto::r#trait::{DistKeyShare, PubShare, ThresholdSigner};
+use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint};
 /// Handle a `DkgMessage::Commitment`.
 ///
 /// Deserializes and stores the commitment, optionally triggers polynomial generation
 /// for this node (if this is the first commitment received and we haven't yet
 /// generated ours), then checks whether Phase 1 is complete.
-pub(in crate::dkg::v0::coordinator) async fn handle_commitment_message<D>(
+pub async fn handle_commitment_message<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     from_node_id: u32,
     commitment: Vec<u8>,
+    report_evidence: Option<SignedDkgCommitment>,
 ) -> Result<Option<DkgMessage>>
 where
     D: CoordinatorDkg,
+    SignImpl: ThresholdSigner<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            DistKeyShare = DistKeyShare<Fr>,
+            PubPoly = D::PubPoly,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
+        > + Send
+        + Sync
+        + 'static,
 {
     tracing::debug!(
         from_node_id = from_node_id,
@@ -59,6 +74,15 @@ where
             num_coefficients, expected_coeff_count
         )));
     }
+
+    verify_commitment_evidence(
+        coord,
+        session_id,
+        from_node_id,
+        &commitment,
+        report_evidence,
+    )
+    .await?;
 
     let mut commitment_coeffs = Vec::with_capacity(num_coefficients);
     for i in 0..num_coefficients {
@@ -148,6 +172,17 @@ where
                 })
                 .await
                 .ok_or_else(|| session_not_found(session_id))??;
+            let report_evidence =
+                build_commitment_evidence(coord, session_id, node_id, commitment_bytes.clone())
+                    .await?;
+            coord
+                .app_state
+                .dkg_session_state
+                .with_state_mut(&session_id, |state| {
+                    state.local_signed_commitment = report_evidence.clone();
+                })
+                .await
+                .ok_or_else(|| session_not_found(session_id))?;
 
             let mut sent_count = 0;
             let mut expected_count = 0;
@@ -161,6 +196,7 @@ where
                     session_id,
                     from_node_id: node_id,
                     commitment: commitment_bytes.clone(),
+                    report_evidence: report_evidence.clone(),
                 };
 
                 if coord
@@ -252,20 +288,25 @@ where
     {
         tracing::debug!(
             from_node_id = from_node_id,
-            to_node_id = pending_share.to_id,
+            to_node_id = pending_share.share.to_id,
             session_id = session_id,
             "DKG Coordinator: Replaying share that was waiting for commitment"
         );
-        let _ = super::share::receive_and_record_share(coord, session_id, pending_share)
-            .await
-            .inspect_err(|error| {
-                tracing::error!(
-                    from_node_id = from_node_id,
-                    session_id = session_id,
-                    error = %error,
-                    "DKG Coordinator: Queued share failed after commitment arrived"
-                );
-            });
+        let _ = super::share::receive_and_record_share(
+            coord,
+            session_id,
+            pending_share.share,
+            pending_share.report_evidence,
+        )
+        .await
+        .inspect_err(|error| {
+            tracing::error!(
+                from_node_id = from_node_id,
+                session_id = session_id,
+                error = %error,
+                "DKG Coordinator: Queued share failed after commitment arrived"
+            );
+        });
     }
 
     Ok(None)

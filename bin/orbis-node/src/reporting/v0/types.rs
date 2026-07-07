@@ -8,6 +8,8 @@ pub const NODE_OFFLINE_REPORT_TYPE: &str = "node_offline";
 pub const INVALID_CRYPTO_RESPONSE_REPORT_TYPE: &str = "invalid_crypto_response";
 pub const PRE_REENCRYPT_RESPONSE_DOMAIN: &str = "orbis-pre-reencrypt-response-v1";
 pub const SIGN_RESPONSE_DOMAIN: &str = "orbis-sign-response-v1";
+pub const DKG_COMMITMENT_DOMAIN: &str = "orbis-dkg-commitment-v1";
+pub const DKG_SHARE_DOMAIN: &str = "orbis-dkg-share-v1";
 pub const REPORT_TTL_SECS: u64 = 120;
 /// Reporters backdate `observed_at` by this so the `observed_at <= block_time`
 /// check passes gas simulation against ~5s blocks. invalid_crypto_response
@@ -271,6 +273,198 @@ impl SignResponseStatement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgCommitmentStatement {
+    pub domain: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub protocol_version: u64,
+    pub request_id: String,
+    pub signed_at: u64,
+    pub responder_node_key: String,
+    pub origin_protocol: String,
+    pub accused_committee_scope: CommitteeScope,
+    pub signing_committee_scope: CommitteeScope,
+    pub from_node_id: u32,
+    pub commitment: Vec<u8>,
+    pub crypto_backend: String,
+}
+
+impl DkgCommitmentStatement {
+    /// Field order is the canonical wire contract — the chain-side (Go)
+    /// decoder must read fields in exactly this order.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_string(&mut out, &self.domain);
+        write_string(&mut out, &self.chain_id);
+        write_string(&mut out, &self.ring_id);
+        write_string(&mut out, &self.ring_pk);
+        write_string(&mut out, &self.ring_state_sha256);
+        write_u64(&mut out, self.protocol_version);
+        write_string(&mut out, &self.request_id);
+        write_u64(&mut out, self.signed_at);
+        write_string(&mut out, &self.responder_node_key);
+        write_string(&mut out, &self.origin_protocol);
+        out.push(self.accused_committee_scope.tag());
+        out.push(self.signing_committee_scope.tag());
+        write_u32(&mut out, self.from_node_id);
+        write_bytes(&mut out, &self.commitment);
+        write_string(&mut out, &self.crypto_backend);
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let domain = decoder.read_string("domain")?;
+        let chain_id = decoder.read_string("chain_id")?;
+        let ring_id = decoder.read_string("ring_id")?;
+        let ring_pk = decoder.read_string("ring_pk")?;
+        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
+        let protocol_version = decoder.read_u64("protocol_version")?;
+        let request_id = decoder.read_string("request_id")?;
+        let signed_at = decoder.read_u64("signed_at")?;
+        let responder_node_key = decoder.read_string("responder_node_key")?;
+        let origin_protocol = decoder.read_string("origin_protocol")?;
+        let accused_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("accused_committee_scope")?)?;
+        let signing_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("signing_committee_scope")?)?;
+        let from_node_id = decoder.read_u32("from_node_id")?;
+        let commitment = decoder.read_bytes("commitment")?;
+        let crypto_backend = decoder.read_string("crypto_backend")?;
+        decoder.finish()?;
+        Ok(Self {
+            domain,
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            protocol_version,
+            request_id,
+            signed_at,
+            responder_node_key,
+            origin_protocol,
+            accused_committee_scope,
+            signing_committee_scope,
+            from_node_id,
+            commitment,
+            crypto_backend,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgShareStatement {
+    pub domain: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub protocol_version: u64,
+    pub request_id: String,
+    pub signed_at: u64,
+    pub responder_node_key: String,
+    pub receiver_node_key: String,
+    pub origin_protocol: String,
+    pub accused_committee_scope: CommitteeScope,
+    pub signing_committee_scope: CommitteeScope,
+    pub from_node_id: u32,
+    pub to_node_id: u32,
+    pub commitment_statement: DkgCommitmentStatement,
+    pub commitment_signature: Vec<u8>,
+    pub share_value: Vec<u8>,
+    pub nonce: [u8; 16],
+    pub crypto_backend: String,
+}
+
+impl DkgShareStatement {
+    /// Field order is the canonical wire contract — the chain-side (Go)
+    /// decoder must read fields in exactly this order.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_string(&mut out, &self.domain);
+        write_string(&mut out, &self.chain_id);
+        write_string(&mut out, &self.ring_id);
+        write_string(&mut out, &self.ring_pk);
+        write_string(&mut out, &self.ring_state_sha256);
+        write_u64(&mut out, self.protocol_version);
+        write_string(&mut out, &self.request_id);
+        write_u64(&mut out, self.signed_at);
+        write_string(&mut out, &self.responder_node_key);
+        write_string(&mut out, &self.receiver_node_key);
+        write_string(&mut out, &self.origin_protocol);
+        out.push(self.accused_committee_scope.tag());
+        out.push(self.signing_committee_scope.tag());
+        write_u32(&mut out, self.from_node_id);
+        write_u32(&mut out, self.to_node_id);
+        write_bytes(&mut out, &self.commitment_statement.canonical_bytes());
+        write_bytes(&mut out, &self.commitment_signature);
+        write_bytes(&mut out, &self.share_value);
+        write_bytes(&mut out, &self.nonce);
+        write_string(&mut out, &self.crypto_backend);
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let domain = decoder.read_string("domain")?;
+        let chain_id = decoder.read_string("chain_id")?;
+        let ring_id = decoder.read_string("ring_id")?;
+        let ring_pk = decoder.read_string("ring_pk")?;
+        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
+        let protocol_version = decoder.read_u64("protocol_version")?;
+        let request_id = decoder.read_string("request_id")?;
+        let signed_at = decoder.read_u64("signed_at")?;
+        let responder_node_key = decoder.read_string("responder_node_key")?;
+        let receiver_node_key = decoder.read_string("receiver_node_key")?;
+        let origin_protocol = decoder.read_string("origin_protocol")?;
+        let accused_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("accused_committee_scope")?)?;
+        let signing_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("signing_committee_scope")?)?;
+        let from_node_id = decoder.read_u32("from_node_id")?;
+        let to_node_id = decoder.read_u32("to_node_id")?;
+        let commitment_statement = DkgCommitmentStatement::from_canonical_bytes(
+            &decoder.read_bytes("commitment_statement")?,
+        )?;
+        let commitment_signature = decoder.read_bytes("commitment_signature")?;
+        let share_value = decoder.read_bytes("share_value")?;
+        let nonce_bytes = decoder.read_bytes("nonce")?;
+        let nonce = nonce_bytes.try_into().map_err(|bytes: Vec<u8>| {
+            ReportingError::InvalidReport(format!(
+                "DKG share nonce must be 16 bytes, got {}",
+                bytes.len()
+            ))
+        })?;
+        let crypto_backend = decoder.read_string("crypto_backend")?;
+        decoder.finish()?;
+        Ok(Self {
+            domain,
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            protocol_version,
+            request_id,
+            signed_at,
+            responder_node_key,
+            receiver_node_key,
+            origin_protocol,
+            accused_committee_scope,
+            signing_committee_scope,
+            from_node_id,
+            to_node_id,
+            commitment_statement,
+            commitment_signature,
+            share_value,
+            nonce,
+            crypto_backend,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InvalidCryptoResponse {
     Pre {
         statement: PreReencryptResponseStatement,
@@ -278,6 +472,10 @@ pub enum InvalidCryptoResponse {
     },
     Sign {
         statement: SignResponseStatement,
+        response_signature: Vec<u8>,
+    },
+    DkgShare {
+        statement: DkgShareStatement,
         response_signature: Vec<u8>,
     },
 }
@@ -302,6 +500,14 @@ impl InvalidCryptoResponse {
                 write_bytes(&mut out, &statement.canonical_bytes());
                 write_bytes(&mut out, response_signature);
             }
+            Self::DkgShare {
+                statement,
+                response_signature,
+            } => {
+                write_string(&mut out, "dkg_share");
+                write_bytes(&mut out, &statement.canonical_bytes());
+                write_bytes(&mut out, response_signature);
+            }
         }
         out
     }
@@ -321,6 +527,10 @@ impl InvalidCryptoResponse {
                 statement: SignResponseStatement::from_canonical_bytes(&statement_bytes)?,
                 response_signature,
             }),
+            "dkg_share" => Ok(Self::DkgShare {
+                statement: DkgShareStatement::from_canonical_bytes(&statement_bytes)?,
+                response_signature,
+            }),
             value => Err(ReportingError::InvalidReport(format!(
                 "unsupported invalid crypto evidence kind {value}"
             ))),
@@ -331,6 +541,15 @@ impl InvalidCryptoResponse {
         match self {
             Self::Pre { statement, .. } => &statement.request_id,
             Self::Sign { statement, .. } => &statement.request_id,
+            Self::DkgShare { statement, .. } => &statement.request_id,
+        }
+    }
+
+    pub fn signing_committee_scope(&self) -> CommitteeScope {
+        match self {
+            Self::Pre { .. } => CommitteeScope::Current,
+            Self::Sign { statement, .. } => statement.signing_committee_scope,
+            Self::DkgShare { statement, .. } => statement.signing_committee_scope,
         }
     }
 }
@@ -697,6 +916,51 @@ mod tests {
         }
     }
 
+    fn dkg_commitment_statement() -> DkgCommitmentStatement {
+        DkgCommitmentStatement {
+            domain: DKG_COMMITMENT_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "dkg-session-1".to_string(),
+            signed_at: 1_700_000_000,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id: 2,
+            commitment: vec![1, 2, 3],
+            crypto_backend: "dkg/test".to_string(),
+        }
+    }
+
+    fn dkg_share_statement() -> DkgShareStatement {
+        DkgShareStatement {
+            domain: DKG_SHARE_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "dkg-session-1".to_string(),
+            signed_at: 1_700_000_000 + CHAIN_BLOCK_GRACE_SECS,
+            responder_node_key: "accused".to_string(),
+            receiver_node_key: "receiver".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id: 2,
+            to_node_id: 1,
+            commitment_statement: dkg_commitment_statement(),
+            commitment_signature: vec![41; 64],
+            share_value: vec![7, 8],
+            nonce: [9; 16],
+            crypto_backend: "dkg/test".to_string(),
+        }
+    }
+
     #[test]
     fn pre_response_statement_round_trips_and_is_domain_separated() {
         let statement = pre_statement();
@@ -755,6 +1019,36 @@ mod tests {
             InvalidCryptoResponse::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
             payload
         );
+    }
+
+    #[test]
+    fn dkg_share_statement_round_trips_and_binds_nested_commitment() {
+        let statement = dkg_share_statement();
+        assert_eq!(
+            DkgShareStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
+            statement
+        );
+
+        let mut changed = dkg_share_statement();
+        changed.commitment_statement.commitment.push(99);
+        assert_ne!(
+            dkg_share_statement().canonical_bytes(),
+            changed.canonical_bytes()
+        );
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_share_payload_round_trips() {
+        let payload = InvalidCryptoResponse::DkgShare {
+            statement: dkg_share_statement(),
+            response_signature: vec![42; 64],
+        };
+
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
+            payload
+        );
+        assert_eq!(payload.signing_committee_scope(), CommitteeScope::Current);
     }
 
     #[test]

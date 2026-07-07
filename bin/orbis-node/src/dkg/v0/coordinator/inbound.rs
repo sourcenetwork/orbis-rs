@@ -3,19 +3,23 @@ use crate::dkg::v0::helpers::session_not_found;
 use crate::dkg::v0::messages::DkgMessage;
 use crate::dkg::v0::session_state::DkgMessageType;
 use crate::helpers::identity::extract_node_part;
+use crypto::r#trait::{DistKeyShare, PubShare, ThresholdSigner};
+use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint};
 use network::PeerId;
 
-use super::{message_handlers, refresh_health_check, types::CoordinatorDkg, DkgCoordinator};
+use super::{
+    evidence, message_handlers, refresh_health_check, types::CoordinatorDkg, DkgCoordinator,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::dkg::v0::coordinator) enum CommitteeScope {
+pub enum CommitteeScope {
     None,
     Current,
     ReshareNew,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::dkg::v0::coordinator) struct DkgMessageMeta {
+pub struct DkgMessageMeta {
     pub message_type: DkgMessageType,
     pub sender_node_id: Option<u32>,
     pub dedup_node_id: Option<u32>,
@@ -38,6 +42,15 @@ impl DkgMessageMeta {
                 CommitteeScope::Current,
                 "share",
             ),
+            DkgMessage::DkgInvalidShareEvidence {
+                receiver_node_id, ..
+            } => Self {
+                message_type: DkgMessageType::DkgInvalidShareEvidence,
+                sender_node_id: Some(*receiver_node_id),
+                dedup_node_id: None,
+                committee_scope: CommitteeScope::ReshareNew,
+                metric_label: "dkg_invalid_share_evidence",
+            },
             DkgMessage::Complaint { from_node_id, .. } => Self::from_sender(
                 DkgMessageType::Complaint,
                 *from_node_id,
@@ -101,10 +114,7 @@ impl DkgMessageMeta {
     }
 }
 
-pub(in crate::dkg::v0::coordinator) async fn wait_for_session<D>(
-    coord: &DkgCoordinator<D>,
-    session_id: u128,
-) -> Result<()>
+pub async fn wait_for_session<D>(coord: &DkgCoordinator<D>, session_id: u128) -> Result<()>
 where
     D: CoordinatorDkg,
 {
@@ -134,7 +144,7 @@ where
     found.map_err(|_| session_not_found(session_id))
 }
 
-pub(in crate::dkg::v0::coordinator) async fn validate_sender<D>(
+pub async fn validate_sender<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     meta: DkgMessageMeta,
@@ -193,28 +203,46 @@ where
     }
 }
 
-pub(in crate::dkg::v0::coordinator) async fn dispatch<D>(
+pub async fn dispatch<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     message: DkgMessage,
 ) -> Result<Option<DkgMessage>>
 where
     D: CoordinatorDkg,
+    SignImpl: ThresholdSigner<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            DistKeyShare = DistKeyShare<Fr>,
+            PubPoly = D::PubPoly,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
+        > + Send
+        + Sync
+        + 'static,
 {
     match message {
         DkgMessage::Commitment {
             from_node_id,
             commitment,
+            report_evidence,
             ..
         } => {
-            message_handlers::handle_commitment_message(coord, session_id, from_node_id, commitment)
-                .await
+            message_handlers::handle_commitment_message(
+                coord,
+                session_id,
+                from_node_id,
+                commitment,
+                report_evidence,
+            )
+            .await
         }
         DkgMessage::Share {
             from_node_id,
             to_node_id,
             share_value,
             nonce,
+            report_evidence,
             ..
         } => {
             message_handlers::handle_share_message(
@@ -224,8 +252,14 @@ where
                 to_node_id,
                 share_value,
                 nonce,
+                report_evidence,
             )
             .await
+        }
+        DkgMessage::DkgInvalidShareEvidence {
+            report_evidence, ..
+        } => {
+            evidence::handle_invalid_share_evidence_relay(coord, session_id, report_evidence).await
         }
         DkgMessage::Complaint {
             from_node_id,
@@ -330,6 +364,7 @@ mod tests {
                 session_id: 1,
                 from_node_id: 2,
                 commitment: vec![],
+                report_evidence: None,
             },
             DkgMessageType::Commitment,
             Some(2),
@@ -344,6 +379,7 @@ mod tests {
                 to_node_id: 3,
                 share_value: vec![],
                 nonce: [0; 16],
+                report_evidence: None,
             },
             DkgMessageType::Share,
             Some(2),

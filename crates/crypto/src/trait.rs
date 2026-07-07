@@ -531,6 +531,9 @@ pub trait Dkg: Send + Sync {
         PublicKey = Self::PublicKey,
         ShareValue = Self::ShareValue,
     >;
+
+    fn name() -> String;
+
     /// Initialize a new DKG node
     ///
     /// # Arguments

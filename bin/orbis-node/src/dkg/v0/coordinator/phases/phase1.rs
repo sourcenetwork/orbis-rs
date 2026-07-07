@@ -1,6 +1,7 @@
 use super::*;
+use crate::dkg::v0::coordinator::evidence::build_commitment_evidence;
 
-pub(in crate::dkg::v0::coordinator) async fn initiate_phase1_commitments<D>(
+pub async fn initiate_phase1_commitments<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     peer_ids: &[String],
@@ -70,6 +71,16 @@ where
         .dkg_session_state
         .update_phase(&session_id, DkgPhase::Phase1Commitments)
         .await;
+    let report_evidence =
+        build_commitment_evidence(coord, session_id, node_id, commitment_bytes.clone()).await?;
+    coord
+        .app_state
+        .dkg_session_state
+        .with_state_mut(&session_id, |state| {
+            state.local_signed_commitment = report_evidence.clone();
+        })
+        .await
+        .ok_or_else(|| session_not_found(session_id))?;
 
     let mut peers_sent = 0;
     let mut expected_peers = 0;
@@ -84,6 +95,7 @@ where
             session_id,
             from_node_id: node_id,
             commitment: commitment_bytes.clone(),
+            report_evidence: report_evidence.clone(),
         };
 
         if coord
@@ -146,7 +158,7 @@ where
 /// Check if Phase 1 is complete and trigger Phase 2 if so.
 ///
 /// Called after each incoming commitment message.
-pub(in crate::dkg::v0::coordinator) async fn check_and_trigger_phase2<D>(
+pub async fn check_and_trigger_phase2<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     peer_ids: &[String],
