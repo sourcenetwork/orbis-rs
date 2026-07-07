@@ -8,9 +8,11 @@
 //!   cargo test --features integration-test -- --nocapture
 
 use crate::{
+    app_state::AppState,
     constants::{
         GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MIN_NODE_BALANCE,
     },
+    dkg::v0::helpers::serialize_commitment_coefficients,
     dkg::v0::service::DkgServiceImpl,
     helpers::{
         launch::{create_and_store_node_key, LogLevel},
@@ -22,17 +24,38 @@ use crate::{
     info::InfoServiceImpl,
     init_node,
     pre::v0::service::PreServiceImpl,
+    reporting::v0::{
+        observation::{InvalidCryptoResponseObservation, ReportObservation},
+        queue_report,
+        types::{
+            ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgShareStatement,
+            InvalidCryptoResponse, CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN,
+        },
+    },
     sign::v0::service::SignServiceImpl,
     store_secret::StoreSecretServiceImpl,
     Args, NodeConfig,
 };
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
-use bulletin::r#trait::{Bulletin, BulletinWriteKind, NodeInfo};
+use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo, RingPayload};
 use bulletin::BulletinImpl;
-use common::{blockchain::ChainConfig, SourceHubTestContainer};
-use crypto::{helpers::generate_keypair, CryptoSerialize, DkgImpl, PreImpl, SignImpl};
-use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
+use common::{
+    blockchain::{
+        events::ReportEventSubscription, sign_node_message_with_hex_key, ChainConfig,
+        SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+    },
+    SourceHubTestContainer,
+};
+use crypto::{
+    helpers::generate_keypair,
+    r#trait::{CryptoDeserialize, Dkg, DkgMode, DkgRole},
+    CryptoSerialize, DkgImpl, PreImpl, ScalarField, SignImpl,
+};
+use local_storage::{
+    r#trait::{LocalStorage, LocalStorageKeys},
+    LocalStorageImpl,
+};
 use network::{Network, NetworkImpl};
 use proto::{
     info_service::{
@@ -45,15 +68,17 @@ use proto::{
     v0::store_secret::store_secret_service_server::StoreSecretServiceServer,
 };
 use std::sync::Arc;
-use tokio::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::time::{sleep, Duration, Instant};
 use tonic::Request;
 
 /// A running in-process orbis node with its gRPC server.
 struct LiveNodeHandle {
     grpc_endpoint: String,
-    _peer_addr: String,
+    peer_addr: String,
     _public_address: String,
     db_path: String,
+    app_state: Arc<AppState<DkgImpl>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -67,8 +92,8 @@ impl Drop for LiveNodeHandle {
 /// Three in-process orbis nodes backed by a real SourceHub chain.
 struct LiveThreeNodeNetwork {
     alice: LiveNodeHandle,
-    _bob: LiveNodeHandle,
-    _charlie: LiveNodeHandle,
+    bob: LiveNodeHandle,
+    charlie: LiveNodeHandle,
     /// ACP policy ID all three nodes are whitelisted for.
     policy_id: String,
     /// Compressed pubkeys of alice, bob, charlie (in that order).
@@ -238,13 +263,15 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
         };
 
         let node = init_node(config).await.expect("init_node");
+        let app_state = node.app_state.clone();
         let task = spawn_test_grpc_server(node);
 
         handles.push(LiveNodeHandle {
             grpc_endpoint: format!("http://{}", grpc_bind),
-            _peer_addr: peer_addr,
+            peer_addr,
             _public_address: public_address,
             db_path,
+            app_state,
             task,
         });
     }
@@ -256,8 +283,8 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
     let mut it = handles.into_iter();
     LiveThreeNodeNetwork {
         alice: it.next().unwrap(),
-        _bob: it.next().unwrap(),
-        _charlie: it.next().unwrap(),
+        bob: it.next().unwrap(),
+        charlie: it.next().unwrap(),
         policy_id,
         node_keys,
         chain_config,
@@ -366,13 +393,15 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
         };
 
         let node = init_node(config).await.expect("init_node");
+        let app_state = node.app_state.clone();
         let task = spawn_test_grpc_server(node);
 
         handles.push(LiveNodeHandle {
             grpc_endpoint: format!("http://{}", grpc_bind),
-            _peer_addr: peer_addr,
+            peer_addr,
             _public_address: public_address,
             db_path,
+            app_state,
             task,
         });
     }
@@ -414,6 +443,178 @@ async fn setup_ring(
 
     let ring_pk = wait_for_ring_finalized(chain_config, &ring_id, Duration::from_secs(90)).await;
     (ring_pk, ring_id)
+}
+
+async fn read_ring_payload(chain_config: &ChainConfig, ring_id: &str) -> RingPayload {
+    let payload_bytes = cli_tool::read_bulletin_post_with_config(
+        ring_id.to_string(),
+        BulletinKind::Ring,
+        chain_config.clone(),
+    )
+    .await
+    .expect("read ring bulletin post");
+    serde_json::from_slice(&payload_bytes).expect("parse RingPayload")
+}
+
+async fn wait_for_live_ring_states(nodes: &[&LiveNodeHandle], ring_pk_hex: &str) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let mut all_ready = true;
+        for node in nodes {
+            let Ok(mut client) = InfoServiceClient::connect(node.grpc_endpoint.clone()).await
+            else {
+                all_ready = false;
+                break;
+            };
+            let Ok(resp) = client
+                .get_ring_state(Request::new(GetRingStateRequest {
+                    ring_pk_hex: ring_pk_hex.to_string(),
+                }))
+                .await
+            else {
+                all_ready = false;
+                break;
+            };
+            if resp.into_inner().public_polynomial.is_empty() {
+                all_ready = false;
+                break;
+            }
+        }
+        if all_ready {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "live nodes did not persist ring state in time"
+        );
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn signed_bad_refresh_dkg_share_observation(
+    chain_id: String,
+    ring_id: String,
+    ring: &RingPayload,
+    accused_node_key: String,
+    accused_peer_id: String,
+    accused_app_state: &AppState<DkgImpl>,
+) -> InvalidCryptoResponseObservation {
+    let from_node_id = sorted_node_id(&accused_node_key, &ring.peer_node_keys);
+    let to_node_id = (1..=ring.peer_node_keys.len() as u32)
+        .find(|candidate| {
+            *candidate != from_node_id
+                && ring
+                    .peer_node_keys
+                    .get(candidate.saturating_sub(1) as usize)
+                    .is_some_and(|node_key| node_key != &accused_node_key)
+        })
+        .expect("non-accused receiver");
+    let receiver_node_key = ring.peer_node_keys[to_node_id.saturating_sub(1) as usize].clone();
+
+    let dkg_session_id = 424_242_171_u128;
+    let request_id = dkg_session_id.to_string();
+    let mut dealer = DkgImpl::new(
+        from_node_id,
+        ring.threshold as usize,
+        ring.peer_node_keys.len(),
+        dkg_session_id,
+        DkgRole::Standard,
+    )
+    .expect("create DKG dealer");
+    dealer
+        .generate_polynomial(DkgMode::Refresh)
+        .expect("generate refresh polynomial");
+    let commitment =
+        serialize_commitment_coefficients(&dealer.commitment().coefficients).expect("commitment");
+    let share = dealer
+        .generate_shares()
+        .expect("generate shares")
+        .into_iter()
+        .find(|share| share.to_id == to_node_id)
+        .expect("share for receiver");
+    let share_value = <ScalarField as CryptoSerialize>::to_bytes(&share.value).expect("share");
+    let mut bad_share_value = ScalarField::from_bytes(&share_value).expect("deserialize share");
+    bad_share_value += ScalarField::from(1_u64);
+    let bad_share_value =
+        <ScalarField as CryptoSerialize>::to_bytes(&bad_share_value).expect("bad share");
+    assert_ne!(share_value, bad_share_value);
+
+    let signed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_secs();
+    let commitment_statement = DkgCommitmentStatement {
+        domain: DKG_COMMITMENT_DOMAIN.to_string(),
+        chain_id: chain_id.clone(),
+        ring_id: ring_id.clone(),
+        ring_pk: ring.ring_pk.clone(),
+        ring_state_sha256: ring_state_sha256(ring),
+        protocol_version: network::V0.version,
+        request_id: request_id.clone(),
+        signed_at: signed_at - 1,
+        responder_node_key: accused_node_key.clone(),
+        origin_protocol: "pss_refresh".to_string(),
+        accused_committee_scope: CommitteeScope::Current,
+        signing_committee_scope: CommitteeScope::Current,
+        from_node_id,
+        commitment,
+        crypto_backend: DkgImpl::name(),
+    };
+    let signing_key = accused_app_state
+        .local_storage
+        .get_encrypted(LocalStorageKeys::NodeSigningKey)
+        .expect("read node signing key")
+        .expect("node signing key exists");
+    let signing_key_hex = String::from_utf8(signing_key.to_vec()).expect("signing key hex");
+    let commitment_signature =
+        sign_node_message_with_hex_key(&signing_key_hex, &commitment_statement.canonical_bytes())
+            .expect("sign DKG commitment evidence");
+    let statement = DkgShareStatement {
+        domain: DKG_SHARE_DOMAIN.to_string(),
+        chain_id,
+        ring_id: ring_id.clone(),
+        ring_pk: ring.ring_pk.clone(),
+        ring_state_sha256: ring_state_sha256(ring),
+        protocol_version: network::V0.version,
+        request_id,
+        signed_at,
+        responder_node_key: accused_node_key.clone(),
+        receiver_node_key,
+        origin_protocol: "pss_refresh".to_string(),
+        accused_committee_scope: CommitteeScope::Current,
+        signing_committee_scope: CommitteeScope::Current,
+        from_node_id,
+        to_node_id,
+        commitment_statement,
+        commitment_signature,
+        share_value: bad_share_value,
+        nonce: share.nonce,
+        crypto_backend: DkgImpl::name(),
+    };
+    let response_signature =
+        sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes())
+            .expect("sign DKG share evidence");
+    let observed_at = signed_at - CHAIN_BLOCK_GRACE_SECS;
+    InvalidCryptoResponseObservation {
+        ring_id,
+        accused_node_key,
+        accused_peer_id,
+        observed_at,
+        evidence: InvalidCryptoResponse::DkgShare {
+            statement,
+            response_signature,
+        },
+    }
+}
+
+fn sorted_node_id(node_key: &str, peer_node_keys: &[String]) -> u32 {
+    let mut sorted_node_keys = peer_node_keys.to_vec();
+    sorted_node_keys.sort();
+    sorted_node_keys
+        .iter()
+        .position(|candidate| candidate == node_key)
+        .map(|index| index as u32 + 1)
+        .expect("node key in ring")
 }
 
 // =========================================================================
@@ -484,6 +685,81 @@ async fn test_two_simultaneous_dkg_sessions() {
         &pk1[..8.min(pk1.len())],
         ring_id_2,
         &pk2[..8.min(pk2.len())],
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_sourcehub_accepts_invalid_crypto_dkg_share_report_from_live_nodes() {
+    let net = setup_live_three_node_network("reporting_dkg_share_sourcehub", 51080).await;
+    let endpoint = net.alice.grpc_endpoint.clone();
+
+    let (ring_pk_hex, ring_id) = setup_ring(
+        &net.chain_config,
+        &endpoint,
+        &net.node_keys,
+        2,
+        &net.policy_id,
+    )
+    .await;
+    wait_for_live_ring_states(&[&net.alice, &net.bob, &net.charlie], &ring_pk_hex).await;
+    let ring = read_ring_payload(&net.chain_config, &ring_id).await;
+
+    let accused_node_key = net.node_keys[2].clone();
+    let observation = signed_bad_refresh_dkg_share_observation(
+        net.chain_config.chain_id.clone(),
+        ring_id.clone(),
+        &ring,
+        accused_node_key.clone(),
+        net.charlie.peer_addr.clone(),
+        &net.charlie.app_state,
+    );
+
+    let sub = ReportEventSubscription::connect(&net.chain_config.rpc_url)
+        .await
+        .expect("connect report event subscription");
+    assert!(
+        queue_report::<DkgImpl, SignImpl>(
+            net.alice.app_state.clone(),
+            &network::V0,
+            ReportObservation::InvalidCryptoResponse(Box::new(observation)),
+        )
+        .await
+        .expect("queue invalid DKG-share report"),
+        "report should be queued"
+    );
+    net.alice.app_state.reporting_state.shutdown().await;
+
+    let event = sub
+        .wait_for_report_accepted(&ring_id, Duration::from_secs(120))
+        .await
+        .expect("DKG-share invalid-crypto report should be accepted on SourceHub");
+
+    assert_eq!(event.report_type, "invalid_crypto_response");
+    assert_eq!(event.accused_node_key, accused_node_key);
+    assert_eq!(event.ring_id, ring_id);
+    assert!(!event.report_id.is_empty(), "report_id should be set");
+    assert!(
+        [net.node_keys[0].as_str(), net.node_keys[1].as_str()]
+            .contains(&event.reporter_node_key.as_str()),
+        "reporter should be a non-accused current-committee member, got {}",
+        event.reporter_node_key
+    );
+
+    let controller_client = SourceHubClient::with_signer(
+        net.chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, net.chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+    let demerits = controller_client
+        .orbis_read_node_demerits(&ring_id, &accused_node_key)
+        .await
+        .expect("query accused demerits");
+    assert_eq!(
+        demerits, 1,
+        "invalid DKG-share report should add one demerit"
     );
 }
 
