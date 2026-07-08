@@ -239,6 +239,7 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         request_id: request_id.clone(),
         signed_at,
         responder_node_key: accused_node_key.clone(),
+        origin_protocol: "pre".to_string(),
         object_id,
         rdr_pk: rdr_pk_bytes,
         derivation: None,

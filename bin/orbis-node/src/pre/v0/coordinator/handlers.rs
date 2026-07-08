@@ -190,6 +190,7 @@ where
             request_id: request_id.clone(),
             signed_at,
             responder_node_key: self.app_state.node_key.clone(),
+            origin_protocol: "pre".to_string(),
             object_id: ctx.object_id.clone(),
             rdr_pk: ctx.rdr_pk_bytes.clone(),
             derivation: ctx.derivation.clone(),

@@ -890,6 +890,12 @@ fn validate_pre_invalid_statement_shape(
             "PRE response responder does not match accused node".to_string(),
         ));
     }
+    if !is_valid_invalid_crypto_pre_origin(&statement.origin_protocol) {
+        return Err(ReportingError::InvalidReport(format!(
+            "unsupported PRE response origin protocol {}",
+            statement.origin_protocol
+        )));
+    }
     if statement.object_id.trim().is_empty() {
         return Err(ReportingError::InvalidReport(
             "PRE response object_id cannot be empty".to_string(),
@@ -1104,6 +1110,10 @@ fn validate_dkg_commitment_statement_shape(statement: &DkgShareStatement) -> Res
         )));
     }
     Ok(())
+}
+
+fn is_valid_invalid_crypto_pre_origin(origin_protocol: &str) -> bool {
+    origin_protocol == "pre"
 }
 
 fn is_valid_invalid_crypto_sign_origin(origin_protocol: &str) -> bool {
@@ -1401,6 +1411,7 @@ mod tests {
                     request_id: "pre-request-1".to_string(),
                     signed_at: 110,
                     responder_node_key: "accused".to_string(),
+                    origin_protocol: "pre".to_string(),
                     object_id: "object".to_string(),
                     rdr_pk: vec![1],
                     derivation: None,

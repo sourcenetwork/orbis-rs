@@ -96,6 +96,7 @@ pub struct PreReencryptResponseStatement {
     /// stops one signed bad response from being re-reported indefinitely.
     pub signed_at: u64,
     pub responder_node_key: String,
+    pub origin_protocol: String,
     pub object_id: String,
     pub rdr_pk: Vec<u8>,
     pub derivation: Option<Vec<u8>>,
@@ -120,6 +121,7 @@ impl PreReencryptResponseStatement {
         write_string(&mut out, &self.request_id);
         write_u64(&mut out, self.signed_at);
         write_string(&mut out, &self.responder_node_key);
+        write_string(&mut out, &self.origin_protocol);
         write_string(&mut out, &self.object_id);
         write_bytes(&mut out, &self.rdr_pk);
         write_optional_bytes(&mut out, self.derivation.as_deref());
@@ -142,6 +144,7 @@ impl PreReencryptResponseStatement {
         let request_id = decoder.read_string("request_id")?;
         let signed_at = decoder.read_u64("signed_at")?;
         let responder_node_key = decoder.read_string("responder_node_key")?;
+        let origin_protocol = decoder.read_string("origin_protocol")?;
         let object_id = decoder.read_string("object_id")?;
         let rdr_pk = decoder.read_bytes("rdr_pk")?;
         let derivation = decoder.read_optional_bytes("derivation")?;
@@ -161,6 +164,7 @@ impl PreReencryptResponseStatement {
             request_id,
             signed_at,
             responder_node_key,
+            origin_protocol,
             object_id,
             rdr_pk,
             derivation,
@@ -905,6 +909,7 @@ mod tests {
             request_id: "pre-request-1".to_string(),
             signed_at: 1_700_000_000 + CHAIN_BLOCK_GRACE_SECS,
             responder_node_key: "accused".to_string(),
+            origin_protocol: "pre".to_string(),
             object_id: "object-1".to_string(),
             rdr_pk: vec![1, 2, 3],
             derivation: Some(vec![4, 5, 6]),
