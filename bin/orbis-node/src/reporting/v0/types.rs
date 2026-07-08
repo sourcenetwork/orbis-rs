@@ -475,7 +475,7 @@ pub enum InvalidCryptoResponse {
         response_signature: Vec<u8>,
     },
     DkgShare {
-        statement: DkgShareStatement,
+        statement: Box<DkgShareStatement>,
         response_signature: Vec<u8>,
     },
 }
@@ -528,7 +528,7 @@ impl InvalidCryptoResponse {
                 response_signature,
             }),
             "dkg_share" => Ok(Self::DkgShare {
-                statement: DkgShareStatement::from_canonical_bytes(&statement_bytes)?,
+                statement: Box::new(DkgShareStatement::from_canonical_bytes(&statement_bytes)?),
                 response_signature,
             }),
             value => Err(ReportingError::InvalidReport(format!(

@@ -509,7 +509,7 @@ where
         accused_peer_id: accused_info.peer_id,
         observed_at,
         evidence: InvalidCryptoResponse::DkgShare {
-            statement: evidence.statement,
+            statement: Box::new(evidence.statement),
             response_signature: evidence.signature,
         },
     };
