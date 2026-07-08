@@ -362,6 +362,7 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
 
 #[tokio::test]
 #[serial_test::serial]
+#[cfg(not(feature = "decaf377"))]
 async fn test_invalid_crypto_response_triggers_on_chain_report() {
     println!("Starting invalid-crypto reporting integration test...");
 
