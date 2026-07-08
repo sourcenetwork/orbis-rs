@@ -28,7 +28,12 @@ use network::PeerId;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{peers, phases, state_machine::DkgEvent, types::CoordinatorDkg, DkgCoordinator};
+use super::{
+    peers, phases,
+    state_machine::DkgEvent,
+    types::{CoordinatorDkg, CoordinatorReportSigner},
+    DkgCoordinator,
+};
 
 mod commitment;
 mod session_init;

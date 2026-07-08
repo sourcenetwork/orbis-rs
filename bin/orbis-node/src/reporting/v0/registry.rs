@@ -1,4 +1,5 @@
 use crate::app_state::PeerConnectionPool;
+use crate::dkg::v0::helpers::deserialize_wire_commitment;
 use crate::helpers::identity::{determine_session_node_id, extract_node_part};
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::helpers::ring::RingConfig;
@@ -27,8 +28,8 @@ use crypto::r#trait::{
     ReencryptReply, ThresholdDealer, ThresholdSigner,
 };
 use crypto::{
-    DkgImpl, GroupAffine, PolynomialCommitmentImpl, PreImpl, PubPolyImpl, ScalarField,
-    SigShareInner, SignImpl, GROUP_POINT_SIZE,
+    DkgImpl, GroupAffine, PreImpl, PubPolyImpl, ScalarField, SigShareInner, SignImpl,
+    GROUP_POINT_SIZE,
 };
 use local_storage::LocalStorageImpl;
 use network::{Network, PeerId};
@@ -854,42 +855,80 @@ fn validate_local_signer(
     Ok(())
 }
 
+struct InvalidCryptoStatementPrologue<'a> {
+    label: &'static str,
+    domain: &'a str,
+    expected_domain: &'static str,
+    chain_id: &'a str,
+    ring_id: &'a str,
+    ring_pk: &'a str,
+    ring_state_sha256: &'a str,
+    request_id: &'a str,
+    signed_at: u64,
+    responder_node_key: &'a str,
+}
+
+fn validate_invalid_crypto_statement_prologue(
+    envelope: &ReportEnvelope,
+    context: &ReportValidationContext,
+    statement: InvalidCryptoStatementPrologue<'_>,
+) -> Result<()> {
+    let label = statement.label;
+    if statement.domain != statement.expected_domain {
+        return Err(ReportingError::InvalidReport(format!(
+            "unexpected {label} domain {}",
+            statement.domain
+        )));
+    }
+    if statement.chain_id != envelope.chain_id || envelope.chain_id != context.bulletin.chain_id() {
+        return Err(ReportingError::Unauthorized(format!(
+            "{label} chain ID does not match report chain ID"
+        )));
+    }
+    if statement.ring_id != envelope.ring_id
+        || statement.ring_pk != envelope.ring_pk
+        || statement.ring_state_sha256 != envelope.ring_state_sha256
+    {
+        return Err(ReportingError::Unauthorized(format!(
+            "{label} ring binding does not match report envelope"
+        )));
+    }
+    if statement.request_id != envelope.session_id {
+        return Err(ReportingError::Unauthorized(format!(
+            "{label} request_id does not match report session_id"
+        )));
+    }
+    validate_evidence_anchor(statement.signed_at, envelope.observed_at)?;
+    if statement.responder_node_key != envelope.accused_node_key {
+        return Err(ReportingError::Unauthorized(format!(
+            "{label} responder does not match accused node"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_pre_invalid_statement_shape(
     envelope: &ReportEnvelope,
     statement: &PreReencryptResponseStatement,
     response_signature: &[u8],
     context: &ReportValidationContext,
 ) -> Result<()> {
-    if statement.domain != PRE_REENCRYPT_RESPONSE_DOMAIN {
-        return Err(ReportingError::InvalidReport(format!(
-            "unexpected PRE response domain {}",
-            statement.domain
-        )));
-    }
-    if statement.chain_id != envelope.chain_id || envelope.chain_id != context.bulletin.chain_id() {
-        return Err(ReportingError::Unauthorized(
-            "PRE response chain ID does not match report chain ID".to_string(),
-        ));
-    }
-    if statement.ring_id != envelope.ring_id
-        || statement.ring_pk != envelope.ring_pk
-        || statement.ring_state_sha256 != envelope.ring_state_sha256
-    {
-        return Err(ReportingError::Unauthorized(
-            "PRE response ring binding does not match report envelope".to_string(),
-        ));
-    }
-    if statement.request_id != envelope.session_id {
-        return Err(ReportingError::Unauthorized(
-            "PRE response request_id does not match report session_id".to_string(),
-        ));
-    }
-    validate_pre_evidence_anchor(statement.signed_at, envelope.observed_at)?;
-    if statement.responder_node_key != envelope.accused_node_key {
-        return Err(ReportingError::Unauthorized(
-            "PRE response responder does not match accused node".to_string(),
-        ));
-    }
+    validate_invalid_crypto_statement_prologue(
+        envelope,
+        context,
+        InvalidCryptoStatementPrologue {
+            label: "PRE response",
+            domain: &statement.domain,
+            expected_domain: PRE_REENCRYPT_RESPONSE_DOMAIN,
+            chain_id: &statement.chain_id,
+            ring_id: &statement.ring_id,
+            ring_pk: &statement.ring_pk,
+            ring_state_sha256: &statement.ring_state_sha256,
+            request_id: &statement.request_id,
+            signed_at: statement.signed_at,
+            responder_node_key: &statement.responder_node_key,
+        },
+    )?;
     if !is_valid_invalid_crypto_pre_origin(&statement.origin_protocol) {
         return Err(ReportingError::InvalidReport(format!(
             "unsupported PRE response origin protocol {}",
@@ -922,36 +961,22 @@ fn validate_sign_response_statement_shape(
     response_signature: &[u8],
     context: &ReportValidationContext,
 ) -> Result<()> {
-    if statement.domain != SIGN_RESPONSE_DOMAIN {
-        return Err(ReportingError::InvalidReport(format!(
-            "unexpected Sign response domain {}",
-            statement.domain
-        )));
-    }
-    if statement.chain_id != envelope.chain_id || envelope.chain_id != context.bulletin.chain_id() {
-        return Err(ReportingError::Unauthorized(
-            "Sign response chain ID does not match report chain ID".to_string(),
-        ));
-    }
-    if statement.ring_id != envelope.ring_id
-        || statement.ring_pk != envelope.ring_pk
-        || statement.ring_state_sha256 != envelope.ring_state_sha256
-    {
-        return Err(ReportingError::Unauthorized(
-            "Sign response ring binding does not match report envelope".to_string(),
-        ));
-    }
-    if statement.request_id != envelope.session_id {
-        return Err(ReportingError::Unauthorized(
-            "Sign response request_id does not match report session_id".to_string(),
-        ));
-    }
-    validate_pre_evidence_anchor(statement.signed_at, envelope.observed_at)?;
-    if statement.responder_node_key != envelope.accused_node_key {
-        return Err(ReportingError::Unauthorized(
-            "Sign response responder does not match accused node".to_string(),
-        ));
-    }
+    validate_invalid_crypto_statement_prologue(
+        envelope,
+        context,
+        InvalidCryptoStatementPrologue {
+            label: "Sign response",
+            domain: &statement.domain,
+            expected_domain: SIGN_RESPONSE_DOMAIN,
+            chain_id: &statement.chain_id,
+            ring_id: &statement.ring_id,
+            ring_pk: &statement.ring_pk,
+            ring_state_sha256: &statement.ring_state_sha256,
+            request_id: &statement.request_id,
+            signed_at: statement.signed_at,
+            responder_node_key: &statement.responder_node_key,
+        },
+    )?;
     if !is_valid_invalid_crypto_sign_origin(&statement.origin_protocol) {
         return Err(ReportingError::InvalidReport(format!(
             "unsupported Sign response origin protocol {}",
@@ -989,36 +1014,22 @@ fn validate_dkg_share_statement_shape(
     response_signature: &[u8],
     context: &ReportValidationContext,
 ) -> Result<()> {
-    if statement.domain != DKG_SHARE_DOMAIN {
-        return Err(ReportingError::InvalidReport(format!(
-            "unexpected DKG share domain {}",
-            statement.domain
-        )));
-    }
-    if statement.chain_id != envelope.chain_id || envelope.chain_id != context.bulletin.chain_id() {
-        return Err(ReportingError::Unauthorized(
-            "DKG share chain ID does not match report chain ID".to_string(),
-        ));
-    }
-    if statement.ring_id != envelope.ring_id
-        || statement.ring_pk != envelope.ring_pk
-        || statement.ring_state_sha256 != envelope.ring_state_sha256
-    {
-        return Err(ReportingError::Unauthorized(
-            "DKG share ring binding does not match report envelope".to_string(),
-        ));
-    }
-    if statement.request_id != envelope.session_id {
-        return Err(ReportingError::Unauthorized(
-            "DKG share request_id does not match report session_id".to_string(),
-        ));
-    }
-    validate_pre_evidence_anchor(statement.signed_at, envelope.observed_at)?;
-    if statement.responder_node_key != envelope.accused_node_key {
-        return Err(ReportingError::Unauthorized(
-            "DKG share responder does not match accused node".to_string(),
-        ));
-    }
+    validate_invalid_crypto_statement_prologue(
+        envelope,
+        context,
+        InvalidCryptoStatementPrologue {
+            label: "DKG share",
+            domain: &statement.domain,
+            expected_domain: DKG_SHARE_DOMAIN,
+            chain_id: &statement.chain_id,
+            ring_id: &statement.ring_id,
+            ring_pk: &statement.ring_pk,
+            ring_state_sha256: &statement.ring_state_sha256,
+            request_id: &statement.request_id,
+            signed_at: statement.signed_at,
+            responder_node_key: &statement.responder_node_key,
+        },
+    )?;
     if !is_valid_invalid_crypto_dkg_origin(&statement.origin_protocol) {
         return Err(ReportingError::InvalidReport(format!(
             "unsupported DKG share origin protocol {}",
@@ -1133,7 +1144,7 @@ fn is_valid_invalid_crypto_dkg_origin(origin_protocol: &str) -> bool {
 /// `now <= expires_at`) bound how long one signed bad response stays
 /// reportable — without this, it could be re-wrapped in fresh envelopes and
 /// re-reported indefinitely once the chain prunes its dedupe records.
-fn validate_pre_evidence_anchor(signed_at: u64, observed_at: u64) -> Result<()> {
+fn validate_evidence_anchor(signed_at: u64, observed_at: u64) -> Result<()> {
     if signed_at < CHAIN_BLOCK_GRACE_SECS || observed_at != signed_at - CHAIN_BLOCK_GRACE_SECS {
         return Err(ReportingError::Unauthorized(
             "report envelope is not anchored to the evidence timestamp".to_string(),
@@ -1193,8 +1204,7 @@ fn require_dkg_share_verification_failure(statement: &DkgShareStatement) -> Resu
     // cannot be decoded returned an unusable share, which is itself an attributable
     // verification failure — confirm the report on a decode error rather than
     // rejecting it.
-    let Ok(commitment) =
-        deserialize_wire_dkg_commitment(&statement.commitment_statement.commitment)
+    let Ok(commitment) = deserialize_wire_commitment(&statement.commitment_statement.commitment)
     else {
         return Ok(());
     };
@@ -1208,30 +1218,6 @@ fn require_dkg_share_verification_failure(statement: &DkgShareStatement) -> Resu
         ));
     }
     Ok(())
-}
-
-fn deserialize_wire_dkg_commitment(
-    bytes: &[u8],
-) -> std::result::Result<PolynomialCommitmentImpl, String> {
-    if bytes.is_empty() {
-        return Err("commitment cannot be empty".to_string());
-    }
-    if !bytes.len().is_multiple_of(GROUP_POINT_SIZE) {
-        return Err(format!(
-            "commitment length {} is not a multiple of {}",
-            bytes.len(),
-            GROUP_POINT_SIZE
-        ));
-    }
-
-    let mut coefficients = Vec::with_capacity(bytes.len() / GROUP_POINT_SIZE);
-    for (index, chunk) in bytes.chunks_exact(GROUP_POINT_SIZE).enumerate() {
-        let coeff = GroupAffine::from_bytes(chunk)
-            .map_err(|error| format!("coefficient {index}: {error}"))?;
-        coefficients.push(coeff);
-    }
-
-    Ok(PolynomialCommitmentImpl { coefficients })
 }
 
 async fn require_pre_proof_verification_failure(
@@ -1636,25 +1622,25 @@ mod tests {
     }
 
     #[test]
-    fn pre_evidence_anchor_requires_exact_backdated_observed_at() {
+    fn evidence_anchor_requires_exact_backdated_observed_at() {
         let signed_at = 1_700_000_000u64;
         let anchored = signed_at - CHAIN_BLOCK_GRACE_SECS;
 
-        validate_pre_evidence_anchor(signed_at, anchored).unwrap();
+        validate_evidence_anchor(signed_at, anchored).unwrap();
 
         // Any drift decouples the envelope's expires_at from the evidence age,
         // which would let one signed bad response be re-reported after the
         // chain prunes its dedupe records.
         for observed_at in [anchored - 1, anchored + 1, signed_at, 0] {
             assert!(matches!(
-                validate_pre_evidence_anchor(signed_at, observed_at),
+                validate_evidence_anchor(signed_at, observed_at),
                 Err(ReportingError::Unauthorized(_))
             ));
         }
 
         // signed_at below the grace can never be anchored.
         assert!(matches!(
-            validate_pre_evidence_anchor(CHAIN_BLOCK_GRACE_SECS - 1, 0),
+            validate_evidence_anchor(CHAIN_BLOCK_GRACE_SECS - 1, 0),
             Err(ReportingError::Unauthorized(_))
         ));
     }

@@ -12,15 +12,15 @@ use crate::reporting::v0::queue_report;
 use crate::reporting::v0::types::CommitteeScope as ReportCommitteeScope;
 use crate::ring_state::RingPolyState;
 use bulletin::r#trait::{BulletinKind, RingPayload};
-use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
+use crypto::r#trait::Dkg;
 use crypto::{
     GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
-    PubPolyImpl as PubPoly, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint,
+    PubPolyImpl as PubPoly, ScalarField as Fr, SignImpl,
 };
 use network::{Connection as NetworkConnection, Message as NetworkMessage};
 use std::sync::Arc;
 
-use super::DkgCoordinator;
+use super::{types::CoordinatorReportSigner, DkgCoordinator};
 
 async fn send_on_stream(
     stream: &Arc<dyn NetworkConnection>,
@@ -51,16 +51,7 @@ where
         + Send
         + Sync
         + 'static,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     if let Some(cached) = coord
         .app_state
@@ -263,16 +254,7 @@ async fn queue_pss_offline_report<D>(
         + Send
         + Sync
         + 'static,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     if !is_reportable_dkg_offline_error(error) {
         return;
@@ -336,16 +318,7 @@ where
         + Send
         + Sync
         + 'static,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     let is_reshare = matches!(kind, SessionKind::Reshare { .. });
     let (origin_protocol, ring_id) = match &kind {

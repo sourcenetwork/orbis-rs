@@ -6,19 +6,14 @@ use crate::dkg::v0::helpers::{
 use crate::dkg::v0::messages::{DkgMessage, SessionKind};
 use crate::dkg::v0::session_state::{DkgPhase, RefreshHealthCheckCandidate};
 use crate::helpers::identity::is_self_peer_id;
-use crypto::r#trait::{
-    CryptoDeserialize, DistKeyShare, DkgRole, PubPoly as PubPolyTrait, PubShare, ThresholdSigner,
-};
-use crypto::{
-    CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl,
-    SignaturePoint,
-};
+use crypto::r#trait::{CryptoDeserialize, DkgRole, PubPoly as PubPolyTrait};
+use crypto::{CryptoSerialize, SignImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::reshare::selection::record_and_ack_valid_reshare_share;
 use super::state_machine::{self, DkgCommand, DkgEvent, SessionSnapshot};
-use super::types::CoordinatorDkg;
+use super::types::{CoordinatorDkg, CoordinatorReportSigner};
 use super::{refresh_health_check, reshare, ring_storage, DkgCoordinator};
 
 mod phase1;

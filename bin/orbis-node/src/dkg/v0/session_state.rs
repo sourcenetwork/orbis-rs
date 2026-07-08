@@ -191,6 +191,18 @@ pub(crate) struct RefreshSessionState {
     pub pending_result: Option<PendingRefreshHealthCheckResult>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct DkgReportEvidenceBinding {
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub chain_id: String,
+    pub protocol_version: u64,
+    pub request_id: String,
+    pub origin_protocol: String,
+    pub receiver_node_keys: Vec<String>,
+}
+
 #[derive(Default)]
 pub(crate) struct SessionTransportState {
     pub peer_streams: HashMap<String, Arc<dyn Connection>>,
@@ -288,6 +300,8 @@ pub struct DkgSessionState<D: Dkg> {
     pub(crate) messages: MessageTrackingState<D::ShareValue>,
     /// This node's signed commitment evidence for Refresh/Reshare share reports.
     pub(crate) local_signed_commitment: Option<SignedDkgCommitment>,
+    /// Cached non-secret binding data for Refresh/Reshare DKG report evidence.
+    pub(crate) report_evidence_binding: Option<DkgReportEvidenceBinding>,
     /// What kind of ceremony this session is running (Fresh, Refresh, or Reshare).
     ///
     /// Drives `generate_polynomial` mode selection and Phase 4 storage/bulletin behaviour.
@@ -325,6 +339,7 @@ impl<D: Dkg> DkgSessionState<D> {
             reshare: ReshareSessionState::default(),
             messages: MessageTrackingState::default(),
             local_signed_commitment: None,
+            report_evidence_binding: None,
             kind: SessionKind::Fresh,
             pss_interval: 0,
             policy_id: None,

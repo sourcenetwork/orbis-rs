@@ -12,16 +12,7 @@ pub async fn initiate_phase4_completion<D>(
 ) -> Result<()>
 where
     D: CoordinatorDkg + Send + Sync,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     tracing::info!(
         session_id = session_id,

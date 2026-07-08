@@ -1,10 +1,8 @@
 use std::future::Future;
 use std::time::Duration;
 
-use crypto::r#trait::{
-    CryptoDeserialize, DistKeyShare, PubPoly as PubPolyTrait, PubShare, ThresholdSigner,
-};
-use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint};
+use crypto::r#trait::{CryptoDeserialize, PubPoly as PubPolyTrait, ThresholdSigner};
+use crypto::{SignImpl, SignaturePoint};
 use sha2::{Digest, Sha256};
 
 use crate::constants::{REFRESH_HEALTH_CHECK_MAX_ATTEMPTS, REFRESH_HEALTH_CHECK_RETRY_DELAY};
@@ -24,7 +22,7 @@ use crate::sign::v0::messages::{
     REFRESH_HEALTH_CHECK_DOMAIN,
 };
 
-use super::types::CoordinatorDkg;
+use super::types::{CoordinatorDkg, CoordinatorReportSigner};
 use super::DkgCoordinator;
 
 const REFRESH_HEALTH_CHECK_RESULT_SEND_ATTEMPTS: usize = 3;
@@ -38,16 +36,7 @@ pub async fn run_selector<D>(
 ) -> Result<()>
 where
     D: CoordinatorDkg + Send + Sync,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     if candidate.peer_ids.is_empty() {
         rollback_candidate(coord, session_id, &candidate.ring_key).await;

@@ -3,20 +3,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bulletin::r#trait::{BulletinKind, NodeInfo, RingPayload};
 use common::blockchain::{sign_node_message_with_hex_key, verify_node_message};
-use crypto::r#trait::{
-    CryptoDeserialize, DistKeyShare, Dkg, PolynomialCommitment as PolynomialCommitmentTrait,
-    PubShare, ThresholdSigner,
-};
-use crypto::{
-    GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment, ScalarField as Fr,
-    SigShareInner, SignImpl, SignaturePoint, GROUP_POINT_SIZE,
-};
+use crypto::r#trait::{CryptoDeserialize, Dkg, PolynomialCommitment as PolynomialCommitmentTrait};
+use crypto::{ScalarField as Fr, SignImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 
 use crate::app_state::AppState;
 use crate::dkg::v0::error::{DkgError, Result};
-use crate::dkg::v0::helpers::session_not_found;
+use crate::dkg::v0::helpers::{deserialize_wire_commitment, session_not_found};
 use crate::dkg::v0::messages::{DkgMessage, SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::session_state::DkgReportEvidenceBinding;
 use crate::reporting::v0::observation::{InvalidCryptoResponseObservation, ReportObservation};
 use crate::reporting::v0::queue_report;
 use crate::reporting::v0::types::{
@@ -24,21 +19,70 @@ use crate::reporting::v0::types::{
     InvalidCryptoResponse, CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN,
 };
 
-use super::{types::CoordinatorDkg, DkgCoordinator};
+use super::{
+    types::{CoordinatorDkg, CoordinatorReportSigner},
+    DkgCoordinator,
+};
 
-#[derive(Clone)]
-struct DkgEvidenceBinding {
-    ring_id: String,
-    ring_pk: String,
-    ring_state_sha256: String,
-    chain_id: String,
-    protocol_version: u64,
-    request_id: String,
-    origin_protocol: String,
-    receiver_node_keys: Vec<String>,
+pub(crate) struct DkgEvidenceBuildContext {
+    binding: DkgReportEvidenceBinding,
+    signing_key_hex: String,
 }
 
-pub async fn build_commitment_evidence<D>(
+pub(crate) async fn evidence_build_context<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+) -> Result<Option<DkgEvidenceBuildContext>>
+where
+    D: CoordinatorDkg,
+{
+    let Some(binding) = evidence_binding(coord, session_id).await? else {
+        return Ok(None);
+    };
+    let signing_key_hex = read_node_signing_key_hex(&coord.app_state)?;
+    Ok(Some(DkgEvidenceBuildContext {
+        binding,
+        signing_key_hex,
+    }))
+}
+
+pub(crate) fn build_commitment_evidence_with_context<D>(
+    coord: &DkgCoordinator<D>,
+    context: &DkgEvidenceBuildContext,
+    from_node_id: u32,
+    commitment: Vec<u8>,
+) -> Result<SignedDkgCommitment>
+where
+    D: CoordinatorDkg,
+{
+    let binding = &context.binding;
+    let signed_at = now_unix_secs()?;
+    let statement = DkgCommitmentStatement {
+        domain: DKG_COMMITMENT_DOMAIN.to_string(),
+        chain_id: binding.chain_id.clone(),
+        ring_id: binding.ring_id.clone(),
+        ring_pk: binding.ring_pk.clone(),
+        ring_state_sha256: binding.ring_state_sha256.clone(),
+        protocol_version: binding.protocol_version,
+        request_id: binding.request_id.clone(),
+        signed_at,
+        responder_node_key: coord.app_state.node_key.clone(),
+        origin_protocol: binding.origin_protocol.clone(),
+        accused_committee_scope: CommitteeScope::Current,
+        signing_committee_scope: CommitteeScope::Current,
+        from_node_id,
+        commitment,
+        crypto_backend: D::name(),
+    };
+    let signature =
+        sign_statement_with_key(&context.signing_key_hex, &statement.canonical_bytes())?;
+    Ok(SignedDkgCommitment {
+        statement,
+        signature,
+    })
+}
+
+pub async fn build_and_store_commitment_evidence<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     from_node_id: u32,
@@ -47,50 +91,56 @@ pub async fn build_commitment_evidence<D>(
 where
     D: CoordinatorDkg,
 {
-    let Some(binding) = evidence_binding(coord, session_id).await? else {
+    let Some(context) = evidence_build_context(coord, session_id).await? else {
         return Ok(None);
     };
-
-    let signed_at = now_unix_secs()?;
-    let statement = DkgCommitmentStatement {
-        domain: DKG_COMMITMENT_DOMAIN.to_string(),
-        chain_id: binding.chain_id,
-        ring_id: binding.ring_id,
-        ring_pk: binding.ring_pk,
-        ring_state_sha256: binding.ring_state_sha256,
-        protocol_version: binding.protocol_version,
-        request_id: binding.request_id,
-        signed_at,
-        responder_node_key: coord.app_state.node_key.clone(),
-        origin_protocol: binding.origin_protocol,
-        accused_committee_scope: CommitteeScope::Current,
-        signing_committee_scope: CommitteeScope::Current,
+    let report_evidence = build_and_store_commitment_evidence_with_context(
+        coord,
+        session_id,
+        &context,
         from_node_id,
         commitment,
-        crypto_backend: D::name(),
-    };
-    let signature = sign_statement(&coord.app_state, &statement.canonical_bytes())?;
-    Ok(Some(SignedDkgCommitment {
-        statement,
-        signature,
-    }))
+    )
+    .await?;
+    Ok(Some(report_evidence))
 }
 
-pub async fn build_share_evidence<D>(
+pub(crate) async fn build_and_store_commitment_evidence_with_context<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
+    context: &DkgEvidenceBuildContext,
+    from_node_id: u32,
+    commitment: Vec<u8>,
+) -> Result<SignedDkgCommitment>
+where
+    D: CoordinatorDkg,
+{
+    let report_evidence =
+        build_commitment_evidence_with_context(coord, context, from_node_id, commitment)?;
+    coord
+        .app_state
+        .dkg_session_state
+        .with_state_mut(&session_id, |state| {
+            state.local_signed_commitment = Some(report_evidence.clone());
+        })
+        .await
+        .ok_or_else(|| session_not_found(session_id))?;
+    Ok(report_evidence)
+}
+
+pub(crate) fn build_share_evidence_with_context<D>(
+    coord: &DkgCoordinator<D>,
+    context: &DkgEvidenceBuildContext,
     from_node_id: u32,
     to_node_id: u32,
     share_value: Vec<u8>,
     nonce: [u8; 16],
     commitment_evidence: &SignedDkgCommitment,
-) -> Result<Option<SignedDkgShare>>
+) -> Result<SignedDkgShare>
 where
     D: CoordinatorDkg,
 {
-    let Some(binding) = evidence_binding(coord, session_id).await? else {
-        return Ok(None);
-    };
+    let binding = &context.binding;
     let receiver_node_key = binding
         .receiver_node_keys
         .get(to_node_id.saturating_sub(1) as usize)
@@ -105,16 +155,16 @@ where
     let signed_at = now_unix_secs()?;
     let statement = DkgShareStatement {
         domain: DKG_SHARE_DOMAIN.to_string(),
-        chain_id: binding.chain_id,
-        ring_id: binding.ring_id,
-        ring_pk: binding.ring_pk,
-        ring_state_sha256: binding.ring_state_sha256,
+        chain_id: binding.chain_id.clone(),
+        ring_id: binding.ring_id.clone(),
+        ring_pk: binding.ring_pk.clone(),
+        ring_state_sha256: binding.ring_state_sha256.clone(),
         protocol_version: binding.protocol_version,
-        request_id: binding.request_id,
+        request_id: binding.request_id.clone(),
         signed_at,
         responder_node_key: coord.app_state.node_key.clone(),
         receiver_node_key,
-        origin_protocol: binding.origin_protocol,
+        origin_protocol: binding.origin_protocol.clone(),
         accused_committee_scope: CommitteeScope::Current,
         signing_committee_scope: CommitteeScope::Current,
         from_node_id,
@@ -125,11 +175,12 @@ where
         nonce,
         crypto_backend: D::name(),
     };
-    let signature = sign_statement(&coord.app_state, &statement.canonical_bytes())?;
-    Ok(Some(SignedDkgShare {
+    let signature =
+        sign_statement_with_key(&context.signing_key_hex, &statement.canonical_bytes())?;
+    Ok(SignedDkgShare {
         statement,
         signature,
-    }))
+    })
 }
 
 pub async fn verify_commitment_evidence<D>(
@@ -231,16 +282,7 @@ pub async fn queue_or_relay_invalid_share<D>(
 ) -> Result<()>
 where
     D: CoordinatorDkg,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     let is_current_member = coord
         .app_state
@@ -273,16 +315,7 @@ pub async fn handle_invalid_share_evidence_relay<D>(
 ) -> Result<Option<DkgMessage>>
 where
     D: CoordinatorDkg,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     if report_evidence.statement.origin_protocol != "pss_reshare" {
         return Err(DkgError::Unauthorized(
@@ -329,10 +362,20 @@ where
 async fn evidence_binding<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
-) -> Result<Option<DkgEvidenceBinding>>
+) -> Result<Option<DkgReportEvidenceBinding>>
 where
     D: CoordinatorDkg,
 {
+    if let Some(cached) = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| state.report_evidence_binding.clone())
+        .await
+        .ok_or_else(|| session_not_found(session_id))?
+    {
+        return Ok(Some(cached));
+    }
+
     let Some((kind, stored_ring_id, protocol_version, receiver_node_keys)) = coord
         .app_state
         .dkg_session_state
@@ -385,7 +428,7 @@ where
     let ring = RingPayload::try_from(ring_post)
         .map_err(|error| DkgError::Deserialization(error.to_string()))?;
 
-    Ok(Some(DkgEvidenceBinding {
+    let binding = DkgReportEvidenceBinding {
         ring_id,
         ring_pk: ring.ring_pk.clone(),
         ring_state_sha256: ring_state_sha256(&ring),
@@ -394,11 +437,28 @@ where
         request_id: session_id.to_string(),
         origin_protocol: origin_protocol.to_string(),
         receiver_node_keys,
-    }))
+    };
+
+    let binding = coord
+        .app_state
+        .dkg_session_state
+        .with_state_mut(&session_id, |state| {
+            if state.report_evidence_binding.is_none() {
+                state.report_evidence_binding = Some(binding.clone());
+            }
+            state.report_evidence_binding.clone()
+        })
+        .await
+        .ok_or_else(|| session_not_found(session_id))?
+        .ok_or_else(|| {
+            DkgError::InvalidState("failed to cache DKG report evidence binding".to_string())
+        })?;
+
+    Ok(Some(binding))
 }
 
 fn validate_commitment_statement<D>(
-    binding: &DkgEvidenceBinding,
+    binding: &DkgReportEvidenceBinding,
     from_node_id: u32,
     commitment: &[u8],
     statement: &DkgCommitmentStatement,
@@ -433,7 +493,7 @@ where
 }
 
 fn validate_share_statement<D>(
-    binding: &DkgEvidenceBinding,
+    binding: &DkgReportEvidenceBinding,
     from_node_id: u32,
     to_node_id: u32,
     share_value: &[u8],
@@ -493,7 +553,7 @@ where
     Ok(())
 }
 
-fn sign_statement<D>(app_state: &Arc<AppState<D>>, message: &[u8]) -> Result<Vec<u8>>
+fn read_node_signing_key_hex<D>(app_state: &Arc<AppState<D>>) -> Result<String>
 where
     D: Dkg + Clone + 'static,
 {
@@ -505,7 +565,11 @@ where
     let signing_key_hex = String::from_utf8(signing_key.to_vec()).map_err(|error| {
         DkgError::Storage(format!("Stored node signing key is not UTF-8: {error}"))
     })?;
-    sign_node_message_with_hex_key(&signing_key_hex, message)
+    Ok(signing_key_hex)
+}
+
+fn sign_statement_with_key(signing_key_hex: &str, message: &[u8]) -> Result<Vec<u8>> {
+    sign_node_message_with_hex_key(signing_key_hex, message)
         .map_err(|error| DkgError::Crypto(format!("Failed to sign DKG evidence: {error}")))
 }
 
@@ -523,16 +587,7 @@ async fn queue_invalid_share_report<D>(
 ) -> Result<()>
 where
     D: CoordinatorDkg,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     let accused_node_key = evidence.statement.responder_node_key.clone();
     let accused_info = read_node_info(&app_state, &accused_node_key).await?;
@@ -658,27 +713,6 @@ where
         .await
         .map_err(|error| DkgError::Bulletin(error.to_string()))?;
     NodeInfo::try_from(post).map_err(|error| DkgError::Deserialization(error.to_string()))
-}
-
-fn deserialize_wire_commitment(bytes: &[u8]) -> std::result::Result<PolynomialCommitment, String> {
-    if bytes.is_empty() {
-        return Err("commitment cannot be empty".to_string());
-    }
-    if !bytes.len().is_multiple_of(GROUP_POINT_SIZE) {
-        return Err(format!(
-            "commitment length {} is not a multiple of {}",
-            bytes.len(),
-            GROUP_POINT_SIZE
-        ));
-    }
-
-    let mut coefficients = Vec::with_capacity(bytes.len() / GROUP_POINT_SIZE);
-    for (index, chunk) in bytes.chunks_exact(GROUP_POINT_SIZE).enumerate() {
-        let coeff =
-            G1Affine::from_bytes(chunk).map_err(|error| format!("coefficient {index}: {error}"))?;
-        coefficients.push(coeff);
-    }
-    Ok(PolynomialCommitment { coefficients })
 }
 
 #[cfg(test)]

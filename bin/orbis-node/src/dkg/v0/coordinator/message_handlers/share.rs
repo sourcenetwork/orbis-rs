@@ -3,8 +3,7 @@ use crate::dkg::v0::coordinator::evidence::{
     queue_or_relay_invalid_share, share_evidence_proves_failure, verify_share_evidence,
 };
 use crypto::error::CryptoError;
-use crypto::r#trait::{DistKeyShare, PubShare, ThresholdSigner};
-use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint};
+use crypto::SignImpl;
 
 /// Handle a `DkgMessage::Share`.
 ///
@@ -22,16 +21,7 @@ pub async fn handle_share_message<D>(
 ) -> Result<Option<DkgMessage>>
 where
     D: CoordinatorDkg,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     if share_value.is_empty() {
         return Err(DkgError::ShareVerificationFailed(
@@ -205,16 +195,7 @@ pub(super) async fn receive_and_record_share<D>(
 ) -> Result<()>
 where
     D: CoordinatorDkg,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     let from_node_id = share.from_id;
     let to_node_id = share.to_id;

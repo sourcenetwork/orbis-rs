@@ -1,5 +1,5 @@
 use super::*;
-use crate::dkg::v0::coordinator::evidence::build_commitment_evidence;
+use crate::dkg::v0::coordinator::evidence::build_and_store_commitment_evidence;
 
 pub async fn initiate_phase1_commitments<D>(
     coord: &DkgCoordinator<D>,
@@ -72,15 +72,8 @@ where
         .update_phase(&session_id, DkgPhase::Phase1Commitments)
         .await;
     let report_evidence =
-        build_commitment_evidence(coord, session_id, node_id, commitment_bytes.clone()).await?;
-    coord
-        .app_state
-        .dkg_session_state
-        .with_state_mut(&session_id, |state| {
-            state.local_signed_commitment = report_evidence.clone();
-        })
-        .await
-        .ok_or_else(|| session_not_found(session_id))?;
+        build_and_store_commitment_evidence(coord, session_id, node_id, commitment_bytes.clone())
+            .await?;
 
     let mut peers_sent = 0;
     let mut expected_peers = 0;

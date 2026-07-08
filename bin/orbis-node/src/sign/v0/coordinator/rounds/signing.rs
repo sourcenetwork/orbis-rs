@@ -2,6 +2,7 @@ use crate::constants::SIGN_COLLECTION_TIMEOUT;
 use crate::helpers::identity::{
     determine_ring_node_id_from_peer_id, determine_session_node_id, is_self_peer_id,
 };
+use crate::helpers::node_routes::node_key_for_canonical_node_id;
 use crate::helpers::response_manager::ResponseInitOutcome;
 use crate::helpers::ring::{
     is_ring_reshare_in_progress, load_ring_pub_poly_and_bundle, RingConfig,
@@ -88,7 +89,7 @@ impl SignResponseReportContextBase {
             ring_state_sha256: self.ring_state_sha256.clone(),
             protocol_version: self.protocol_version,
             request_id: self.request_id.clone(),
-            accused_node_key: node_key_for_session_node_id(node_id, &ring.peer_node_keys)?,
+            accused_node_key: node_key_for_canonical_node_id(node_id, &ring.peer_node_keys)?,
             accused_peer_id: peer_route_for_session_node_id(node_id, ring)?,
             origin_protocol: self.origin_protocol.clone(),
             accused_committee_scope: self.accused_committee_scope,
@@ -1034,18 +1035,8 @@ where
     }
 }
 
-fn node_key_for_session_node_id(node_id: u32, peer_node_keys: &[String]) -> Option<String> {
-    if node_id == 0 {
-        return None;
-    }
-    let mut sorted = peer_node_keys.to_vec();
-    sorted.sort();
-    sorted.dedup();
-    sorted.get(node_id as usize - 1).cloned()
-}
-
 fn peer_route_for_session_node_id(node_id: u32, ring: &RingConfig) -> Option<String> {
-    let node_key = node_key_for_session_node_id(node_id, &ring.peer_node_keys)?;
+    let node_key = node_key_for_canonical_node_id(node_id, &ring.peer_node_keys)?;
     ring.peer_node_keys
         .iter()
         .zip(ring.peer_ids.iter())

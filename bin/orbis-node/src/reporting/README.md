@@ -5,11 +5,11 @@ as PRE, DKG, PSS, and signing should only submit normalized observations here;
 report construction, validation, threshold signing, and delivery should stay in
 this module.
 
-Supported report types are `node_offline` and
-`pre_invalid_reencryption_proof`. They are intentionally small: protocols can
-keep serving the user while reporting tries, in the background, to produce a
-threshold-signed artifact proving that a committee member appears offline or
-returned an attributable invalid PRE proof.
+Supported report types are `node_offline` and `invalid_crypto_response`. They
+are intentionally small: protocols can keep serving the user while reporting
+tries, in the background, to produce a threshold-signed artifact proving that a
+committee member appears offline or returned an attributable bad cryptographic
+response.
 
 ## High-level flow
 
@@ -24,13 +24,15 @@ flowchart TD
     G --> H["Reporter validates local authority"]
     H --> I["Generic orchestrator threshold-signs envelope"]
     I --> J["Independent signers validate report"]
-    J --> K["Independent signers probe accused node over health ALPN"]
-    K --> L{"Any health probe succeeds?"}
-    L -- "yes" --> M["Reject report"]
-    L -- "no" --> N["Return signature share"]
-    N --> O["Recover threshold signature"]
-    O --> P["Pass SignedReport to sink::submit"]
-    P --> Q["Submit signed artifact to SourceHub via bulletin.submit_report"]
+    J --> K{"Report type needs health probe?"}
+    K -- "node_offline" --> L["Independent signers probe accused node over health ALPN"]
+    L --> M{"Any health probe succeeds?"}
+    M -- "yes" --> N["Reject report"]
+    M -- "no" --> O["Return signature share"]
+    K -- "invalid_crypto_response" --> O
+    O --> P["Recover threshold signature"]
+    P --> Q["Pass SignedReport to sink::submit"]
+    Q --> R["Submit signed artifact to SourceHub via bulletin.submit_report"]
 ```
 
 ## `node_offline` flow
@@ -73,60 +75,92 @@ These should not create `node_offline` reports:
 - peer application errors;
 - malformed responses;
 - invalid shares / verification failures (these create
-  `pre_invalid_reencryption_proof` reports instead — see below);
+  `invalid_crypto_response` reports instead — see below);
 - canceled stragglers after PRE already has enough shares.
 
 The payload must stay sanitized. `NodeOffline` records only the originating
 protocol/version and committee scopes. It must not include JWTs, object IDs,
 ciphertexts, raw error text, or transport sub-stage details.
 
-## `pre_invalid_reencryption_proof` flow
+## `invalid_crypto_response` flow
 
-A PRE responder signs every `ReencryptResponse` with its secp256k1 chain key
+`invalid_crypto_response` is the unified report type for attributable bad
+cryptographic responses. Its payload is:
+
+```text
+evidence_kind, statement, response_signature
+```
+
+The current evidence kinds are:
+
+- `pre`: a signed `PreReencryptResponseStatement` for an invalid PRE proof.
+  The statement domain is `orbis-pre-reencrypt-response-v1`, and
+  `origin_protocol` must be `pre`.
+- `sign`: a signed `SignResponseStatement` for an invalid threshold signature
+  share. The statement domain is `orbis-sign-response-v1`, and
+  `origin_protocol` may be `sign`, `pss_refresh`, `pss_reshare`, or `report`.
+- `dkg_share`: a signed `DkgShareStatement` for an invalid raw PSS DKG share.
+  The share statement domain is `orbis-dkg-share-v1`; it embeds a signed
+  `DkgCommitmentStatement` with domain `orbis-dkg-commitment-v1`.
+  `origin_protocol` must be `pss_refresh` or `pss_reshare`. Fresh/full DKG
+  does not report bad raw shares.
+
+Each response statement is signed by the accused node's secp256k1 chain key
 (`NodeSigningKey`; the ring-registered `node_key` is exactly that key's
-compressed public key hex). The signature covers a canonical
-`PreReencryptResponseStatement`: domain tag (`orbis-pre-reencrypt-response-v1`),
-chain_id, ring_id, ring_pk, ring_state_sha256, protocol_version, request_id,
-`signed_at` (unix seconds at response time), responder_node_key, object_id,
-rdr_pk, optional derivation, from_node_id, share, challenge, proof, and the
-crypto backend name. The coordinator rebuilds the statement from its own
-context, so any disagreement (or a missing/forged signature) rejects the
-response outright — a share is only usable if it is fully attributable.
+compressed public key hex). The signed statement carries chain/ring binding,
+the ring-state digest, protocol version, request/session id, `signed_at`, the
+responder node key, origin protocol, protocol-specific crypto material, and the
+crypto backend name. Missing or invalid evidence signatures reject the response
+or report outright; only signature-valid evidence is attributable.
 
-When a signature-valid response fails `dealer.verify()` (the NIZK does not
-verify against the ring polynomial), the coordinator queues a
-`pre_invalid_reencryption_proof` observation carrying the signed statement as
-evidence — inline during collection, or via the response drain if the result
-arrives after threshold. Deserialization failures stay unreported (corruption
-in transit is not misbehavior), and a stale/future `signed_at` rejects the
-response the same way a bad signature does.
+When a signature-valid response fails the protocol-specific verifier, the
+protocol queues `ReportObservation::InvalidCryptoResponse`. The protocol should
+still continue if it has enough valid responses. Deserialization failures,
+malformed evidence, bad signatures, wrong sender/recipient bindings, and stale
+or future `signed_at` values are rejected without reporting.
 
-Signer-side validation (no health probe for this type):
+Signer-side validation (no health probe for this report type):
 
 - statement↔envelope binding: chain_id, ring_id, ring_pk, ring_state digest,
   `request_id == session_id`, `responder_node_key == accused_node_key`;
-- accused node-id mapping: `from_node_id` must equal the accused's canonical
-  DKG index in the current ring;
-- evidence signature: secp256k1 verify under `accused_node_key`;
+- evidence origin and scope policy:
+  - PRE: origin `pre`, current/current committee scopes;
+  - Sign: origin `sign`, `pss_refresh`, `pss_reshare`, or `report`, using the
+    statement's accused/signing committee scopes;
+  - DKG share: origin `pss_refresh` or `pss_reshare`, current/current scopes;
+- evidence signature: secp256k1 verify under `accused_node_key`; DKG share
+  reports also verify the nested DKG commitment signature;
 - **evidence anchor**: `observed_at == signed_at - CHAIN_BLOCK_GRACE_SECS`
   (exactly). This pins the envelope's fixed `observed_at + REPORT_TTL_SECS`
   expiry to the evidence's age, so the shared shape checks already reject
   stale or future evidence and the chain's plain TTL dedupe records provably
   outlive any resubmission of the same evidence — one accepted report per
-  (request, accused), ever, with no extra retention rules;
-- re-verification: fetch the document by object_id from the bulletin
-  (authoritative enc_cmt), load the local `RingPolyState` polynomial, and run
-  `verify()` on the evidence — if the proof actually verifies, refuse to sign
-  (anti-framing gate).
+  (request, accused, origin), ever, with no extra retention rules;
+- anti-framing re-verification: signers rerun the relevant cryptographic check
+  and refuse to sign if the PRE proof, Sign share, or DKG share actually
+  verifies.
 
-Notes: `session_id` is the PRE `request_id`, so chain session-dedupe yields
-per-request demerits ("keep submitting invalid proofs, keep getting
-demerited"). Demerit weight is the ring's `pre_invalid_proof_demerits`
-(DemeritConfig; feeds the cross-repo ring-state digest). The
-`response_signature`/`signed_at` wire fields are mandatory — all ring nodes
-must upgrade together. A node whose shares went stale (e.g. it missed a PSS
-refresh) produces honestly-signed proofs that fail verification and will be
-demerited; like `node_offline`, the report attributes fault, not intent.
+For PRE evidence, signers fetch the document by object_id from the bulletin
+(authoritative enc_cmt), load the local `RingPolyState` polynomial, and run
+`verify()` on the evidence. For Sign evidence, signers verify the signature
+share against the signed message/commitments/context. For DKG share evidence,
+signers verify the share against the accused's own signed commitment and only
+report if `commitment.verify_share(to_node_id, share_value)` fails.
+
+Raw DKG bad-share reporting is PSS-only. During refresh, the receiver is a
+current committee member and queues the report directly. During reshare, a pure
+pending-new receiver cannot sign a current-signed report, so it relays the
+signed bad-share evidence to current committee peers. A current peer accepts a
+relay only for `pss_reshare`, re-checks the evidence against the local session,
+confirms the share verification failure, and then queues the report itself.
+
+Notes: `session_id` is the evidence `request_id`, so chain session-dedupe yields
+per-request demerits ("keep submitting invalid crypto, keep getting
+demerited"). Demerit weight is the ring's
+`invalid_crypto_response_demerits` (DemeritConfig; feeds the cross-repo
+ring-state digest). The signed evidence wire fields are mandatory — all ring
+nodes must upgrade together. Like `node_offline`, this report attributes fault,
+not intent.
 
 ## Common validation gates
 
@@ -156,7 +190,7 @@ offline member using the existing threshold.
 
 Independently, before accepting `MsgSubmitReport` and applying demerits, the
 chain re-checks most of the same invariants plus its own replay protection
-(see [Chain-side acceptance](#chain-side-acceptance-sourcehub) above):
+(see [Chain-side acceptance](#chain-side-acceptance-sourcehub) below):
 
 - envelope shape and validity-window checks;
 - `report.chain_id` matches the running chain;
@@ -180,11 +214,12 @@ freshness itself.
 Reports reuse the normal sign coordinator through a dedicated
 `SignContext::Report` path.
 
-- BLS signers perform report validation and health probing before returning
-  their signature share.
-- FROST signers perform report validation and health probing before nonce
-  generation. Round two is bound to the exact report digest through the nonce
-  context key, so the signer does not need to probe twice.
+- BLS signers perform report validation before returning their signature share.
+  `node_offline` additionally performs the health probe before signing.
+- FROST signers perform report validation before nonce generation.
+  `node_offline` additionally performs the health probe before nonce generation.
+  Round two is bound to the exact report digest through the nonce context key,
+  so the signer does not need to validate/probe twice.
 - The accused node is excluded from requests, expected peer sets, nonce
   collection, and final share collection.
 - Exclusion is by node key, not by reindexing the committee, so MPC node IDs stay
@@ -192,7 +227,8 @@ Reports reuse the normal sign coordinator through a dedicated
 
 ## Health protocol
 
-The health check uses the reporting ALPN:
+Only `node_offline` reports use the health check. The probe uses the reporting
+ALPN:
 
 ```text
 orbis/reporting/health/0
@@ -212,8 +248,9 @@ report.
 ## Report sink
 
 `sink::submit` forwards the completed `SignedReport` to SourceHub by calling
-`bulletin.submit_report`. The canonical encoding and golden vectors are defined
-on the Rust side; the chain should not introduce a competing encoding.
+`bulletin.submit_report`. The canonical encoding is defined on the Rust side;
+SourceHub mirrors the decoder and golden vectors rather than introducing a
+competing encoding.
 
 ## Chain-side acceptance (sourcehub)
 
@@ -231,8 +268,9 @@ change:
    already accepted;
 5. decode and validate the report payload: `node_offline` checks
    `origin_protocol` is one of `pre`/`sign`/`pss_refresh`/`pss_reshare`, while
-   `pre_invalid_reencryption_proof` binds the signed PRE response statement to
-   the envelope;
+   `invalid_crypto_response` decodes its evidence kind (`pre`, `sign`, or
+   `dkg_share`), checks the expected statement domain/shape, validates
+   origin-protocol policy, and binds the signed statement to the envelope;
 6. look up the ring, require it finalized, and require `report.ring_pk` /
    `report.ring_state_sha256` to match current on-chain ring state exactly
    (stale ring state is rejected, same as the orbis-rs gate);
@@ -276,8 +314,8 @@ no replay gap opened by forgetting it.
 `DemeritAmountForReportType` (`x/orbis/keeper/demerits.go`) maps each report
 type to a point value: `node_offline` uses
 `ring.DemeritConfig.NodeOfflineDemerits`, and
-`pre_invalid_reencryption_proof` uses
-`ring.DemeritConfig.PreInvalidProofDemerits`.
+`invalid_crypto_response` uses
+`ring.DemeritConfig.InvalidCryptoResponseDemerits`.
 `IncrementNodeDemerits` (`x/orbis/keeper/store.go`) then adds that amount to the
 node's running total for `(ring_id, node_key)`. The total lives in a lazily-reset
 window: if the existing window started more than `DemeritConfig.ResetIntervalSeconds`
@@ -298,6 +336,11 @@ To add another fault path:
 The protocol module should classify and submit observations. It should not own
 report envelopes, health probing, threshold-signing policy, or chain delivery.
 
+To add another invalid-crypto evidence kind under the existing report type,
+extend `InvalidCryptoResponse`, add statement shape/signature/anti-framing
+validation in the handler, update SourceHub's decoder, and add matching golden
+vectors on both sides.
+
 ## Test expectations
 
 Each report type should have coverage for:
@@ -313,3 +356,7 @@ Each report type should have coverage for:
 - health probe success rejecting a report;
 - below-threshold validation producing no signed report;
 - final signature verification under the ring key for both BLS and FROST builds.
+- invalid-crypto evidence kind decoding, statement binding, signature checks,
+  anti-framing re-verification, and SourceHub golden vectors;
+- DKG refresh direct reporting and reshare relay from pending-new receivers to
+  current committee signers.

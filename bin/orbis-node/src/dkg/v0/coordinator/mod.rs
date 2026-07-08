@@ -38,12 +38,14 @@ use crate::dkg::v0::messages::DkgMessage;
 use crate::dkg::v0::session_state::{CreateSessionOutcome, DkgMessageType, MessageProcessingClaim};
 use crate::metrics;
 use ::network::PeerId;
-use crypto::r#trait::{DistKeyShare, Dkg, DkgRole, PubShare, ThresholdSigner};
+use crypto::r#trait::{Dkg, DkgRole};
 use crypto::{
     GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
-    PubPolyImpl as PubPoly, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint,
+    PubPolyImpl as PubPoly, ScalarField as Fr, SignImpl,
 };
 use std::sync::Arc;
+
+use self::types::CoordinatorReportSigner;
 
 /// Releases a `try_claim_message_processing` claim on drop.
 ///
@@ -161,16 +163,7 @@ where
         sender_peer_id: &PeerId,
     ) -> Result<Option<DkgMessage>>
     where
-        SignImpl: ThresholdSigner<
-                ShareValue = Fr,
-                PublicKey = G1Affine,
-                DistKeyShare = DistKeyShare<Fr>,
-                PubPoly = D::PubPoly,
-                Signature = SignaturePoint,
-                SigShare = PubShare<SigShareInner>,
-            > + Send
-            + Sync
-            + 'static,
+        SignImpl: CoordinatorReportSigner<D>,
     {
         let session_id = message.session_id();
         let meta = inbound::DkgMessageMeta::from_message(&message);

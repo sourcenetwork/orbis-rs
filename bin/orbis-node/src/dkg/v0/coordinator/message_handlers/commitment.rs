@@ -1,9 +1,8 @@
 use super::*;
 use crate::dkg::v0::coordinator::evidence::{
-    build_commitment_evidence, verify_commitment_evidence,
+    build_and_store_commitment_evidence, verify_commitment_evidence,
 };
-use crypto::r#trait::{DistKeyShare, PubShare, ThresholdSigner};
-use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint};
+use crypto::SignImpl;
 /// Handle a `DkgMessage::Commitment`.
 ///
 /// Deserializes and stores the commitment, optionally triggers polynomial generation
@@ -18,16 +17,7 @@ pub async fn handle_commitment_message<D>(
 ) -> Result<Option<DkgMessage>>
 where
     D: CoordinatorDkg,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     tracing::debug!(
         from_node_id = from_node_id,
@@ -172,17 +162,13 @@ where
                 })
                 .await
                 .ok_or_else(|| session_not_found(session_id))??;
-            let report_evidence =
-                build_commitment_evidence(coord, session_id, node_id, commitment_bytes.clone())
-                    .await?;
-            coord
-                .app_state
-                .dkg_session_state
-                .with_state_mut(&session_id, |state| {
-                    state.local_signed_commitment = report_evidence.clone();
-                })
-                .await
-                .ok_or_else(|| session_not_found(session_id))?;
+            let report_evidence = build_and_store_commitment_evidence(
+                coord,
+                session_id,
+                node_id,
+                commitment_bytes.clone(),
+            )
+            .await?;
 
             let mut sent_count = 0;
             let mut expected_count = 0;

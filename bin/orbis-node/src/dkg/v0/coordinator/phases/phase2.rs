@@ -1,5 +1,8 @@
 use super::*;
-use crate::dkg::v0::coordinator::evidence::{build_commitment_evidence, build_share_evidence};
+use crate::dkg::v0::coordinator::evidence::{
+    build_and_store_commitment_evidence_with_context, build_share_evidence_with_context,
+    evidence_build_context,
+};
 
 pub async fn initiate_phase2_shares<D>(
     coord: &DkgCoordinator<D>,
@@ -67,21 +70,22 @@ where
         .dkg_session_state
         .update_phase(&session_id, DkgPhase::Phase2Shares)
         .await;
+    let evidence_context = evidence_build_context(coord, session_id).await?;
     let commitment_evidence = match stored_commitment_evidence {
         Some(evidence) => Some(evidence),
-        None => {
-            let evidence =
-                build_commitment_evidence(coord, session_id, node_id, commitment_bytes).await?;
-            coord
-                .app_state
-                .dkg_session_state
-                .with_state_mut(&session_id, |state| {
-                    state.local_signed_commitment = evidence.clone();
-                })
-                .await
-                .ok_or_else(|| session_not_found(session_id))?;
-            evidence
-        }
+        None => match &evidence_context {
+            Some(context) => Some(
+                build_and_store_commitment_evidence_with_context(
+                    coord,
+                    session_id,
+                    context,
+                    node_id,
+                    commitment_bytes,
+                )
+                .await?,
+            ),
+            None => None,
+        },
     };
 
     if peer_ids.is_empty() {
@@ -140,19 +144,19 @@ where
             let share_value_bytes = CryptoSerialize::to_bytes(&share.value).map_err(|e| {
                 DkgError::Serialization(format!("Failed to serialize share value: {}", e))
             })?;
-            let report_evidence = if let Some(commitment_evidence) = &commitment_evidence {
-                build_share_evidence(
-                    coord,
-                    session_id,
-                    node_id,
-                    share.to_id,
-                    share_value_bytes.clone(),
-                    share.nonce,
-                    commitment_evidence,
-                )
-                .await?
-            } else {
-                None
+            let report_evidence = match (&evidence_context, &commitment_evidence) {
+                (Some(context), Some(commitment_evidence)) => {
+                    Some(build_share_evidence_with_context(
+                        coord,
+                        context,
+                        node_id,
+                        share.to_id,
+                        share_value_bytes.clone(),
+                        share.nonce,
+                        commitment_evidence,
+                    )?)
+                }
+                _ => None,
             };
             let share_msg = DkgMessage::Share {
                 session_id,
@@ -189,19 +193,17 @@ where
         let share_value_bytes = CryptoSerialize::to_bytes(&share.value).map_err(|e| {
             DkgError::Serialization(format!("Failed to serialize share value: {}", e))
         })?;
-        let report_evidence = if let Some(commitment_evidence) = &commitment_evidence {
-            build_share_evidence(
+        let report_evidence = match (&evidence_context, &commitment_evidence) {
+            (Some(context), Some(commitment_evidence)) => Some(build_share_evidence_with_context(
                 coord,
-                session_id,
+                context,
                 node_id,
                 share.to_id,
                 share_value_bytes.clone(),
                 share.nonce,
                 commitment_evidence,
-            )
-            .await?
-        } else {
-            None
+            )?),
+            _ => None,
         };
 
         // Private DKG shares must be sent only to their intended recipient.

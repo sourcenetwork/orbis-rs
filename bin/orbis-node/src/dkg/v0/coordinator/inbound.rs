@@ -3,12 +3,13 @@ use crate::dkg::v0::helpers::session_not_found;
 use crate::dkg::v0::messages::DkgMessage;
 use crate::dkg::v0::session_state::DkgMessageType;
 use crate::helpers::identity::extract_node_part;
-use crypto::r#trait::{DistKeyShare, PubShare, ThresholdSigner};
-use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint};
+use crypto::SignImpl;
 use network::PeerId;
 
 use super::{
-    evidence, message_handlers, refresh_health_check, types::CoordinatorDkg, DkgCoordinator,
+    evidence, message_handlers, refresh_health_check,
+    types::{CoordinatorDkg, CoordinatorReportSigner},
+    DkgCoordinator,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,16 +211,7 @@ pub async fn dispatch<D>(
 ) -> Result<Option<DkgMessage>>
 where
     D: CoordinatorDkg,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     match message {
         DkgMessage::Commitment {

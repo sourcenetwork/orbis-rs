@@ -79,6 +79,17 @@ pub fn canonical_node_id_assignments_from_node_keys(
     Ok(assignments)
 }
 
+pub fn node_key_for_canonical_node_id(node_id: u32, peer_node_keys: &[String]) -> Option<String> {
+    if node_id == 0 {
+        return None;
+    }
+    canonical_node_id_assignments_from_node_keys(peer_node_keys)
+        .ok()?
+        .into_iter()
+        .find(|(_, assigned_node_id)| *assigned_node_id == node_id)
+        .map(|(node_key, _)| node_key)
+}
+
 pub fn node_id_to_peer_id_from_routes(
     routes: &[NodeRoute],
     node_id_assignments: &HashMap<String, u32>,
@@ -211,5 +222,24 @@ mod tests {
         assert_eq!(assignments["node-a"], 1);
         assert_eq!(assignments["node-b"], 2);
         assert_eq!(assignments["node-c"], 3);
+    }
+
+    #[test]
+    fn node_key_for_canonical_node_id_uses_sorted_node_keys() {
+        let peer_node_keys = vec![
+            "node-c".to_string(),
+            "node-a".to_string(),
+            "node-b".to_string(),
+        ];
+
+        assert_eq!(
+            node_key_for_canonical_node_id(1, &peer_node_keys).as_deref(),
+            Some("node-a")
+        );
+        assert_eq!(
+            node_key_for_canonical_node_id(3, &peer_node_keys).as_deref(),
+            Some("node-c")
+        );
+        assert_eq!(node_key_for_canonical_node_id(0, &peer_node_keys), None);
     }
 }
