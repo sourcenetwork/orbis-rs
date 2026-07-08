@@ -1040,7 +1040,7 @@ mod tests {
     #[test]
     fn invalid_crypto_response_dkg_share_payload_round_trips() {
         let payload = InvalidCryptoResponse::DkgShare {
-            statement: dkg_share_statement(),
+            statement: Box::new(dkg_share_statement()),
             response_signature: vec![42; 64],
         };
 

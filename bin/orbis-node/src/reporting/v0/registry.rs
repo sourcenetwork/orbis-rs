@@ -1498,7 +1498,7 @@ mod tests {
             accused_peer_id: "aa".repeat(32),
             observed_at: statement.signed_at - CHAIN_BLOCK_GRACE_SECS,
             evidence: InvalidCryptoResponse::DkgShare {
-                statement,
+                statement: Box::new(statement),
                 response_signature: vec![9; 64],
             },
         }
@@ -1662,7 +1662,7 @@ mod tests {
         statement.origin_protocol = "fresh_dkg".to_string();
         statement.commitment_statement.origin_protocol = "fresh_dkg".to_string();
         envelope.payload = InvalidCryptoResponse::DkgShare {
-            statement: statement.clone(),
+            statement: Box::new(statement.clone()),
             response_signature: vec![9; 64],
         }
         .canonical_bytes();

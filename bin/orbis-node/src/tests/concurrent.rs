@@ -601,7 +601,7 @@ fn signed_bad_refresh_dkg_share_observation(
         accused_peer_id,
         observed_at,
         evidence: InvalidCryptoResponse::DkgShare {
-            statement,
+            statement: Box::new(statement),
             response_signature,
         },
     }

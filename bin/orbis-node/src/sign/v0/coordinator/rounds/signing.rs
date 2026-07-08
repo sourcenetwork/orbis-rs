@@ -80,12 +80,7 @@ impl SignResponseReportContextBase {
         }
     }
 
-    fn for_peer(
-        &self,
-        ring: &RingConfig,
-        node_id: u32,
-        accused_peer_id: String,
-    ) -> Option<SignResponseReportContext> {
+    fn for_peer(&self, ring: &RingConfig, node_id: u32) -> Option<SignResponseReportContext> {
         Some(SignResponseReportContext {
             chain_id: self.chain_id.clone(),
             ring_id: self.ring_id.clone(),
@@ -94,7 +89,7 @@ impl SignResponseReportContextBase {
             protocol_version: self.protocol_version,
             request_id: self.request_id.clone(),
             accused_node_key: node_key_for_session_node_id(node_id, &ring.peer_node_keys)?,
-            accused_peer_id,
+            accused_peer_id: peer_route_for_session_node_id(node_id, ring)?,
             origin_protocol: self.origin_protocol.clone(),
             accused_committee_scope: self.accused_committee_scope,
             signing_committee_scope: self.signing_committee_scope,
@@ -478,9 +473,9 @@ where
                             continue;
                         };
                         let sender_peer_hex = response.sender_peer_hex.clone();
-                        let report_context = sign_report_context_base.as_ref().and_then(|base| {
-                            base.for_peer(&ring, expected_node_id, sender_peer_hex.clone())
-                        });
+                        let report_context = sign_report_context_base
+                            .as_ref()
+                            .and_then(|base| base.for_peer(&ring, expected_node_id));
                         match Self::verify_peer_signature_response(
                             &signer,
                             response.message,
@@ -833,9 +828,7 @@ where
                             let sender_peer_hex = response.sender_peer_hex.clone();
                             let report_context = sign_report_context_base
                                 .as_ref()
-                                .and_then(|base| {
-                                    base.for_peer(&ring, expected_node_id, sender_peer_hex.clone())
-                                });
+                                .and_then(|base| base.for_peer(&ring, expected_node_id));
                             match Self::verify_peer_signature_response(
                                 &signer,
                                 response.message,
@@ -946,7 +939,7 @@ where
             let sender_peer_hex = response.sender_peer_hex.clone();
             let report_context = sign_report_context_base
                 .as_ref()
-                .and_then(|base| base.for_peer(&ring, expected_node_id, sender_peer_hex.clone()));
+                .and_then(|base| base.for_peer(&ring, expected_node_id));
             match Self::verify_peer_signature_response(
                 &signer,
                 response.message,
@@ -1049,4 +1042,48 @@ fn node_key_for_session_node_id(node_id: u32, peer_node_keys: &[String]) -> Opti
     sorted.sort();
     sorted.dedup();
     sorted.get(node_id as usize - 1).cloned()
+}
+
+fn peer_route_for_session_node_id(node_id: u32, ring: &RingConfig) -> Option<String> {
+    let node_key = node_key_for_session_node_id(node_id, &ring.peer_node_keys)?;
+    ring.peer_node_keys
+        .iter()
+        .zip(ring.peer_ids.iter())
+        .find(|(candidate, _)| *candidate == &node_key)
+        .map(|(_, route)| route.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_route_for_session_node_id_returns_canonical_ring_route() {
+        let ring = RingConfig {
+            ring_id: "ring".to_string(),
+            ring_pk_bytes: vec![],
+            peer_ids: vec![
+                "peer-c@node3:50051".to_string(),
+                "peer-a@node1:50051".to_string(),
+                "peer-b@node2:50051".to_string(),
+            ],
+            peer_node_keys: vec![
+                "node-key-c".to_string(),
+                "node-key-a".to_string(),
+                "node-key-b".to_string(),
+            ],
+            threshold: 2,
+            total_participants: 3,
+            public_polynomial_hex: String::new(),
+        };
+
+        assert_eq!(
+            peer_route_for_session_node_id(1, &ring).as_deref(),
+            Some("peer-a@node1:50051")
+        );
+        assert_eq!(
+            peer_route_for_session_node_id(3, &ring).as_deref(),
+            Some("peer-c@node3:50051")
+        );
+    }
 }
