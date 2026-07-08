@@ -290,7 +290,39 @@ where
         ));
     }
     verify_relay_is_current_signer(coord, session_id).await?;
-    queue_invalid_share_report(coord.app_state.clone(), coord.routes, report_evidence).await?;
+
+    // A relayed report is otherwise unauthenticated network input, so re-run the
+    // same checks the direct receiver path runs before spending a report attempt
+    // on it: authenticate the evidence against this session (ring binding plus the
+    // responder's commitment and share signatures) and confirm it actually proves a
+    // verification failure. Without this a peer could relay altered evidence or
+    // evidence for a perfectly valid share and force a bogus report.
+    let from_node_id = report_evidence.statement.from_node_id;
+    let to_node_id = report_evidence.statement.to_node_id;
+    let share_value = report_evidence.statement.share_value.clone();
+    let nonce = report_evidence.statement.nonce;
+    let verified = verify_share_evidence(
+        coord,
+        session_id,
+        from_node_id,
+        to_node_id,
+        &share_value,
+        nonce,
+        Some(report_evidence),
+    )
+    .await?
+    .ok_or_else(|| {
+        DkgError::Unauthorized(
+            "relayed DKG bad-share evidence is not valid for this session".to_string(),
+        )
+    })?;
+    if !share_evidence_proves_failure(&verified) {
+        return Err(DkgError::Unauthorized(
+            "relayed DKG share evidence does not prove a verification failure".to_string(),
+        ));
+    }
+
+    queue_invalid_share_report(coord.app_state.clone(), coord.routes, verified).await?;
     Ok(None)
 }
 
@@ -647,4 +679,106 @@ fn deserialize_wire_commitment(bytes: &[u8]) -> std::result::Result<PolynomialCo
         coefficients.push(coeff);
     }
     Ok(PolynomialCommitment { coefficients })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_default, test_db_path};
+    use crypto::DkgImpl;
+    use std::sync::Arc;
+
+    fn signed_share_with_origin(origin: &str) -> SignedDkgShare {
+        let commitment_statement = DkgCommitmentStatement {
+            domain: DKG_COMMITMENT_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            protocol_version: 0,
+            request_id: "session".to_string(),
+            signed_at: 100,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: origin.to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id: 2,
+            commitment: vec![1],
+            crypto_backend: DkgImpl::name(),
+        };
+        SignedDkgShare {
+            statement: DkgShareStatement {
+                domain: DKG_SHARE_DOMAIN.to_string(),
+                chain_id: "chain".to_string(),
+                ring_id: "ring".to_string(),
+                ring_pk: "pk".to_string(),
+                ring_state_sha256: "00".repeat(32),
+                protocol_version: 0,
+                request_id: "session".to_string(),
+                signed_at: 100,
+                responder_node_key: "accused".to_string(),
+                receiver_node_key: "receiver".to_string(),
+                origin_protocol: origin.to_string(),
+                accused_committee_scope: CommitteeScope::Current,
+                signing_committee_scope: CommitteeScope::Current,
+                from_node_id: 2,
+                to_node_id: 1,
+                commitment_statement,
+                commitment_signature: vec![7; 64],
+                share_value: vec![8],
+                nonce: [9; 16],
+                crypto_backend: DkgImpl::name(),
+            },
+            signature: vec![5; 64],
+        }
+    }
+
+    /// A relayed report is unauthenticated network input; the handler must reject a
+    /// non-reshare origin before doing any work, since the relay message only
+    /// exists for reshare pending-new receivers.
+    #[tokio::test]
+    async fn relay_rejects_non_reshare_origin() {
+        let db_name = "evidence_relay_rejects_non_reshare_origin";
+        let db_path = test_db_path(db_name);
+        cleanup_db(&db_path);
+        let app_state = Arc::new(create_test_app_state_default(db_name).await);
+        let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
+
+        let error = handle_invalid_share_evidence_relay(
+            &coordinator,
+            1,
+            signed_share_with_origin("pss_refresh"),
+        )
+        .await
+        .unwrap_err();
+        cleanup_db(&db_path);
+
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+    }
+
+    /// A reshare-origin relay for a session this node is not currently signing is
+    /// rejected before the evidence is queued.
+    #[tokio::test]
+    async fn relay_rejects_unknown_session() {
+        let db_name = "evidence_relay_rejects_unknown_session";
+        let db_path = test_db_path(db_name);
+        cleanup_db(&db_path);
+        let app_state = Arc::new(create_test_app_state_default(db_name).await);
+        let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
+
+        let error = handle_invalid_share_evidence_relay(
+            &coordinator,
+            999,
+            signed_share_with_origin("pss_reshare"),
+        )
+        .await
+        .unwrap_err();
+        cleanup_db(&db_path);
+
+        // No such session exists, so the current-signer check fails before queuing.
+        assert!(matches!(
+            error,
+            DkgError::SessionNotFound(_) | DkgError::Unauthorized(_)
+        ));
+    }
 }
