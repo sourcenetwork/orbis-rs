@@ -12,6 +12,8 @@ use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{deserialize_wire_commitment, session_not_found};
 use crate::dkg::v0::messages::{DkgMessage, SessionKind, SignedDkgCommitment, SignedDkgShare};
 use crate::dkg::v0::session_state::DkgReportEvidenceBinding;
+use crate::helpers::identity::extract_node_part;
+use crate::helpers::node_routes::node_key_for_canonical_node_id;
 use crate::reporting::v0::observation::{InvalidCryptoResponseObservation, ReportObservation};
 use crate::reporting::v0::queue_report;
 use crate::reporting::v0::types::{
@@ -284,20 +286,7 @@ where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    let is_current_member = coord
-        .app_state
-        .dkg_session_state
-        .with_state(&session_id, |state| {
-            state
-                .routing
-                .peer_node_keys
-                .iter()
-                .any(|node_key| node_key == &coord.app_state.node_key)
-        })
-        .await
-        .ok_or_else(|| session_not_found(session_id))?;
-
-    if is_current_member {
+    if local_node_is_current_route_member(coord, session_id).await? {
         queue_invalid_share_report(coord.app_state.clone(), coord.routes, evidence).await
     } else if evidence.statement.origin_protocol == "pss_reshare" {
         relay_invalid_share_evidence(coord, session_id, evidence).await
@@ -436,6 +425,7 @@ where
         protocol_version,
         request_id: session_id.to_string(),
         origin_protocol: origin_protocol.to_string(),
+        current_node_keys: ring.peer_node_keys.clone(),
         receiver_node_keys,
     };
 
@@ -487,6 +477,19 @@ where
     if statement.responder_node_key.trim().is_empty() {
         return Err(DkgError::Unauthorized(
             "DKG commitment evidence responder cannot be empty".to_string(),
+        ));
+    }
+    let expected_responder_node_key =
+        node_key_for_canonical_node_id(from_node_id, &binding.current_node_keys).ok_or_else(
+            || {
+                DkgError::Unauthorized(format!(
+                    "DKG commitment from_node_id {from_node_id} is outside the current committee"
+                ))
+            },
+        )?;
+    if statement.responder_node_key != expected_responder_node_key {
+        return Err(DkgError::Unauthorized(
+            "DKG commitment evidence responder does not match from_node_id".to_string(),
         ));
     }
     Ok(())
@@ -675,6 +678,28 @@ where
     Ok(())
 }
 
+async fn local_node_is_current_route_member<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+) -> Result<bool>
+where
+    D: CoordinatorDkg,
+{
+    let local_peer_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
+    coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| {
+            state
+                .routing
+                .node_id_to_peer_id
+                .values()
+                .any(|peer_id| extract_node_part(peer_id) == local_peer_hex)
+        })
+        .await
+        .ok_or_else(|| session_not_found(session_id))
+}
+
 async fn verify_relay_is_current_signer<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
@@ -682,19 +707,7 @@ async fn verify_relay_is_current_signer<D>(
 where
     D: CoordinatorDkg,
 {
-    let is_current_member = coord
-        .app_state
-        .dkg_session_state
-        .with_state(&session_id, |state| {
-            state
-                .routing
-                .peer_node_keys
-                .iter()
-                .any(|node_key| node_key == &coord.app_state.node_key)
-        })
-        .await
-        .ok_or_else(|| session_not_found(session_id))?;
-    if is_current_member {
+    if local_node_is_current_route_member(coord, session_id).await? {
         Ok(())
     } else {
         Err(DkgError::Unauthorized(
@@ -719,6 +732,7 @@ where
 mod tests {
     use super::*;
     use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_default, test_db_path};
+    use crypto::r#trait::DkgRole;
     use crypto::DkgImpl;
     use std::sync::Arc;
 
@@ -765,6 +779,158 @@ mod tests {
             },
             signature: vec![5; 64],
         }
+    }
+
+    fn evidence_binding_for_tests() -> DkgReportEvidenceBinding {
+        DkgReportEvidenceBinding {
+            ring_id: "ring".to_string(),
+            ring_pk: "pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            chain_id: "chain".to_string(),
+            protocol_version: 0,
+            request_id: "session".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            current_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
+            receiver_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
+        }
+    }
+
+    fn commitment_statement_for_tests(responder_node_key: &str) -> DkgCommitmentStatement {
+        DkgCommitmentStatement {
+            domain: DKG_COMMITMENT_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            protocol_version: 0,
+            request_id: "session".to_string(),
+            signed_at: 100,
+            responder_node_key: responder_node_key.to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id: 1,
+            commitment: vec![1, 2, 3],
+            crypto_backend: DkgImpl::name(),
+        }
+    }
+
+    #[test]
+    fn commitment_evidence_rejects_responder_not_bound_to_from_node_id() {
+        let binding = evidence_binding_for_tests();
+        let statement = commitment_statement_for_tests("node-b");
+
+        let error = validate_commitment_statement::<DkgImpl>(&binding, 1, &[1, 2, 3], &statement)
+            .unwrap_err();
+
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+    }
+
+    #[test]
+    fn share_evidence_rejects_responder_not_bound_to_from_node_id() {
+        let binding = evidence_binding_for_tests();
+        let commitment_statement = commitment_statement_for_tests("node-b");
+        let statement = DkgShareStatement {
+            domain: DKG_SHARE_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            protocol_version: 0,
+            request_id: "session".to_string(),
+            signed_at: 101,
+            responder_node_key: "node-b".to_string(),
+            receiver_node_key: "node-a".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id: 1,
+            to_node_id: 1,
+            commitment_statement,
+            commitment_signature: vec![7; 64],
+            share_value: vec![9],
+            nonce: [8; 16],
+            crypto_backend: DkgImpl::name(),
+        };
+
+        let error = validate_share_statement::<DkgImpl>(&binding, 1, 1, &[9], [8; 16], &statement)
+            .unwrap_err();
+
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+    }
+
+    #[tokio::test]
+    async fn current_signer_detection_uses_current_route_map_during_reshare() {
+        let db_name = "evidence_current_signer_uses_current_routes";
+        let db_path = test_db_path(db_name);
+        cleanup_db(&db_path);
+        let app_state = Arc::new(create_test_app_state_default(db_name).await);
+        let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+        let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
+        let session_id = 7;
+
+        coordinator
+            .create_session(session_id, 1, 2, 3, DkgRole::Dealer, |state| {
+                state.kind = SessionKind::Reshare {
+                    ring_pk_hex: "ring-pk".to_string(),
+                    new_peer_node_keys: vec!["new-a".to_string(), "new-b".to_string()],
+                    new_threshold: 2,
+                    bulletin_post_id: "ring-id".to_string(),
+                };
+                // During reshare this field is the receiver/new committee; it must
+                // not be used to decide whether this node can sign current reports.
+                state.routing.peer_node_keys = vec!["new-a".to_string(), "new-b".to_string()];
+                state
+                    .routing
+                    .node_id_to_peer_id
+                    .insert(1, format!("{local_peer_hex}@127.0.0.1:1234"));
+            })
+            .await
+            .expect("create reshare dealer session");
+
+        assert!(local_node_is_current_route_member(&coordinator, session_id)
+            .await
+            .expect("membership check"));
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn pure_new_receiver_is_not_current_report_signer() {
+        let db_name = "evidence_pure_new_not_current_signer";
+        let db_path = test_db_path(db_name);
+        cleanup_db(&db_path);
+        let app_state = Arc::new(create_test_app_state_default(db_name).await);
+        let local_node_key = app_state.node_key.clone();
+        let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+        let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
+        let session_id = 8;
+
+        coordinator
+            .create_session(session_id, 1, 1, 1, DkgRole::Receiver, |state| {
+                state.kind = SessionKind::Reshare {
+                    ring_pk_hex: "ring-pk".to_string(),
+                    new_peer_node_keys: vec![local_node_key.clone()],
+                    new_threshold: 1,
+                    bulletin_post_id: "ring-id".to_string(),
+                };
+                // This simulates the pure-new receiver case that used to be
+                // misclassified because `peer_node_keys` names the new committee.
+                state.routing.peer_node_keys = vec![local_node_key];
+                state.routing.node_id_to_peer_id.insert(1, "a".repeat(64));
+                state
+                    .routing
+                    .reshare_new_node_id_to_peer_id
+                    .insert(1, local_peer_hex);
+            })
+            .await
+            .expect("create reshare receiver session");
+
+        assert!(
+            !local_node_is_current_route_member(&coordinator, session_id)
+                .await
+                .expect("membership check")
+        );
+        cleanup_db(&db_path);
     }
 
     /// A relayed report is unauthenticated network input; the handler must reject a

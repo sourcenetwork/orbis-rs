@@ -200,6 +200,7 @@ pub(crate) struct DkgReportEvidenceBinding {
     pub protocol_version: u64,
     pub request_id: String,
     pub origin_protocol: String,
+    pub current_node_keys: Vec<String>,
     pub receiver_node_keys: Vec<String>,
 }
 
