@@ -99,9 +99,42 @@ where
         return Ok(None);
     }
 
-    let share_val = <D::ShareValue>::from_bytes(share_value.as_slice()).map_err(|e| {
-        DkgError::Deserialization(format!("Failed to deserialize share value: {}", e))
-    })?;
+    let share_val = match <D::ShareValue>::from_bytes(share_value.as_slice()) {
+        Ok(value) => value,
+        Err(e) => {
+            // A signed but undeserializable share is still attributable bad crypto
+            // (the length was already checked above, so this is a right-sized but
+            // invalid encoding). Authenticate the evidence and, if it proves
+            // failure, report the share instead of silently dropping it.
+            let report_evidence = verify_share_evidence(
+                coord,
+                session_id,
+                from_node_id,
+                to_node_id,
+                &share_value,
+                nonce,
+                report_evidence,
+            )
+            .await?;
+            if let Some(report_evidence) = report_evidence {
+                if share_evidence_proves_failure(&report_evidence) {
+                    queue_or_relay_invalid_share(coord, session_id, report_evidence).await?;
+                    tracing::warn!(
+                        from_node_id = from_node_id,
+                        to_node_id = to_node_id,
+                        session_id = session_id,
+                        error = %e,
+                        "DKG Coordinator: queued invalid_crypto_response report for undeserializable DKG share"
+                    );
+                    return Ok(None);
+                }
+            }
+            return Err(DkgError::Deserialization(format!(
+                "Failed to deserialize share value: {}",
+                e
+            )));
+        }
+    };
     let share = DistributedShare {
         from_id: from_node_id,
         to_id: to_node_id,

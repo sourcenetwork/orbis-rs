@@ -149,7 +149,14 @@ where
             })
             .ok();
         let Some(share_v) = share_v else {
-            return PeerResponseVerification::Rejected;
+            return Self::report_invalid_pre_response(
+                report_context,
+                statement,
+                response_signature,
+                signed_at,
+                from_node_id,
+                seen_node_ids,
+            );
         };
 
         let challenge = <D::ShareValue>::from_bytes(&challenge_bytes[..])
@@ -162,7 +169,14 @@ where
             })
             .ok();
         let Some(challenge) = challenge else {
-            return PeerResponseVerification::Rejected;
+            return Self::report_invalid_pre_response(
+                report_context,
+                statement,
+                response_signature,
+                signed_at,
+                from_node_id,
+                seen_node_ids,
+            );
         };
 
         let proof = <D::ShareValue>::from_bytes(&proof_bytes[..])
@@ -175,7 +189,14 @@ where
             })
             .ok();
         let Some(proof) = proof else {
-            return PeerResponseVerification::Rejected;
+            return Self::report_invalid_pre_response(
+                report_context,
+                statement,
+                response_signature,
+                signed_at,
+                from_node_id,
+                seen_node_ids,
+            );
         };
 
         let reply = ReencryptReply {
@@ -194,21 +215,14 @@ where
                 "PRE Coordinator: Failed to verify share"
             );
             seen_node_ids.insert(reply.share.i);
-            return PeerResponseVerification::InvalidProof(Box::new(
-                InvalidCryptoResponseObservation {
-                    ring_id: report_context.ring_id.to_string(),
-                    accused_node_key: report_context.accused_node_key.to_string(),
-                    accused_peer_id: report_context.accused_peer_id.to_string(),
-                    // Pin the envelope to the evidence: validators and the
-                    // chain require observed_at == signed_at - grace, which
-                    // makes the envelope's fixed TTL expiry the evidence expiry.
-                    observed_at: signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
-                    evidence: InvalidCryptoResponse::Pre {
-                        statement,
-                        response_signature,
-                    },
-                },
-            ));
+            return Self::report_invalid_pre_response(
+                report_context,
+                statement,
+                response_signature,
+                signed_at,
+                from_node_id,
+                seen_node_ids,
+            );
         }
 
         tracing::debug!(
@@ -217,6 +231,35 @@ where
         );
         seen_node_ids.insert(reply.share.i);
         PeerResponseVerification::Verified(reply.share.clone())
+    }
+
+    /// Build an invalid-crypto observation for a response whose node signature
+    /// has already been verified. A signed response whose share/challenge/proof
+    /// cannot be deserialized is still attributable bad crypto, so a decode
+    /// failure is treated the same as a proof that fails verification rather than
+    /// being silently dropped. Co-signers reach the same conclusion because
+    /// deserialization of the signed bytes is deterministic
+    /// (see `require_pre_proof_verification_failure`).
+    fn report_invalid_pre_response(
+        report_context: &PreResponseReportContext<'_>,
+        statement: PreReencryptResponseStatement,
+        response_signature: Vec<u8>,
+        signed_at: u64,
+        from_node_id: u32,
+        seen_node_ids: &mut HashSet<u32>,
+    ) -> PeerResponseVerification<G1Affine> {
+        seen_node_ids.insert(from_node_id);
+        PeerResponseVerification::InvalidProof(Box::new(InvalidCryptoResponseObservation {
+            ring_id: report_context.ring_id.to_string(),
+            accused_node_key: report_context.accused_node_key.to_string(),
+            accused_peer_id: report_context.accused_peer_id.to_string(),
+            // Pin the envelope to the evidence: observed_at == signed_at - grace.
+            observed_at: signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
+            evidence: InvalidCryptoResponse::Pre {
+                statement,
+                response_signature,
+            },
+        }))
     }
 }
 
@@ -375,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn signed_invalid_pre_proofs_are_reported_but_malformed_or_unsigned_are_rejected() {
+    fn signed_invalid_or_malformed_pre_proofs_are_reported_but_unsigned_are_rejected() {
         let fixture = verify_fixture();
         let rdr_pk_bytes = CryptoSerialize::to_bytes(&fixture.rdr_pk).unwrap();
         let context = report_context(&fixture, &rdr_pk_bytes);
@@ -432,6 +475,9 @@ mod tests {
         ));
         assert!(seen.is_empty());
 
+        // A malformed-but-signed share is attributable bad crypto: the responder
+        // signed a statement whose share cannot be decoded, so it is reported
+        // rather than dropped.
         let mut seen = HashSet::new();
         let malformed_share = signed_response(
             &fixture,
@@ -442,21 +488,25 @@ mod tests {
             unix_now(),
             true,
         );
-        assert!(matches!(
-            PreCoordinator::<DkgImpl, PreImpl>::verify_peer_response(
-                &fixture.dealer,
-                malformed_share,
-                &fixture.rdr_pk,
-                &fixture.pub_poly,
-                &fixture.enc_cmt,
-                None,
-                fixture.from_node_id,
-                &context,
-                &mut seen,
-            ),
-            PeerResponseVerification::Rejected
-        ));
-        assert!(seen.is_empty());
+        let malformed_result = PreCoordinator::<DkgImpl, PreImpl>::verify_peer_response(
+            &fixture.dealer,
+            malformed_share,
+            &fixture.rdr_pk,
+            &fixture.pub_poly,
+            &fixture.enc_cmt,
+            None,
+            fixture.from_node_id,
+            &context,
+            &mut seen,
+        );
+        let PeerResponseVerification::InvalidProof(observation) = malformed_result else {
+            panic!("signed but malformed PRE share should produce a report observation");
+        };
+        let InvalidCryptoResponse::Pre { statement, .. } = &observation.evidence else {
+            panic!("PRE observation must carry PRE evidence");
+        };
+        assert_eq!(statement.share, vec![1, 2, 3]);
+        assert!(seen.contains(&fixture.from_node_id));
 
         let mut seen = HashSet::new();
         let now = unix_now();

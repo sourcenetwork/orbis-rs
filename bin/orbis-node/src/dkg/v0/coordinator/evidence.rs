@@ -208,13 +208,18 @@ where
 }
 
 pub fn share_evidence_proves_failure(evidence: &SignedDkgShare) -> bool {
+    // A responder that signs share evidence whose commitment or share value cannot
+    // be decoded distributed an unusable share; a decode failure is itself proof of
+    // a bad share, so treat it the same as a share that fails verification. Registry
+    // co-signers reach the same conclusion because deserialization is deterministic
+    // (see `require_dkg_share_verification_failure`).
     let Ok(commitment) =
         deserialize_wire_commitment(&evidence.statement.commitment_statement.commitment)
     else {
-        return false;
+        return true;
     };
     let Ok(share_value) = Fr::from_bytes(&evidence.statement.share_value) else {
-        return false;
+        return true;
     };
     !commitment.verify_share(evidence.statement.to_node_id, &share_value)
 }

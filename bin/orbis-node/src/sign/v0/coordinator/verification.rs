@@ -86,119 +86,120 @@ where
             return PeerSignatureVerification::Rejected;
         }
 
-        let sig_share_v = SigShareInner::from_bytes(&sig_share_bytes[..])
-            .inspect_err(|error| {
-                tracing::error!(
-                    from_node_id = from_node_id,
-                    error = %error,
-                    "Sign Coordinator: Failed to deserialize sig_share"
-                );
-                seen_node_ids.insert(from_node_id);
-            })
-            .ok();
-        let Some(sig_share_v) = sig_share_v else {
-            return PeerSignatureVerification::Rejected;
-        };
-
-        let sig_share = PubShare {
-            i: from_node_id,
-            v: sig_share_v,
-        };
-
-        match signer.verify_share(
-            message,
-            pub_poly,
-            &sig_share,
-            signing_commitments,
-            derivation,
-            metadata,
-        ) {
-            Ok(()) => {
-                tracing::debug!(
-                    from_node_id = from_node_id,
-                    "Sign Coordinator: Verified share"
-                );
-                seen_node_ids.insert(sig_share.i);
-                PeerSignatureVerification::Verified(sig_share)
+        // Attempt to deserialize the responder's sig_share. A signed response
+        // whose sig_share cannot be decoded is still attributable bad crypto, so a
+        // decode failure falls through to the report path the same as a share that
+        // fails verification, rather than being silently dropped. Co-signers reach
+        // the same conclusion because deserialization of the signed bytes is
+        // deterministic (see `require_sign_share_verification_failure`).
+        match SigShareInner::from_bytes(&sig_share_bytes[..]) {
+            Ok(sig_share_v) => {
+                let sig_share = PubShare {
+                    i: from_node_id,
+                    v: sig_share_v,
+                };
+                match signer.verify_share(
+                    message,
+                    pub_poly,
+                    &sig_share,
+                    signing_commitments,
+                    derivation,
+                    metadata,
+                ) {
+                    Ok(()) => {
+                        tracing::debug!(
+                            from_node_id = from_node_id,
+                            "Sign Coordinator: Verified share"
+                        );
+                        seen_node_ids.insert(sig_share.i);
+                        return PeerSignatureVerification::Verified(sig_share);
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            from_node_id = from_node_id,
+                            error = %error,
+                            "Sign Coordinator: Failed to verify share"
+                        );
+                    }
+                }
             }
             Err(error) => {
                 tracing::error!(
                     from_node_id = from_node_id,
                     error = %error,
-                    "Sign Coordinator: Failed to verify share"
+                    "Sign Coordinator: Failed to deserialize sig_share"
                 );
-                seen_node_ids.insert(sig_share.i);
-
-                let Some(report_context) = report_context else {
-                    return PeerSignatureVerification::Rejected;
-                };
-
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                if signed_at > now.saturating_add(CHAIN_BLOCK_GRACE_SECS)
-                    || now.saturating_sub(signed_at) > REPORT_TTL_SECS
-                {
-                    tracing::warn!(
-                        from_node_id = from_node_id,
-                        signed_at = signed_at,
-                        now = now,
-                        "Sign Coordinator: rejecting bad share with implausible signed_at"
-                    );
-                    return PeerSignatureVerification::Rejected;
-                }
-
-                let statement = SignResponseStatement {
-                    domain: SIGN_RESPONSE_DOMAIN.to_string(),
-                    chain_id: report_context.chain_id.clone(),
-                    ring_id: report_context.ring_id.clone(),
-                    ring_pk: report_context.ring_pk.clone(),
-                    ring_state_sha256: report_context.ring_state_sha256.clone(),
-                    protocol_version: report_context.protocol_version,
-                    request_id: report_context.request_id.clone(),
-                    signed_at,
-                    responder_node_key: report_context.accused_node_key.clone(),
-                    origin_protocol: report_context.origin_protocol.clone(),
-                    accused_committee_scope: report_context.accused_committee_scope,
-                    signing_committee_scope: report_context.signing_committee_scope,
-                    from_node_id,
-                    message: report_context.message.clone(),
-                    signing_commitments: report_context.signing_commitments.clone(),
-                    derivation: report_context.derivation.clone(),
-                    metadata: report_context.metadata.clone(),
-                    sig_share: sig_share_bytes,
-                    crypto_backend: S::name(),
-                };
-
-                if let Err(error) = verify_node_message(
-                    &report_context.accused_node_key,
-                    &statement.canonical_bytes(),
-                    &response_signature,
-                ) {
-                    tracing::warn!(
-                        from_node_id = from_node_id,
-                        accused_node_key = %report_context.accused_node_key,
-                        error = %error,
-                        "Sign Coordinator: rejecting bad share with invalid node signature"
-                    );
-                    return PeerSignatureVerification::Rejected;
-                }
-
-                PeerSignatureVerification::InvalidCrypto(Box::new(
-                    InvalidCryptoResponseObservation {
-                        ring_id: report_context.ring_id.clone(),
-                        accused_node_key: report_context.accused_node_key.clone(),
-                        accused_peer_id: report_context.accused_peer_id.clone(),
-                        observed_at: signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
-                        evidence: InvalidCryptoResponse::Sign {
-                            statement,
-                            response_signature,
-                        },
-                    },
-                ))
             }
         }
+
+        seen_node_ids.insert(from_node_id);
+
+        let Some(report_context) = report_context else {
+            return PeerSignatureVerification::Rejected;
+        };
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if signed_at > now.saturating_add(CHAIN_BLOCK_GRACE_SECS)
+            || now.saturating_sub(signed_at) > REPORT_TTL_SECS
+        {
+            tracing::warn!(
+                from_node_id = from_node_id,
+                signed_at = signed_at,
+                now = now,
+                "Sign Coordinator: rejecting bad share with implausible signed_at"
+            );
+            return PeerSignatureVerification::Rejected;
+        }
+
+        let statement = SignResponseStatement {
+            domain: SIGN_RESPONSE_DOMAIN.to_string(),
+            chain_id: report_context.chain_id.clone(),
+            ring_id: report_context.ring_id.clone(),
+            ring_pk: report_context.ring_pk.clone(),
+            ring_state_sha256: report_context.ring_state_sha256.clone(),
+            protocol_version: report_context.protocol_version,
+            request_id: report_context.request_id.clone(),
+            signed_at,
+            responder_node_key: report_context.accused_node_key.clone(),
+            origin_protocol: report_context.origin_protocol.clone(),
+            accused_committee_scope: report_context.accused_committee_scope,
+            signing_committee_scope: report_context.signing_committee_scope,
+            from_node_id,
+            message: report_context.message.clone(),
+            signing_commitments: report_context.signing_commitments.clone(),
+            derivation: report_context.derivation.clone(),
+            metadata: report_context.metadata.clone(),
+            sig_share: sig_share_bytes,
+            crypto_backend: S::name(),
+        };
+
+        if let Err(error) = verify_node_message(
+            &report_context.accused_node_key,
+            &statement.canonical_bytes(),
+            &response_signature,
+        ) {
+            tracing::warn!(
+                from_node_id = from_node_id,
+                accused_node_key = %report_context.accused_node_key,
+                error = %error,
+                "Sign Coordinator: rejecting bad share with invalid node signature"
+            );
+            return PeerSignatureVerification::Rejected;
+        }
+
+        PeerSignatureVerification::InvalidCrypto(Box::new(InvalidCryptoResponseObservation {
+            ring_id: report_context.ring_id.clone(),
+            accused_node_key: report_context.accused_node_key.clone(),
+            accused_peer_id: report_context.accused_peer_id.clone(),
+            observed_at: signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
+            evidence: InvalidCryptoResponse::Sign {
+                statement,
+                response_signature,
+            },
+        }))
     }
 
     pub(crate) fn parse_peer_nonce_response(
@@ -412,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn signed_invalid_sign_shares_are_reported_but_malformed_or_unsigned_are_rejected() {
+    fn signed_invalid_or_malformed_sign_shares_are_reported_but_unsigned_are_rejected() {
         let fixture = verify_fixture();
         let context = report_context(&fixture);
 
@@ -468,7 +469,9 @@ mod tests {
         ));
         assert!(seen.is_empty());
 
-        // Malformed share bytes are corruption-in-transit, not provable misbehavior.
+        // A malformed-but-signed share is attributable bad crypto, not corruption
+        // in transit: the response signature covers the sig_share bytes, so a valid
+        // signature over undecodable bytes is provable misbehavior and is reported.
         let mut seen = HashSet::new();
         let malformed = signed_response(
             &fixture,
@@ -477,21 +480,25 @@ mod tests {
             unix_now(),
             true,
         );
-        assert!(matches!(
-            SignCoordinator::<DkgImpl, SignImpl>::verify_peer_signature_response(
-                &fixture.signer,
-                malformed,
-                &fixture.message,
-                &fixture.pub_poly,
-                &[],
-                None,
-                None,
-                fixture.from_node_id,
-                Some(&context),
-                &mut seen,
-            ),
-            PeerSignatureVerification::Rejected
-        ));
+        let malformed_result = SignCoordinator::<DkgImpl, SignImpl>::verify_peer_signature_response(
+            &fixture.signer,
+            malformed,
+            &fixture.message,
+            &fixture.pub_poly,
+            &[],
+            None,
+            None,
+            fixture.from_node_id,
+            Some(&context),
+            &mut seen,
+        );
+        let PeerSignatureVerification::InvalidCrypto(observation) = malformed_result else {
+            panic!("signed but malformed sign share should produce a report observation");
+        };
+        let InvalidCryptoResponse::Sign { statement, .. } = &observation.evidence else {
+            panic!("Sign observation must carry Sign evidence");
+        };
+        assert_eq!(statement.sig_share, vec![1, 2, 3]);
         assert!(seen.contains(&fixture.from_node_id));
 
         // A bad share whose node signature does not verify is rejected, not reported.

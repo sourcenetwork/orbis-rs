@@ -1144,9 +1144,15 @@ fn require_sign_share_verification_failure(
     let pub_poly = PubPolyImpl::from_bytes(&pub_poly_bytes).map_err(|error| {
         ReportingError::InvalidReport(format!("failed to deserialize public polynomial: {error}"))
     })?;
-    let sig_share_v = SigShareInner::from_bytes(&statement.sig_share).map_err(|error| {
-        ReportingError::InvalidReport(format!("failed to deserialize Sign sig_share: {error}"))
-    })?;
+    // The sig_share is the responder's own signed crypto output. A responder that
+    // signs a statement whose sig_share cannot be decoded returned an unusable
+    // response, which is itself an attributable verification failure — confirm the
+    // report on a decode error rather than rejecting it. (pub_poly above and
+    // signing_commitments below are round/infrastructure inputs, so a decode error
+    // there stays InvalidReport.)
+    let Ok(sig_share_v) = SigShareInner::from_bytes(&statement.sig_share) else {
+        return Ok(());
+    };
     let sig_share = PubShare {
         i: statement.from_node_id,
         v: sig_share_v,
@@ -1172,13 +1178,19 @@ fn require_sign_share_verification_failure(
 }
 
 fn require_dkg_share_verification_failure(statement: &DkgShareStatement) -> Result<()> {
-    let commitment = deserialize_wire_dkg_commitment(&statement.commitment_statement.commitment)
-        .map_err(|error| {
-            ReportingError::InvalidReport(format!("failed to deserialize DKG commitment: {error}"))
-        })?;
-    let share_value = ScalarField::from_bytes(&statement.share_value).map_err(|error| {
-        ReportingError::InvalidReport(format!("failed to deserialize DKG share value: {error}"))
-    })?;
+    // The nested commitment and share value are the responder's own signed crypto
+    // output. A responder that signs a statement whose commitment or share value
+    // cannot be decoded returned an unusable share, which is itself an attributable
+    // verification failure — confirm the report on a decode error rather than
+    // rejecting it.
+    let Ok(commitment) =
+        deserialize_wire_dkg_commitment(&statement.commitment_statement.commitment)
+    else {
+        return Ok(());
+    };
+    let Ok(share_value) = ScalarField::from_bytes(&statement.share_value) else {
+        return Ok(());
+    };
 
     if commitment.verify_share(statement.to_node_id, &share_value) {
         return Err(ReportingError::Unauthorized(
@@ -1239,15 +1251,21 @@ async fn require_pre_proof_verification_failure(
             "failed to deserialize encrypted commitment: {error}"
         ))
     })?;
-    let share = GroupAffine::from_bytes(&statement.share).map_err(|error| {
-        ReportingError::InvalidReport(format!("failed to deserialize PRE share: {error}"))
-    })?;
-    let challenge = ScalarField::from_bytes(&statement.challenge).map_err(|error| {
-        ReportingError::InvalidReport(format!("failed to deserialize PRE challenge: {error}"))
-    })?;
-    let proof = ScalarField::from_bytes(&statement.proof).map_err(|error| {
-        ReportingError::InvalidReport(format!("failed to deserialize PRE proof: {error}"))
-    })?;
+    // The share, challenge, and proof are the responder's own signed crypto
+    // output. A responder that signs a statement whose share/challenge/proof
+    // cannot be decoded returned an unusable response, which is itself an
+    // attributable verification failure — confirm the report on a decode error
+    // rather than rejecting it. (rdr_pk, enc_cmt, and pub_poly above are
+    // request/infrastructure inputs, so a decode error there stays InvalidReport.)
+    let Ok(share) = GroupAffine::from_bytes(&statement.share) else {
+        return Ok(());
+    };
+    let Ok(challenge) = ScalarField::from_bytes(&statement.challenge) else {
+        return Ok(());
+    };
+    let Ok(proof) = ScalarField::from_bytes(&statement.proof) else {
+        return Ok(());
+    };
     let poly_state =
         RingPolyState::load_from_ring_pk_hex(&context.local_storage, &statement.ring_pk)
             .map_err(ReportingError::InvalidReport)?;
@@ -1640,6 +1658,20 @@ mod tests {
         assert!(error
             .to_string()
             .contains("reported DKG share verifies successfully"));
+    }
+
+    #[test]
+    fn dkg_share_undecodable_responder_output_is_treated_as_failure() {
+        // A signed but undeserializable share value is attributable bad crypto, so
+        // co-signers must accept the report (Ok) rather than refuse it.
+        let mut bad_share_value = dkg_share_statement(false);
+        bad_share_value.share_value = vec![0xff; 4];
+        require_dkg_share_verification_failure(&bad_share_value).unwrap();
+
+        // Likewise for an undeserializable nested commitment.
+        let mut bad_commitment = dkg_share_statement(false);
+        bad_commitment.commitment_statement.commitment = vec![0xff; 3];
+        require_dkg_share_verification_failure(&bad_commitment).unwrap();
     }
 
     #[tokio::test]
