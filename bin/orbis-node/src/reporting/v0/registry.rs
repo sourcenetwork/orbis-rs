@@ -855,25 +855,25 @@ fn validate_local_signer(
     Ok(())
 }
 
-struct InvalidCryptoStatementPrologue<'a> {
-    label: &'static str,
-    domain: &'a str,
-    expected_domain: &'static str,
-    chain_id: &'a str,
-    ring_id: &'a str,
-    ring_pk: &'a str,
-    ring_state_sha256: &'a str,
-    request_id: &'a str,
+struct InvalidCryptoStatementPrologue {
+    label: String,
+    domain: String,
+    expected_domain: String,
+    chain_id: String,
+    ring_id: String,
+    ring_pk: String,
+    ring_state_sha256: String,
+    request_id: String,
     signed_at: u64,
-    responder_node_key: &'a str,
+    responder_node_key: String,
 }
 
 fn validate_invalid_crypto_statement_prologue(
     envelope: &ReportEnvelope,
     context: &ReportValidationContext,
-    statement: InvalidCryptoStatementPrologue<'_>,
+    statement: InvalidCryptoStatementPrologue,
 ) -> Result<()> {
-    let label = statement.label;
+    let label = statement.label.as_str();
     if statement.domain != statement.expected_domain {
         return Err(ReportingError::InvalidReport(format!(
             "unexpected {label} domain {}",
@@ -917,16 +917,16 @@ fn validate_pre_invalid_statement_shape(
         envelope,
         context,
         InvalidCryptoStatementPrologue {
-            label: "PRE response",
-            domain: &statement.domain,
-            expected_domain: PRE_REENCRYPT_RESPONSE_DOMAIN,
-            chain_id: &statement.chain_id,
-            ring_id: &statement.ring_id,
-            ring_pk: &statement.ring_pk,
-            ring_state_sha256: &statement.ring_state_sha256,
-            request_id: &statement.request_id,
+            label: "PRE response".to_string(),
+            domain: statement.domain.clone(),
+            expected_domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
+            chain_id: statement.chain_id.clone(),
+            ring_id: statement.ring_id.clone(),
+            ring_pk: statement.ring_pk.clone(),
+            ring_state_sha256: statement.ring_state_sha256.clone(),
+            request_id: statement.request_id.clone(),
             signed_at: statement.signed_at,
-            responder_node_key: &statement.responder_node_key,
+            responder_node_key: statement.responder_node_key.clone(),
         },
     )?;
     if !is_valid_invalid_crypto_pre_origin(&statement.origin_protocol) {
@@ -965,16 +965,16 @@ fn validate_sign_response_statement_shape(
         envelope,
         context,
         InvalidCryptoStatementPrologue {
-            label: "Sign response",
-            domain: &statement.domain,
-            expected_domain: SIGN_RESPONSE_DOMAIN,
-            chain_id: &statement.chain_id,
-            ring_id: &statement.ring_id,
-            ring_pk: &statement.ring_pk,
-            ring_state_sha256: &statement.ring_state_sha256,
-            request_id: &statement.request_id,
+            label: "Sign response".to_string(),
+            domain: statement.domain.clone(),
+            expected_domain: SIGN_RESPONSE_DOMAIN.to_string(),
+            chain_id: statement.chain_id.clone(),
+            ring_id: statement.ring_id.clone(),
+            ring_pk: statement.ring_pk.clone(),
+            ring_state_sha256: statement.ring_state_sha256.clone(),
+            request_id: statement.request_id.clone(),
             signed_at: statement.signed_at,
-            responder_node_key: &statement.responder_node_key,
+            responder_node_key: statement.responder_node_key.clone(),
         },
     )?;
     if !is_valid_invalid_crypto_sign_origin(&statement.origin_protocol) {
@@ -1018,16 +1018,16 @@ fn validate_dkg_share_statement_shape(
         envelope,
         context,
         InvalidCryptoStatementPrologue {
-            label: "DKG share",
-            domain: &statement.domain,
-            expected_domain: DKG_SHARE_DOMAIN,
-            chain_id: &statement.chain_id,
-            ring_id: &statement.ring_id,
-            ring_pk: &statement.ring_pk,
-            ring_state_sha256: &statement.ring_state_sha256,
-            request_id: &statement.request_id,
+            label: "DKG share".to_string(),
+            domain: statement.domain.clone(),
+            expected_domain: DKG_SHARE_DOMAIN.to_string(),
+            chain_id: statement.chain_id.clone(),
+            ring_id: statement.ring_id.clone(),
+            ring_pk: statement.ring_pk.clone(),
+            ring_state_sha256: statement.ring_state_sha256.clone(),
+            request_id: statement.request_id.clone(),
             signed_at: statement.signed_at,
-            responder_node_key: &statement.responder_node_key,
+            responder_node_key: statement.responder_node_key.clone(),
         },
     )?;
     if !is_valid_invalid_crypto_dkg_origin(&statement.origin_protocol) {
