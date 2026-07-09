@@ -43,8 +43,8 @@ const NODE3_SIGNING_KEY_HEX: &str =
     "0000000000000000000000000000000000000000000000000000000000000003";
 
 use super::constants::{
-    reporting_genesis_json, NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, NODE_KEY_4,
-    RING_GOVERNANCE_POLICY_ID,
+    reporting_genesis_json, NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, NODE_KEY_4, NODE_KEY_OFFLINE,
+    OFFLINE_NODE_PEER_ID, RING_GOVERNANCE_POLICY_ID,
 };
 
 fn canonical_node_id(node_key: &str, node_keys: &[String]) -> u32 {
@@ -1797,6 +1797,23 @@ async fn test_reshare_offline_triggers_on_chain_report() {
     println!("node3 demerit points: {demerits}");
 }
 
+/// Verifies the reshare bad-DKG-share relay path: a pure-new receiver (node4) that
+/// gets provably-bad reshare evidence relays it to the current committee, which
+/// re-verifies, threshold-signs an `invalid_crypto_response` report, and lands it
+/// on chain while the reshare is still pending.
+///
+/// Reshare bad-share reports are only valid while the ring is in the
+/// pending-reshare state (PendingNew scope resolution node-side and the ring-state
+/// digest check chain-side), and a reshare among healthy nodes completes within
+/// seconds — closing that window before the relay/co-sign/tx pipeline can finish.
+/// To hold the window open deterministically, the new committee includes
+/// NODE_KEY_OFFLINE, which has genesis-seeded NodeInfo but no running node: a
+/// dealer only completes once *every* new member acks its share, so the
+/// participant set never freezes and the ring stays pending for the whole test.
+/// This mirrors a real production state — a reshare stalled on an offline new
+/// member — during which misbehaving dealers must still be reportable. (A bad
+/// dealer in a reshare that *does* complete is intentionally unreportable: it is
+/// being rotated out anyway.)
 #[tokio::test]
 #[serial_test::serial]
 async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
@@ -1815,6 +1832,18 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
                     "pss_interval": 86400,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
                     "reporting": reporting_genesis_json(1, &[], 10)
+                }],
+                // The offline member has no container; seed its NodeInfo so the
+                // chain accepts it as a reshare target and nodes can resolve a
+                // (syntactically valid, unreachable) route for it.
+                "node_infos": [{
+                    "node_key": NODE_KEY_OFFLINE,
+                    "node_info": {
+                        "peer_id": OFFLINE_NODE_PEER_ID,
+                        "controller_key": TEST_ACCOUNT_PUBKEY_HEX,
+                        "whitelisted_policy_ids": [],
+                        "whitelisted_ring_ids": [RING_ID]
+                    }
                 }]
             }),
         )
@@ -1939,14 +1968,17 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
         .await
         .expect("connect report event subscription");
 
+    // NODE_KEY_OFFLINE never acks its shares, so no dealer ever completes and the
+    // ring stays in the pending-reshare state (see the test doc comment).
     let reshare_node_keys = vec![
         NODE_KEY_1.to_string(),
         NODE_KEY_2.to_string(),
         NODE_KEY_4.to_string(),
+        NODE_KEY_OFFLINE.to_string(),
     ];
     let reshare_threshold = 2u32;
 
-    println!("Triggering ring reshare to node1/node2/node4, threshold=2...");
+    println!("Triggering ring reshare to node1/node2/node4/offline, threshold=2...");
     cli_tool::start_ring_reshare_by_acp_with_config(
         RING_ID.to_string(),
         reshare_node_keys.clone(),
