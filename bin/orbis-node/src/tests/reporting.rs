@@ -1980,11 +1980,22 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
     );
 
     let local_ring_key = ring_key_from_ring_pk_hex(&ring_pk_hex);
-    let session_id =
-        wait_for_active_pss_session(&node4_endpoint, &local_ring_key, Duration::from_secs(180))
-            .await
-            .parse::<u128>()
-            .expect("active PSS session id should parse");
+    let (node1_session_id, node2_session_id, node4_session_id) = tokio::join!(
+        wait_for_active_pss_session(endpoints[0], &local_ring_key, Duration::from_secs(180)),
+        wait_for_active_pss_session(endpoints[1], &local_ring_key, Duration::from_secs(180)),
+        wait_for_active_pss_session(&node4_endpoint, &local_ring_key, Duration::from_secs(180)),
+    );
+    assert_eq!(
+        node2_session_id, node1_session_id,
+        "node2 should join the same active reshare session as node1"
+    );
+    assert_eq!(
+        node4_session_id, node1_session_id,
+        "node4 should join the same active reshare session as current signers"
+    );
+    let session_id = node4_session_id
+        .parse::<u128>()
+        .expect("active PSS session id should parse");
     println!("node4 active reshare session: {session_id}");
 
     let evidence = signed_bad_reshare_dkg_share(
