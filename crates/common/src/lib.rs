@@ -593,38 +593,51 @@ impl IntegrationTestNetworkBuilder {
             Some(f)
         };
 
-        let mut command = compose_command(&compose_file, &project_name);
-        if node_count == 4 {
-            command.args(["--profile", "node4"]);
-        }
-        command.args(["up", "-d", "--build"]);
+        let start_compose = || {
+            let mut command = compose_command(&compose_file, &project_name);
+            if node_count == 4 {
+                command.args(["--profile", "node4"]);
+            }
+            command.args(["up", "-d", "--build"]);
 
-        if let Some(feat) = crypto_feature {
-            command.env("ORBIS_INTEGRATION_CRYPTO", feat);
-        }
-        command.env(
-            "ORBIS_BUILD_INTEGRATION_TEST",
-            if production_node_build {
-                "false"
+            if let Some(feat) = crypto_feature {
+                command.env("ORBIS_INTEGRATION_CRYPTO", feat);
+            }
+            command.env(
+                "ORBIS_BUILD_INTEGRATION_TEST",
+                if production_node_build {
+                    "false"
+                } else {
+                    "true"
+                },
+            );
+            command.env(
+                "ORBIS_ENABLE_INTEGRATION_TEST",
+                if unsafe_testing_runtime_enabled {
+                    "true"
+                } else {
+                    "false"
+                },
+            );
+            if let Some(ref patch_file) = patch_file {
+                command.env("GENESIS_PATCH_FILE", patch_file.path());
             } else {
-                "true"
-            },
-        );
-        command.env(
-            "ORBIS_ENABLE_INTEGRATION_TEST",
-            if unsafe_testing_runtime_enabled {
-                "true"
-            } else {
-                "false"
-            },
-        );
-        if let Some(ref patch_file) = patch_file {
-            command.env("GENESIS_PATCH_FILE", patch_file.path());
-        } else {
-            command.env_remove("GENESIS_PATCH_FILE");
-        }
+                command.env_remove("GENESIS_PATCH_FILE");
+            }
 
-        let status = command.status().expect("Failed to start docker compose");
+            command.status()
+        };
+
+        let mut status = start_compose().expect("Failed to start docker compose");
+        if !status.success() {
+            eprintln!(
+                "docker compose up failed for project {project_name} with status {status}; retrying once"
+            );
+            report_compose_failure(&compose_file, &project_name);
+            stop_compose(&compose_file, &project_name);
+            std::thread::sleep(Duration::from_secs(2));
+            status = start_compose().expect("Failed to start docker compose on retry");
+        }
 
         if !status.success() {
             report_compose_failure(&compose_file, &project_name);
