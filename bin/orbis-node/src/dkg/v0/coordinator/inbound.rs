@@ -325,7 +325,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dkg::v0::messages::SessionKind;
+    use crate::dkg::v0::messages::{SessionKind, SignedDkgShare};
+    use crate::reporting::v0::types::{
+        CommitteeScope as ReportingCommitteeScope, DkgCommitmentStatement, DkgShareStatement,
+        DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN,
+    };
     use crate::sign::v0::messages::RefreshHealthCheckStatement;
     use std::collections::HashMap;
 
@@ -347,6 +351,52 @@ mod tests {
                 metric_label,
             }
         );
+    }
+
+    fn signed_dkg_share_for_metadata() -> SignedDkgShare {
+        let commitment_statement = DkgCommitmentStatement {
+            domain: DKG_COMMITMENT_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "ring-pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            protocol_version: 0,
+            request_id: "1".to_string(),
+            signed_at: 100,
+            responder_node_key: "dealer".to_string(),
+            origin_protocol: "pss_reshare".to_string(),
+            accused_committee_scope: ReportingCommitteeScope::Current,
+            signing_committee_scope: ReportingCommitteeScope::Current,
+            from_node_id: 2,
+            commitment: vec![1],
+            crypto_backend: "dkg/test".to_string(),
+        };
+
+        SignedDkgShare {
+            statement: DkgShareStatement {
+                domain: DKG_SHARE_DOMAIN.to_string(),
+                chain_id: "chain".to_string(),
+                ring_id: "ring".to_string(),
+                ring_pk: "ring-pk".to_string(),
+                ring_state_sha256: "00".repeat(32),
+                protocol_version: 0,
+                request_id: "1".to_string(),
+                signed_at: 100,
+                responder_node_key: "dealer".to_string(),
+                receiver_node_key: "receiver".to_string(),
+                origin_protocol: "pss_reshare".to_string(),
+                accused_committee_scope: ReportingCommitteeScope::Current,
+                signing_committee_scope: ReportingCommitteeScope::Current,
+                from_node_id: 2,
+                to_node_id: 3,
+                commitment_statement,
+                commitment_signature: vec![7; 64],
+                share_value: vec![8],
+                nonce: [9; 16],
+                crypto_backend: "dkg/test".to_string(),
+            },
+            signature: vec![5; 64],
+        }
     }
 
     #[test]
@@ -378,6 +428,18 @@ mod tests {
             Some(2),
             CommitteeScope::Current,
             "share",
+        );
+        assert_meta(
+            DkgMessage::DkgInvalidShareEvidence {
+                session_id: 1,
+                receiver_node_id: 3,
+                report_evidence: signed_dkg_share_for_metadata(),
+            },
+            DkgMessageType::DkgInvalidShareEvidence,
+            Some(3),
+            None,
+            CommitteeScope::ReshareNew,
+            "dkg_invalid_share_evidence",
         );
         assert_meta(
             DkgMessage::Complaint {

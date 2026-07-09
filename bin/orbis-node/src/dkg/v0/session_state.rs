@@ -1004,25 +1004,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
-    /// Set new-committee node_id to peer_id mappings for reshare-only messages.
-    pub async fn set_reshare_new_peer_mappings(
-        &self,
-        session_id: &u128,
-        node_id_to_peer_id: HashMap<u32, String>,
-    ) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            let mut node_to_peer = HashMap::new();
-            let mut peer_to_node = HashMap::new();
-            for (node_id, peer_id) in node_id_to_peer_id {
-                node_to_peer.insert(node_id, peer_id.clone());
-                peer_to_node.insert(peer_id, node_id);
-            }
-            state.routing.reshare_new_node_id_to_peer_id = node_to_peer;
-            state.routing.reshare_new_peer_id_to_node_id = peer_to_node;
-        }
-    }
-
     /// Get peer_id for a node_id
     pub async fn get_peer_id_for_node(&self, session_id: &u128, node_id: u32) -> Option<String> {
         let states = self.states.read().await;

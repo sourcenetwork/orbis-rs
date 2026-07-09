@@ -611,22 +611,6 @@ where
         }
     }
 
-    coordinator
-        .set_peer_ids(&session_id, peer_ids.to_vec())
-        .await;
-    app_state
-        .dkg_session_state
-        .set_peer_node_keys(&session_id, ring_payload.peer_node_keys.clone())
-        .await;
-    app_state
-        .dkg_session_state
-        .set_ring_id(&session_id, post_id.clone())
-        .await;
-    app_state
-        .dkg_session_state
-        .set_node_peer_mappings(&session_id, node_id_to_peer_id.clone())
-        .await;
-
     let init_msg = DkgMessage::SessionInit {
         session_id,
         threshold: threshold as u32,
@@ -895,37 +879,6 @@ where
             return Err(e);
         }
     }
-
-    app_state
-        .dkg_session_state
-        .set_pss_interval(&session_id, ring_payload.pss_interval)
-        .await;
-
-    coordinator
-        .set_peer_ids(&session_id, new_route_peer_ids.clone())
-        .await;
-    app_state
-        .dkg_session_state
-        .set_peer_node_keys(&session_id, new_peer_node_keys.clone())
-        .await;
-    app_state
-        .dkg_session_state
-        .set_ring_id(&session_id, post_id.clone())
-        .await;
-
-    // Store old-committee node_id → peer_id mappings for sender validation.
-    app_state
-        .dkg_session_state
-        .set_node_peer_mappings(&session_id, old_node_id_to_peer_id.clone())
-        .await;
-
-    let new_node_id_to_peer_id =
-        node_id_to_peer_id_from_routes(&new_routes, &new_node_id_assignments)
-            .map_err(DkgError::InvalidInput)?;
-    app_state
-        .dkg_session_state
-        .set_reshare_new_peer_mappings(&session_id, new_node_id_to_peer_id)
-        .await;
 
     let init_msg = DkgMessage::SessionInit {
         session_id,
