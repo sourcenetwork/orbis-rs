@@ -453,7 +453,7 @@ where
             .take_authenticated_responses_for_version(self.routes.version, &request_id)
             .await
             .ok_or_else(|| {
-                PreError::Timeout(format!("No responses found for request {}", &request_id))
+                PreError::Timeout(format!("No responses found for request {}", request_id))
             })?;
 
         for response in collected_responses {
