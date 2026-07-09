@@ -1,5 +1,6 @@
 use super::verification::{PeerResponseVerification, PreResponseReportContext};
 use super::{PreCoordinator, PreResponse};
+use crate::app_state::AppState;
 use crate::constants::PRE_COLLECTION_TIMEOUT;
 use crate::helpers::identity::{
     determine_ring_node_id_from_peer_id, determine_session_node_id, extract_node_part,
@@ -22,6 +23,22 @@ use crypto::r#trait::{
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use crypto::{PolynomialCommitmentImpl, PubPolyImpl, SigShareInner, SignImpl, SignaturePoint};
 use std::collections::HashSet;
+use std::sync::Arc;
+
+struct PreResponseDrainArgs<D: Dkg> {
+    set: tokio::task::JoinSet<(String, Result<Option<PreMessage>>)>,
+    ring: RingConfig,
+    report_binding: PreReportBinding,
+    request_id: String,
+    object_id: String,
+    rdr_pk_bytes: Vec<u8>,
+    derivation: Option<Vec<u8>>,
+    rdr_pk: D::PublicKey,
+    pub_poly: D::PubPoly,
+    enc_cmt: D::PublicKey,
+    seen_node_ids: HashSet<u32>,
+}
+
 impl<D, T> PreCoordinator<D, T>
 where
     D: Dkg<
@@ -431,19 +448,19 @@ where
         // whose proofs fail verification map to invalid-proof observations. Without
         // the latter, a bad proof that loses the race against threshold completion —
         // the common case in a healthy ring — would go unreported.
-        self.spawn_response_drain(
+        self.spawn_response_drain(PreResponseDrainArgs {
             set,
-            ring.clone(),
-            report_binding.clone(),
-            request_id.clone(),
-            ctx.object_id.clone(),
-            ctx.rdr_pk_bytes.clone(),
-            ctx.derivation.clone(),
+            ring: ring.clone(),
+            report_binding: report_binding.clone(),
+            request_id: request_id.clone(),
+            object_id: ctx.object_id.clone(),
+            rdr_pk_bytes: ctx.rdr_pk_bytes.clone(),
+            derivation: ctx.derivation.clone(),
             rdr_pk,
-            pub_poly.clone(),
+            pub_poly: pub_poly.clone(),
             enc_cmt,
-            seen_node_ids.clone(),
-        );
+            seen_node_ids: seen_node_ids.clone(),
+        });
 
         // 6. Collect any responses that were already stored before cancellation and
         // verify the ones we have not counted yet.
@@ -581,131 +598,163 @@ where
     /// transport errors become offline observations and signed responses that
     /// fail proof verification become invalid-proof observations. Verified
     /// shares arriving here are simply logged — the request already completed.
-    #[allow(clippy::too_many_arguments)]
-    fn spawn_response_drain(
-        &self,
-        mut set: tokio::task::JoinSet<(String, Result<Option<PreMessage>>)>,
-        ring: RingConfig,
-        report_binding: PreReportBinding,
-        request_id: String,
-        object_id: String,
-        rdr_pk_bytes: Vec<u8>,
-        derivation: Option<Vec<u8>>,
-        rdr_pk: D::PublicKey,
-        pub_poly: D::PubPoly,
-        enc_cmt: D::PublicKey,
-        mut seen_node_ids: HashSet<u32>,
-    ) {
+    fn spawn_response_drain(&self, args: PreResponseDrainArgs<D>) {
         let app_state = self.app_state.clone();
         let routes = self.routes;
         tokio::spawn(async move {
-            let dealer = T::new();
-            let deadline = tokio::time::Instant::now() + PRE_COLLECTION_TIMEOUT;
-            while let Ok(Some(res)) = tokio::time::timeout_at(deadline, set.join_next()).await {
-                match res {
-                    Ok((peer_id, Ok(Some(response)))) => {
-                        let Some(expected_node_id) =
-                            determine_ring_node_id_from_peer_id(&peer_id, &ring)
-                        else {
-                            tracing::error!(
-                                peer_id = %peer_id,
-                                "PRE Coordinator: late response from peer outside ring"
-                            );
-                            continue;
-                        };
-                        let Some(accused_node_key) = node_key_for_peer(&ring, &peer_id) else {
-                            tracing::error!(
-                                peer_id = %peer_id,
-                                "PRE Coordinator: late response from peer without node key"
-                            );
-                            continue;
-                        };
-                        let report_context = PreResponseReportContext {
-                            chain_id: report_binding.chain_id.clone(),
-                            ring_id: report_binding.ring_id.clone(),
-                            ring_pk: report_binding.ring_pk.clone(),
-                            ring_state_sha256: report_binding.ring_state_sha256.clone(),
-                            protocol_version: routes.version,
-                            request_id: request_id.clone(),
-                            accused_node_key: accused_node_key.to_string(),
-                            accused_peer_id: peer_id.clone(),
-                            object_id: object_id.clone(),
-                            rdr_pk: rdr_pk_bytes.clone(),
-                            derivation: derivation.clone(),
-                        };
-                        match Self::verify_peer_response(
-                            &dealer,
-                            response,
-                            &rdr_pk,
-                            &pub_poly,
-                            &enc_cmt,
-                            derivation.as_deref(),
-                            expected_node_id,
-                            &report_context,
-                            &mut seen_node_ids,
-                        ) {
-                            PeerResponseVerification::InvalidProof(observation) => {
-                                let _ = queue_report::<D, SignImpl>(
-                                    app_state.clone(),
-                                    routes,
-                                    ReportObservation::InvalidCryptoResponse(observation),
-                                )
-                                .await
-                                .inspect_err(|error| {
-                                    tracing::warn!(
-                                        peer_id = %peer_id,
-                                        error = %error,
-                                        "Failed to queue PRE invalid-proof report observation (post-threshold drain)"
-                                    );
-                                });
-                            }
-                            PeerResponseVerification::Verified(_) => {
-                                tracing::debug!(
-                                    peer_id = %peer_id,
-                                    "PRE Coordinator: valid share arrived after collection completed"
-                                );
-                            }
-                            PeerResponseVerification::Rejected => {}
-                        }
-                    }
-                    Ok((peer_id, Err(e))) => {
+            Self::run_pre_response_drain(app_state, routes, args).await;
+        });
+    }
+
+    async fn run_pre_response_drain(
+        app_state: Arc<AppState<D>>,
+        routes: &'static network::ProtocolRoutes,
+        mut args: PreResponseDrainArgs<D>,
+    ) {
+        let dealer = T::new();
+        let deadline = tokio::time::Instant::now() + PRE_COLLECTION_TIMEOUT;
+        while let Ok(Some(result)) = tokio::time::timeout_at(deadline, args.set.join_next()).await {
+            Self::handle_pre_drain_result(&app_state, routes, &dealer, &mut args, result).await;
+        }
+    }
+
+    async fn handle_pre_drain_result(
+        app_state: &Arc<AppState<D>>,
+        routes: &'static network::ProtocolRoutes,
+        dealer: &T,
+        args: &mut PreResponseDrainArgs<D>,
+        result: std::result::Result<(String, Result<Option<PreMessage>>), tokio::task::JoinError>,
+    ) {
+        match result {
+            Ok((peer_id, Ok(Some(response)))) => {
+                Self::handle_pre_drain_response(app_state, routes, dealer, args, peer_id, response)
+                    .await;
+            }
+            Ok((peer_id, Err(e))) => {
+                tracing::warn!(
+                    peer_id = %peer_id,
+                    error = %e,
+                    "PRE peer request failed (post-threshold drain)"
+                );
+                if let Some(observation) = offline_observation_from_pre_error(
+                    &args.ring,
+                    &peer_id,
+                    &e,
+                    routes.version,
+                    &args.request_id,
+                ) {
+                    let _ = queue_report::<D, SignImpl>(
+                        app_state.clone(),
+                        routes,
+                        ReportObservation::NodeOffline(observation),
+                    )
+                    .await
+                    .inspect_err(|error| {
                         tracing::warn!(
                             peer_id = %peer_id,
-                            error = %e,
-                            "PRE peer request failed (post-threshold drain)"
+                            error = %error,
+                            "Failed to queue offline report observation (post-threshold drain)"
                         );
-                        if let Some(observation) = offline_observation_from_pre_error(
-                            &ring,
-                            &peer_id,
-                            &e,
-                            routes.version,
-                            &request_id,
-                        ) {
-                            let _ = queue_report::<D, SignImpl>(
-                                app_state.clone(),
-                                routes,
-                                ReportObservation::NodeOffline(observation),
-                            )
-                            .await
-                            .inspect_err(|error| {
-                                tracing::warn!(
-                                    peer_id = %peer_id,
-                                    error = %error,
-                                    "Failed to queue offline report observation (post-threshold drain)"
-                                );
-                            });
-                        }
-                    }
-                    Ok((_, Ok(None))) => {}
-                    Err(join_err) => {
-                        tracing::error!(
-                            error = ?join_err,
-                            "Peer reencrypt task panicked in response drain"
-                        );
-                    }
+                    });
                 }
             }
-        });
+            Ok((_, Ok(None))) => {}
+            Err(join_err) => {
+                tracing::error!(
+                    error = ?join_err,
+                    "Peer reencrypt task panicked in response drain"
+                );
+            }
+        }
+    }
+
+    async fn handle_pre_drain_response(
+        app_state: &Arc<AppState<D>>,
+        routes: &'static network::ProtocolRoutes,
+        dealer: &T,
+        args: &mut PreResponseDrainArgs<D>,
+        peer_id: String,
+        response: PreMessage,
+    ) {
+        let Some((expected_node_id, report_context)) =
+            Self::build_pre_drain_report_context(routes, args, &peer_id)
+        else {
+            return;
+        };
+
+        match Self::verify_peer_response(
+            dealer,
+            response,
+            &args.rdr_pk,
+            &args.pub_poly,
+            &args.enc_cmt,
+            args.derivation.as_deref(),
+            expected_node_id,
+            &report_context,
+            &mut args.seen_node_ids,
+        ) {
+            PeerResponseVerification::InvalidProof(observation) => {
+                let _ = queue_report::<D, SignImpl>(
+                    app_state.clone(),
+                    routes,
+                    ReportObservation::InvalidCryptoResponse(observation),
+                )
+                .await
+                .inspect_err(|error| {
+                    tracing::warn!(
+                        peer_id = %peer_id,
+                        error = %error,
+                        "Failed to queue PRE invalid-proof report observation (post-threshold drain)"
+                    );
+                });
+            }
+            PeerResponseVerification::Verified(_) => {
+                tracing::debug!(
+                    peer_id = %peer_id,
+                    "PRE Coordinator: valid share arrived after collection completed"
+                );
+            }
+            PeerResponseVerification::Rejected => {}
+        }
+    }
+
+    fn build_pre_drain_report_context(
+        routes: &'static network::ProtocolRoutes,
+        args: &PreResponseDrainArgs<D>,
+        peer_id: &str,
+    ) -> Option<(u32, PreResponseReportContext)> {
+        let Some(expected_node_id) = determine_ring_node_id_from_peer_id(peer_id, &args.ring)
+        else {
+            tracing::error!(
+                peer_id = %peer_id,
+                "PRE Coordinator: late response from peer outside ring"
+            );
+            return None;
+        };
+        let Some(accused_node_key) = node_key_for_peer(&args.ring, peer_id) else {
+            tracing::error!(
+                peer_id = %peer_id,
+                "PRE Coordinator: late response from peer without node key"
+            );
+            return None;
+        };
+
+        Some((
+            expected_node_id,
+            PreResponseReportContext {
+                chain_id: args.report_binding.chain_id.clone(),
+                ring_id: args.report_binding.ring_id.clone(),
+                ring_pk: args.report_binding.ring_pk.clone(),
+                ring_state_sha256: args.report_binding.ring_state_sha256.clone(),
+                protocol_version: routes.version,
+                request_id: args.request_id.clone(),
+                accused_node_key: accused_node_key.to_string(),
+                accused_peer_id: peer_id.to_string(),
+                object_id: args.object_id.clone(),
+                rdr_pk: args.rdr_pk_bytes.clone(),
+                derivation: args.derivation.clone(),
+            },
+        ))
     }
 }
 
