@@ -328,17 +328,17 @@ where
                                 continue;
                             };
                             let report_context = PreResponseReportContext {
-                                chain_id: &report_binding.chain_id,
-                                ring_id: &report_binding.ring_id,
-                                ring_pk: &report_binding.ring_pk,
-                                ring_state_sha256: &report_binding.ring_state_sha256,
+                                chain_id: report_binding.chain_id.clone(),
+                                ring_id: report_binding.ring_id.clone(),
+                                ring_pk: report_binding.ring_pk.clone(),
+                                ring_state_sha256: report_binding.ring_state_sha256.clone(),
                                 protocol_version: self.routes.version,
-                                request_id: &request_id,
-                                accused_node_key,
-                                accused_peer_id: &peer_id,
-                                object_id: &ctx.object_id,
-                                rdr_pk: &ctx.rdr_pk_bytes,
-                                derivation: ctx.derivation.as_deref(),
+                                request_id: request_id.clone(),
+                                accused_node_key: accused_node_key.to_string(),
+                                accused_peer_id: peer_id.clone(),
+                                object_id: ctx.object_id.clone(),
+                                rdr_pk: ctx.rdr_pk_bytes.clone(),
+                                derivation: ctx.derivation.clone(),
                             };
                             match Self::verify_peer_response(
                                 &dealer,
@@ -474,17 +474,17 @@ where
                 continue;
             };
             let report_context = PreResponseReportContext {
-                chain_id: &report_binding.chain_id,
-                ring_id: &report_binding.ring_id,
-                ring_pk: &report_binding.ring_pk,
-                ring_state_sha256: &report_binding.ring_state_sha256,
+                chain_id: report_binding.chain_id.clone(),
+                ring_id: report_binding.ring_id.clone(),
+                ring_pk: report_binding.ring_pk.clone(),
+                ring_state_sha256: report_binding.ring_state_sha256.clone(),
                 protocol_version: self.routes.version,
-                request_id: &request_id,
-                accused_node_key,
-                accused_peer_id: &response.sender_peer_hex,
-                object_id: &ctx.object_id,
-                rdr_pk: &ctx.rdr_pk_bytes,
-                derivation: ctx.derivation.as_deref(),
+                request_id: request_id.clone(),
+                accused_node_key: accused_node_key.to_string(),
+                accused_peer_id: response.sender_peer_hex.clone(),
+                object_id: ctx.object_id.clone(),
+                rdr_pk: ctx.rdr_pk_bytes.clone(),
+                derivation: ctx.derivation.clone(),
             };
             match Self::verify_peer_response(
                 &dealer,
@@ -621,17 +621,17 @@ where
                             continue;
                         };
                         let report_context = PreResponseReportContext {
-                            chain_id: &report_binding.chain_id,
-                            ring_id: &report_binding.ring_id,
-                            ring_pk: &report_binding.ring_pk,
-                            ring_state_sha256: &report_binding.ring_state_sha256,
+                            chain_id: report_binding.chain_id.clone(),
+                            ring_id: report_binding.ring_id.clone(),
+                            ring_pk: report_binding.ring_pk.clone(),
+                            ring_state_sha256: report_binding.ring_state_sha256.clone(),
                             protocol_version: routes.version,
-                            request_id: &request_id,
-                            accused_node_key,
-                            accused_peer_id: &peer_id,
-                            object_id: &object_id,
-                            rdr_pk: &rdr_pk_bytes,
-                            derivation: derivation.as_deref(),
+                            request_id: request_id.clone(),
+                            accused_node_key: accused_node_key.to_string(),
+                            accused_peer_id: peer_id.clone(),
+                            object_id: object_id.clone(),
+                            rdr_pk: rdr_pk_bytes.clone(),
+                            derivation: derivation.clone(),
                         };
                         match Self::verify_peer_response(
                             &dealer,

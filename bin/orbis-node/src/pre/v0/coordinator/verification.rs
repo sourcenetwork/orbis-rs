@@ -13,18 +13,18 @@ use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) struct PreResponseReportContext<'a> {
-    pub chain_id: &'a str,
-    pub ring_id: &'a str,
-    pub ring_pk: &'a str,
-    pub ring_state_sha256: &'a str,
+pub(crate) struct PreResponseReportContext {
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
     pub protocol_version: u64,
-    pub request_id: &'a str,
-    pub accused_node_key: &'a str,
-    pub accused_peer_id: &'a str,
-    pub object_id: &'a str,
-    pub rdr_pk: &'a [u8],
-    pub derivation: Option<&'a [u8]>,
+    pub request_id: String,
+    pub accused_node_key: String,
+    pub accused_peer_id: String,
+    pub object_id: String,
+    pub rdr_pk: Vec<u8>,
+    pub derivation: Option<Vec<u8>>,
 }
 
 pub(crate) enum PeerResponseVerification<PublicKey> {
@@ -55,7 +55,7 @@ where
         enc_cmt: &D::PublicKey,
         derivation: Option<&[u8]>,
         expected_node_id: u32,
-        report_context: &PreResponseReportContext<'_>,
+        report_context: &PreResponseReportContext,
         seen_node_ids: &mut HashSet<u32>,
     ) -> PeerResponseVerification<D::PublicKey> {
         let PreMessage::ReencryptResponse {
@@ -107,18 +107,18 @@ where
 
         let statement = PreReencryptResponseStatement {
             domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
-            chain_id: report_context.chain_id.to_string(),
-            ring_id: report_context.ring_id.to_string(),
-            ring_pk: report_context.ring_pk.to_string(),
-            ring_state_sha256: report_context.ring_state_sha256.to_string(),
+            chain_id: report_context.chain_id.clone(),
+            ring_id: report_context.ring_id.clone(),
+            ring_pk: report_context.ring_pk.clone(),
+            ring_state_sha256: report_context.ring_state_sha256.clone(),
             protocol_version: report_context.protocol_version,
-            request_id: report_context.request_id.to_string(),
+            request_id: report_context.request_id.clone(),
             signed_at,
-            responder_node_key: report_context.accused_node_key.to_string(),
+            responder_node_key: report_context.accused_node_key.clone(),
             origin_protocol: "pre".to_string(),
-            object_id: report_context.object_id.to_string(),
-            rdr_pk: report_context.rdr_pk.to_vec(),
-            derivation: report_context.derivation.map(ToOwned::to_owned),
+            object_id: report_context.object_id.clone(),
+            rdr_pk: report_context.rdr_pk.clone(),
+            derivation: report_context.derivation.clone(),
             from_node_id,
             share: share_bytes.clone(),
             challenge: challenge_bytes.clone(),
@@ -127,7 +127,7 @@ where
         };
 
         if let Err(error) = verify_node_message(
-            report_context.accused_node_key,
+            &report_context.accused_node_key,
             &statement.canonical_bytes(),
             &response_signature,
         ) {
@@ -242,7 +242,7 @@ where
     /// deserialization of the signed bytes is deterministic
     /// (see `require_pre_proof_verification_failure`).
     fn report_invalid_pre_response(
-        report_context: &PreResponseReportContext<'_>,
+        report_context: &PreResponseReportContext,
         statement: PreReencryptResponseStatement,
         response_signature: Vec<u8>,
         signed_at: u64,
@@ -251,9 +251,9 @@ where
     ) -> PeerResponseVerification<G1Affine> {
         seen_node_ids.insert(from_node_id);
         PeerResponseVerification::InvalidProof(Box::new(InvalidCryptoResponseObservation {
-            ring_id: report_context.ring_id.to_string(),
-            accused_node_key: report_context.accused_node_key.to_string(),
-            accused_peer_id: report_context.accused_peer_id.to_string(),
+            ring_id: report_context.ring_id.clone(),
+            accused_node_key: report_context.accused_node_key.clone(),
+            accused_peer_id: report_context.accused_peer_id.clone(),
             // Pin the envelope to the evidence: observed_at == signed_at - grace.
             observed_at: signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
             evidence: InvalidCryptoResponse::Pre {
@@ -400,21 +400,18 @@ mod tests {
         }
     }
 
-    fn report_context<'a>(
-        fixture: &'a VerifyFixture,
-        rdr_pk_bytes: &'a [u8],
-    ) -> PreResponseReportContext<'a> {
+    fn report_context(fixture: &VerifyFixture, rdr_pk_bytes: &[u8]) -> PreResponseReportContext {
         PreResponseReportContext {
-            chain_id: "chain",
-            ring_id: "ring",
-            ring_pk: "ring-pk",
-            ring_state_sha256: &fixture.ring_state_sha256,
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "ring-pk".to_string(),
+            ring_state_sha256: fixture.ring_state_sha256.clone(),
             protocol_version: 0,
-            request_id: &fixture.request_id,
-            accused_node_key: &fixture.responder_node_key,
-            accused_peer_id: "accused-peer",
-            object_id: &fixture.object_id,
-            rdr_pk: rdr_pk_bytes,
+            request_id: fixture.request_id.clone(),
+            accused_node_key: fixture.responder_node_key.clone(),
+            accused_peer_id: "accused-peer".to_string(),
+            object_id: fixture.object_id.clone(),
+            rdr_pk: rdr_pk_bytes.to_vec(),
             derivation: None,
         }
     }
