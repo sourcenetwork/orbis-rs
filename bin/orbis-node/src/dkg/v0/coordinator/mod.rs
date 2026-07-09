@@ -19,7 +19,7 @@
 //! - [`network`] — peer stream management and message dispatch
 //! - [`phases`] — DKG phase transitions (Phase 1 → 2 → 4)
 
-mod evidence;
+pub(crate) mod evidence;
 mod inbound;
 mod message_handlers;
 mod network;

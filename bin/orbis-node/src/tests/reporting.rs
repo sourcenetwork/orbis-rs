@@ -10,33 +10,291 @@
 //! FROST variant (builds the node containers with decaf377 automatically):
 //!   cargo test -p orbis-node --no-default-features --features "redb,integration-test,decaf377" test_frost_invalid_sign_share_triggers_on_chain_report -- --nocapture
 
+use crate::dkg::v0::helpers::serialize_commitment_coefficients;
+use crate::dkg::v0::messages::SignedDkgShare;
 use crate::helpers::test_helpers::wait_for_ring_finalized;
-use crate::ring_state::RingShareBundle;
+use crate::reporting::v0::types::{
+    ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgShareStatement,
+    DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN,
+};
+use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::r#trait::{BulletinKind, RingPayload};
 use common::{
     blockchain::{
-        events::ReportEventSubscription, orbis::WhitelistTarget, SourceHubClient, TxSigner,
-        TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
+        events::ReportEventSubscription, orbis::WhitelistTarget, sign_node_message_with_hex_key,
+        SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
     },
     IntegrationTestNetwork,
 };
 use crypto::helpers::generate_keypair;
-use crypto::r#trait::{CryptoDeserialize, Dkg, PriShare};
+use crypto::r#trait::{CryptoDeserialize, Dkg, DkgMode, DkgRole, PriShare};
 use crypto::CryptoSerialize;
-use crypto::{DkgImpl, ScalarField};
+use crypto::{DkgImpl, GroupAffine, ScalarField};
 use proto::unsafe_testing::{
-    unsafe_testing_service_client::UnsafeTestingServiceClient, GetLocalStorageRequest,
-    LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType, SetLocalStorageRequest,
+    unsafe_testing_service_client::UnsafeTestingServiceClient, GetActivePssSessionRequest,
+    GetLocalStorageRequest, LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType,
+    SetLocalStorageRequest, SubmitDkgInvalidShareEvidenceRequest,
 };
 use tokio::time::{sleep, Duration, Instant};
 use zeroize::Zeroizing;
 
 const RING_ID: &str = "reporting-test-ring";
+const NODE3_SIGNING_KEY_HEX: &str =
+    "0000000000000000000000000000000000000000000000000000000000000003";
 
 use super::constants::{
     reporting_genesis_json, NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, NODE_KEY_4,
     RING_GOVERNANCE_POLICY_ID,
 };
+
+fn canonical_node_id(node_key: &str, node_keys: &[String]) -> u32 {
+    let mut sorted = node_keys.to_vec();
+    sorted.sort();
+    sorted
+        .iter()
+        .position(|candidate| candidate == node_key)
+        .map(|index| index as u32 + 1)
+        .expect("node key should be in committee")
+}
+
+fn sorted_node_keys(node_keys: &[String]) -> Vec<String> {
+    let mut sorted = node_keys.to_vec();
+    sorted.sort();
+    sorted
+}
+
+fn ring_key_from_ring_pk_hex(ring_pk_hex: &str) -> String {
+    let bytes = hex::decode(ring_pk_hex).expect("decode ring_pk hex");
+    GroupAffine::from_bytes(&bytes)
+        .expect("deserialize ring_pk")
+        .to_string()
+}
+
+async fn wait_for_active_pss_session(endpoint: &str, ring_pk: &str, timeout: Duration) -> String {
+    let mut client = UnsafeTestingServiceClient::connect(endpoint.to_string())
+        .await
+        .expect("connect unsafe-testing client for active PSS lookup");
+    let deadline = Instant::now() + timeout;
+    loop {
+        let response = client
+            .get_active_pss_session(GetActivePssSessionRequest {
+                ring_pk: ring_pk.to_string(),
+            })
+            .await
+            .expect("query active PSS session")
+            .into_inner();
+        if response.found {
+            return response.session_id;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for active PSS session for ring_pk {ring_pk}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn ensure_ring_index_on_nodes(endpoints: &[String], ring_pk_hex: &str, ring_id: &str) {
+    let ring_key = ring_key_from_ring_pk_hex(ring_pk_hex);
+    let indexed_at_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_secs();
+
+    for (index, endpoint) in endpoints.iter().enumerate() {
+        let mut client = UnsafeTestingServiceClient::connect(endpoint.clone())
+            .await
+            .expect("connect unsafe-testing client for RingIndex");
+        let key = LocalStorageKey {
+            key_type: LocalStorageKeyType::RingIndex as i32,
+            ring_key: String::new(),
+        };
+        let stored = client
+            .get_local_storage(GetLocalStorageRequest {
+                key: Some(key.clone()),
+                access_mode: LocalStorageAccessMode::Plain as i32,
+            })
+            .await
+            .expect("read RingIndex")
+            .into_inner();
+        let mut ring_index: Vec<RingIndexEntry> = if stored.found {
+            serde_json::from_slice(&stored.value).expect("parse RingIndex")
+        } else {
+            Vec::new()
+        };
+
+        if let Some(entry) = ring_index
+            .iter_mut()
+            .find(|entry| entry.ring_pk_str == ring_key)
+        {
+            entry.bulletin_post_id = ring_id.to_string();
+        } else {
+            ring_index.push(RingIndexEntry {
+                ring_pk_str: ring_key.clone(),
+                bulletin_post_id: ring_id.to_string(),
+                indexed_at_secs,
+            });
+        }
+
+        client
+            .set_local_storage(SetLocalStorageRequest {
+                key: Some(key),
+                access_mode: LocalStorageAccessMode::Plain as i32,
+                value: serde_json::to_vec(&ring_index).expect("serialize RingIndex"),
+            })
+            .await
+            .expect("write RingIndex");
+        println!(
+            "Ensured RingIndex entry on node{} for local ring key {}...",
+            index + 1,
+            &ring_key[..40.min(ring_key.len())]
+        );
+    }
+}
+
+async fn wait_for_ring_state_on_nodes(endpoints: &[String], ring_pk_hex: &str, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let mut statuses = Vec::with_capacity(endpoints.len());
+        let mut ready = true;
+        for (index, endpoint) in endpoints.iter().enumerate() {
+            match cli_tool::query_ring_state(endpoint.clone(), ring_pk_hex.to_string()).await {
+                Ok((_, last_pss)) => {
+                    statuses.push(format!("node{}: last_pss={last_pss}", index + 1));
+                }
+                Err(error) => {
+                    statuses.push(format!("node{}: {error}", index + 1));
+                    ready = false;
+                    break;
+                }
+            }
+        }
+        if ready {
+            println!(
+                "All selected nodes have local DKG ring state: {}",
+                statuses.join("; ")
+            );
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for local DKG ring state: {}",
+            statuses.join("; ")
+        );
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn signed_bad_reshare_dkg_share(
+    chain_id: String,
+    ring_id: String,
+    ring: &RingPayload,
+    session_id: u128,
+    accused_node_key: &str,
+    accused_signing_key_hex: &str,
+    receiver_node_key: &str,
+) -> SignedDkgShare {
+    let from_node_id = canonical_node_id(accused_node_key, &ring.peer_node_keys);
+    let receiver_node_keys = ring
+        .new_peer_node_keys
+        .clone()
+        .expect("reshare announcement should include new_peer_node_keys");
+    let to_node_id = canonical_node_id(receiver_node_key, &receiver_node_keys);
+
+    let mut dealer = DkgImpl::new(
+        from_node_id,
+        ring.threshold as usize,
+        ring.peer_node_keys.len(),
+        session_id,
+        DkgRole::Dealer,
+    )
+    .expect("create reshare dealer");
+    dealer
+        .generate_polynomial(DkgMode::Reshare {
+            old_share: ScalarField::from(42_u64),
+            participating_ids: (1..=ring.peer_node_keys.len() as u32).collect(),
+            new_threshold: ring
+                .new_threshold
+                .unwrap_or(ring.threshold)
+                .try_into()
+                .expect("new threshold fits usize"),
+            new_total_nodes: receiver_node_keys.len(),
+            new_node_id: None,
+        })
+        .expect("generate reshare polynomial");
+
+    let commitment =
+        serialize_commitment_coefficients(&dealer.commitment().coefficients).expect("commitment");
+    let share = dealer
+        .generate_shares()
+        .expect("generate reshare shares")
+        .into_iter()
+        .find(|share| share.to_id == to_node_id)
+        .expect("share for receiver");
+    let share_value = <ScalarField as CryptoSerialize>::to_bytes(&share.value).expect("share");
+    let mut bad_share_value = ScalarField::from_bytes(&share_value).expect("deserialize share");
+    bad_share_value += ScalarField::from(1_u64);
+    let bad_share_value =
+        <ScalarField as CryptoSerialize>::to_bytes(&bad_share_value).expect("bad share");
+    assert_ne!(share_value, bad_share_value);
+
+    let signed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_secs();
+    let commitment_statement = DkgCommitmentStatement {
+        domain: DKG_COMMITMENT_DOMAIN.to_string(),
+        chain_id: chain_id.clone(),
+        ring_id: ring_id.clone(),
+        ring_pk: ring.ring_pk.clone(),
+        ring_state_sha256: ring_state_sha256(ring),
+        protocol_version: network::V0.version,
+        request_id: session_id.to_string(),
+        signed_at: signed_at - 1,
+        responder_node_key: accused_node_key.to_string(),
+        origin_protocol: "pss_reshare".to_string(),
+        accused_committee_scope: CommitteeScope::Current,
+        signing_committee_scope: CommitteeScope::Current,
+        from_node_id,
+        commitment,
+        crypto_backend: DkgImpl::name(),
+    };
+    let commitment_signature = sign_node_message_with_hex_key(
+        accused_signing_key_hex,
+        &commitment_statement.canonical_bytes(),
+    )
+    .expect("sign DKG commitment evidence");
+    let statement = DkgShareStatement {
+        domain: DKG_SHARE_DOMAIN.to_string(),
+        chain_id,
+        ring_id,
+        ring_pk: ring.ring_pk.clone(),
+        ring_state_sha256: ring_state_sha256(ring),
+        protocol_version: network::V0.version,
+        request_id: session_id.to_string(),
+        signed_at,
+        responder_node_key: accused_node_key.to_string(),
+        receiver_node_key: receiver_node_key.to_string(),
+        origin_protocol: "pss_reshare".to_string(),
+        accused_committee_scope: CommitteeScope::Current,
+        signing_committee_scope: CommitteeScope::Current,
+        from_node_id,
+        to_node_id,
+        commitment_statement,
+        commitment_signature,
+        share_value: bad_share_value,
+        nonce: share.nonce,
+        crypto_backend: DkgImpl::name(),
+    };
+    let signature =
+        sign_node_message_with_hex_key(accused_signing_key_hex, &statement.canonical_bytes())
+            .expect("sign DKG share evidence");
+
+    SignedDkgShare {
+        statement,
+        signature,
+    }
+}
 
 #[tokio::test]
 #[serial_test::serial]
@@ -1537,6 +1795,253 @@ async fn test_reshare_offline_triggers_on_chain_report() {
         "node3 should have demerits after accepted offline report, got {demerits}"
     );
     println!("node3 demerit points: {demerits}");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
+    println!("Starting PSS reshare bad DKG-share relay reporting integration test...");
+
+    let network = IntegrationTestNetwork::builder()
+        .with_node_count(4)
+        .with_module_genesis(
+            "orbis",
+            serde_json::json!({
+                "rings": [{
+                    "id": RING_ID,
+                    "ring_pk": "",
+                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+                    "threshold": 2,
+                    "pss_interval": 86400,
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "reporting": reporting_genesis_json(1, &[], 10)
+                }]
+            }),
+        )
+        .build();
+
+    let chain_config = network.chain_config();
+    let endpoints = network.all_endpoints();
+    let endpoint = endpoints[0].to_string();
+    let node4_endpoint = endpoints[3].to_string();
+
+    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
+        .await;
+
+    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
+        .await
+        .expect("query node1 info");
+    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
+        .await
+        .expect("query node2 info");
+    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
+        .await
+        .expect("query node3 info");
+    let node4_info = cli_tool::query_node_info(endpoints[3].to_string())
+        .await
+        .expect("query node4 info");
+
+    assert_eq!(node1_info.node_key, NODE_KEY_1, "node1 key mismatch");
+    assert_eq!(node2_info.node_key, NODE_KEY_2, "node2 key mismatch");
+    assert_eq!(node3_info.node_key, NODE_KEY_3, "node3 key mismatch");
+    assert_eq!(node4_info.node_key, NODE_KEY_4, "node4 key mismatch");
+
+    let peer_addresses = [
+        IntegrationTestNetwork::transform_p2p_address(
+            &node1_info.p2p_address,
+            IntegrationTestNetwork::NODE1_SERVICE,
+        ),
+        IntegrationTestNetwork::transform_p2p_address(
+            &node2_info.p2p_address,
+            IntegrationTestNetwork::NODE2_SERVICE,
+        ),
+        IntegrationTestNetwork::transform_p2p_address(
+            &node3_info.p2p_address,
+            IntegrationTestNetwork::NODE3_SERVICE,
+        ),
+        IntegrationTestNetwork::transform_p2p_address(
+            &node4_info.p2p_address,
+            IntegrationTestNetwork::NODE4_SERVICE,
+        ),
+    ];
+
+    let controller_client = SourceHubClient::with_signer(
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
+    let initial_node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
+    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
+        &controller_client,
+        RING_ID,
+        &initial_node_keys,
+    )
+    .await;
+    assert_eq!(
+        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+        "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
+    );
+
+    for (node_key, peer_address) in [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, NODE_KEY_4]
+        .iter()
+        .zip(&peer_addresses)
+    {
+        wait_for_node_info_on_chain(
+            &controller_client,
+            node_key,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
+
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
+    }
+
+    println!("Starting DKG for ring {RING_ID}...");
+    cli_tool::do_dkg(endpoint.clone(), RING_ID.to_string())
+        .await
+        .expect("DKG should succeed");
+
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, Duration::from_secs(90)).await;
+    println!(
+        "DKG finalized. Ring PK: {}...",
+        &ring_pk_hex[..40.min(ring_pk_hex.len())]
+    );
+    let dkg_node_endpoints: Vec<String> = endpoints[..3]
+        .iter()
+        .map(|endpoint| (*endpoint).to_string())
+        .collect();
+    wait_for_ring_state_on_nodes(&dkg_node_endpoints, &ring_pk_hex, Duration::from_secs(60)).await;
+    ensure_ring_index_on_nodes(&dkg_node_endpoints, &ring_pk_hex, RING_ID).await;
+
+    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+        .await
+        .expect("connect report event subscription");
+
+    let reshare_node_keys = vec![
+        NODE_KEY_1.to_string(),
+        NODE_KEY_2.to_string(),
+        NODE_KEY_4.to_string(),
+    ];
+    let reshare_threshold = 2u32;
+
+    println!("Triggering ring reshare to node1/node2/node4, threshold=2...");
+    cli_tool::start_ring_reshare_by_acp_with_config(
+        RING_ID.to_string(),
+        reshare_node_keys.clone(),
+        Some(reshare_threshold),
+        chain_config.clone(),
+    )
+    .await
+    .expect("start ring reshare announcement");
+
+    let payload_bytes = cli_tool::read_bulletin_post_with_config(
+        RING_ID.to_string(),
+        BulletinKind::Ring,
+        chain_config.clone(),
+    )
+    .await
+    .expect("read ring payload after reshare announcement");
+    let ring_payload: RingPayload =
+        serde_json::from_slice(&payload_bytes).expect("parse RingPayload");
+    assert_eq!(
+        ring_payload
+            .new_peer_node_keys
+            .as_ref()
+            .map(|node_keys| sorted_node_keys(node_keys)),
+        Some(sorted_node_keys(&reshare_node_keys)),
+        "reshare should target node1/node2/node4"
+    );
+    assert_eq!(
+        ring_payload.new_threshold,
+        Some(reshare_threshold),
+        "reshare should target threshold 2"
+    );
+
+    let local_ring_key = ring_key_from_ring_pk_hex(&ring_pk_hex);
+    let session_id =
+        wait_for_active_pss_session(&node4_endpoint, &local_ring_key, Duration::from_secs(180))
+            .await
+            .parse::<u128>()
+            .expect("active PSS session id should parse");
+    println!("node4 active reshare session: {session_id}");
+
+    let evidence = signed_bad_reshare_dkg_share(
+        chain_config.chain_id.clone(),
+        RING_ID.to_string(),
+        &ring_payload,
+        session_id,
+        NODE_KEY_3,
+        NODE3_SIGNING_KEY_HEX,
+        NODE_KEY_4,
+    );
+
+    let mut unsafe_client = UnsafeTestingServiceClient::connect(node4_endpoint)
+        .await
+        .expect("connect unsafe-testing client to node4");
+    unsafe_client
+        .submit_dkg_invalid_share_evidence(SubmitDkgInvalidShareEvidenceRequest {
+            session_id: session_id.to_string(),
+            signed_share_json: serde_json::to_vec(&evidence).expect("serialize signed evidence"),
+        })
+        .await
+        .expect("submit bad DKG-share evidence through pure-new receiver");
+
+    println!("Waiting for DKG bad-share EventReportAccepted on chain (up to 120s)...");
+    let event = sub
+        .wait_for_report_accepted(RING_ID, Duration::from_secs(120))
+        .await
+        .expect("DKG bad-share EventReportAccepted should be emitted");
+
+    println!(
+        "DKG bad-share report accepted on chain: report_id={} accused={} reporter={}",
+        event.report_id, event.accused_node_key, event.reporter_node_key
+    );
+
+    assert_eq!(
+        event.report_type, "invalid_crypto_response",
+        "unexpected report_type"
+    );
+    assert_eq!(
+        event.accused_node_key, NODE_KEY_3,
+        "node3 should be the accused bad-share dealer"
+    );
+    assert_eq!(event.ring_id, RING_ID, "ring_id mismatch");
+    assert!(
+        [NODE_KEY_1, NODE_KEY_2].contains(&event.reporter_node_key.as_str()),
+        "reporter should be a non-accused current signer, got {}",
+        event.reporter_node_key
+    );
+
+    let demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
+        .await
+        .expect("query node3 demerits");
+    assert_eq!(
+        demerits, 1,
+        "node3 should have exactly one demerit after the DKG bad-share report"
+    );
 }
 
 /// Verifies the on-chain kick + backup-node promotion flow: node3 starts with

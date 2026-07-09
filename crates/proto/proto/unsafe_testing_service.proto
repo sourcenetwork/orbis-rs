@@ -6,6 +6,8 @@ service UnsafeTestingService {
   rpc GetLocalStorage(GetLocalStorageRequest) returns (GetLocalStorageResponse);
   rpc SetLocalStorage(SetLocalStorageRequest) returns (SetLocalStorageResponse);
   rpc DeleteLocalStorage(DeleteLocalStorageRequest) returns (DeleteLocalStorageResponse);
+  rpc GetActivePssSession(GetActivePssSessionRequest) returns (GetActivePssSessionResponse);
+  rpc SubmitDkgInvalidShareEvidence(SubmitDkgInvalidShareEvidenceRequest) returns (SubmitDkgInvalidShareEvidenceResponse);
 }
 
 enum LocalStorageKeyType {
@@ -52,3 +54,19 @@ message DeleteLocalStorageRequest {
 message DeleteLocalStorageResponse {
   bool existed = 1;
 }
+
+message GetActivePssSessionRequest {
+  string ring_pk = 1;
+}
+
+message GetActivePssSessionResponse {
+  bool found = 1;
+  string session_id = 2;
+}
+
+message SubmitDkgInvalidShareEvidenceRequest {
+  string session_id = 1;
+  bytes signed_share_json = 2;
+}
+
+message SubmitDkgInvalidShareEvidenceResponse {}

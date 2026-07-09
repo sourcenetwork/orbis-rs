@@ -398,7 +398,7 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
         if unsafe_testing_enabled {
             tracing::warn!("Unsafe testing gRPC service is enabled");
             let unsafe_testing_service =
-                UnsafeTestingServiceImpl::new(node.app_state.local_storage.clone());
+                UnsafeTestingServiceImpl::with_app_state(node.app_state.clone());
             grpc_server =
                 grpc_server.add_service(UnsafeTestingServiceServer::new(unsafe_testing_service));
         } else {

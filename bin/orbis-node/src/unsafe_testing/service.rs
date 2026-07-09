@@ -1,12 +1,22 @@
+use std::sync::Arc;
+
+use crate::app_state::AppState;
+use crate::dkg::v0::coordinator::evidence::{
+    queue_or_relay_invalid_share, share_evidence_proves_failure, verify_share_evidence,
+};
+use crate::dkg::v0::coordinator::DkgCoordinator;
+use crate::dkg::v0::messages::SignedDkgShare;
+use crypto::DkgImpl;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     LocalStorageImpl,
 };
 use proto::unsafe_testing::{
     unsafe_testing_service_server::UnsafeTestingService, DeleteLocalStorageRequest,
-    DeleteLocalStorageResponse, GetLocalStorageRequest, GetLocalStorageResponse,
-    LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType, SetLocalStorageRequest,
-    SetLocalStorageResponse,
+    DeleteLocalStorageResponse, GetActivePssSessionRequest, GetActivePssSessionResponse,
+    GetLocalStorageRequest, GetLocalStorageResponse, LocalStorageAccessMode, LocalStorageKey,
+    LocalStorageKeyType, SetLocalStorageRequest, SetLocalStorageResponse,
+    SubmitDkgInvalidShareEvidenceRequest, SubmitDkgInvalidShareEvidenceResponse,
 };
 use tonic::{Request, Response, Status};
 use zeroize::Zeroizing;
@@ -14,11 +24,23 @@ use zeroize::Zeroizing;
 #[derive(Clone)]
 pub struct UnsafeTestingServiceImpl {
     local_storage: LocalStorageImpl,
+    app_state: Option<Arc<AppState<DkgImpl>>>,
 }
 
 impl UnsafeTestingServiceImpl {
+    #[cfg(test)]
     pub fn new(local_storage: LocalStorageImpl) -> Self {
-        Self { local_storage }
+        Self {
+            local_storage,
+            app_state: None,
+        }
+    }
+
+    pub fn with_app_state(app_state: Arc<AppState<DkgImpl>>) -> Self {
+        Self {
+            local_storage: app_state.local_storage.clone(),
+            app_state: Some(app_state),
+        }
     }
 }
 
@@ -142,5 +164,74 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
             .map_err(|error| storage_error("delete", error))?;
 
         Ok(Response::new(DeleteLocalStorageResponse { existed }))
+    }
+
+    async fn get_active_pss_session(
+        &self,
+        request: Request<GetActivePssSessionRequest>,
+    ) -> Result<Response<GetActivePssSessionResponse>, Status> {
+        let ring_pk = request.into_inner().ring_pk;
+        if ring_pk.trim().is_empty() {
+            return Err(Status::invalid_argument("ring_pk is required"));
+        }
+        let app_state = self.app_state.clone().ok_or_else(|| {
+            Status::failed_precondition("unsafe PSS session lookup requires app state")
+        })?;
+        let session_id = app_state
+            .dkg_session_state
+            .active_ring_pss_session(&ring_pk)
+            .await;
+        Ok(Response::new(GetActivePssSessionResponse {
+            found: session_id.is_some(),
+            session_id: session_id.map(|id| id.to_string()).unwrap_or_default(),
+        }))
+    }
+
+    async fn submit_dkg_invalid_share_evidence(
+        &self,
+        request: Request<SubmitDkgInvalidShareEvidenceRequest>,
+    ) -> Result<Response<SubmitDkgInvalidShareEvidenceResponse>, Status> {
+        let request = request.into_inner();
+        let session_id = request
+            .session_id
+            .parse::<u128>()
+            .map_err(|error| Status::invalid_argument(format!("invalid session_id: {error}")))?;
+        let evidence: SignedDkgShare =
+            serde_json::from_slice(&request.signed_share_json).map_err(|error| {
+                Status::invalid_argument(format!("invalid signed_share_json: {error}"))
+            })?;
+        let app_state = self.app_state.clone().ok_or_else(|| {
+            Status::failed_precondition("unsafe DKG evidence injection requires app state")
+        })?;
+        let coordinator = DkgCoordinator::<DkgImpl>::with_routes(app_state, &network::V0);
+
+        let from_node_id = evidence.statement.from_node_id;
+        let to_node_id = evidence.statement.to_node_id;
+        let share_value = evidence.statement.share_value.clone();
+        let nonce = evidence.statement.nonce;
+        let verified = verify_share_evidence::<DkgImpl>(
+            &coordinator,
+            session_id,
+            from_node_id,
+            to_node_id,
+            &share_value,
+            nonce,
+            Some(evidence),
+        )
+        .await
+        .map_err(|error| Status::failed_precondition(error.to_string()))?
+        .ok_or_else(|| Status::failed_precondition("DKG report evidence is not active"))?;
+
+        if !share_evidence_proves_failure(&verified) {
+            return Err(Status::failed_precondition(
+                "DKG share evidence does not prove a verification failure",
+            ));
+        }
+
+        queue_or_relay_invalid_share::<DkgImpl>(&coordinator, session_id, verified)
+            .await
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+
+        Ok(Response::new(SubmitDkgInvalidShareEvidenceResponse {}))
     }
 }
