@@ -21,6 +21,16 @@ where
         + Send
         + Sync
         + 'static,
+    crypto::SignImpl: crypto::r#trait::ThresholdSigner<
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
+            PubPoly = D::PubPoly,
+            Signature = crypto::SignaturePoint,
+            SigShare = crypto::r#trait::PubShare<crypto::SigShareInner>,
+        > + Send
+        + Sync
+        + 'static,
 {
     type Msg = DkgMessage;
 

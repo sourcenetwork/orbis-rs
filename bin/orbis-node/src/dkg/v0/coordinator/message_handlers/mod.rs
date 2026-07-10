@@ -9,7 +9,7 @@ use crate::dkg::v0::helpers::{
     validate_fresh_dkg_ring_payload, validate_fresh_session_init_params,
     validate_refresh_session_init_for_version, validate_reshare_session_init_for_version,
 };
-use crate::dkg::v0::messages::{DkgMessage, SessionKind};
+use crate::dkg::v0::messages::{DkgMessage, SessionKind, SignedDkgCommitment, SignedDkgShare};
 use crate::dkg::v0::session_state::RingPssClaimOutcome;
 use crate::helpers::identity::is_self_peer_id;
 use crate::helpers::node_routes::{
@@ -28,15 +28,20 @@ use network::PeerId;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{peers, phases, state_machine::DkgEvent, types::CoordinatorDkg, DkgCoordinator};
+use super::{
+    peers, phases,
+    state_machine::DkgEvent,
+    types::{CoordinatorDkg, CoordinatorReportSigner},
+    DkgCoordinator,
+};
 
 mod commitment;
 mod session_init;
 mod share;
 
-pub(in crate::dkg::v0::coordinator) use crate::dkg::v0::coordinator::reshare::selection::{
+pub use crate::dkg::v0::coordinator::reshare::selection::{
     handle_reshare_participant_set, handle_reshare_share_ack,
 };
-pub(in crate::dkg::v0::coordinator) use commitment::handle_commitment_message;
-pub(in crate::dkg::v0::coordinator) use session_init::handle_session_init;
-pub(in crate::dkg::v0::coordinator) use share::handle_share_message;
+pub use commitment::handle_commitment_message;
+pub use session_init::handle_session_init;
+pub use share::handle_share_message;

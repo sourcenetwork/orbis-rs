@@ -12,7 +12,7 @@ use crate::constants::{
     SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
 };
 use crate::dkg::v0::error::DkgError;
-use crate::dkg::v0::messages::SessionKind;
+use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
 use crate::metrics;
 use crate::ring_state::RingShareBundle;
 use crate::sign::v0::messages::RefreshHealthCheckStatement;
@@ -79,6 +79,7 @@ pub enum RingPssClaimOutcome {
 pub enum DkgMessageType {
     Commitment,
     Share,
+    DkgInvalidShareEvidence,
     ReshareShareAck,
     ReshareParticipantSet,
     RefreshHealthCheckResult,
@@ -143,7 +144,7 @@ pub(crate) struct SessionRoutingState {
 }
 
 pub(crate) struct MessageTrackingState<ShareValue: Zeroize> {
-    pub pending_shares_waiting_for_commitment: HashMap<u32, DistributedShare<ShareValue>>,
+    pub pending_shares_waiting_for_commitment: HashMap<u32, PendingDkgShare<ShareValue>>,
     pub processed: HashSet<(u128, u32, DkgMessageType)>,
     pub processing: HashSet<(u128, u32, DkgMessageType)>,
 }
@@ -156,6 +157,12 @@ impl<ShareValue: Zeroize> Default for MessageTrackingState<ShareValue> {
             processing: HashSet::new(),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PendingDkgShare<ShareValue: Zeroize> {
+    pub share: DistributedShare<ShareValue>,
+    pub report_evidence: Option<SignedDkgShare>,
 }
 
 pub(crate) struct ReshareSessionState<ShareValue: Zeroize> {
@@ -182,6 +189,19 @@ impl<ShareValue: Zeroize> Default for ReshareSessionState<ShareValue> {
 pub(crate) struct RefreshSessionState {
     pub candidate: Option<RefreshHealthCheckCandidate>,
     pub pending_result: Option<PendingRefreshHealthCheckResult>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DkgReportEvidenceBinding {
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub chain_id: String,
+    pub protocol_version: u64,
+    pub request_id: String,
+    pub origin_protocol: String,
+    pub current_node_keys: Vec<String>,
+    pub receiver_node_keys: Vec<String>,
 }
 
 #[derive(Default)]
@@ -279,6 +299,10 @@ pub struct DkgSessionState<D: Dkg> {
     pub(crate) reshare: ReshareSessionState<D::ShareValue>,
     /// Message ordering and deduplication state.
     pub(crate) messages: MessageTrackingState<D::ShareValue>,
+    /// This node's signed commitment evidence for Refresh/Reshare share reports.
+    pub(crate) local_signed_commitment: Option<SignedDkgCommitment>,
+    /// Cached non-secret binding data for Refresh/Reshare DKG report evidence.
+    pub(crate) report_evidence_binding: Option<DkgReportEvidenceBinding>,
     /// What kind of ceremony this session is running (Fresh, Refresh, or Reshare).
     ///
     /// Drives `generate_polynomial` mode selection and Phase 4 storage/bulletin behaviour.
@@ -315,6 +339,8 @@ impl<D: Dkg> DkgSessionState<D> {
             shares_received: 0,
             reshare: ReshareSessionState::default(),
             messages: MessageTrackingState::default(),
+            local_signed_commitment: None,
+            report_evidence_binding: None,
             kind: SessionKind::Fresh,
             pss_interval: 0,
             policy_id: None,
@@ -710,6 +736,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         self.rings_pss.read().await.contains_key(ring_pk_key)
     }
 
+    #[cfg(any(test, feature = "unsafe-testing"))]
+    pub async fn active_ring_pss_session(&self, ring_pk_key: &str) -> Option<u128> {
+        self.rings_pss.read().await.get(ring_pk_key).copied()
+    }
+
     /// Mark one exact reshare bulletin update as ready to sign.
     pub async fn mark_reshare_signature_ready(&self, key: ReshareSignatureReadyKey) {
         self.reshare_signature_ready.write().await.insert(key);
@@ -973,25 +1004,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         }
     }
 
-    /// Set new-committee node_id to peer_id mappings for reshare-only messages.
-    pub async fn set_reshare_new_peer_mappings(
-        &self,
-        session_id: &u128,
-        node_id_to_peer_id: HashMap<u32, String>,
-    ) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            let mut node_to_peer = HashMap::new();
-            let mut peer_to_node = HashMap::new();
-            for (node_id, peer_id) in node_id_to_peer_id {
-                node_to_peer.insert(node_id, peer_id.clone());
-                peer_to_node.insert(peer_id, node_id);
-            }
-            state.routing.reshare_new_node_id_to_peer_id = node_to_peer;
-            state.routing.reshare_new_peer_id_to_node_id = peer_to_node;
-        }
-    }
-
     /// Get peer_id for a node_id
     pub async fn get_peer_id_for_node(&self, session_id: &u128, node_id: u32) -> Option<String> {
         let states = self.states.read().await;
@@ -1052,6 +1064,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         &self,
         session_id: &u128,
         share: DistributedShare<D::ShareValue>,
+        report_evidence: Option<SignedDkgShare>,
     ) -> Option<bool> {
         let mut states = self.states.write().await;
         let state = states.get_mut(session_id)?;
@@ -1063,10 +1076,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         {
             return Some(false);
         }
-        state
-            .messages
-            .pending_shares_waiting_for_commitment
-            .insert(from_node_id, share);
+        state.messages.pending_shares_waiting_for_commitment.insert(
+            from_node_id,
+            PendingDkgShare {
+                share,
+                report_evidence,
+            },
+        );
         Some(true)
     }
 
@@ -1075,7 +1091,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         &self,
         session_id: &u128,
         from_node_id: u32,
-    ) -> Option<DistributedShare<D::ShareValue>> {
+    ) -> Option<PendingDkgShare<D::ShareValue>> {
         let mut states = self.states.write().await;
         states
             .get_mut(session_id)?
@@ -1229,10 +1245,6 @@ impl<D: Dkg> Drop for SessionStateManager<D> {
 
 #[cfg(test)]
 impl<D: Dkg + 'static> SessionStateManager<D> {
-    pub async fn active_ring_pss_session(&self, ring_pk_key: &str) -> Option<u128> {
-        self.rings_pss.read().await.get(ring_pk_key).copied()
-    }
-
     pub async fn get_session_generation(&self, session_id: &u128) -> Option<u64> {
         let states = self.states.read().await;
         states.get(session_id).map(|s| s.generation)
@@ -1602,12 +1614,12 @@ mod tests {
         };
 
         assert_eq!(
-            mgr.store_pending_share_waiting_for_commitment(&3, share.clone())
+            mgr.store_pending_share_waiting_for_commitment(&3, share.clone(), None)
                 .await,
             Some(true)
         );
         assert_eq!(
-            mgr.store_pending_share_waiting_for_commitment(&3, share)
+            mgr.store_pending_share_waiting_for_commitment(&3, share, None)
                 .await,
             Some(false),
             "a duplicate early share from the same sender should not replace the first"
@@ -1617,8 +1629,8 @@ mod tests {
             .take_pending_share_waiting_for_commitment(&3, 2)
             .await
             .expect("pending share should be present");
-        assert_eq!(drained.from_id, 2);
-        assert_eq!(drained.to_id, 1);
+        assert_eq!(drained.share.from_id, 2);
+        assert_eq!(drained.share.to_id, 1);
         assert!(
             mgr.take_pending_share_waiting_for_commitment(&3, 2)
                 .await

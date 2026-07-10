@@ -6,13 +6,18 @@ use crate::pre::v0::helpers::{
     validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::v0::messages::{PreMessage, ReencryptRequest};
+use crate::reporting::v0::types::{
+    ring_state_sha256, PreReencryptResponseStatement, PRE_REENCRYPT_RESPONSE_DOMAIN,
+};
 use crate::ring_state::RingShareBundle;
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
+use common::blockchain::sign_node_message_with_hex_key;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, ReencryptReply, Secret,
     ThresholdDealer,
 };
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
+use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::time::{SystemTime, UNIX_EPOCH};
 impl<D, T> PreCoordinator<D, T>
 where
@@ -171,6 +176,43 @@ where
         let proof_bytes = CryptoSerialize::to_bytes(&reply.proof)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize proof: {}", e)))?;
 
+        let signed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| PreError::SystemTime(format!("Failed to get timestamp: {}", e)))?
+            .as_secs();
+        let statement = PreReencryptResponseStatement {
+            domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
+            chain_id: self.app_state.bulletin.chain_id(),
+            ring_id: document_payload.ring_id.clone(),
+            ring_pk: ring_payload.ring_pk.clone(),
+            ring_state_sha256: ring_state_sha256(&ring_payload),
+            protocol_version: self.routes.version,
+            request_id: request_id.clone(),
+            signed_at,
+            responder_node_key: self.app_state.node_key.clone(),
+            origin_protocol: "pre".to_string(),
+            object_id: ctx.object_id.clone(),
+            rdr_pk: ctx.rdr_pk_bytes.clone(),
+            derivation: ctx.derivation.clone(),
+            from_node_id: node_id,
+            share: share_bytes.clone(),
+            challenge: challenge_bytes.clone(),
+            proof: proof_bytes.clone(),
+            crypto_backend: T::name(),
+        };
+        let signing_key = self
+            .app_state
+            .local_storage
+            .get_encrypted(LocalStorageKeys::NodeSigningKey)
+            .map_err(|e| PreError::Storage(format!("Failed to read node signing key: {}", e)))?
+            .ok_or_else(|| PreError::Storage("Node signing key is not configured".to_string()))?;
+        let signing_key_hex = String::from_utf8(signing_key.to_vec()).map_err(|e| {
+            PreError::Storage(format!("Stored node signing key is not UTF-8: {}", e))
+        })?;
+        let response_signature =
+            sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes())
+                .map_err(|e| PreError::Crypto(format!("Failed to sign PRE response: {}", e)))?;
+
         // 9. Create response message
         let response = PreMessage::ReencryptResponse {
             request_id: request_id.clone(),
@@ -178,6 +220,8 @@ where
             share: share_bytes,
             challenge: challenge_bytes,
             proof: proof_bytes,
+            signed_at,
+            response_signature,
         };
 
         tracing::debug!(

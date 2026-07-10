@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use super::{types::CoordinatorDkg, DkgCoordinator};
 
-pub(in crate::dkg::v0::coordinator) async fn cleanup_departing_dealer<D>(
+pub async fn cleanup_departing_dealer<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     ring_key: Option<String>,
@@ -64,7 +64,7 @@ where
     Ok(())
 }
 
-pub(in crate::dkg::v0::coordinator) async fn add_ring_index_entry<D>(
+pub async fn add_ring_index_entry<D>(
     app_state: &Arc<AppState<D>>,
     storage_key: &str,
     bulletin_post_id: String,
@@ -102,7 +102,7 @@ where
     Ok(())
 }
 
-pub(in crate::dkg::v0::coordinator) async fn preflight_new_ring_capacity<D>(
+pub async fn preflight_new_ring_capacity<D>(
     app_state: &Arc<AppState<D>>,
     storage_key: &str,
 ) -> Result<()>
@@ -115,7 +115,7 @@ where
 }
 
 /// Confirm the completed fresh ring against the pre-created ring on the bulletin.
-pub(in crate::dkg::v0::coordinator) async fn post_fresh_ring_finalization<D>(
+pub async fn post_fresh_ring_finalization<D>(
     coord: &DkgCoordinator<D>,
     ring_id: &str,
     ring_pk_bytes: &[u8],

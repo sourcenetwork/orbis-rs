@@ -110,7 +110,7 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
                         "next_version": 1,
                         "activation_time": activation_time
                     },
-                    "reporting": reporting_genesis_json(1, &[])
+                    "reporting": reporting_genesis_json(1, &[], 3)
                 }],
                 "key_derivations": [{
                     "id": DERIVATION_ID,

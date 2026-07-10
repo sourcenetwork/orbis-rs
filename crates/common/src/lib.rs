@@ -102,7 +102,7 @@ fn report_compose_failure(compose_file: &str, project_name: &str) {
 
 fn stop_compose(compose_file: &str, project_name: &str) {
     match compose_command(compose_file, project_name)
-        .args(["down", "-v", "--remove-orphans"])
+        .args(["--profile", "node4", "down", "-v", "--remove-orphans"])
         .status()
     {
         Ok(status) if !status.success() => {
@@ -271,7 +271,7 @@ pub struct NodeInfo {
     pub public_address: String,
 }
 
-/// Integration test network that spins up sourcehub + 3 orbis nodes via Docker Compose.
+/// Integration test network that spins up sourcehub + orbis nodes via Docker Compose.
 ///
 /// The node image is built with the crypto implementation selected by the
 /// `ORBIS_INTEGRATION_CRYPTO` env var (e.g. `bls12-381` or `decaf377`). When that var is set,
@@ -282,7 +282,7 @@ pub struct IntegrationTestNetwork {
     compose_file: String,
     project_name: String,
     chain_config: ChainConfig,
-    node_endpoints: [String; 3],
+    node_endpoints: Vec<String>,
     _patch_file: Option<tempfile::NamedTempFile>,
 }
 
@@ -292,18 +292,21 @@ pub struct IntegrationTestNetworkBuilder {
     genesis_patches: serde_json::Map<String, serde_json::Value>,
     production_node_build: bool,
     unsafe_testing_runtime_enabled: bool,
+    node_count: usize,
 }
 
 impl IntegrationTestNetwork {
     pub const NODE1_SERVICE: &'static str = "node1";
     pub const NODE2_SERVICE: &'static str = "node2";
     pub const NODE3_SERVICE: &'static str = "node3";
+    pub const NODE4_SERVICE: &'static str = "node4";
 
     pub fn builder() -> IntegrationTestNetworkBuilder {
         IntegrationTestNetworkBuilder {
             genesis_patches: serde_json::Map::new(),
             production_node_build: false,
             unsafe_testing_runtime_enabled: true,
+            node_count: 3,
         }
     }
 
@@ -368,12 +371,8 @@ impl IntegrationTestNetwork {
         &self.node_endpoints[0]
     }
 
-    pub fn all_endpoints(&self) -> [&str; 3] {
-        [
-            &self.node_endpoints[0],
-            &self.node_endpoints[1],
-            &self.node_endpoints[2],
-        ]
+    pub fn all_endpoints(&self) -> Vec<&str> {
+        self.node_endpoints.iter().map(String::as_str).collect()
     }
 
     pub fn sourcehub_rpc_url(&self) -> &str {
@@ -403,9 +402,11 @@ impl IntegrationTestNetwork {
     /// their local storage. Docker may reassign ephemeral host ports during a
     /// restart, so the returned endpoints must replace any previously cached
     /// node endpoints.
-    pub fn restart_nodes(&self) -> [String; 3] {
+    pub fn restart_nodes(&self) -> Vec<String> {
+        let services = self.node_services();
         let status = compose_command(&self.compose_file, &self.project_name)
-            .args(["restart", "node1", "node2", "node3"])
+            .arg("restart")
+            .args(&services)
             .status()
             .expect("Failed to restart integration test nodes");
         if !status.success() {
@@ -413,20 +414,17 @@ impl IntegrationTestNetwork {
             panic!("Failed to restart integration test nodes");
         }
 
-        [
-            localhost_url(
-                published_port(&self.compose_file, &self.project_name, "node1", 50051)
-                    .expect("discover restarted node1 endpoint"),
-            ),
-            localhost_url(
-                published_port(&self.compose_file, &self.project_name, "node2", 50051)
-                    .expect("discover restarted node2 endpoint"),
-            ),
-            localhost_url(
-                published_port(&self.compose_file, &self.project_name, "node3", 50051)
-                    .expect("discover restarted node3 endpoint"),
-            ),
-        ]
+        services
+            .iter()
+            .map(|service| {
+                localhost_url(
+                    published_port(&self.compose_file, &self.project_name, service, 50051)
+                        .unwrap_or_else(|error| {
+                            panic!("discover restarted {service} endpoint: {error}")
+                        }),
+                )
+            })
+            .collect()
     }
 
     /// Transform a p2p_address from local format to Docker inter-container format
@@ -454,8 +452,15 @@ impl IntegrationTestNetwork {
             1 => Self::NODE1_SERVICE,
             2 => Self::NODE2_SERVICE,
             3 => Self::NODE3_SERVICE,
+            4 => Self::NODE4_SERVICE,
             _ => panic!("Invalid node index: {}", node_index),
         }
+    }
+
+    fn node_services(&self) -> Vec<String> {
+        (1..=self.node_endpoints.len())
+            .map(|index| Self::service_name_for_node(index).to_string())
+            .collect()
     }
 
     /// Stop a single Docker Compose service by name without removing it.
@@ -468,6 +473,27 @@ impl IntegrationTestNetwork {
             report_compose_failure(&self.compose_file, &self.project_name);
             panic!("Failed to stop service {service}");
         }
+    }
+
+    /// Start a previously stopped Docker Compose service without recreating it,
+    /// preserving its local storage. Docker may reassign the ephemeral host port,
+    /// so the returned gRPC endpoint must replace any previously cached one.
+    pub fn start_service(&self, service: &str) -> String {
+        let status = compose_command(&self.compose_file, &self.project_name)
+            .args(["start", service])
+            .status()
+            .expect("docker compose start failed");
+        if !status.success() {
+            report_compose_failure(&self.compose_file, &self.project_name);
+            panic!("Failed to start service {service}");
+        }
+        localhost_url(
+            published_port(&self.compose_file, &self.project_name, service, 50051).unwrap_or_else(
+                |error| {
+                    panic!("failed to discover {service} endpoint after starting service: {error}")
+                },
+            ),
+        )
     }
 }
 
@@ -508,11 +534,21 @@ impl IntegrationTestNetworkBuilder {
         self
     }
 
+    pub fn with_node_count(mut self, node_count: usize) -> Self {
+        assert!(
+            matches!(node_count, 3 | 4),
+            "integration test network supports 3 or 4 nodes"
+        );
+        self.node_count = node_count;
+        self
+    }
+
     pub fn build(self) -> IntegrationTestNetwork {
         let IntegrationTestNetworkBuilder {
             genesis_patches,
             production_node_build,
             unsafe_testing_runtime_enabled,
+            node_count,
         } = self;
         let compose_file = INTEGRATION_TEST_COMPOSE_FILE.to_string();
         let project_name = unique_project_name("orbis-integration");
@@ -557,35 +593,51 @@ impl IntegrationTestNetworkBuilder {
             Some(f)
         };
 
-        let mut command = compose_command(&compose_file, &project_name);
-        command.args(["up", "-d", "--build"]);
+        let start_compose = || {
+            let mut command = compose_command(&compose_file, &project_name);
+            if node_count == 4 {
+                command.args(["--profile", "node4"]);
+            }
+            command.args(["up", "-d", "--build"]);
 
-        if let Some(feat) = crypto_feature {
-            command.env("ORBIS_INTEGRATION_CRYPTO", feat);
-        }
-        command.env(
-            "ORBIS_BUILD_INTEGRATION_TEST",
-            if production_node_build {
-                "false"
+            if let Some(feat) = crypto_feature {
+                command.env("ORBIS_INTEGRATION_CRYPTO", feat);
+            }
+            command.env(
+                "ORBIS_BUILD_INTEGRATION_TEST",
+                if production_node_build {
+                    "false"
+                } else {
+                    "true"
+                },
+            );
+            command.env(
+                "ORBIS_ENABLE_INTEGRATION_TEST",
+                if unsafe_testing_runtime_enabled {
+                    "true"
+                } else {
+                    "false"
+                },
+            );
+            if let Some(ref patch_file) = patch_file {
+                command.env("GENESIS_PATCH_FILE", patch_file.path());
             } else {
-                "true"
-            },
-        );
-        command.env(
-            "ORBIS_ENABLE_INTEGRATION_TEST",
-            if unsafe_testing_runtime_enabled {
-                "true"
-            } else {
-                "false"
-            },
-        );
-        if let Some(ref patch_file) = patch_file {
-            command.env("GENESIS_PATCH_FILE", patch_file.path());
-        } else {
-            command.env_remove("GENESIS_PATCH_FILE");
-        }
+                command.env_remove("GENESIS_PATCH_FILE");
+            }
 
-        let status = command.status().expect("Failed to start docker compose");
+            command.status()
+        };
+
+        let mut status = start_compose().expect("Failed to start docker compose");
+        if !status.success() {
+            eprintln!(
+                "docker compose up failed for project {project_name} with status {status}; retrying once"
+            );
+            report_compose_failure(&compose_file, &project_name);
+            stop_compose(&compose_file, &project_name);
+            std::thread::sleep(Duration::from_secs(2));
+            status = start_compose().expect("Failed to start docker compose on retry");
+        }
 
         if !status.success() {
             report_compose_failure(&compose_file, &project_name);
@@ -593,7 +645,7 @@ impl IntegrationTestNetworkBuilder {
             panic!("Failed to start integration test containers");
         }
 
-        let endpoints = (|| -> Result<(ChainConfig, [String; 3]), String> {
+        let endpoints = (|| -> Result<(ChainConfig, Vec<String>), String> {
             let chain_config = ChainConfig::builder()
                 .rpc_url(Some(localhost_url(published_port(
                     &compose_file,
@@ -614,26 +666,16 @@ impl IntegrationTestNetworkBuilder {
                     9090,
                 )?)))
                 .build();
-            let node_endpoints = [
-                localhost_url(published_port(
+            let mut node_endpoints = Vec::with_capacity(node_count);
+            for index in 1..=node_count {
+                let service = IntegrationTestNetwork::service_name_for_node(index);
+                node_endpoints.push(localhost_url(published_port(
                     &compose_file,
                     &project_name,
-                    "node1",
+                    service,
                     50051,
-                )?),
-                localhost_url(published_port(
-                    &compose_file,
-                    &project_name,
-                    "node2",
-                    50051,
-                )?),
-                localhost_url(published_port(
-                    &compose_file,
-                    &project_name,
-                    "node3",
-                    50051,
-                )?),
-            ];
+                )?));
+            }
             Ok((chain_config, node_endpoints))
         })()
         .unwrap_or_else(|error| {

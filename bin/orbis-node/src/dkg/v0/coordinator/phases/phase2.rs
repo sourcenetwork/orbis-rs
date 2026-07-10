@@ -1,6 +1,10 @@
 use super::*;
+use crate::dkg::v0::coordinator::evidence::{
+    build_and_store_commitment_evidence_with_context, build_share_evidence_with_context,
+    evidence_build_context,
+};
 
-pub(in crate::dkg::v0::coordinator) async fn initiate_phase2_shares<D>(
+pub async fn initiate_phase2_shares<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     peer_ids: &[String],
@@ -8,7 +12,15 @@ pub(in crate::dkg::v0::coordinator) async fn initiate_phase2_shares<D>(
 where
     D: CoordinatorDkg,
 {
-    let (shares, node_id, threshold, is_reshare, reshare_new_node_id_to_peer_id) = coord
+    let (
+        shares,
+        node_id,
+        threshold,
+        is_reshare,
+        reshare_new_node_id_to_peer_id,
+        commitment_bytes,
+        stored_commitment_evidence,
+    ) = coord
         .app_state
         .dkg_session_state
         .with_state_mut(&session_id, |state| {
@@ -46,6 +58,8 @@ where
                 state.node.threshold(),
                 matches!(state.kind, SessionKind::Reshare { .. }),
                 reshare_peer_ids,
+                serialize_commitment_coefficients(&state.node.commitment().coefficients)?,
+                state.local_signed_commitment.clone(),
             ))
         })
         .await
@@ -56,6 +70,23 @@ where
         .dkg_session_state
         .update_phase(&session_id, DkgPhase::Phase2Shares)
         .await;
+    let evidence_context = evidence_build_context(coord, session_id).await?;
+    let commitment_evidence = match stored_commitment_evidence {
+        Some(evidence) => Some(evidence),
+        None => match &evidence_context {
+            Some(context) => Some(
+                build_and_store_commitment_evidence_with_context(
+                    coord,
+                    session_id,
+                    context,
+                    node_id,
+                    commitment_bytes,
+                )
+                .await?,
+            ),
+            None => None,
+        },
+    };
 
     if peer_ids.is_empty() {
         tracing::error!("DKG Coordinator: No peer_ids available to send shares to");
@@ -113,12 +144,27 @@ where
             let share_value_bytes = CryptoSerialize::to_bytes(&share.value).map_err(|e| {
                 DkgError::Serialization(format!("Failed to serialize share value: {}", e))
             })?;
+            let report_evidence = match (&evidence_context, &commitment_evidence) {
+                (Some(context), Some(commitment_evidence)) => {
+                    Some(build_share_evidence_with_context(
+                        coord,
+                        context,
+                        node_id,
+                        share.to_id,
+                        share_value_bytes.clone(),
+                        share.nonce,
+                        commitment_evidence,
+                    )?)
+                }
+                _ => None,
+            };
             let share_msg = DkgMessage::Share {
                 session_id,
                 from_node_id: node_id,
                 to_node_id: share.to_id,
                 share_value: share_value_bytes,
                 nonce: share.nonce,
+                report_evidence,
             };
             if coord
                 .send_message_to_peer(target_peer_id, share_msg, Some(session_id))
@@ -147,6 +193,18 @@ where
         let share_value_bytes = CryptoSerialize::to_bytes(&share.value).map_err(|e| {
             DkgError::Serialization(format!("Failed to serialize share value: {}", e))
         })?;
+        let report_evidence = match (&evidence_context, &commitment_evidence) {
+            (Some(context), Some(commitment_evidence)) => Some(build_share_evidence_with_context(
+                coord,
+                context,
+                node_id,
+                share.to_id,
+                share_value_bytes.clone(),
+                share.nonce,
+                commitment_evidence,
+            )?),
+            _ => None,
+        };
 
         // Private DKG shares must be sent only to their intended recipient.
         let target_peer_id = match coord
@@ -171,6 +229,7 @@ where
             to_node_id: share.to_id,
             share_value: share_value_bytes,
             nonce: share.nonce,
+            report_evidence,
         };
         if coord
             .send_message_to_peer(&target_peer_id, share_msg, Some(session_id))

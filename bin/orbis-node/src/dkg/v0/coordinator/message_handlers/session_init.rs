@@ -8,7 +8,7 @@ use crate::helpers::protocol_version::read_ring_for_protocol;
 /// `node_id == 1`, it also calls `initiate_phase1_commitments` so the protocol
 /// starts even if the gRPC initiator is not a participant.
 /// Returns `Ok(None)` — the caller should return this directly from `handle_message`.
-pub(in crate::dkg::v0::coordinator) async fn handle_session_init<D>(
+pub async fn handle_session_init<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     threshold: u32,

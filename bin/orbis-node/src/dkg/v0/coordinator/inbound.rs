@@ -3,19 +3,24 @@ use crate::dkg::v0::helpers::session_not_found;
 use crate::dkg::v0::messages::DkgMessage;
 use crate::dkg::v0::session_state::DkgMessageType;
 use crate::helpers::identity::extract_node_part;
+use crypto::SignImpl;
 use network::PeerId;
 
-use super::{message_handlers, refresh_health_check, types::CoordinatorDkg, DkgCoordinator};
+use super::{
+    evidence, message_handlers, refresh_health_check,
+    types::{CoordinatorDkg, CoordinatorReportSigner},
+    DkgCoordinator,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::dkg::v0::coordinator) enum CommitteeScope {
+pub enum CommitteeScope {
     None,
     Current,
     ReshareNew,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::dkg::v0::coordinator) struct DkgMessageMeta {
+pub struct DkgMessageMeta {
     pub message_type: DkgMessageType,
     pub sender_node_id: Option<u32>,
     pub dedup_node_id: Option<u32>,
@@ -38,6 +43,15 @@ impl DkgMessageMeta {
                 CommitteeScope::Current,
                 "share",
             ),
+            DkgMessage::DkgInvalidShareEvidence {
+                receiver_node_id, ..
+            } => Self {
+                message_type: DkgMessageType::DkgInvalidShareEvidence,
+                sender_node_id: Some(*receiver_node_id),
+                dedup_node_id: None,
+                committee_scope: CommitteeScope::ReshareNew,
+                metric_label: "dkg_invalid_share_evidence",
+            },
             DkgMessage::Complaint { from_node_id, .. } => Self::from_sender(
                 DkgMessageType::Complaint,
                 *from_node_id,
@@ -101,10 +115,7 @@ impl DkgMessageMeta {
     }
 }
 
-pub(in crate::dkg::v0::coordinator) async fn wait_for_session<D>(
-    coord: &DkgCoordinator<D>,
-    session_id: u128,
-) -> Result<()>
+pub async fn wait_for_session<D>(coord: &DkgCoordinator<D>, session_id: u128) -> Result<()>
 where
     D: CoordinatorDkg,
 {
@@ -134,7 +145,7 @@ where
     found.map_err(|_| session_not_found(session_id))
 }
 
-pub(in crate::dkg::v0::coordinator) async fn validate_sender<D>(
+pub async fn validate_sender<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     meta: DkgMessageMeta,
@@ -193,28 +204,37 @@ where
     }
 }
 
-pub(in crate::dkg::v0::coordinator) async fn dispatch<D>(
+pub async fn dispatch<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     message: DkgMessage,
 ) -> Result<Option<DkgMessage>>
 where
     D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     match message {
         DkgMessage::Commitment {
             from_node_id,
             commitment,
+            report_evidence,
             ..
         } => {
-            message_handlers::handle_commitment_message(coord, session_id, from_node_id, commitment)
-                .await
+            message_handlers::handle_commitment_message(
+                coord,
+                session_id,
+                from_node_id,
+                commitment,
+                report_evidence,
+            )
+            .await
         }
         DkgMessage::Share {
             from_node_id,
             to_node_id,
             share_value,
             nonce,
+            report_evidence,
             ..
         } => {
             message_handlers::handle_share_message(
@@ -224,8 +244,14 @@ where
                 to_node_id,
                 share_value,
                 nonce,
+                report_evidence,
             )
             .await
+        }
+        DkgMessage::DkgInvalidShareEvidence {
+            report_evidence, ..
+        } => {
+            evidence::handle_invalid_share_evidence_relay(coord, session_id, report_evidence).await
         }
         DkgMessage::Complaint {
             from_node_id,
@@ -299,7 +325,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dkg::v0::messages::SessionKind;
+    use crate::dkg::v0::messages::{SessionKind, SignedDkgShare};
+    use crate::reporting::v0::types::{
+        CommitteeScope as ReportingCommitteeScope, DkgCommitmentStatement, DkgShareStatement,
+        DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN,
+    };
     use crate::sign::v0::messages::RefreshHealthCheckStatement;
     use std::collections::HashMap;
 
@@ -323,6 +353,52 @@ mod tests {
         );
     }
 
+    fn signed_dkg_share_for_metadata() -> SignedDkgShare {
+        let commitment_statement = DkgCommitmentStatement {
+            domain: DKG_COMMITMENT_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "ring-pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            protocol_version: 0,
+            request_id: "1".to_string(),
+            signed_at: 100,
+            responder_node_key: "dealer".to_string(),
+            origin_protocol: "pss_reshare".to_string(),
+            accused_committee_scope: ReportingCommitteeScope::Current,
+            signing_committee_scope: ReportingCommitteeScope::Current,
+            from_node_id: 2,
+            commitment: vec![1],
+            crypto_backend: "dkg/test".to_string(),
+        };
+
+        SignedDkgShare {
+            statement: DkgShareStatement {
+                domain: DKG_SHARE_DOMAIN.to_string(),
+                chain_id: "chain".to_string(),
+                ring_id: "ring".to_string(),
+                ring_pk: "ring-pk".to_string(),
+                ring_state_sha256: "00".repeat(32),
+                protocol_version: 0,
+                request_id: "1".to_string(),
+                signed_at: 100,
+                responder_node_key: "dealer".to_string(),
+                receiver_node_key: "receiver".to_string(),
+                origin_protocol: "pss_reshare".to_string(),
+                accused_committee_scope: ReportingCommitteeScope::Current,
+                signing_committee_scope: ReportingCommitteeScope::Current,
+                from_node_id: 2,
+                to_node_id: 3,
+                commitment_statement,
+                commitment_signature: vec![7; 64],
+                share_value: vec![8],
+                nonce: [9; 16],
+                crypto_backend: "dkg/test".to_string(),
+            },
+            signature: vec![5; 64],
+        }
+    }
+
     #[test]
     fn metadata_covers_every_message_variant() {
         assert_meta(
@@ -330,6 +406,7 @@ mod tests {
                 session_id: 1,
                 from_node_id: 2,
                 commitment: vec![],
+                report_evidence: None,
             },
             DkgMessageType::Commitment,
             Some(2),
@@ -344,12 +421,25 @@ mod tests {
                 to_node_id: 3,
                 share_value: vec![],
                 nonce: [0; 16],
+                report_evidence: None,
             },
             DkgMessageType::Share,
             Some(2),
             Some(2),
             CommitteeScope::Current,
             "share",
+        );
+        assert_meta(
+            DkgMessage::DkgInvalidShareEvidence {
+                session_id: 1,
+                receiver_node_id: 3,
+                report_evidence: signed_dkg_share_for_metadata(),
+            },
+            DkgMessageType::DkgInvalidShareEvidence,
+            Some(3),
+            None,
+            CommitteeScope::ReshareNew,
+            "dkg_invalid_share_evidence",
         );
         assert_meta(
             DkgMessage::Complaint {

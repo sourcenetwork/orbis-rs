@@ -83,7 +83,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
                     "threshold": 2,
                     "pss_interval": 5,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": reporting_genesis_json(1, &[])
+                    "reporting": reporting_genesis_json(1, &[], 3)
                 }]
             }),
         )

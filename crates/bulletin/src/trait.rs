@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 // canonical ring-state hash, so a divergence would have nodes reporting against config the
 // chain never stored.
 pub const DEFAULT_NODE_OFFLINE_DEMERITS: u64 = 1;
+pub const DEFAULT_INVALID_CRYPTO_RESPONSE_DEMERITS: u64 = 1;
 pub const DEFAULT_DEMERIT_RESET_INTERVAL_SECONDS: u64 = 86_400;
 pub const DEFAULT_REPORTING_KICK_THRESHOLD: u64 = 3;
 
@@ -14,6 +15,8 @@ pub const DEFAULT_REPORTING_KICK_THRESHOLD: u64 = 3;
 pub struct DemeritConfig {
     pub node_offline_demerits: u64,
     pub reset_interval_seconds: u64,
+    #[serde(default = "default_invalid_crypto_response_demerits")]
+    pub invalid_crypto_response_demerits: u64,
 }
 
 impl Default for DemeritConfig {
@@ -21,8 +24,13 @@ impl Default for DemeritConfig {
         Self {
             node_offline_demerits: DEFAULT_NODE_OFFLINE_DEMERITS,
             reset_interval_seconds: DEFAULT_DEMERIT_RESET_INTERVAL_SECONDS,
+            invalid_crypto_response_demerits: DEFAULT_INVALID_CRYPTO_RESPONSE_DEMERITS,
         }
     }
+}
+
+fn default_invalid_crypto_response_demerits() -> u64 {
+    DEFAULT_INVALID_CRYPTO_RESPONSE_DEMERITS
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]

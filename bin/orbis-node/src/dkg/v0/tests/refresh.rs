@@ -232,6 +232,10 @@ async fn test_dkg_followed_by_pss_refresh() {
         .dkg_session_state
         .set_peer_node_keys(&refresh_session_id, peer_node_keys.clone())
         .await;
+    initiator_state
+        .dkg_session_state
+        .set_ring_id(&refresh_session_id, TEST_FRESH_DKG_RING_ID.to_string())
+        .await;
 
     // Set node_id ↔ peer_id mappings on the initiator.
     let mut node_id_to_peer_id = std::collections::HashMap::new();
@@ -448,11 +452,13 @@ async fn test_share_before_commitment_waits_for_commitment() {
         to_node_id: 1,
         share_value,
         nonce: share.nonce,
+        report_evidence: None,
     };
     let commitment_msg = DkgMessage::Commitment {
         session_id,
         from_node_id: 2,
         commitment,
+        report_evidence: None,
     };
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
@@ -632,7 +638,7 @@ fn refresh_session_init(ring_pk: &str, peer_node_key: &str, peer_id: &str) -> Dk
         },
         pss_interval: 86400,
         policy_id: None,
-        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        ring_id: format!("test-ring-{ring_pk}"),
     }
 }
 

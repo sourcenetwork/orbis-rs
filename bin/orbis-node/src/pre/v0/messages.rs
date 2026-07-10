@@ -48,6 +48,10 @@ pub enum PreMessage {
         share: Vec<u8>,     // Serialized PubShare<G1Affine>
         challenge: Vec<u8>, // Serialized Fr (for NIZK proof)
         proof: Vec<u8>,     // Serialized Fr (for NIZK proof)
+        /// Unix seconds when the responder signed the response statement;
+        /// covered by `response_signature`, so it cannot be forged after the fact.
+        signed_at: u64,
+        response_signature: Vec<u8>,
     },
     /// Error message
     Error { request_id: String, error: String },

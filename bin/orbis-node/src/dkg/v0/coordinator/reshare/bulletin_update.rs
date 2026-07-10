@@ -2,9 +2,9 @@ use std::future::Future;
 use std::time::Duration;
 
 use bulletin::r#trait::{BulletinKind, RingPayload};
-use crypto::r#trait::{DistKeyShare, DkgRole, PubShare, ThresholdSigner};
+use crypto::r#trait::DkgRole;
+use crypto::SignImpl;
 use crypto::THRESHOLD_SIGNATURE_SCHEME;
-use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint};
 
 use crate::constants::{RESHARE_SIGNATURE_MAX_ATTEMPTS, RESHARE_SIGNATURE_RETRY_DELAY};
 use crate::dkg::v0::error::{DkgError, Result};
@@ -22,7 +22,7 @@ use crate::sign::v0::messages::{
     RingReshareUpdateContext, RingReshareUpdateStatement, SignContext, RING_RESHARE_UPDATE_DOMAIN,
 };
 
-use super::super::types::CoordinatorDkg;
+use super::super::types::{CoordinatorDkg, CoordinatorReportSigner};
 use super::super::DkgCoordinator;
 
 #[derive(Clone)]
@@ -37,7 +37,7 @@ struct PreparedReshareUpdate {
     chain_id: String,
 }
 
-pub(in crate::dkg::v0::coordinator) async fn update_bulletin_if_selector<D>(
+pub async fn update_bulletin_if_selector<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     kind: &SessionKind,
@@ -50,16 +50,7 @@ pub(in crate::dkg::v0::coordinator) async fn update_bulletin_if_selector<D>(
 ) -> Result<()>
 where
     D: CoordinatorDkg + Send + Sync,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     let SessionKind::Reshare {
         ring_pk_hex,

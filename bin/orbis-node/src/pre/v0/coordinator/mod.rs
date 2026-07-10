@@ -15,6 +15,8 @@ mod initiator;
 mod network;
 mod verification;
 
+pub(crate) use initiator::PreReportBinding;
+
 use crate::app_state::AppState;
 use crypto::r#trait::{Dkg, Secret, ThresholdDealer};
 use serde::{Deserialize, Serialize};

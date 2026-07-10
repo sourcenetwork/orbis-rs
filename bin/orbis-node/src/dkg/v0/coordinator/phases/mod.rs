@@ -6,34 +6,25 @@ use crate::dkg::v0::helpers::{
 use crate::dkg::v0::messages::{DkgMessage, SessionKind};
 use crate::dkg::v0::session_state::{DkgPhase, RefreshHealthCheckCandidate};
 use crate::helpers::identity::is_self_peer_id;
-use crypto::r#trait::{
-    CryptoDeserialize, DistKeyShare, DkgRole, PubPoly as PubPolyTrait, PubShare, ThresholdSigner,
-};
-use crypto::{
-    CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl,
-    SignaturePoint,
-};
+use crypto::r#trait::{CryptoDeserialize, DkgRole, PubPoly as PubPolyTrait};
+use crypto::{CryptoSerialize, SignImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::reshare::selection::record_and_ack_valid_reshare_share;
 use super::state_machine::{self, DkgCommand, DkgEvent, SessionSnapshot};
-use super::types::CoordinatorDkg;
+use super::types::{CoordinatorDkg, CoordinatorReportSigner};
 use super::{refresh_health_check, reshare, ring_storage, DkgCoordinator};
 
 mod phase1;
 mod phase2;
 mod phase4;
 
-pub(in crate::dkg::v0::coordinator) use phase1::{
-    check_and_trigger_phase2, initiate_phase1_commitments,
-};
-pub(in crate::dkg::v0::coordinator) use phase2::initiate_phase2_shares;
-pub(in crate::dkg::v0::coordinator) use phase4::{
-    check_and_trigger_phase4, initiate_phase4_completion,
-};
+pub use phase1::{check_and_trigger_phase2, initiate_phase1_commitments};
+pub use phase2::initiate_phase2_shares;
+pub use phase4::{check_and_trigger_phase4, initiate_phase4_completion};
 
-pub(in crate::dkg::v0::coordinator) async fn drive_event<D>(
+pub async fn drive_event<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     event: DkgEvent,
@@ -47,7 +38,7 @@ where
     execute_commands(coord, session_id, transition.commands, peer_ids).await
 }
 
-pub(in crate::dkg::v0::coordinator) async fn drive_post_phase2_event<D>(
+pub async fn drive_post_phase2_event<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     event: DkgEvent,

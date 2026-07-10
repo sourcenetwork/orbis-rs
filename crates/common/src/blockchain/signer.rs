@@ -6,6 +6,7 @@ use cosmrs::{
     tx::{self, Fee, SignDoc, SignerInfo},
     AccountId, Any, Coin,
 };
+use k256::ecdsa::{signature::Verifier as _, Signature as EcdsaSignature, VerifyingKey};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Transaction signer using secp256k1.
@@ -89,6 +90,15 @@ impl TxSigner {
     /// Get the signer's compressed public key as hex.
     pub fn public_key_hex(&self) -> String {
         hex::encode(self.signing_key.public_key().to_bytes())
+    }
+
+    /// Sign a domain-separated node message with this node's secp256k1 key.
+    pub fn sign_node_message(&self, message: &[u8]) -> Result<Vec<u8>> {
+        let signature = self
+            .signing_key
+            .sign(message)
+            .map_err(|e| BlockchainError::Signing(format!("Failed to sign node message: {}", e)))?;
+        Ok(signature.to_bytes().to_vec())
     }
 
     /// Get the signer's account ID.
@@ -200,6 +210,31 @@ impl TxSigner {
     }
 }
 
+/// Sign a node message from a hex-encoded secp256k1 private key.
+pub fn sign_node_message_with_hex_key(hex_key: &str, message: &[u8]) -> Result<Vec<u8>> {
+    let key_bytes = hex::decode(hex_key)
+        .map_err(|e| BlockchainError::Signing(format!("Invalid hex key: {}", e)))?;
+    let signing_key = SigningKey::from_slice(&key_bytes)
+        .map_err(|e| BlockchainError::Signing(format!("Invalid private key: {}", e)))?;
+    let signature = signing_key
+        .sign(message)
+        .map_err(|e| BlockchainError::Signing(format!("Failed to sign node message: {}", e)))?;
+    Ok(signature.to_bytes().to_vec())
+}
+
+/// Verify a node message signature against a compressed secp256k1 public key hex.
+pub fn verify_node_message(public_key_hex: &str, message: &[u8], signature: &[u8]) -> Result<()> {
+    let public_key_bytes = hex::decode(public_key_hex)
+        .map_err(|e| BlockchainError::Signing(format!("Invalid public key hex: {}", e)))?;
+    let verifying_key = VerifyingKey::from_sec1_bytes(&public_key_bytes)
+        .map_err(|e| BlockchainError::Signing(format!("Invalid public key: {}", e)))?;
+    let signature = EcdsaSignature::try_from(signature)
+        .map_err(|e| BlockchainError::Signing(format!("Invalid signature: {}", e)))?;
+    verifying_key
+        .verify(message, &signature)
+        .map_err(|e| BlockchainError::Signing(format!("Node message signature failed: {}", e)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,6 +267,21 @@ mod tests {
             public_key_hex,
             hex::encode(signer.signing_key.public_key().to_bytes())
         );
+    }
+
+    #[test]
+    fn node_message_signature_round_trips_and_rejects_tampering() {
+        let hex_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let config = ChainConfig::local();
+        let signer = TxSigner::from_hex_key(hex_key, config).unwrap();
+        let message = b"orbis-pre-response-test";
+        let signature = signer.sign_node_message(message).unwrap();
+
+        verify_node_message(&signer.public_key_hex(), message, &signature).unwrap();
+        assert!(verify_node_message(&signer.public_key_hex(), b"tampered", &signature,).is_err());
+        let mut bad_signature = signature.clone();
+        bad_signature[0] ^= 0x01;
+        assert!(verify_node_message(&signer.public_key_hex(), message, &bad_signature).is_err());
     }
 
     #[test]

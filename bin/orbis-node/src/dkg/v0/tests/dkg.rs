@@ -340,7 +340,7 @@ async fn test_start_dkg_succeeds_on_all_connections() {
             // Parse RingPayload from bulletin post
             let ring_payload: RingPayload = post.try_into().expect("parse RingPayload");
             assert_eq!(ring_payload.policy_id, policy_id);
-            println!("Ring public key from bulletin: {}", &ring_payload.ring_pk);
+            println!("Ring public key from bulletin: {}", ring_payload.ring_pk);
 
             // Deserialize the public key to get the key string for local storage lookup
             let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode hex");

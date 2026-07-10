@@ -31,7 +31,7 @@ async fn test_stale_pending_dkg_is_cancelled_on_sourcehub() {
                     "threshold": 2,
                     "pss_interval": PSS_INTERVAL_SECS,
                     "policy_id": "integration-test-policy",
-                    "reporting": reporting_genesis_json(1, &[])
+                    "reporting": reporting_genesis_json(1, &[], 3)
                 }]
             }),
         )

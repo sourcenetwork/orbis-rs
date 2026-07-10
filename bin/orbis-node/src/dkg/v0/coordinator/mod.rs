@@ -19,6 +19,7 @@
 //! - [`network`] — peer stream management and message dispatch
 //! - [`phases`] — DKG phase transitions (Phase 1 → 2 → 4)
 
+pub(crate) mod evidence;
 mod inbound;
 mod message_handlers;
 mod network;
@@ -40,9 +41,11 @@ use ::network::PeerId;
 use crypto::r#trait::{Dkg, DkgRole};
 use crypto::{
     GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
-    PubPolyImpl as PubPoly, ScalarField as Fr,
+    PubPolyImpl as PubPoly, ScalarField as Fr, SignImpl,
 };
 use std::sync::Arc;
+
+use self::types::CoordinatorReportSigner;
 
 /// Releases a `try_claim_message_processing` claim on drop.
 ///
@@ -128,8 +131,8 @@ pub struct DkgCoordinator<D>
 where
     D: Dkg + Clone + 'static,
 {
-    pub(in crate::dkg::v0::coordinator) app_state: Arc<AppState<D>>,
-    pub(in crate::dkg::v0::coordinator) routes: &'static ::network::ProtocolRoutes,
+    pub app_state: Arc<AppState<D>>,
+    pub routes: &'static ::network::ProtocolRoutes,
 }
 
 impl<D> DkgCoordinator<D>
@@ -158,7 +161,10 @@ where
         &self,
         message: DkgMessage,
         sender_peer_id: &PeerId,
-    ) -> Result<Option<DkgMessage>> {
+    ) -> Result<Option<DkgMessage>>
+    where
+        SignImpl: CoordinatorReportSigner<D>,
+    {
         let session_id = message.session_id();
         let meta = inbound::DkgMessageMeta::from_message(&message);
         metrics::record_dkg_message_received(meta.metric_label);
@@ -324,7 +330,7 @@ where
     }
 
     /// Remove a DKG session from state.
-    pub(in crate::dkg::v0::coordinator) async fn remove_session(&self, session_id: u128) {
+    pub async fn remove_session(&self, session_id: u128) {
         self.app_state
             .dkg_session_state
             .remove_session(&session_id)
@@ -361,7 +367,7 @@ where
     }
 
     /// Open a QUIC stream to a peer, evicting and reconnecting the cached connection on failure.
-    pub(in crate::dkg::v0::coordinator) async fn open_stream_to_peer(
+    pub async fn open_stream_to_peer(
         &self,
         peer_id_str: &str,
     ) -> Result<Box<dyn ::network::Connection>> {

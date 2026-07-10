@@ -8,7 +8,10 @@ use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::{BearerToken, DkgClaims};
 use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, DkgRole, PriShare};
-use crypto::{CryptoSerialize, GroupAffine as G1Affine, ScalarField as Fr};
+use crypto::{
+    CryptoSerialize, GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
+    ScalarField as Fr, GROUP_POINT_SIZE,
+};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -41,6 +44,30 @@ pub fn serialize_commitment_coefficients(coefficients: &[G1Affine]) -> Result<Ve
         bytes.extend_from_slice(&coeff_bytes);
     }
     Ok(bytes)
+}
+
+pub fn deserialize_wire_commitment(
+    bytes: &[u8],
+) -> std::result::Result<PolynomialCommitment, String> {
+    if bytes.is_empty() {
+        return Err("commitment cannot be empty".to_string());
+    }
+    if !bytes.len().is_multiple_of(GROUP_POINT_SIZE) {
+        return Err(format!(
+            "commitment length {} is not a multiple of {}",
+            bytes.len(),
+            GROUP_POINT_SIZE
+        ));
+    }
+
+    let mut coefficients = Vec::with_capacity(bytes.len() / GROUP_POINT_SIZE);
+    for (index, chunk) in bytes.chunks_exact(GROUP_POINT_SIZE).enumerate() {
+        let coeff =
+            G1Affine::from_bytes(chunk).map_err(|error| format!("coefficient {index}: {error}"))?;
+        coefficients.push(coeff);
+    }
+
+    Ok(PolynomialCommitment { coefficients })
 }
 
 fn hash_labeled_bytes(hasher: &mut Sha256, label: &[u8], bytes: &[u8]) {

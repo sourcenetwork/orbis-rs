@@ -1,10 +1,8 @@
 use std::future::Future;
 use std::time::Duration;
 
-use crypto::r#trait::{
-    CryptoDeserialize, DistKeyShare, PubPoly as PubPolyTrait, PubShare, ThresholdSigner,
-};
-use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignImpl, SignaturePoint};
+use crypto::r#trait::{CryptoDeserialize, PubPoly as PubPolyTrait, ThresholdSigner};
+use crypto::{SignImpl, SignaturePoint};
 use sha2::{Digest, Sha256};
 
 use crate::constants::{REFRESH_HEALTH_CHECK_MAX_ATTEMPTS, REFRESH_HEALTH_CHECK_RETRY_DELAY};
@@ -24,13 +22,13 @@ use crate::sign::v0::messages::{
     REFRESH_HEALTH_CHECK_DOMAIN,
 };
 
-use super::types::CoordinatorDkg;
+use super::types::{CoordinatorDkg, CoordinatorReportSigner};
 use super::DkgCoordinator;
 
 const REFRESH_HEALTH_CHECK_RESULT_SEND_ATTEMPTS: usize = 3;
 const REFRESH_HEALTH_CHECK_RESULT_RETRY_DELAY: Duration = Duration::from_millis(250);
 
-pub(in crate::dkg::v0::coordinator) async fn run_selector<D>(
+pub async fn run_selector<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     ring_pk_bytes: &[u8],
@@ -38,16 +36,7 @@ pub(in crate::dkg::v0::coordinator) async fn run_selector<D>(
 ) -> Result<()>
 where
     D: CoordinatorDkg + Send + Sync,
-    SignImpl: ThresholdSigner<
-            ShareValue = Fr,
-            PublicKey = G1Affine,
-            DistKeyShare = DistKeyShare<Fr>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     if candidate.peer_ids.is_empty() {
         rollback_candidate(coord, session_id, &candidate.ring_key).await;
@@ -238,7 +227,7 @@ fn is_retryable_refresh_health_check_error(error: &SignError) -> bool {
     )
 }
 
-pub(in crate::dkg::v0::coordinator) async fn handle_result<D>(
+pub async fn handle_result<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     from_node_id: u32,
@@ -252,7 +241,7 @@ where
     Ok(None)
 }
 
-pub(in crate::dkg::v0::coordinator) async fn apply_pending_result_if_present<D>(
+pub async fn apply_pending_result_if_present<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
 ) -> Result<()>

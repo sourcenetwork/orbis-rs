@@ -4,7 +4,7 @@ use crypto::r#trait::DkgRole;
 
 /// Protocol events that can advance the local coordinator state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::dkg::v0::coordinator) enum DkgEvent {
+pub enum DkgEvent {
     CommitmentRecorded,
     ShareRecorded { from_node_id: u32 },
     ReshareParticipantSetAccepted,
@@ -13,7 +13,7 @@ pub(in crate::dkg::v0::coordinator) enum DkgEvent {
 }
 
 impl DkgEvent {
-    pub(in crate::dkg::v0::coordinator) fn evaluates_phase4(self) -> bool {
+    pub fn evaluates_phase4(self) -> bool {
         matches!(
             self,
             Self::ShareRecorded { .. }
@@ -25,20 +25,20 @@ impl DkgEvent {
 
 /// Side effects selected by the state machine and executed outside the state lock.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::dkg::v0::coordinator) enum DkgCommand {
+pub enum DkgCommand {
     InitiatePhase2Shares,
     AckValidReshareShare { dealer_id: u32 },
     CompletePhase4,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(in crate::dkg::v0::coordinator) struct Transition {
+pub struct Transition {
     pub next_phase: Option<DkgPhase>,
     pub commands: Vec<DkgCommand>,
 }
 
 #[derive(Debug, Clone)]
-pub(in crate::dkg::v0::coordinator) struct SessionSnapshot {
+pub struct SessionSnapshot {
     pub kind: SessionKind,
     pub phase: DkgPhase,
     pub role: DkgRole,
@@ -54,11 +54,11 @@ pub(in crate::dkg::v0::coordinator) struct SessionSnapshot {
 }
 
 impl SessionSnapshot {
-    pub(in crate::dkg::v0::coordinator) fn is_reshare(&self) -> bool {
+    pub fn is_reshare(&self) -> bool {
         matches!(self.kind, SessionKind::Reshare { .. })
     }
 
-    pub(in crate::dkg::v0::coordinator) fn phase1_expected_commitments(&self) -> Option<usize> {
+    pub fn phase1_expected_commitments(&self) -> Option<usize> {
         if self.is_reshare() {
             return None;
         }
@@ -68,7 +68,7 @@ impl SessionSnapshot {
         })
     }
 
-    pub(in crate::dkg::v0::coordinator) fn phase4_expected_shares(&self) -> usize {
+    pub fn phase4_expected_shares(&self) -> usize {
         match self.role {
             DkgRole::Receiver => self.total_nodes,
             _ => self.total_nodes.saturating_sub(1),
@@ -96,7 +96,7 @@ impl SessionSnapshot {
         self.is_reshare() && matches!(self.role, DkgRole::Receiver | DkgRole::DealerReceiver)
     }
 
-    pub(in crate::dkg::v0::coordinator) fn should_complete_phase4(&self) -> bool {
+    pub fn should_complete_phase4(&self) -> bool {
         if matches!(
             self.phase,
             DkgPhase::Phase4Completing | DkgPhase::Phase4Complete
@@ -114,10 +114,7 @@ impl SessionSnapshot {
     }
 }
 
-pub(in crate::dkg::v0::coordinator) fn transition(
-    snapshot: &SessionSnapshot,
-    event: DkgEvent,
-) -> Transition {
+pub fn transition(snapshot: &SessionSnapshot, event: DkgEvent) -> Transition {
     let mut transition = Transition::default();
 
     match event {

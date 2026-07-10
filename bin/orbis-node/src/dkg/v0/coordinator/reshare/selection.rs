@@ -1,6 +1,6 @@
 use super::*;
 
-pub(in crate::dkg::v0::coordinator) async fn record_and_ack_valid_reshare_share<D>(
+pub async fn record_and_ack_valid_reshare_share<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     dealer_id: u32,
@@ -160,7 +160,7 @@ where
         .unwrap_or(false)
 }
 
-pub(in crate::dkg::v0::coordinator) async fn handle_reshare_share_ack<D>(
+pub async fn handle_reshare_share_ack<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     receiver_node_id: u32,
@@ -371,7 +371,7 @@ where
     Ok(())
 }
 
-pub(in crate::dkg::v0::coordinator) async fn handle_reshare_participant_set<D>(
+pub async fn handle_reshare_participant_set<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     from_node_id: u32,

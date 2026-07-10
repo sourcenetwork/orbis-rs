@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::reporting::v0::types::{DkgCommitmentStatement, DkgShareStatement};
 use crate::sign::v0::messages::RefreshHealthCheckStatement;
 
 /// Describes what kind of ceremony a DKG session is running.
@@ -59,6 +60,8 @@ pub enum DkgMessage {
         session_id: u128,
         from_node_id: u32,
         commitment: Vec<u8>, // Serialized PolynomialCommitment
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        report_evidence: Option<SignedDkgCommitment>,
     },
     /// Phase 2: Share distribution
     Share {
@@ -67,6 +70,15 @@ pub enum DkgMessage {
         to_node_id: u32,
         share_value: Vec<u8>, // Serialized share value
         nonce: [u8; 16],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        report_evidence: Option<SignedDkgShare>,
+    },
+    /// Reshare-only: a pending-new receiver forwards signed bad-share evidence
+    /// to the current committee so the active ring can sign the report.
+    DkgInvalidShareEvidence {
+        session_id: u128,
+        receiver_node_id: u32,
+        report_evidence: SignedDkgShare,
     },
     /// Phase 3: Complaint about a malicious node
     Complaint {
@@ -133,6 +145,7 @@ impl DkgMessage {
         match self {
             DkgMessage::Commitment { session_id, .. } => *session_id,
             DkgMessage::Share { session_id, .. } => *session_id,
+            DkgMessage::DkgInvalidShareEvidence { session_id, .. } => *session_id,
             DkgMessage::Complaint { session_id, .. } => *session_id,
             DkgMessage::ReshareShareAck { session_id, .. } => *session_id,
             DkgMessage::ReshareParticipantSet { session_id, .. } => *session_id,
@@ -141,6 +154,18 @@ impl DkgMessage {
             DkgMessage::Error { session_id, .. } => *session_id,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedDkgCommitment {
+    pub statement: DkgCommitmentStatement,
+    pub signature: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedDkgShare {
+    pub statement: DkgShareStatement,
+    pub signature: Vec<u8>,
 }
 
 #[cfg(test)]

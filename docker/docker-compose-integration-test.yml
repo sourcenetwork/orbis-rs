@@ -140,6 +140,36 @@ services:
       retries: 30
       start_period: 30s
 
+  node4:
+    profiles: ["node4"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
+        CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
+    environment:
+      - ORBIS_ENABLE_INTEGRATION_TEST=${ORBIS_ENABLE_INTEGRATION_TEST:-true}
+      - ORBIS_PASSWORD=testpassword123
+      - ORBIS_SECRET_KEY=testsecret4testsecret4
+      - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000004
+      - RUST_LOG=debug
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    ports:
+      - "127.0.0.1::50051"
+      - "127.0.0.1::9090"
+    networks:
+      - orbis-integration-network
+    depends_on:
+      sourcehub:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
 networks:
   orbis-integration-network:
     driver: bridge

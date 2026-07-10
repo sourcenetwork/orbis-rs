@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::helpers::node_routes::{canonical_node_id_assignments_from_node_keys, NodeRoute};
 
-pub(in crate::dkg::v0::coordinator) fn same_peer_set(left: &[String], right: &[String]) -> bool {
+pub fn same_peer_set(left: &[String], right: &[String]) -> bool {
     let mut left_sorted = left.to_vec();
     let mut right_sorted = right.to_vec();
     left_sorted.sort();
@@ -11,7 +11,7 @@ pub(in crate::dkg::v0::coordinator) fn same_peer_set(left: &[String], right: &[S
     left_sorted == right_sorted
 }
 
-pub(in crate::dkg::v0::coordinator) fn validate_node_id_assignments(
+pub fn validate_node_id_assignments(
     peer_node_keys: &[String],
     node_id_assignments: &HashMap<String, u32>,
 ) -> Result<HashMap<String, u32>> {
@@ -46,7 +46,7 @@ pub(in crate::dkg::v0::coordinator) fn validate_node_id_assignments(
     Ok(canonical)
 }
 
-pub(in crate::dkg::v0::coordinator) fn old_committee_node_peer_mappings(
+pub fn old_committee_node_peer_mappings(
     peer_node_keys: &[String],
     routes: &[NodeRoute],
     node_id_assignments: &HashMap<String, u32>,

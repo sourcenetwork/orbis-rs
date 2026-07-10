@@ -2,7 +2,10 @@ use crate::dkg::v0::error::DkgError;
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::error::PreError;
-use crate::reporting::v0::types::{CommitteeScope, NODE_OFFLINE_REPORT_TYPE};
+use crate::reporting::v0::types::{
+    CommitteeScope, InvalidCryptoResponse, CHAIN_BLOCK_GRACE_SECS,
+    INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
+};
 use crate::sign::v0::error::SignError;
 
 #[derive(Debug, Clone)]
@@ -19,14 +22,25 @@ pub struct OfflineObservation {
 }
 
 #[derive(Debug, Clone)]
+pub struct InvalidCryptoResponseObservation {
+    pub ring_id: String,
+    pub accused_node_key: String,
+    pub accused_peer_id: String,
+    pub observed_at: u64,
+    pub evidence: InvalidCryptoResponse,
+}
+
+#[derive(Debug, Clone)]
 pub enum ReportObservation {
     NodeOffline(OfflineObservation),
+    InvalidCryptoResponse(Box<InvalidCryptoResponseObservation>),
 }
 
 impl ReportObservation {
     pub fn report_type(&self) -> &'static str {
         match self {
             Self::NodeOffline(_) => NODE_OFFLINE_REPORT_TYPE,
+            Self::InvalidCryptoResponse(_) => INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
         }
     }
 }
@@ -152,7 +166,6 @@ pub fn offline_observation_from_peer_routes(
     // Subtract a grace period so observed_at is behind the chain's latest block time.
     // Gas simulation checks observed_at <= block_time; blocks are ~5s apart, so without
     // this buffer the check fails when the report is submitted before the next block.
-    const CHAIN_BLOCK_GRACE_SECS: u64 = 10;
     let observed_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
