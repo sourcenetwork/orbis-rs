@@ -30,7 +30,7 @@ pub const JWT_CLOCK_SKEW_LEEWAY_SECS: u64 = 5 * 60;
 /// oversized tokens from reaching DID resolution and signature verification.
 pub const MAX_JWT_BYTES: usize = 16 * 1024;
 
-/// Maximum protobuf-decoded byte length for small public gRPC requests.
+/// Maximum protobuf-encoded byte length for small public gRPC requests.
 ///
 /// Small/control endpoints should never need a body larger than a JWT-sized
 /// envelope. Larger data-carrying endpoints define their own request caps.
@@ -397,7 +397,7 @@ pub const MIN_ITEM_SIZE: usize = 9;
 /// Prevents oversized messages from bloating JWTs and network messages sent to all ring members.
 pub const MAX_SIGN_MESSAGE_BYTES: usize = 1024 * 1024; // 1 MiB
 
-/// Maximum protobuf-decoded byte length for a Sign gRPC request.
+/// Maximum protobuf-encoded byte length for a Sign gRPC request.
 ///
 /// Preserves the 1 MiB signed-message contract while leaving room for the
 /// derivation id, optional fields, and request framing overhead.
