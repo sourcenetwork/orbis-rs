@@ -131,7 +131,8 @@ async fn setup_fault_three_node_network(
         let db_path = test_db_path(&format!("{}_{}", db_prefix, i));
         cleanup_db(&db_path);
 
-        let local_storage = LocalStorageImpl::new(None, db_path.clone()).expect("local storage");
+        let local_storage = LocalStorageImpl::new("test-password".to_string(), db_path.clone())
+            .expect("local storage");
 
         let signer = create_and_store_node_key(
             local_storage.clone(),

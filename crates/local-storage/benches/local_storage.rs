@@ -77,9 +77,8 @@ mod redb_backend {
 
         fn open(tag: &str) -> Self {
             let path = unique_db_path(tag);
-            let storage =
-                RedbStorage::new(Some(BENCH_PASSWORD.to_string()), path.display().to_string())
-                    .expect("open redb storage");
+            let storage = RedbStorage::new(BENCH_PASSWORD.to_string(), path.display().to_string())
+                .expect("open redb storage");
             Self { storage, path }
         }
 
@@ -108,7 +107,7 @@ mod memory_backend {
         type Storage = MemoryStorage;
 
         fn open(_tag: &str) -> Self {
-            let storage = MemoryStorage::new(Some(BENCH_PASSWORD.to_string()), String::new())
+            let storage = MemoryStorage::new(BENCH_PASSWORD.to_string(), String::new())
                 .expect("open memory storage");
             Self { storage }
         }

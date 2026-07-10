@@ -5,11 +5,10 @@ use crate::tests::{test_encrypted_functions, test_set_get_contains_delete};
 #[test]
 fn test_db_functions_memory() {
     test_set_get_contains_delete::<MemoryStorage>(
-        MemoryStorage::new(None, "".to_string()).unwrap(),
+        MemoryStorage::new("test_password".to_string(), "".to_string()).unwrap(),
     );
-    test_encrypted_functions::<MemoryStorage>(MemoryStorage::new(None, "".to_string()).unwrap());
     test_encrypted_functions::<MemoryStorage>(
-        MemoryStorage::new(Some("test_password".to_string()), "".to_string()).unwrap(),
+        MemoryStorage::new("test_password".to_string(), "".to_string()).unwrap(),
     );
 }
 

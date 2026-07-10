@@ -15,9 +15,14 @@ pub trait CryptoSerialize: Sized {
     /// Serialize this value to bytes (compressed format preferred).
     fn to_bytes(&self) -> Result<Vec<u8>>;
 
-    /// Returns the size in bytes of the serialized representation.
-    /// This can be used for pre-allocation and validation.
-    fn serialized_size() -> usize;
+    /// Lower bound on the serialized size in bytes.
+    ///
+    /// For fixed-size types this is the exact encoded size. For variable-size
+    /// types (e.g. polynomials, whose length depends on the value) it is only
+    /// the minimum possible encoding — typically just the length prefix. Use it
+    /// for pre-allocation and cheap too-short checks, never as an exact-length
+    /// validator.
+    fn min_serialized_size() -> usize;
 }
 
 /// Trait for types that can be deserialized from bytes.
@@ -157,9 +162,9 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoSerialize
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
-        // 4 + 4 + 16 + 16 + 4 + ShareValue::serialized_size()
-        44 + ShareValue::serialized_size()
+    fn min_serialized_size() -> usize {
+        // 4 + 4 + 16 + 16 + 4 + ShareValue::min_serialized_size()
+        44 + ShareValue::min_serialized_size()
     }
 }
 
@@ -238,8 +243,8 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoSerialize
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
-        4 + ShareValue::serialized_size()
+    fn min_serialized_size() -> usize {
+        4 + ShareValue::min_serialized_size()
     }
 }
 
@@ -277,8 +282,8 @@ impl<PublicKey: CryptoSerialize + CryptoDeserialize> CryptoSerialize for PubShar
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
-        4 + PublicKey::serialized_size()
+    fn min_serialized_size() -> usize {
+        4 + PublicKey::min_serialized_size()
     }
 }
 
@@ -310,8 +315,8 @@ impl<ShareValue: CryptoSerialize + CryptoDeserialize + Zeroize> CryptoSerialize
         self.pri_share.to_bytes()
     }
 
-    fn serialized_size() -> usize {
-        PriShare::<ShareValue>::serialized_size()
+    fn min_serialized_size() -> usize {
+        PriShare::<ShareValue>::min_serialized_size()
     }
 }
 
@@ -346,11 +351,11 @@ impl<
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         // 4 + PubShare size + 4 + ShareValue size + 4 + ShareValue size
-        12 + PubShare::<PublicKey>::serialized_size()
-            + ShareValue::serialized_size()
-            + ShareValue::serialized_size()
+        12 + PubShare::<PublicKey>::min_serialized_size()
+            + ShareValue::min_serialized_size()
+            + ShareValue::min_serialized_size()
     }
 }
 
@@ -436,7 +441,7 @@ impl CryptoSerialize for () {
         Ok(Vec::new())
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         0
     }
 }

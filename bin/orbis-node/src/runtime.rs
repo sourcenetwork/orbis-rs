@@ -115,9 +115,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
         // Get password for encrypting ring key shares
         let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
-        let local_storage =
-            LocalStorageImpl::new(Some(password), db_path(&runtime_base_path, "orbis"))
-                .map_err(|e| format!("Failed to create local storage: {}", e))?;
+        let local_storage = LocalStorageImpl::new(password, db_path(&runtime_base_path, "orbis"))
+            .map_err(|e| format!("Failed to create local storage: {}", e))?;
         // Get node secret hex for netwokring
         let node_secret_hex = get_network_key_secret(None, local_storage.clone())
             .map_err(|e| format!("Failed to get node secret: {}", e))?;

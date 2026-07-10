@@ -808,7 +808,8 @@ mod tests {
 
     fn make_storage(db_name: &str) -> (LocalStorageImpl, String) {
         let db_path = test_db_path(db_name);
-        let storage = LocalStorageImpl::new(None, db_path.clone()).expect("create storage");
+        let storage = LocalStorageImpl::new("test-password".to_string(), db_path.clone())
+            .expect("create storage");
         (storage, db_path)
     }
 

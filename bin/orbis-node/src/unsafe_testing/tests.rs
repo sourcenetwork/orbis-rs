@@ -19,7 +19,7 @@ fn key(key_type: LocalStorageKeyType, ring_key: &str) -> LocalStorageKey {
 
 fn service(name: &str) -> (UnsafeTestingServiceImpl, String) {
     let path = test_db_path(name);
-    let storage = LocalStorageImpl::new(Some("unsafe-testing-password".to_string()), path.clone())
+    let storage = LocalStorageImpl::new("unsafe-testing-password".to_string(), path.clone())
         .expect("create local storage");
     (UnsafeTestingServiceImpl::new(storage), path)
 }

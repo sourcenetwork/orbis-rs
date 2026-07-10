@@ -176,7 +176,8 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
         let db_path = test_db_path(&format!("{}_{}", db_prefix, i));
         cleanup_db(&db_path); // clear any leftover from a previous failed run
 
-        let local_storage = LocalStorageImpl::new(None, db_path.clone()).expect("local storage");
+        let local_storage = LocalStorageImpl::new("test-password".to_string(), db_path.clone())
+            .expect("local storage");
 
         // Create signing key (stored in local_storage) and fund it via the faucet
         let signer = create_and_store_node_key(
@@ -311,7 +312,8 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
         let db_path = test_db_path(&format!("{}_{}", db_prefix, i));
         cleanup_db(&db_path);
 
-        let local_storage = LocalStorageImpl::new(None, db_path.clone()).expect("local storage");
+        let local_storage = LocalStorageImpl::new("test-password".to_string(), db_path.clone())
+            .expect("local storage");
 
         let signer = create_and_store_node_key(
             local_storage.clone(),

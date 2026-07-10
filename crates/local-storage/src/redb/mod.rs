@@ -3,9 +3,9 @@ use crate::{
     error::{LocalStorageError, Result},
     r#trait::{LocalStorage, LocalStorageKeys},
 };
-use aes_gcm::{Aes256Gcm, Key, KeyInit};
+use aes_gcm::Aes256Gcm;
 use argon2::password_hash::SaltString;
-use rand_core::{OsRng, RngCore};
+use rand_core::OsRng;
 use redb::{Database, ReadableDatabase, TableDefinition, TableError};
 use std::path::Path;
 use std::sync::Arc;
@@ -35,71 +35,42 @@ impl LocalStorage for RedbStorage {
         NAME.to_string()
     }
 
-    fn new(password: Option<String>, db_path: String) -> Result<Self> {
-        // Create parent directories if they don't exist
-        if let Some(parent) = Path::new(&db_path).parent() {
-            if !parent.exists() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    LocalStorageError::UniqueDBError(format!(
-                        "Failed to create database directory: {}",
-                        e
-                    ))
-                })?;
-            }
-        }
-
-        let db = Database::create(&db_path).map_err(|e| {
-            LocalStorageError::UniqueDBError(format!("Failed to create database: {}", e))
-        })?;
+    fn new(password: String, db_path: String) -> Result<Self> {
+        let db = open_database(&db_path)?;
 
         let existing_salt = raw_get(&db, INTERNAL_SALT_KEY)?;
 
-        match password {
-            Some(password) => {
-                let (cipher, salt_bytes) = if let Some(stored_salt) = existing_salt {
-                    // Existing database - verify password
-                    let cipher = derive_cipher(&password, &stored_salt)?;
-                    let encrypted_check = raw_get(&db, INTERNAL_PASSWORD_CHECK_KEY)?
-                        .ok_or(LocalStorageError::CorruptData)?;
-                    let decrypted = decrypt_value(&cipher, &encrypted_check)
-                        .map_err(|_| LocalStorageError::InvalidPassword)?;
+        let (cipher, salt_bytes) = if let Some(stored_salt) = existing_salt {
+            // Existing database - verify password
+            let cipher = derive_cipher(&password, &stored_salt)?;
+            let encrypted_check =
+                raw_get(&db, INTERNAL_PASSWORD_CHECK_KEY)?.ok_or(LocalStorageError::CorruptData)?;
+            let decrypted = decrypt_value(&cipher, &encrypted_check)
+                .map_err(|_| LocalStorageError::InvalidPassword)?;
 
-                    if decrypted != PASSWORD_CHECK_VALUE {
-                        return Err(LocalStorageError::InvalidPassword);
-                    }
-                    (cipher, stored_salt)
-                } else {
-                    // New database - generate salt and store password check
-                    let salt = SaltString::generate(&mut OsRng);
-                    let salt_bytes = salt.as_salt().as_str().as_bytes().to_vec();
-                    let cipher = derive_cipher(&password, &salt_bytes)?;
-                    let encrypted_check = encrypt_value(&cipher, PASSWORD_CHECK_VALUE)?;
-
-                    raw_set(&db, INTERNAL_SALT_KEY, &salt_bytes)?;
-                    raw_set(&db, INTERNAL_PASSWORD_CHECK_KEY, &encrypted_check)?;
-                    (cipher, salt_bytes)
-                };
-
-                Ok(Self {
-                    store: db.into(),
-                    cipher,
-                    salt: Some(salt_bytes),
-                })
+            if decrypted != PASSWORD_CHECK_VALUE {
+                return Err(LocalStorageError::InvalidPassword);
             }
-            None => {
-                // No password - use random key (encryption still works but key isn't persisted)
-                let mut key_bytes = Zeroizing::new([0u8; 32]);
-                OsRng.fill_bytes(key_bytes.as_mut());
-                let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key_bytes.as_ref()));
+            (cipher, stored_salt)
+        } else {
+            // New database - generate salt and store password check
+            let salt = SaltString::generate(&mut OsRng);
+            let salt_bytes = salt.as_salt().as_str().as_bytes().to_vec();
+            let cipher = derive_cipher(&password, &salt_bytes)?;
+            let encrypted_check = encrypt_value(&cipher, PASSWORD_CHECK_VALUE)?;
 
-                Ok(Self {
-                    store: db.into(),
-                    cipher,
-                    salt: None,
-                })
-            }
-        }
+            raw_set(&db, INTERNAL_SALT_KEY, &salt_bytes)?;
+            raw_set(&db, INTERNAL_PASSWORD_CHECK_KEY, &encrypted_check)?;
+            (cipher, salt_bytes)
+        };
+
+        Ok(Self {
+            store: db.into(),
+            cipher,
+            salt: Some(salt_bytes),
+        })
     }
+
     fn get(&self, key: LocalStorageKeys) -> Result<Option<Vec<u8>>> {
         let key_bytes = serialize_key(&key)?;
         raw_get(&self.store, &key_bytes)
@@ -129,6 +100,23 @@ impl LocalStorage for RedbStorage {
         let encrypted = encrypt_value(&self.cipher, &value)?;
         self.set(key, encrypted)
     }
+}
+
+/// Create parent directories as needed and open (or create) the redb database.
+fn open_database(db_path: &str) -> Result<Database> {
+    if let Some(parent) = Path::new(db_path).parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                LocalStorageError::UniqueDBError(format!(
+                    "Failed to create database directory: {}",
+                    e
+                ))
+            })?;
+        }
+    }
+
+    Database::create(db_path)
+        .map_err(|e| LocalStorageError::UniqueDBError(format!("Failed to create database: {}", e)))
 }
 
 fn serialize_key(key: &LocalStorageKeys) -> Result<Vec<u8>> {

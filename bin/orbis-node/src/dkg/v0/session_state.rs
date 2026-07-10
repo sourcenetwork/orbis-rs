@@ -84,7 +84,6 @@ pub enum DkgMessageType {
     ReshareShareAck,
     ReshareParticipantSet,
     RefreshHealthCheckResult,
-    Complaint,
     SessionInit,
     Error,
 }

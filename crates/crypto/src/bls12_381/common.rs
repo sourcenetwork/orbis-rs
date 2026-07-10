@@ -92,7 +92,7 @@ impl CryptoSerialize for G2Point {
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         G2_COMPRESSED_SIZE
     }
 }
@@ -121,7 +121,7 @@ impl CryptoSerialize for Fr {
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         FR_COMPRESSED_SIZE
     }
 }
@@ -146,7 +146,7 @@ impl CryptoSerialize for G1Affine {
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         G1_COMPRESSED_SIZE
     }
 }
@@ -262,7 +262,7 @@ impl CryptoSerialize for PubPoly {
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         // Variable size, return minimum (just the length field)
         4
     }
@@ -321,7 +321,7 @@ impl CryptoSerialize for PolynomialCommitment {
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         // Variable size, return minimum (just the length field)
         4
     }

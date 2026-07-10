@@ -56,7 +56,7 @@ use tower_http::cors::CorsLayer;
 ///
 /// `test_name` is used to derive an isolated DB path via [`test_db_path`].
 /// `addr` is the gRPC bind address (`"127.0.0.1:0"` lets the OS pick a free port).
-/// `password` is forwarded to [`LocalStorageImpl::new`]; pass `None` for unencrypted storage.
+/// `password` is the storage password; `None` falls back to `"test-password"`.
 async fn make_test_node_config(
     test_name: &str,
     addr: &str,
@@ -97,8 +97,11 @@ async fn make_test_node_config(
         },
         node_key: "test-node-key".to_string(),
         network,
-        local_storage: LocalStorageImpl::new(password, db_path.clone())
-            .expect("Failed to create local storage"),
+        local_storage: LocalStorageImpl::new(
+            password.unwrap_or_else(|| "test-password".to_string()),
+            db_path.clone(),
+        )
+        .expect("Failed to create local storage"),
         authz,
         bulletin,
     };
@@ -111,8 +114,8 @@ async fn make_bootstrap_identity(
     let db_path = test_db_path(test_name);
     cleanup_db(&db_path);
 
-    let local_storage =
-        LocalStorageImpl::new(None, db_path.clone()).expect("Failed to create local storage");
+    let local_storage = LocalStorageImpl::new("test-password".to_string(), db_path.clone())
+        .expect("Failed to create local storage");
     let runtime_base_path = project_root::get_project_root().expect("resolve project root");
     let signer = create_and_store_node_key(
         local_storage.clone(),
@@ -843,7 +846,7 @@ fn test_create_and_store_node_key() {
     use common::blockchain::ChainConfig;
 
     let db_path = test_db_path("test_create_and_store_node_key");
-    let local_storage = LocalStorageImpl::new(Some("test-password".to_string()), db_path.clone())
+    let local_storage = LocalStorageImpl::new("test-password".to_string(), db_path.clone())
         .expect("Failed to create local storage");
 
     let config = ChainConfig::local();

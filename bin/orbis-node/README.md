@@ -78,6 +78,30 @@ storage and the node network identity key. Treat both as production secrets.
   node identity change must be reflected in bulletin committee metadata before
   peers will treat it as the same operational participant.
 
+## Chain endpoint trust (hard requirement)
+
+The node **fully trusts** the SourceHub endpoints it is configured with
+(`--chain-rpc`, `--chain-rest`, `--bulletin-grpc`, `--authz-grpc`). Bulletin
+reads are plain RPC responses — there is **no light-client or Merkle-proof
+verification**. Everything security-critical flows from those reads: ring
+payloads and committee membership, peer routing (`NodeInfo`), reporting
+config, protocol-version upgrades, and ACP authorization decisions. An
+attacker who controls the RPC endpoint can present a forged ring state to
+this node.
+
+Operational rules:
+
+- **Run your own SourceHub full node** and point every chain endpoint flag at
+  it — colocated on the same host or on an operator-controlled network path.
+  Never use a third-party or public RPC endpoint for a production ring node.
+- If the chain node is not on localhost, protect the path to it (TLS and/or a
+  private network); the RPC connection is the root of trust for this node.
+- The `ring_state_sha256` bound into signed reporting statements limits
+  *silent* divergence between honest nodes (statements built from different
+  ring states will not co-sign), but it does not protect a node whose own RPC
+  view is forged. Detection is not prevention — the trusted-endpoint
+  requirement above is the actual control.
+
 ## In-repo docs
 
 - [`src/dkg/README.md`](src/dkg/README.md) — implemented DKG, refresh, and reshare flow.

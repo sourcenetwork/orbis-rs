@@ -139,8 +139,8 @@ async fn create_test_app_state_with_bulletin_inner(
             .await
             .expect("Failed to initialize network for testing"),
     );
-    let local_storage =
-        LocalStorageImpl::new(None, test_db_path(db_name)).expect("Failed to create local storage");
+    let local_storage = LocalStorageImpl::new("test-password".to_string(), test_db_path(db_name))
+        .expect("Failed to create local storage");
     let local_peer_id_hex = hex::encode(network.local_peer_id().as_bytes());
     let mut node_signing_key = [0u8; 32];
     loop {
