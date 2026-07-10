@@ -12,6 +12,7 @@ use crate::constants::{
     SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
 };
 use crate::dkg::v0::error::DkgError;
+use crate::dkg::v0::helpers::bidirectional_node_peer_maps;
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
 use crate::metrics;
 use crate::ring_state::RingShareBundle;
@@ -879,29 +880,22 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
 
     /// Check if a session exists
     pub async fn session_exists(&self, session_id: &u128) -> bool {
-        let states = self.states.read().await;
-        states.contains_key(session_id)
+        self.states.read().await.contains_key(session_id)
     }
 
     pub async fn set_peer_ids(&self, session_id: &u128, peer_ids: Vec<String>) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.routing.peer_ids = peer_ids;
-        }
+        self.with_state_mut(session_id, |s| s.routing.peer_ids = peer_ids)
+            .await;
     }
 
     pub async fn set_peer_node_keys(&self, session_id: &u128, peer_node_keys: Vec<String>) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.routing.peer_node_keys = peer_node_keys;
-        }
+        self.with_state_mut(session_id, |s| s.routing.peer_node_keys = peer_node_keys)
+            .await;
     }
 
     pub async fn set_ring_id(&self, session_id: &u128, ring_id: String) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.routing.ring_id = ring_id;
-        }
+        self.with_state_mut(session_id, |s| s.routing.ring_id = ring_id)
+            .await;
     }
 
     /// Stage a refresh bundle while waiting for the post-refresh health-check result.
@@ -910,10 +904,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         session_id: &u128,
         candidate: RefreshHealthCheckCandidate,
     ) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.refresh.candidate = Some(candidate);
-        }
+        self.with_state_mut(session_id, |s| s.refresh.candidate = Some(candidate))
+            .await;
     }
 
     /// Load the staged refresh bundle, if this session still has one.
@@ -921,18 +913,15 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         &self,
         session_id: &u128,
     ) -> Option<RefreshHealthCheckCandidate> {
-        let states = self.states.read().await;
-        states
-            .get(session_id)
-            .and_then(|state| state.refresh.candidate.clone())
+        self.with_state(session_id, |s| s.refresh.candidate.clone())
+            .await
+            .flatten()
     }
 
     /// Discard any staged refresh bundle for this session.
     pub async fn clear_refresh_health_check_candidate(&self, session_id: &u128) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.refresh.candidate = None;
-        }
+        self.with_state_mut(session_id, |s| s.refresh.candidate = None)
+            .await;
     }
 
     /// Store a refresh health-check result that arrived before Phase 4 staged its candidate.
@@ -941,13 +930,14 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         session_id: &u128,
         result: PendingRefreshHealthCheckResult,
     ) -> Option<bool> {
-        let mut states = self.states.write().await;
-        let state = states.get_mut(session_id)?;
-        if state.refresh.pending_result.is_some() {
-            return Some(false);
-        }
-        state.refresh.pending_result = Some(result);
-        Some(true)
+        self.with_state_mut(session_id, |state| {
+            if state.refresh.pending_result.is_some() {
+                return false;
+            }
+            state.refresh.pending_result = Some(result);
+            true
+        })
+        .await
     }
 
     /// Remove and return an early refresh health-check result, if one was queued.
@@ -955,33 +945,30 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         &self,
         session_id: &u128,
     ) -> Option<PendingRefreshHealthCheckResult> {
-        let mut states = self.states.write().await;
-        states.get_mut(session_id)?.refresh.pending_result.take()
+        self.with_state_mut(session_id, |s| s.refresh.pending_result.take())
+            .await
+            .flatten()
     }
 
     /// Store the PSS refresh interval for this session so Phase 4 can persist it.
     pub async fn set_pss_interval(&self, session_id: &u128, interval: u64) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.pss_interval = interval;
-        }
+        self.with_state_mut(session_id, |s| s.pss_interval = interval)
+            .await;
     }
 
     pub async fn get_peer_ids(&self, session_id: &u128) -> Option<Vec<String>> {
-        let states = self.states.read().await;
-        states.get(session_id).map(|s| s.routing.peer_ids.clone())
+        self.with_state(session_id, |s| s.routing.peer_ids.clone())
+            .await
     }
 
     pub async fn get_peer_node_keys(&self, session_id: &u128) -> Option<Vec<String>> {
-        let states = self.states.read().await;
-        states
-            .get(session_id)
-            .map(|s| s.routing.peer_node_keys.clone())
+        self.with_state(session_id, |s| s.routing.peer_node_keys.clone())
+            .await
     }
 
     pub async fn ring_id_for_session(&self, session_id: &u128) -> Option<String> {
-        let states = self.states.read().await;
-        states.get(session_id).map(|s| s.routing.ring_id.clone())
+        self.with_state(session_id, |s| s.routing.ring_id.clone())
+            .await
     }
 
     /// Set node_id to peer_id mappings for efficient routing
@@ -990,29 +977,21 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         session_id: &u128,
         node_id_to_peer_id: HashMap<u32, String>,
     ) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            // Build both maps in a single pass to avoid cloning
-            let mut node_to_peer = HashMap::new();
-            let mut peer_to_node = HashMap::new();
-            for (node_id, peer_id) in node_id_to_peer_id {
-                node_to_peer.insert(node_id, peer_id.clone());
-                peer_to_node.insert(peer_id, node_id);
-            }
+        let (node_to_peer, peer_to_node) = bidirectional_node_peer_maps(node_id_to_peer_id);
+        self.with_state_mut(session_id, |state| {
             state.routing.node_id_to_peer_id = node_to_peer;
             state.routing.peer_id_to_node_id = peer_to_node;
-        }
+        })
+        .await;
     }
 
     /// Get peer_id for a node_id
     pub async fn get_peer_id_for_node(&self, session_id: &u128, node_id: u32) -> Option<String> {
-        let states = self.states.read().await;
-        states
-            .get(session_id)?
-            .routing
-            .node_id_to_peer_id
-            .get(&node_id)
-            .cloned()
+        self.with_state(session_id, |s| {
+            s.routing.node_id_to_peer_id.get(&node_id).cloned()
+        })
+        .await
+        .flatten()
     }
 
     /// Atomically claim a message for processing.
@@ -1022,19 +1001,18 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         from_node_id: u32,
         message_type: DkgMessageType,
     ) -> MessageProcessingClaim {
-        let mut states = self.states.write().await;
-        let Some(state) = states.get_mut(session_id) else {
-            return MessageProcessingClaim::MissingSession;
-        };
-
-        let key = (*session_id, from_node_id, message_type);
-        if state.messages.processed.contains(&key) {
-            return MessageProcessingClaim::AlreadyProcessed;
-        }
-        if !state.messages.processing.insert(key) {
-            return MessageProcessingClaim::AlreadyProcessing;
-        }
-        MessageProcessingClaim::Claimed
+        self.with_state_mut(session_id, |state| {
+            let key = (*session_id, from_node_id, message_type);
+            if state.messages.processed.contains(&key) {
+                return MessageProcessingClaim::AlreadyProcessed;
+            }
+            if !state.messages.processing.insert(key) {
+                return MessageProcessingClaim::AlreadyProcessing;
+            }
+            MessageProcessingClaim::Claimed
+        })
+        .await
+        .unwrap_or(MessageProcessingClaim::MissingSession)
     }
 
     /// Finish a previously claimed message, marking it processed only on success.
@@ -1045,14 +1023,14 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         message_type: DkgMessageType,
         processed: bool,
     ) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
+        self.with_state_mut(session_id, |state| {
             let key = (*session_id, from_node_id, message_type);
             state.messages.processing.remove(&key);
             if processed {
                 state.messages.processed.insert(key);
             }
-        }
+        })
+        .await;
     }
 
     /// Store a share whose sender commitment has not arrived yet.
@@ -1066,24 +1044,25 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         share: DistributedShare<D::ShareValue>,
         report_evidence: Option<SignedDkgShare>,
     ) -> Option<bool> {
-        let mut states = self.states.write().await;
-        let state = states.get_mut(session_id)?;
-        let from_node_id = share.from_id;
-        if state
-            .messages
-            .pending_shares_waiting_for_commitment
-            .contains_key(&from_node_id)
-        {
-            return Some(false);
-        }
-        state.messages.pending_shares_waiting_for_commitment.insert(
-            from_node_id,
-            PendingDkgShare {
-                share,
-                report_evidence,
-            },
-        );
-        Some(true)
+        self.with_state_mut(session_id, |state| {
+            let from_node_id = share.from_id;
+            if state
+                .messages
+                .pending_shares_waiting_for_commitment
+                .contains_key(&from_node_id)
+            {
+                return false;
+            }
+            state.messages.pending_shares_waiting_for_commitment.insert(
+                from_node_id,
+                PendingDkgShare {
+                    share,
+                    report_evidence,
+                },
+            );
+            true
+        })
+        .await
     }
 
     /// Remove and return a pending share that was waiting on `from_node_id`'s commitment.
@@ -1092,34 +1071,31 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         session_id: &u128,
         from_node_id: u32,
     ) -> Option<PendingDkgShare<D::ShareValue>> {
-        let mut states = self.states.write().await;
-        states
-            .get_mut(session_id)?
-            .messages
-            .pending_shares_waiting_for_commitment
-            .remove(&from_node_id)
+        self.with_state_mut(session_id, |s| {
+            s.messages
+                .pending_shares_waiting_for_commitment
+                .remove(&from_node_id)
+        })
+        .await
+        .flatten()
     }
 
     pub async fn update_phase(&self, session_id: &u128, phase: DkgPhase) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
+        self.with_state_mut(session_id, |state| {
             state.phase = phase;
             state.phase_started_at = Instant::now();
-        }
+        })
+        .await;
     }
 
     pub async fn increment_commitments(&self, session_id: &u128) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.commitments_received += 1;
-        }
+        self.with_state_mut(session_id, |s| s.commitments_received += 1)
+            .await;
     }
 
     pub async fn increment_shares(&self, session_id: &u128) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.shares_received += 1;
-        }
+        self.with_state_mut(session_id, |s| s.shares_received += 1)
+            .await;
     }
 
     /// Get the cached outbound stream to a peer for this session, if one exists.
@@ -1128,13 +1104,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         session_id: &u128,
         peer_id: &str,
     ) -> Option<Arc<dyn Connection>> {
-        let states = self.states.read().await;
-        states
-            .get(session_id)?
-            .transport
-            .peer_streams
-            .get(peer_id)
-            .cloned()
+        self.with_state(session_id, |s| {
+            s.transport.peer_streams.get(peer_id).cloned()
+        })
+        .await
+        .flatten()
     }
 
     /// Cache an outbound stream to a peer for this session.
@@ -1144,18 +1118,18 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         peer_id: String,
         stream: Arc<dyn Connection>,
     ) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.transport.peer_streams.insert(peer_id, stream);
-        }
+        self.with_state_mut(session_id, |s| {
+            s.transport.peer_streams.insert(peer_id, stream);
+        })
+        .await;
     }
 
     /// Remove the cached outbound stream to a peer for this session, if any.
     pub async fn remove_peer_stream(&self, session_id: &u128, peer_id: &str) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.transport.peer_streams.remove(peer_id);
-        }
+        self.with_state_mut(session_id, |s| {
+            s.transport.peer_streams.remove(peer_id);
+        })
+        .await;
     }
 
     /// Get or create the per-peer outbound send lock for this session.
@@ -1164,15 +1138,16 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         session_id: &u128,
         peer_id: &str,
     ) -> Option<(Arc<Mutex<()>>, u64)> {
-        let mut states = self.states.write().await;
-        let state = states.get_mut(session_id)?;
-        let lock = state
-            .transport
-            .peer_send_locks
-            .entry(peer_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone();
-        Some((lock, state.generation))
+        self.with_state_mut(session_id, |state| {
+            let lock = state
+                .transport
+                .peer_send_locks
+                .entry(peer_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone();
+            (lock, state.generation)
+        })
+        .await
     }
 
     /// Remove a session and free its memory.
@@ -1246,8 +1221,7 @@ impl<D: Dkg> Drop for SessionStateManager<D> {
 #[cfg(test)]
 impl<D: Dkg + 'static> SessionStateManager<D> {
     pub async fn get_session_generation(&self, session_id: &u128) -> Option<u64> {
-        let states = self.states.read().await;
-        states.get(session_id).map(|s| s.generation)
+        self.with_state(session_id, |s| s.generation).await
     }
 
     pub async fn session_count(&self) -> usize {
@@ -1255,10 +1229,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     pub async fn set_session_kind(&self, session_id: &u128, kind: SessionKind) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state.kind = kind;
-        }
+        self.with_state_mut(session_id, |s| s.kind = kind).await;
     }
 
     pub async fn is_message_processed(
@@ -1267,15 +1238,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         from_node_id: u32,
         message_type: DkgMessageType,
     ) -> bool {
-        let states = self.states.read().await;
-        if let Some(state) = states.get(session_id) {
-            state
-                .messages
+        self.with_state(session_id, |s| {
+            s.messages
                 .processed
                 .contains(&(*session_id, from_node_id, message_type))
-        } else {
-            false
-        }
+        })
+        .await
+        .unwrap_or(false)
     }
 
     pub async fn mark_message_processed(
@@ -1284,13 +1253,12 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         from_node_id: u32,
         message_type: DkgMessageType,
     ) {
-        let mut states = self.states.write().await;
-        if let Some(state) = states.get_mut(session_id) {
-            state
-                .messages
+        self.with_state_mut(session_id, |s| {
+            s.messages
                 .processed
                 .insert((*session_id, from_node_id, message_type));
-        }
+        })
+        .await;
     }
 }
 

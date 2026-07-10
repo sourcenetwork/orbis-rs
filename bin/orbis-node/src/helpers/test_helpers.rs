@@ -355,189 +355,111 @@ fn seed_three_node_dummy_bulletin(
 /// }
 /// ```
 pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> ThreeNodeNetwork {
-    println!("Setting up three-node test network...");
-
-    // Create a shared DummyBulletin for all nodes (keep concrete type for test access)
-    let dummy_bulletin = Arc::new(
-        DummyBulletin::new()
-            .await
-            .expect("Failed to initialize shared dummy bulletin"),
-    );
-    // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
-    let alice_state = create_test_app_state_with_bulletin(
-        true,
-        dummy_bulletin.clone(),
-        &format!("{}_1", db_name),
-    )
-    .await;
-    let bob_state = create_test_app_state_with_bulletin(
-        true,
-        dummy_bulletin.clone(),
-        &format!("{}_2", db_name),
-    )
-    .await;
-    let charlie_state = create_test_app_state_with_bulletin(
-        true,
-        dummy_bulletin.clone(),
-        &format!("{}_3", db_name),
-    )
-    .await;
-
-    // Get peer IDs and addresses for each node
-    let alice_peer_id = alice_state.network.local_peer_id();
-    let alice_address = alice_state
-        .network
-        .local_address()
-        .expect("Failed to get Alice's address");
-    // Get socket address for peer ID formatting
-    let alice_socket_addr = alice_state
-        .network
-        .bound_addresses()
-        .first()
-        .copied()
-        .map(|addr| format!("{}", addr))
-        .unwrap_or_else(|| "127.0.0.1:0".to_string());
-    let alice_peer_id_with_addr = format!("{}@{}", alice_address, alice_socket_addr);
-
-    let bob_peer_id = bob_state.network.local_peer_id();
-    let bob_address = bob_state
-        .network
-        .local_address()
-        .expect("Failed to get Bob's address");
-    let bob_socket_addr = bob_state
-        .network
-        .bound_addresses()
-        .first()
-        .copied()
-        .map(|addr| format!("{}", addr))
-        .unwrap_or_else(|| "127.0.0.1:0".to_string());
-    let bob_peer_id_with_addr = format!("{}@{}", bob_address, bob_socket_addr);
-
-    let charlie_peer_id = charlie_state.network.local_peer_id();
-    let charlie_address = charlie_state
-        .network
-        .local_address()
-        .expect("Failed to get Charlie's address");
-    let charlie_socket_addr = charlie_state
-        .network
-        .bound_addresses()
-        .first()
-        .copied()
-        .map(|addr| format!("{}", addr))
-        .unwrap_or_else(|| "127.0.0.1:0".to_string());
-    let charlie_peer_id_with_addr = format!("{}@{}", charlie_address, charlie_socket_addr);
-
-    println!(
-        "Alice - Peer ID: {}, Address: {}",
-        hex::encode(alice_peer_id.as_bytes()),
-        alice_address
-    );
-    println!(
-        "Bob - Peer ID: {}, Address: {}",
-        hex::encode(bob_peer_id.as_bytes()),
-        bob_address
-    );
-    println!(
-        "Charlie - Peer ID: {}, Address: {}",
-        hex::encode(charlie_peer_id.as_bytes()),
-        charlie_address
-    );
-
-    seed_three_node_dummy_bulletin(
-        &dummy_bulletin,
-        [
-            (&alice_state, &alice_peer_id_with_addr),
-            (&bob_state, &bob_peer_id_with_addr),
-            (&charlie_state, &charlie_peer_id_with_addr),
-        ],
-    );
-
-    // Optionally start routers for all nodes with the production protocol handlers.
-    // DKG reshare Phase 4 now collects a threshold signature over the bulletin
+    // DKG reshare Phase 4 collects a threshold signature over the bulletin
     // update, so even DKG-focused network tests need the Sign handler available.
-    let alice_router = if start_routers {
-        println!("Starting router for Alice with DKG, PRE, and Sign handlers...");
-        let alice_app_state = Arc::new(alice_state.clone());
-        Some(
-            create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
-                &alice_state.network,
-                alice_app_state,
-            )
-            .expect("Failed to create router for Alice"),
-        )
-    } else {
-        None
-    };
+    setup_three_node_network_impl(start_routers, true, true, db_name, TestRouterHandlers::All).await
+}
 
-    let bob_router = if start_routers {
-        println!("Starting router for Bob with DKG, PRE, and Sign handlers...");
-        let bob_app_state = Arc::new(bob_state.clone());
-        Some(
-            create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
-                &bob_state.network,
-                bob_app_state,
-            )
-            .expect("Failed to create router for Bob"),
-        )
-    } else {
-        None
-    };
+/// Which protocol handlers the test routers install.
+#[derive(Clone, Copy)]
+enum TestRouterHandlers {
+    /// DKG + PRE only.
+    DkgPre,
+    /// DKG + PRE + Sign.
+    All,
+}
 
-    let charlie_router = if start_routers {
-        println!("Starting router for Charlie with DKG, PRE, and Sign handlers...");
-        let charlie_app_state = Arc::new(charlie_state.clone());
-        Some(
-            create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
-                &charlie_state.network,
-                charlie_app_state,
-            )
-            .expect("Failed to create router for Charlie"),
-        )
-    } else {
-        None
-    };
-
-    ThreeNodeNetwork {
-        alice: TestNode {
-            app_state: alice_state,
-            peer_id: alice_peer_id,
-            address: alice_peer_id_with_addr,
-            router: alice_router,
-        },
-        bob: TestNode {
-            app_state: bob_state,
-            peer_id: bob_peer_id,
-            address: bob_peer_id_with_addr,
-            router: bob_router,
-        },
-        charlie: TestNode {
-            app_state: charlie_state,
-            peer_id: charlie_peer_id,
-            address: charlie_peer_id_with_addr,
-            router: charlie_router,
-        },
-        dummy_bulletin: Some(dummy_bulletin),
+impl TestRouterHandlers {
+    fn label(self) -> &'static str {
+        match self {
+            TestRouterHandlers::DkgPre => "DKG and PRE",
+            TestRouterHandlers::All => "DKG, PRE, and Sign",
+        }
     }
 }
 
-/// Set up a three-node test network with both DKG and PRE protocol handlers
+/// Create one test node on the shared bulletin and resolve its peer identity.
 ///
-/// This function creates three nodes (Alice, Bob, Charlie), initializes their networks,
-/// gets their peer IDs and addresses, and optionally starts routers for all nodes
-/// to accept incoming connections for both DKG and PRE protocols.
+/// Returns the node's state, peer ID, and `address@socket` route string.
+async fn setup_test_node(
+    name: &str,
+    dummy_authz: bool,
+    shared_bulletin: Arc<dyn Bulletin + Send + Sync>,
+    dummy_bulletin: Option<Arc<DummyBulletin>>,
+    db_name: &str,
+) -> (AppState<DkgImpl>, network::PeerId, String) {
+    let state = create_test_app_state_with_bulletin_inner(
+        dummy_authz,
+        shared_bulletin,
+        dummy_bulletin,
+        db_name,
+    )
+    .await;
+    let peer_id = state.network.local_peer_id();
+    let address = state
+        .network
+        .local_address()
+        .unwrap_or_else(|e| panic!("Failed to get {name}'s address: {e:?}"));
+    // Get socket address for peer ID formatting
+    let socket_addr = state
+        .network
+        .bound_addresses()
+        .first()
+        .copied()
+        .map(|addr| format!("{}", addr))
+        .unwrap_or_else(|| "127.0.0.1:0".to_string());
+    let peer_id_with_addr = format!("{}@{}", address, socket_addr);
+
+    println!(
+        "{} - Peer ID: {}, Address: {}",
+        name,
+        hex::encode(peer_id.as_bytes()),
+        address
+    );
+
+    (state, peer_id, peer_id_with_addr)
+}
+
+/// Start a router for one test node with the selected protocol handlers.
+fn start_test_router(
+    name: &str,
+    state: &AppState<DkgImpl>,
+    handlers: TestRouterHandlers,
+) -> Box<dyn Router> {
+    println!(
+        "Starting router for {} with {} handlers...",
+        name,
+        handlers.label()
+    );
+    let app_state = Arc::new(state.clone());
+    let router = match handlers {
+        TestRouterHandlers::DkgPre => {
+            create_router_with_handlers::<DkgImpl, PreImpl>(&state.network, app_state)
+        }
+        TestRouterHandlers::All => {
+            create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(&state.network, app_state)
+        }
+    };
+    router.unwrap_or_else(|e| panic!("Failed to create router for {name}: {e:?}"))
+}
+
+/// Shared implementation behind the `setup_three_node_network*` variants.
 ///
-/// # Arguments
-/// * `start_routers` - If true, starts routers for all nodes to accept connections
-///
-/// # Returns
-/// A `ThreeNodeNetwork` containing all three nodes with their information
-pub async fn setup_three_node_network_with_pre(
+/// Creates three nodes (Alice, Bob, Charlie) on one shared bulletin, seeds the
+/// dummy bulletin with their NodeInfo routes and the fresh-DKG ring fixture
+/// (when using a dummy bulletin), and optionally starts a router per node with
+/// the selected protocol handlers.
+async fn setup_three_node_network_impl(
     start_routers: bool,
     dummy_authz: bool,
     dummy_bulletin: bool,
     db_name: &str,
+    handlers: TestRouterHandlers,
 ) -> ThreeNodeNetwork {
-    println!("Setting up three-node test network with DKG and PRE handlers...");
+    println!(
+        "Setting up three-node test network with {} handlers...",
+        handlers.label()
+    );
 
     // Create a shared bulletin for all nodes (keep concrete DummyBulletin for test access)
     let (shared_bulletin, dummy_bulletin_arc): (
@@ -562,87 +484,30 @@ pub async fn setup_three_node_network_with_pre(
     };
 
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
-    let alice_state = create_test_app_state_with_bulletin_inner(
+    let (alice_state, alice_peer_id, alice_peer_id_with_addr) = setup_test_node(
+        "Alice",
         dummy_authz,
         shared_bulletin.clone(),
         dummy_bulletin_arc.clone(),
         &format!("{}_1", db_name),
     )
     .await;
-    let bob_state = create_test_app_state_with_bulletin_inner(
+    let (bob_state, bob_peer_id, bob_peer_id_with_addr) = setup_test_node(
+        "Bob",
         dummy_authz,
         shared_bulletin.clone(),
         dummy_bulletin_arc.clone(),
         &format!("{}_2", db_name),
     )
     .await;
-    let charlie_state = create_test_app_state_with_bulletin_inner(
+    let (charlie_state, charlie_peer_id, charlie_peer_id_with_addr) = setup_test_node(
+        "Charlie",
         dummy_authz,
         shared_bulletin,
         dummy_bulletin_arc.clone(),
         &format!("{}_3", db_name),
     )
     .await;
-
-    // Get peer IDs and addresses for each node
-    let alice_peer_id = alice_state.network.local_peer_id();
-    let alice_address = alice_state
-        .network
-        .local_address()
-        .expect("Failed to get Alice's address");
-    // Get socket address for peer ID formatting
-    let alice_socket_addr = alice_state
-        .network
-        .bound_addresses()
-        .first()
-        .copied()
-        .map(|addr| format!("{}", addr))
-        .unwrap_or_else(|| "127.0.0.1:0".to_string());
-    let alice_peer_id_with_addr = format!("{}@{}", alice_address, alice_socket_addr);
-
-    let bob_peer_id = bob_state.network.local_peer_id();
-    let bob_address = bob_state
-        .network
-        .local_address()
-        .expect("Failed to get Bob's address");
-    let bob_socket_addr = bob_state
-        .network
-        .bound_addresses()
-        .first()
-        .copied()
-        .map(|addr| format!("{}", addr))
-        .unwrap_or_else(|| "127.0.0.1:0".to_string());
-    let bob_peer_id_with_addr = format!("{}@{}", bob_address, bob_socket_addr);
-
-    let charlie_peer_id = charlie_state.network.local_peer_id();
-    let charlie_address = charlie_state
-        .network
-        .local_address()
-        .expect("Failed to get Charlie's address");
-    let charlie_socket_addr = charlie_state
-        .network
-        .bound_addresses()
-        .first()
-        .copied()
-        .map(|addr| format!("{}", addr))
-        .unwrap_or_else(|| "127.0.0.1:0".to_string());
-    let charlie_peer_id_with_addr = format!("{}@{}", charlie_address, charlie_socket_addr);
-
-    println!(
-        "Alice - Peer ID: {}, Address: {}",
-        hex::encode(alice_peer_id.as_bytes()),
-        alice_address
-    );
-    println!(
-        "Bob - Peer ID: {}, Address: {}",
-        hex::encode(bob_peer_id.as_bytes()),
-        bob_address
-    );
-    println!(
-        "Charlie - Peer ID: {}, Address: {}",
-        hex::encode(charlie_peer_id.as_bytes()),
-        charlie_address
-    );
 
     if let Some(dummy_bulletin) = &dummy_bulletin_arc {
         seed_three_node_dummy_bulletin(
@@ -655,41 +520,14 @@ pub async fn setup_three_node_network_with_pre(
         );
     }
 
-    // Start routers for all nodes with both DKG and PRE protocol handlers
-    let alice_router = if start_routers {
-        println!("Starting router for Alice with DKG and PRE handlers...");
-        let alice_app_state = Arc::new(alice_state.clone());
-        Some(
-            create_router_with_handlers::<DkgImpl, PreImpl>(&alice_state.network, alice_app_state)
-                .expect("Failed to create router for Alice"),
+    let (alice_router, bob_router, charlie_router) = if start_routers {
+        (
+            Some(start_test_router("Alice", &alice_state, handlers)),
+            Some(start_test_router("Bob", &bob_state, handlers)),
+            Some(start_test_router("Charlie", &charlie_state, handlers)),
         )
     } else {
-        None
-    };
-
-    let bob_router = if start_routers {
-        println!("Starting router for Bob with DKG and PRE handlers...");
-        let bob_app_state = Arc::new(bob_state.clone());
-        Some(
-            create_router_with_handlers::<DkgImpl, PreImpl>(&bob_state.network, bob_app_state)
-                .expect("Failed to create router for Bob"),
-        )
-    } else {
-        None
-    };
-
-    let charlie_router = if start_routers {
-        println!("Starting router for Charlie with DKG and PRE handlers...");
-        let charlie_app_state = Arc::new(charlie_state.clone());
-        Some(
-            create_router_with_handlers::<DkgImpl, PreImpl>(
-                &charlie_state.network,
-                charlie_app_state,
-            )
-            .expect("Failed to create router for Charlie"),
-        )
-    } else {
-        None
+        (None, None, None)
     };
 
     ThreeNodeNetwork {
@@ -713,6 +551,33 @@ pub async fn setup_three_node_network_with_pre(
         },
         dummy_bulletin: dummy_bulletin_arc,
     }
+}
+
+/// Set up a three-node test network with both DKG and PRE protocol handlers
+///
+/// This function creates three nodes (Alice, Bob, Charlie), initializes their networks,
+/// gets their peer IDs and addresses, and optionally starts routers for all nodes
+/// to accept incoming connections for both DKG and PRE protocols.
+///
+/// # Arguments
+/// * `start_routers` - If true, starts routers for all nodes to accept connections
+///
+/// # Returns
+/// A `ThreeNodeNetwork` containing all three nodes with their information
+pub async fn setup_three_node_network_with_pre(
+    start_routers: bool,
+    dummy_authz: bool,
+    dummy_bulletin: bool,
+    db_name: &str,
+) -> ThreeNodeNetwork {
+    setup_three_node_network_impl(
+        start_routers,
+        dummy_authz,
+        dummy_bulletin,
+        db_name,
+        TestRouterHandlers::DkgPre,
+    )
+    .await
 }
 
 /// Set up a three-node test network with DKG, PRE, and Sign protocol handlers
@@ -735,187 +600,14 @@ pub async fn setup_three_node_network_with_sign(
     dummy_bulletin: bool,
     db_name: &str,
 ) -> ThreeNodeNetwork {
-    println!("Setting up three-node test network with DKG, PRE, and Sign handlers...");
-
-    // Create a shared bulletin for all nodes (keep concrete DummyBulletin for test access)
-    let (shared_bulletin, dummy_bulletin_arc): (
-        Arc<dyn Bulletin + Send + Sync>,
-        Option<Arc<DummyBulletin>>,
-    ) = if dummy_bulletin {
-        let db = Arc::new(
-            DummyBulletin::new()
-                .await
-                .expect("Failed to initialize shared dummy bulletin"),
-        );
-        (db.clone(), Some(db))
-    } else {
-        (
-            Arc::new(
-                BulletinImpl::new(ChainConfigBuilder::default())
-                    .await
-                    .expect("Failed to initialize shared bulletin"),
-            ),
-            None,
-        )
-    };
-
-    // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
-    let alice_state = create_test_app_state_with_bulletin_inner(
+    setup_three_node_network_impl(
+        start_routers,
         dummy_authz,
-        shared_bulletin.clone(),
-        dummy_bulletin_arc.clone(),
-        &format!("{}_1", db_name),
+        dummy_bulletin,
+        db_name,
+        TestRouterHandlers::All,
     )
-    .await;
-    let bob_state = create_test_app_state_with_bulletin_inner(
-        dummy_authz,
-        shared_bulletin.clone(),
-        dummy_bulletin_arc.clone(),
-        &format!("{}_2", db_name),
-    )
-    .await;
-    let charlie_state = create_test_app_state_with_bulletin_inner(
-        dummy_authz,
-        shared_bulletin,
-        dummy_bulletin_arc.clone(),
-        &format!("{}_3", db_name),
-    )
-    .await;
-
-    // Get peer IDs and addresses for each node
-    let alice_peer_id = alice_state.network.local_peer_id();
-    let alice_address = alice_state
-        .network
-        .local_address()
-        .expect("Failed to get Alice's address");
-    let alice_socket_addr = alice_state
-        .network
-        .bound_addresses()
-        .first()
-        .copied()
-        .map(|addr| format!("{}", addr))
-        .unwrap_or_else(|| "127.0.0.1:0".to_string());
-    let alice_peer_id_with_addr = format!("{}@{}", alice_address, alice_socket_addr);
-
-    let bob_peer_id = bob_state.network.local_peer_id();
-    let bob_address = bob_state
-        .network
-        .local_address()
-        .expect("Failed to get Bob's address");
-    let bob_socket_addr = bob_state
-        .network
-        .bound_addresses()
-        .first()
-        .copied()
-        .map(|addr| format!("{}", addr))
-        .unwrap_or_else(|| "127.0.0.1:0".to_string());
-    let bob_peer_id_with_addr = format!("{}@{}", bob_address, bob_socket_addr);
-
-    let charlie_peer_id = charlie_state.network.local_peer_id();
-    let charlie_address = charlie_state
-        .network
-        .local_address()
-        .expect("Failed to get Charlie's address");
-    let charlie_socket_addr = charlie_state
-        .network
-        .bound_addresses()
-        .first()
-        .copied()
-        .map(|addr| format!("{}", addr))
-        .unwrap_or_else(|| "127.0.0.1:0".to_string());
-    let charlie_peer_id_with_addr = format!("{}@{}", charlie_address, charlie_socket_addr);
-
-    println!(
-        "Alice - Peer ID: {}, Address: {}",
-        hex::encode(alice_peer_id.as_bytes()),
-        alice_address
-    );
-    println!(
-        "Bob - Peer ID: {}, Address: {}",
-        hex::encode(bob_peer_id.as_bytes()),
-        bob_address
-    );
-    println!(
-        "Charlie - Peer ID: {}, Address: {}",
-        hex::encode(charlie_peer_id.as_bytes()),
-        charlie_address
-    );
-
-    if let Some(dummy_bulletin) = &dummy_bulletin_arc {
-        seed_three_node_dummy_bulletin(
-            dummy_bulletin,
-            [
-                (&alice_state, &alice_peer_id_with_addr),
-                (&bob_state, &bob_peer_id_with_addr),
-                (&charlie_state, &charlie_peer_id_with_addr),
-            ],
-        );
-    }
-
-    // Start routers for all nodes with DKG, PRE, and Sign protocol handlers
-    let alice_router = if start_routers {
-        println!("Starting router for Alice with DKG, PRE, and Sign handlers...");
-        let alice_app_state = Arc::new(alice_state.clone());
-        Some(
-            create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
-                &alice_state.network,
-                alice_app_state,
-            )
-            .expect("Failed to create router for Alice"),
-        )
-    } else {
-        None
-    };
-
-    let bob_router = if start_routers {
-        println!("Starting router for Bob with DKG, PRE, and Sign handlers...");
-        let bob_app_state = Arc::new(bob_state.clone());
-        Some(
-            create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
-                &bob_state.network,
-                bob_app_state,
-            )
-            .expect("Failed to create router for Bob"),
-        )
-    } else {
-        None
-    };
-
-    let charlie_router = if start_routers {
-        println!("Starting router for Charlie with DKG, PRE, and Sign handlers...");
-        let charlie_app_state = Arc::new(charlie_state.clone());
-        Some(
-            create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
-                &charlie_state.network,
-                charlie_app_state,
-            )
-            .expect("Failed to create router for Charlie"),
-        )
-    } else {
-        None
-    };
-
-    ThreeNodeNetwork {
-        alice: TestNode {
-            app_state: alice_state,
-            peer_id: alice_peer_id,
-            address: alice_peer_id_with_addr,
-            router: alice_router,
-        },
-        bob: TestNode {
-            app_state: bob_state,
-            peer_id: bob_peer_id,
-            address: bob_peer_id_with_addr,
-            router: bob_router,
-        },
-        charlie: TestNode {
-            app_state: charlie_state,
-            peer_id: charlie_peer_id,
-            address: charlie_peer_id_with_addr,
-            router: charlie_router,
-        },
-        dummy_bulletin: dummy_bulletin_arc,
-    }
+    .await
 }
 
 /// Post a `RingPayload` to the bulletin and write a `RingIndexEntry` into local storage.
