@@ -10,7 +10,8 @@
 use crate::{
     app_state::AppState,
     constants::{
-        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MIN_NODE_BALANCE,
+        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_SIGN_REQUEST_BYTES,
+        MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES, MIN_NODE_BALANCE,
     },
     dkg::v0::helpers::serialize_commitment_coefficients,
     dkg::v0::service::DkgServiceImpl,
@@ -135,11 +136,26 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
 
     tokio::spawn(async move {
         let _ = tonic::transport::Server::builder()
-            .add_service(DkgServiceServer::new(dkg_service))
-            .add_service(PreServiceServer::new(pre_service))
-            .add_service(InfoServiceServer::new(info_service))
-            .add_service(StoreSecretServiceServer::new(store_secret_service))
-            .add_service(SignServiceServer::new(sign_service))
+            .add_service(
+                DkgServiceServer::new(dkg_service)
+                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+            )
+            .add_service(
+                PreServiceServer::new(pre_service)
+                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+            )
+            .add_service(
+                InfoServiceServer::new(info_service)
+                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+            )
+            .add_service(
+                StoreSecretServiceServer::new(store_secret_service)
+                    .max_decoding_message_size(MAX_STORE_SECRET_REQUEST_BYTES),
+            )
+            .add_service(
+                SignServiceServer::new(sign_service)
+                    .max_decoding_message_size(MAX_SIGN_REQUEST_BYTES),
+            )
             .serve(node.grpc_addr)
             .await;
         // Best-effort router cleanup when the server stops (e.g. on task abort)

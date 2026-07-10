@@ -236,7 +236,10 @@ pub(crate) fn start_bootstrap_info_server(
             .accept_http1(true)
             .layer(CorsLayer::permissive())
             .layer(GrpcWebLayer::new())
-            .add_service(InfoServiceServer::new(info_service))
+            .add_service(
+                InfoServiceServer::new(info_service)
+                    .max_decoding_message_size(constants::MAX_SMALL_GRPC_REQUEST_BYTES),
+            )
             .serve_with_incoming_shutdown(incoming, async {
                 let _ = shutdown_rx.await;
             })
@@ -387,7 +390,10 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
         .max_concurrent_streams(Some(node.grpc_max_concurrent_streams))
         .layer(CorsLayer::permissive())
         .layer(GrpcWebLayer::new())
-        .add_service(InfoServiceServer::new(info_service));
+        .add_service(
+            InfoServiceServer::new(info_service)
+                .max_decoding_message_size(constants::MAX_SMALL_GRPC_REQUEST_BYTES),
+        );
 
     #[cfg(feature = "unsafe-testing")]
     {
@@ -401,8 +407,10 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
             tracing::warn!("Unsafe testing gRPC service is enabled");
             let unsafe_testing_service =
                 UnsafeTestingServiceImpl::with_app_state(node.app_state.clone());
-            grpc_server =
-                grpc_server.add_service(UnsafeTestingServiceServer::new(unsafe_testing_service));
+            grpc_server = grpc_server.add_service(
+                UnsafeTestingServiceServer::new(unsafe_testing_service)
+                    .max_decoding_message_size(constants::MAX_SIGN_REQUEST_BYTES),
+            );
         } else {
             tracing::info!(
                 "Unsafe testing feature is compiled in, but its gRPC service is disabled"
@@ -434,10 +442,22 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
                         protocol_routes,
                     );
                 grpc_server = grpc_server
-                    .add_service(DkgServiceServer::new(dkg_service))
-                    .add_service(PreServiceServer::new(pre_service))
-                    .add_service(StoreSecretServiceServer::new(store_secret_service))
-                    .add_service(SignServiceServer::new(sign_service));
+                    .add_service(
+                        DkgServiceServer::new(dkg_service)
+                            .max_decoding_message_size(constants::MAX_SMALL_GRPC_REQUEST_BYTES),
+                    )
+                    .add_service(
+                        PreServiceServer::new(pre_service)
+                            .max_decoding_message_size(constants::MAX_SMALL_GRPC_REQUEST_BYTES),
+                    )
+                    .add_service(
+                        StoreSecretServiceServer::new(store_secret_service)
+                            .max_decoding_message_size(constants::MAX_STORE_SECRET_REQUEST_BYTES),
+                    )
+                    .add_service(
+                        SignServiceServer::new(sign_service)
+                            .max_decoding_message_size(constants::MAX_SIGN_REQUEST_BYTES),
+                    );
             }
             _ => {}
         }

@@ -17,7 +17,8 @@ use crate::sign::v0::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{
     constants::{
-        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MIN_NODE_BALANCE,
+        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_SIGN_REQUEST_BYTES,
+        MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES, MIN_NODE_BALANCE,
         PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
     },
     helpers::{
@@ -100,11 +101,26 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
 
     tokio::spawn(async move {
         let _ = tonic::transport::Server::builder()
-            .add_service(DkgServiceServer::new(dkg_service))
-            .add_service(PreServiceServer::new(pre_service))
-            .add_service(InfoServiceServer::new(info_service))
-            .add_service(StoreSecretServiceServer::new(store_secret_service))
-            .add_service(SignServiceServer::new(sign_service))
+            .add_service(
+                DkgServiceServer::new(dkg_service)
+                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+            )
+            .add_service(
+                PreServiceServer::new(pre_service)
+                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+            )
+            .add_service(
+                InfoServiceServer::new(info_service)
+                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+            )
+            .add_service(
+                StoreSecretServiceServer::new(store_secret_service)
+                    .max_decoding_message_size(MAX_STORE_SECRET_REQUEST_BYTES),
+            )
+            .add_service(
+                SignServiceServer::new(sign_service)
+                    .max_decoding_message_size(MAX_SIGN_REQUEST_BYTES),
+            )
             .serve(node.grpc_addr)
             .await;
         let _ = node.router.shutdown().await;

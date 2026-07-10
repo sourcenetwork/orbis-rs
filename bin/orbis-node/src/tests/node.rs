@@ -2,7 +2,10 @@
 
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::{
-    constants::{GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS},
+    constants::{
+        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_SIGN_MESSAGE_BYTES,
+        MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES,
+    },
     dkg::v0::service::DkgServiceImpl,
     helpers::{
         launch::{
@@ -36,9 +39,17 @@ use proto::{
     v0::dkg::{
         dkg_service_client::DkgServiceClient, dkg_service_server::DkgServiceServer, StartDkgRequest,
     },
-    v0::pre::pre_service_server::PreServiceServer,
-    v0::sign::sign_service_server::SignServiceServer,
-    v0::store_secret::store_secret_service_server::StoreSecretServiceServer,
+    v0::pre::{
+        pre_service_client::PreServiceClient, pre_service_server::PreServiceServer, StartPreRequest,
+    },
+    v0::sign::{
+        sign_service_client::SignServiceClient, sign_service_server::SignServiceServer,
+        StartSignRequest,
+    },
+    v0::store_secret::{
+        store_secret_service_client::StoreSecretServiceClient,
+        store_secret_service_server::StoreSecretServiceServer, StoreSecretRequest,
+    },
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -180,11 +191,26 @@ fn spawn_full_test_grpc_server(
             .accept_http1(true)
             .layer(CorsLayer::permissive())
             .layer(GrpcWebLayer::new())
-            .add_service(DkgServiceServer::new(dkg_service))
-            .add_service(PreServiceServer::new(pre_service))
-            .add_service(InfoServiceServer::new(info_service))
-            .add_service(StoreSecretServiceServer::new(store_secret_service))
-            .add_service(SignServiceServer::new(sign_service))
+            .add_service(
+                DkgServiceServer::new(dkg_service)
+                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+            )
+            .add_service(
+                PreServiceServer::new(pre_service)
+                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+            )
+            .add_service(
+                InfoServiceServer::new(info_service)
+                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+            )
+            .add_service(
+                StoreSecretServiceServer::new(store_secret_service)
+                    .max_decoding_message_size(MAX_STORE_SECRET_REQUEST_BYTES),
+            )
+            .add_service(
+                SignServiceServer::new(sign_service)
+                    .max_decoding_message_size(MAX_SIGN_REQUEST_BYTES),
+            )
             .serve_with_incoming_shutdown(incoming, async {
                 let _ = shutdown_rx.await;
             })
@@ -212,6 +238,21 @@ async fn send_http1_request(addr: SocketAddr, request: Vec<u8>) -> String {
         .expect("read test HTTP/1 response");
 
     String::from_utf8_lossy(&response).into_owned()
+}
+
+fn assert_decode_limit_error(status: tonic::Status) {
+    assert_eq!(
+        status.code(),
+        Code::OutOfRange,
+        "oversized gRPC request should fail during decode"
+    );
+    assert!(
+        status
+            .message()
+            .contains("decoded message length too large"),
+        "unexpected decode-limit error message: {}",
+        status.message()
+    );
 }
 
 #[test]
@@ -389,6 +430,98 @@ Connection: close\r\n\
         post_headers.contains("access-control-allow-origin: *"),
         "POST response did not include browser CORS headers:\n{post_response}"
     );
+
+    shutdown_tx.send(()).expect("shutdown full test server");
+    task.await.expect("join full test server task");
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_full_grpc_server_enforces_decode_caps() {
+    let (config, db_path) = make_test_node_config(
+        "test_full_grpc_server_enforces_decode_caps",
+        "127.0.0.1:0",
+        None,
+    )
+    .await;
+    let node = init_node(config).await.expect("initialize test node");
+    let (addr, shutdown_tx, task) = spawn_full_test_grpc_server(node);
+    let endpoint = format!("http://{}", addr);
+
+    let mut dkg_client = DkgServiceClient::connect(endpoint.clone())
+        .await
+        .expect("connect dkg client");
+    let dkg_err = dkg_client
+        .start_dkg(StartDkgRequest {
+            ring_id: "x".repeat(MAX_SMALL_GRPC_REQUEST_BYTES),
+        })
+        .await
+        .expect_err("oversized dkg request should fail during decode");
+    assert_decode_limit_error(dkg_err);
+
+    let mut pre_client = PreServiceClient::connect(endpoint.clone())
+        .await
+        .expect("connect pre client");
+    let pre_err = pre_client
+        .start_pre(StartPreRequest {
+            rdr_pk: Vec::new(),
+            object_id: "object-id".to_string(),
+            derivation: Some(vec![0u8; MAX_SMALL_GRPC_REQUEST_BYTES]),
+            salt: None,
+            valid_window: None,
+        })
+        .await
+        .expect_err("oversized pre request should fail during decode");
+    assert_decode_limit_error(pre_err);
+
+    let mut sign_client = SignServiceClient::connect(endpoint.clone())
+        .await
+        .expect("connect sign client");
+    let at_limit_sign_err = sign_client
+        .start_sign(StartSignRequest {
+            message: vec![0u8; MAX_SIGN_MESSAGE_BYTES],
+            derivation_id: "derivation-id".to_string(),
+            valid_window: None,
+        })
+        .await
+        .expect_err("sign request at message limit should reach auth");
+    assert_eq!(
+        at_limit_sign_err.code(),
+        Code::Unauthenticated,
+        "sign request at message limit should reach the service auth path"
+    );
+
+    let sign_decode_err = sign_client
+        .start_sign(StartSignRequest {
+            message: vec![0u8; MAX_SIGN_REQUEST_BYTES],
+            derivation_id: "derivation-id".to_string(),
+            valid_window: None,
+        })
+        .await
+        .expect_err("oversized sign request should fail during decode");
+    assert_decode_limit_error(sign_decode_err);
+
+    let mut store_secret_client = StoreSecretServiceClient::connect(endpoint)
+        .await
+        .expect("connect store secret client");
+    let store_secret_err = store_secret_client
+        .store_secret(StoreSecretRequest {
+            encrypted_document: vec![0u8; MAX_STORE_SECRET_REQUEST_BYTES],
+            enc_cmt: Vec::new(),
+            ring_id: "ring-id".to_string(),
+            policy_id: "policy-id".to_string(),
+            resource: "resource".to_string(),
+            permission: "read".to_string(),
+            shared_point: Vec::new(),
+            challenge: Vec::new(),
+            response: Vec::new(),
+            with_proof: false,
+            tier: None,
+            timestamp: None,
+        })
+        .await
+        .expect_err("oversized store-secret request should fail during decode");
+    assert_decode_limit_error(store_secret_err);
 
     shutdown_tx.send(()).expect("shutdown full test server");
     task.await.expect("join full test server task");
