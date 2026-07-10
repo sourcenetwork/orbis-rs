@@ -35,6 +35,8 @@ use zeroize::Zeroize;
 pub enum DkgPhase {
     /// Initialization - session created, waiting to start
     Initializing,
+    /// Fresh DKG pre-round - broadcasting commitment hashes before revealing commitments
+    Phase0CommitmentHashes,
     /// Phase 1 - Generating polynomial and broadcasting commitments
     Phase1Commitments,
     /// Phase 2 - Generating and sending shares; share verification happens
@@ -78,6 +80,7 @@ pub enum RingPssClaimOutcome {
 /// DKG Message Type for deduplication (more efficient than String)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DkgMessageType {
+    CommitmentHash,
     Commitment,
     Share,
     DkgInvalidShareEvidence,
@@ -145,6 +148,7 @@ pub(crate) struct SessionRoutingState {
 
 pub(crate) struct MessageTrackingState<ShareValue: Zeroize> {
     pub pending_shares_waiting_for_commitment: HashMap<u32, PendingDkgShare<ShareValue>>,
+    pub pending_commitments_waiting_for_hash: HashMap<u32, PendingDkgCommitment>,
     pub processed: HashSet<(u128, u32, DkgMessageType)>,
     pub processing: HashSet<(u128, u32, DkgMessageType)>,
 }
@@ -153,6 +157,7 @@ impl<ShareValue: Zeroize> Default for MessageTrackingState<ShareValue> {
     fn default() -> Self {
         Self {
             pending_shares_waiting_for_commitment: HashMap::new(),
+            pending_commitments_waiting_for_hash: HashMap::new(),
             processed: HashSet::new(),
             processing: HashSet::new(),
         }
@@ -160,9 +165,28 @@ impl<ShareValue: Zeroize> Default for MessageTrackingState<ShareValue> {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct PendingDkgCommitment {
+    pub commitment: Vec<u8>,
+    pub report_evidence: Option<SignedDkgCommitment>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct PendingDkgShare<ShareValue: Zeroize> {
     pub share: DistributedShare<ShareValue>,
     pub report_evidence: Option<SignedDkgShare>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CommitmentHashRecordOutcome {
+    Recorded,
+    DuplicateSame,
+    Mismatch { existing: [u8; 32] },
+}
+
+#[derive(Default)]
+pub(crate) struct CommitRevealState {
+    pub received_hashes: HashMap<u32, [u8; 32]>,
+    pub own_hash_broadcast_complete: bool,
 }
 
 pub(crate) struct ReshareSessionState<ShareValue: Zeroize> {
@@ -297,6 +321,8 @@ pub struct DkgSessionState<D: Dkg> {
     pub shares_received: usize,
     /// Reshare-only data and selection progress.
     pub(crate) reshare: ReshareSessionState<D::ShareValue>,
+    /// Fresh-only commit-reveal pre-round state.
+    pub(crate) commit_reveal: CommitRevealState,
     /// Message ordering and deduplication state.
     pub(crate) messages: MessageTrackingState<D::ShareValue>,
     /// This node's signed commitment evidence for Refresh/Reshare share reports.
@@ -338,6 +364,7 @@ impl<D: Dkg> DkgSessionState<D> {
             commitments_received: 0,
             shares_received: 0,
             reshare: ReshareSessionState::default(),
+            commit_reveal: CommitRevealState::default(),
             messages: MessageTrackingState::default(),
             local_signed_commitment: None,
             report_evidence_binding: None,
@@ -1079,6 +1106,97 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         .flatten()
     }
 
+    pub async fn record_commitment_hash(
+        &self,
+        session_id: &u128,
+        from_node_id: u32,
+        commitment_hash: [u8; 32],
+    ) -> Option<CommitmentHashRecordOutcome> {
+        self.with_state_mut(session_id, |state| {
+            match state.commit_reveal.received_hashes.get(&from_node_id) {
+                Some(existing) if existing == &commitment_hash => {
+                    CommitmentHashRecordOutcome::DuplicateSame
+                }
+                Some(existing) => CommitmentHashRecordOutcome::Mismatch {
+                    existing: *existing,
+                },
+                None => {
+                    state
+                        .commit_reveal
+                        .received_hashes
+                        .insert(from_node_id, commitment_hash);
+                    CommitmentHashRecordOutcome::Recorded
+                }
+            }
+        })
+        .await
+    }
+
+    pub async fn get_commitment_hash(
+        &self,
+        session_id: &u128,
+        from_node_id: u32,
+    ) -> Option<[u8; 32]> {
+        self.with_state(session_id, |state| {
+            state
+                .commit_reveal
+                .received_hashes
+                .get(&from_node_id)
+                .copied()
+        })
+        .await
+        .flatten()
+    }
+
+    pub async fn mark_commitment_hash_broadcast_complete(&self, session_id: &u128) {
+        self.with_state_mut(session_id, |state| {
+            state.commit_reveal.own_hash_broadcast_complete = true;
+        })
+        .await;
+    }
+
+    pub async fn store_pending_commitment_waiting_for_hash(
+        &self,
+        session_id: &u128,
+        from_node_id: u32,
+        commitment: Vec<u8>,
+        report_evidence: Option<SignedDkgCommitment>,
+    ) -> Option<bool> {
+        self.with_state_mut(session_id, |state| {
+            if state
+                .messages
+                .pending_commitments_waiting_for_hash
+                .contains_key(&from_node_id)
+            {
+                return false;
+            }
+            state.messages.pending_commitments_waiting_for_hash.insert(
+                from_node_id,
+                PendingDkgCommitment {
+                    commitment,
+                    report_evidence,
+                },
+            );
+            true
+        })
+        .await
+    }
+
+    pub async fn take_pending_commitment_waiting_for_hash(
+        &self,
+        session_id: &u128,
+        from_node_id: u32,
+    ) -> Option<PendingDkgCommitment> {
+        self.with_state_mut(session_id, |state| {
+            state
+                .messages
+                .pending_commitments_waiting_for_hash
+                .remove(&from_node_id)
+        })
+        .await
+        .flatten()
+    }
+
     pub async fn update_phase(&self, session_id: &u128, phase: DkgPhase) {
         self.with_state_mut(session_id, |state| {
             state.phase = phase;
@@ -1603,6 +1721,56 @@ mod tests {
                 .await
                 .is_none(),
             "pending share should only drain once"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_commitment_hash_recording_detects_duplicates_and_mismatches() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(33, make_node(1), 3, |_| {}).await;
+
+        assert_eq!(
+            mgr.record_commitment_hash(&33, 2, [1; 32]).await,
+            Some(CommitmentHashRecordOutcome::Recorded)
+        );
+        assert_eq!(mgr.get_commitment_hash(&33, 2).await, Some([1; 32]));
+        assert_eq!(
+            mgr.record_commitment_hash(&33, 2, [1; 32]).await,
+            Some(CommitmentHashRecordOutcome::DuplicateSame)
+        );
+        assert_eq!(
+            mgr.record_commitment_hash(&33, 2, [2; 32]).await,
+            Some(CommitmentHashRecordOutcome::Mismatch { existing: [1; 32] })
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pending_commitment_waiting_for_hash_is_drained_once() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(34, make_node(1), 3, |_| {}).await;
+
+        assert_eq!(
+            mgr.store_pending_commitment_waiting_for_hash(&34, 2, vec![1, 2, 3], None)
+                .await,
+            Some(true)
+        );
+        assert_eq!(
+            mgr.store_pending_commitment_waiting_for_hash(&34, 2, vec![4, 5, 6], None)
+                .await,
+            Some(false),
+            "a duplicate early commitment from the same sender should not replace the first"
+        );
+
+        let drained = mgr
+            .take_pending_commitment_waiting_for_hash(&34, 2)
+            .await
+            .expect("pending commitment should be present");
+        assert_eq!(drained.commitment, vec![1, 2, 3]);
+        assert!(
+            mgr.take_pending_commitment_waiting_for_hash(&34, 2)
+                .await
+                .is_none(),
+            "pending commitment should only drain once"
         );
     }
 

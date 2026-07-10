@@ -3,7 +3,9 @@ use crate::decaf377::dkg::DKGNode;
 use crate::decaf377::pre::ThresholdDealerNode;
 use crate::decaf377::sign::ThresholdDecafSigner;
 use crate::dkg_tests::run_all_tests;
-use crate::r#trait::{DistributedShare, Dkg};
+use crate::r#trait::{
+    DistributedShare, Dkg, DkgMode, DkgRole, PolynomialCommitment as PolynomialCommitmentTrait,
+};
 use decaf377::{Element, Fr};
 use rand_core::{OsRng, RngCore};
 
@@ -33,6 +35,19 @@ fn test_all_dkg_tests() {
         },
     )
     .unwrap();
+}
+
+#[test]
+fn constant_term_is_identity_matches_dkg_mode() {
+    // Fresh: random constant term → not identity (negligible chance of a false failure).
+    let mut fresh = DKGNode::new(1, 2, 3, 42, DkgRole::Standard).unwrap();
+    fresh.generate_polynomial(DkgMode::Fresh).unwrap();
+    assert!(!fresh.commitment().constant_term_is_identity());
+
+    // Refresh: zero constant term → identity (delta polynomial keeps the secret).
+    let mut refresh = DKGNode::new(1, 2, 3, 42, DkgRole::Standard).unwrap();
+    refresh.generate_polynomial(DkgMode::Refresh).unwrap();
+    assert!(refresh.commitment().constant_term_is_identity());
 }
 
 #[test]

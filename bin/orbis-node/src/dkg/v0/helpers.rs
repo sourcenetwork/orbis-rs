@@ -38,6 +38,7 @@ pub fn bidirectional_node_peer_maps(
 }
 
 const PSS_SESSION_ID_DOMAIN: &[u8] = b"orbis-pss-session-v1";
+pub(crate) const DKG_COMMITMENT_HASH_DOMAIN: &[u8] = b"orbis-dkg-commitment-hash-v1";
 
 pub(crate) fn ring_payload_matches_ring_key(ring_pk_key: &str, ring_pk_payload: &str) -> bool {
     if let Ok(bytes) = hex::decode(ring_pk_payload) {
@@ -46,6 +47,10 @@ pub(crate) fn ring_payload_matches_ring_key(ring_pk_key: &str, ring_pk_payload: 
         }
     }
     ring_pk_payload == ring_pk_key
+}
+
+pub(crate) fn public_key_matches_storage_key(public_key: &G1Affine, storage_key: &str) -> bool {
+    public_key.to_string() == storage_key
 }
 
 /// Serializes a slice of G1Affine commitment coefficients to a flat byte buffer.
@@ -82,6 +87,19 @@ pub fn deserialize_wire_commitment(
     }
 
     Ok(PolynomialCommitment { coefficients })
+}
+
+pub(crate) fn fresh_commitment_hash(
+    session_id: u128,
+    from_node_id: u32,
+    commitment_bytes: &[u8],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(DKG_COMMITMENT_HASH_DOMAIN);
+    hasher.update(session_id.to_le_bytes());
+    hasher.update(from_node_id.to_le_bytes());
+    hasher.update(commitment_bytes);
+    hasher.finalize().into()
 }
 
 fn hash_labeled_bytes(hasher: &mut Sha256, label: &[u8], bytes: &[u8]) {
@@ -880,6 +898,24 @@ mod tests {
             policy_id: Some("policy".to_string()),
             reporting: Default::default(),
         }
+    }
+
+    #[test]
+    fn fresh_commitment_hash_binds_session_sender_and_bytes() {
+        let commitment = b"commitment-bytes";
+        let base = fresh_commitment_hash(7, 2, commitment);
+
+        assert_eq!(base, fresh_commitment_hash(7, 2, commitment));
+        assert_ne!(base, fresh_commitment_hash(8, 2, commitment));
+        assert_ne!(base, fresh_commitment_hash(7, 3, commitment));
+        assert_ne!(base, fresh_commitment_hash(7, 2, b"other"));
+    }
+
+    #[test]
+    fn public_key_matches_storage_key_compares_canonical_key_string() {
+        let pk = G1Affine::default();
+        assert!(public_key_matches_storage_key(&pk, &pk.to_string()));
+        assert!(!public_key_matches_storage_key(&pk, "different-key"));
     }
 
     #[tokio::test]

@@ -4,8 +4,8 @@ use crate::constants::{
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{
     build_reshare_params, derive_refresh_session_id, derive_reshare_session_id,
-    effective_new_peer_node_keys, serialize_commitment_coefficients, session_not_found,
-    validate_dkg_claims, validate_dkg_node_authorization_for_committee,
+    effective_new_peer_node_keys, fresh_commitment_hash, serialize_commitment_coefficients,
+    session_not_found, validate_dkg_claims, validate_dkg_node_authorization_for_committee,
     validate_fresh_dkg_ring_payload, validate_fresh_session_init_params,
     validate_refresh_session_init_for_version, validate_reshare_session_init_for_version,
 };
@@ -19,7 +19,9 @@ use crate::helpers::node_routes::{
 use crate::ring_state::RingShareBundle;
 
 use authn::{resolve_jwt_did, BearerToken, DkgClaims};
-use crypto::r#trait::{DistributedShare, DkgRole};
+use crypto::r#trait::{
+    DistributedShare, DkgRole, PolynomialCommitment as PolynomialCommitmentTrait,
+};
 use crypto::{
     CryptoDeserialize, PolynomialCommitmentImpl as PolynomialCommitment,
     GROUP_POINT_SIZE as G1_COMPRESSED_SIZE, SCALAR_SIZE as FR_COMPRESSED_SIZE,
@@ -36,6 +38,7 @@ use super::{
 };
 
 mod commitment;
+mod commitment_hash;
 mod session_init;
 mod share;
 
@@ -43,5 +46,6 @@ pub use crate::dkg::v0::coordinator::reshare::selection::{
     handle_reshare_participant_set, handle_reshare_share_ack,
 };
 pub use commitment::handle_commitment_message;
+pub use commitment_hash::handle_commitment_hash_message;
 pub use session_init::handle_session_init;
 pub use share::handle_share_message;

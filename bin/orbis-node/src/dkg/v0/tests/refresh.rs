@@ -427,9 +427,9 @@ async fn test_share_before_commitment_waits_for_commitment() {
         .await;
 
     coordinator
-        .initiate_phase1_commitments(session_id, &[])
+        .initiate_phase0_commitment_hashes(session_id, &[])
         .await
-        .expect("phase 1 with no peers");
+        .expect("phase 0 with no peers");
 
     let mut sender_node =
         *DkgImpl::new(2, 2, 3, session_id, DkgRole::Standard).expect("create sender node");
@@ -438,6 +438,8 @@ async fn test_share_before_commitment_waits_for_commitment() {
         .expect("sender polynomial");
     let commitment = serialize_commitment_coefficients(&sender_node.commitment().coefficients)
         .expect("serialize sender commitment");
+    let commitment_hash =
+        crate::dkg::v0::helpers::fresh_commitment_hash(session_id, 2, &commitment);
     let share = sender_node
         .generate_shares()
         .expect("sender shares")
@@ -454,6 +456,11 @@ async fn test_share_before_commitment_waits_for_commitment() {
         nonce: share.nonce,
         report_evidence: None,
     };
+    let hash_msg = DkgMessage::CommitmentHash {
+        session_id,
+        from_node_id: 2,
+        commitment_hash,
+    };
     let commitment_msg = DkgMessage::Commitment {
         session_id,
         from_node_id: 2,
@@ -462,6 +469,11 @@ async fn test_share_before_commitment_waits_for_commitment() {
     };
     let sender_bytes = hex::decode(sender_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+
+    coordinator
+        .handle_message(hash_msg, &sender_peer_id)
+        .await
+        .expect("commitment hash should be accepted");
 
     let share_coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     let share_sender = sender_peer_id.clone();

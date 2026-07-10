@@ -134,6 +134,7 @@ where
 {
     let message_type = match &message {
         DkgMessage::SessionInit { .. } => "session_init",
+        DkgMessage::CommitmentHash { .. } => "commitment_hash",
         DkgMessage::Commitment { .. } => "commitment",
         DkgMessage::Share { .. } => "share",
         DkgMessage::DkgInvalidShareEvidence { .. } => "dkg_invalid_share_evidence",

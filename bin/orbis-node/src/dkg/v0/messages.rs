@@ -55,6 +55,12 @@ impl SessionKind {
 /// DKG protocol message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DkgMessage {
+    /// Fresh DKG only: pre-commitment hash broadcast.
+    CommitmentHash {
+        session_id: u128,
+        from_node_id: u32,
+        commitment_hash: [u8; 32],
+    },
     /// Phase 1: Polynomial commitment broadcast
     Commitment {
         session_id: u128,
@@ -136,6 +142,7 @@ impl DkgMessage {
     /// Get the session ID from any message
     pub fn session_id(&self) -> u128 {
         match self {
+            DkgMessage::CommitmentHash { session_id, .. } => *session_id,
             DkgMessage::Commitment { session_id, .. } => *session_id,
             DkgMessage::Share { session_id, .. } => *session_id,
             DkgMessage::DkgInvalidShareEvidence { session_id, .. } => *session_id,

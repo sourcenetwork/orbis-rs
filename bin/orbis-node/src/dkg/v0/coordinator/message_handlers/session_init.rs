@@ -639,28 +639,37 @@ where
         }
     }
 
-    // When the gRPC initiator is not a participant, nobody calls
-    // `initiate_phase1_commitments` from `service.rs`:
-    // - Fresh/Refresh: node 1 (lowest sorted peer, agreed via `node_id_assignments`)
+    // When the gRPC initiator is not a participant, nobody calls the local start path
+    // from `service.rs`:
+    // - Fresh: every participant starts Phase 0 so all commitment hashes arrive before
+    //   any commitment reveal.
+    // - Refresh: node 1 (lowest sorted peer, agreed via `node_id_assignments`)
     //   starts Phase 1 so peers are not stuck waiting for the first commitment.
     // - Reshare: dealers do not need to wait for commitments from other old dealers.
     //   Remote old-committee nodes start as soon as their SessionInit is processed,
     //   broadcasting their commitment to the new committee and then sending shares.
     let session_init_from_self = *sender_peer_id == coord.app_state.network.local_peer_id();
-    let starts_phase1 = match kind {
-        SessionKind::Fresh | SessionKind::Refresh { .. } => assigned_node_id == 1,
+    let starts_phase = match kind {
+        SessionKind::Fresh => true,
+        SessionKind::Refresh { .. } => assigned_node_id == 1,
         SessionKind::Reshare { .. } => !session_init_from_self,
     };
-    if session_created_here && starts_phase1 && dkg_role != DkgRole::Receiver {
+    if session_created_here && starts_phase && dkg_role != DkgRole::Receiver {
         let peer_ids_for_phase1 = coord
             .app_state
             .dkg_session_state
             .get_peer_ids(&session_id)
             .await
             .unwrap_or_default();
-        coord
-            .initiate_phase1_commitments(session_id, &peer_ids_for_phase1)
-            .await?;
+        if matches!(kind, SessionKind::Fresh) {
+            coord
+                .initiate_phase0_commitment_hashes(session_id, &peer_ids_for_phase1)
+                .await?;
+        } else {
+            coord
+                .initiate_phase1_commitments(session_id, &peer_ids_for_phase1)
+                .await?;
+        }
     }
 
     tracing::info!(

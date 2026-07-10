@@ -374,6 +374,15 @@ where
         network::open_stream_to_peer(self, peer_id_str).await
     }
 
+    /// Fresh DKG Phase 0: generate polynomial and broadcast commitment hash to all peers.
+    pub async fn initiate_phase0_commitment_hashes(
+        &self,
+        session_id: u128,
+        peer_ids: &[String],
+    ) -> Result<()> {
+        phases::initiate_phase0_commitment_hashes(self, session_id, peer_ids).await
+    }
+
     /// Phase 1: Generate polynomial and broadcast commitment to all peers.
     ///
     /// Called by the initiator after `StartDkg`, or by the PSS scheduler.

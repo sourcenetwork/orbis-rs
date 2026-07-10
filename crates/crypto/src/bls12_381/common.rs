@@ -245,6 +245,10 @@ impl PolynomialCommitmentTrait for PolynomialCommitment {
         // Constant-time comparison
         expected_padded.ct_eq(&actual_padded).into()
     }
+
+    fn constant_term_is_identity(&self) -> bool {
+        self.coefficients.first().is_some_and(|c| c.is_zero())
+    }
 }
 
 // ============================================================================

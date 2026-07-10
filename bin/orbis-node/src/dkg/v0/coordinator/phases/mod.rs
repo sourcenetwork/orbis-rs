@@ -1,7 +1,7 @@
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{
-    build_refresh_ring_bundle, persist_ring_bundle, serialize_commitment_coefficients,
-    session_not_found,
+    build_refresh_ring_bundle, fresh_commitment_hash, persist_ring_bundle,
+    public_key_matches_storage_key, serialize_commitment_coefficients, session_not_found,
 };
 use crate::dkg::v0::messages::{DkgMessage, SessionKind};
 use crate::dkg::v0::session_state::{DkgPhase, RefreshHealthCheckCandidate};
@@ -16,10 +16,12 @@ use super::state_machine::{self, DkgCommand, DkgEvent, SessionSnapshot};
 use super::types::{CoordinatorDkg, CoordinatorReportSigner};
 use super::{refresh_health_check, reshare, ring_storage, DkgCoordinator};
 
+mod phase0;
 mod phase1;
 mod phase2;
 mod phase4;
 
+pub use phase0::initiate_phase0_commitment_hashes;
 pub use phase1::{check_and_trigger_phase2, initiate_phase1_commitments};
 pub use phase2::initiate_phase2_shares;
 pub use phase4::{check_and_trigger_phase4, initiate_phase4_completion};
@@ -72,6 +74,8 @@ where
                 total_nodes: state.node.total_nodes(),
                 threshold: state.node.threshold(),
                 has_polynomial: !state.node.commitment().coefficients.is_empty(),
+                commitment_hashes_received: state.commit_reveal.received_hashes.len(),
+                hash_broadcast_complete: state.commit_reveal.own_hash_broadcast_complete,
                 commitments_received: state.commitments_received,
                 shares_received: state.shares_received,
                 reshare_selected_dealers: state.reshare.selected_dealers.is_some(),
@@ -102,6 +106,15 @@ where
 {
     for command in commands {
         match command {
+            DkgCommand::RevealCommitment => {
+                let peer_ids = peer_ids.ok_or_else(|| {
+                    DkgError::ProtocolError(
+                        "State machine requested commitment reveal without peer IDs".to_string(),
+                    )
+                })?;
+                Box::pin(initiate_phase1_commitments(coord, session_id, peer_ids)).await?;
+                Box::pin(check_and_trigger_phase2(coord, session_id, peer_ids)).await?;
+            }
             DkgCommand::InitiatePhase2Shares => {
                 let peer_ids = peer_ids.ok_or_else(|| {
                     DkgError::ProtocolError(
@@ -163,6 +176,11 @@ where
                     "Post-Phase-2 state machine path tried to re-enter Phase 2".to_string(),
                 ));
             }
+            DkgCommand::RevealCommitment => {
+                return Err(DkgError::ProtocolError(
+                    "Post-Phase-2 state machine path tried to reveal a commitment".to_string(),
+                ));
+            }
         }
     }
 
@@ -178,7 +196,9 @@ fn log_transition_wait(
     if transition.commands.iter().any(|command| {
         matches!(
             command,
-            DkgCommand::InitiatePhase2Shares | DkgCommand::CompletePhase4
+            DkgCommand::RevealCommitment
+                | DkgCommand::InitiatePhase2Shares
+                | DkgCommand::CompletePhase4
         )
     }) {
         return;
