@@ -58,7 +58,7 @@ impl CryptoSerialize for SchnorrSignature {
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         ELEMENT_COMPRESSED_SIZE + FR_COMPRESSED_SIZE
     }
 }
@@ -90,7 +90,7 @@ impl CryptoSerialize for FrostNonceCommitment {
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         2 * ELEMENT_COMPRESSED_SIZE
     }
 }
@@ -132,7 +132,7 @@ impl CryptoSerialize for FrostSigningState {
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         4 + 2 * FR_COMPRESSED_SIZE
     }
 }

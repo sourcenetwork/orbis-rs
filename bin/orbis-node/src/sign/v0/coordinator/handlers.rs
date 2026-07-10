@@ -5,8 +5,8 @@ use crate::constants::{
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::reporting::v0::types::{
     ring_state_sha256, CommitteeScope, InvalidCryptoResponse, NodeOffline, ReportEnvelope,
-    SignResponseStatement, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
-    SIGN_RESPONSE_DOMAIN,
+    ReportSigningContext, SignResponseStatement, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
+    NODE_OFFLINE_REPORT_TYPE, SIGN_RESPONSE_DOMAIN,
 };
 use crate::reporting::v0::validate_signing_report;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
@@ -18,7 +18,10 @@ use crate::sign::v0::helpers::{
     validate_ring_reshare_update_statement, validate_sign_claims,
     verify_message_and_get_info_for_version,
 };
-use crate::sign::v0::messages::{NonceRequest, SignContext, SignMessage, SignRequest};
+use crate::sign::v0::messages::{
+    NonceRequest, PolicyContext, RefreshHealthCheckContext, RingReshareUpdateContext, SignContext,
+    SignMessage, SignRequest,
+};
 use crate::sign::v0::response_state::NonceStoreOutcome;
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
 use bulletin::r#trait::{BulletinKind, DocumentPayload, RingPayload};
@@ -58,6 +61,16 @@ impl SignResponseReportBinding {
             signing_committee_scope,
         }
     }
+}
+
+/// Ring, key-derivation, and fault-report data resolved by pathway-specific
+/// authorization of a SignRequest (one `authorize_*_sign_request` method per
+/// `SignContext` variant).
+struct SignRequestAuthorization {
+    ring_pk_hex: String,
+    derivation: Option<Vec<u8>>,
+    metadata: Option<Vec<u8>>,
+    report_binding: Option<SignResponseReportBinding>,
 }
 impl<D, S> SignCoordinator<D, S>
 where
@@ -424,6 +437,208 @@ where
     }
 
     /// Handle a sign request (responder side)
+    /// Authorize a Bulletin-context sign request.
+    ///
+    /// Message is a BulletinPost; on-chain existence is the authorization.
+    /// Signs from root key: no derivation, no metadata.
+    async fn authorize_bulletin_sign_request(
+        &self,
+        message: &[u8],
+        object_id: &str,
+    ) -> Result<SignRequestAuthorization> {
+        let (ring_pk_hex, _) = verify_message_and_get_info_for_version::<D>(
+            message,
+            &self.app_state.local_storage,
+            &self.app_state.bulletin,
+            object_id,
+            !S::INTERACTIVE,
+            self.routes.version,
+        )
+        .await?;
+        let document_payload = self.read_document_payload(object_id).await?;
+        let ring_payload = self
+            .read_ring_payload_unchecked(&document_payload.ring_id)
+            .await?;
+        let report_binding = SignResponseReportBinding::from_ring(
+            document_payload.ring_id,
+            &ring_payload,
+            "sign",
+            CommitteeScope::Current,
+            CommitteeScope::Current,
+        );
+        Ok(SignRequestAuthorization {
+            ring_pk_hex,
+            derivation: None,
+            metadata: None,
+            report_binding: Some(report_binding),
+        })
+    }
+
+    /// Authorize a Policy-context sign request: validate the JWT, fetch the key
+    /// derivation from the bulletin, and check policy access. Signs from the
+    /// derived key; produces no report binding (unreportable by design).
+    async fn authorize_policy_sign_request(
+        &self,
+        message: &[u8],
+        ctx: &PolicyContext,
+    ) -> Result<SignRequestAuthorization> {
+        let (token_string, derivation_id, valid_window) =
+            (&ctx.token_string, &ctx.derivation_id, &ctx.valid_window);
+        // Always re-validate JWT (pure crypto, no IO)
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
+            .as_secs();
+        let token: BearerToken<SignClaims> = resolve_jwt_did(
+            token_string,
+            current_time,
+            MAX_TOKEN_LIFETIME_SECS,
+            MAX_JWT_BYTES,
+            JWT_CLOCK_SKEW_LEEWAY_SECS,
+        )
+        .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+
+        validate_sign_claims(&token, derivation_id, Some(message))?;
+
+        // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
+        let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
+            &*self.app_state.bulletin,
+            derivation_id,
+            !S::INTERACTIVE,
+            self.routes.version,
+        )
+        .await?;
+
+        // For interactive (FROST), authz was already checked in handle_nonce_request
+        // (Round 1) before the nonce was generated — can decide to skip the IO here (I choose not to but can if speed is needed).
+        // For non-interactive (BLS), this is the first and only round, so check now.
+        check_policy_access(
+            &*self.app_state.authz,
+            &key_derivation,
+            derivation_id,
+            &token.issuer_id,
+            valid_window.clone(),
+        )
+        .await?;
+
+        // Derivation and metadata come from the bulletin, not the client
+        let derivation = Some(key_derivation.derivation.into_bytes());
+        let metadata = Some(S::encode_metadata(
+            &key_derivation.policy_id,
+            &key_derivation.resource,
+            &key_derivation.permission,
+        ));
+
+        Ok(SignRequestAuthorization {
+            ring_pk_hex: ring_payload.ring_pk,
+            derivation,
+            metadata,
+            report_binding: None,
+        })
+    }
+
+    /// Authorize a reshare bulletin-update sign request: validate the announced
+    /// transition statement against the bulletin and local session state.
+    async fn authorize_ring_reshare_update_sign_request(
+        &self,
+        message: &[u8],
+        ctx: &RingReshareUpdateContext,
+    ) -> Result<SignRequestAuthorization> {
+        let ring_pk_hex = validate_ring_reshare_update_statement(
+            &*self.app_state.bulletin,
+            &self.app_state.dkg_session_state,
+            &ctx.statement,
+            Some(message),
+            false,
+        )
+        .await?;
+        let ring_payload = self
+            .read_ring_payload_unchecked(&ctx.statement.ring_id)
+            .await?;
+        let report_binding = SignResponseReportBinding::from_ring(
+            ctx.statement.ring_id.clone(),
+            &ring_payload,
+            "pss_reshare",
+            CommitteeScope::PendingNew,
+            CommitteeScope::PendingNew,
+        );
+        Ok(SignRequestAuthorization {
+            ring_pk_hex,
+            derivation: None,
+            metadata: None,
+            report_binding: Some(report_binding),
+        })
+    }
+
+    /// Authorize a post-refresh health-check sign request: validate the canonical
+    /// statement against this node's staged refreshed bundle.
+    async fn authorize_refresh_health_check_sign_request(
+        &self,
+        message: &[u8],
+        ctx: &RefreshHealthCheckContext,
+    ) -> Result<SignRequestAuthorization> {
+        let (ring_pk_hex, _) = validate_refresh_health_check_statement(
+            &self.app_state.dkg_session_state,
+            &ctx.statement,
+            Some(message),
+        )
+        .await?;
+        let (ring_id, ring_payload) = self.read_ring_payload_for_ring_pk_hex(&ring_pk_hex).await?;
+        let report_binding = SignResponseReportBinding::from_ring(
+            ring_id,
+            &ring_payload,
+            "pss_refresh",
+            CommitteeScope::Current,
+            CommitteeScope::Current,
+        );
+        Ok(SignRequestAuthorization {
+            ring_pk_hex,
+            derivation: None,
+            metadata: None,
+            report_binding: Some(report_binding),
+        })
+    }
+
+    /// Authorize a fault-report sign request: the message must be the report's
+    /// canonical envelope, independently re-validated for this report type.
+    async fn authorize_report_sign_request(
+        &self,
+        message: &[u8],
+        ctx: &ReportSigningContext,
+        sender_peer_id: &PeerId,
+    ) -> Result<SignRequestAuthorization> {
+        let canonical = ctx.envelope.canonical_bytes();
+        if canonical != message {
+            return Err(SignError::Unauthorized(
+                "fault report message does not match its canonical envelope".to_string(),
+            ));
+        }
+        let ring_pk_hex = validate_signing_report(
+            &self.app_state,
+            self.routes,
+            ctx,
+            sender_peer_id.clone(),
+            !S::INTERACTIVE,
+        )
+        .await
+        .map_err(|error| SignError::Unauthorized(error.to_string()))?;
+        let signing_scope = Self::report_signing_scope_from_envelope(&ctx.envelope)?;
+        let report_binding = SignResponseReportBinding {
+            ring_id: ctx.envelope.ring_id.clone(),
+            ring_pk: ctx.envelope.ring_pk.clone(),
+            ring_state_sha256: ctx.envelope.ring_state_sha256.clone(),
+            origin_protocol: "report",
+            accused_committee_scope: signing_scope,
+            signing_committee_scope: signing_scope,
+        };
+        Ok(SignRequestAuthorization {
+            ring_pk_hex,
+            derivation: None,
+            metadata: None,
+            report_binding: Some(report_binding),
+        })
+    }
+
     async fn handle_sign_request(
         &self,
         req: SignRequest,
@@ -473,147 +688,28 @@ where
         }
 
         // Resolve ring info and auth based on pathway.
-        let (ring_pk_hex, derivation, metadata, report_binding) = match &context {
+        let SignRequestAuthorization {
+            ring_pk_hex,
+            derivation,
+            metadata,
+            report_binding,
+        } = match &context {
             SignContext::Bulletin { object_id } => {
-                // Message is a BulletinPost; on-chain existence is the authorization.
-                // Signs from root key: no derivation, no metadata.
-                let (ring_pk_hex, _) = verify_message_and_get_info_for_version::<D>(
-                    &message,
-                    &self.app_state.local_storage,
-                    &self.app_state.bulletin,
-                    object_id,
-                    !S::INTERACTIVE,
-                    self.routes.version,
-                )
-                .await?;
-                let document_payload = self.read_document_payload(object_id).await?;
-                let ring_payload = self
-                    .read_ring_payload_unchecked(&document_payload.ring_id)
-                    .await?;
-                let report_binding = SignResponseReportBinding::from_ring(
-                    document_payload.ring_id,
-                    &ring_payload,
-                    "sign",
-                    CommitteeScope::Current,
-                    CommitteeScope::Current,
-                );
-                (ring_pk_hex, None, None, Some(report_binding))
+                self.authorize_bulletin_sign_request(&message, object_id)
+                    .await?
             }
-            SignContext::Policy(ctx) => {
-                let (token_string, derivation_id, valid_window) =
-                    (&ctx.token_string, &ctx.derivation_id, &ctx.valid_window);
-                // Always re-validate JWT (pure crypto, no IO)
-                let current_time = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
-                    .as_secs();
-                let token: BearerToken<SignClaims> = resolve_jwt_did(
-                    token_string,
-                    current_time,
-                    MAX_TOKEN_LIFETIME_SECS,
-                    MAX_JWT_BYTES,
-                    JWT_CLOCK_SKEW_LEEWAY_SECS,
-                )
-                .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-
-                validate_sign_claims(&token, derivation_id, Some(&message))?;
-
-                // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
-                let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
-                    &*self.app_state.bulletin,
-                    derivation_id,
-                    !S::INTERACTIVE,
-                    self.routes.version,
-                )
-                .await?;
-
-                // For interactive (FROST), authz was already checked in handle_nonce_request
-                // (Round 1) before the nonce was generated — can decide to skip the IO here (I choose not to but can if speed is needed).
-                // For non-interactive (BLS), this is the first and only round, so check now.
-                check_policy_access(
-                    &*self.app_state.authz,
-                    &key_derivation,
-                    derivation_id,
-                    &token.issuer_id,
-                    valid_window.clone(),
-                )
-                .await?;
-
-                // Derivation and metadata come from the bulletin, not the client
-                let derivation = Some(key_derivation.derivation.into_bytes());
-                let metadata = Some(S::encode_metadata(
-                    &key_derivation.policy_id,
-                    &key_derivation.resource,
-                    &key_derivation.permission,
-                ));
-
-                (ring_payload.ring_pk, derivation, metadata, None)
-            }
+            SignContext::Policy(ctx) => self.authorize_policy_sign_request(&message, ctx).await?,
             SignContext::RingReshareUpdate(ctx) => {
-                let ring_pk_hex = validate_ring_reshare_update_statement(
-                    &*self.app_state.bulletin,
-                    &self.app_state.dkg_session_state,
-                    &ctx.statement,
-                    Some(&message),
-                    false,
-                )
-                .await?;
-                let ring_payload = self
-                    .read_ring_payload_unchecked(&ctx.statement.ring_id)
-                    .await?;
-                let report_binding = SignResponseReportBinding::from_ring(
-                    ctx.statement.ring_id.clone(),
-                    &ring_payload,
-                    "pss_reshare",
-                    CommitteeScope::PendingNew,
-                    CommitteeScope::PendingNew,
-                );
-                (ring_pk_hex, None, None, Some(report_binding))
+                self.authorize_ring_reshare_update_sign_request(&message, ctx)
+                    .await?
             }
             SignContext::RefreshHealthCheck(ctx) => {
-                let (ring_pk_hex, _) = validate_refresh_health_check_statement(
-                    &self.app_state.dkg_session_state,
-                    &ctx.statement,
-                    Some(&message),
-                )
-                .await?;
-                let (ring_id, ring_payload) =
-                    self.read_ring_payload_for_ring_pk_hex(&ring_pk_hex).await?;
-                let report_binding = SignResponseReportBinding::from_ring(
-                    ring_id,
-                    &ring_payload,
-                    "pss_refresh",
-                    CommitteeScope::Current,
-                    CommitteeScope::Current,
-                );
-                (ring_pk_hex, None, None, Some(report_binding))
+                self.authorize_refresh_health_check_sign_request(&message, ctx)
+                    .await?
             }
             SignContext::Report(ctx) => {
-                let canonical = ctx.envelope.canonical_bytes();
-                if canonical != message {
-                    return Err(SignError::Unauthorized(
-                        "fault report message does not match its canonical envelope".to_string(),
-                    ));
-                }
-                let ring_pk_hex = validate_signing_report(
-                    &self.app_state,
-                    self.routes,
-                    ctx,
-                    sender_peer_id.clone(),
-                    !S::INTERACTIVE,
-                )
-                .await
-                .map_err(|error| SignError::Unauthorized(error.to_string()))?;
-                let signing_scope = Self::report_signing_scope_from_envelope(&ctx.envelope)?;
-                let report_binding = SignResponseReportBinding {
-                    ring_id: ctx.envelope.ring_id.clone(),
-                    ring_pk: ctx.envelope.ring_pk.clone(),
-                    ring_state_sha256: ctx.envelope.ring_state_sha256.clone(),
-                    origin_protocol: "report",
-                    accused_committee_scope: signing_scope,
-                    signing_committee_scope: signing_scope,
-                };
-                (ring_pk_hex, None, None, Some(report_binding))
+                self.authorize_report_sign_request(&message, ctx, sender_peer_id)
+                    .await?
             }
         };
 

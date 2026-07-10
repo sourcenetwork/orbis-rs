@@ -140,7 +140,6 @@ where
         DkgMessage::ReshareShareAck { .. } => "reshare_share_ack",
         DkgMessage::ReshareParticipantSet { .. } => "reshare_participant_set",
         DkgMessage::RefreshHealthCheckResult { .. } => "refresh_health_check_result",
-        DkgMessage::Complaint { .. } => "complaint",
         DkgMessage::Error { .. } => "error",
     };
 
@@ -664,7 +663,8 @@ mod tests {
         let authz: Arc<dyn Authz + Send + Sync> =
             Arc::new(DummyAuthZ::new().await.expect("DummyAuthZ::new"));
         let local_storage =
-            LocalStorageImpl::new(None, test_db_path(db_name)).expect("create test storage");
+            LocalStorageImpl::new("test-password".to_string(), test_db_path(db_name))
+                .expect("create test storage");
         let network: Arc<dyn Network> = Arc::new(FakeNetwork {
             local_peer_id,
             state,

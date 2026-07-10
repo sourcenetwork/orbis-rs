@@ -80,13 +80,6 @@ pub enum DkgMessage {
         receiver_node_id: u32,
         report_evidence: SignedDkgShare,
     },
-    /// Phase 3: Complaint about a malicious node
-    Complaint {
-        session_id: u128,
-        from_node_id: u32,
-        accused_node_id: u32,
-        reason: String,
-    },
     /// Reshare-only: a new-committee receiver confirms it has verified one
     /// valid share from an old-committee dealer.
     ReshareShareAck {
@@ -146,7 +139,6 @@ impl DkgMessage {
             DkgMessage::Commitment { session_id, .. } => *session_id,
             DkgMessage::Share { session_id, .. } => *session_id,
             DkgMessage::DkgInvalidShareEvidence { session_id, .. } => *session_id,
-            DkgMessage::Complaint { session_id, .. } => *session_id,
             DkgMessage::ReshareShareAck { session_id, .. } => *session_id,
             DkgMessage::ReshareParticipantSet { session_id, .. } => *session_id,
             DkgMessage::RefreshHealthCheckResult { session_id, .. } => *session_id,

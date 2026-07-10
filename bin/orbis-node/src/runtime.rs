@@ -1,3 +1,5 @@
+use crate::app_state::AppState;
+use crate::constants::{self, MIN_NODE_BALANCE};
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
@@ -5,6 +7,7 @@ use crate::helpers::launch::{
 };
 use crate::info::{BootstrapInfoServiceImpl, InfoServiceImpl};
 use crate::store_secret::StoreSecretServiceImpl;
+use crate::{dkg, metrics, pre, pss, sign};
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::{r#trait::Bulletin, BulletinImpl};
@@ -112,9 +115,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
         // Get password for encrypting ring key shares
         let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
-        let local_storage =
-            LocalStorageImpl::new(Some(password), db_path(&runtime_base_path, "orbis"))
-                .map_err(|e| format!("Failed to create local storage: {}", e))?;
+        let local_storage = LocalStorageImpl::new(password, db_path(&runtime_base_path, "orbis"))
+            .map_err(|e| format!("Failed to create local storage: {}", e))?;
         // Get node secret hex for netwokring
         let node_secret_hex = get_network_key_secret(None, local_storage.clone())
             .map_err(|e| format!("Failed to get node secret: {}", e))?;
@@ -234,7 +236,10 @@ pub(crate) fn start_bootstrap_info_server(
             .accept_http1(true)
             .layer(CorsLayer::permissive())
             .layer(GrpcWebLayer::new())
-            .add_service(InfoServiceServer::new(info_service))
+            .add_service(
+                InfoServiceServer::new(info_service)
+                    .max_decoding_message_size(constants::MAX_SMALL_GRPC_REQUEST_BYTES),
+            )
             .serve_with_incoming_shutdown(incoming, async {
                 let _ = shutdown_rx.await;
             })
@@ -385,7 +390,10 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
         .max_concurrent_streams(Some(node.grpc_max_concurrent_streams))
         .layer(CorsLayer::permissive())
         .layer(GrpcWebLayer::new())
-        .add_service(InfoServiceServer::new(info_service));
+        .add_service(
+            InfoServiceServer::new(info_service)
+                .max_decoding_message_size(constants::MAX_SMALL_GRPC_REQUEST_BYTES),
+        );
 
     #[cfg(feature = "unsafe-testing")]
     {
@@ -399,8 +407,10 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
             tracing::warn!("Unsafe testing gRPC service is enabled");
             let unsafe_testing_service =
                 UnsafeTestingServiceImpl::with_app_state(node.app_state.clone());
-            grpc_server =
-                grpc_server.add_service(UnsafeTestingServiceServer::new(unsafe_testing_service));
+            grpc_server = grpc_server.add_service(
+                UnsafeTestingServiceServer::new(unsafe_testing_service)
+                    .max_decoding_message_size(constants::MAX_SIGN_REQUEST_BYTES),
+            );
         } else {
             tracing::info!(
                 "Unsafe testing feature is compiled in, but its gRPC service is disabled"
@@ -432,10 +442,22 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
                         protocol_routes,
                     );
                 grpc_server = grpc_server
-                    .add_service(DkgServiceServer::new(dkg_service))
-                    .add_service(PreServiceServer::new(pre_service))
-                    .add_service(StoreSecretServiceServer::new(store_secret_service))
-                    .add_service(SignServiceServer::new(sign_service));
+                    .add_service(
+                        DkgServiceServer::new(dkg_service)
+                            .max_decoding_message_size(constants::MAX_SMALL_GRPC_REQUEST_BYTES),
+                    )
+                    .add_service(
+                        PreServiceServer::new(pre_service)
+                            .max_decoding_message_size(constants::MAX_SMALL_GRPC_REQUEST_BYTES),
+                    )
+                    .add_service(
+                        StoreSecretServiceServer::new(store_secret_service)
+                            .max_decoding_message_size(constants::MAX_STORE_SECRET_REQUEST_BYTES),
+                    )
+                    .add_service(
+                        SignServiceServer::new(sign_service)
+                            .max_decoding_message_size(constants::MAX_SIGN_REQUEST_BYTES),
+                    );
             }
             _ => {}
         }
@@ -507,6 +529,3 @@ fn init_tracing(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-use crate::app_state::AppState;
-use crate::constants::{self, MIN_NODE_BALANCE};
-use crate::{dkg, metrics, pre, pss, sign};

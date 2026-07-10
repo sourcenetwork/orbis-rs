@@ -30,6 +30,23 @@ pub const JWT_CLOCK_SKEW_LEEWAY_SECS: u64 = 5 * 60;
 /// oversized tokens from reaching DID resolution and signature verification.
 pub const MAX_JWT_BYTES: usize = 16 * 1024;
 
+/// Maximum protobuf-encoded byte length for small public gRPC requests.
+///
+/// Small/control endpoints should never need a body larger than a JWT-sized
+/// envelope. Larger data-carrying endpoints define their own request caps.
+pub const MAX_SMALL_GRPC_REQUEST_BYTES: usize = MAX_JWT_BYTES;
+
+// ============================================================================
+// StoreSecret Constants
+// ============================================================================
+
+/// Maximum protobuf-encoded byte length for a StoreSecret request.
+///
+/// This caps the whole request rather than each field individually, keeping the
+/// relay bound simple while preventing oversized encrypted documents, proofs,
+/// and metadata from reaching hashing, parsing, or bulletin posting work.
+pub const MAX_STORE_SECRET_REQUEST_BYTES: usize = 256 * 1024;
+
 // ============================================================================
 // Cryptographic Constants
 // ============================================================================
@@ -379,3 +396,9 @@ pub const MIN_ITEM_SIZE: usize = 9;
 /// Maximum byte length for the message field in a sign request.
 /// Prevents oversized messages from bloating JWTs and network messages sent to all ring members.
 pub const MAX_SIGN_MESSAGE_BYTES: usize = 1024 * 1024; // 1 MiB
+
+/// Maximum protobuf-encoded byte length for a Sign gRPC request.
+///
+/// Preserves the 1 MiB signed-message contract while leaving room for the
+/// derivation id, optional fields, and request framing overhead.
+pub const MAX_SIGN_REQUEST_BYTES: usize = MAX_SIGN_MESSAGE_BYTES + MAX_JWT_BYTES;

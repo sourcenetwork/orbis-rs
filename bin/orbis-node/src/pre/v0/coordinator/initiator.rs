@@ -344,19 +344,15 @@ where
                                 );
                                 continue;
                             };
-                            let report_context = PreResponseReportContext {
-                                chain_id: report_binding.chain_id.clone(),
-                                ring_id: report_binding.ring_id.clone(),
-                                ring_pk: report_binding.ring_pk.clone(),
-                                ring_state_sha256: report_binding.ring_state_sha256.clone(),
-                                protocol_version: self.routes.version,
-                                request_id: request_id.clone(),
-                                accused_node_key: accused_node_key.to_string(),
-                                accused_peer_id: peer_id.clone(),
-                                object_id: ctx.object_id.clone(),
-                                rdr_pk: ctx.rdr_pk_bytes.clone(),
-                                derivation: ctx.derivation.clone(),
-                            };
+                            let report_context = report_binding.response_report_context(
+                                self.routes.version,
+                                &request_id,
+                                accused_node_key,
+                                &peer_id,
+                                &ctx.object_id,
+                                ctx.rdr_pk_bytes.clone(),
+                                ctx.derivation.clone(),
+                            );
                             match Self::verify_peer_response(
                                 &dealer,
                                 response,
@@ -462,7 +458,7 @@ where
             seen_node_ids: seen_node_ids.clone(),
         });
 
-        // 6. Collect any responses that were already stored before cancellation and
+        // 5. Collect any responses that were already stored before cancellation and
         // verify the ones we have not counted yet.
         let collected_responses = self
             .app_state
@@ -490,19 +486,15 @@ where
                 );
                 continue;
             };
-            let report_context = PreResponseReportContext {
-                chain_id: report_binding.chain_id.clone(),
-                ring_id: report_binding.ring_id.clone(),
-                ring_pk: report_binding.ring_pk.clone(),
-                ring_state_sha256: report_binding.ring_state_sha256.clone(),
-                protocol_version: self.routes.version,
-                request_id: request_id.clone(),
-                accused_node_key: accused_node_key.to_string(),
-                accused_peer_id: response.sender_peer_hex.clone(),
-                object_id: ctx.object_id.clone(),
-                rdr_pk: ctx.rdr_pk_bytes.clone(),
-                derivation: ctx.derivation.clone(),
-            };
+            let report_context = report_binding.response_report_context(
+                self.routes.version,
+                &request_id,
+                accused_node_key,
+                &response.sender_peer_hex,
+                &ctx.object_id,
+                ctx.rdr_pk_bytes.clone(),
+                ctx.derivation.clone(),
+            );
             match Self::verify_peer_response(
                 &dealer,
                 response.message,
@@ -536,7 +528,7 @@ where
             }
         }
 
-        // 7. Check if we have enough verified shares
+        // 6. Check if we have enough verified shares
         if verified_shares.len() < ring.threshold {
             if is_ring_reshare_in_progress(&ring.ring_pk_bytes, &self.app_state.dkg_session_state)
                 .await
@@ -553,7 +545,7 @@ where
             });
         }
 
-        // 8. Recover the reencrypted commitment
+        // 7. Recover the reencrypted commitment
         let xnc_cmt_opt = dealer
             .recover(&verified_shares, ring.threshold, ring.total_participants)
             .map_err(|e| {
@@ -563,23 +555,23 @@ where
         let xnc_cmt = xnc_cmt_opt
             .ok_or_else(|| PreError::RecoveryFailed("Recovery returned None".to_string()))?;
 
-        // 10. Serialize xnc_cmt to bytes then hex using trait method
+        // 8. Serialize xnc_cmt to bytes then hex using trait method
         let xnc_cmt_bytes = CryptoSerialize::to_bytes(&xnc_cmt)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize xnc_cmt: {}", e)))?;
         let xnc_cmt_hex = hex::encode(&xnc_cmt_bytes);
 
-        // 11. Deserialize secret from bytes (use cloned version)
+        // 9. Deserialize secret from bytes (use cloned version)
         let secret: Secret = serde_json::from_slice(&secret_bytes_for_later).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
         })?;
 
-        // 12. Create response structure
+        // 10. Create response structure
         let pre_response = PreResponse {
             xnc_cmt: xnc_cmt_hex,
             secret,
         };
 
-        // 13. Serialize response to JSON bytes
+        // 11. Serialize response to JSON bytes
         let response_bytes = serde_json::to_vec(&pre_response)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize response: {}", e)))?;
 
@@ -741,19 +733,15 @@ where
 
         Some((
             expected_node_id,
-            PreResponseReportContext {
-                chain_id: args.report_binding.chain_id.clone(),
-                ring_id: args.report_binding.ring_id.clone(),
-                ring_pk: args.report_binding.ring_pk.clone(),
-                ring_state_sha256: args.report_binding.ring_state_sha256.clone(),
-                protocol_version: routes.version,
-                request_id: args.request_id.clone(),
-                accused_node_key: accused_node_key.to_string(),
-                accused_peer_id: peer_id.to_string(),
-                object_id: args.object_id.clone(),
-                rdr_pk: args.rdr_pk_bytes.clone(),
-                derivation: args.derivation.clone(),
-            },
+            args.report_binding.response_report_context(
+                routes.version,
+                &args.request_id,
+                accused_node_key,
+                peer_id,
+                &args.object_id,
+                args.rdr_pk_bytes.clone(),
+                args.derivation.clone(),
+            ),
         ))
     }
 }
@@ -795,6 +783,32 @@ impl PreReportBinding {
             ring_payload.ring_pk.clone(),
             ring_state_sha256(ring_payload),
         )
+    }
+
+    /// Build the report context for one PRE response accused of an invalid proof.
+    fn response_report_context(
+        &self,
+        protocol_version: u64,
+        request_id: &str,
+        accused_node_key: &str,
+        accused_peer_id: &str,
+        object_id: &str,
+        rdr_pk: Vec<u8>,
+        derivation: Option<Vec<u8>>,
+    ) -> PreResponseReportContext {
+        PreResponseReportContext {
+            chain_id: self.chain_id.clone(),
+            ring_id: self.ring_id.clone(),
+            ring_pk: self.ring_pk.clone(),
+            ring_state_sha256: self.ring_state_sha256.clone(),
+            protocol_version,
+            request_id: request_id.to_string(),
+            accused_node_key: accused_node_key.to_string(),
+            accused_peer_id: accused_peer_id.to_string(),
+            object_id: object_id.to_string(),
+            rdr_pk,
+            derivation,
+        }
     }
 }
 

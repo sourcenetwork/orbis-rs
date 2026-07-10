@@ -29,7 +29,7 @@ impl CryptoSerialize for Fr {
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         FR_COMPRESSED_SIZE
     }
 }
@@ -54,7 +54,7 @@ impl CryptoSerialize for Element {
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         ELEMENT_COMPRESSED_SIZE
     }
 }
@@ -173,7 +173,7 @@ impl CryptoSerialize for PubPoly {
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         // Variable size, return minimum (just the length field)
         4
     }
@@ -230,7 +230,7 @@ impl CryptoSerialize for PolynomialCommitment {
         Ok(bytes)
     }
 
-    fn serialized_size() -> usize {
+    fn min_serialized_size() -> usize {
         // Variable size, return minimum (just the length field)
         4
     }

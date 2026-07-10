@@ -430,6 +430,9 @@ Provisioning files live in `docker/grafana/` and are mounted into the container 
 - Only public keys and metadata appear in trace output
 - Local storage uses AES-256-GCM with Argon2 key derivation
 - All share transmissions include nonces and session IDs to prevent replay attacks
+- Nodes **fully trust their configured SourceHub endpoints** (no light-client
+  verification of chain reads) — production nodes must run their own SourceHub
+  full node; see [Chain endpoint trust](bin/orbis-node/README.md#chain-endpoint-trust-hard-requirement)
 
 ## License
 

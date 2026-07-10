@@ -524,7 +524,7 @@ pub fn deserialize_commitments<S: ThresholdSigner>(
 pub fn validate_sign_claims(
     token: &BearerToken<SignClaims>,
     derivation_id: &str,
-    message: Option<&Vec<u8>>,
+    message: Option<&[u8]>,
 ) -> Result<()> {
     if token.claims.derivation_id != derivation_id {
         return Err(SignError::Unauthorized(format!(

@@ -14,6 +14,7 @@ use crypto::{
 };
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
@@ -21,6 +22,19 @@ use zeroize::Zeroizing;
 /// Returns a `SessionNotFound` error for the given session_id.
 pub fn session_not_found(session_id: u128) -> DkgError {
     DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
+}
+
+/// Build the forward and reverse node_id <-> peer_id lookup maps from one mapping.
+pub fn bidirectional_node_peer_maps(
+    node_id_to_peer_id: HashMap<u32, String>,
+) -> (HashMap<u32, String>, HashMap<String, u32>) {
+    let mut node_to_peer = HashMap::with_capacity(node_id_to_peer_id.len());
+    let mut peer_to_node = HashMap::with_capacity(node_id_to_peer_id.len());
+    for (node_id, peer_id) in node_id_to_peer_id {
+        node_to_peer.insert(node_id, peer_id.clone());
+        peer_to_node.insert(peer_id, node_id);
+    }
+    (node_to_peer, peer_to_node)
 }
 
 const PSS_SESSION_ID_DOMAIN: &[u8] = b"orbis-pss-session-v1";
@@ -794,7 +808,8 @@ mod tests {
 
     fn make_storage(db_name: &str) -> (LocalStorageImpl, String) {
         let db_path = test_db_path(db_name);
-        let storage = LocalStorageImpl::new(None, db_path.clone()).expect("create storage");
+        let storage = LocalStorageImpl::new("test-password".to_string(), db_path.clone())
+            .expect("create storage");
         (storage, db_path)
     }
 

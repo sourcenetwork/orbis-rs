@@ -52,12 +52,6 @@ impl DkgMessageMeta {
                 committee_scope: CommitteeScope::ReshareNew,
                 metric_label: "dkg_invalid_share_evidence",
             },
-            DkgMessage::Complaint { from_node_id, .. } => Self::from_sender(
-                DkgMessageType::Complaint,
-                *from_node_id,
-                CommitteeScope::Current,
-                "complaint",
-            ),
             DkgMessage::ReshareShareAck {
                 receiver_node_id, ..
             } => Self {
@@ -253,20 +247,6 @@ where
         } => {
             evidence::handle_invalid_share_evidence_relay(coord, session_id, report_evidence).await
         }
-        DkgMessage::Complaint {
-            from_node_id,
-            accused_node_id,
-            reason,
-            ..
-        } => {
-            tracing::warn!(
-                from_node_id,
-                accused_node_id,
-                reason = %reason,
-                "DKG Coordinator: Received complaint"
-            );
-            Ok(None)
-        }
         DkgMessage::ReshareShareAck {
             receiver_node_id,
             dealer_id,
@@ -440,19 +420,6 @@ mod tests {
             None,
             CommitteeScope::ReshareNew,
             "dkg_invalid_share_evidence",
-        );
-        assert_meta(
-            DkgMessage::Complaint {
-                session_id: 1,
-                from_node_id: 2,
-                accused_node_id: 3,
-                reason: "test".into(),
-            },
-            DkgMessageType::Complaint,
-            Some(2),
-            Some(2),
-            CommitteeScope::Current,
-            "complaint",
         );
         assert_meta(
             DkgMessage::ReshareShareAck {

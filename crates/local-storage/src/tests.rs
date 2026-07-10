@@ -56,10 +56,10 @@ pub fn test_encrypted_functions<DB: LocalStorage>(db: DB) {
 pub fn test_new_creates_database<DB, F>(path: &str, constructor: F)
 where
     DB: LocalStorage,
-    F: Fn(Option<String>, String) -> crate::error::Result<DB>,
+    F: Fn(String, String) -> crate::error::Result<DB>,
 {
     // Creating a new database should succeed
-    let storage = constructor(Some("my_password".to_string()), path.to_string());
+    let storage = constructor("my_password".to_string(), path.to_string());
     assert!(
         storage.is_ok(),
         "Failed to create database: {:?}",
@@ -78,14 +78,14 @@ where
 pub fn test_reopens_with_correct_password<DB, F>(path: &str, constructor: F)
 where
     DB: LocalStorage,
-    F: Fn(Option<String>, String) -> crate::error::Result<DB>,
+    F: Fn(String, String) -> crate::error::Result<DB>,
 {
     let password = "correct_password".to_string();
 
     // Create a new database with a password and store data
     {
-        let storage = constructor(Some(password.clone()), path.to_string())
-            .expect("Failed to create database");
+        let storage =
+            constructor(password.clone(), path.to_string()).expect("Failed to create database");
         storage
             .set(
                 LocalStorageKeys::RingKey("test".to_string()),
@@ -96,7 +96,7 @@ where
 
     // Reopen with the same password - should succeed and data should persist
     {
-        let storage = constructor(Some(password), path.to_string())
+        let storage = constructor(password, path.to_string())
             .expect("Failed to reopen database with correct password");
         let value = storage
             .get(LocalStorageKeys::RingKey("test".to_string()))
@@ -113,16 +113,16 @@ where
 pub fn test_fails_with_wrong_password<DB, F>(path: &str, constructor: F)
 where
     DB: LocalStorage + std::fmt::Debug,
-    F: Fn(Option<String>, String) -> crate::error::Result<DB>,
+    F: Fn(String, String) -> crate::error::Result<DB>,
 {
     // Create a new database with a password
     {
-        let _storage = constructor(Some("correct_password".to_string()), path.to_string())
+        let _storage = constructor("correct_password".to_string(), path.to_string())
             .expect("Failed to create database");
     }
 
     // Try to reopen with wrong password - should fail
-    let result = constructor(Some("wrong_password".to_string()), path.to_string());
+    let result = constructor("wrong_password".to_string(), path.to_string());
     assert!(result.is_err(), "Should have failed with wrong password");
     assert!(
         matches!(result.unwrap_err(), LocalStorageError::InvalidPassword),
@@ -130,34 +130,11 @@ where
     );
 }
 
-/// Test that creating a database without password works
-pub fn test_without_password<DB, F>(path: &str, constructor: F)
-where
-    DB: LocalStorage,
-    F: Fn(Option<String>, String) -> crate::error::Result<DB>,
-{
-    // Create without password
-    let storage =
-        constructor(None, path.to_string()).expect("Failed to create database without password");
-
-    // Basic operations should still work
-    storage
-        .set(
-            LocalStorageKeys::RingKey("key".to_string()),
-            b"value".to_vec(),
-        )
-        .expect("Failed to set value");
-    let value = storage
-        .get(LocalStorageKeys::RingKey("key".to_string()))
-        .expect("Failed to get value");
-    assert_eq!(value, Some(b"value".to_vec()));
-}
-
 /// Test that encrypted data persists across reopens
 pub fn test_encrypted_data_persists<DB, F>(path: &str, constructor: F)
 where
     DB: LocalStorage,
-    F: Fn(Option<String>, String) -> crate::error::Result<DB>,
+    F: Fn(String, String) -> crate::error::Result<DB>,
 {
     let password = "persistence_test".to_string();
     let key = LocalStorageKeys::RingKey("secret".to_string());
@@ -165,8 +142,8 @@ where
 
     // Create and store encrypted data
     {
-        let storage = constructor(Some(password.clone()), path.to_string())
-            .expect("Failed to create database");
+        let storage =
+            constructor(password.clone(), path.to_string()).expect("Failed to create database");
         storage
             .set_encrypted(key.clone(), zeroize::Zeroizing::new(secret_data.clone()))
             .expect("Failed to set encrypted value");
@@ -174,8 +151,7 @@ where
 
     // Reopen and verify we can decrypt
     {
-        let storage =
-            constructor(Some(password), path.to_string()).expect("Failed to reopen database");
+        let storage = constructor(password, path.to_string()).expect("Failed to reopen database");
         let decrypted = storage
             .get_encrypted(key)
             .expect("Failed to get encrypted value");

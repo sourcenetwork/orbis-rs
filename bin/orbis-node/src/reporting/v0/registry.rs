@@ -406,7 +406,12 @@ impl InvalidCryptoResponseHandler {
         statement: &crate::reporting::v0::types::PreReencryptResponseStatement,
         response_signature: &[u8],
     ) -> Result<()> {
-        validate_pre_invalid_statement_shape(envelope, statement, response_signature, context)?;
+        validate_pre_reencrypt_response_statement_shape(
+            envelope,
+            statement,
+            response_signature,
+            context,
+        )?;
         let effective_version =
             validate_report_route_version_at_observed_at(envelope, ring, context.routes.version)?;
         if statement.protocol_version != effective_version {
@@ -907,7 +912,7 @@ fn validate_invalid_crypto_statement_prologue(
     Ok(())
 }
 
-fn validate_pre_invalid_statement_shape(
+fn validate_pre_reencrypt_response_statement_shape(
     envelope: &ReportEnvelope,
     statement: &PreReencryptResponseStatement,
     response_signature: &[u8],
@@ -1529,7 +1534,7 @@ mod tests {
     }
 
     #[test]
-    fn routes_pre_invalid_proof_observation_to_handler() {
+    fn routes_pre_invalid_observation_to_handler() {
         let registry = ReportRegistry::with_defaults();
         let handler = registry
             .handler_for_observation(&ReportObservation::InvalidCryptoResponse(Box::new(
