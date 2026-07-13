@@ -293,7 +293,7 @@ where
                     });
             }
 
-            // Initiate Phase 1 only if we're participating
+            // Initiate Phase 0 (commitment-hash pre-round) only if we're participating
             if self_included {
                 coordinator
                     .initiate_phase0_commitment_hashes(session_id, &peer_ids)
