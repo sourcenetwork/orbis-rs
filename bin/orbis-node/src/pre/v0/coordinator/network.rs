@@ -1,7 +1,7 @@
 use super::PreCoordinator;
 use crate::constants::PEER_RESPONSE_TIMEOUT;
+use crate::helpers::response_manager::ResponseStoreOutcome;
 use crate::pre::v0::error::{PreError, Result};
-use crate::pre::v0::helpers::store_response;
 use crate::pre::v0::messages::PreMessage;
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
@@ -102,24 +102,31 @@ where
 
         // Only store valid reencryption responses; log and drop peer errors
         let authenticated_peer_id = stream.peer_id().clone();
+        let authenticated_peer_hex = hex::encode(authenticated_peer_id.as_bytes());
         match response {
             response @ PreMessage::ReencryptResponse { .. } => {
-                let accepted = store_response(
-                    self.routes.version,
-                    response.clone(),
-                    &authenticated_peer_id,
-                    &self.app_state.pre_response_state,
-                )
-                .await;
-                if accepted {
-                    Ok(Some(response))
-                } else {
-                    tracing::warn!(
-                        peer = %peer_id_str,
-                        authenticated_peer = %hex::encode(authenticated_peer_id.as_bytes()),
-                        "PRE Coordinator: rejecting fast-path response from unexpected or duplicate peer"
-                    );
-                    Ok(None)
+                match self
+                    .app_state
+                    .pre_response_state
+                    .store_response_for_version(
+                        self.routes.version,
+                        response.request_id(),
+                        response.clone(),
+                        authenticated_peer_id.as_bytes(),
+                    )
+                    .await
+                {
+                    ResponseStoreOutcome::Stored | ResponseStoreOutcome::MissingRequest => {
+                        Ok(Some(response))
+                    }
+                    ResponseStoreOutcome::UnexpectedOrDuplicatePeer => {
+                        tracing::warn!(
+                            peer = %peer_id_str,
+                            authenticated_peer = %authenticated_peer_hex,
+                            "PRE Coordinator: rejecting fast-path response from unexpected or duplicate peer"
+                        );
+                        Ok(None)
+                    }
                 }
             }
             PreMessage::Error { error, .. } => {
