@@ -20,27 +20,46 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - name: Check formatting
       run: cargo fmt --all -- --check
-    - name: Clippy
-      run: cargo clippy --all-targets --features=integration-test,fault-injection -- -D warnings
-    - name: Clippy (decaf377)
-      run: cargo clippy --all-targets --no-default-features --features=decaf377,redb,integration-test,fault-injection -- -D warnings
     - name: Install cargo-deny
       run: cargo install cargo-deny --locked
     - name: Check licences
       run: cargo deny check
 
-  build:
-
-    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}/\
-      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
-
+  clippy:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crypto: bls12-381
+            cargo_flags: --features=integration-test,fault-injection
+          - crypto: decaf377
+            cargo_flags: --no-default-features --features=decaf377,redb,integration-test,fault-injection
     steps:
     - uses: actions/checkout@v4
     - name: Update Rust stable
       run: rustup update stable
     - name: Install protoc
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-    - name: Run tests
-      run: cargo test --features=integration-test,fault-injection --verbose
-    - name: Run tests decaf377
-      run: cargo test --no-default-features --features=decaf377,redb,integration-test,fault-injection --verbose
+    - name: Clippy (${{ matrix.crypto }})
+      run: cargo clippy --all-targets ${{ matrix.cargo_flags }} -- -D warnings
+
+  build:
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}/\
+      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crypto: bls12-381
+            cargo_flags: --features=integration-test,fault-injection
+          - crypto: decaf377
+            cargo_flags: --no-default-features --features=decaf377,redb,integration-test,fault-injection
+    steps:
+    - uses: actions/checkout@v4
+    - name: Update Rust stable
+      run: rustup update stable
+    - name: Install protoc
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+    - name: Run tests (${{ matrix.crypto }})
+      run: cargo test ${{ matrix.cargo_flags }} --verbose

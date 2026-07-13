@@ -26,7 +26,10 @@ use proto::v0::dkg::dkg_service_client::DkgServiceClient;
 use proto::v0::pre::pre_service_client::PreServiceClient;
 use proto::v0::sign::sign_service_client::SignServiceClient;
 use proto::v0::store_secret::store_secret_service_client::StoreSecretServiceClient;
-use tonic::Request;
+use tonic::{Code, Request, Status};
+
+const DKG_START_MAX_ATTEMPTS: usize = 3;
+const DKG_START_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Response structure from PRE server
 #[derive(Debug, Deserialize)]
@@ -45,6 +48,11 @@ pub struct DkgResult {
     pub message: String,
 }
 
+fn is_retryable_dkg_start_error(status: &Status) -> bool {
+    status.code() == Code::Unavailable
+        && status.message().to_ascii_lowercase().contains("timed out")
+}
+
 pub async fn do_dkg(endpoint: String, ring_id: String) -> Result<DkgResult> {
     println!("Starting DKG session:");
     println!("  Endpoint: {}", endpoint);
@@ -57,22 +65,38 @@ pub async fn do_dkg(endpoint: String, ring_id: String) -> Result<DkgResult> {
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
 
-    let request = proto::v0::dkg::StartDkgRequest {
-        ring_id: ring_id.clone(),
-    };
-
     // JWT work
     let jwt_signer = JwtSigner::new();
     let token = jwt_signer
         .create_dkg_jwt(&ring_id)
         .expect("Failed to create JWT");
-    let tonic_request = create_authenticated_request(request, &token)
-        .map_err(|e| anyhow!("Failed to create_dkg_jwt: {}", e))?;
 
-    let response = client
-        .start_dkg(tonic_request)
-        .await
-        .context("DKG request failed")?;
+    let mut response = None;
+    for attempt in 1..=DKG_START_MAX_ATTEMPTS {
+        let request = proto::v0::dkg::StartDkgRequest {
+            ring_id: ring_id.clone(),
+        };
+        let tonic_request = create_authenticated_request(request, &token)
+            .map_err(|e| anyhow!("Failed to create_dkg_jwt: {}", e))?;
+
+        match client.start_dkg(tonic_request).await {
+            Ok(ok) => {
+                response = Some(ok);
+                break;
+            }
+            Err(status)
+                if attempt < DKG_START_MAX_ATTEMPTS && is_retryable_dkg_start_error(&status) =>
+            {
+                println!(
+                    "DKG request timed out connecting to a peer (attempt {attempt}/{DKG_START_MAX_ATTEMPTS}); retrying..."
+                );
+                tokio::time::sleep(DKG_START_RETRY_DELAY).await;
+            }
+            Err(status) => return Err(status).context("DKG request failed"),
+        }
+    }
+
+    let response = response.expect("DKG retry loop should return or store a response");
 
     let response = response.into_inner();
 
