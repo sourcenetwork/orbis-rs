@@ -40,6 +40,8 @@ jobs:
             cargo_flags: --no-default-features --features=decaf377,redb,integration-test,fault-injection
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
     - name: Update Rust stable
       run: rustup update stable
     - name: Install protoc
@@ -60,6 +62,8 @@ jobs:
             cargo_flags: --no-default-features --features=decaf377,redb,integration-test,fault-injection
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
     - name: Update Rust stable
       run: rustup update stable
     - name: Install protoc
