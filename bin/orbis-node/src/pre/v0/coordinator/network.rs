@@ -23,9 +23,10 @@ where
     /// Send a PRE request to a peer and wait for the response
     ///
     /// This method sends a request and waits for the response on the same connection,
-    /// storing the response for later collection. Returns the reencryption response
-    /// when one was received and stored; peer errors and unexpected message types
-    /// are logged and returned as `Ok(None)`.
+    /// storing the response for later collection when the request is still tracked.
+    /// Returns the reencryption response when one was received, including when it
+    /// arrives after threshold completion and can no longer be stored; peer errors
+    /// and unexpected message types are logged and returned as `Ok(None)`.
     pub async fn send_request_and_receive_response(
         &self,
         peer_id_str: &str,
@@ -105,7 +106,7 @@ where
         let authenticated_peer_hex = hex::encode(authenticated_peer_id.as_bytes());
         match response {
             response @ PreMessage::ReencryptResponse { .. } => {
-                match self
+                let store_outcome = self
                     .app_state
                     .pre_response_state
                     .store_response_for_version(
@@ -114,9 +115,17 @@ where
                         response.clone(),
                         authenticated_peer_id.as_bytes(),
                     )
-                    .await
-                {
-                    ResponseStoreOutcome::Stored | ResponseStoreOutcome::MissingRequest => {
+                    .await;
+
+                match store_outcome {
+                    ResponseStoreOutcome::Stored => Ok(Some(response)),
+                    ResponseStoreOutcome::MissingRequest => {
+                        tracing::debug!(
+                            peer = %peer_id_str,
+                            authenticated_peer = %authenticated_peer_hex,
+                            request_id = %response.request_id(),
+                            "PRE Coordinator: fast-path response arrived after response state cleanup; returning for verification"
+                        );
                         Ok(Some(response))
                     }
                     ResponseStoreOutcome::UnexpectedOrDuplicatePeer => {
