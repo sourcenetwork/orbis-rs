@@ -5,6 +5,7 @@ use crypto::r#trait::DkgRole;
 /// Protocol events that can advance the local coordinator state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DkgEvent {
+    CommitmentHashRecorded,
     CommitmentRecorded,
     ShareRecorded { from_node_id: u32 },
     ReshareParticipantSetAccepted,
@@ -26,6 +27,7 @@ impl DkgEvent {
 /// Side effects selected by the state machine and executed outside the state lock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DkgCommand {
+    RevealCommitment,
     InitiatePhase2Shares,
     AckValidReshareShare { dealer_id: u32 },
     CompletePhase4,
@@ -46,6 +48,8 @@ pub struct SessionSnapshot {
     pub total_nodes: usize,
     pub threshold: usize,
     pub has_polynomial: bool,
+    pub commitment_hashes_received: usize,
+    pub hash_broadcast_complete: bool,
     pub commitments_received: usize,
     pub shares_received: usize,
     pub reshare_selected_dealers: bool,
@@ -56,6 +60,10 @@ pub struct SessionSnapshot {
 impl SessionSnapshot {
     pub fn is_reshare(&self) -> bool {
         matches!(self.kind, SessionKind::Reshare { .. })
+    }
+
+    pub fn is_fresh(&self) -> bool {
+        matches!(self.kind, SessionKind::Fresh)
     }
 
     pub fn phase1_expected_commitments(&self) -> Option<usize> {
@@ -76,6 +84,14 @@ impl SessionSnapshot {
     }
 
     fn should_initiate_phase2(&self) -> bool {
+        if self.is_fresh()
+            && matches!(
+                self.phase,
+                DkgPhase::Initializing | DkgPhase::Phase0CommitmentHashes
+            )
+        {
+            return false;
+        }
         if matches!(
             self.phase,
             DkgPhase::Phase2Shares | DkgPhase::Phase4Completing | DkgPhase::Phase4Complete
@@ -90,6 +106,15 @@ impl SessionSnapshot {
         }
         self.phase1_expected_commitments()
             .is_some_and(|expected| self.commitments_received >= expected)
+    }
+
+    fn should_reveal_commitment(&self) -> bool {
+        self.is_fresh()
+            && self.phase == DkgPhase::Phase0CommitmentHashes
+            && self.role != DkgRole::Receiver
+            && self.has_polynomial
+            && self.hash_broadcast_complete
+            && self.commitment_hashes_received >= self.total_nodes.saturating_sub(1)
     }
 
     fn should_ack_valid_reshare_share(&self) -> bool {
@@ -118,6 +143,12 @@ pub fn transition(snapshot: &SessionSnapshot, event: DkgEvent) -> Transition {
     let mut transition = Transition::default();
 
     match event {
+        DkgEvent::CommitmentHashRecorded => {
+            if snapshot.should_reveal_commitment() {
+                transition.next_phase = Some(DkgPhase::Phase1Commitments);
+                transition.commands.push(DkgCommand::RevealCommitment);
+            }
+        }
         DkgEvent::CommitmentRecorded => {
             if snapshot.should_initiate_phase2() {
                 transition.next_phase = Some(DkgPhase::Phase2Shares);
@@ -171,6 +202,8 @@ mod tests {
             total_nodes: 3,
             threshold: 2,
             has_polynomial: true,
+            commitment_hashes_received: 0,
+            hash_broadcast_complete: false,
             commitments_received: 2,
             shares_received: 0,
             reshare_selected_dealers: false,
@@ -185,6 +218,45 @@ mod tests {
 
         assert_eq!(transition.next_phase, Some(DkgPhase::Phase2Shares));
         assert_eq!(transition.commands, vec![DkgCommand::InitiatePhase2Shares]);
+    }
+
+    #[test]
+    fn fresh_hashes_trigger_commitment_reveal() {
+        let mut snapshot = snapshot();
+        snapshot.phase = DkgPhase::Phase0CommitmentHashes;
+        snapshot.commitment_hashes_received = 2;
+        snapshot.hash_broadcast_complete = true;
+        snapshot.commitments_received = 0;
+
+        let transition = transition(&snapshot, DkgEvent::CommitmentHashRecorded);
+
+        assert_eq!(transition.next_phase, Some(DkgPhase::Phase1Commitments));
+        assert_eq!(transition.commands, vec![DkgCommand::RevealCommitment]);
+    }
+
+    #[test]
+    fn fresh_hash_phase_does_not_trigger_phase2_before_reveal() {
+        let mut snapshot = snapshot();
+        snapshot.phase = DkgPhase::Phase0CommitmentHashes;
+        snapshot.commitments_received = 2;
+
+        let transition = transition(&snapshot, DkgEvent::CommitmentRecorded);
+
+        assert_eq!(transition.next_phase, None);
+        assert!(transition.commands.is_empty());
+    }
+
+    #[test]
+    fn fresh_hashes_wait_for_own_hash_broadcast() {
+        let mut snapshot = snapshot();
+        snapshot.phase = DkgPhase::Phase0CommitmentHashes;
+        snapshot.commitment_hashes_received = 2;
+        snapshot.hash_broadcast_complete = false;
+
+        let transition = transition(&snapshot, DkgEvent::CommitmentHashRecorded);
+
+        assert_eq!(transition.next_phase, None);
+        assert!(transition.commands.is_empty());
     }
 
     #[test]

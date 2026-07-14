@@ -47,6 +47,24 @@ where
         return Ok(());
     }
 
+    let fresh_phase = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| {
+            matches!(state.kind, SessionKind::Fresh).then_some(state.phase)
+        })
+        .await
+        .ok_or_else(|| session_not_found(session_id))?;
+    if matches!(
+        fresh_phase,
+        Some(DkgPhase::Initializing | DkgPhase::Phase0CommitmentHashes)
+    ) {
+        return Err(DkgError::ProtocolError(
+            "Fresh DKG commitments can only be revealed after commitment hashes are complete"
+                .to_string(),
+        ));
+    }
+
     let (commitment_bytes, node_id, threshold, is_reshare, role) = coord
         .app_state
         .dkg_session_state

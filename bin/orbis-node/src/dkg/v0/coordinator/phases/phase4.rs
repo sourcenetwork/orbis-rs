@@ -118,6 +118,16 @@ where
         .map(|k| k.to_string())
         .unwrap_or_else(|| aggregate_pk.to_string());
 
+    if matches!(kind, SessionKind::Reshare { .. })
+        && !public_key_matches_storage_key(&aggregate_pk, &storage_key)
+    {
+        return Err(DkgError::Crypto(format!(
+            "Reshare: computed aggregate public key {} does not match the ring's existing key {}; \
+             aborting before persisting shifted ring state",
+            aggregate_pk, storage_key
+        )));
+    }
+
     let adds_new_local_ring = is_fresh || is_reshare_receiver;
     if is_fresh {
         ring_storage::preflight_new_ring_capacity(&coord.app_state, &storage_key).await?;
@@ -175,7 +185,19 @@ where
                 e
             ))
         })?;
-        ring_pk_bytes = CryptoSerialize::to_bytes(&staged_pub_poly.eval(0)).map_err(|e| {
+        // A refresh must not change the ring's public key. Received refresh commitments
+        // are individually checked for an identity constant term, but this end-to-end
+        // guard catches any residual drift before the candidate is staged — the health
+        // check verifies self-consistently under the *staged* key and cannot see a shift.
+        let staged_pk = staged_pub_poly.eval(0);
+        if !public_key_matches_storage_key(&staged_pk, &storage_key) {
+            return Err(DkgError::Crypto(format!(
+                "Refresh: staged ring public key {} does not match the ring's existing key {}; \
+                 aborting refresh before staging",
+                staged_pk, storage_key
+            )));
+        }
+        ring_pk_bytes = CryptoSerialize::to_bytes(&staged_pk).map_err(|e| {
             DkgError::Serialization(format!(
                 "Refresh: failed to serialize staged aggregate public key: {}",
                 e

@@ -473,6 +473,13 @@ pub trait PolynomialCommitment:
     fn eval(&self, i: u32) -> Self::PublicKey;
     /// Verify a share against this commitment using constant-time comparison
     fn verify_share(&self, share_id: u32, share_value: &Self::ShareValue) -> bool;
+    /// Returns true iff the commitment has a constant term and it is the group identity.
+    ///
+    /// Used to validate PSS **refresh** commitments: a refresh delta polynomial must
+    /// satisfy `P(0) = O` so the aggregate secret is unchanged. A non-identity constant
+    /// term would silently shift the ring key. Returns `false` for an empty commitment
+    /// (empty is already rejected upstream).
+    fn constant_term_is_identity(&self) -> bool;
 }
 /// Role of a participant in the DKG protocol.
 ///

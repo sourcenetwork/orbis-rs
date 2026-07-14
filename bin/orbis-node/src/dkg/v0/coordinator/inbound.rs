@@ -31,6 +31,15 @@ pub struct DkgMessageMeta {
 impl DkgMessageMeta {
     pub fn from_message(message: &DkgMessage) -> Self {
         match message {
+            DkgMessage::CommitmentHash { from_node_id, .. } => Self {
+                message_type: DkgMessageType::CommitmentHash,
+                sender_node_id: Some(*from_node_id),
+                // Do not deduplicate: a second hash from the same sender may be
+                // equivocation and must reach the mismatch check.
+                dedup_node_id: None,
+                committee_scope: CommitteeScope::Current,
+                metric_label: "commitment_hash",
+            },
             DkgMessage::Commitment { from_node_id, .. } => Self::from_sender(
                 DkgMessageType::Commitment,
                 *from_node_id,
@@ -208,6 +217,19 @@ where
     SignImpl: CoordinatorReportSigner<D>,
 {
     match message {
+        DkgMessage::CommitmentHash {
+            from_node_id,
+            commitment_hash,
+            ..
+        } => {
+            message_handlers::handle_commitment_hash_message(
+                coord,
+                session_id,
+                from_node_id,
+                commitment_hash,
+            )
+            .await
+        }
         DkgMessage::Commitment {
             from_node_id,
             commitment,
@@ -381,6 +403,18 @@ mod tests {
 
     #[test]
     fn metadata_covers_every_message_variant() {
+        assert_meta(
+            DkgMessage::CommitmentHash {
+                session_id: 1,
+                from_node_id: 2,
+                commitment_hash: [7; 32],
+            },
+            DkgMessageType::CommitmentHash,
+            Some(2),
+            None,
+            CommitteeScope::Current,
+            "commitment_hash",
+        );
         assert_meta(
             DkgMessage::Commitment {
                 session_id: 1,

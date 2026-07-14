@@ -50,11 +50,18 @@ where
     }
 
     // Get expected commitment size from session (= new_threshold for Reshare,
-    // = old threshold for Fresh/Refresh).
-    let expected_coeff_count = coord
+    // = old threshold for Fresh/Refresh), plus the session kind we need for
+    // kind-specific commitment validation below.
+    let (expected_coeff_count, is_refresh, is_fresh) = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| state.expected_commitment_size())
+        .with_state(&session_id, |state| {
+            (
+                state.expected_commitment_size(),
+                matches!(state.kind, SessionKind::Refresh { .. }),
+                matches!(state.kind, SessionKind::Fresh),
+            )
+        })
         .await
         .ok_or_else(|| session_not_found(session_id))?;
 
@@ -63,6 +70,52 @@ where
             "Invalid number of commitment coefficients: got {}, expected {}",
             num_coefficients, expected_coeff_count
         )));
+    }
+
+    if is_fresh {
+        match coord
+            .app_state
+            .dkg_session_state
+            .get_commitment_hash(&session_id, from_node_id)
+            .await
+        {
+            Some(expected_hash) => {
+                let actual_hash = fresh_commitment_hash(session_id, from_node_id, &commitment);
+                if actual_hash != expected_hash {
+                    tracing::warn!(
+                        session_id = session_id,
+                        from_node_id = from_node_id,
+                        expected_hash = %hex::encode(expected_hash),
+                        actual_hash = %hex::encode(actual_hash),
+                        "DKG Coordinator: Fresh commitment reveal does not match prior hash"
+                    );
+                    return Err(DkgError::CommitmentVerificationFailed(format!(
+                        "Fresh commitment from node {} does not match its commitment hash",
+                        from_node_id
+                    )));
+                }
+            }
+            None => {
+                let inserted = coord
+                    .app_state
+                    .dkg_session_state
+                    .store_pending_commitment_waiting_for_hash(
+                        &session_id,
+                        from_node_id,
+                        commitment,
+                        report_evidence,
+                    )
+                    .await
+                    .ok_or_else(|| session_not_found(session_id))?;
+                tracing::debug!(
+                    session_id = session_id,
+                    from_node_id = from_node_id,
+                    inserted = inserted,
+                    "DKG Coordinator: Fresh commitment arrived before hash; queued for replay"
+                );
+                return Ok(None);
+            }
+        }
     }
 
     verify_commitment_evidence(
@@ -91,10 +144,31 @@ where
         coefficients: commitment_coeffs,
     };
 
+    // Refresh delta polynomials must have an identity constant term (P(0) = O) so the
+    // aggregate secret is unchanged. A non-identity constant would silently shift the
+    // ring key and permanently brick decryption of existing ciphertexts. Reject before
+    // the crypto layer stores it; abort-only (the session stalls to its phase timeout).
+    if is_refresh && !polynomial_commitment.constant_term_is_identity() {
+        return Err(DkgError::CommitmentVerificationFailed(format!(
+            "Refresh commitment from node {} has a non-identity constant term \
+             (a nonzero delta at x=0 would shift the ring key)",
+            from_node_id
+        )));
+    }
+
     let need_to_generate_polynomial = coord
         .app_state
         .dkg_session_state
         .with_state_mut(&session_id, |state| {
+            let generates_polynomial = state.node.role() != DkgRole::Receiver;
+            let local_commitment_empty = state.node.commitment().coefficients.is_empty();
+            if is_fresh && generates_polynomial && local_commitment_empty {
+                return Err(DkgError::ProtocolError(
+                    "Fresh commitment arrived before local commitment hash was prepared"
+                        .to_string(),
+                ));
+            }
+
             state
                 .node
                 .receive_commitment(from_node_id, polynomial_commitment)
@@ -102,10 +176,7 @@ where
 
             // Receiver nodes never generate a polynomial — they only accumulate
             // commitments to verify the shares they will receive.
-            let generates_polynomial = state.node.role() != DkgRole::Receiver;
-            Ok::<_, DkgError>(
-                generates_polynomial && state.node.commitment().coefficients.is_empty(),
-            )
+            Ok::<_, DkgError>(!is_fresh && generates_polynomial && local_commitment_empty)
         })
         .await
         .ok_or_else(|| session_not_found(session_id))??;

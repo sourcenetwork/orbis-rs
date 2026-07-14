@@ -293,12 +293,12 @@ where
                     });
             }
 
-            // Initiate Phase 1 only if we're participating
+            // Initiate Phase 0 (commitment-hash pre-round) only if we're participating
             if self_included {
                 coordinator
-                    .initiate_phase1_commitments(session_id, &peer_ids)
+                    .initiate_phase0_commitment_hashes(session_id, &peer_ids)
                     .await?;
-                tracing::info!("DKG Protocol: Phase 1 initiated, commitments broadcasted");
+                tracing::info!("DKG Protocol: Phase 0 initiated, commitment hashes broadcasted");
             } else {
                 tracing::info!("DKG Protocol: SessionInit sent to participants (coordinator not participating)");
             }
