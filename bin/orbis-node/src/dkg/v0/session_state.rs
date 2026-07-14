@@ -1875,30 +1875,34 @@ mod tests {
         mgr.store_received_commitment(&50, 3, signed_commitment(3, vec![4, 5, 6], nonce_a))
             .await;
 
-        let dealer = |revealed| async move {
-            mgr.find_conflicting_commitment_pair(&50, revealed)
-                .await
-                .map(|(dealer_id, _, _)| dealer_id)
-        };
-
         // A reveal matching what we stored → no conflict.
+        let matching_reveal = [signed_commitment(2, vec![1, 2, 3], nonce_a)];
         assert_eq!(
-            dealer(&[signed_commitment(2, vec![1, 2, 3], nonce_a)]).await,
+            mgr.find_conflicting_commitment_pair(&50, &matching_reveal)
+                .await
+                .map(|(dealer_id, _, _)| dealer_id),
             None
         );
         // A reveal for a dealer we never received from → ignored.
+        let unknown_dealer_reveal = [signed_commitment(9, vec![9, 9], nonce_a)];
         assert_eq!(
-            dealer(&[signed_commitment(9, vec![9, 9], nonce_a)]).await,
+            mgr.find_conflicting_commitment_pair(&50, &unknown_dealer_reveal)
+                .await
+                .map(|(dealer_id, _, _)| dealer_id),
             None
         );
         // Different bytes but a DIFFERENT nonce → honest retry, NOT equivocation (not framed).
+        let retry_reveal = [signed_commitment(2, vec![7, 7, 7], [2u8; 16])];
         assert_eq!(
-            dealer(&[signed_commitment(2, vec![7, 7, 7], [2u8; 16])]).await,
+            mgr.find_conflicting_commitment_pair(&50, &retry_reveal)
+                .await
+                .map(|(dealer_id, _, _)| dealer_id),
             None
         );
         // Different bytes with the SAME nonce for dealer 2 → equivocation; returns the pair.
+        let conflicting_reveal = [signed_commitment(2, vec![7, 7, 7], nonce_a)];
         let (dealer_id, ours, reveal) = mgr
-            .find_conflicting_commitment_pair(&50, &[signed_commitment(2, vec![7, 7, 7], nonce_a)])
+            .find_conflicting_commitment_pair(&50, &conflicting_reveal)
             .await
             .expect("equivocation detected");
         assert_eq!(dealer_id, 2);
