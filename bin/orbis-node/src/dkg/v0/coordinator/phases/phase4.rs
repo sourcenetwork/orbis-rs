@@ -123,7 +123,13 @@ where
     {
         // Equivocation-consistent failure: reveal our received commitments so peers can
         // attribute an equivocating dealer (diagnostic; the ceremony aborts regardless).
-        broadcast_commitment_audit(coord, session_id).await;
+        if let Err(error) = broadcast_commitment_audit(coord, session_id).await {
+            tracing::debug!(
+                session_id = session_id,
+                error = %error,
+                "DKG Coordinator: failed to broadcast commitment-audit reveal"
+            );
+        }
         return Err(DkgError::Crypto(format!(
             "Reshare: computed aggregate public key {} does not match the ring's existing key {}; \
              aborting before persisting shifted ring state",
@@ -195,7 +201,13 @@ where
         let staged_pk = staged_pub_poly.eval(0);
         if !public_key_matches_storage_key(&staged_pk, &storage_key) {
             // Equivocation-consistent failure: reveal received commitments for attribution.
-            broadcast_commitment_audit(coord, session_id).await;
+            if let Err(error) = broadcast_commitment_audit(coord, session_id).await {
+                tracing::debug!(
+                    session_id = session_id,
+                    error = %error,
+                    "DKG Coordinator: failed to broadcast commitment-audit reveal"
+                );
+            }
             return Err(DkgError::Crypto(format!(
                 "Refresh: staged ring public key {} does not match the ring's existing key {}; \
                  aborting refresh before staging",
@@ -444,7 +456,7 @@ fn cleanup_new_ring_bundle_after_index_failure(
 /// commitments this node received to the other receivers, who compare them against
 /// their own to attribute an equivocating dealer. Diagnostic only — never changes the
 /// abort outcome, and send failures are ignored.
-async fn broadcast_commitment_audit<D>(coord: &DkgCoordinator<D>, session_id: u128)
+async fn broadcast_commitment_audit<D>(coord: &DkgCoordinator<D>, session_id: u128) -> Result<()>
 where
     D: CoordinatorDkg + Send + Sync,
 {
@@ -452,9 +464,10 @@ where
         .app_state
         .dkg_session_state
         .received_commitments_snapshot(&session_id)
-        .await;
+        .await
+        .ok_or_else(|| session_not_found(session_id))?;
     if revealed.is_empty() {
-        return;
+        return Ok(());
     }
 
     // Revealer identity + target receiver set depend on the ceremony kind: reshare
@@ -465,24 +478,31 @@ where
         .dkg_session_state
         .with_state(&session_id, |state| {
             if matches!(state.kind, SessionKind::Reshare { .. }) {
-                let revealer = state.reshare.params.as_ref().and_then(|p| p.new_node_id)?;
+                let params = state.reshare.params.as_ref().ok_or_else(|| {
+                    DkgError::InvalidState(
+                        "Reshare commitment audit missing reshare params".to_string(),
+                    )
+                })?;
+                let revealer = params.new_node_id.ok_or_else(|| {
+                    DkgError::InvalidState(
+                        "Reshare commitment audit missing new committee node id".to_string(),
+                    )
+                })?;
                 let targets: Vec<String> = state
                     .routing
                     .reshare_new_node_id_to_peer_id
                     .values()
                     .cloned()
                     .collect();
-                Some((revealer, targets))
+                Ok::<_, DkgError>((revealer, targets))
             } else {
-                Some((state.node.node_id(), state.routing.peer_ids.clone()))
+                Ok::<_, DkgError>((state.node.node_id(), state.routing.peer_ids.clone()))
             }
         })
         .await
-        .flatten();
+        .ok_or_else(|| session_not_found(session_id))??;
 
-    let Some((revealer_node_id, target_peers)) = resolved else {
-        return;
-    };
+    let (revealer_node_id, target_peers) = resolved;
 
     let message = DkgMessage::CommitmentAudit {
         session_id,
@@ -505,4 +525,6 @@ where
             );
         }
     }
+
+    Ok(())
 }

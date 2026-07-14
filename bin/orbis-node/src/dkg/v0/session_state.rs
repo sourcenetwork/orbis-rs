@@ -1203,7 +1203,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub async fn received_commitments_snapshot(
         &self,
         session_id: &u128,
-    ) -> Vec<SignedDkgCommitment> {
+    ) -> Option<Vec<SignedDkgCommitment>> {
         self.with_state(session_id, |state| {
             state
                 .commitment_audit
@@ -1213,7 +1213,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 .collect()
         })
         .await
-        .unwrap_or_default()
     }
 
     /// Compare peer-revealed commitments against what we received: return the first
