@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use crate::app_state::AppState;
 use crate::dkg::v0::coordinator::evidence::{
-    queue_or_relay_invalid_share, share_evidence_proves_failure, verify_share_evidence,
+    queue_or_relay_equivocation, queue_or_relay_invalid_share, share_evidence_proves_failure,
+    verify_share_evidence,
 };
 use crate::dkg::v0::coordinator::DkgCoordinator;
-use crate::dkg::v0::messages::SignedDkgShare;
+use crate::dkg::v0::messages::{SignedDkgCommitment, SignedDkgShare};
 use crypto::DkgImpl;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -16,6 +17,7 @@ use proto::unsafe_testing::{
     DeleteLocalStorageResponse, GetActivePssSessionRequest, GetActivePssSessionResponse,
     GetLocalStorageRequest, GetLocalStorageResponse, LocalStorageAccessMode, LocalStorageKey,
     LocalStorageKeyType, SetLocalStorageRequest, SetLocalStorageResponse,
+    SubmitDkgEquivocationEvidenceRequest, SubmitDkgEquivocationEvidenceResponse,
     SubmitDkgInvalidShareEvidenceRequest, SubmitDkgInvalidShareEvidenceResponse,
 };
 use tonic::{Request, Response, Status};
@@ -233,5 +235,39 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
             .map_err(|error| Status::failed_precondition(error.to_string()))?;
 
         Ok(Response::new(SubmitDkgInvalidShareEvidenceResponse {}))
+    }
+
+    async fn submit_dkg_equivocation_evidence(
+        &self,
+        request: Request<SubmitDkgEquivocationEvidenceRequest>,
+    ) -> Result<Response<SubmitDkgEquivocationEvidenceResponse>, Status> {
+        let request = request.into_inner();
+        let session_id = request
+            .session_id
+            .parse::<u128>()
+            .map_err(|error| Status::invalid_argument(format!("invalid session_id: {error}")))?;
+        let commitment_a: SignedDkgCommitment = serde_json::from_slice(&request.commitment_a_json)
+            .map_err(|error| {
+                Status::invalid_argument(format!("invalid commitment_a_json: {error}"))
+            })?;
+        let commitment_b: SignedDkgCommitment = serde_json::from_slice(&request.commitment_b_json)
+            .map_err(|error| {
+                Status::invalid_argument(format!("invalid commitment_b_json: {error}"))
+            })?;
+        let app_state = self.app_state.clone().ok_or_else(|| {
+            Status::failed_precondition("unsafe DKG evidence injection requires app state")
+        })?;
+        let coordinator = DkgCoordinator::<DkgImpl>::with_routes(app_state, &network::V0);
+
+        queue_or_relay_equivocation::<DkgImpl>(
+            &coordinator,
+            session_id,
+            commitment_a,
+            commitment_b,
+        )
+        .await
+        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+
+        Ok(Response::new(SubmitDkgEquivocationEvidenceResponse {}))
     }
 }
