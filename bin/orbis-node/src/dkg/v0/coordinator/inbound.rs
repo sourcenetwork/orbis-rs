@@ -40,6 +40,16 @@ impl DkgMessageMeta {
                 committee_scope: CommitteeScope::Current,
                 metric_label: "commitment_hash",
             },
+            DkgMessage::CommitmentAudit { .. } => Self {
+                message_type: DkgMessageType::CommitmentAudit,
+                // No sender authentication: trust is per-commitment (each revealed
+                // commitment is signature-verified in the handler), so a claimed
+                // revealer id is irrelevant and a committee scope is unneeded.
+                sender_node_id: None,
+                dedup_node_id: None,
+                committee_scope: CommitteeScope::None,
+                metric_label: "commitment_audit",
+            },
             DkgMessage::Commitment { from_node_id, .. } => Self::from_sender(
                 DkgMessageType::Commitment,
                 *from_node_id,
@@ -230,6 +240,9 @@ where
             )
             .await
         }
+        DkgMessage::CommitmentAudit { revealed, .. } => {
+            message_handlers::handle_commitment_audit_message(coord, session_id, revealed).await
+        }
         DkgMessage::Commitment {
             from_node_id,
             commitment,
@@ -414,6 +427,18 @@ mod tests {
             None,
             CommitteeScope::Current,
             "commitment_hash",
+        );
+        assert_meta(
+            DkgMessage::CommitmentAudit {
+                session_id: 1,
+                revealer_node_id: 2,
+                revealed: vec![],
+            },
+            DkgMessageType::CommitmentAudit,
+            None,
+            None,
+            CommitteeScope::None,
+            "commitment_audit",
         );
         assert_meta(
             DkgMessage::Commitment {

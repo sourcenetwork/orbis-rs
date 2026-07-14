@@ -69,6 +69,15 @@ pub enum DkgMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         report_evidence: Option<SignedDkgCommitment>,
     },
+    /// Refresh/reshare only: on an equivocation-consistent phase4 failure, a node
+    /// reveals the signed commitments it received so peers can compare against their
+    /// own and name the equivocating dealer. Diagnostic (logs only); each revealed
+    /// commitment is signature-verified, so a lying revealer cannot forge attribution.
+    CommitmentAudit {
+        session_id: u128,
+        revealer_node_id: u32,
+        revealed: Vec<SignedDkgCommitment>,
+    },
     /// Phase 2: Share distribution
     Share {
         session_id: u128,
@@ -143,6 +152,7 @@ impl DkgMessage {
     pub fn session_id(&self) -> u128 {
         match self {
             DkgMessage::CommitmentHash { session_id, .. } => *session_id,
+            DkgMessage::CommitmentAudit { session_id, .. } => *session_id,
             DkgMessage::Commitment { session_id, .. } => *session_id,
             DkgMessage::Share { session_id, .. } => *session_id,
             DkgMessage::DkgInvalidShareEvidence { session_id, .. } => *session_id,
