@@ -85,6 +85,7 @@ pub enum DkgMessageType {
     Commitment,
     Share,
     DkgInvalidShareEvidence,
+    DkgInvalidCommitmentEvidence,
     ReshareShareAck,
     ReshareParticipantSet,
     RefreshHealthCheckResult,
@@ -359,6 +360,11 @@ pub struct DkgSessionState<D: Dkg> {
     /// Extra parameters required only for Reshare sessions.  `None` for Fresh and Refresh.
     /// Refresh candidate/result staging.
     pub(crate) refresh: RefreshSessionState,
+    /// Per-session-instance nonce this node signs into every commitment it broadcasts
+    /// this attempt. Generated once here so an honest node signing via both the phase1
+    /// and lazy paths produces identical commitment bytes; a fresh instance (retry) gets
+    /// a new nonce so honest retries cannot be framed as equivocation.
+    pub(crate) session_nonce: [u8; 16],
     /// Per-session network streams and send serialization.
     pub(crate) transport: SessionTransportState,
     /// Owns active metrics for exactly the lifetime of this ceremony.
@@ -390,6 +396,7 @@ impl<D: Dkg> DkgSessionState<D> {
             pss_interval: 0,
             policy_id: None,
             refresh: RefreshSessionState::default(),
+            session_nonce: rand::random::<[u8; 16]>(),
             transport: SessionTransportState::default(),
             metrics_guard: None,
         }
@@ -1211,11 +1218,15 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Compare peer-revealed commitments against what we received: return the first
     /// dealer for which a revealed commitment's bytes differ from ours (equivocation).
     /// Dealers we never received a commitment from are ignored.
-    pub async fn find_conflicting_dealer(
+    /// Return the two conflicting commitments (`ours`, `reveal`) for the first dealer that
+    /// equivocated, so the caller can build an equivocation report. Equivocation requires
+    /// the SAME per-attempt nonce with different bytes; a different nonce means an honest
+    /// retry (or evasion), not equivocation.
+    pub async fn find_conflicting_commitment_pair(
         &self,
         session_id: &u128,
         revealed: &[SignedDkgCommitment],
-    ) -> Option<u32> {
+    ) -> Option<(u32, SignedDkgCommitment, SignedDkgCommitment)> {
         self.with_state(session_id, |state| {
             revealed.iter().find_map(|reveal| {
                 let dealer_id = reveal.statement.from_node_id;
@@ -1223,7 +1234,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     .commitment_audit
                     .received_commitments
                     .get(&dealer_id)?;
-                (ours.statement.commitment != reveal.statement.commitment).then_some(dealer_id)
+                (ours.statement.session_nonce == reveal.statement.session_nonce
+                    && ours.statement.commitment != reveal.statement.commitment)
+                    .then(|| (dealer_id, ours.clone(), reveal.clone()))
             })
         })
         .await
@@ -1819,7 +1832,11 @@ mod tests {
         );
     }
 
-    fn signed_commitment(dealer_id: u32, commitment: Vec<u8>) -> SignedDkgCommitment {
+    fn signed_commitment(
+        dealer_id: u32,
+        commitment: Vec<u8>,
+        session_nonce: [u8; 16],
+    ) -> SignedDkgCommitment {
         use crate::reporting::v0::types::{
             CommitteeScope as ReportingCommitteeScope, DkgCommitmentStatement,
             DKG_COMMITMENT_DOMAIN,
@@ -1840,6 +1857,7 @@ mod tests {
                 signing_committee_scope: ReportingCommitteeScope::Current,
                 from_node_id: dealer_id,
                 commitment,
+                session_nonce,
                 crypto_backend: "dkg/test".to_string(),
             },
             signature: vec![0; 64],
@@ -1847,33 +1865,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_find_conflicting_dealer() {
+    async fn test_find_conflicting_commitment_pair() {
         let mgr = SessionStateManager::<DkgImpl>::new();
         mgr.create_session(50, make_node(1), 3, |_| {}).await;
 
-        mgr.store_received_commitment(&50, 2, signed_commitment(2, vec![1, 2, 3]))
+        let nonce_a = [1u8; 16];
+        mgr.store_received_commitment(&50, 2, signed_commitment(2, vec![1, 2, 3], nonce_a))
             .await;
-        mgr.store_received_commitment(&50, 3, signed_commitment(3, vec![4, 5, 6]))
+        mgr.store_received_commitment(&50, 3, signed_commitment(3, vec![4, 5, 6], nonce_a))
             .await;
 
         // A reveal matching what we stored → no conflict.
-        assert_eq!(
-            mgr.find_conflicting_dealer(&50, &[signed_commitment(2, vec![1, 2, 3])])
-                .await,
-            None
-        );
+        assert!(mgr
+            .find_conflicting_commitment_pair(&50, &[signed_commitment(2, vec![1, 2, 3], nonce_a)])
+            .await
+            .is_none());
         // A reveal for a dealer we never received from → ignored.
-        assert_eq!(
-            mgr.find_conflicting_dealer(&50, &[signed_commitment(9, vec![9, 9])])
-                .await,
-            None
-        );
-        // A reveal whose bytes differ from ours for dealer 2 → equivocation, attributed to 2.
-        assert_eq!(
-            mgr.find_conflicting_dealer(&50, &[signed_commitment(2, vec![7, 7, 7])])
-                .await,
-            Some(2)
-        );
+        assert!(mgr
+            .find_conflicting_commitment_pair(&50, &[signed_commitment(9, vec![9, 9], nonce_a)])
+            .await
+            .is_none());
+        // Different bytes but a DIFFERENT nonce → honest retry, NOT equivocation (not framed).
+        assert!(mgr
+            .find_conflicting_commitment_pair(
+                &50,
+                &[signed_commitment(2, vec![7, 7, 7], [2u8; 16])]
+            )
+            .await
+            .is_none());
+        // Different bytes with the SAME nonce for dealer 2 → equivocation; returns the pair.
+        let (dealer_id, ours, reveal) = mgr
+            .find_conflicting_commitment_pair(&50, &[signed_commitment(2, vec![7, 7, 7], nonce_a)])
+            .await
+            .expect("equivocation detected");
+        assert_eq!(dealer_id, 2);
+        assert_eq!(ours.statement.commitment, vec![1, 2, 3]);
+        assert_eq!(reveal.statement.commitment, vec![7, 7, 7]);
     }
 
     #[tokio::test]

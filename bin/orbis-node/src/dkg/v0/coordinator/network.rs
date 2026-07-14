@@ -139,6 +139,7 @@ where
         DkgMessage::Commitment { .. } => "commitment",
         DkgMessage::Share { .. } => "share",
         DkgMessage::DkgInvalidShareEvidence { .. } => "dkg_invalid_share_evidence",
+        DkgMessage::DkgInvalidCommitmentEvidence { .. } => "dkg_invalid_commitment_evidence",
         DkgMessage::ReshareShareAck { .. } => "reshare_share_ack",
         DkgMessage::ReshareParticipantSet { .. } => "reshare_participant_set",
         DkgMessage::RefreshHealthCheckResult { .. } => "refresh_health_check_result",

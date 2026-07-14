@@ -258,6 +258,7 @@ fn signed_bad_reshare_dkg_share(
         signing_committee_scope: CommitteeScope::Current,
         from_node_id,
         commitment,
+        session_nonce: [0u8; 16],
         crypto_backend: DkgImpl::name(),
     };
     let commitment_signature = sign_node_message_with_hex_key(

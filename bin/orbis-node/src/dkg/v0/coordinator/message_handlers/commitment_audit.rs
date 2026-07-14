@@ -1,5 +1,7 @@
 use super::*;
-use crate::dkg::v0::coordinator::evidence::verify_commitment_evidence;
+use crate::dkg::v0::coordinator::evidence::{
+    queue_or_relay_equivocation, verify_commitment_evidence,
+};
 use crate::dkg::v0::messages::SignedDkgCommitment;
 use crypto::SignImpl;
 
@@ -8,10 +10,10 @@ use crypto::SignImpl;
 /// A peer whose refresh/reshare ceremony failed an equivocation-consistent phase4 check
 /// reveals the signed commitments it received. We re-verify each dealer signature and
 /// compare against the commitments we received; if any dealer signed two different
-/// commitments, that dealer equivocated. This is diagnostic (logs only): the ceremony is
-/// already aborting via the phase4 check, so we never abort here and always return
-/// `Ok(None)`. Trust is per-commitment (the dealer's signature), so a lying revealer
-/// cannot forge attribution.
+/// commitments (same session nonce, different bytes) that dealer equivocated → we log it
+/// and queue/relay a threshold-signed equivocation report. We never abort here (the
+/// ceremony is already aborting via the phase4 check) and always return `Ok(None)`. Trust
+/// is per-commitment (the dealer's signature), so a lying revealer cannot forge attribution.
 pub async fn handle_commitment_audit_message<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
@@ -58,23 +60,28 @@ where
         }
     }
 
-    if let Some(dealer_node_id) = coord
+    if let Some((dealer_node_id, ours, reveal)) = coord
         .app_state
         .dkg_session_state
-        .find_conflicting_dealer(&session_id, &verified)
+        .find_conflicting_commitment_pair(&session_id, &verified)
         .await
     {
-        let responder_node_key = verified
-            .iter()
-            .find(|c| c.statement.from_node_id == dealer_node_id)
-            .map(|c| c.statement.responder_node_key.clone())
-            .unwrap_or_default();
         tracing::error!(
             session_id = session_id,
             dealer_node_id = dealer_node_id,
-            responder_node_key = %responder_node_key,
+            responder_node_key = %ours.statement.responder_node_key,
             "DKG commitment equivocation detected — dealer distributed conflicting commitments"
         );
+        // Report it on-chain (threshold-signed). `ours` (locally received) anchors the
+        // envelope. Best-effort: log-not-propagate so the ceremony's abort is unchanged.
+        if let Err(error) = queue_or_relay_equivocation(coord, session_id, ours, reveal).await {
+            tracing::warn!(
+                session_id = session_id,
+                dealer_node_id = dealer_node_id,
+                error = %error,
+                "Failed to queue/relay DKG equivocation report"
+            );
+        }
     }
 
     Ok(None)

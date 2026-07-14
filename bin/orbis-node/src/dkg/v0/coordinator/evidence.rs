@@ -29,6 +29,7 @@ use super::{
 pub(crate) struct DkgEvidenceBuildContext {
     binding: DkgReportEvidenceBinding,
     signing_key_hex: String,
+    session_nonce: [u8; 16],
 }
 
 pub(crate) async fn evidence_build_context<D>(
@@ -42,9 +43,16 @@ where
         return Ok(None);
     };
     let signing_key_hex = read_node_signing_key_hex(&coord.app_state)?;
+    let session_nonce = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| state.session_nonce)
+        .await
+        .ok_or_else(|| session_not_found(session_id))?;
     Ok(Some(DkgEvidenceBuildContext {
         binding,
         signing_key_hex,
+        session_nonce,
     }))
 }
 
@@ -74,6 +82,7 @@ where
         signing_committee_scope: CommitteeScope::Current,
         from_node_id,
         commitment,
+        session_nonce: context.session_nonce,
         crypto_backend: D::name(),
     };
     let signature =
@@ -348,6 +357,171 @@ where
     Ok(None)
 }
 
+/// Two commitments are equivocation iff the same dealer signed both for the same session
+/// under the SAME per-attempt nonce with different bytes. Same nonce is what distinguishes
+/// genuine equivocation from an honest retry (which uses a fresh nonce).
+fn commitments_prove_equivocation(
+    commitment_a: &SignedDkgCommitment,
+    commitment_b: &SignedDkgCommitment,
+) -> bool {
+    commitment_a.statement.session_nonce == commitment_b.statement.session_nonce
+        && commitment_a.statement.commitment != commitment_b.statement.commitment
+        && commitment_a.statement.from_node_id == commitment_b.statement.from_node_id
+}
+
+pub async fn queue_or_relay_equivocation<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    commitment_a: SignedDkgCommitment,
+    commitment_b: SignedDkgCommitment,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    if local_node_is_current_route_member(coord, session_id).await? {
+        queue_equivocation_report(
+            coord.app_state.clone(),
+            coord.routes,
+            commitment_a,
+            commitment_b,
+        )
+        .await
+    } else if commitment_a.statement.origin_protocol == "pss_reshare" {
+        relay_equivocation_evidence(coord, session_id, commitment_a, commitment_b).await
+    } else {
+        Err(DkgError::Unauthorized(
+            "local node is not in the report signing committee".to_string(),
+        ))
+    }
+}
+
+async fn relay_equivocation_evidence<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    commitment_a: SignedDkgCommitment,
+    commitment_b: SignedDkgCommitment,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let current_peer_ids = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| {
+            state
+                .routing
+                .node_id_to_peer_id
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .await
+        .ok_or_else(|| session_not_found(session_id))?;
+    if current_peer_ids.is_empty() {
+        return Err(DkgError::InvalidState(
+            "cannot relay DKG equivocation evidence without current committee routes".to_string(),
+        ));
+    }
+
+    let mut sent = 0usize;
+    for peer_id in current_peer_ids {
+        let msg = DkgMessage::DkgInvalidCommitmentEvidence {
+            session_id,
+            commitment_a: commitment_a.clone(),
+            commitment_b: commitment_b.clone(),
+        };
+        if coord
+            .send_message_to_peer(&peer_id, msg, Some(session_id))
+            .await
+            .inspect_err(|error| {
+                tracing::warn!(
+                    session_id = session_id,
+                    peer_id = %peer_id,
+                    error = %error,
+                    "Failed to relay DKG equivocation evidence to current committee peer"
+                );
+            })
+            .is_ok()
+        {
+            sent += 1;
+        }
+    }
+
+    if sent == 0 {
+        return Err(DkgError::NetworkCommunication(
+            "failed to relay DKG equivocation evidence to any current committee peer".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub async fn handle_invalid_commitment_evidence_relay<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    commitment_a: SignedDkgCommitment,
+    commitment_b: SignedDkgCommitment,
+) -> Result<Option<DkgMessage>>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    if commitment_a.statement.origin_protocol != "pss_reshare" {
+        return Err(DkgError::Unauthorized(
+            "DKG equivocation evidence relay is only valid for reshare".to_string(),
+        ));
+    }
+    verify_relay_is_current_signer(coord, session_id).await?;
+
+    // Relayed evidence is otherwise unauthenticated input: re-authenticate both commitments
+    // against this session (ring binding + the dealer's signature) and re-confirm they
+    // actually prove equivocation before spending a report attempt on them.
+    let from_node_id_a = commitment_a.statement.from_node_id;
+    let commitment_bytes_a = commitment_a.statement.commitment.clone();
+    let verified_a = verify_commitment_evidence(
+        coord,
+        session_id,
+        from_node_id_a,
+        &commitment_bytes_a,
+        Some(commitment_a),
+    )
+    .await?
+    .ok_or_else(|| {
+        DkgError::Unauthorized(
+            "relayed DKG equivocation commitment is not valid for this session".to_string(),
+        )
+    })?;
+    let from_node_id_b = commitment_b.statement.from_node_id;
+    let commitment_bytes_b = commitment_b.statement.commitment.clone();
+    let verified_b = verify_commitment_evidence(
+        coord,
+        session_id,
+        from_node_id_b,
+        &commitment_bytes_b,
+        Some(commitment_b),
+    )
+    .await?
+    .ok_or_else(|| {
+        DkgError::Unauthorized(
+            "relayed DKG equivocation commitment is not valid for this session".to_string(),
+        )
+    })?;
+    if !commitments_prove_equivocation(&verified_a, &verified_b) {
+        return Err(DkgError::Unauthorized(
+            "relayed DKG commitments do not prove equivocation".to_string(),
+        ));
+    }
+
+    queue_equivocation_report(
+        coord.app_state.clone(),
+        coord.routes,
+        verified_a,
+        verified_b,
+    )
+    .await?;
+    Ok(None)
+}
+
 async fn evidence_binding<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
@@ -619,6 +793,44 @@ where
     Ok(())
 }
 
+async fn queue_equivocation_report<D>(
+    app_state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    commitment_a: SignedDkgCommitment,
+    commitment_b: SignedDkgCommitment,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    // Both commitments name the same dealer; commitment_a anchors the envelope's observed_at.
+    let accused_node_key = commitment_a.statement.responder_node_key.clone();
+    let accused_info = read_node_info(&app_state, &accused_node_key).await?;
+    let observed_at = commitment_a
+        .statement
+        .signed_at
+        .saturating_sub(CHAIN_BLOCK_GRACE_SECS);
+    let observation = InvalidCryptoResponseObservation {
+        ring_id: commitment_a.statement.ring_id.clone(),
+        accused_node_key,
+        accused_peer_id: accused_info.peer_id,
+        observed_at,
+        evidence: InvalidCryptoResponse::DkgEquivocation {
+            commitment_a: Box::new(commitment_a),
+            commitment_b: Box::new(commitment_b),
+        },
+    };
+
+    queue_report::<D, SignImpl>(
+        app_state,
+        routes,
+        ReportObservation::InvalidCryptoResponse(Box::new(observation)),
+    )
+    .await
+    .map_err(|error| DkgError::Generic(error.to_string()))?;
+    Ok(())
+}
+
 async fn relay_invalid_share_evidence<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
@@ -752,6 +964,7 @@ mod tests {
             signing_committee_scope: CommitteeScope::Current,
             from_node_id: 2,
             commitment: vec![1],
+            session_nonce: [0u8; 16],
             crypto_backend: DkgImpl::name(),
         };
         SignedDkgShare {
@@ -811,6 +1024,7 @@ mod tests {
             signing_committee_scope: CommitteeScope::Current,
             from_node_id: 1,
             commitment: vec![1, 2, 3],
+            session_nonce: [0u8; 16],
             crypto_backend: DkgImpl::name(),
         }
     }
@@ -824,6 +1038,42 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, DkgError::Unauthorized(_)));
+    }
+
+    fn signed_commitment_for_equivocation(
+        commitment: Vec<u8>,
+        session_nonce: [u8; 16],
+    ) -> SignedDkgCommitment {
+        let mut statement = commitment_statement_for_tests("accused");
+        statement.commitment = commitment;
+        statement.session_nonce = session_nonce;
+        SignedDkgCommitment {
+            statement,
+            signature: vec![1; 64],
+        }
+    }
+
+    #[test]
+    fn commitments_prove_equivocation_requires_same_nonce_and_different_bytes() {
+        let nonce = [5u8; 16];
+        let a = signed_commitment_for_equivocation(vec![1, 2, 3], nonce);
+
+        // Same nonce, different bytes → equivocation.
+        let b = signed_commitment_for_equivocation(vec![9, 9, 9], nonce);
+        assert!(commitments_prove_equivocation(&a, &b));
+
+        // Same nonce, identical bytes → not equivocation.
+        let same = signed_commitment_for_equivocation(vec![1, 2, 3], nonce);
+        assert!(!commitments_prove_equivocation(&a, &same));
+
+        // Different nonce (honest retry), different bytes → not equivocation.
+        let retry = signed_commitment_for_equivocation(vec![9, 9, 9], [6u8; 16]);
+        assert!(!commitments_prove_equivocation(&a, &retry));
+
+        // Different dealer → not equivocation.
+        let mut other_dealer = signed_commitment_for_equivocation(vec![9, 9, 9], nonce);
+        other_dealer.statement.from_node_id += 1;
+        assert!(!commitments_prove_equivocation(&a, &other_dealer));
     }
 
     #[test]

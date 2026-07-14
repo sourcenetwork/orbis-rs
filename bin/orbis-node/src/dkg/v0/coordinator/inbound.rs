@@ -71,6 +71,14 @@ impl DkgMessageMeta {
                 committee_scope: CommitteeScope::ReshareNew,
                 metric_label: "dkg_invalid_share_evidence",
             },
+            DkgMessage::DkgInvalidCommitmentEvidence { .. } => Self {
+                message_type: DkgMessageType::DkgInvalidCommitmentEvidence,
+                // Self-authenticating via the accused's two signatures — no sender id.
+                sender_node_id: None,
+                dedup_node_id: None,
+                committee_scope: CommitteeScope::ReshareNew,
+                metric_label: "dkg_invalid_commitment_evidence",
+            },
             DkgMessage::ReshareShareAck {
                 receiver_node_id, ..
             } => Self {
@@ -282,6 +290,19 @@ where
         } => {
             evidence::handle_invalid_share_evidence_relay(coord, session_id, report_evidence).await
         }
+        DkgMessage::DkgInvalidCommitmentEvidence {
+            commitment_a,
+            commitment_b,
+            ..
+        } => {
+            evidence::handle_invalid_commitment_evidence_relay(
+                coord,
+                session_id,
+                commitment_a,
+                commitment_b,
+            )
+            .await
+        }
         DkgMessage::ReshareShareAck {
             receiver_node_id,
             dealer_id,
@@ -340,7 +361,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dkg::v0::messages::{SessionKind, SignedDkgShare};
+    use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
     use crate::reporting::v0::types::{
         CommitteeScope as ReportingCommitteeScope, DkgCommitmentStatement, DkgShareStatement,
         DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN,
@@ -368,6 +389,14 @@ mod tests {
         );
     }
 
+    fn signed_commitment_for_metadata() -> SignedDkgCommitment {
+        let share = signed_dkg_share_for_metadata();
+        SignedDkgCommitment {
+            statement: share.statement.commitment_statement.clone(),
+            signature: share.statement.commitment_signature.clone(),
+        }
+    }
+
     fn signed_dkg_share_for_metadata() -> SignedDkgShare {
         let commitment_statement = DkgCommitmentStatement {
             domain: DKG_COMMITMENT_DOMAIN.to_string(),
@@ -384,6 +413,7 @@ mod tests {
             signing_committee_scope: ReportingCommitteeScope::Current,
             from_node_id: 2,
             commitment: vec![1],
+            session_nonce: [0u8; 16],
             crypto_backend: "dkg/test".to_string(),
         };
 
@@ -479,6 +509,18 @@ mod tests {
             None,
             CommitteeScope::ReshareNew,
             "dkg_invalid_share_evidence",
+        );
+        assert_meta(
+            DkgMessage::DkgInvalidCommitmentEvidence {
+                session_id: 1,
+                commitment_a: signed_commitment_for_metadata(),
+                commitment_b: signed_commitment_for_metadata(),
+            },
+            DkgMessageType::DkgInvalidCommitmentEvidence,
+            None,
+            None,
+            CommitteeScope::ReshareNew,
+            "dkg_invalid_commitment_evidence",
         );
         assert_meta(
             DkgMessage::ReshareShareAck {

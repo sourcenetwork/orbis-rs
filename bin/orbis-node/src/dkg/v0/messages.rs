@@ -95,6 +95,14 @@ pub enum DkgMessage {
         receiver_node_id: u32,
         report_evidence: SignedDkgShare,
     },
+    /// Reshare-only: a pending-new receiver forwards two conflicting signed commitments
+    /// (equivocation evidence) to the current committee so the active ring can sign the
+    /// report against the equivocating old-committee dealer.
+    DkgInvalidCommitmentEvidence {
+        session_id: u128,
+        commitment_a: SignedDkgCommitment,
+        commitment_b: SignedDkgCommitment,
+    },
     /// Reshare-only: a new-committee receiver confirms it has verified one
     /// valid share from an old-committee dealer.
     ReshareShareAck {
@@ -156,6 +164,7 @@ impl DkgMessage {
             DkgMessage::Commitment { session_id, .. } => *session_id,
             DkgMessage::Share { session_id, .. } => *session_id,
             DkgMessage::DkgInvalidShareEvidence { session_id, .. } => *session_id,
+            DkgMessage::DkgInvalidCommitmentEvidence { session_id, .. } => *session_id,
             DkgMessage::ReshareShareAck { session_id, .. } => *session_id,
             DkgMessage::ReshareParticipantSet { session_id, .. } => *session_id,
             DkgMessage::RefreshHealthCheckResult { session_id, .. } => *session_id,

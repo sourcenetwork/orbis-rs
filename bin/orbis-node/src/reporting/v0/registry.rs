@@ -1,5 +1,6 @@
 use crate::app_state::PeerConnectionPool;
 use crate::dkg::v0::helpers::deserialize_wire_commitment;
+use crate::dkg::v0::messages::SignedDkgCommitment;
 use crate::helpers::identity::{determine_session_node_id, extract_node_part};
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::helpers::ring::RingConfig;
@@ -11,11 +12,11 @@ use crate::reporting::v0::observation::{
 };
 use crate::reporting::v0::state::InFlightReportKey;
 use crate::reporting::v0::types::{
-    ring_state_sha256, CommitteeScope, DkgShareStatement, InvalidCryptoResponse, NodeOffline,
-    PreReencryptResponseStatement, ReportEnvelope, SignResponseStatement, CHAIN_BLOCK_GRACE_SECS,
-    DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
-    NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS,
-    SIGN_RESPONSE_DOMAIN,
+    ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgShareStatement,
+    InvalidCryptoResponse, NodeOffline, PreReencryptResponseStatement, ReportEnvelope,
+    SignResponseStatement, CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN,
+    INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN,
+    REPORT_DOMAIN, REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN,
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::SigningOptions;
@@ -393,6 +394,19 @@ impl ReportHandler for InvalidCryptoResponseHandler {
                 )
                 .await
             }
+            InvalidCryptoResponse::DkgEquivocation {
+                commitment_a,
+                commitment_b,
+            } => {
+                self.validate_dkg_equivocation_evidence(
+                    envelope,
+                    context,
+                    &ring,
+                    commitment_a,
+                    commitment_b,
+                )
+                .await
+            }
         }
     }
 }
@@ -605,6 +619,107 @@ impl InvalidCryptoResponseHandler {
         })?;
 
         require_dkg_share_verification_failure(statement)
+    }
+
+    async fn validate_dkg_equivocation_evidence(
+        &self,
+        envelope: &ReportEnvelope,
+        context: &ReportValidationContext,
+        ring: &RingPayload,
+        commitment_a: &SignedDkgCommitment,
+        commitment_b: &SignedDkgCommitment,
+    ) -> Result<()> {
+        // commitment_a anchors the envelope's observed_at; commitment_b only needs
+        // ring/session binding (its signed_at may differ within the attempt).
+        validate_equivocation_commitment_shape(
+            envelope,
+            context,
+            &commitment_a.statement,
+            &commitment_a.signature,
+            true,
+        )?;
+        validate_equivocation_commitment_shape(
+            envelope,
+            context,
+            &commitment_b.statement,
+            &commitment_b.signature,
+            false,
+        )?;
+
+        let effective_version =
+            validate_report_route_version_at_observed_at(envelope, ring, context.routes.version)?;
+        if commitment_a.statement.protocol_version != effective_version
+            || commitment_b.statement.protocol_version != effective_version
+        {
+            return Err(ReportingError::Unauthorized(format!(
+                "DKG equivocation protocol version does not match effective ring version {}",
+                effective_version
+            )));
+        }
+
+        let signing_committee = validate_ring_and_membership_for_scopes(
+            envelope,
+            ring,
+            CommitteeScope::Current,
+            CommitteeScope::Current,
+            "DKG equivocation",
+        )?;
+        validate_node_routes(envelope, context, ring).await?;
+        validate_local_signer(envelope, context, &signing_committee, "DKG equivocation")?;
+
+        let accused_committee = committee_for_scope(ring, CommitteeScope::Current)?;
+        let expected_from_node_id = determine_session_node_id(
+            &envelope.accused_node_key,
+            &accused_committee.peer_node_keys,
+        )
+        .ok_or_else(|| {
+            ReportingError::Unauthorized(
+                "accused node is not in the DKG equivocation node-id map".to_string(),
+            )
+        })?;
+        if commitment_a.statement.from_node_id != expected_from_node_id
+            || commitment_b.statement.from_node_id != expected_from_node_id
+        {
+            return Err(ReportingError::Unauthorized(format!(
+                "DKG equivocation from_node_id does not match accused node_id {}",
+                expected_from_node_id
+            )));
+        }
+
+        verify_node_message(
+            &envelope.accused_node_key,
+            &commitment_a.statement.canonical_bytes(),
+            &commitment_a.signature,
+        )
+        .map_err(|error| {
+            ReportingError::Unauthorized(format!(
+                "invalid DKG equivocation commitment_a signature: {}",
+                error
+            ))
+        })?;
+        verify_node_message(
+            &envelope.accused_node_key,
+            &commitment_b.statement.canonical_bytes(),
+            &commitment_b.signature,
+        )
+        .map_err(|error| {
+            ReportingError::Unauthorized(format!(
+                "invalid DKG equivocation commitment_b signature: {}",
+                error
+            ))
+        })?;
+
+        // The refutation: equivocation requires the SAME per-attempt nonce with different
+        // bytes. Identical bytes, or a different nonce (honest retry), is not equivocation.
+        if commitment_a.statement.session_nonce != commitment_b.statement.session_nonce
+            || commitment_a.statement.commitment == commitment_b.statement.commitment
+        {
+            return Err(ReportingError::Unauthorized(
+                "reported commitments are not equivocation".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     fn observation(observation: &ReportObservation) -> Result<&InvalidCryptoResponseObservation> {
@@ -871,6 +986,10 @@ struct InvalidCryptoStatementPrologue {
     request_id: String,
     signed_at: u64,
     responder_node_key: String,
+    /// Whether `signed_at` must anchor the envelope's `observed_at`. True for the statement
+    /// whose timestamp anchors the report; false for a second statement (e.g. the other
+    /// commitment in an equivocation report) that only needs ring/session binding.
+    check_anchor: bool,
 }
 
 fn validate_invalid_crypto_statement_prologue(
@@ -903,7 +1022,9 @@ fn validate_invalid_crypto_statement_prologue(
             "{label} request_id does not match report session_id"
         )));
     }
-    validate_evidence_anchor(statement.signed_at, envelope.observed_at)?;
+    if statement.check_anchor {
+        validate_evidence_anchor(statement.signed_at, envelope.observed_at)?;
+    }
     if statement.responder_node_key != envelope.accused_node_key {
         return Err(ReportingError::Unauthorized(format!(
             "{label} responder does not match accused node"
@@ -932,6 +1053,7 @@ fn validate_pre_reencrypt_response_statement_shape(
             request_id: statement.request_id.clone(),
             signed_at: statement.signed_at,
             responder_node_key: statement.responder_node_key.clone(),
+            check_anchor: true,
         },
     )?;
     if !is_valid_invalid_crypto_pre_origin(&statement.origin_protocol) {
@@ -980,6 +1102,7 @@ fn validate_sign_response_statement_shape(
             request_id: statement.request_id.clone(),
             signed_at: statement.signed_at,
             responder_node_key: statement.responder_node_key.clone(),
+            check_anchor: true,
         },
     )?;
     if !is_valid_invalid_crypto_sign_origin(&statement.origin_protocol) {
@@ -1033,6 +1156,7 @@ fn validate_dkg_share_statement_shape(
             request_id: statement.request_id.clone(),
             signed_at: statement.signed_at,
             responder_node_key: statement.responder_node_key.clone(),
+            check_anchor: true,
         },
     )?;
     if !is_valid_invalid_crypto_dkg_origin(&statement.origin_protocol) {
@@ -1124,6 +1248,75 @@ fn validate_dkg_commitment_statement_shape(statement: &DkgShareStatement) -> Res
             commitment.commitment.len(),
             GROUP_POINT_SIZE
         )));
+    }
+    Ok(())
+}
+
+fn validate_equivocation_commitment_shape(
+    envelope: &ReportEnvelope,
+    context: &ReportValidationContext,
+    commitment: &DkgCommitmentStatement,
+    signature: &[u8],
+    check_anchor: bool,
+) -> Result<()> {
+    validate_invalid_crypto_statement_prologue(
+        envelope,
+        context,
+        InvalidCryptoStatementPrologue {
+            label: "DKG equivocation commitment".to_string(),
+            domain: commitment.domain.clone(),
+            expected_domain: DKG_COMMITMENT_DOMAIN.to_string(),
+            chain_id: commitment.chain_id.clone(),
+            ring_id: commitment.ring_id.clone(),
+            ring_pk: commitment.ring_pk.clone(),
+            ring_state_sha256: commitment.ring_state_sha256.clone(),
+            request_id: commitment.request_id.clone(),
+            signed_at: commitment.signed_at,
+            responder_node_key: commitment.responder_node_key.clone(),
+            check_anchor,
+        },
+    )?;
+    if !is_valid_invalid_crypto_dkg_origin(&commitment.origin_protocol) {
+        return Err(ReportingError::InvalidReport(format!(
+            "unsupported DKG equivocation origin protocol {}",
+            commitment.origin_protocol
+        )));
+    }
+    if commitment.accused_committee_scope != CommitteeScope::Current
+        || commitment.signing_committee_scope != CommitteeScope::Current
+    {
+        return Err(ReportingError::Unauthorized(
+            "DKG equivocation reports must use current accused and signing scopes".to_string(),
+        ));
+    }
+    if commitment.from_node_id == 0 {
+        return Err(ReportingError::InvalidReport(
+            "DKG equivocation from_node_id must be non-zero".to_string(),
+        ));
+    }
+    if commitment.crypto_backend != DkgImpl::name() {
+        return Err(ReportingError::Unauthorized(format!(
+            "DKG equivocation crypto backend {} does not match local backend {}",
+            commitment.crypto_backend,
+            DkgImpl::name()
+        )));
+    }
+    if commitment.commitment.is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "DKG equivocation commitment cannot be empty".to_string(),
+        ));
+    }
+    if !commitment.commitment.len().is_multiple_of(GROUP_POINT_SIZE) {
+        return Err(ReportingError::InvalidReport(format!(
+            "DKG equivocation commitment length {} is not a multiple of {}",
+            commitment.commitment.len(),
+            GROUP_POINT_SIZE
+        )));
+    }
+    if signature.is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "DKG equivocation commitment signature cannot be empty".to_string(),
+        ));
     }
     Ok(())
 }
@@ -1484,6 +1677,7 @@ mod tests {
             signing_committee_scope: CommitteeScope::Current,
             from_node_id: 2,
             commitment,
+            session_nonce: [0u8; 16],
             crypto_backend: DkgImpl::name(),
         };
         DkgShareStatement {
@@ -1720,6 +1914,113 @@ mod tests {
         .unwrap_err();
         crate::helpers::test_helpers::cleanup_db(&db_path);
         assert!(error.to_string().contains("unsupported DKG share origin"));
+    }
+
+    fn equivocation_commitment(
+        ring: &RingPayload,
+        chain_id: &str,
+        commitment: Vec<u8>,
+        session_nonce: [u8; 16],
+        signed_at: u64,
+    ) -> SignedDkgCommitment {
+        SignedDkgCommitment {
+            statement: DkgCommitmentStatement {
+                domain: DKG_COMMITMENT_DOMAIN.to_string(),
+                chain_id: chain_id.to_string(),
+                ring_id: "ring".to_string(),
+                ring_pk: ring.ring_pk.clone(),
+                ring_state_sha256: ring_state_sha256(ring),
+                protocol_version: 0,
+                request_id: "dkg-session-1".to_string(),
+                signed_at,
+                responder_node_key: "accused".to_string(),
+                origin_protocol: "pss_reshare".to_string(),
+                accused_committee_scope: CommitteeScope::Current,
+                signing_committee_scope: CommitteeScope::Current,
+                from_node_id: 2,
+                commitment,
+                session_nonce,
+                crypto_backend: DkgImpl::name(),
+            },
+            signature: vec![1; 64],
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_equivocation_commitment_shape_accepts_bound_and_rejects_bad_origin() {
+        let db_name = "registry_equivocation_commitment_shape";
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+        let chain_id = app_state.bulletin.chain_id();
+        let ring = ring_fixture(2);
+
+        let mut dealer = DkgImpl::new(2, 2, 3, 7, DkgRole::Standard).unwrap();
+        dealer.generate_polynomial(DkgMode::Fresh).unwrap();
+        let commitment =
+            serialize_commitment_coefficients(&dealer.commitment().coefficients).unwrap();
+        let signed_at = CHAIN_BLOCK_GRACE_SECS + 100;
+        let nonce = [3u8; 16];
+        let commitment_a =
+            equivocation_commitment(&ring, &chain_id, commitment.clone(), nonce, signed_at);
+        let mut different = commitment.clone();
+        different[0] ^= 0xff;
+        let commitment_b = equivocation_commitment(&ring, &chain_id, different, nonce, signed_at);
+
+        let observation = InvalidCryptoResponseObservation {
+            ring_id: "ring".to_string(),
+            accused_node_key: "accused".to_string(),
+            accused_peer_id: "aa".repeat(32),
+            observed_at: signed_at - CHAIN_BLOCK_GRACE_SECS,
+            evidence: InvalidCryptoResponse::DkgEquivocation {
+                commitment_a: Box::new(commitment_a.clone()),
+                commitment_b: Box::new(commitment_b),
+            },
+        };
+        let envelope = InvalidCryptoResponseHandler.build_envelope(
+            &observation,
+            &ring,
+            "reporter",
+            chain_id.clone(),
+        );
+        let context = ReportValidationContext {
+            local_node_key: app_state.node_key.clone(),
+            requester_peer_id: None,
+            network: app_state.network.clone(),
+            peer_connection_pool: app_state.peer_connection_pool.clone(),
+            bulletin: app_state.bulletin.clone(),
+            local_storage: app_state.local_storage.clone(),
+            routes: &network::V0,
+            now: envelope.observed_at,
+            mode: ReportValidationMode::ReporterObservation,
+        };
+
+        // A well-bound commitment passes the shape check.
+        validate_equivocation_commitment_shape(
+            &envelope,
+            &context,
+            &commitment_a.statement,
+            &commitment_a.signature,
+            true,
+        )
+        .unwrap();
+
+        // A non-DKG origin is rejected.
+        let mut bad = commitment_a.clone();
+        bad.statement.origin_protocol = "not_dkg".to_string();
+        let error = validate_equivocation_commitment_shape(
+            &envelope,
+            &context,
+            &bad.statement,
+            &bad.signature,
+            true,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported DKG equivocation origin"));
+
+        crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 
     #[test]
