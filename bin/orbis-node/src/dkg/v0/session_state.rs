@@ -11,6 +11,7 @@ use crate::constants::{
     DKG_COMPLETED_SESSION_TTL, DKG_PHASE4_COMPLETION_TIMEOUT, DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS,
     SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
 };
+use crate::dkg::v0::coordinator::evidence::commitments_prove_equivocation;
 use crate::dkg::v0::error::DkgError;
 use crate::dkg::v0::helpers::bidirectional_node_peer_maps;
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
@@ -194,12 +195,12 @@ pub(crate) struct CommitRevealState {
 /// Refresh/reshare only: the signed commitment this node received from each dealer,
 /// kept so that on an equivocation-consistent failure (phase4 aggregate/staged-pk
 /// mismatch) it can be revealed to peers who compare it against their own to name
-/// the equivocating dealer. Diagnostic (logs only) — no on-chain report.
+/// the equivocating dealer, and to build a threshold-signed on-chain equivocation
+/// report (see `evidence::queue_or_relay_equivocation`).
 ///
-/// Limitation: refresh/reshare reuse a deterministic session_id across retries, so a
-/// commitment from a prior attempt could be replayed into a live session and provoke a
-/// FALSE attribution in logs. Acceptable while this is log-only; a per-attempt anchor
-/// (needed anyway for an on-chain equivocation report) would close it.
+/// Refresh/reshare reuse a deterministic session_id across retries; false attribution
+/// from a replayed prior-attempt commitment is avoided via `session_nonce`, a fresh
+/// per-attempt anchor each dealer signs into every commitment it broadcasts.
 #[derive(Default)]
 pub(crate) struct CommitmentAuditState {
     pub received_commitments: HashMap<u32, SignedDkgCommitment>,
@@ -1234,8 +1235,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     .commitment_audit
                     .received_commitments
                     .get(&dealer_id)?;
-                (ours.statement.session_nonce == reveal.statement.session_nonce
-                    && ours.statement.commitment != reveal.statement.commitment)
+                commitments_prove_equivocation(ours, reveal)
                     .then(|| (dealer_id, ours.clone(), reveal.clone()))
             })
         })
@@ -1875,24 +1875,27 @@ mod tests {
         mgr.store_received_commitment(&50, 3, signed_commitment(3, vec![4, 5, 6], nonce_a))
             .await;
 
+        let dealer = |revealed| async move {
+            mgr.find_conflicting_commitment_pair(&50, revealed)
+                .await
+                .map(|(dealer_id, _, _)| dealer_id)
+        };
+
         // A reveal matching what we stored → no conflict.
-        assert!(mgr
-            .find_conflicting_commitment_pair(&50, &[signed_commitment(2, vec![1, 2, 3], nonce_a)])
-            .await
-            .is_none());
+        assert_eq!(
+            dealer(&[signed_commitment(2, vec![1, 2, 3], nonce_a)]).await,
+            None
+        );
         // A reveal for a dealer we never received from → ignored.
-        assert!(mgr
-            .find_conflicting_commitment_pair(&50, &[signed_commitment(9, vec![9, 9], nonce_a)])
-            .await
-            .is_none());
+        assert_eq!(
+            dealer(&[signed_commitment(9, vec![9, 9], nonce_a)]).await,
+            None
+        );
         // Different bytes but a DIFFERENT nonce → honest retry, NOT equivocation (not framed).
-        assert!(mgr
-            .find_conflicting_commitment_pair(
-                &50,
-                &[signed_commitment(2, vec![7, 7, 7], [2u8; 16])]
-            )
-            .await
-            .is_none());
+        assert_eq!(
+            dealer(&[signed_commitment(2, vec![7, 7, 7], [2u8; 16])]).await,
+            None
+        );
         // Different bytes with the SAME nonce for dealer 2 → equivocation; returns the pair.
         let (dealer_id, ours, reveal) = mgr
             .find_conflicting_commitment_pair(&50, &[signed_commitment(2, vec![7, 7, 7], nonce_a)])

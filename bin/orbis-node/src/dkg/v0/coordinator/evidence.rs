@@ -360,7 +360,7 @@ where
 /// Two commitments are equivocation iff the same dealer signed both for the same session
 /// under the SAME per-attempt nonce with different bytes. Same nonce is what distinguishes
 /// genuine equivocation from an honest retry (which uses a fresh nonce).
-fn commitments_prove_equivocation(
+pub(crate) fn commitments_prove_equivocation(
     commitment_a: &SignedDkgCommitment,
     commitment_b: &SignedDkgCommitment,
 ) -> bool {
