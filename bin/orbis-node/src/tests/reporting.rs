@@ -12,7 +12,7 @@
 
 use crate::constants::DKG_PHASE4_COMPLETION_TIMEOUT;
 use crate::dkg::v0::helpers::serialize_commitment_coefficients;
-use crate::dkg::v0::messages::SignedDkgShare;
+use crate::dkg::v0::messages::{SignedDkgCommitment, SignedDkgShare};
 use crate::helpers::test_helpers::wait_for_ring_finalized;
 use crate::reporting::v0::types::{
     ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgShareStatement,
@@ -34,7 +34,8 @@ use crypto::{DkgImpl, GroupAffine, ScalarField};
 use proto::unsafe_testing::{
     unsafe_testing_service_client::UnsafeTestingServiceClient, GetActivePssSessionRequest,
     GetLocalStorageRequest, LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType,
-    SetLocalStorageRequest, SubmitDkgInvalidShareEvidenceRequest,
+    SetLocalStorageRequest, SubmitDkgEquivocationEvidenceRequest,
+    SubmitDkgInvalidShareEvidenceRequest,
 };
 use tokio::time::{sleep, Duration, Instant};
 use zeroize::Zeroizing;
@@ -258,6 +259,7 @@ fn signed_bad_reshare_dkg_share(
         signing_committee_scope: CommitteeScope::Current,
         from_node_id,
         commitment,
+        session_nonce: [0u8; 16],
         crypto_backend: DkgImpl::name(),
     };
     let commitment_signature = sign_node_message_with_hex_key(
@@ -295,6 +297,91 @@ fn signed_bad_reshare_dkg_share(
         statement,
         signature,
     }
+}
+
+fn signed_equivocation_commitments(
+    chain_id: String,
+    ring_id: String,
+    ring: &RingPayload,
+    session_id: u128,
+    accused_node_key: &str,
+    accused_signing_key_hex: &str,
+) -> (SignedDkgCommitment, SignedDkgCommitment) {
+    let from_node_id = canonical_node_id(accused_node_key, &ring.peer_node_keys);
+    let receiver_node_keys = ring
+        .new_peer_node_keys
+        .clone()
+        .expect("reshare announcement should include new_peer_node_keys");
+    let participating_ids: Vec<u32> = (1..=ring.peer_node_keys.len() as u32).collect();
+    let new_threshold = ring
+        .new_threshold
+        .unwrap_or(ring.threshold)
+        .try_into()
+        .expect("new threshold fits usize");
+    let new_total_nodes = receiver_node_keys.len();
+
+    let make_commitment = || {
+        let mut dealer = DkgImpl::new(
+            from_node_id,
+            ring.threshold as usize,
+            ring.peer_node_keys.len(),
+            session_id,
+            DkgRole::Dealer,
+        )
+        .expect("create reshare dealer");
+        dealer
+            .generate_polynomial(DkgMode::Reshare {
+                old_share: ScalarField::from(42_u64),
+                participating_ids: participating_ids.clone(),
+                new_threshold,
+                new_total_nodes,
+                new_node_id: None,
+            })
+            .expect("generate reshare polynomial");
+        serialize_commitment_coefficients(&dealer.commitment().coefficients).expect("commitment")
+    };
+
+    let commitment_a = make_commitment();
+    let commitment_b = make_commitment();
+    assert_ne!(
+        commitment_a, commitment_b,
+        "equivocation evidence must contain two different commitments"
+    );
+
+    let signed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_secs();
+    let session_nonce = [7u8; 16];
+    let sign_commitment = |commitment: Vec<u8>| {
+        let statement = DkgCommitmentStatement {
+            domain: DKG_COMMITMENT_DOMAIN.to_string(),
+            chain_id: chain_id.clone(),
+            ring_id: ring_id.clone(),
+            ring_pk: ring.ring_pk.clone(),
+            ring_state_sha256: ring_state_sha256(ring),
+            protocol_version: network::V0.version,
+            request_id: session_id.to_string(),
+            signed_at,
+            responder_node_key: accused_node_key.to_string(),
+            origin_protocol: "pss_reshare".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id,
+            commitment,
+            session_nonce,
+            crypto_backend: DkgImpl::name(),
+        };
+        let signature =
+            sign_node_message_with_hex_key(accused_signing_key_hex, &statement.canonical_bytes())
+                .expect("sign DKG equivocation commitment");
+        SignedDkgCommitment {
+            statement,
+            signature,
+        }
+    };
+
+    (sign_commitment(commitment_a), sign_commitment(commitment_b))
 }
 
 #[tokio::test]
@@ -2085,6 +2172,288 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
     assert_eq!(
         demerits, 1,
         "node3 should have exactly one demerit after the DKG bad-share report"
+    );
+}
+
+/// Verifies the reshare DKG-commitment equivocation relay path: a pure-new
+/// receiver (node4) receives two conflicting, signed commitments from an
+/// old-committee dealer (node3) and relays them to the current committee, which
+/// re-verifies, threshold-signs an `invalid_crypto_response` report, and submits
+/// it while the reshare is still pending.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_reshare_dkg_equivocation_triggers_on_chain_report() {
+    println!("Starting PSS reshare DKG equivocation reporting integration test...");
+
+    let network = IntegrationTestNetwork::builder()
+        .with_node_count(4)
+        .with_module_genesis(
+            "orbis",
+            serde_json::json!({
+                "rings": [{
+                    "id": RING_ID,
+                    "ring_pk": "",
+                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+                    "threshold": 2,
+                    "pss_interval": 86400,
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "reporting": reporting_genesis_json(1, &[], 10)
+                }],
+                // The offline member has no container; seed its NodeInfo so the
+                // chain accepts it as a reshare target and nodes can resolve a
+                // syntactically valid, unreachable route for it.
+                "node_infos": [{
+                    "node_key": NODE_KEY_OFFLINE,
+                    "node_info": {
+                        "peer_id": OFFLINE_NODE_PEER_ID,
+                        "controller_key": TEST_ACCOUNT_PUBKEY_HEX,
+                        "whitelisted_policy_ids": [],
+                        "whitelisted_ring_ids": [RING_ID]
+                    }
+                }]
+            }),
+        )
+        .build();
+
+    let chain_config = network.chain_config();
+    let endpoints = network.all_endpoints();
+    let endpoint = endpoints[0].to_string();
+    let node4_endpoint = endpoints[3].to_string();
+
+    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
+        .await;
+
+    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
+        .await
+        .expect("query node1 info");
+    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
+        .await
+        .expect("query node2 info");
+    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
+        .await
+        .expect("query node3 info");
+    let node4_info = cli_tool::query_node_info(endpoints[3].to_string())
+        .await
+        .expect("query node4 info");
+
+    assert_eq!(node1_info.node_key, NODE_KEY_1, "node1 key mismatch");
+    assert_eq!(node2_info.node_key, NODE_KEY_2, "node2 key mismatch");
+    assert_eq!(node3_info.node_key, NODE_KEY_3, "node3 key mismatch");
+    assert_eq!(node4_info.node_key, NODE_KEY_4, "node4 key mismatch");
+
+    let peer_addresses = [
+        IntegrationTestNetwork::transform_p2p_address(
+            &node1_info.p2p_address,
+            IntegrationTestNetwork::NODE1_SERVICE,
+        ),
+        IntegrationTestNetwork::transform_p2p_address(
+            &node2_info.p2p_address,
+            IntegrationTestNetwork::NODE2_SERVICE,
+        ),
+        IntegrationTestNetwork::transform_p2p_address(
+            &node3_info.p2p_address,
+            IntegrationTestNetwork::NODE3_SERVICE,
+        ),
+        IntegrationTestNetwork::transform_p2p_address(
+            &node4_info.p2p_address,
+            IntegrationTestNetwork::NODE4_SERVICE,
+        ),
+    ];
+
+    let controller_client = SourceHubClient::with_signer(
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
+    let initial_node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
+    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
+        &controller_client,
+        RING_ID,
+        &initial_node_keys,
+    )
+    .await;
+    assert_eq!(
+        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+        "ACP policy ID mismatch - update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
+    );
+
+    for (node_key, peer_address) in [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, NODE_KEY_4]
+        .iter()
+        .zip(&peer_addresses)
+    {
+        wait_for_node_info_on_chain(
+            &controller_client,
+            node_key,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
+
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
+    }
+
+    println!("Starting DKG for ring {RING_ID}...");
+    cli_tool::do_dkg(endpoint.clone(), RING_ID.to_string())
+        .await
+        .expect("DKG should succeed");
+
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    println!(
+        "DKG finalized. Ring PK: {}...",
+        &ring_pk_hex[..40.min(ring_pk_hex.len())]
+    );
+    let dkg_node_endpoints: Vec<String> = endpoints[..3]
+        .iter()
+        .map(|endpoint| (*endpoint).to_string())
+        .collect();
+    wait_for_ring_state_on_nodes(&dkg_node_endpoints, &ring_pk_hex, Duration::from_secs(60)).await;
+    ensure_ring_index_on_nodes(&dkg_node_endpoints, &ring_pk_hex, RING_ID).await;
+
+    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+        .await
+        .expect("connect report event subscription");
+
+    // NODE_KEY_OFFLINE never acks its shares, so no dealer ever completes and the
+    // ring stays in the pending-reshare state.
+    let reshare_node_keys = vec![
+        NODE_KEY_1.to_string(),
+        NODE_KEY_2.to_string(),
+        NODE_KEY_4.to_string(),
+        NODE_KEY_OFFLINE.to_string(),
+    ];
+    let reshare_threshold = 2u32;
+
+    println!("Triggering ring reshare to node1/node2/node4/offline, threshold=2...");
+    cli_tool::start_ring_reshare_by_acp_with_config(
+        RING_ID.to_string(),
+        reshare_node_keys.clone(),
+        Some(reshare_threshold),
+        chain_config.clone(),
+    )
+    .await
+    .expect("start ring reshare announcement");
+
+    let payload_bytes = cli_tool::read_bulletin_post_with_config(
+        RING_ID.to_string(),
+        BulletinKind::Ring,
+        chain_config.clone(),
+    )
+    .await
+    .expect("read ring payload after reshare announcement");
+    let ring_payload: RingPayload =
+        serde_json::from_slice(&payload_bytes).expect("parse RingPayload");
+    assert_eq!(
+        ring_payload
+            .new_peer_node_keys
+            .as_ref()
+            .map(|node_keys| sorted_node_keys(node_keys)),
+        Some(sorted_node_keys(&reshare_node_keys)),
+        "reshare should target node1/node2/node4/offline"
+    );
+    assert_eq!(
+        ring_payload.new_threshold,
+        Some(reshare_threshold),
+        "reshare should target threshold 2"
+    );
+
+    let local_ring_key = ring_key_from_ring_pk_hex(&ring_pk_hex);
+    let (node1_session_id, node2_session_id, node4_session_id) = tokio::join!(
+        wait_for_active_pss_session(endpoints[0], &local_ring_key, Duration::from_secs(180)),
+        wait_for_active_pss_session(endpoints[1], &local_ring_key, Duration::from_secs(180)),
+        wait_for_active_pss_session(&node4_endpoint, &local_ring_key, Duration::from_secs(180)),
+    );
+    assert_eq!(
+        node2_session_id, node1_session_id,
+        "node2 should join the same active reshare session as node1"
+    );
+    assert_eq!(
+        node4_session_id, node1_session_id,
+        "node4 should join the same active reshare session as current signers"
+    );
+    let session_id = node4_session_id
+        .parse::<u128>()
+        .expect("active PSS session id should parse");
+    println!("node4 active reshare session: {session_id}");
+
+    let (commitment_a, commitment_b) = signed_equivocation_commitments(
+        chain_config.chain_id.clone(),
+        RING_ID.to_string(),
+        &ring_payload,
+        session_id,
+        NODE_KEY_3,
+        NODE3_SIGNING_KEY_HEX,
+    );
+
+    let mut unsafe_client = UnsafeTestingServiceClient::connect(node4_endpoint)
+        .await
+        .expect("connect unsafe-testing client to node4");
+    unsafe_client
+        .submit_dkg_equivocation_evidence(SubmitDkgEquivocationEvidenceRequest {
+            session_id: session_id.to_string(),
+            commitment_a_json: serde_json::to_vec(&commitment_a)
+                .expect("serialize commitment_a evidence"),
+            commitment_b_json: serde_json::to_vec(&commitment_b)
+                .expect("serialize commitment_b evidence"),
+        })
+        .await
+        .expect("submit DKG equivocation evidence through pure-new receiver");
+
+    println!("Waiting for DKG equivocation EventReportAccepted on chain (up to 120s)...");
+    let event = sub
+        .wait_for_report_accepted_matching(RING_ID, Duration::from_secs(120), |event| {
+            event.report_type == "invalid_crypto_response" && event.accused_node_key == NODE_KEY_3
+        })
+        .await
+        .expect("DKG equivocation EventReportAccepted should be emitted");
+
+    println!(
+        "DKG equivocation report accepted on chain: report_id={} accused={} reporter={}",
+        event.report_id, event.accused_node_key, event.reporter_node_key
+    );
+
+    assert_eq!(
+        event.report_type, "invalid_crypto_response",
+        "unexpected report_type"
+    );
+    assert_eq!(
+        event.accused_node_key, NODE_KEY_3,
+        "node3 should be the accused equivocation dealer"
+    );
+    assert_eq!(event.ring_id, RING_ID, "ring_id mismatch");
+    assert!(
+        [NODE_KEY_1, NODE_KEY_2].contains(&event.reporter_node_key.as_str()),
+        "reporter should be a non-accused current signer, got {}",
+        event.reporter_node_key
+    );
+
+    let demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
+        .await
+        .expect("query node3 demerits");
+    assert_eq!(
+        demerits, 1,
+        "node3 should have exactly one demerit after the DKG equivocation report"
     );
 }
 

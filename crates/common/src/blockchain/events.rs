@@ -253,17 +253,53 @@ impl ReportEventSubscription {
     }
 
     pub async fn wait_for_report_accepted(
-        mut self,
+        self,
         ring_id: &str,
         timeout: Duration,
     ) -> Result<ReportAcceptedEvent> {
-        let result = tokio::time::timeout(timeout, self.wait_for_report_inner(ring_id)).await;
+        self.wait_for_report_accepted_matching_inner(ring_id, timeout, |_| true, false)
+            .await
+    }
+
+    pub async fn wait_for_report_accepted_matching<F>(
+        self,
+        ring_id: &str,
+        timeout: Duration,
+        predicate: F,
+    ) -> Result<ReportAcceptedEvent>
+    where
+        F: FnMut(&ReportAcceptedEvent) -> bool,
+    {
+        self.wait_for_report_accepted_matching_inner(ring_id, timeout, predicate, true)
+            .await
+    }
+
+    async fn wait_for_report_accepted_matching_inner<F>(
+        mut self,
+        ring_id: &str,
+        timeout: Duration,
+        mut predicate: F,
+        require_matching: bool,
+    ) -> Result<ReportAcceptedEvent>
+    where
+        F: FnMut(&ReportAcceptedEvent) -> bool,
+    {
+        let result = tokio::time::timeout(timeout, async {
+            loop {
+                let event = self.wait_for_report_inner(ring_id).await?;
+                if predicate(&event) {
+                    return Ok(event);
+                }
+            }
+        })
+        .await;
         let _ = self.stream.close(None).await;
 
         result.map_err(|_| {
+            let qualifier = if require_matching { " matching" } else { "" };
             BlockchainError::Timeout(format!(
-                "Timed out waiting for report accepted event for ring '{}'",
-                ring_id,
+                "Timed out waiting for{} report accepted event for ring '{}'",
+                qualifier, ring_id,
             ))
         })?
     }

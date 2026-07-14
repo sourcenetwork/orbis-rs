@@ -1,3 +1,4 @@
+use crate::dkg::v0::messages::SignedDkgCommitment;
 use crate::reporting::v0::error::{ReportingError, Result};
 use bulletin::r#trait::RingPayload;
 use serde::{Deserialize, Serialize};
@@ -292,6 +293,11 @@ pub struct DkgCommitmentStatement {
     pub signing_committee_scope: CommitteeScope,
     pub from_node_id: u32,
     pub commitment: Vec<u8>,
+    /// Per-session-instance nonce the dealer generates once and signs into every
+    /// commitment it broadcasts for this attempt. Equivocation = same dealer signing
+    /// two commitments with the SAME nonce but different bytes; an honest retry uses a
+    /// fresh nonce, so it cannot be framed as equivocation. Opaque to receivers.
+    pub session_nonce: [u8; 16],
     pub crypto_backend: String,
 }
 
@@ -314,6 +320,7 @@ impl DkgCommitmentStatement {
         out.push(self.signing_committee_scope.tag());
         write_u32(&mut out, self.from_node_id);
         write_bytes(&mut out, &self.commitment);
+        write_bytes(&mut out, &self.session_nonce);
         write_string(&mut out, &self.crypto_backend);
         out
     }
@@ -336,6 +343,13 @@ impl DkgCommitmentStatement {
             CommitteeScope::from_tag(decoder.read_u8("signing_committee_scope")?)?;
         let from_node_id = decoder.read_u32("from_node_id")?;
         let commitment = decoder.read_bytes("commitment")?;
+        let session_nonce_bytes = decoder.read_bytes("session_nonce")?;
+        let session_nonce = session_nonce_bytes.try_into().map_err(|bytes: Vec<u8>| {
+            ReportingError::InvalidReport(format!(
+                "DKG commitment session_nonce must be 16 bytes, got {}",
+                bytes.len()
+            ))
+        })?;
         let crypto_backend = decoder.read_string("crypto_backend")?;
         decoder.finish()?;
         Ok(Self {
@@ -353,6 +367,7 @@ impl DkgCommitmentStatement {
             signing_committee_scope,
             from_node_id,
             commitment,
+            session_nonce,
             crypto_backend,
         })
     }
@@ -482,6 +497,13 @@ pub enum InvalidCryptoResponse {
         statement: Box<DkgShareStatement>,
         response_signature: Vec<u8>,
     },
+    /// DKG commitment equivocation: two conflicting commitments, each validly signed by
+    /// the same dealer (same ring/session/nonce, different bytes). Unlike the other kinds,
+    /// the fault is the *conflict between two signed statements*, not one statement failing.
+    DkgEquivocation {
+        commitment_a: Box<SignedDkgCommitment>,
+        commitment_b: Box<SignedDkgCommitment>,
+    },
 }
 
 impl InvalidCryptoResponse {
@@ -512,6 +534,16 @@ impl InvalidCryptoResponse {
                 write_bytes(&mut out, &statement.canonical_bytes());
                 write_bytes(&mut out, response_signature);
             }
+            Self::DkgEquivocation {
+                commitment_a,
+                commitment_b,
+            } => {
+                write_string(&mut out, "dkg_equivocation");
+                write_bytes(&mut out, &commitment_a.statement.canonical_bytes());
+                write_bytes(&mut out, &commitment_a.signature);
+                write_bytes(&mut out, &commitment_b.statement.canonical_bytes());
+                write_bytes(&mut out, &commitment_b.signature);
+            }
         }
         out
     }
@@ -519,26 +551,59 @@ impl InvalidCryptoResponse {
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
         let mut decoder = Decoder::new(bytes);
         let evidence_kind = decoder.read_string("evidence_kind")?;
-        let statement_bytes = decoder.read_bytes("statement")?;
-        let response_signature = decoder.read_bytes("response_signature")?;
+        // The single-statement kinds share a (statement, signature) tail; the two-statement
+        // equivocation kind has its own layout, so branch the decode on the kind.
+        let evidence = match evidence_kind.as_str() {
+            "pre" => {
+                let statement_bytes = decoder.read_bytes("statement")?;
+                let response_signature = decoder.read_bytes("response_signature")?;
+                Self::Pre {
+                    statement: PreReencryptResponseStatement::from_canonical_bytes(
+                        &statement_bytes,
+                    )?,
+                    response_signature,
+                }
+            }
+            "sign" => {
+                let statement_bytes = decoder.read_bytes("statement")?;
+                let response_signature = decoder.read_bytes("response_signature")?;
+                Self::Sign {
+                    statement: SignResponseStatement::from_canonical_bytes(&statement_bytes)?,
+                    response_signature,
+                }
+            }
+            "dkg_share" => {
+                let statement_bytes = decoder.read_bytes("statement")?;
+                let response_signature = decoder.read_bytes("response_signature")?;
+                Self::DkgShare {
+                    statement: Box::new(DkgShareStatement::from_canonical_bytes(&statement_bytes)?),
+                    response_signature,
+                }
+            }
+            "dkg_equivocation" => {
+                let statement_a = decoder.read_bytes("commitment_a_statement")?;
+                let signature_a = decoder.read_bytes("commitment_a_signature")?;
+                let statement_b = decoder.read_bytes("commitment_b_statement")?;
+                let signature_b = decoder.read_bytes("commitment_b_signature")?;
+                Self::DkgEquivocation {
+                    commitment_a: Box::new(SignedDkgCommitment {
+                        statement: DkgCommitmentStatement::from_canonical_bytes(&statement_a)?,
+                        signature: signature_a,
+                    }),
+                    commitment_b: Box::new(SignedDkgCommitment {
+                        statement: DkgCommitmentStatement::from_canonical_bytes(&statement_b)?,
+                        signature: signature_b,
+                    }),
+                }
+            }
+            value => {
+                return Err(ReportingError::InvalidReport(format!(
+                    "unsupported invalid crypto evidence kind {value}"
+                )))
+            }
+        };
         decoder.finish()?;
-        match evidence_kind.as_str() {
-            "pre" => Ok(Self::Pre {
-                statement: PreReencryptResponseStatement::from_canonical_bytes(&statement_bytes)?,
-                response_signature,
-            }),
-            "sign" => Ok(Self::Sign {
-                statement: SignResponseStatement::from_canonical_bytes(&statement_bytes)?,
-                response_signature,
-            }),
-            "dkg_share" => Ok(Self::DkgShare {
-                statement: Box::new(DkgShareStatement::from_canonical_bytes(&statement_bytes)?),
-                response_signature,
-            }),
-            value => Err(ReportingError::InvalidReport(format!(
-                "unsupported invalid crypto evidence kind {value}"
-            ))),
-        }
+        Ok(evidence)
     }
 
     pub fn request_id(&self) -> &str {
@@ -546,6 +611,7 @@ impl InvalidCryptoResponse {
             Self::Pre { statement, .. } => &statement.request_id,
             Self::Sign { statement, .. } => &statement.request_id,
             Self::DkgShare { statement, .. } => &statement.request_id,
+            Self::DkgEquivocation { commitment_a, .. } => &commitment_a.statement.request_id,
         }
     }
 
@@ -554,6 +620,7 @@ impl InvalidCryptoResponse {
             Self::Pre { .. } => CommitteeScope::Current,
             Self::Sign { statement, .. } => statement.signing_committee_scope,
             Self::DkgShare { statement, .. } => statement.signing_committee_scope,
+            Self::DkgEquivocation { .. } => CommitteeScope::Current,
         }
     }
 }
@@ -937,6 +1004,7 @@ mod tests {
             signing_committee_scope: CommitteeScope::Current,
             from_node_id: 2,
             commitment: vec![1, 2, 3],
+            session_nonce: [0u8; 16],
             crypto_backend: "dkg/test".to_string(),
         }
     }
@@ -1043,6 +1111,23 @@ mod tests {
     }
 
     #[test]
+    fn dkg_commitment_statement_round_trips_and_binds_session_nonce() {
+        let statement = dkg_commitment_statement();
+        assert_eq!(
+            DkgCommitmentStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
+            statement
+        );
+
+        // The per-attempt nonce is part of the signed bytes — changing it changes them.
+        let mut changed = dkg_commitment_statement();
+        changed.session_nonce = [7u8; 16];
+        assert_ne!(
+            dkg_commitment_statement().canonical_bytes(),
+            changed.canonical_bytes()
+        );
+    }
+
+    #[test]
     fn invalid_crypto_response_dkg_share_payload_round_trips() {
         let payload = InvalidCryptoResponse::DkgShare {
             statement: Box::new(dkg_share_statement()),
@@ -1053,6 +1138,31 @@ mod tests {
             InvalidCryptoResponse::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
             payload
         );
+        assert_eq!(payload.signing_committee_scope(), CommitteeScope::Current);
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_equivocation_payload_round_trips() {
+        let mut statement_a = dkg_commitment_statement();
+        statement_a.session_nonce = [3u8; 16];
+        let mut statement_b = statement_a.clone();
+        statement_b.commitment = vec![9, 9, 9]; // conflicting bytes, same nonce
+        let payload = InvalidCryptoResponse::DkgEquivocation {
+            commitment_a: Box::new(SignedDkgCommitment {
+                statement: statement_a.clone(),
+                signature: vec![1; 64],
+            }),
+            commitment_b: Box::new(SignedDkgCommitment {
+                statement: statement_b,
+                signature: vec![2; 64],
+            }),
+        };
+
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
+            payload
+        );
+        assert_eq!(payload.request_id(), statement_a.request_id);
         assert_eq!(payload.signing_committee_scope(), CommitteeScope::Current);
     }
 

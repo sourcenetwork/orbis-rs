@@ -11,6 +11,7 @@ use crate::constants::{
     DKG_COMPLETED_SESSION_TTL, DKG_PHASE4_COMPLETION_TIMEOUT, DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS,
     SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
 };
+use crate::dkg::v0::coordinator::evidence::commitments_prove_equivocation;
 use crate::dkg::v0::error::DkgError;
 use crate::dkg::v0::helpers::bidirectional_node_peer_maps;
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
@@ -81,9 +82,11 @@ pub enum RingPssClaimOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DkgMessageType {
     CommitmentHash,
+    CommitmentAudit,
     Commitment,
     Share,
     DkgInvalidShareEvidence,
+    DkgInvalidCommitmentEvidence,
     ReshareShareAck,
     ReshareParticipantSet,
     RefreshHealthCheckResult,
@@ -187,6 +190,20 @@ pub(crate) enum CommitmentHashRecordOutcome {
 pub(crate) struct CommitRevealState {
     pub received_hashes: HashMap<u32, [u8; 32]>,
     pub own_hash_broadcast_complete: bool,
+}
+
+/// Refresh/reshare only: the signed commitment this node received from each dealer,
+/// kept so that on an equivocation-consistent failure (phase4 aggregate/staged-pk
+/// mismatch) it can be revealed to peers who compare it against their own to name
+/// the equivocating dealer, and to build a threshold-signed on-chain equivocation
+/// report (see `evidence::queue_or_relay_equivocation`).
+///
+/// Refresh/reshare reuse a deterministic session_id across retries; false attribution
+/// from a replayed prior-attempt commitment is avoided via `session_nonce`, a fresh
+/// per-attempt anchor each dealer signs into every commitment it broadcasts.
+#[derive(Default)]
+pub(crate) struct CommitmentAuditState {
+    pub received_commitments: HashMap<u32, SignedDkgCommitment>,
 }
 
 pub(crate) struct ReshareSessionState<ShareValue: Zeroize> {
@@ -323,6 +340,8 @@ pub struct DkgSessionState<D: Dkg> {
     pub(crate) reshare: ReshareSessionState<D::ShareValue>,
     /// Fresh-only commit-reveal pre-round state.
     pub(crate) commit_reveal: CommitRevealState,
+    /// Refresh/reshare-only: received signed commitments for on-failure equivocation audit.
+    pub(crate) commitment_audit: CommitmentAuditState,
     /// Message ordering and deduplication state.
     pub(crate) messages: MessageTrackingState<D::ShareValue>,
     /// This node's signed commitment evidence for Refresh/Reshare share reports.
@@ -342,6 +361,11 @@ pub struct DkgSessionState<D: Dkg> {
     /// Extra parameters required only for Reshare sessions.  `None` for Fresh and Refresh.
     /// Refresh candidate/result staging.
     pub(crate) refresh: RefreshSessionState,
+    /// Per-session-instance nonce this node signs into every commitment it broadcasts
+    /// this attempt. Generated once here so an honest node signing via both the phase1
+    /// and lazy paths produces identical commitment bytes; a fresh instance (retry) gets
+    /// a new nonce so honest retries cannot be framed as equivocation.
+    pub(crate) session_nonce: [u8; 16],
     /// Per-session network streams and send serialization.
     pub(crate) transport: SessionTransportState,
     /// Owns active metrics for exactly the lifetime of this ceremony.
@@ -365,6 +389,7 @@ impl<D: Dkg> DkgSessionState<D> {
             shares_received: 0,
             reshare: ReshareSessionState::default(),
             commit_reveal: CommitRevealState::default(),
+            commitment_audit: CommitmentAuditState::default(),
             messages: MessageTrackingState::default(),
             local_signed_commitment: None,
             report_evidence_binding: None,
@@ -372,6 +397,7 @@ impl<D: Dkg> DkgSessionState<D> {
             pss_interval: 0,
             policy_id: None,
             refresh: RefreshSessionState::default(),
+            session_nonce: rand::random::<[u8; 16]>(),
             transport: SessionTransportState::default(),
             metrics_guard: None,
         }
@@ -1155,6 +1181,67 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         .await;
     }
 
+    /// Refresh/reshare only: remember the signed commitment received from `dealer_id`
+    /// so it can be revealed if the ceremony later fails an equivocation-consistent check.
+    pub async fn store_received_commitment(
+        &self,
+        session_id: &u128,
+        dealer_id: u32,
+        signed_commitment: SignedDkgCommitment,
+    ) {
+        self.with_state_mut(session_id, |state| {
+            state
+                .commitment_audit
+                .received_commitments
+                .insert(dealer_id, signed_commitment);
+        })
+        .await;
+    }
+
+    /// Snapshot of every signed commitment this node received, for the on-failure
+    /// equivocation-audit reveal broadcast.
+    pub async fn received_commitments_snapshot(
+        &self,
+        session_id: &u128,
+    ) -> Option<Vec<SignedDkgCommitment>> {
+        self.with_state(session_id, |state| {
+            state
+                .commitment_audit
+                .received_commitments
+                .values()
+                .cloned()
+                .collect()
+        })
+        .await
+    }
+
+    /// Compare peer-revealed commitments against what we received: return the first
+    /// dealer for which a revealed commitment's bytes differ from ours (equivocation).
+    /// Dealers we never received a commitment from are ignored.
+    /// Return the two conflicting commitments (`ours`, `reveal`) for the first dealer that
+    /// equivocated, so the caller can build an equivocation report. Equivocation requires
+    /// the SAME per-attempt nonce with different bytes; a different nonce means an honest
+    /// retry (or evasion), not equivocation.
+    pub async fn find_conflicting_commitment_pair(
+        &self,
+        session_id: &u128,
+        revealed: &[SignedDkgCommitment],
+    ) -> Option<(u32, SignedDkgCommitment, SignedDkgCommitment)> {
+        self.with_state(session_id, |state| {
+            revealed.iter().find_map(|reveal| {
+                let dealer_id = reveal.statement.from_node_id;
+                let ours = state
+                    .commitment_audit
+                    .received_commitments
+                    .get(&dealer_id)?;
+                commitments_prove_equivocation(ours, reveal)
+                    .then(|| (dealer_id, ours.clone(), reveal.clone()))
+            })
+        })
+        .await
+        .flatten()
+    }
+
     pub async fn store_pending_commitment_waiting_for_hash(
         &self,
         session_id: &u128,
@@ -1742,6 +1829,84 @@ mod tests {
             mgr.record_commitment_hash(&33, 2, [2; 32]).await,
             Some(CommitmentHashRecordOutcome::Mismatch { existing: [1; 32] })
         );
+    }
+
+    fn signed_commitment(
+        dealer_id: u32,
+        commitment: Vec<u8>,
+        session_nonce: [u8; 16],
+    ) -> SignedDkgCommitment {
+        use crate::reporting::v0::types::{
+            CommitteeScope as ReportingCommitteeScope, DkgCommitmentStatement,
+            DKG_COMMITMENT_DOMAIN,
+        };
+        SignedDkgCommitment {
+            statement: DkgCommitmentStatement {
+                domain: DKG_COMMITMENT_DOMAIN.to_string(),
+                chain_id: "chain".to_string(),
+                ring_id: "ring".to_string(),
+                ring_pk: "ring-pk".to_string(),
+                ring_state_sha256: "00".repeat(32),
+                protocol_version: 0,
+                request_id: "1".to_string(),
+                signed_at: 100,
+                responder_node_key: format!("dealer-{dealer_id}"),
+                origin_protocol: "pss_reshare".to_string(),
+                accused_committee_scope: ReportingCommitteeScope::Current,
+                signing_committee_scope: ReportingCommitteeScope::Current,
+                from_node_id: dealer_id,
+                commitment,
+                session_nonce,
+                crypto_backend: "dkg/test".to_string(),
+            },
+            signature: vec![0; 64],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_find_conflicting_commitment_pair() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(50, make_node(1), 3, |_| {}).await;
+
+        let nonce_a = [1u8; 16];
+        mgr.store_received_commitment(&50, 2, signed_commitment(2, vec![1, 2, 3], nonce_a))
+            .await;
+        mgr.store_received_commitment(&50, 3, signed_commitment(3, vec![4, 5, 6], nonce_a))
+            .await;
+
+        // A reveal matching what we stored → no conflict.
+        let matching_reveal = [signed_commitment(2, vec![1, 2, 3], nonce_a)];
+        assert_eq!(
+            mgr.find_conflicting_commitment_pair(&50, &matching_reveal)
+                .await
+                .map(|(dealer_id, _, _)| dealer_id),
+            None
+        );
+        // A reveal for a dealer we never received from → ignored.
+        let unknown_dealer_reveal = [signed_commitment(9, vec![9, 9], nonce_a)];
+        assert_eq!(
+            mgr.find_conflicting_commitment_pair(&50, &unknown_dealer_reveal)
+                .await
+                .map(|(dealer_id, _, _)| dealer_id),
+            None
+        );
+        // Different bytes but a DIFFERENT nonce → honest retry, NOT equivocation (not framed).
+        let retry_reveal = [signed_commitment(2, vec![7, 7, 7], [2u8; 16])];
+        assert_eq!(
+            mgr.find_conflicting_commitment_pair(&50, &retry_reveal)
+                .await
+                .map(|(dealer_id, _, _)| dealer_id),
+            None
+        );
+        // Different bytes with the SAME nonce for dealer 2 → equivocation; returns the pair.
+        let conflicting_reveal = [signed_commitment(2, vec![7, 7, 7], nonce_a)];
+        let (dealer_id, ours, reveal) = mgr
+            .find_conflicting_commitment_pair(&50, &conflicting_reveal)
+            .await
+            .expect("equivocation detected");
+        assert_eq!(dealer_id, 2);
+        assert_eq!(ours.statement.commitment, vec![1, 2, 3]);
+        assert_eq!(reveal.statement.commitment, vec![7, 7, 7]);
     }
 
     #[tokio::test]

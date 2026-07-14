@@ -118,7 +118,9 @@ where
         }
     }
 
-    verify_commitment_evidence(
+    // For refresh/reshare this returns the verified signed commitment (None for fresh);
+    // we retain it below so it can be revealed for the on-failure equivocation audit.
+    let verified_evidence = verify_commitment_evidence(
         coord,
         session_id,
         from_node_id,
@@ -186,6 +188,18 @@ where
         .dkg_session_state
         .increment_commitments(&session_id)
         .await;
+
+    // Refresh/reshare: retain the dealer's signed commitment so that if this ceremony
+    // later fails an equivocation-consistent phase4 check, we can reveal it to peers who
+    // compare it against theirs to name the equivocating dealer. Store-only — no wire
+    // traffic on the happy path.
+    if let Some(evidence) = verified_evidence {
+        coord
+            .app_state
+            .dkg_session_state
+            .store_received_commitment(&session_id, from_node_id, evidence)
+            .await;
+    }
 
     // If this is the first commitment received and we haven't yet generated our
     // polynomial, generate it now and broadcast our commitment.

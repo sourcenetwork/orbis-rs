@@ -121,6 +121,15 @@ where
     if matches!(kind, SessionKind::Reshare { .. })
         && !public_key_matches_storage_key(&aggregate_pk, &storage_key)
     {
+        // Equivocation-consistent failure: reveal our received commitments so peers can
+        // attribute an equivocating dealer (diagnostic; the ceremony aborts regardless).
+        if let Err(error) = broadcast_commitment_audit(coord, session_id).await {
+            tracing::debug!(
+                session_id = session_id,
+                error = %error,
+                "DKG Coordinator: failed to broadcast commitment-audit reveal"
+            );
+        }
         return Err(DkgError::Crypto(format!(
             "Reshare: computed aggregate public key {} does not match the ring's existing key {}; \
              aborting before persisting shifted ring state",
@@ -191,6 +200,14 @@ where
         // check verifies self-consistently under the *staged* key and cannot see a shift.
         let staged_pk = staged_pub_poly.eval(0);
         if !public_key_matches_storage_key(&staged_pk, &storage_key) {
+            // Equivocation-consistent failure: reveal received commitments for attribution.
+            if let Err(error) = broadcast_commitment_audit(coord, session_id).await {
+                tracing::debug!(
+                    session_id = session_id,
+                    error = %error,
+                    "DKG Coordinator: failed to broadcast commitment-audit reveal"
+                );
+            }
             return Err(DkgError::Crypto(format!(
                 "Refresh: staged ring public key {} does not match the ring's existing key {}; \
                  aborting refresh before staging",
@@ -433,4 +450,81 @@ fn cleanup_new_ring_bundle_after_index_failure(
                 "Phase 4: failed to delete new RingShareBundle after RingIndex write failure"
             );
         });
+}
+
+/// Best-effort: on an equivocation-consistent phase4 failure, reveal the signed
+/// commitments this node received to the other receivers, who compare them against
+/// their own to attribute an equivocating dealer. Diagnostic only — never changes the
+/// abort outcome, and send failures are ignored.
+async fn broadcast_commitment_audit<D>(coord: &DkgCoordinator<D>, session_id: u128) -> Result<()>
+where
+    D: CoordinatorDkg + Send + Sync,
+{
+    let revealed = coord
+        .app_state
+        .dkg_session_state
+        .received_commitments_snapshot(&session_id)
+        .await
+        .ok_or_else(|| session_not_found(session_id))?;
+    if revealed.is_empty() {
+        return Ok(());
+    }
+
+    // Revealer identity + target receiver set depend on the ceremony kind: reshare
+    // receivers are the new committee (keyed by new-committee node id); refresh receivers
+    // are the current committee.
+    let resolved = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| {
+            if matches!(state.kind, SessionKind::Reshare { .. }) {
+                let params = state.reshare.params.as_ref().ok_or_else(|| {
+                    DkgError::InvalidState(
+                        "Reshare commitment audit missing reshare params".to_string(),
+                    )
+                })?;
+                let revealer = params.new_node_id.ok_or_else(|| {
+                    DkgError::InvalidState(
+                        "Reshare commitment audit missing new committee node id".to_string(),
+                    )
+                })?;
+                let targets: Vec<String> = state
+                    .routing
+                    .reshare_new_node_id_to_peer_id
+                    .values()
+                    .cloned()
+                    .collect();
+                Ok::<_, DkgError>((revealer, targets))
+            } else {
+                Ok::<_, DkgError>((state.node.node_id(), state.routing.peer_ids.clone()))
+            }
+        })
+        .await
+        .ok_or_else(|| session_not_found(session_id))??;
+
+    let (revealer_node_id, target_peers) = resolved;
+
+    let message = DkgMessage::CommitmentAudit {
+        session_id,
+        revealer_node_id,
+        revealed,
+    };
+
+    for peer in target_peers {
+        if is_self_peer_id(&coord.app_state.network, &peer) {
+            continue;
+        }
+        if let Err(error) = coord
+            .send_message_to_peer(&peer, message.clone(), Some(session_id))
+            .await
+        {
+            tracing::debug!(
+                peer_id = %peer,
+                error = %error,
+                "DKG Coordinator: failed to send commitment-audit reveal"
+            );
+        }
+    }
+
+    Ok(())
 }
