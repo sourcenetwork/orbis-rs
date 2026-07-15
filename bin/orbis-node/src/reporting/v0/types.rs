@@ -497,6 +497,13 @@ pub enum InvalidCryptoResponse {
         statement: Box<DkgShareStatement>,
         response_signature: Vec<u8>,
     },
+    /// A refresh dealer's signed commitment whose constant term is NOT the group identity.
+    /// A refresh delta polynomial must have `P(0) = O`; a non-identity constant would shift
+    /// the ring key. Single self-incriminating statement, like `DkgShare`.
+    DkgInvalidRefreshCommitment {
+        statement: Box<DkgCommitmentStatement>,
+        response_signature: Vec<u8>,
+    },
     /// DKG commitment equivocation: two conflicting commitments, each validly signed by
     /// the same dealer (same ring/session/nonce, different bytes). Unlike the other kinds,
     /// the fault is the *conflict between two signed statements*, not one statement failing.
@@ -531,6 +538,14 @@ impl InvalidCryptoResponse {
                 response_signature,
             } => {
                 write_string(&mut out, "dkg_share");
+                write_bytes(&mut out, &statement.canonical_bytes());
+                write_bytes(&mut out, response_signature);
+            }
+            Self::DkgInvalidRefreshCommitment {
+                statement,
+                response_signature,
+            } => {
+                write_string(&mut out, "dkg_invalid_refresh_commitment");
                 write_bytes(&mut out, &statement.canonical_bytes());
                 write_bytes(&mut out, response_signature);
             }
@@ -580,6 +595,16 @@ impl InvalidCryptoResponse {
                     response_signature,
                 }
             }
+            "dkg_invalid_refresh_commitment" => {
+                let statement_bytes = decoder.read_bytes("statement")?;
+                let response_signature = decoder.read_bytes("response_signature")?;
+                Self::DkgInvalidRefreshCommitment {
+                    statement: Box::new(DkgCommitmentStatement::from_canonical_bytes(
+                        &statement_bytes,
+                    )?),
+                    response_signature,
+                }
+            }
             "dkg_equivocation" => {
                 let statement_a = decoder.read_bytes("commitment_a_statement")?;
                 let signature_a = decoder.read_bytes("commitment_a_signature")?;
@@ -611,6 +636,7 @@ impl InvalidCryptoResponse {
             Self::Pre { statement, .. } => &statement.request_id,
             Self::Sign { statement, .. } => &statement.request_id,
             Self::DkgShare { statement, .. } => &statement.request_id,
+            Self::DkgInvalidRefreshCommitment { statement, .. } => &statement.request_id,
             Self::DkgEquivocation { commitment_a, .. } => &commitment_a.statement.request_id,
         }
     }
@@ -620,6 +646,9 @@ impl InvalidCryptoResponse {
             Self::Pre { .. } => CommitteeScope::Current,
             Self::Sign { statement, .. } => statement.signing_committee_scope,
             Self::DkgShare { statement, .. } => statement.signing_committee_scope,
+            Self::DkgInvalidRefreshCommitment { statement, .. } => {
+                statement.signing_committee_scope
+            }
             Self::DkgEquivocation { .. } => CommitteeScope::Current,
         }
     }
@@ -1138,6 +1167,23 @@ mod tests {
             InvalidCryptoResponse::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
             payload
         );
+        assert_eq!(payload.signing_committee_scope(), CommitteeScope::Current);
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_invalid_refresh_commitment_payload_round_trips() {
+        let mut statement = dkg_commitment_statement();
+        statement.origin_protocol = "pss_refresh".to_string();
+        let payload = InvalidCryptoResponse::DkgInvalidRefreshCommitment {
+            statement: Box::new(statement.clone()),
+            response_signature: vec![42; 64],
+        };
+
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
+            payload
+        );
+        assert_eq!(payload.request_id(), statement.request_id);
         assert_eq!(payload.signing_committee_scope(), CommitteeScope::Current);
     }
 
