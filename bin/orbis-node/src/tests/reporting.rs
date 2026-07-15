@@ -1002,7 +1002,9 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
     // report lands, preserving the exact demerit count below. Each PRE uses a fresh request_id, so
     // multiple accepted reports would NOT dedupe on-chain — the "timeout ⇒ nothing generated"
     // property is what keeps this to a single report.
-    println!("Triggering PRE until node3's invalid proof is reported (PRE succeeds each attempt)...");
+    println!(
+        "Triggering PRE until node3's invalid proof is reported (PRE succeeds each attempt)..."
+    );
     let mut invalid_proof_event = None;
     for attempt in 1..=2 {
         let invalid_proof_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
