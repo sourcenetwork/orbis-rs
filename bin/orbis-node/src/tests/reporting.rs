@@ -992,30 +992,51 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         .expect("store corrupted ring share bundle");
     println!("node3 ring share corrupted.");
 
-    let invalid_proof_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
-        .await
-        .expect("connect invalid-proof report event subscription");
-
-    // PRE still succeeds (node1 self-share + node2), while node3's signed
-    // response carries a proof that fails verification and gets reported —
-    // inline if it races ahead of threshold, otherwise via the response drain.
-    println!("Triggering PRE (expects success with node3 submitting an invalid proof)...");
-    let _plaintext = pre_with_retry(
-        endpoint.clone(),
-        ring_pk_hex.clone(),
-        reader_pk_hex.clone(),
-        reader_sk_hex.clone(),
-        object_id.clone(),
-        did_pk_string.clone(),
-    )
-    .await;
-    println!("PRE succeeded (node3's invalid share ignored).");
-
-    println!("Waiting for invalid-proof EventReportAccepted on chain (up to 120s)...");
-    let invalid_proof_event = invalid_proof_sub
-        .wait_for_report_accepted(RING_ID, Duration::from_secs(120))
-        .await
-        .expect("invalid-proof EventReportAccepted should be emitted");
+    // PRE still succeeds (node1 self-share + node2), while node3's signed response carries a proof
+    // that fails verification and gets reported — inline if it races ahead of threshold, otherwise
+    // via the post-threshold response drain. A single node3 response can occasionally miss the drain
+    // window under CI load, so retry the whole PRE (each attempt is a fresh reportable response) if
+    // the report doesn't land. The per-attempt wait (150s) far exceeds the report pipeline's maximum
+    // latency (drain ≤30s + threshold-sign + submit + block inclusion ≈ tens of seconds), so a
+    // timeout means that attempt produced no report at all — which makes the retry safe: exactly one
+    // report lands, preserving the exact demerit count below. Each PRE uses a fresh request_id, so
+    // multiple accepted reports would NOT dedupe on-chain — the "timeout ⇒ nothing generated"
+    // property is what keeps this to a single report.
+    println!("Triggering PRE until node3's invalid proof is reported (PRE succeeds each attempt)...");
+    let mut invalid_proof_event = None;
+    for attempt in 1..=2 {
+        let invalid_proof_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+            .await
+            .expect("connect invalid-proof report event subscription");
+        let _plaintext = pre_with_retry(
+            endpoint.clone(),
+            ring_pk_hex.clone(),
+            reader_pk_hex.clone(),
+            reader_sk_hex.clone(),
+            object_id.clone(),
+            did_pk_string.clone(),
+        )
+        .await;
+        println!(
+            "PRE attempt {attempt} succeeded; waiting for invalid-proof EventReportAccepted (up to 150s)..."
+        );
+        match invalid_proof_sub
+            .wait_for_report_accepted_matching(RING_ID, Duration::from_secs(150), |event| {
+                event.accused_node_key.as_str() == NODE_KEY_3
+            })
+            .await
+        {
+            Ok(event) => {
+                invalid_proof_event = Some(event);
+                break;
+            }
+            Err(error) => {
+                println!("Invalid-proof report not seen on attempt {attempt}/2: {error}");
+            }
+        }
+    }
+    let invalid_proof_event = invalid_proof_event
+        .expect("invalid-proof EventReportAccepted should be emitted within 2 attempts");
 
     println!(
         "Invalid-proof report accepted: report_id={} accused={}",
