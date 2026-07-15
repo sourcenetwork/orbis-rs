@@ -1885,65 +1885,34 @@ async fn test_refresh_invalid_commitment_triggers_on_chain_report() {
         .await
         .expect("connect report event subscription");
 
-    let local_ring_key = ring_key_from_ring_pk_hex(&ring_pk_hex);
     let mut unsafe_client = UnsafeTestingServiceClient::connect(endpoint.clone())
         .await
         .expect("connect unsafe-testing client to node1");
-    let deadline = Instant::now() + Duration::from_secs(180);
 
-    loop {
-        let response = unsafe_client
-            .get_active_pss_session(GetActivePssSessionRequest {
-                ring_pk: local_ring_key.clone(),
-            })
-            .await
-            .expect("query active PSS refresh session")
-            .into_inner();
-
-        if response.found {
-            let session_id = response
-                .session_id
-                .parse::<u128>()
-                .expect("active PSS session id should parse");
-            let evidence = signed_bad_refresh_commitment(
-                chain_config.chain_id.clone(),
-                RING_ID.to_string(),
-                &ring_payload,
-                session_id,
-                NODE_KEY_3,
-                NODE3_SIGNING_KEY_HEX,
-            );
-
-            match unsafe_client
-                .submit_dkg_invalid_refresh_commitment_evidence(
-                    SubmitDkgInvalidRefreshCommitmentEvidenceRequest {
-                        session_id: session_id.to_string(),
-                        signed_commitment_json: serde_json::to_vec(&evidence)
-                            .expect("serialize signed refresh commitment evidence"),
-                    },
-                )
-                .await
-            {
-                Ok(_) => {
-                    println!(
-                        "Submitted invalid refresh commitment evidence for session {session_id}"
-                    );
-                    break;
-                }
-                Err(error) => {
-                    println!(
-                        "Active refresh session {session_id} disappeared before evidence submission completed: {error}"
-                    );
-                }
-            }
-        }
-
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting to submit invalid refresh commitment evidence"
-        );
-        sleep(Duration::from_millis(100)).await;
-    }
+    // The report is built from the ring + the signed statement, not from a live DKG session, so we
+    // inject once with a fixed request_id (it only serves as the on-chain session dedupe key). This
+    // avoids racing a healthy same-committee refresh, which completes before an injection targeting
+    // its live session could land.
+    let request_id: u128 = 777_000_111_222_u128;
+    let evidence = signed_bad_refresh_commitment(
+        chain_config.chain_id.clone(),
+        RING_ID.to_string(),
+        &ring_payload,
+        request_id,
+        NODE_KEY_3,
+        NODE3_SIGNING_KEY_HEX,
+    );
+    unsafe_client
+        .submit_dkg_invalid_refresh_commitment_evidence(
+            SubmitDkgInvalidRefreshCommitmentEvidenceRequest {
+                session_id: request_id.to_string(),
+                signed_commitment_json: serde_json::to_vec(&evidence)
+                    .expect("serialize signed refresh commitment evidence"),
+            },
+        )
+        .await
+        .expect("submit invalid refresh commitment evidence");
+    println!("Submitted invalid refresh commitment evidence (request_id {request_id})");
 
     println!("Waiting for invalid-refresh-commitment EventReportAccepted on chain (up to 120s)...");
     let event = sub
