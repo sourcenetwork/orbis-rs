@@ -1,6 +1,7 @@
 use super::*;
 use crate::dkg::v0::coordinator::evidence::{
-    build_and_store_commitment_evidence, verify_commitment_evidence,
+    build_and_store_commitment_evidence, queue_invalid_refresh_commitment_report,
+    verify_commitment_evidence,
 };
 use crypto::SignImpl;
 /// Handle a `DkgMessage::Commitment`.
@@ -151,6 +152,25 @@ where
     // ring key and permanently brick decryption of existing ciphertexts. Reject before
     // the crypto layer stores it; abort-only (the session stalls to its phase timeout).
     if is_refresh && !polynomial_commitment.constant_term_is_identity() {
+        // Report the misbehaving dealer (best-effort, log-not-propagate) before aborting.
+        // The signed commitment in hand is self-authenticating evidence; refresh keeps the
+        // same committee so this node can queue the report directly.
+        if let Some(evidence) = &verified_evidence {
+            if let Err(error) = queue_invalid_refresh_commitment_report(
+                coord.app_state.clone(),
+                coord.routes,
+                evidence.clone(),
+            )
+            .await
+            {
+                tracing::warn!(
+                    session_id = session_id,
+                    from_node_id = from_node_id,
+                    error = %error,
+                    "Failed to queue invalid-refresh-commitment report"
+                );
+            }
+        }
         return Err(DkgError::CommitmentVerificationFailed(format!(
             "Refresh commitment from node {} has a non-identity constant term \
              (a nonzero delta at x=0 would shift the ring key)",

@@ -28,14 +28,16 @@ use common::{
     IntegrationTestNetwork,
 };
 use crypto::helpers::generate_keypair;
-use crypto::r#trait::{CryptoDeserialize, Dkg, DkgMode, DkgRole, PriShare};
+use crypto::r#trait::{
+    CryptoDeserialize, Dkg, DkgMode, DkgRole, PolynomialCommitment as _, PriShare,
+};
 use crypto::CryptoSerialize;
 use crypto::{DkgImpl, GroupAffine, ScalarField};
 use proto::unsafe_testing::{
     unsafe_testing_service_client::UnsafeTestingServiceClient, GetActivePssSessionRequest,
     GetLocalStorageRequest, LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType,
     SetLocalStorageRequest, SubmitDkgEquivocationEvidenceRequest,
-    SubmitDkgInvalidShareEvidenceRequest,
+    SubmitDkgInvalidRefreshCommitmentEvidenceRequest, SubmitDkgInvalidShareEvidenceRequest,
 };
 use tokio::time::{sleep, Duration, Instant};
 use zeroize::Zeroizing;
@@ -382,6 +384,66 @@ fn signed_equivocation_commitments(
     };
 
     (sign_commitment(commitment_a), sign_commitment(commitment_b))
+}
+
+fn signed_bad_refresh_commitment(
+    chain_id: String,
+    ring_id: String,
+    ring: &RingPayload,
+    session_id: u128,
+    accused_node_key: &str,
+    accused_signing_key_hex: &str,
+) -> SignedDkgCommitment {
+    let from_node_id = canonical_node_id(accused_node_key, &ring.peer_node_keys);
+
+    let mut dealer = DkgImpl::new(
+        from_node_id,
+        ring.threshold as usize,
+        ring.peer_node_keys.len(),
+        session_id,
+        DkgRole::Standard,
+    )
+    .expect("create refresh dealer");
+    dealer
+        .generate_polynomial(DkgMode::Fresh)
+        .expect("generate non-refresh polynomial");
+    assert!(
+        !dealer.commitment().constant_term_is_identity(),
+        "test evidence must use a non-identity constant term"
+    );
+
+    let commitment =
+        serialize_commitment_coefficients(&dealer.commitment().coefficients).expect("commitment");
+    let signed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_secs();
+    let statement = DkgCommitmentStatement {
+        domain: DKG_COMMITMENT_DOMAIN.to_string(),
+        chain_id,
+        ring_id,
+        ring_pk: ring.ring_pk.clone(),
+        ring_state_sha256: ring_state_sha256(ring),
+        protocol_version: network::V0.version,
+        request_id: session_id.to_string(),
+        signed_at,
+        responder_node_key: accused_node_key.to_string(),
+        origin_protocol: "pss_refresh".to_string(),
+        accused_committee_scope: CommitteeScope::Current,
+        signing_committee_scope: CommitteeScope::Current,
+        from_node_id,
+        commitment,
+        session_nonce: [9u8; 16],
+        crypto_backend: DkgImpl::name(),
+    };
+    let signature =
+        sign_node_message_with_hex_key(accused_signing_key_hex, &statement.canonical_bytes())
+            .expect("sign invalid refresh commitment evidence");
+
+    SignedDkgCommitment {
+        statement,
+        signature,
+    }
 }
 
 #[tokio::test]
@@ -930,30 +992,53 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         .expect("store corrupted ring share bundle");
     println!("node3 ring share corrupted.");
 
-    let invalid_proof_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
-        .await
-        .expect("connect invalid-proof report event subscription");
-
-    // PRE still succeeds (node1 self-share + node2), while node3's signed
-    // response carries a proof that fails verification and gets reported —
-    // inline if it races ahead of threshold, otherwise via the response drain.
-    println!("Triggering PRE (expects success with node3 submitting an invalid proof)...");
-    let _plaintext = pre_with_retry(
-        endpoint.clone(),
-        ring_pk_hex.clone(),
-        reader_pk_hex.clone(),
-        reader_sk_hex.clone(),
-        object_id.clone(),
-        did_pk_string.clone(),
-    )
-    .await;
-    println!("PRE succeeded (node3's invalid share ignored).");
-
-    println!("Waiting for invalid-proof EventReportAccepted on chain (up to 120s)...");
-    let invalid_proof_event = invalid_proof_sub
-        .wait_for_report_accepted(RING_ID, Duration::from_secs(120))
-        .await
-        .expect("invalid-proof EventReportAccepted should be emitted");
+    // PRE still succeeds (node1 self-share + node2), while node3's signed response carries a proof
+    // that fails verification and gets reported — inline if it races ahead of threshold, otherwise
+    // via the post-threshold response drain. A single node3 response can occasionally miss the drain
+    // window under CI load, so retry the whole PRE (each attempt is a fresh reportable response) if
+    // the report doesn't land. The per-attempt wait (150s) far exceeds the report pipeline's maximum
+    // latency (drain ≤30s + threshold-sign + submit + block inclusion ≈ tens of seconds), so a
+    // timeout means that attempt produced no report at all — which makes the retry safe: exactly one
+    // report lands, preserving the exact demerit count below. Each PRE uses a fresh request_id, so
+    // multiple accepted reports would NOT dedupe on-chain — the "timeout ⇒ nothing generated"
+    // property is what keeps this to a single report.
+    println!(
+        "Triggering PRE until node3's invalid proof is reported (PRE succeeds each attempt)..."
+    );
+    let mut invalid_proof_event = None;
+    for attempt in 1..=2 {
+        let invalid_proof_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+            .await
+            .expect("connect invalid-proof report event subscription");
+        let _plaintext = pre_with_retry(
+            endpoint.clone(),
+            ring_pk_hex.clone(),
+            reader_pk_hex.clone(),
+            reader_sk_hex.clone(),
+            object_id.clone(),
+            did_pk_string.clone(),
+        )
+        .await;
+        println!(
+            "PRE attempt {attempt} succeeded; waiting for invalid-proof EventReportAccepted (up to 150s)..."
+        );
+        match invalid_proof_sub
+            .wait_for_report_accepted_matching(RING_ID, Duration::from_secs(150), |event| {
+                event.accused_node_key.as_str() == NODE_KEY_3
+            })
+            .await
+        {
+            Ok(event) => {
+                invalid_proof_event = Some(event);
+                break;
+            }
+            Err(error) => {
+                println!("Invalid-proof report not seen on attempt {attempt}/2: {error}");
+            }
+        }
+    }
+    let invalid_proof_event = invalid_proof_event
+        .expect("invalid-proof EventReportAccepted should be emitted within 2 attempts");
 
     println!(
         "Invalid-proof report accepted: report_id={} accused={}",
@@ -1677,6 +1762,218 @@ async fn test_refresh_offline_triggers_on_chain_report() {
         "node3 should have demerits in configured increments of 3 after accepted offline report, got {demerits}"
     );
     println!("node3 demerit points: {demerits}");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_refresh_invalid_commitment_triggers_on_chain_report() {
+    println!("Starting PSS refresh invalid-commitment reporting integration test...");
+
+    let network = IntegrationTestNetwork::builder()
+        .with_module_genesis(
+            "orbis",
+            serde_json::json!({
+                "rings": [{
+                    "id": RING_ID,
+                    "ring_pk": "",
+                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+                    "threshold": 2,
+                    "pss_interval": 5,
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "reporting": reporting_genesis_json(1, &[], 10)
+                }]
+            }),
+        )
+        .build();
+
+    let chain_config = network.chain_config();
+    let endpoints = network.all_endpoints();
+    let endpoint = endpoints[0].to_string();
+
+    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
+        .await;
+
+    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
+        .await
+        .expect("query node1 info");
+    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
+        .await
+        .expect("query node2 info");
+    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
+        .await
+        .expect("query node3 info");
+
+    assert_eq!(node1_info.node_key, NODE_KEY_1, "node1 key mismatch");
+    assert_eq!(node2_info.node_key, NODE_KEY_2, "node2 key mismatch");
+    assert_eq!(node3_info.node_key, NODE_KEY_3, "node3 key mismatch");
+
+    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node1_info.p2p_address,
+        IntegrationTestNetwork::NODE1_SERVICE,
+    );
+    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node2_info.p2p_address,
+        IntegrationTestNetwork::NODE2_SERVICE,
+    );
+    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node3_info.p2p_address,
+        IntegrationTestNetwork::NODE3_SERVICE,
+    );
+
+    let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
+    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
+
+    let controller_client = SourceHubClient::with_signer(
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
+    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
+        &controller_client,
+        RING_ID,
+        &node_keys,
+    )
+    .await;
+    assert_eq!(
+        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+        "ACP policy ID mismatch - update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
+    );
+
+    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
+        wait_for_node_info_on_chain(
+            &controller_client,
+            node_key,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
+
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
+    }
+
+    println!("Starting DKG for ring {RING_ID}...");
+    cli_tool::do_dkg(endpoint.clone(), RING_ID.to_string())
+        .await
+        .expect("DKG should succeed");
+
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    println!(
+        "DKG finalized. Ring PK: {}...",
+        &ring_pk_hex[..40.min(ring_pk_hex.len())]
+    );
+
+    let dkg_node_endpoints: Vec<String> = endpoints[..3]
+        .iter()
+        .map(|endpoint| (*endpoint).to_string())
+        .collect();
+    wait_for_ring_state_on_nodes(&dkg_node_endpoints, &ring_pk_hex, Duration::from_secs(60)).await;
+    ensure_ring_index_on_nodes(&dkg_node_endpoints, &ring_pk_hex, RING_ID).await;
+
+    let payload_bytes = cli_tool::read_bulletin_post_with_config(
+        RING_ID.to_string(),
+        BulletinKind::Ring,
+        chain_config.clone(),
+    )
+    .await
+    .expect("read finalized ring payload");
+    let ring_payload: RingPayload =
+        serde_json::from_slice(&payload_bytes).expect("parse finalized RingPayload");
+    assert_eq!(
+        ring_payload.ring_pk, ring_pk_hex,
+        "ring payload should contain finalized ring_pk"
+    );
+
+    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+        .await
+        .expect("connect report event subscription");
+
+    let mut unsafe_client = UnsafeTestingServiceClient::connect(endpoint.clone())
+        .await
+        .expect("connect unsafe-testing client to node1");
+
+    // The report is built from the ring + the signed statement, not from a live DKG session, so we
+    // inject once with a fixed request_id (it only serves as the on-chain session dedupe key). This
+    // avoids racing a healthy same-committee refresh, which completes before an injection targeting
+    // its live session could land.
+    let request_id: u128 = 777_000_111_222_u128;
+    let evidence = signed_bad_refresh_commitment(
+        chain_config.chain_id.clone(),
+        RING_ID.to_string(),
+        &ring_payload,
+        request_id,
+        NODE_KEY_3,
+        NODE3_SIGNING_KEY_HEX,
+    );
+    unsafe_client
+        .submit_dkg_invalid_refresh_commitment_evidence(
+            SubmitDkgInvalidRefreshCommitmentEvidenceRequest {
+                session_id: request_id.to_string(),
+                signed_commitment_json: serde_json::to_vec(&evidence)
+                    .expect("serialize signed refresh commitment evidence"),
+            },
+        )
+        .await
+        .expect("submit invalid refresh commitment evidence");
+    println!("Submitted invalid refresh commitment evidence (request_id {request_id})");
+
+    println!("Waiting for invalid-refresh-commitment EventReportAccepted on chain (up to 120s)...");
+    let event = sub
+        .wait_for_report_accepted_matching(RING_ID, Duration::from_secs(120), |event| {
+            event.report_type == "invalid_crypto_response" && event.accused_node_key == NODE_KEY_3
+        })
+        .await
+        .expect("invalid-refresh-commitment EventReportAccepted should be emitted");
+
+    println!(
+        "Invalid-refresh-commitment report accepted on chain: report_id={} accused={} reporter={}",
+        event.report_id, event.accused_node_key, event.reporter_node_key
+    );
+
+    assert_eq!(
+        event.report_type, "invalid_crypto_response",
+        "unexpected report_type"
+    );
+    assert_eq!(
+        event.accused_node_key, NODE_KEY_3,
+        "node3 should be the accused invalid refresh dealer"
+    );
+    assert_eq!(event.ring_id, RING_ID, "ring_id mismatch");
+    assert!(!event.report_id.is_empty(), "report_id should be set");
+    assert!(
+        [NODE_KEY_1, NODE_KEY_2].contains(&event.reporter_node_key.as_str()),
+        "reporter should be a non-accused current signer, got {}",
+        event.reporter_node_key
+    );
+
+    let demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
+        .await
+        .expect("query node3 demerits");
+    assert_eq!(
+        demerits, 1,
+        "node3 should have exactly one demerit after the invalid refresh commitment report"
+    );
 }
 
 #[tokio::test]

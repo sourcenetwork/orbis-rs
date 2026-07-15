@@ -394,6 +394,19 @@ impl ReportHandler for InvalidCryptoResponseHandler {
                 )
                 .await
             }
+            InvalidCryptoResponse::DkgInvalidRefreshCommitment {
+                statement,
+                response_signature,
+            } => {
+                self.validate_dkg_invalid_refresh_commitment_evidence(
+                    envelope,
+                    context,
+                    &ring,
+                    statement,
+                    response_signature,
+                )
+                .await
+            }
             InvalidCryptoResponse::DkgEquivocation {
                 commitment_a,
                 commitment_b,
@@ -720,6 +733,77 @@ impl InvalidCryptoResponseHandler {
         }
 
         Ok(())
+    }
+
+    async fn validate_dkg_invalid_refresh_commitment_evidence(
+        &self,
+        envelope: &ReportEnvelope,
+        context: &ReportValidationContext,
+        ring: &RingPayload,
+        statement: &DkgCommitmentStatement,
+        response_signature: &[u8],
+    ) -> Result<()> {
+        validate_refresh_commitment_statement_shape(
+            envelope,
+            statement,
+            response_signature,
+            context,
+        )?;
+
+        let effective_version =
+            validate_report_route_version_at_observed_at(envelope, ring, context.routes.version)?;
+        if statement.protocol_version != effective_version {
+            return Err(ReportingError::Unauthorized(format!(
+                "DKG refresh commitment protocol version {} does not match effective ring version {}",
+                statement.protocol_version, effective_version
+            )));
+        }
+
+        let signing_committee = validate_ring_and_membership_for_scopes(
+            envelope,
+            ring,
+            statement.accused_committee_scope,
+            statement.signing_committee_scope,
+            "DKG invalid-refresh-commitment",
+        )?;
+        validate_node_routes(envelope, context, ring).await?;
+        validate_local_signer(
+            envelope,
+            context,
+            &signing_committee,
+            "DKG invalid-refresh-commitment",
+        )?;
+
+        let accused_committee = committee_for_scope(ring, statement.accused_committee_scope)?;
+        let expected_from_node_id = determine_session_node_id(
+            &envelope.accused_node_key,
+            &accused_committee.peer_node_keys,
+        )
+        .ok_or_else(|| {
+            ReportingError::Unauthorized(
+                "accused node is not in the DKG refresh commitment node-id map".to_string(),
+            )
+        })?;
+        if statement.from_node_id != expected_from_node_id {
+            return Err(ReportingError::Unauthorized(format!(
+                "DKG refresh commitment from_node_id {} does not match accused node_id {}",
+                statement.from_node_id, expected_from_node_id
+            )));
+        }
+
+        verify_node_message(
+            &envelope.accused_node_key,
+            &statement.canonical_bytes(),
+            response_signature,
+        )
+        .map_err(|error| {
+            ReportingError::Unauthorized(format!(
+                "invalid DKG refresh commitment signature: {}",
+                error
+            ))
+        })?;
+
+        require_refresh_commitment_is_invalid(statement)
     }
 
     fn observation(observation: &ReportObservation) -> Result<&InvalidCryptoResponseObservation> {
@@ -1316,6 +1400,93 @@ fn validate_equivocation_commitment_shape(
     if signature.is_empty() {
         return Err(ReportingError::InvalidReport(
             "DKG equivocation commitment signature cannot be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_refresh_commitment_statement_shape(
+    envelope: &ReportEnvelope,
+    statement: &DkgCommitmentStatement,
+    response_signature: &[u8],
+    context: &ReportValidationContext,
+) -> Result<()> {
+    validate_invalid_crypto_statement_prologue(
+        envelope,
+        context,
+        InvalidCryptoStatementPrologue {
+            label: "DKG refresh commitment".to_string(),
+            domain: statement.domain.clone(),
+            expected_domain: DKG_COMMITMENT_DOMAIN.to_string(),
+            chain_id: statement.chain_id.clone(),
+            ring_id: statement.ring_id.clone(),
+            ring_pk: statement.ring_pk.clone(),
+            ring_state_sha256: statement.ring_state_sha256.clone(),
+            request_id: statement.request_id.clone(),
+            signed_at: statement.signed_at,
+            responder_node_key: statement.responder_node_key.clone(),
+            check_anchor: true,
+        },
+    )?;
+    // This report kind is refresh-ONLY: a reshare commitment legitimately has a
+    // non-identity constant term, so it must never be reportable as an invalid refresh.
+    if statement.origin_protocol != "pss_refresh" {
+        return Err(ReportingError::InvalidReport(format!(
+            "DKG invalid-refresh-commitment report requires pss_refresh origin, got {}",
+            statement.origin_protocol
+        )));
+    }
+    if statement.accused_committee_scope != CommitteeScope::Current
+        || statement.signing_committee_scope != CommitteeScope::Current
+    {
+        return Err(ReportingError::Unauthorized(
+            "DKG refresh commitment reports must use current accused and signing scopes"
+                .to_string(),
+        ));
+    }
+    if statement.from_node_id == 0 {
+        return Err(ReportingError::InvalidReport(
+            "DKG refresh commitment from_node_id must be non-zero".to_string(),
+        ));
+    }
+    if statement.crypto_backend != DkgImpl::name() {
+        return Err(ReportingError::Unauthorized(format!(
+            "DKG refresh commitment crypto backend {} does not match local backend {}",
+            statement.crypto_backend,
+            DkgImpl::name()
+        )));
+    }
+    if statement.commitment.is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "DKG refresh commitment cannot be empty".to_string(),
+        ));
+    }
+    if !statement.commitment.len().is_multiple_of(GROUP_POINT_SIZE) {
+        return Err(ReportingError::InvalidReport(format!(
+            "DKG refresh commitment length {} is not a multiple of {}",
+            statement.commitment.len(),
+            GROUP_POINT_SIZE
+        )));
+    }
+    if response_signature.is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "DKG refresh commitment signature cannot be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The refutation for an invalid-refresh-commitment report: a valid refresh delta
+/// commitment has an identity constant term, so if it decodes and the constant term IS
+/// identity the commitment is fine → reject the report. A commitment that cannot be
+/// decoded is itself an attributable fault (mirrors `require_dkg_share_verification_failure`).
+fn require_refresh_commitment_is_invalid(statement: &DkgCommitmentStatement) -> Result<()> {
+    let Ok(commitment) = deserialize_wire_commitment(&statement.commitment) else {
+        return Ok(());
+    };
+    if commitment.constant_term_is_identity() {
+        return Err(ReportingError::Unauthorized(
+            "reported refresh commitment has a valid identity constant term".to_string(),
         ));
     }
     Ok(())
@@ -2021,6 +2192,137 @@ mod tests {
             .contains("unsupported DKG equivocation origin"));
 
         crate::helpers::test_helpers::cleanup_db(&db_path);
+    }
+
+    fn refresh_commitment(
+        ring: &RingPayload,
+        chain_id: &str,
+        commitment: Vec<u8>,
+        signed_at: u64,
+    ) -> SignedDkgCommitment {
+        SignedDkgCommitment {
+            statement: DkgCommitmentStatement {
+                domain: DKG_COMMITMENT_DOMAIN.to_string(),
+                chain_id: chain_id.to_string(),
+                ring_id: "ring".to_string(),
+                ring_pk: ring.ring_pk.clone(),
+                ring_state_sha256: ring_state_sha256(ring),
+                protocol_version: 0,
+                request_id: "refresh-session-1".to_string(),
+                signed_at,
+                responder_node_key: "accused".to_string(),
+                origin_protocol: "pss_refresh".to_string(),
+                accused_committee_scope: CommitteeScope::Current,
+                signing_committee_scope: CommitteeScope::Current,
+                from_node_id: 2,
+                commitment,
+                session_nonce: [5u8; 16],
+                crypto_backend: DkgImpl::name(),
+            },
+            signature: vec![1; 64],
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_refresh_commitment_shape_accepts_and_rejects_wrong_origin() {
+        let db_name = "registry_refresh_commitment_shape";
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+        let chain_id = app_state.bulletin.chain_id();
+        let ring = ring_fixture(2);
+
+        // The shape validator only checks structure (not the refutation), so any real
+        // commitment shape works here.
+        let mut dealer = DkgImpl::new(2, 2, 3, 7, DkgRole::Standard).unwrap();
+        dealer.generate_polynomial(DkgMode::Fresh).unwrap();
+        let commitment =
+            serialize_commitment_coefficients(&dealer.commitment().coefficients).unwrap();
+        let signed_at = CHAIN_BLOCK_GRACE_SECS + 100;
+        let commitment = refresh_commitment(&ring, &chain_id, commitment, signed_at);
+
+        let observation = InvalidCryptoResponseObservation {
+            ring_id: "ring".to_string(),
+            accused_node_key: "accused".to_string(),
+            accused_peer_id: "aa".repeat(32),
+            observed_at: signed_at - CHAIN_BLOCK_GRACE_SECS,
+            evidence: InvalidCryptoResponse::DkgInvalidRefreshCommitment {
+                statement: Box::new(commitment.statement.clone()),
+                response_signature: commitment.signature.clone(),
+            },
+        };
+        let envelope = InvalidCryptoResponseHandler.build_envelope(
+            &observation,
+            &ring,
+            "reporter",
+            chain_id.clone(),
+        );
+        let context = ReportValidationContext {
+            local_node_key: app_state.node_key.clone(),
+            requester_peer_id: None,
+            network: app_state.network.clone(),
+            peer_connection_pool: app_state.peer_connection_pool.clone(),
+            bulletin: app_state.bulletin.clone(),
+            local_storage: app_state.local_storage.clone(),
+            routes: &network::V0,
+            now: envelope.observed_at,
+            mode: ReportValidationMode::ReporterObservation,
+        };
+
+        // A well-formed pss_refresh commitment passes the shape check.
+        validate_refresh_commitment_statement_shape(
+            &envelope,
+            &commitment.statement,
+            &commitment.signature,
+            &context,
+        )
+        .unwrap();
+
+        // A reshare origin is rejected: reshare commitments legitimately have a
+        // non-identity constant term, so they must never be reportable as invalid refresh.
+        let mut bad = commitment.clone();
+        bad.statement.origin_protocol = "pss_reshare".to_string();
+        let error = validate_refresh_commitment_statement_shape(
+            &envelope,
+            &bad.statement,
+            &bad.signature,
+            &context,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("requires pss_refresh origin"));
+
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn require_refresh_commitment_is_invalid_rejects_identity_and_accepts_non_identity() {
+        let ring = ring_fixture(2);
+        let chain_id = "test-chain";
+
+        // Refresh mode → identity constant term → a VALID refresh commitment → report rejected.
+        let mut refresh_dealer = DkgImpl::new(2, 2, 3, 7, DkgRole::Standard).unwrap();
+        refresh_dealer
+            .generate_polynomial(DkgMode::Refresh)
+            .unwrap();
+        let identity_commitment =
+            serialize_commitment_coefficients(&refresh_dealer.commitment().coefficients).unwrap();
+        let valid = refresh_commitment(&ring, chain_id, identity_commitment, 100);
+        let error = require_refresh_commitment_is_invalid(&valid.statement).unwrap_err();
+        assert!(error.to_string().contains("identity constant term"));
+
+        // Fresh mode → non-identity constant term → the dealer tried to shift the ring key
+        // → report stands.
+        let mut fresh_dealer = DkgImpl::new(2, 2, 3, 7, DkgRole::Standard).unwrap();
+        fresh_dealer.generate_polynomial(DkgMode::Fresh).unwrap();
+        let non_identity_commitment =
+            serialize_commitment_coefficients(&fresh_dealer.commitment().coefficients).unwrap();
+        let invalid = refresh_commitment(&ring, chain_id, non_identity_commitment, 100);
+        require_refresh_commitment_is_invalid(&invalid.statement).unwrap();
+
+        // An undecodable commitment is itself an attributable fault → report stands.
+        let mut undecodable = valid.clone();
+        undecodable.statement.commitment = vec![0xff; 3];
+        require_refresh_commitment_is_invalid(&undecodable.statement).unwrap();
     }
 
     #[test]

@@ -793,6 +793,45 @@ where
     Ok(())
 }
 
+/// Report a refresh dealer whose signed commitment has a non-identity constant term.
+/// Refresh keeps the same committee, so the detector is always a current-committee member —
+/// this queues directly (no relay). Single self-incriminating statement.
+pub async fn queue_invalid_refresh_commitment_report<D>(
+    app_state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    commitment: SignedDkgCommitment,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let accused_node_key = commitment.statement.responder_node_key.clone();
+    let accused_info = read_node_info(&app_state, &accused_node_key).await?;
+    let observed_at = commitment
+        .statement
+        .signed_at
+        .saturating_sub(CHAIN_BLOCK_GRACE_SECS);
+    let observation = InvalidCryptoResponseObservation {
+        ring_id: commitment.statement.ring_id.clone(),
+        accused_node_key,
+        accused_peer_id: accused_info.peer_id,
+        observed_at,
+        evidence: InvalidCryptoResponse::DkgInvalidRefreshCommitment {
+            statement: Box::new(commitment.statement),
+            response_signature: commitment.signature,
+        },
+    };
+
+    queue_report::<D, SignImpl>(
+        app_state,
+        routes,
+        ReportObservation::InvalidCryptoResponse(Box::new(observation)),
+    )
+    .await
+    .map_err(|error| DkgError::Generic(error.to_string()))?;
+    Ok(())
+}
+
 async fn queue_equivocation_report<D>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,

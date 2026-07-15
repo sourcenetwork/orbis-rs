@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use crate::app_state::AppState;
 use crate::dkg::v0::coordinator::evidence::{
-    queue_or_relay_equivocation, queue_or_relay_invalid_share, share_evidence_proves_failure,
-    verify_share_evidence,
+    queue_invalid_refresh_commitment_report, queue_or_relay_equivocation,
+    queue_or_relay_invalid_share, share_evidence_proves_failure, verify_share_evidence,
 };
 use crate::dkg::v0::coordinator::DkgCoordinator;
+use crate::dkg::v0::helpers::deserialize_wire_commitment;
 use crate::dkg::v0::messages::{SignedDkgCommitment, SignedDkgShare};
+use crypto::r#trait::PolynomialCommitment as _;
 use crypto::DkgImpl;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -18,7 +20,9 @@ use proto::unsafe_testing::{
     GetLocalStorageRequest, GetLocalStorageResponse, LocalStorageAccessMode, LocalStorageKey,
     LocalStorageKeyType, SetLocalStorageRequest, SetLocalStorageResponse,
     SubmitDkgEquivocationEvidenceRequest, SubmitDkgEquivocationEvidenceResponse,
-    SubmitDkgInvalidShareEvidenceRequest, SubmitDkgInvalidShareEvidenceResponse,
+    SubmitDkgInvalidRefreshCommitmentEvidenceRequest,
+    SubmitDkgInvalidRefreshCommitmentEvidenceResponse, SubmitDkgInvalidShareEvidenceRequest,
+    SubmitDkgInvalidShareEvidenceResponse,
 };
 use tonic::{Request, Response, Status};
 use zeroize::Zeroizing;
@@ -269,5 +273,39 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
         .map_err(|error| Status::failed_precondition(error.to_string()))?;
 
         Ok(Response::new(SubmitDkgEquivocationEvidenceResponse {}))
+    }
+
+    async fn submit_dkg_invalid_refresh_commitment_evidence(
+        &self,
+        request: Request<SubmitDkgInvalidRefreshCommitmentEvidenceRequest>,
+    ) -> Result<Response<SubmitDkgInvalidRefreshCommitmentEvidenceResponse>, Status> {
+        let request = request.into_inner();
+        let evidence: SignedDkgCommitment = serde_json::from_slice(&request.signed_commitment_json)
+            .map_err(|error| {
+                Status::invalid_argument(format!("invalid signed_commitment_json: {error}"))
+            })?;
+        let app_state = self.app_state.clone().ok_or_else(|| {
+            Status::failed_precondition("unsafe DKG evidence injection requires app state")
+        })?;
+
+        // The report producer + co-signer validation are the real security boundary and need only
+        // the ring and the signed statement — not a live DKG session — so this injects directly
+        // rather than going through the node-local session pre-check (a healthy same-committee
+        // refresh completes before an injection targeting its live session could land).
+        if let Ok(commitment) = deserialize_wire_commitment(&evidence.statement.commitment) {
+            if commitment.constant_term_is_identity() {
+                return Err(Status::failed_precondition(
+                    "DKG refresh commitment evidence has an identity constant term",
+                ));
+            }
+        }
+
+        queue_invalid_refresh_commitment_report::<DkgImpl>(app_state, &network::V0, evidence)
+            .await
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+
+        Ok(Response::new(
+            SubmitDkgInvalidRefreshCommitmentEvidenceResponse {},
+        ))
     }
 }
