@@ -364,6 +364,19 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
     // Start PSS reshare scheduler (no-op if interval is zero)
     let pss_scheduler = pss::spawn_pss_scheduler(node.app_state.clone(), node.reshare_interval);
 
+    // Start the PSS stall reporter: attributes dealers that go unreachable mid-refresh/reshare
+    // as `node_offline` (gated by the co-signer reachability probe).
+    let pss_stall_reporter = node
+        .app_state
+        .dkg_session_state
+        .take_stall_report_receiver()
+        .map(|rx| {
+            crate::dkg::v0::coordinator::network::spawn_pss_stall_reporter(
+                node.app_state.clone(),
+                rx,
+            )
+        });
+
     tracing::info!("Server is ready to accept connections");
     tracing::info!(grpc_addr = %node.grpc_addr, "Starting gRPC server");
     tracing::info!(p2p_addr = %node.local_address, "P2P address for node-to-node communication");
@@ -478,6 +491,9 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
 
     if let Some(scheduler) = pss_scheduler {
         scheduler.shutdown().await;
+    }
+    if let Some(reporter) = pss_stall_reporter {
+        reporter.shutdown().await;
     }
 
     // Clean shutdown of router

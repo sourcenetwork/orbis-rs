@@ -5,9 +5,11 @@ use crate::dkg::v0::coordinator::evidence::{
     queue_invalid_refresh_commitment_report, queue_or_relay_equivocation,
     queue_or_relay_invalid_share, share_evidence_proves_failure, verify_share_evidence,
 };
+use crate::dkg::v0::coordinator::network::report_abandoned_pss_session;
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::helpers::deserialize_wire_commitment;
-use crate::dkg::v0::messages::{SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::session_state::AbandonedPssSession;
 use crypto::r#trait::PolynomialCommitment as _;
 use crypto::DkgImpl;
 use local_storage::{
@@ -22,7 +24,8 @@ use proto::unsafe_testing::{
     SubmitDkgEquivocationEvidenceRequest, SubmitDkgEquivocationEvidenceResponse,
     SubmitDkgInvalidRefreshCommitmentEvidenceRequest,
     SubmitDkgInvalidRefreshCommitmentEvidenceResponse, SubmitDkgInvalidShareEvidenceRequest,
-    SubmitDkgInvalidShareEvidenceResponse,
+    SubmitDkgInvalidShareEvidenceResponse, SubmitPssStallOfflineReportRequest,
+    SubmitPssStallOfflineReportResponse,
 };
 use tonic::{Request, Response, Status};
 use zeroize::Zeroizing;
@@ -307,5 +310,35 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
         Ok(Response::new(
             SubmitDkgInvalidRefreshCommitmentEvidenceResponse {},
         ))
+    }
+
+    async fn submit_pss_stall_offline_report(
+        &self,
+        request: Request<SubmitPssStallOfflineReportRequest>,
+    ) -> Result<Response<SubmitPssStallOfflineReportResponse>, Status> {
+        let request = request.into_inner();
+        let session_id = request
+            .session_id
+            .parse::<u128>()
+            .map_err(|error| Status::invalid_argument(format!("invalid session_id: {error}")))?;
+        let app_state = self.app_state.clone().ok_or_else(|| {
+            Status::failed_precondition("unsafe PSS stall injection requires app state")
+        })?;
+
+        // Drive the real drain-worker path: a genuinely-abandoned refresh session whose only
+        // silent dealer is `peer_id`. The accused must be stopped so the co-signer reachability
+        // probe passes and the resulting node_offline report is accepted.
+        let event = AbandonedPssSession {
+            session_id,
+            kind: SessionKind::Refresh {
+                ring_pk_hex: request.ring_pk_hex,
+            },
+            ring_id: request.ring_id,
+            protocol_version: network::V0.version,
+            missing_peer_ids: vec![request.peer_id],
+        };
+        report_abandoned_pss_session::<DkgImpl>(&app_state, event).await;
+
+        Ok(Response::new(SubmitPssStallOfflineReportResponse {}))
     }
 }

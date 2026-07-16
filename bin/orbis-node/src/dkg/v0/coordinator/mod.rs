@@ -22,7 +22,7 @@
 pub(crate) mod evidence;
 mod inbound;
 mod message_handlers;
-mod network;
+pub(crate) mod network;
 mod peers;
 mod phases;
 mod refresh_health_check;
