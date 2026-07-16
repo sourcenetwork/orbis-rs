@@ -10,6 +10,7 @@ service UnsafeTestingService {
   rpc SubmitDkgInvalidShareEvidence(SubmitDkgInvalidShareEvidenceRequest) returns (SubmitDkgInvalidShareEvidenceResponse);
   rpc SubmitDkgEquivocationEvidence(SubmitDkgEquivocationEvidenceRequest) returns (SubmitDkgEquivocationEvidenceResponse);
   rpc SubmitDkgInvalidRefreshCommitmentEvidence(SubmitDkgInvalidRefreshCommitmentEvidenceRequest) returns (SubmitDkgInvalidRefreshCommitmentEvidenceResponse);
+  rpc SubmitPssStallOfflineReport(SubmitPssStallOfflineReportRequest) returns (SubmitPssStallOfflineReportResponse);
 }
 
 enum LocalStorageKeyType {
@@ -87,3 +88,16 @@ message SubmitDkgInvalidRefreshCommitmentEvidenceRequest {
 }
 
 message SubmitDkgInvalidRefreshCommitmentEvidenceResponse {}
+
+// Injects an AbandonedPssSession through the real PSS stall-report path (drain worker logic),
+// attributing `peer_id` as a silent refresh dealer. Used to test the G1 stall→node_offline flow
+// deterministically: the accused must be genuinely stopped so the co-signer reachability probe
+// passes and the report is accepted.
+message SubmitPssStallOfflineReportRequest {
+  string ring_id = 1;
+  string session_id = 2;
+  string peer_id = 3;
+  string ring_pk_hex = 4;
+}
+
+message SubmitPssStallOfflineReportResponse {}

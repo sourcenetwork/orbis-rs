@@ -517,37 +517,59 @@ where
 {
     let task = tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
-            let Some(routes) = network::routes_for_version(event.protocol_version) else {
-                tracing::warn!(
-                    protocol_version = event.protocol_version,
-                    session_id = %event.session_id,
-                    "PSS stall reporter: no protocol routes for version; dropping offline attribution"
-                );
-                continue;
-            };
-            for peer_id in event.missing_peer_ids {
-                if let Err(error) = queue_pss_offline_report_task(
-                    app_state.clone(),
-                    routes,
-                    peer_id.clone(),
-                    event.kind.clone(),
-                    event.ring_id.clone(),
-                    event.session_id.to_string(),
-                )
-                .await
-                {
-                    tracing::warn!(
-                        peer_id = %peer_id,
-                        session_id = %event.session_id,
-                        error = %error,
-                        "PSS stall reporter: failed to queue offline report for silent dealer"
-                    );
-                }
-            }
+            report_abandoned_pss_session(&app_state, event).await;
         }
         tracing::debug!("PSS stall reporter: channel closed, worker shutting down");
     });
     PssStallReporterHandle { task }
+}
+
+/// Attempt a `node_offline` report for each silent dealer in an [`AbandonedPssSession`]. Shared by
+/// the drain worker ([`spawn_pss_stall_reporter`]) and the unsafe-testing injection hook so both
+/// exercise the same path. Acceptance is gated by the co-signer reachability probe, so only dealers
+/// that are genuinely unreachable at probe time are demerited.
+pub(crate) async fn report_abandoned_pss_session<D>(
+    app_state: &Arc<AppState<D>>,
+    event: AbandonedPssSession,
+) where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(routes) = network::routes_for_version(event.protocol_version) else {
+        tracing::warn!(
+            protocol_version = event.protocol_version,
+            session_id = %event.session_id,
+            "PSS stall reporter: no protocol routes for version; dropping offline attribution"
+        );
+        return;
+    };
+    for peer_id in event.missing_peer_ids {
+        if let Err(error) = queue_pss_offline_report_task(
+            app_state.clone(),
+            routes,
+            peer_id.clone(),
+            event.kind.clone(),
+            event.ring_id.clone(),
+            event.session_id.to_string(),
+        )
+        .await
+        {
+            tracing::warn!(
+                peer_id = %peer_id,
+                session_id = %event.session_id,
+                error = %error,
+                "PSS stall reporter: failed to queue offline report for silent dealer"
+            );
+        }
+    }
 }
 
 /// Open a QUIC stream to a peer, evicting and reconnecting the cached connection on failure.
