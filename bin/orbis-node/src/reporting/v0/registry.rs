@@ -975,7 +975,7 @@ impl ReportHandler for UnauthorizedRequestHandler {
             ReportingError::Unauthorized(format!("invalid relay request signature: {}", error))
         })?;
 
-        require_relayed_request_unauthorized(context, statement).await
+        require_relayed_request_unauthorized(context, statement, &payload.checked_at_anchor).await
     }
 }
 
@@ -1086,28 +1086,27 @@ fn validate_relay_request_statement_shape(
     Ok(())
 }
 
-/// The refutation for an `unauthorized_request` report: re-run the ACP check for the relayed
-/// request at `statement.checked_at_height` — the height the relayer signed it observed when it
-/// checked. If the actor **is** authorized at that height the relayer forwarded a legitimate
-/// request → reject the report; only an unauthorized verdict confirms it. Judging by the relayer's
-/// own check height protects an honest relayer from a revocation that lands right after it forwards.
-///
-/// `checked_at_height` is bounded to recent here (`≤ current height`); the precise
-/// `block_time(checked_at_height) ≈ signed_at` binding is enforced chain-side (sourcehub owns
-/// historical block times).
+/// The refutation for an `unauthorized_request` report: re-run the ACP check for the relayed request
+/// as of the acceptor's captured `checked_at_anchor` (an opaque `Authz` point-in-history token). If
+/// the actor **is** authorized at that anchor the relayer forwarded a legitimate request → reject
+/// the report; only an unauthorized verdict confirms it. `anchor_time(anchor) ≈ signed_at` binds the
+/// anchor to the relay moment, so it reflects the policy state when the relayer checked — protecting
+/// an honest relayer from a revocation that lands right after it forwards, with no assumption about
+/// what the anchor encodes.
 async fn require_relayed_request_unauthorized(
     context: &ReportValidationContext,
     statement: &RelayRequestStatement,
+    checked_at_anchor: &str,
 ) -> Result<()> {
-    let current_height = context
-        .bulletin
-        .latest_block_height()
+    let anchor_time = context
+        .authz
+        .anchor_time(checked_at_anchor)
         .await
         .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
-    if statement.checked_at_height > current_height {
+    if anchor_time.abs_diff(statement.signed_at) > RELAY_CHECK_MAX_DRIFT_SECS {
         return Err(ReportingError::InvalidReport(format!(
-            "relay request checked_at_height {} is ahead of current height {}",
-            statement.checked_at_height, current_height
+            "relay request anchor time {} drifts from signed_at {} by more than {}s",
+            anchor_time, statement.signed_at, RELAY_CHECK_MAX_DRIFT_SECS
         )));
     }
 
@@ -1176,16 +1175,12 @@ async fn require_relayed_request_unauthorized(
         .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
     let authorized = context
         .authz
-        .check_at_height(
-            request_bytes,
-            &statement.actor_id,
-            Some(statement.checked_at_height),
-        )
+        .check_at(request_bytes, &statement.actor_id, checked_at_anchor)
         .await
         .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
     if authorized {
         return Err(ReportingError::Unauthorized(
-            "relayed request was authorized at the relayer's checked_at_height".to_string(),
+            "relayed request was authorized at the captured anchor".to_string(),
         ));
     }
     Ok(())

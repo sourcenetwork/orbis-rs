@@ -529,6 +529,23 @@ impl SourceHubClient {
         Ok(self.rpc_client.status().await?)
     }
 
+    /// Unix-seconds timestamp of the block committed at `height`.
+    pub async fn get_block_time(&self, height: u64) -> Result<u64> {
+        let block_height = tendermint::block::Height::try_from(height)
+            .map_err(|e| BlockchainError::Query(format!("invalid block height {height}: {e}")))?;
+        let response = self.rpc_client.block(block_height).await?;
+        let secs = response
+            .block
+            .header
+            .time
+            .duration_since(tendermint::Time::unix_epoch())
+            .map_err(|e| {
+                BlockchainError::Query(format!("block {height} time before unix epoch: {e}"))
+            })?
+            .as_secs();
+        Ok(secs)
+    }
+
     /// Make a REST API GET request.
     pub async fn rest_get<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
         let response = self

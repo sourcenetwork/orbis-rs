@@ -80,10 +80,42 @@ pub struct SourceHubAuth {
 #[async_trait]
 impl Authz for SourceHubAuth {
     async fn check(&self, permission: Vec<u8>, subject: &str) -> Result<bool> {
-        self.check_at_height(permission, subject, None).await
+        self.verify_at(permission, subject, None).await
     }
 
-    async fn check_at_height(
+    /// For SourceHub the opaque anchor is a decimal block height.
+    async fn check_at(&self, permission: Vec<u8>, subject: &str, anchor: &str) -> Result<bool> {
+        let height = parse_anchor_height(anchor)?;
+        self.verify_at(permission, subject, Some(height)).await
+    }
+
+    async fn current_anchor(&self) -> Result<String> {
+        let height = self
+            .chain_client
+            .get_latest_height()
+            .await
+            .map_err(|e| AuthZError::ChainError(e.to_string()))?;
+        Ok(height.to_string())
+    }
+
+    async fn anchor_time(&self, anchor: &str) -> Result<u64> {
+        let height = parse_anchor_height(anchor)?;
+        self.chain_client
+            .get_block_time(height)
+            .await
+            .map_err(|e| AuthZError::ChainError(e.to_string()))
+    }
+}
+
+/// Parse a SourceHub opaque anchor (a decimal block height).
+fn parse_anchor_height(anchor: &str) -> Result<u64> {
+    anchor.parse::<u64>().map_err(|e| {
+        AuthZError::InvalidRequest(format!("invalid block-height anchor {anchor:?}: {e}"))
+    })
+}
+
+impl SourceHubAuth {
+    async fn verify_at(
         &self,
         permission: Vec<u8>,
         subject: &str,

@@ -1507,13 +1507,14 @@ async fn test_sign_policy_check_policy_access_enforces_authz_denial() {
         async fn check(&self, _: Vec<u8>, _: &str) -> authz::error::Result<bool> {
             Ok(false)
         }
-        async fn check_at_height(
-            &self,
-            _: Vec<u8>,
-            _: &str,
-            _: Option<u64>,
-        ) -> authz::error::Result<bool> {
+        async fn check_at(&self, _: Vec<u8>, _: &str, _: &str) -> authz::error::Result<bool> {
             Ok(false)
+        }
+        async fn current_anchor(&self) -> authz::error::Result<String> {
+            Ok("0".to_string())
+        }
+        async fn anchor_time(&self, _: &str) -> authz::error::Result<u64> {
+            Ok(0)
         }
     }
 
@@ -1562,13 +1563,19 @@ async fn test_sign_policy_check_policy_access_expired_valid_window() {
             }
             Ok(true)
         }
-        async fn check_at_height(
+        async fn check_at(
             &self,
             permission: Vec<u8>,
             subject: &str,
-            _: Option<u64>,
+            _: &str,
         ) -> authz::error::Result<bool> {
             self.check(permission, subject).await
+        }
+        async fn current_anchor(&self) -> authz::error::Result<String> {
+            Ok("0".to_string())
+        }
+        async fn anchor_time(&self, _: &str) -> authz::error::Result<u64> {
+            Ok(0)
         }
     }
 

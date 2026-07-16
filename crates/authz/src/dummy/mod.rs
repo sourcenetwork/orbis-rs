@@ -9,13 +9,16 @@ impl Authz for DummyAuthZ {
         Ok(true)
     }
 
-    async fn check_at_height(
-        &self,
-        _permission: Vec<u8>,
-        _subject: &str,
-        _height: Option<u64>,
-    ) -> Result<bool> {
+    async fn check_at(&self, _permission: Vec<u8>, _subject: &str, _anchor: &str) -> Result<bool> {
         Ok(true)
+    }
+
+    async fn current_anchor(&self) -> Result<String> {
+        Ok("0".to_string())
+    }
+
+    async fn anchor_time(&self, _anchor: &str) -> Result<u64> {
+        Ok(0)
     }
 }
 

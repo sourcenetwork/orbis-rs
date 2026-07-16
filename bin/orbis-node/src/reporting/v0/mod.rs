@@ -77,6 +77,7 @@ pub async fn queue_unauthorized_request_report<D, S>(
     routes: &'static network::ProtocolRoutes,
     statement: crate::reporting::v0::types::RelayRequestStatement,
     relay_signature: Vec<u8>,
+    checked_at_anchor: String,
 ) -> Result<()>
 where
     D: Dkg<ShareValue = ScalarField, PublicKey = GroupAffine> + Clone + Send + Sync + 'static,
@@ -114,6 +115,7 @@ where
         payload: UnauthorizedRequestPayload {
             statement,
             relay_signature,
+            checked_at_anchor,
         },
     };
     queue_report::<D, S>(

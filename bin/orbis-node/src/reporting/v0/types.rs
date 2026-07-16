@@ -296,10 +296,6 @@ pub struct RelayRequestStatement {
     pub request_id: String,
     /// Unix seconds at which the relayer produced and signed this statement (its ACP-check time).
     pub signed_at: u64,
-    /// Block height the relayer observed when it ran its ACP check. The refutation re-runs ACP at
-    /// this height so the relayer is judged by the policy state at the moment it forwarded — and,
-    /// being signed here, it can't be moved by a malicious reporter.
-    pub checked_at_height: u64,
     /// The caller's JWT `iat`. The relayer must have forwarded promptly after the caller signed
     /// (`|signed_at - user_signed_at| <= RELAY_CHECK_MAX_DRIFT_SECS`).
     pub user_signed_at: u64,
@@ -332,7 +328,6 @@ impl RelayRequestStatement {
         write_u64(&mut out, self.protocol_version);
         write_string(&mut out, &self.request_id);
         write_u64(&mut out, self.signed_at);
-        write_u64(&mut out, self.checked_at_height);
         write_u64(&mut out, self.user_signed_at);
         write_string(&mut out, &self.relayer_node_key);
         write_string(&mut out, &self.origin_protocol);
@@ -357,7 +352,6 @@ impl RelayRequestStatement {
         let protocol_version = decoder.read_u64("protocol_version")?;
         let request_id = decoder.read_string("request_id")?;
         let signed_at = decoder.read_u64("signed_at")?;
-        let checked_at_height = decoder.read_u64("checked_at_height")?;
         let user_signed_at = decoder.read_u64("user_signed_at")?;
         let relayer_node_key = decoder.read_string("relayer_node_key")?;
         let origin_protocol = decoder.read_string("origin_protocol")?;
@@ -381,7 +375,6 @@ impl RelayRequestStatement {
             protocol_version,
             request_id,
             signed_at,
-            checked_at_height,
             user_signed_at,
             relayer_node_key,
             origin_protocol,
@@ -397,13 +390,15 @@ impl RelayRequestStatement {
     }
 }
 
-/// The full `unauthorized_request` report payload: the relayer's signed statement and its signature
-/// over `statement.canonical_bytes()`. The ACP re-check anchor lives inside the signed statement
-/// (`checked_at_height`) so it cannot be moved by a malicious reporter.
+/// The full `unauthorized_request` report payload: the relayer's signed statement, its signature
+/// over `statement.canonical_bytes()`, and the **opaque anchor** the acceptor captured when it saw
+/// the failure (`Authz::current_anchor()` — a block height, timestamp, … depending on backend). The
+/// refutation re-runs ACP at this anchor and bounds `Authz::anchor_time(anchor) ≈ statement.signed_at`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnauthorizedRequestPayload {
     pub statement: RelayRequestStatement,
     pub relay_signature: Vec<u8>,
+    pub checked_at_anchor: String,
 }
 
 impl UnauthorizedRequestPayload {
@@ -411,6 +406,7 @@ impl UnauthorizedRequestPayload {
         let mut out = Vec::new();
         write_bytes(&mut out, &self.statement.canonical_bytes());
         write_bytes(&mut out, &self.relay_signature);
+        write_string(&mut out, &self.checked_at_anchor);
         out
     }
 
@@ -418,10 +414,12 @@ impl UnauthorizedRequestPayload {
         let mut decoder = Decoder::new(bytes);
         let statement_bytes = decoder.read_bytes("statement")?;
         let relay_signature = decoder.read_bytes("relay_signature")?;
+        let checked_at_anchor = decoder.read_string("checked_at_anchor")?;
         decoder.finish()?;
         Ok(Self {
             statement: RelayRequestStatement::from_canonical_bytes(&statement_bytes)?,
             relay_signature,
+            checked_at_anchor,
         })
     }
 }
@@ -1149,7 +1147,6 @@ mod tests {
             protocol_version: 0,
             request_id: "sign-request-1".to_string(),
             signed_at: 1_700_000_000,
-            checked_at_height: 42_000,
             user_signed_at: 1_699_999_995,
             relayer_node_key: "relayer".to_string(),
             origin_protocol: "sign".to_string(),
@@ -1178,6 +1175,7 @@ mod tests {
         let payload = UnauthorizedRequestPayload {
             statement: relay_request_statement(),
             relay_signature: vec![7; 64],
+            checked_at_anchor: "42000".to_string(),
         };
         assert_eq!(
             UnauthorizedRequestPayload::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
