@@ -138,6 +138,20 @@ pub struct PendingRefreshHealthCheckResult {
     pub signature: Option<String>,
 }
 
+/// Emitted when the expiration sweep abandons a refresh/reshare session that stalled while
+/// collecting commitments. Carries the dealers this node never heard from so a downstream
+/// worker can attempt `node_offline` reports for them. The co-signer reachability probe gates
+/// acceptance, so a merely-slow (reachable) dealer is auto-exonerated — only dealers that are
+/// genuinely unreachable at probe time (crashed/partitioned mid-phase) get demerited.
+#[derive(Clone, Debug)]
+pub struct AbandonedPssSession {
+    pub session_id: u128,
+    pub kind: SessionKind,
+    pub ring_id: String,
+    pub protocol_version: u64,
+    pub missing_peer_ids: Vec<String>,
+}
+
 #[derive(Default)]
 pub(crate) struct SessionRoutingState {
     pub node_id_to_peer_id: HashMap<u32, String>,
@@ -453,6 +467,39 @@ impl<D: Dkg> DkgSessionState<D> {
             self.node.threshold()
         }
     }
+
+    /// Peer IDs of the dealers this node never received a commitment from — the crash signal
+    /// for a stalled refresh/reshare session (see [`AbandonedPssSession`]). A dealer that dies
+    /// after `SessionInit` never broadcasts its commitment, so it is absent from
+    /// `received_commitments`. Returns empty for `Fresh` (fresh DKG has no finalized ring to
+    /// anchor an offline report against).
+    ///
+    /// Refresh: every current-committee member is a dealer. Reshare: the participating
+    /// old-committee members are the dealers. Over-attribution is harmless — the downstream
+    /// `node_offline` report is gated by the co-signer reachability probe.
+    pub(crate) fn missing_dealer_peer_ids(&self) -> Vec<String> {
+        let dealer_node_ids: Vec<u32> = match &self.kind {
+            SessionKind::Fresh => return Vec::new(),
+            SessionKind::Refresh { .. } => (1..=self.routing.peer_node_keys.len() as u32).collect(),
+            SessionKind::Reshare { .. } => match &self.reshare.params {
+                Some(params) => params.participating_ids.clone(),
+                None => (1..=self.routing.peer_node_keys.len() as u32).collect(),
+            },
+        };
+
+        let own_node_id = self.node.node_id();
+        dealer_node_ids
+            .into_iter()
+            .filter(|node_id| *node_id != own_node_id)
+            .filter(|node_id| {
+                !self
+                    .commitment_audit
+                    .received_commitments
+                    .contains_key(node_id)
+            })
+            .filter_map(|node_id| self.routing.node_id_to_peer_id.get(&node_id).cloned())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -536,6 +583,10 @@ pub struct SessionStateManager<D: Dkg> {
     reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
     shutdown_tx: watch::Sender<bool>,
     background_tasks: StdMutex<Vec<JoinHandle<()>>>,
+    /// Receiver for stalled refresh/reshare sessions published by the expiration sweep for
+    /// offline-report attribution. Taken once via [`SessionStateManager::take_stall_report_receiver`]
+    /// at node startup; the sender lives inside the expiration worker.
+    stall_report_rx: StdMutex<Option<mpsc::UnboundedReceiver<AbandonedPssSession>>>,
 }
 
 impl<D: Dkg + 'static> SessionStateManager<D> {
@@ -564,12 +615,21 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             .await;
         }));
 
-        // Spawn background expiration task (handles abandoned sessions)
+        // Spawn background expiration task (handles abandoned sessions). It owns the sole
+        // sender for the stall-report channel, so the receiver stays open for the worker's life.
+        let (stall_report_tx, stall_report_rx) = mpsc::unbounded_channel();
         let states_clone = states.clone();
         let pss_clone = rings_pss.clone();
         let ready_clone = reshare_signature_ready.clone();
         background_tasks.push(tokio::spawn(async move {
-            Self::expiration_worker(states_clone, pss_clone, ready_clone, shutdown_rx).await;
+            Self::expiration_worker(
+                states_clone,
+                pss_clone,
+                ready_clone,
+                shutdown_rx,
+                stall_report_tx,
+            )
+            .await;
         }));
 
         Self {
@@ -580,7 +640,21 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             reshare_signature_ready,
             shutdown_tx,
             background_tasks: StdMutex::new(background_tasks),
+            stall_report_rx: StdMutex::new(Some(stall_report_rx)),
         }
+    }
+
+    /// Take the receiver for stalled-PSS-session offline-report attribution. Returns `Some`
+    /// exactly once (the first caller); subsequent calls return `None`. Called at node startup
+    /// to spawn the drain worker. If no one takes it, the sweep's published events accumulate
+    /// unread in the channel — harmless, just never turned into reports.
+    pub fn take_stall_report_receiver(
+        &self,
+    ) -> Option<mpsc::UnboundedReceiver<AbandonedPssSession>> {
+        self.stall_report_rx
+            .lock()
+            .expect("stall_report_rx mutex poisoned")
+            .take()
     }
 
     /// Background task that processes cleanup requests from guards
@@ -645,6 +719,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         rings_pss: Arc<RwLock<HashMap<String, u128>>>,
         reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
         mut shutdown_rx: watch::Receiver<bool>,
+        stall_report_tx: mpsc::UnboundedSender<AbandonedPssSession>,
     ) {
         let mut interval = tokio::time::interval(SESSION_EXPIRATION_CHECK_INTERVAL);
 
@@ -703,6 +778,26 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         "SessionStateManager: Removing DKG session stalled in phase"
                     );
                     to_remove_ids.push(*session_id);
+
+                    // A refresh/reshare that stalled while collecting commitments means one or
+                    // more dealers went silent. Publish the dealers we never heard from so the
+                    // stall-report worker can attempt `node_offline` reports (the co-signer
+                    // reachability probe filters to dealers that are actually unreachable).
+                    if matches!(
+                        state.phase,
+                        DkgPhase::Phase1Commitments | DkgPhase::Phase2Shares
+                    ) {
+                        let missing_peer_ids = state.missing_dealer_peer_ids();
+                        if !missing_peer_ids.is_empty() {
+                            let _ = stall_report_tx.send(AbandonedPssSession {
+                                session_id: *session_id,
+                                kind: state.kind.clone(),
+                                ring_id: state.routing.ring_id.clone(),
+                                protocol_version: state.protocol_version,
+                                missing_peer_ids,
+                            });
+                        }
+                    }
                 }
             }
 
@@ -1861,6 +1956,77 @@ mod tests {
             },
             signature: vec![0; 64],
         }
+    }
+
+    #[tokio::test]
+    async fn missing_dealer_peer_ids_reports_silent_refresh_dealers() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        // Own node_id = 1 in a 3-member refresh committee.
+        mgr.create_session(80, make_node(1), 3, |_| {}).await;
+        mgr.set_session_kind(
+            &80,
+            SessionKind::Refresh {
+                ring_pk_hex: "rk".to_string(),
+            },
+        )
+        .await;
+        mgr.set_peer_node_keys(&80, vec!["k1".into(), "k2".into(), "k3".into()])
+            .await;
+        mgr.set_node_peer_mappings(
+            &80,
+            HashMap::from([
+                (1, "peer1".to_string()),
+                (2, "peer2".to_string()),
+                (3, "peer3".to_string()),
+            ]),
+        )
+        .await;
+
+        // Only node 2's commitment arrived; node 3 stayed silent (node 1 is self).
+        mgr.store_received_commitment(&80, 2, signed_commitment(2, vec![1, 2, 3], [0u8; 16]))
+            .await;
+        let missing = mgr
+            .with_state(&80, |s| s.missing_dealer_peer_ids())
+            .await
+            .unwrap();
+        assert_eq!(missing, vec!["peer3".to_string()]);
+
+        // Once node 3's commitment also arrives, nothing is attributed.
+        mgr.store_received_commitment(&80, 3, signed_commitment(3, vec![4, 5, 6], [0u8; 16]))
+            .await;
+        let missing = mgr
+            .with_state(&80, |s| s.missing_dealer_peer_ids())
+            .await
+            .unwrap();
+        assert!(missing.is_empty(), "no dealer is silent once all commit");
+    }
+
+    #[tokio::test]
+    async fn missing_dealer_peer_ids_empty_for_fresh_dkg() {
+        // Fresh DKG has no finalized ring to anchor an offline report against, so even a
+        // session missing every peer's commitment must not attribute anyone.
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(81, make_node(1), 3, |_| {}).await; // default kind = Fresh
+        mgr.set_peer_node_keys(&81, vec!["k1".into(), "k2".into(), "k3".into()])
+            .await;
+        mgr.set_node_peer_mappings(
+            &81,
+            HashMap::from([
+                (1, "peer1".to_string()),
+                (2, "peer2".to_string()),
+                (3, "peer3".to_string()),
+            ]),
+        )
+        .await;
+
+        let missing = mgr
+            .with_state(&81, |s| s.missing_dealer_peer_ids())
+            .await
+            .unwrap();
+        assert!(
+            missing.is_empty(),
+            "fresh DKG must not produce offline attribution"
+        );
     }
 
     #[tokio::test]
