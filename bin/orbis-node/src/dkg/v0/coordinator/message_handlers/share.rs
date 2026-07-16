@@ -259,7 +259,7 @@ where
     coord
         .app_state
         .dkg_session_state
-        .increment_shares(&session_id)
+        .record_received_share(&session_id, from_node_id)
         .await;
 
     phases::drive_event(

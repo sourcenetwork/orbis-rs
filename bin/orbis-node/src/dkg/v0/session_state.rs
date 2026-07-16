@@ -18,7 +18,7 @@ use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare}
 use crate::metrics;
 use crate::ring_state::RingShareBundle;
 use crate::sign::v0::messages::RefreshHealthCheckStatement;
-use crypto::r#trait::{DistributedShare, Dkg, DkgMode};
+use crypto::r#trait::{DistributedShare, Dkg, DkgMode, DkgRole};
 use network::Connection;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -139,10 +139,10 @@ pub struct PendingRefreshHealthCheckResult {
 }
 
 /// Emitted when the expiration sweep abandons a refresh/reshare session that stalled while
-/// collecting commitments. Carries the dealers this node never heard from so a downstream
-/// worker can attempt `node_offline` reports for them. The co-signer reachability probe gates
-/// acceptance, so a merely-slow (reachable) dealer is auto-exonerated — only dealers that are
-/// genuinely unreachable at probe time (crashed/partitioned mid-phase) get demerited.
+/// collecting commitments or Phase 2 shares. Carries the dealers this node never heard from so
+/// a downstream worker can attempt `node_offline` reports for them. The co-signer reachability
+/// probe gates acceptance, so a merely-slow (reachable) dealer is auto-exonerated — only dealers
+/// that are genuinely unreachable at probe time (crashed/partitioned mid-phase) get demerited.
 #[derive(Clone, Debug)]
 pub struct AbandonedPssSession {
     pub session_id: u128,
@@ -206,11 +206,12 @@ pub(crate) struct CommitRevealState {
     pub own_hash_broadcast_complete: bool,
 }
 
-/// Refresh/reshare only: the signed commitment this node received from each dealer,
-/// kept so that on an equivocation-consistent failure (phase4 aggregate/staged-pk
-/// mismatch) it can be revealed to peers who compare it against their own to name
-/// the equivocating dealer, and to build a threshold-signed on-chain equivocation
-/// report (see `evidence::queue_or_relay_equivocation`).
+/// Dealer messages this node has accepted.
+///
+/// Signed commitments are kept so that on an equivocation-consistent failure
+/// (phase4 aggregate/staged-pk mismatch) they can be revealed to peers who compare
+/// them against their own to name the equivocating dealer, and to build a
+/// threshold-signed on-chain equivocation report (see `evidence::queue_or_relay_equivocation`).
 ///
 /// Refresh/reshare reuse a deterministic session_id across retries; false attribution
 /// from a replayed prior-attempt commitment is avoided via `session_nonce`, a fresh
@@ -218,6 +219,7 @@ pub(crate) struct CommitRevealState {
 #[derive(Default)]
 pub(crate) struct CommitmentAuditState {
     pub received_commitments: HashMap<u32, SignedDkgCommitment>,
+    pub received_shares: HashSet<u32>,
 }
 
 pub(crate) struct ReshareSessionState<ShareValue: Zeroize> {
@@ -468,16 +470,16 @@ impl<D: Dkg> DkgSessionState<D> {
         }
     }
 
-    /// Peer IDs of the dealers this node never received a commitment from — the crash signal
+    /// Peer IDs of the dealers this node never heard from in the stalled phase — the crash signal
     /// for a stalled refresh/reshare session (see [`AbandonedPssSession`]). A dealer that dies
-    /// after `SessionInit` never broadcasts its commitment, so it is absent from
-    /// `received_commitments`. Returns empty for `Fresh` (fresh DKG has no finalized ring to
-    /// anchor an offline report against).
+    /// after `SessionInit` never broadcasts its commitment; a dealer that dies after committing
+    /// never sends this node its Phase 2 share. Returns empty for `Fresh` (fresh DKG has no
+    /// finalized ring to anchor an offline report against).
     ///
     /// Refresh: every current-committee member is a dealer. Reshare: the participating
     /// old-committee members are the dealers. Over-attribution is harmless — the downstream
     /// `node_offline` report is gated by the co-signer reachability probe.
-    pub(crate) fn missing_dealer_peer_ids(&self) -> Vec<String> {
+    pub(crate) fn missing_dealer_peer_ids(&self, stalled_phase: DkgPhase) -> Vec<String> {
         let dealer_node_ids: Vec<u32> = match &self.kind {
             SessionKind::Fresh => return Vec::new(),
             SessionKind::Refresh { .. } => (1..=self.routing.peer_node_keys.len() as u32).collect(),
@@ -487,15 +489,24 @@ impl<D: Dkg> DkgSessionState<D> {
             },
         };
 
+        if stalled_phase == DkgPhase::Phase2Shares
+            && matches!(self.kind, SessionKind::Reshare { .. })
+            && self.node.role() == DkgRole::Dealer
+        {
+            return Vec::new();
+        }
+
         let own_node_id = self.node.node_id();
         dealer_node_ids
             .into_iter()
             .filter(|node_id| *node_id != own_node_id)
-            .filter(|node_id| {
-                !self
+            .filter(|node_id| match stalled_phase {
+                DkgPhase::Phase1Commitments => !self
                     .commitment_audit
                     .received_commitments
-                    .contains_key(node_id)
+                    .contains_key(node_id),
+                DkgPhase::Phase2Shares => !self.commitment_audit.received_shares.contains(node_id),
+                _ => false,
             })
             .filter_map(|node_id| self.routing.node_id_to_peer_id.get(&node_id).cloned())
             .collect()
@@ -779,15 +790,15 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     );
                     to_remove_ids.push(*session_id);
 
-                    // A refresh/reshare that stalled while collecting commitments means one or
-                    // more dealers went silent. Publish the dealers we never heard from so the
-                    // stall-report worker can attempt `node_offline` reports (the co-signer
-                    // reachability probe filters to dealers that are actually unreachable).
+                    // A refresh/reshare that stalled while collecting commitments or shares
+                    // means one or more dealers went silent. Publish the dealers we never heard
+                    // from so the stall-report worker can attempt `node_offline` reports (the
+                    // co-signer reachability probe filters to dealers that are actually unreachable).
                     if matches!(
                         state.phase,
                         DkgPhase::Phase1Commitments | DkgPhase::Phase2Shares
                     ) {
-                        let missing_peer_ids = state.missing_dealer_peer_ids();
+                        let missing_peer_ids = state.missing_dealer_peer_ids(state.phase);
                         if !missing_peer_ids.is_empty() {
                             let _ = stall_report_tx.send(AbandonedPssSession {
                                 session_id: *session_id,
@@ -1392,9 +1403,20 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             .await;
     }
 
+    #[cfg(test)]
     pub async fn increment_shares(&self, session_id: &u128) {
         self.with_state_mut(session_id, |s| s.shares_received += 1)
             .await;
+    }
+
+    /// Record a successfully verified Phase 2 share from `dealer_id`.
+    pub async fn record_received_share(&self, session_id: &u128, dealer_id: u32) {
+        self.with_state_mut(session_id, |state| {
+            if state.commitment_audit.received_shares.insert(dealer_id) {
+                state.shares_received += 1;
+            }
+        })
+        .await;
     }
 
     /// Get the cached outbound stream to a peer for this session, if one exists.
@@ -1986,7 +2008,9 @@ mod tests {
         mgr.store_received_commitment(&80, 2, signed_commitment(2, vec![1, 2, 3], [0u8; 16]))
             .await;
         let missing = mgr
-            .with_state(&80, |s| s.missing_dealer_peer_ids())
+            .with_state(&80, |s| {
+                s.missing_dealer_peer_ids(DkgPhase::Phase1Commitments)
+            })
             .await
             .unwrap();
         assert_eq!(missing, vec!["peer3".to_string()]);
@@ -1995,10 +2019,61 @@ mod tests {
         mgr.store_received_commitment(&80, 3, signed_commitment(3, vec![4, 5, 6], [0u8; 16]))
             .await;
         let missing = mgr
-            .with_state(&80, |s| s.missing_dealer_peer_ids())
+            .with_state(&80, |s| {
+                s.missing_dealer_peer_ids(DkgPhase::Phase1Commitments)
+            })
             .await
             .unwrap();
         assert!(missing.is_empty(), "no dealer is silent once all commit");
+    }
+
+    #[tokio::test]
+    async fn missing_dealer_peer_ids_reports_silent_phase2_share_dealers() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        // Own node_id = 1 in a 3-member refresh committee.
+        mgr.create_session(82, make_node(1), 3, |_| {}).await;
+        mgr.set_session_kind(
+            &82,
+            SessionKind::Refresh {
+                ring_pk_hex: "rk".to_string(),
+            },
+        )
+        .await;
+        mgr.set_peer_node_keys(&82, vec!["k1".into(), "k2".into(), "k3".into()])
+            .await;
+        mgr.set_node_peer_mappings(
+            &82,
+            HashMap::from([
+                (1, "peer1".to_string()),
+                (2, "peer2".to_string()),
+                (3, "peer3".to_string()),
+            ]),
+        )
+        .await;
+
+        // Both dealers committed, so a commitment stall would not accuse either peer.
+        mgr.store_received_commitment(&82, 2, signed_commitment(2, vec![1, 2, 3], [0u8; 16]))
+            .await;
+        mgr.store_received_commitment(&82, 3, signed_commitment(3, vec![4, 5, 6], [0u8; 16]))
+            .await;
+        let missing_commitments = mgr
+            .with_state(&82, |s| {
+                s.missing_dealer_peer_ids(DkgPhase::Phase1Commitments)
+            })
+            .await
+            .unwrap();
+        assert!(
+            missing_commitments.is_empty(),
+            "commitment tracking should not accuse a dealer that committed"
+        );
+
+        // Node 2's share was accepted; node 3 committed but never sent its Phase 2 share.
+        mgr.record_received_share(&82, 2).await;
+        let missing_shares = mgr
+            .with_state(&82, |s| s.missing_dealer_peer_ids(DkgPhase::Phase2Shares))
+            .await
+            .unwrap();
+        assert_eq!(missing_shares, vec!["peer3".to_string()]);
     }
 
     #[tokio::test]
@@ -2020,7 +2095,9 @@ mod tests {
         .await;
 
         let missing = mgr
-            .with_state(&81, |s| s.missing_dealer_peer_ids())
+            .with_state(&81, |s| {
+                s.missing_dealer_peer_ids(DkgPhase::Phase1Commitments)
+            })
             .await
             .unwrap();
         assert!(

@@ -494,11 +494,12 @@ impl PssStallReporterHandle {
 }
 
 /// Drain [`AbandonedPssSession`] events (published by the session-expiration sweep when a
-/// refresh/reshare stalls while collecting commitments) and attempt a `node_offline` report for
-/// each dealer this node never heard from. Acceptance is gated by the co-signer reachability
-/// probe (`require_peer_offline`), so a merely-slow or reachable-but-withholding dealer is
-/// auto-exonerated — only a dealer that is genuinely unreachable at probe time (crashed or
-/// partitioned mid-phase) is demerited. This makes the necessarily-broad "silent dealer" set safe.
+/// refresh/reshare stalls while collecting commitments or Phase 2 shares) and attempt a
+/// `node_offline` report for each dealer this node never heard from. Acceptance is gated by the
+/// co-signer reachability probe (`require_peer_offline`), so a merely-slow or
+/// reachable-but-withholding dealer is auto-exonerated — only a dealer that is genuinely
+/// unreachable at probe time (crashed or partitioned mid-phase) is demerited. This makes the
+/// necessarily-broad "silent dealer" set safe.
 pub(crate) fn spawn_pss_stall_reporter<D>(
     app_state: Arc<AppState<D>>,
     mut rx: mpsc::UnboundedReceiver<AbandonedPssSession>,
