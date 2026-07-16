@@ -23,6 +23,13 @@ pub const MAX_TOKEN_LIFETIME_SECS: u64 = 24 * 60 * 60;
 /// windows after token expiry.
 pub const JWT_CLOCK_SKEW_LEEWAY_SECS: u64 = 5 * 60;
 
+/// Maximum tolerated drift (seconds) when attributing a relayer for forwarding an ACP-failing
+/// Sign/PRE request (`unauthorized_request` report). The acceptor requires the relayer's
+/// `signed_at` to be within this of `now` (the relay must be fresh so its signed `checked_at_height`
+/// anchor is recent), and the report validation requires the relayer's `signed_at` to be within this
+/// of the caller's JWT `iat` (the relayer must have forwarded promptly after the caller signed).
+pub const RELAY_CHECK_MAX_DRIFT_SECS: u64 = 30;
+
 /// Maximum allowed byte length for a bearer token string.
 ///
 /// Large request payloads are bound via digest claims rather than embedded in full,

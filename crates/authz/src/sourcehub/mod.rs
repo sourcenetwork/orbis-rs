@@ -80,6 +80,15 @@ pub struct SourceHubAuth {
 #[async_trait]
 impl Authz for SourceHubAuth {
     async fn check(&self, permission: Vec<u8>, subject: &str) -> Result<bool> {
+        self.check_at_height(permission, subject, None).await
+    }
+
+    async fn check_at_height(
+        &self,
+        permission: Vec<u8>,
+        subject: &str,
+        height: Option<u64>,
+    ) -> Result<bool> {
         // Decode the access check request from bytes
         let request = AccessCheckRequest::from_bytes(&permission)?;
 
@@ -120,7 +129,7 @@ impl Authz for SourceHubAuth {
 
         let is_authorized = self
             .chain_client
-            .acp_verify_access(&request.policy_id, &access_request)
+            .acp_verify_access(&request.policy_id, &access_request, height)
             .await
             .map_err(|e| AuthZError::ChainError(e.to_string()))?;
 

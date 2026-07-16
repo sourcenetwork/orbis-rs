@@ -8,6 +8,15 @@ impl Authz for DummyAuthZ {
     async fn check(&self, _permission: Vec<u8>, _subject: &str) -> Result<bool> {
         Ok(true)
     }
+
+    async fn check_at_height(
+        &self,
+        _permission: Vec<u8>,
+        _subject: &str,
+        _height: Option<u64>,
+    ) -> Result<bool> {
+        Ok(true)
+    }
 }
 
 impl DummyAuthZ {

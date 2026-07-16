@@ -360,6 +360,9 @@ pub trait Bulletin {
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost>;
     /// Submit a threshold-signed MPC fault report to the chain.
     async fn submit_report(&self, submission: BulletinReportSubmission) -> Result<()>;
+    /// Latest chain block height. Used to anchor an `unauthorized_request` report's ACP re-check to
+    /// (approximately) the relay height.
+    async fn latest_block_height(&self) -> Result<u64>;
     /// Chain ID used when building chain-bound signing statements.
     fn chain_id(&self) -> String;
     /// Serialize the canonical sign bytes for a ring reshare finalization sign doc.

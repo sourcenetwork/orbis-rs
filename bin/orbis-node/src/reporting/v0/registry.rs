@@ -1,4 +1,5 @@
 use crate::app_state::PeerConnectionPool;
+use crate::constants::RELAY_CHECK_MAX_DRIFT_SECS;
 use crate::dkg::v0::helpers::deserialize_wire_commitment;
 use crate::dkg::v0::messages::SignedDkgCommitment;
 use crate::helpers::identity::{determine_session_node_id, extract_node_part};
@@ -9,20 +10,26 @@ use crate::reporting::v0::error::{ReportingError, Result};
 use crate::reporting::v0::health::require_peer_offline;
 use crate::reporting::v0::observation::{
     InvalidCryptoResponseObservation, OfflineObservation, ReportObservation,
+    UnauthorizedRequestObservation,
 };
 use crate::reporting::v0::state::InFlightReportKey;
 use crate::reporting::v0::types::{
     ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgShareStatement,
-    InvalidCryptoResponse, NodeOffline, PreReencryptResponseStatement, ReportEnvelope,
-    SignResponseStatement, CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN,
-    INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN,
-    REPORT_DOMAIN, REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN,
+    InvalidCryptoResponse, NodeOffline, PreReencryptResponseStatement, RelayRequestStatement,
+    ReportEnvelope, SignResponseStatement, UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS,
+    DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
+    NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN, REPORT_DOMAIN,
+    REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::SigningOptions;
 use crate::sign::v0::helpers::deserialize_commitments;
 use async_trait::async_trait;
-use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, NodeInfo, RingPayload};
+use authz::r#trait::Authz;
+use authz::sourcehub::{AccessCheckRequest, ValidWindow};
+use bulletin::r#trait::{
+    Bulletin, BulletinKind, DocumentPayload, KeyDerivation, NodeInfo, RingPayload,
+};
 use common::blockchain::verify_node_message;
 use crypto::r#trait::{
     CryptoDeserialize, Dkg, PolynomialCommitment as PolynomialCommitmentTrait, PubShare,
@@ -50,6 +57,8 @@ pub struct ReportValidationContext {
     pub network: Arc<dyn Network>,
     pub peer_connection_pool: Arc<PeerConnectionPool>,
     pub bulletin: Arc<dyn Bulletin + Send + Sync>,
+    /// Used by the `unauthorized_request` refutation to re-run the ACP check at the anchored height.
+    pub authz: Arc<dyn Authz + Send + Sync>,
     pub local_storage: LocalStorageImpl,
     pub routes: &'static network::ProtocolRoutes,
     pub now: u64,
@@ -95,6 +104,7 @@ impl ReportRegistry {
         };
         registry.register(Arc::new(NodeOfflineHandler));
         registry.register(Arc::new(InvalidCryptoResponseHandler));
+        registry.register(Arc::new(UnauthorizedRequestHandler));
         registry
     }
 
@@ -844,6 +854,341 @@ impl InvalidCryptoResponseHandler {
         excluded_node_keys.insert(envelope.accused_node_key.clone());
         SigningOptions { excluded_node_keys }
     }
+}
+
+struct UnauthorizedRequestHandler;
+
+#[async_trait]
+impl ReportHandler for UnauthorizedRequestHandler {
+    fn report_type(&self) -> &'static str {
+        UNAUTHORIZED_REQUEST_REPORT_TYPE
+    }
+
+    fn in_flight_key(&self, observation: &ReportObservation) -> Result<InFlightReportKey> {
+        let observation = Self::observation(observation)?;
+        Ok(InFlightReportKey {
+            report_type: self.report_type(),
+            ring_id: observation.ring_id.clone(),
+            subject_key: format!(
+                "{}:{}",
+                observation.accused_node_key, observation.payload.statement.request_id
+            ),
+        })
+    }
+
+    async fn prepare(
+        &self,
+        observation: ReportObservation,
+        context: &ReportPreparationContext,
+    ) -> Result<PreparedReport> {
+        let ReportObservation::UnauthorizedRequest(observation) = observation else {
+            return Err(ReportingError::InvalidReport(
+                "unauthorized_request handler received the wrong observation type".to_string(),
+            ));
+        };
+
+        // The relayer is always a current-committee member, so the current committee signs.
+        let (ring, ring_config) =
+            build_signing_ring_config(&observation.ring_id, CommitteeScope::Current, context)
+                .await?;
+
+        let envelope = self.build_envelope(
+            &observation,
+            &ring,
+            &context.reporter_node_key,
+            context.bulletin.chain_id(),
+        );
+
+        Ok(PreparedReport {
+            signing_options: self.signing_options(&envelope),
+            envelope,
+            ring_config,
+        })
+    }
+
+    async fn validate(
+        &self,
+        envelope: &ReportEnvelope,
+        context: &ReportValidationContext,
+    ) -> Result<()> {
+        let payload = UnauthorizedRequestPayload::from_canonical_bytes(&envelope.payload)?;
+        let statement = &payload.statement;
+
+        validate_relay_request_statement_shape(envelope, context, statement)?;
+
+        let ring_post = context
+            .bulletin
+            .read(envelope.ring_id.clone(), BulletinKind::Ring)
+            .await
+            .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
+        let ring = RingPayload::try_from(ring_post)
+            .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+
+        let effective_version =
+            validate_report_route_version_at_observed_at(envelope, &ring, context.routes.version)?;
+        if statement.protocol_version != effective_version {
+            return Err(ReportingError::Unauthorized(format!(
+                "relay request protocol version {} does not match effective ring version {}",
+                statement.protocol_version, effective_version
+            )));
+        }
+
+        let signing_committee = validate_ring_and_membership_for_scopes(
+            envelope,
+            &ring,
+            statement.accused_committee_scope,
+            statement.signing_committee_scope,
+            "unauthorized-request",
+        )?;
+        validate_node_routes(envelope, context, &ring).await?;
+        validate_local_signer(
+            envelope,
+            context,
+            &signing_committee,
+            "unauthorized-request",
+        )?;
+
+        let accused_committee = committee_for_scope(&ring, statement.accused_committee_scope)?;
+        let expected_from_node_id = determine_session_node_id(
+            &envelope.accused_node_key,
+            &accused_committee.peer_node_keys,
+        )
+        .ok_or_else(|| {
+            ReportingError::Unauthorized(
+                "relayer is not in the accused committee node-id map".to_string(),
+            )
+        })?;
+        if statement.from_node_id != expected_from_node_id {
+            return Err(ReportingError::Unauthorized(format!(
+                "relay request from_node_id {} does not match relayer node_id {}",
+                statement.from_node_id, expected_from_node_id
+            )));
+        }
+
+        // The relayer must actually have signed the request it forwarded.
+        verify_node_message(
+            &envelope.accused_node_key,
+            &statement.canonical_bytes(),
+            &payload.relay_signature,
+        )
+        .map_err(|error| {
+            ReportingError::Unauthorized(format!("invalid relay request signature: {}", error))
+        })?;
+
+        require_relayed_request_unauthorized(context, statement).await
+    }
+}
+
+impl UnauthorizedRequestHandler {
+    fn observation(observation: &ReportObservation) -> Result<&UnauthorizedRequestObservation> {
+        match observation {
+            ReportObservation::UnauthorizedRequest(observation) => Ok(observation),
+            _ => Err(ReportingError::InvalidReport(
+                "unauthorized_request handler received the wrong observation type".to_string(),
+            )),
+        }
+    }
+
+    fn build_envelope(
+        &self,
+        observation: &UnauthorizedRequestObservation,
+        ring: &RingPayload,
+        reporter_node_key: &str,
+        chain_id: String,
+    ) -> ReportEnvelope {
+        ReportEnvelope {
+            domain: REPORT_DOMAIN.to_string(),
+            report_type: self.report_type().to_string(),
+            chain_id,
+            ring_id: observation.ring_id.clone(),
+            ring_pk: ring.ring_pk.clone(),
+            ring_state_sha256: ring_state_sha256(ring),
+            reporter_node_key: reporter_node_key.to_string(),
+            accused_node_key: observation.accused_node_key.clone(),
+            accused_peer_id: observation.accused_peer_id.clone(),
+            observed_at: observation.observed_at,
+            expires_at: observation.observed_at.saturating_add(REPORT_TTL_SECS),
+            payload: observation.payload.canonical_bytes(),
+            session_id: observation.payload.statement.request_id.clone(),
+        }
+    }
+
+    fn signing_options(&self, envelope: &ReportEnvelope) -> SigningOptions {
+        let mut excluded_node_keys = HashSet::new();
+        excluded_node_keys.insert(envelope.accused_node_key.clone());
+        SigningOptions { excluded_node_keys }
+    }
+}
+
+fn validate_relay_request_statement_shape(
+    envelope: &ReportEnvelope,
+    context: &ReportValidationContext,
+    statement: &RelayRequestStatement,
+) -> Result<()> {
+    validate_invalid_crypto_statement_prologue(
+        envelope,
+        context,
+        InvalidCryptoStatementPrologue {
+            label: "relay request".to_string(),
+            domain: statement.domain.clone(),
+            expected_domain: RELAY_REQUEST_DOMAIN.to_string(),
+            chain_id: statement.chain_id.clone(),
+            ring_id: statement.ring_id.clone(),
+            ring_pk: statement.ring_pk.clone(),
+            ring_state_sha256: statement.ring_state_sha256.clone(),
+            request_id: statement.request_id.clone(),
+            signed_at: statement.signed_at,
+            responder_node_key: statement.relayer_node_key.clone(),
+            check_anchor: true,
+        },
+    )?;
+    if statement.origin_protocol != "pre" && statement.origin_protocol != "sign" {
+        return Err(ReportingError::InvalidReport(format!(
+            "unsupported relay request origin protocol {}",
+            statement.origin_protocol
+        )));
+    }
+    if statement.accused_committee_scope != CommitteeScope::Current
+        || statement.signing_committee_scope != CommitteeScope::Current
+    {
+        return Err(ReportingError::Unauthorized(
+            "relay request reports must use current accused and signing scopes".to_string(),
+        ));
+    }
+    if statement.from_node_id == 0 {
+        return Err(ReportingError::InvalidReport(
+            "relay request from_node_id must be non-zero".to_string(),
+        ));
+    }
+    if statement.actor_id.trim().is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "relay request actor_id cannot be empty".to_string(),
+        ));
+    }
+    if statement.object_id.trim().is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "relay request object_id cannot be empty".to_string(),
+        ));
+    }
+    if statement.valid_window_start.is_some() != statement.valid_window_end.is_some() {
+        return Err(ReportingError::InvalidReport(
+            "relay request valid_window bounds must both be present or both absent".to_string(),
+        ));
+    }
+    // The relayer must have forwarded promptly after the caller signed. Both values are signed, so
+    // this drift check is reproducible by every co-signer regardless of report propagation delay.
+    if statement.signed_at.abs_diff(statement.user_signed_at) > RELAY_CHECK_MAX_DRIFT_SECS {
+        return Err(ReportingError::InvalidReport(format!(
+            "relay request signed_at {} drifts from caller signed_at {} by more than {}s",
+            statement.signed_at, statement.user_signed_at, RELAY_CHECK_MAX_DRIFT_SECS
+        )));
+    }
+    Ok(())
+}
+
+/// The refutation for an `unauthorized_request` report: re-run the ACP check for the relayed
+/// request at `statement.checked_at_height` — the height the relayer signed it observed when it
+/// checked. If the actor **is** authorized at that height the relayer forwarded a legitimate
+/// request → reject the report; only an unauthorized verdict confirms it. Judging by the relayer's
+/// own check height protects an honest relayer from a revocation that lands right after it forwards.
+///
+/// `checked_at_height` is bounded to recent here (`≤ current height`); the precise
+/// `block_time(checked_at_height) ≈ signed_at` binding is enforced chain-side (sourcehub owns
+/// historical block times).
+async fn require_relayed_request_unauthorized(
+    context: &ReportValidationContext,
+    statement: &RelayRequestStatement,
+) -> Result<()> {
+    let current_height = context
+        .bulletin
+        .latest_block_height()
+        .await
+        .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
+    if statement.checked_at_height > current_height {
+        return Err(ReportingError::InvalidReport(format!(
+            "relay request checked_at_height {} is ahead of current height {}",
+            statement.checked_at_height, current_height
+        )));
+    }
+
+    let valid_window = match (statement.valid_window_start, statement.valid_window_end) {
+        (Some(start), Some(end)) => Some(ValidWindow { start, end }),
+        (None, None) => None,
+        _ => {
+            return Err(ReportingError::InvalidReport(
+                "relay request valid_window bounds must both be present or both absent".to_string(),
+            ))
+        }
+    };
+
+    let access_request = match statement.origin_protocol.as_str() {
+        "pre" => {
+            let document_post = context
+                .bulletin
+                .read(statement.object_id.clone(), BulletinKind::Document)
+                .await
+                .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
+            let document = DocumentPayload::try_from(document_post)
+                .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+            AccessCheckRequest::new(
+                document.policy_id,
+                document.resource,
+                statement.object_id.clone(),
+                document.permission,
+                document.tier,
+                document.timestamp,
+                valid_window,
+            )
+        }
+        "sign" => {
+            let derivation_post = context
+                .bulletin
+                .read(statement.object_id.clone(), BulletinKind::KeyDerivation)
+                .await
+                .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
+            let derivation: KeyDerivation = serde_json::from_slice(&derivation_post.payload)
+                .map_err(|error| {
+                    ReportingError::InvalidReport(format!(
+                        "failed to parse key derivation: {}",
+                        error
+                    ))
+                })?;
+            AccessCheckRequest::new(
+                derivation.policy_id,
+                derivation.resource,
+                statement.object_id.clone(),
+                derivation.permission,
+                None,
+                statement.timestamp,
+                valid_window,
+            )
+        }
+        other => {
+            return Err(ReportingError::InvalidReport(format!(
+                "unsupported relay request origin protocol {}",
+                other
+            )))
+        }
+    };
+
+    let request_bytes = access_request
+        .to_bytes()
+        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+    let authorized = context
+        .authz
+        .check_at_height(
+            request_bytes,
+            &statement.actor_id,
+            Some(statement.checked_at_height),
+        )
+        .await
+        .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
+    if authorized {
+        return Err(ReportingError::Unauthorized(
+            "relayed request was authorized at the relayer's checked_at_height".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 async fn build_signing_ring_config(
@@ -2076,6 +2421,7 @@ mod tests {
                 network: app_state.network.clone(),
                 peer_connection_pool: app_state.peer_connection_pool.clone(),
                 bulletin: app_state.bulletin.clone(),
+                authz: app_state.authz.clone(),
                 local_storage: app_state.local_storage.clone(),
                 routes: &network::V0,
                 now: envelope.observed_at,
@@ -2160,6 +2506,7 @@ mod tests {
             network: app_state.network.clone(),
             peer_connection_pool: app_state.peer_connection_pool.clone(),
             bulletin: app_state.bulletin.clone(),
+            authz: app_state.authz.clone(),
             local_storage: app_state.local_storage.clone(),
             routes: &network::V0,
             now: envelope.observed_at,
@@ -2263,6 +2610,7 @@ mod tests {
             network: app_state.network.clone(),
             peer_connection_pool: app_state.peer_connection_pool.clone(),
             bulletin: app_state.bulletin.clone(),
+            authz: app_state.authz.clone(),
             local_storage: app_state.local_storage.clone(),
             routes: &network::V0,
             now: envelope.observed_at,

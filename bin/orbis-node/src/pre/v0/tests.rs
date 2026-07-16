@@ -1503,6 +1503,14 @@ async fn test_check_policy_access_enforces_authz_denial() {
         async fn check(&self, _: Vec<u8>, _: &str) -> authz::error::Result<bool> {
             Ok(false)
         }
+        async fn check_at_height(
+            &self,
+            _: Vec<u8>,
+            _: &str,
+            _: Option<u64>,
+        ) -> authz::error::Result<bool> {
+            Ok(false)
+        }
     }
 
     let document_payload = DocumentPayload {

@@ -104,6 +104,10 @@ impl Bulletin for DummyBulletin {
         Ok(())
     }
 
+    async fn latest_block_height(&self) -> Result<u64> {
+        Ok(1)
+    }
+
     fn chain_id(&self) -> String {
         "sourcehub-localnet".to_string()
     }

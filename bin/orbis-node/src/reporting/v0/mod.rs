@@ -68,6 +68,63 @@ where
     Ok(outcome)
 }
 
+/// Build and queue an `unauthorized_request` report attributing the node that relayed a Sign/PRE
+/// request whose ACP re-check failed on this node. `statement` + `relay_signature` are the relayer's
+/// signed record of the request; `anchor_block_height` is the height the ACP refutation is anchored
+/// to (the reporter's current chain height ≈ the relay height).
+pub async fn queue_unauthorized_request_report<D, S>(
+    app_state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    statement: crate::reporting::v0::types::RelayRequestStatement,
+    relay_signature: Vec<u8>,
+) -> Result<()>
+where
+    D: Dkg<ShareValue = ScalarField, PublicKey = GroupAffine> + Clone + Send + Sync + 'static,
+    S: ThresholdSigner<
+            ShareValue = ScalarField,
+            PublicKey = GroupAffine,
+            DistKeyShare = DistKeyShare<ScalarField>,
+            PubPoly = D::PubPoly,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
+        > + Send
+        + Sync
+        + 'static,
+{
+    use crate::reporting::v0::observation::UnauthorizedRequestObservation;
+    use crate::reporting::v0::types::{UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS};
+    use bulletin::r#trait::{BulletinKind, NodeInfo};
+
+    let accused_node_key = statement.relayer_node_key.clone();
+    let node_info_post = app_state
+        .bulletin
+        .read(accused_node_key.clone(), BulletinKind::NodeInfo)
+        .await
+        .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
+    let node_info = NodeInfo::try_from(node_info_post)
+        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+
+    let observed_at = statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS);
+    let ring_id = statement.ring_id.clone();
+    let observation = UnauthorizedRequestObservation {
+        ring_id,
+        accused_node_key,
+        accused_peer_id: node_info.peer_id,
+        observed_at,
+        payload: UnauthorizedRequestPayload {
+            statement,
+            relay_signature,
+        },
+    };
+    queue_report::<D, S>(
+        app_state,
+        routes,
+        ReportObservation::UnauthorizedRequest(Box::new(observation)),
+    )
+    .await?;
+    Ok(())
+}
+
 /// Drain remaining JoinSet tasks in the background so peer errors that arrive
 /// after the collection loop broke early (threshold met) still reach `queue_report`.
 /// Call this instead of `drop(set)` after a JoinSet threshold-collection loop.
@@ -161,6 +218,7 @@ where
                 network: Arc::clone(&app_state.network),
                 peer_connection_pool: Arc::clone(&app_state.peer_connection_pool),
                 bulletin: Arc::clone(&app_state.bulletin),
+                authz: Arc::clone(&app_state.authz),
                 local_storage: app_state.local_storage.clone(),
                 routes,
                 now,
@@ -247,6 +305,7 @@ where
                 network: Arc::clone(&app_state.network),
                 peer_connection_pool: Arc::clone(&app_state.peer_connection_pool),
                 bulletin: Arc::clone(&app_state.bulletin),
+                authz: Arc::clone(&app_state.authz),
                 local_storage: app_state.local_storage.clone(),
                 routes,
                 now,

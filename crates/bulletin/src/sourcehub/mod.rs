@@ -205,6 +205,13 @@ impl Bulletin for SourceHubBulletin {
         }
     }
 
+    async fn latest_block_height(&self) -> Result<u64> {
+        self.chain_client
+            .get_latest_height()
+            .await
+            .map_err(|e| BulletinError::ChainError(e.to_string()))
+    }
+
     fn chain_id(&self) -> String {
         self.chain_client.config().chain_id.clone()
     }

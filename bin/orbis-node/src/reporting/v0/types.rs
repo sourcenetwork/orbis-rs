@@ -7,10 +7,12 @@ use sha2::{Digest, Sha256};
 pub const REPORT_DOMAIN: &str = "orbis-mpc-fault-report";
 pub const NODE_OFFLINE_REPORT_TYPE: &str = "node_offline";
 pub const INVALID_CRYPTO_RESPONSE_REPORT_TYPE: &str = "invalid_crypto_response";
+pub const UNAUTHORIZED_REQUEST_REPORT_TYPE: &str = "unauthorized_request";
 pub const PRE_REENCRYPT_RESPONSE_DOMAIN: &str = "orbis-pre-reencrypt-response-v1";
 pub const SIGN_RESPONSE_DOMAIN: &str = "orbis-sign-response-v1";
 pub const DKG_COMMITMENT_DOMAIN: &str = "orbis-dkg-commitment-v1";
 pub const DKG_SHARE_DOMAIN: &str = "orbis-dkg-share-v1";
+pub const RELAY_REQUEST_DOMAIN: &str = "orbis-relay-request-v1";
 pub const REPORT_TTL_SECS: u64 = 120;
 /// Reporters backdate `observed_at` by this so the `observed_at <= block_time`
 /// check passes gas simulation against ~5s blocks. invalid_crypto_response
@@ -273,6 +275,153 @@ impl SignResponseStatement {
             metadata,
             sig_share,
             crypto_backend,
+        })
+    }
+}
+
+/// A relaying node's signed record of a Sign/PRE request it forwarded to a peer. If the peer's
+/// ACP re-check fails, this statement is the on-chain-verifiable evidence attributing the relayer.
+/// The document-derived ACP inputs (policy_id, resource, permission, tier) are NOT carried — they
+/// are re-fetched from the bulletin during the refutation — so the statement stays lean and the
+/// re-check reproducible. `valid_window_*` and `timestamp` are the relayer's own ACP-check inputs
+/// (both window bounds present-or-both-absent), used verbatim so the refutation is deterministic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayRequestStatement {
+    pub domain: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub protocol_version: u64,
+    pub request_id: String,
+    /// Unix seconds at which the relayer produced and signed this statement (its ACP-check time).
+    pub signed_at: u64,
+    /// Block height the relayer observed when it ran its ACP check. The refutation re-runs ACP at
+    /// this height so the relayer is judged by the policy state at the moment it forwarded — and,
+    /// being signed here, it can't be moved by a malicious reporter.
+    pub checked_at_height: u64,
+    /// The caller's JWT `iat`. The relayer must have forwarded promptly after the caller signed
+    /// (`|signed_at - user_signed_at| <= RELAY_CHECK_MAX_DRIFT_SECS`).
+    pub user_signed_at: u64,
+    /// The relaying node's chain key — the accused.
+    pub relayer_node_key: String,
+    /// `"pre"` or `"sign"`.
+    pub origin_protocol: String,
+    pub accused_committee_scope: CommitteeScope,
+    pub signing_committee_scope: CommitteeScope,
+    pub from_node_id: u32,
+    /// The JWT issuer whose access is being checked (the ACP subject/actor).
+    pub actor_id: String,
+    /// PRE object id, or Sign derivation id — the ACP object.
+    pub object_id: String,
+    pub valid_window_start: Option<u64>,
+    pub valid_window_end: Option<u64>,
+    pub timestamp: Option<u64>,
+}
+
+impl RelayRequestStatement {
+    /// Field order is the canonical wire contract — the chain-side (Go) decoder must read fields
+    /// in exactly this order.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_string(&mut out, &self.domain);
+        write_string(&mut out, &self.chain_id);
+        write_string(&mut out, &self.ring_id);
+        write_string(&mut out, &self.ring_pk);
+        write_string(&mut out, &self.ring_state_sha256);
+        write_u64(&mut out, self.protocol_version);
+        write_string(&mut out, &self.request_id);
+        write_u64(&mut out, self.signed_at);
+        write_u64(&mut out, self.checked_at_height);
+        write_u64(&mut out, self.user_signed_at);
+        write_string(&mut out, &self.relayer_node_key);
+        write_string(&mut out, &self.origin_protocol);
+        out.push(self.accused_committee_scope.tag());
+        out.push(self.signing_committee_scope.tag());
+        write_u32(&mut out, self.from_node_id);
+        write_string(&mut out, &self.actor_id);
+        write_string(&mut out, &self.object_id);
+        write_optional_u64(&mut out, self.valid_window_start);
+        write_optional_u64(&mut out, self.valid_window_end);
+        write_optional_u64(&mut out, self.timestamp);
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let domain = decoder.read_string("domain")?;
+        let chain_id = decoder.read_string("chain_id")?;
+        let ring_id = decoder.read_string("ring_id")?;
+        let ring_pk = decoder.read_string("ring_pk")?;
+        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
+        let protocol_version = decoder.read_u64("protocol_version")?;
+        let request_id = decoder.read_string("request_id")?;
+        let signed_at = decoder.read_u64("signed_at")?;
+        let checked_at_height = decoder.read_u64("checked_at_height")?;
+        let user_signed_at = decoder.read_u64("user_signed_at")?;
+        let relayer_node_key = decoder.read_string("relayer_node_key")?;
+        let origin_protocol = decoder.read_string("origin_protocol")?;
+        let accused_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("accused_committee_scope")?)?;
+        let signing_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("signing_committee_scope")?)?;
+        let from_node_id = decoder.read_u32("from_node_id")?;
+        let actor_id = decoder.read_string("actor_id")?;
+        let object_id = decoder.read_string("object_id")?;
+        let valid_window_start = decoder.read_optional_u64("valid_window_start")?;
+        let valid_window_end = decoder.read_optional_u64("valid_window_end")?;
+        let timestamp = decoder.read_optional_u64("timestamp")?;
+        decoder.finish()?;
+        Ok(Self {
+            domain,
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            protocol_version,
+            request_id,
+            signed_at,
+            checked_at_height,
+            user_signed_at,
+            relayer_node_key,
+            origin_protocol,
+            accused_committee_scope,
+            signing_committee_scope,
+            from_node_id,
+            actor_id,
+            object_id,
+            valid_window_start,
+            valid_window_end,
+            timestamp,
+        })
+    }
+}
+
+/// The full `unauthorized_request` report payload: the relayer's signed statement and its signature
+/// over `statement.canonical_bytes()`. The ACP re-check anchor lives inside the signed statement
+/// (`checked_at_height`) so it cannot be moved by a malicious reporter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnauthorizedRequestPayload {
+    pub statement: RelayRequestStatement,
+    pub relay_signature: Vec<u8>,
+}
+
+impl UnauthorizedRequestPayload {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_bytes(&mut out, &self.statement.canonical_bytes());
+        write_bytes(&mut out, &self.relay_signature);
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let statement_bytes = decoder.read_bytes("statement")?;
+        let relay_signature = decoder.read_bytes("relay_signature")?;
+        decoder.finish()?;
+        Ok(Self {
+            statement: RelayRequestStatement::from_canonical_bytes(&statement_bytes)?,
+            relay_signature,
         })
     }
 }
@@ -941,6 +1090,16 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    fn read_optional_u64(&mut self, label: &str) -> Result<Option<u64>> {
+        match self.read_u8(&format!("{label}_present"))? {
+            0 => Ok(None),
+            1 => self.read_u64(label).map(Some),
+            value => Err(ReportingError::InvalidReport(format!(
+                "invalid optional {label} tag {value}"
+            ))),
+        }
+    }
+
     fn finish(&self) -> Result<()> {
         if self.cursor != self.bytes.len() {
             return Err(ReportingError::InvalidReport(
@@ -978,6 +1137,61 @@ mod tests {
             .canonical_bytes(),
             session_id: "pre-request-1".to_string(),
         }
+    }
+
+    fn relay_request_statement() -> RelayRequestStatement {
+        RelayRequestStatement {
+            domain: RELAY_REQUEST_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 0,
+            request_id: "sign-request-1".to_string(),
+            signed_at: 1_700_000_000,
+            checked_at_height: 42_000,
+            user_signed_at: 1_699_999_995,
+            relayer_node_key: "relayer".to_string(),
+            origin_protocol: "sign".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id: 2,
+            actor_id: "did:key:z6Mkactor".to_string(),
+            object_id: "derivation-1".to_string(),
+            valid_window_start: Some(1_699_999_000),
+            valid_window_end: Some(1_700_001_000),
+            timestamp: Some(1_700_000_000),
+        }
+    }
+
+    #[test]
+    fn relay_request_statement_round_trips() {
+        let statement = relay_request_statement();
+        assert_eq!(
+            RelayRequestStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
+            statement
+        );
+    }
+
+    #[test]
+    fn unauthorized_request_payload_round_trips() {
+        let payload = UnauthorizedRequestPayload {
+            statement: relay_request_statement(),
+            relay_signature: vec![7; 64],
+        };
+        assert_eq!(
+            UnauthorizedRequestPayload::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
+            payload
+        );
+        // A statement with no window/timestamp (unbounded auth) also round-trips.
+        let mut unbounded = payload.clone();
+        unbounded.statement.valid_window_start = None;
+        unbounded.statement.valid_window_end = None;
+        unbounded.statement.timestamp = None;
+        assert_eq!(
+            UnauthorizedRequestPayload::from_canonical_bytes(&unbounded.canonical_bytes()).unwrap(),
+            unbounded
+        );
     }
 
     #[test]

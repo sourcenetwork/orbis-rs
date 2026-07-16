@@ -1507,6 +1507,14 @@ async fn test_sign_policy_check_policy_access_enforces_authz_denial() {
         async fn check(&self, _: Vec<u8>, _: &str) -> authz::error::Result<bool> {
             Ok(false)
         }
+        async fn check_at_height(
+            &self,
+            _: Vec<u8>,
+            _: &str,
+            _: Option<u64>,
+        ) -> authz::error::Result<bool> {
+            Ok(false)
+        }
     }
 
     let key_derivation = KeyDerivation {
@@ -1553,6 +1561,14 @@ async fn test_sign_policy_check_policy_access_expired_valid_window() {
                 }
             }
             Ok(true)
+        }
+        async fn check_at_height(
+            &self,
+            permission: Vec<u8>,
+            subject: &str,
+            _: Option<u64>,
+        ) -> authz::error::Result<bool> {
+            self.check(permission, subject).await
         }
     }
 
