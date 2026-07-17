@@ -62,7 +62,11 @@ where
                 crate::metrics::REPORT_ATTEMPTS_TOTAL
                     .with_label_values(&[report_type, "failed"])
                     .inc();
-                tracing::warn!(error = %error, "Offline report attempt did not complete");
+                tracing::warn!(
+                    report_type,
+                    error = %error,
+                    "Report attempt did not complete"
+                );
             } else {
                 crate::metrics::REPORT_ATTEMPTS_TOTAL
                     .with_label_values(&[report_type, "signed"])

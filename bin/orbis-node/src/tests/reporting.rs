@@ -16,14 +16,19 @@ use crate::dkg::v0::messages::{SignedDkgCommitment, SignedDkgShare};
 use crate::helpers::test_helpers::wait_for_ring_finalized;
 use crate::reporting::v0::types::{
     ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgShareStatement,
-    DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN,
+    RelayRequestStatement, DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN, RELAY_REQUEST_DOMAIN,
+    UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
+use authn::JwtSigner;
 use bulletin::r#trait::{BulletinKind, RingPayload};
 use common::{
     blockchain::{
-        events::ReportEventSubscription, orbis::WhitelistTarget, sign_node_message_with_hex_key,
-        SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
+        acp::Object,
+        events::{ReportAcceptedEvent, ReportEventSubscription},
+        orbis::WhitelistTarget,
+        sign_node_message_with_hex_key, ChainConfig, SourceHubClient, TxSigner,
+        TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
     },
     IntegrationTestNetwork,
 };
@@ -38,14 +43,35 @@ use proto::unsafe_testing::{
     GetLocalStorageRequest, LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType,
     SetLocalStorageRequest, SubmitDkgEquivocationEvidenceRequest,
     SubmitDkgInvalidRefreshCommitmentEvidenceRequest, SubmitDkgInvalidShareEvidenceRequest,
-    SubmitPssStallOfflineReportRequest,
+    SubmitPssStallOfflineReportRequest, SubmitUnauthorizedRelayEvidenceRequest,
 };
 use tokio::time::{sleep, Duration, Instant};
 use zeroize::Zeroizing;
 
 const RING_ID: &str = "reporting-test-ring";
+const NODE1_SIGNING_KEY_HEX: &str =
+    "0000000000000000000000000000000000000000000000000000000000000001";
+const NODE2_SIGNING_KEY_HEX: &str =
+    "0000000000000000000000000000000000000000000000000000000000000002";
 const NODE3_SIGNING_KEY_HEX: &str =
     "0000000000000000000000000000000000000000000000000000000000000003";
+const UNAUTHORIZED_RELAY_TEST_POLICY_YAML: &str = r#"
+name: unauthorized-relay-test-policy
+resources:
+  - name: document
+    relations:
+      - name: creator
+        types:
+          - actor
+      - name: reader
+        types:
+          - actor
+    permissions:
+      - name: read
+        expr: reader
+      - name: write
+        expr: creator
+"#;
 
 use super::constants::{
     reporting_genesis_json, NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, NODE_KEY_4, NODE_KEY_OFFLINE,
@@ -771,6 +797,306 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
+    println!("Starting unauthorized relay reporting integration test...");
+
+    let network = IntegrationTestNetwork::builder()
+        .with_module_genesis(
+            "orbis",
+            serde_json::json!({
+                "rings": [{
+                    "id": RING_ID,
+                    "ring_pk": "",
+                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+                    "threshold": 2,
+                    "pss_interval": 86400,
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    // kick_threshold=10: retries can produce more than one accepted
+                    // unauthorized_request report, but must not trigger auto-kick.
+                    "reporting": reporting_genesis_json(1, &[], 10)
+                }]
+            }),
+        )
+        .build();
+
+    let chain_config = network.chain_config();
+    let endpoints = network.all_endpoints();
+    let node1_endpoint = endpoints[0].to_string();
+    let node2_endpoint = endpoints[1].to_string();
+
+    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
+        .await;
+
+    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
+        .await
+        .expect("query node1 info");
+    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
+        .await
+        .expect("query node2 info");
+    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
+        .await
+        .expect("query node3 info");
+
+    assert_eq!(node1_info.node_key, NODE_KEY_1, "node1 key mismatch");
+    assert_eq!(node2_info.node_key, NODE_KEY_2, "node2 key mismatch");
+    assert_eq!(node3_info.node_key, NODE_KEY_3, "node3 key mismatch");
+
+    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node1_info.p2p_address,
+        IntegrationTestNetwork::NODE1_SERVICE,
+    );
+    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node2_info.p2p_address,
+        IntegrationTestNetwork::NODE2_SERVICE,
+    );
+    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node3_info.p2p_address,
+        IntegrationTestNetwork::NODE3_SERVICE,
+    );
+
+    let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
+    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
+
+    let controller_client = SourceHubClient::with_signer(
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
+    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
+        &controller_client,
+        RING_ID,
+        &node_keys,
+    )
+    .await;
+    assert_eq!(
+        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+        "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
+    );
+
+    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
+        wait_for_node_info_on_chain(
+            &controller_client,
+            node_key,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
+
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
+    }
+
+    println!("Starting DKG for ring {RING_ID}...");
+    cli_tool::do_dkg(node1_endpoint.clone(), RING_ID.to_string())
+        .await
+        .expect("DKG should succeed");
+
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    println!(
+        "DKG finalized. Ring PK: {}...",
+        &ring_pk_hex[..40.min(ring_pk_hex.len())]
+    );
+    let ring = read_ring_payload(&chain_config, RING_ID).await;
+    assert_eq!(ring.ring_pk, ring_pk_hex, "finalized ring_pk mismatch");
+
+    let resource = "document".to_string();
+    let permission = "read".to_string();
+    let policy_id = create_policy_with_client(&controller_client).await;
+
+    // PRE: node1 produced a relayer-signed statement for an actor with no ACP relationship.
+    println!("Setting up PRE unauthorized relay fixture...");
+    let (_, pre_object_id) = controller_client
+        .orbis_store_document_get_id(
+            RING_ID,
+            "{}",
+            "{}",
+            &policy_id,
+            &resource,
+            &permission,
+            None,
+            None,
+        )
+        .await
+        .expect("store PRE document");
+
+    register_object_with_client(&controller_client, &policy_id, &pre_object_id, &resource).await;
+
+    let (_, pre_reader_pk) = generate_keypair().expect("generate PRE reader keypair");
+    let pre_reader_pk_bytes =
+        CryptoSerialize::to_bytes(&pre_reader_pk).expect("serialize PRE reader public key");
+    let pre_jwt_signer = JwtSigner::new();
+    let pre_token = pre_jwt_signer
+        .create_pre_jwt(pre_reader_pk_bytes.clone(), &pre_object_id, None, None)
+        .expect("create PRE JWT");
+    let pre_actor_is_reader = controller_client
+        .acp_has_relationship(
+            &policy_id,
+            &pre_jwt_signer.did_uri,
+            &resource,
+            &pre_object_id,
+            "reader",
+        )
+        .await
+        .expect("check PRE reader relationship absence");
+    assert!(
+        !pre_actor_is_reader,
+        "PRE actor must not have a reader relationship"
+    );
+
+    let (pre_statement, pre_signature) = signed_unauthorized_relay_statement(
+        &chain_config,
+        &ring,
+        "pre",
+        NODE_KEY_1,
+        NODE1_SIGNING_KEY_HEX,
+        &pre_object_id,
+        &pre_jwt_signer.did_uri,
+    );
+
+    println!("Submitting PRE unauthorized relay evidence against node1 through node3...");
+    let pre_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+        .await
+        .expect("connect PRE unauthorized report event subscription");
+    submit_unauthorized_relay_evidence(
+        node1_endpoint.clone(),
+        peer_addresses[2].clone(),
+        pre_statement,
+        pre_signature,
+        pre_token,
+        pre_reader_pk_bytes,
+    )
+    .await;
+    println!("PRE unauthorized relay evidence forwarded.");
+    let pre_event = pre_sub
+        .wait_for_report_accepted_matching(RING_ID, Duration::from_secs(180), |event| {
+            event.report_type == UNAUTHORIZED_REQUEST_REPORT_TYPE
+                && event.accused_node_key == NODE_KEY_1
+                && event.reporter_node_key == NODE_KEY_3
+        })
+        .await
+        .expect("PRE unauthorized_request EventReportAccepted should be emitted");
+    println!(
+        "PRE unauthorized relay report accepted: report_id={} accused={} reporter={}",
+        pre_event.report_id, pre_event.accused_node_key, pre_event.reporter_node_key
+    );
+    assert_unauthorized_relay_event(&pre_event, NODE_KEY_1, NODE_KEY_3);
+
+    // Sign: node2 produced a relayer-signed statement for another unauthorized actor.
+    println!("Setting up Sign unauthorized relay fixture...");
+    let sign_derivation = "unauthorized-relay-sign-derivation".to_string();
+    let (_, derivation_id) = controller_client
+        .orbis_store_key_derivation_get_id(
+            RING_ID,
+            &sign_derivation,
+            &policy_id,
+            &resource,
+            &permission,
+        )
+        .await
+        .expect("store Sign key derivation");
+
+    register_object_with_client(&controller_client, &policy_id, &derivation_id, &resource).await;
+
+    let sign_message = b"unauthorized relay sign report test message";
+    let sign_jwt_signer = JwtSigner::new();
+    let sign_token = sign_jwt_signer
+        .create_sign_jwt(&derivation_id, sign_message)
+        .expect("create Sign JWT");
+    let sign_actor_is_reader = controller_client
+        .acp_has_relationship(
+            &policy_id,
+            &sign_jwt_signer.did_uri,
+            &resource,
+            &derivation_id,
+            "reader",
+        )
+        .await
+        .expect("check Sign reader relationship absence");
+    assert!(
+        !sign_actor_is_reader,
+        "Sign actor must not have a reader relationship"
+    );
+
+    let (sign_statement, sign_signature) = signed_unauthorized_relay_statement(
+        &chain_config,
+        &ring,
+        "sign",
+        NODE_KEY_2,
+        NODE2_SIGNING_KEY_HEX,
+        &derivation_id,
+        &sign_jwt_signer.did_uri,
+    );
+
+    println!("Submitting Sign unauthorized relay evidence against node2 through node1...");
+    let sign_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+        .await
+        .expect("connect Sign unauthorized report event subscription");
+    submit_unauthorized_relay_evidence(
+        node2_endpoint,
+        peer_addresses[0].clone(),
+        sign_statement,
+        sign_signature,
+        sign_token,
+        Vec::new(),
+    )
+    .await;
+    println!("Sign unauthorized relay evidence forwarded.");
+    let sign_event = sign_sub
+        .wait_for_report_accepted_matching(RING_ID, Duration::from_secs(180), |event| {
+            event.report_type == UNAUTHORIZED_REQUEST_REPORT_TYPE
+                && event.accused_node_key == NODE_KEY_2
+                && event.reporter_node_key == NODE_KEY_1
+        })
+        .await
+        .expect("Sign unauthorized_request EventReportAccepted should be emitted");
+    println!(
+        "Sign unauthorized relay report accepted: report_id={} accused={} reporter={}",
+        sign_event.report_id, sign_event.accused_node_key, sign_event.reporter_node_key
+    );
+    assert_unauthorized_relay_event(&sign_event, NODE_KEY_2, NODE_KEY_1);
+
+    println!("Checking relayer demerit points...");
+    let node1_demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_1)
+        .await
+        .expect("query node1 demerits");
+    let node2_demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_2)
+        .await
+        .expect("query node2 demerits");
+    assert!(
+        node1_demerits >= 1,
+        "node1 should have at least 1 demerit after the PRE unauthorized relay report"
+    );
+    assert!(
+        node2_demerits >= 1,
+        "node2 should have at least 1 demerit after the Sign unauthorized relay report"
+    );
+    println!("relayer demerits: node1={node1_demerits}, node2={node2_demerits}");
+}
+
+#[tokio::test]
+#[serial_test::serial]
 #[cfg(not(feature = "decaf377"))]
 async fn test_invalid_crypto_response_triggers_on_chain_report() {
     println!("Starting invalid-crypto reporting integration test...");
@@ -1480,6 +1806,164 @@ async fn wait_for_node_info_on_chain(
         );
         sleep(poll_interval).await;
     }
+}
+
+async fn create_policy_with_client(client: &SourceHubClient) -> String {
+    let ids_before: std::collections::HashSet<String> = client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids before unauthorized relay test policy")
+        .ids
+        .into_iter()
+        .collect();
+
+    let result = client
+        .acp_create_policy(UNAUTHORIZED_RELAY_TEST_POLICY_YAML, 1)
+        .await
+        .expect("create unauthorized relay test policy");
+    assert_eq!(
+        result.code, 0,
+        "create unauthorized relay test policy failed: {}",
+        result.log
+    );
+
+    client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids after unauthorized relay test policy")
+        .ids
+        .into_iter()
+        .find(|id| !ids_before.contains(id))
+        .expect("new unauthorized relay test policy ID not found")
+}
+
+async fn register_object_with_client(
+    client: &SourceHubClient,
+    policy_id: &str,
+    object_id: &str,
+    resource: &str,
+) {
+    let result = client
+        .acp_register_object(
+            policy_id,
+            Object {
+                resource: resource.to_string(),
+                id: object_id.to_string(),
+            },
+        )
+        .await
+        .expect("register unauthorized relay test object");
+    assert_eq!(
+        result.code, 0,
+        "register unauthorized relay test object failed: {}",
+        result.log
+    );
+}
+
+async fn read_ring_payload(chain_config: &ChainConfig, ring_id: &str) -> RingPayload {
+    let payload_bytes = cli_tool::read_bulletin_post_with_config(
+        ring_id.to_string(),
+        BulletinKind::Ring,
+        chain_config.clone(),
+    )
+    .await
+    .expect("read ring bulletin post");
+    serde_json::from_slice(&payload_bytes).expect("parse RingPayload")
+}
+
+fn current_unix_time_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_secs()
+}
+
+fn signed_unauthorized_relay_statement(
+    chain_config: &ChainConfig,
+    ring: &RingPayload,
+    origin_protocol: &str,
+    accused_node_key: &str,
+    accused_signing_key_hex: &str,
+    object_id: &str,
+    actor_id: &str,
+) -> (RelayRequestStatement, Vec<u8>) {
+    let signed_at = current_unix_time_secs();
+    let statement = RelayRequestStatement {
+        domain: RELAY_REQUEST_DOMAIN.to_string(),
+        chain_id: chain_config.chain_id.clone(),
+        ring_id: RING_ID.to_string(),
+        ring_pk: ring.ring_pk.clone(),
+        ring_state_sha256: ring_state_sha256(ring),
+        protocol_version: network::V0.version,
+        request_id: format!("unauthorized-relay-{origin_protocol}-{object_id}"),
+        signed_at,
+        user_signed_at: signed_at,
+        relayer_node_key: accused_node_key.to_string(),
+        origin_protocol: origin_protocol.to_string(),
+        accused_committee_scope: CommitteeScope::Current,
+        signing_committee_scope: CommitteeScope::Current,
+        from_node_id: canonical_node_id(accused_node_key, &ring.peer_node_keys),
+        actor_id: actor_id.to_string(),
+        object_id: object_id.to_string(),
+        valid_window_start: None,
+        valid_window_end: None,
+        timestamp: None,
+    };
+    let signature =
+        sign_node_message_with_hex_key(accused_signing_key_hex, &statement.canonical_bytes())
+            .expect("sign unauthorized relay statement");
+    (statement, signature)
+}
+
+async fn submit_unauthorized_relay_evidence(
+    endpoint: String,
+    target_peer_id: String,
+    statement: RelayRequestStatement,
+    relay_signature: Vec<u8>,
+    token_string: String,
+    pre_reader_pk: Vec<u8>,
+) {
+    let mut client = UnsafeTestingServiceClient::connect(endpoint)
+        .await
+        .expect("connect unsafe-testing client for unauthorized relay evidence");
+    client
+        .submit_unauthorized_relay_evidence(SubmitUnauthorizedRelayEvidenceRequest {
+            relay_statement_canonical_bytes: statement.canonical_bytes(),
+            relay_signature,
+            target_peer_id,
+            token_string,
+            pre_reader_pk,
+        })
+        .await
+        .expect("submit unauthorized relay evidence");
+}
+
+fn assert_unauthorized_relay_event(
+    event: &ReportAcceptedEvent,
+    expected_accused_node_key: &str,
+    expected_reporter_node_key: &str,
+) {
+    assert_eq!(
+        event.report_type, UNAUTHORIZED_REQUEST_REPORT_TYPE,
+        "unexpected report_type"
+    );
+    assert_eq!(event.ring_id, RING_ID, "ring_id mismatch");
+    assert!(
+        !event.report_id.is_empty(),
+        "unauthorized_request report_id should be set"
+    );
+    assert_eq!(
+        event.accused_node_key, expected_accused_node_key,
+        "relayer should be the accused node"
+    );
+    assert_ne!(
+        event.reporter_node_key, event.accused_node_key,
+        "reporter must not be the accused relayer"
+    );
+    assert_eq!(
+        event.reporter_node_key, expected_reporter_node_key,
+        "reporter should be the node that submitted the evidence"
+    );
 }
 
 async fn store_secret_with_retry(

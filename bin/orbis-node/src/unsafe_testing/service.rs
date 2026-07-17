@@ -1,6 +1,8 @@
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app_state::AppState;
+use crate::constants::RELAY_CHECK_MAX_DRIFT_SECS;
 use crate::dkg::v0::coordinator::evidence::{
     queue_invalid_refresh_commitment_report, queue_or_relay_equivocation,
     queue_or_relay_invalid_share, share_evidence_proves_failure, verify_share_evidence,
@@ -10,8 +12,15 @@ use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::helpers::deserialize_wire_commitment;
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
 use crate::dkg::v0::session_state::AbandonedPssSession;
+use crate::pre::v0::coordinator::PreCoordinator;
+use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
+use crate::reporting::v0::types::RelayRequestStatement;
+use crate::sign::v0::coordinator::SignCoordinator;
+use crate::sign::v0::messages::{NonceRequest, PolicyContext, SignContext, SignMessage};
+use bulletin::r#trait::{BulletinKind, KeyDerivation};
+use common::blockchain::verify_node_message;
 use crypto::r#trait::PolynomialCommitment as _;
-use crypto::DkgImpl;
+use crypto::{DkgImpl, PreImpl, SignImpl};
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     LocalStorageImpl,
@@ -25,7 +34,8 @@ use proto::unsafe_testing::{
     SubmitDkgInvalidRefreshCommitmentEvidenceRequest,
     SubmitDkgInvalidRefreshCommitmentEvidenceResponse, SubmitDkgInvalidShareEvidenceRequest,
     SubmitDkgInvalidShareEvidenceResponse, SubmitPssStallOfflineReportRequest,
-    SubmitPssStallOfflineReportResponse,
+    SubmitPssStallOfflineReportResponse, SubmitUnauthorizedRelayEvidenceRequest,
+    SubmitUnauthorizedRelayEvidenceResponse,
 };
 use tonic::{Request, Response, Status};
 use zeroize::Zeroizing;
@@ -109,6 +119,13 @@ fn parse_access_mode(value: i32) -> Result<LocalStorageAccessMode, Status> {
 
 fn storage_error(operation: &str, error: impl std::fmt::Display) -> Status {
     Status::internal(format!("failed to {operation} local storage: {error}"))
+}
+
+fn current_unix_time() -> Result<u64, Status> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|error| Status::internal(format!("system clock before unix epoch: {error}")))
 }
 
 #[tonic::async_trait]
@@ -341,4 +358,180 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
 
         Ok(Response::new(SubmitPssStallOfflineReportResponse {}))
     }
+
+    async fn submit_unauthorized_relay_evidence(
+        &self,
+        request: Request<SubmitUnauthorizedRelayEvidenceRequest>,
+    ) -> Result<Response<SubmitUnauthorizedRelayEvidenceResponse>, Status> {
+        let request = request.into_inner();
+        if request.relay_statement_canonical_bytes.is_empty() {
+            return Err(Status::invalid_argument(
+                "relay_statement_canonical_bytes is required",
+            ));
+        }
+        if request.relay_signature.is_empty() {
+            return Err(Status::invalid_argument("relay_signature is required"));
+        }
+        if request.target_peer_id.trim().is_empty() {
+            return Err(Status::invalid_argument("target_peer_id is required"));
+        }
+        if request.token_string.trim().is_empty() {
+            return Err(Status::invalid_argument("token_string is required"));
+        }
+
+        let statement =
+            RelayRequestStatement::from_canonical_bytes(&request.relay_statement_canonical_bytes)
+                .map_err(|error| {
+                Status::invalid_argument(format!(
+                    "invalid relay_statement_canonical_bytes: {error}"
+                ))
+            })?;
+
+        let app_state = self.app_state.clone().ok_or_else(|| {
+            Status::failed_precondition("unsafe unauthorized relay evidence requires app state")
+        })?;
+        if statement.relayer_node_key != app_state.node_key {
+            return Err(Status::failed_precondition(format!(
+                "relay statement relayer_node_key {} does not match this node {}",
+                statement.relayer_node_key, app_state.node_key
+            )));
+        }
+
+        let now = current_unix_time()?;
+        let drift = now.abs_diff(statement.signed_at);
+        if drift > RELAY_CHECK_MAX_DRIFT_SECS {
+            return Err(Status::failed_precondition(format!(
+                "relay statement is stale: signed_at drift {drift}s exceeds {RELAY_CHECK_MAX_DRIFT_SECS}s"
+            )));
+        }
+
+        verify_node_message(
+            &statement.relayer_node_key,
+            &statement.canonical_bytes(),
+            &request.relay_signature,
+        )
+        .map_err(|error| {
+            Status::failed_precondition(format!("invalid relay request signature: {error}"))
+        })?;
+
+        match statement.origin_protocol.as_str() {
+            "pre" => {
+                forward_unauthorized_pre(
+                    app_state,
+                    request.target_peer_id,
+                    statement,
+                    request.relay_signature,
+                    request.token_string,
+                    request.pre_reader_pk,
+                )
+                .await?;
+            }
+            "sign" => {
+                forward_unauthorized_sign(
+                    app_state,
+                    request.target_peer_id,
+                    statement,
+                    request.relay_signature,
+                    request.token_string,
+                )
+                .await?;
+            }
+            other => {
+                return Err(Status::invalid_argument(format!(
+                    "unsupported relay origin_protocol {other}"
+                )));
+            }
+        }
+
+        Ok(Response::new(SubmitUnauthorizedRelayEvidenceResponse {}))
+    }
+}
+
+async fn forward_unauthorized_pre(
+    app_state: Arc<AppState<DkgImpl>>,
+    target_peer_id: String,
+    statement: RelayRequestStatement,
+    relay_signature: Vec<u8>,
+    token_string: String,
+    pre_reader_pk: Vec<u8>,
+) -> Result<(), Status> {
+    if pre_reader_pk.is_empty() {
+        return Err(Status::invalid_argument(
+            "pre_reader_pk is required for PRE relay evidence",
+        ));
+    }
+
+    let request_id = statement.request_id.clone();
+    let message = PreMessage::ReencryptRequest(Box::new(ReencryptRequest {
+        request_id: request_id.clone(),
+        from_node_id: statement.from_node_id,
+        context: PreRequestContext {
+            rdr_pk_bytes: pre_reader_pk,
+            object_id: statement.object_id.clone(),
+            token_string,
+            derivation: None,
+            salt: None,
+            valid_window: None,
+            relay_statement: Some(statement),
+            relay_signature,
+        },
+    }));
+    let coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);
+    coordinator
+        .send_request_and_receive_response(&target_peer_id, message, &request_id)
+        .await
+        .map_err(|error| {
+            Status::failed_precondition(format!(
+                "failed to forward PRE unauthorized relay evidence: {error}"
+            ))
+        })?;
+    Ok(())
+}
+
+async fn forward_unauthorized_sign(
+    app_state: Arc<AppState<DkgImpl>>,
+    target_peer_id: String,
+    statement: RelayRequestStatement,
+    relay_signature: Vec<u8>,
+    token_string: String,
+) -> Result<(), Status> {
+    let derivation_post = app_state
+        .bulletin
+        .read(statement.object_id.clone(), BulletinKind::KeyDerivation)
+        .await
+        .map_err(|error| {
+            Status::failed_precondition(format!("failed to read key derivation: {error}"))
+        })?;
+    let key_derivation: KeyDerivation =
+        serde_json::from_slice(&derivation_post.payload).map_err(|error| {
+            Status::failed_precondition(format!("failed to parse key derivation: {error}"))
+        })?;
+    let ring_pk = hex::decode(&statement.ring_pk).map_err(|error| {
+        Status::failed_precondition(format!("failed to decode relay ring_pk hex: {error}"))
+    })?;
+
+    let request_id = statement.request_id.clone();
+    let message = SignMessage::NonceRequest(NonceRequest {
+        request_id: request_id.clone(),
+        from_node_id: statement.from_node_id,
+        ring_pk,
+        context: SignContext::Policy(Box::new(PolicyContext {
+            token_string,
+            derivation_id: statement.object_id.clone(),
+            valid_window: None,
+            key_derivation,
+            relay_statement: Some(statement),
+            relay_signature,
+        })),
+    });
+    let coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
+    coordinator
+        .send_request_and_receive_response(&target_peer_id, message, &request_id)
+        .await
+        .map_err(|error| {
+            Status::failed_precondition(format!(
+                "failed to forward Sign unauthorized relay evidence: {error}"
+            ))
+        })?;
+    Ok(())
 }
