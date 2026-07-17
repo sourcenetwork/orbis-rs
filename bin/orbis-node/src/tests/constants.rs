@@ -45,6 +45,8 @@ pub fn reporting_genesis_json(
             // Same weight as node_offline; tests that need a different
             // invalid-proof weight can grow a dedicated parameter.
             "invalid_crypto_response_demerits": node_offline_demerits,
+            // Required (>= 1) by the chain's ring validation; same weight as node_offline.
+            "unauthorized_request_demerits": node_offline_demerits,
             "reset_interval_seconds": 86400
         },
         "backup_node_keys": backup_node_keys,
