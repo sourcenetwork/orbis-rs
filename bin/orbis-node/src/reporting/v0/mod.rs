@@ -7,14 +7,22 @@ pub mod state;
 pub mod types;
 
 use crate::app_state::AppState;
+use crate::constants::RELAY_CHECK_MAX_DRIFT_SECS;
+use crate::helpers::identity::determine_session_node_id;
 use crate::reporting::v0::error::{ReportingError, Result};
 use crate::reporting::v0::observation::ReportObservation;
 use crate::reporting::v0::registry::{
     PreparedReport, ReportPreparationContext, ReportValidationContext, ReportValidationMode,
 };
-use crate::reporting::v0::types::{ReportSigningContext, SignedReport};
+use crate::reporting::v0::types::{
+    ring_state_sha256, CommitteeScope, RelayRequestStatement, ReportSigningContext, SignedReport,
+    RELAY_REQUEST_DOMAIN,
+};
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::v0::messages::SignContext;
+use authz::sourcehub::ValidWindow;
+use bulletin::r#trait::RingPayload;
+use common::blockchain::{sign_node_message_with_hex_key, verify_node_message};
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crypto::{GroupAffine, ScalarField, SigShareInner, SignaturePoint, THRESHOLD_SIGNATURE_SCHEME};
 use std::sync::Arc;
@@ -125,6 +133,161 @@ where
     )
     .await?;
     Ok(())
+}
+
+/// Attribute the relaying node when a relayed request fails a responder's ACP re-check.
+///
+/// Best-effort: verifies the relay statement is fresh and signed by the named relayer, captures the
+/// current ACP anchor, and queues an `unauthorized_request` report. Any failure here is logged and
+/// swallowed — the caller rejects the request regardless of whether a report is produced. Shared by
+/// the PRE and Sign responders.
+pub async fn report_unauthorized_relay<D, S>(
+    app_state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    statement: RelayRequestStatement,
+    relay_signature: Vec<u8>,
+    now: u64,
+) where
+    D: Dkg<ShareValue = ScalarField, PublicKey = GroupAffine> + Clone + Send + Sync + 'static,
+    S: ThresholdSigner<
+            ShareValue = ScalarField,
+            PublicKey = GroupAffine,
+            DistKeyShare = DistKeyShare<ScalarField>,
+            PubPoly = D::PubPoly,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
+        > + Send
+        + Sync
+        + 'static,
+{
+    // Reject stale statements: the relay moment must be within the drift window of now, so the
+    // anchor we capture below genuinely reflects the ACP state around the relay.
+    let drift = now.abs_diff(statement.signed_at);
+    if drift > RELAY_CHECK_MAX_DRIFT_SECS {
+        tracing::warn!(
+            request_id = %statement.request_id,
+            drift,
+            "Skipping unauthorized_request report: relay statement is stale"
+        );
+        return;
+    }
+
+    // The relayer signed its own statement; verify before attributing it.
+    if let Err(error) = verify_node_message(
+        &statement.relayer_node_key,
+        &statement.canonical_bytes(),
+        &relay_signature,
+    ) {
+        tracing::warn!(
+            request_id = %statement.request_id,
+            %error,
+            "Skipping unauthorized_request report: relay signature is invalid"
+        );
+        return;
+    }
+
+    // Capture the ACP anchor at ~the relay moment (real now — cannot point at a favorable past).
+    let checked_at_anchor = match app_state.authz.current_anchor().await {
+        Ok(anchor) => anchor,
+        Err(error) => {
+            tracing::warn!(
+                request_id = %statement.request_id,
+                %error,
+                "Skipping unauthorized_request report: failed to capture ACP anchor"
+            );
+            return;
+        }
+    };
+
+    if let Err(error) = queue_unauthorized_request_report::<D, S>(
+        app_state,
+        routes,
+        statement,
+        relay_signature,
+        checked_at_anchor,
+    )
+    .await
+    {
+        tracing::warn!(%error, "Failed to queue unauthorized_request report");
+    }
+}
+
+/// Inputs to [`build_signed_relay_statement`], captured by the coordinator right after its own ACP
+/// check passes and just before it relays a Sign/PRE request.
+pub struct RelayStatementInputs {
+    pub ring: RingPayload,
+    /// Ring bulletin id (from the document / key-derivation payload).
+    pub ring_id: String,
+    pub protocol_version: u64,
+    pub chain_id: String,
+    pub request_id: String,
+    /// `"pre"` or `"sign"`.
+    pub origin_protocol: String,
+    /// The relaying node's chain key.
+    pub relayer_node_key: String,
+    /// The caller (JWT issuer) whose access was checked.
+    pub actor_id: String,
+    /// PRE object id or Sign derivation id.
+    pub object_id: String,
+    /// The caller's JWT `iat`.
+    pub user_signed_at: u64,
+    /// The timestamp the relayer used for its ACP check (PRE: document timestamp; Sign: now-or-none).
+    pub acp_timestamp: Option<u64>,
+    pub valid_window: Option<ValidWindow>,
+}
+
+/// Build and sign the relayer's `RelayRequestStatement` — its self-incriminating record that it
+/// forwarded this request. Signed with the node chain key so a peer's `unauthorized_request` report
+/// can attribute the relayer. `from_node_id` is derived exactly as the refutation re-derives it.
+pub fn build_signed_relay_statement(
+    inputs: RelayStatementInputs,
+    local_storage: &local_storage::LocalStorageImpl,
+) -> Result<(RelayRequestStatement, Vec<u8>)> {
+    use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+    let signing_key = local_storage
+        .get_encrypted(LocalStorageKeys::NodeSigningKey)
+        .map_err(|error| {
+            ReportingError::InvalidReport(format!("failed to read node signing key: {error}"))
+        })?
+        .ok_or_else(|| {
+            ReportingError::InvalidReport("node signing key is not configured".to_string())
+        })?;
+    let signing_key_hex = String::from_utf8(signing_key.to_vec()).map_err(|error| {
+        ReportingError::InvalidReport(format!("stored node signing key is not utf-8: {error}"))
+    })?;
+
+    let signed_at = current_unix_time()?;
+    let from_node_id =
+        determine_session_node_id(&inputs.relayer_node_key, &inputs.ring.peer_node_keys)
+            .unwrap_or(0);
+    let (valid_window_start, valid_window_end) = match &inputs.valid_window {
+        Some(window) => (Some(window.start), Some(window.end)),
+        None => (None, None),
+    };
+    let statement = RelayRequestStatement {
+        domain: RELAY_REQUEST_DOMAIN.to_string(),
+        chain_id: inputs.chain_id,
+        ring_id: inputs.ring_id,
+        ring_pk: inputs.ring.ring_pk.clone(),
+        ring_state_sha256: ring_state_sha256(&inputs.ring),
+        protocol_version: inputs.protocol_version,
+        request_id: inputs.request_id,
+        signed_at,
+        user_signed_at: inputs.user_signed_at,
+        relayer_node_key: inputs.relayer_node_key,
+        origin_protocol: inputs.origin_protocol,
+        accused_committee_scope: CommitteeScope::Current,
+        signing_committee_scope: CommitteeScope::Current,
+        from_node_id,
+        actor_id: inputs.actor_id,
+        object_id: inputs.object_id,
+        valid_window_start,
+        valid_window_end,
+        timestamp: inputs.acp_timestamp,
+    };
+    let signature = sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes())
+        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+    Ok((statement, signature))
 }
 
 /// Drain remaining JoinSet tasks in the background so peer errors that arrive

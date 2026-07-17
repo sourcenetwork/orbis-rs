@@ -13,8 +13,12 @@ use network::PeerId;
 #[async_trait]
 impl<D, T> MessageCoordinator for PreCoordinator<D, T>
 where
-    D: crypto::r#trait::Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
-        + Clone
+    D: crypto::r#trait::Dkg<
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
+            PubPoly = crypto::PubPolyImpl,
+        > + Clone
         + Send
         + Sync
         + 'static,
@@ -28,6 +32,16 @@ where
                 crypto::GroupAffine,
             >,
             PubPoly = D::PubPoly,
+        > + Send
+        + Sync
+        + 'static,
+    crypto::SignImpl: crypto::r#trait::ThresholdSigner<
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
+            PubPoly = crypto::PubPolyImpl,
+            Signature = crypto::SignaturePoint,
+            SigShare = crypto::r#trait::PubShare<crypto::SigShareInner>,
         > + Send
         + Sync
         + 'static,

@@ -6,6 +6,7 @@ use crate::pre::v0::helpers::{
     validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::v0::messages::{PreMessage, ReencryptRequest};
+use crate::reporting::v0::report_unauthorized_relay;
 use crate::reporting::v0::types::{
     ring_state_sha256, PreReencryptResponseStatement, PRE_REENCRYPT_RESPONSE_DOMAIN,
 };
@@ -13,15 +14,24 @@ use crate::ring_state::RingShareBundle;
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
 use common::blockchain::sign_node_message_with_hex_key;
 use crypto::r#trait::{
-    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, ReencryptReply, Secret,
-    ThresholdDealer,
+    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply,
+    Secret, ThresholdDealer,
 };
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
+use crypto::{PolynomialCommitmentImpl, PubPolyImpl, SigShareInner, SignImpl, SignaturePoint};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::time::{SystemTime, UNIX_EPOCH};
 impl<D, T> PreCoordinator<D, T>
 where
-    D: Dkg<ShareValue = Fr, PublicKey = G1Affine> + Clone + Send + Sync + 'static,
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
     T: ThresholdDealer<
             ShareValue = Fr,
             PublicKey = G1Affine,
@@ -29,6 +39,16 @@ where
             Secret = Secret,
             ReencryptReply = ReencryptReply<Fr, G1Affine>,
             PubPoly = D::PubPoly,
+        > + Send
+        + Sync
+        + 'static,
+    SignImpl: crypto::r#trait::ThresholdSigner<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            DistKeyShare = DistKeyShare<Fr>,
+            PubPoly = PubPolyImpl,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
         > + Send
         + Sync
         + 'static,
@@ -45,7 +65,7 @@ where
                     "PRE Coordinator: Received ReencryptRequest"
                 );
                 // Note: from_node_id is not validated here (initiator may not be in ring).
-                self.handle_reencrypt_request(req).await
+                self.handle_reencrypt_request(*req).await
             }
             PreMessage::ReencryptResponse { .. } => {
                 tracing::debug!(
@@ -117,14 +137,31 @@ where
             ctx.salt.as_deref(),
         );
 
-        check_policy_access(
+        if let Err(error) = check_policy_access(
             &*self.app_state.authz,
             &document_payload,
             &ctx.object_id,
             &token.issuer_id,
             ctx.valid_window,
         )
-        .await?;
+        .await
+        {
+            // A relayed request that fails our ACP re-check is attributable to the relaying node,
+            // provided it signed a statement vouching that it forwarded this exact request.
+            if let PreError::Unauthorized(_) = &error {
+                if let Some(statement) = &ctx.relay_statement {
+                    report_unauthorized_relay::<D, SignImpl>(
+                        self.app_state.clone(),
+                        self.routes,
+                        statement.clone(),
+                        ctx.relay_signature.clone(),
+                        current_time,
+                    )
+                    .await;
+                }
+            }
+            return Err(error);
+        }
 
         // 1. Deserialize the secret
         let secret = deserialize_secret(&document_payload.document)?;

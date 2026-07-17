@@ -264,6 +264,8 @@ async fn test_dkg_then_pre_end_to_end() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -464,6 +466,8 @@ async fn test_pre_with_large_secret() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -600,6 +604,8 @@ async fn test_pre_fails_with_wrong_key() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -732,6 +738,8 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -885,6 +893,8 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -1177,6 +1187,8 @@ async fn test_pre_fails_with_wrong_derivation() {
                 derivation: Some(correct_derivation.clone()),
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -1348,6 +1360,8 @@ async fn test_pre_fails_with_bad_proof() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -1464,6 +1478,8 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             PreReportBinding::new(
                 "test-chain".to_string(),

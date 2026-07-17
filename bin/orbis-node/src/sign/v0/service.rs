@@ -4,6 +4,7 @@ use crate::helpers::identity::validate_all_peer_ids;
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::helpers::ring::RingConfig;
 use crate::metrics;
+use crate::reporting::v0::{build_signed_relay_statement, RelayStatementInputs};
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::{SignCoordinator, SigningOptions};
 use crate::sign::v0::error::SignError;
@@ -172,6 +173,33 @@ where
                 .map_err(|e| {
                     SignError::RingState(format!("Failed to load ring polynomial state: {}", e))
                 })?;
+        // The relayer signs a record that it forwarded this request (after passing its own ACP
+        // check above), so a peer whose re-check fails can attribute it via `unauthorized_request`.
+        // Sign's ACP check only stamps a timestamp when a valid window is present, so mirror that
+        // here — the refutation trusts `statement.timestamp` for the sign origin.
+        let relay_acp_timestamp = if valid_window.is_some() {
+            Some(current_time)
+        } else {
+            None
+        };
+        let (relay_statement, relay_signature) = build_signed_relay_statement(
+            RelayStatementInputs {
+                ring: ring_payload.clone(),
+                ring_id: key_derivation.ring_id.clone(),
+                protocol_version: self.routes.version,
+                chain_id: self.state.bulletin.chain_id(),
+                request_id: request_id.clone(),
+                origin_protocol: "sign".to_string(),
+                relayer_node_key: self.state.node_key.clone(),
+                actor_id: token.issuer_id.clone(),
+                object_id: req.derivation_id.clone(),
+                user_signed_at: token.issued_time,
+                acp_timestamp: relay_acp_timestamp,
+                valid_window: valid_window.clone(),
+            },
+            &self.state.local_storage,
+        )
+        .map_err(|e| SignError::Generic(format!("Failed to build relay statement: {}", e)))?;
         let ring = RingConfig {
             ring_id: key_derivation.ring_id.clone(),
             ring_pk_bytes,
@@ -192,6 +220,8 @@ where
                     derivation_id: req.derivation_id,
                     valid_window,
                     key_derivation,
+                    relay_statement: Some(relay_statement),
+                    relay_signature,
                 })),
                 SigningOptions::default(),
             )

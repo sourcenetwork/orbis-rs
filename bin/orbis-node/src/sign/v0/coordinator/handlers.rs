@@ -8,7 +8,7 @@ use crate::reporting::v0::types::{
     ReportSigningContext, SignResponseStatement, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
     NODE_OFFLINE_REPORT_TYPE, SIGN_RESPONSE_DOMAIN,
 };
-use crate::reporting::v0::validate_signing_report;
+use crate::reporting::v0::{report_unauthorized_relay, validate_signing_report};
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::helpers::{
@@ -272,14 +272,31 @@ where
                     self.routes.version,
                 )
                 .await?;
-                check_policy_access(
+                if let Err(error) = check_policy_access(
                     &*self.app_state.authz,
                     &key_derivation,
                     derivation_id,
                     &token.issuer_id,
                     valid_window.clone(),
                 )
-                .await?;
+                .await
+                {
+                    // A relayed request that fails our ACP re-check is attributable to the relaying
+                    // node, provided it signed a statement vouching that it forwarded this request.
+                    if let SignError::Unauthorized(_) = &error {
+                        if let Some(statement) = &ctx.relay_statement {
+                            report_unauthorized_relay::<D, S>(
+                                self.app_state.clone(),
+                                self.routes,
+                                statement.clone(),
+                                ctx.relay_signature.clone(),
+                                current_time,
+                            )
+                            .await;
+                        }
+                    }
+                    return Err(error);
+                }
                 Some(ring_payload.ring_pk)
             }
             // The ready marker proves this signing round belongs to an already accepted
@@ -512,14 +529,31 @@ where
         // For interactive (FROST), authz was already checked in handle_nonce_request
         // (Round 1) before the nonce was generated — can decide to skip the IO here (I choose not to but can if speed is needed).
         // For non-interactive (BLS), this is the first and only round, so check now.
-        check_policy_access(
+        if let Err(error) = check_policy_access(
             &*self.app_state.authz,
             &key_derivation,
             derivation_id,
             &token.issuer_id,
             valid_window.clone(),
         )
-        .await?;
+        .await
+        {
+            // A relayed request that fails our ACP re-check is attributable to the relaying node,
+            // provided it signed a statement vouching that it forwarded this exact request.
+            if let SignError::Unauthorized(_) = &error {
+                if let Some(statement) = &ctx.relay_statement {
+                    report_unauthorized_relay::<D, S>(
+                        self.app_state.clone(),
+                        self.routes,
+                        statement.clone(),
+                        ctx.relay_signature.clone(),
+                        current_time,
+                    )
+                    .await;
+                }
+            }
+            return Err(error);
+        }
 
         // Derivation and metadata come from the bulletin, not the client
         let derivation = Some(key_derivation.derivation.into_bytes());

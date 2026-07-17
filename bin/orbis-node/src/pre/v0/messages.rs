@@ -26,6 +26,11 @@ pub struct PreRequestContext {
     pub salt: Option<String>,
     /// Optional valid window for time-bounded authz checks
     pub valid_window: Option<ValidWindow>,
+    /// The relayer's signed record of this request, so a peer whose ACP re-check fails can attribute
+    /// the relaying node via an `unauthorized_request` report. Always set on the live relay path;
+    /// `None` only in unit tests that construct the context directly.
+    pub relay_statement: Option<crate::reporting::v0::types::RelayRequestStatement>,
+    pub relay_signature: Vec<u8>,
 }
 
 /// Wire message sent from the coordinator to each ring node requesting a reencryption share.
@@ -39,8 +44,9 @@ pub struct ReencryptRequest {
 /// PRE protocol message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PreMessage {
-    /// Request from coordinator to ring node for reencryption
-    ReencryptRequest(ReencryptRequest),
+    /// Request from coordinator to ring node for reencryption.
+    /// Boxed because the relay statement makes this the largest variant.
+    ReencryptRequest(Box<ReencryptRequest>),
     /// Response from ring node to coordinator with reencryption share
     ReencryptResponse {
         request_id: String,

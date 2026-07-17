@@ -297,11 +297,11 @@ where
                     continue;
                 }
 
-                let request = PreMessage::ReencryptRequest(ReencryptRequest {
+                let request = PreMessage::ReencryptRequest(Box::new(ReencryptRequest {
                     request_id: request_id.clone(),
                     from_node_id: node_id,
                     context: ctx.clone(),
-                });
+                }));
 
                 let peer_id = peer_id_str.clone();
                 let req_id = request_id.clone();

@@ -1220,6 +1220,8 @@ async fn test_dkg_then_sign_policy_end_to_end() {
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             })),
             SigningOptions::default(),
         )
@@ -1364,6 +1366,8 @@ async fn test_sign_policy_fails_invalid_jwt() {
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             })),
             SigningOptions::default(),
         )
@@ -1470,6 +1474,8 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             })),
             SigningOptions::default(),
         )
@@ -1786,6 +1792,8 @@ async fn test_sign_policy_fails_wrong_message_digest() {
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             })),
             SigningOptions::default(),
         )
