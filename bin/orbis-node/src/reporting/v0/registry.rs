@@ -2022,11 +2022,13 @@ mod tests {
     };
     use crate::reporting::v0::types::{
         CommitteeScope, DkgCommitmentStatement, DkgShareStatement, InvalidCryptoResponse,
-        NodeOffline, PreReencryptResponseStatement, SignResponseStatement, DKG_COMMITMENT_DOMAIN,
-        DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN,
-        REPORT_DOMAIN, REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN,
+        NodeOffline, PreReencryptResponseStatement, RelayRequestStatement, SignResponseStatement,
+        DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
+        PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS,
+        SIGN_RESPONSE_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
     };
-    use bulletin::r#trait::UpgradeInfo;
+    use bulletin::dummy::DummyBulletin;
+    use bulletin::r#trait::{BulletinPost, UpgradeInfo};
     use crypto::r#trait::{CryptoSerialize, DkgMode, DkgRole};
 
     fn ring_fixture(threshold: u32) -> RingPayload {
@@ -2151,6 +2153,73 @@ mod tests {
                 },
                 response_signature: vec![5; 64],
             },
+        }
+    }
+
+    fn relay_request_statement(
+        ring: &RingPayload,
+        chain_id: String,
+        signed_at: u64,
+    ) -> RelayRequestStatement {
+        RelayRequestStatement {
+            domain: RELAY_REQUEST_DOMAIN.to_string(),
+            chain_id,
+            ring_id: "ring".to_string(),
+            ring_pk: ring.ring_pk.clone(),
+            ring_state_sha256: ring_state_sha256(ring),
+            protocol_version: 0,
+            request_id: "relay-request-1".to_string(),
+            signed_at,
+            user_signed_at: signed_at.saturating_sub(1),
+            relayer_node_key: "accused".to_string(),
+            origin_protocol: "pre".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id: 2,
+            actor_id: "did:key:z6Mkactor".to_string(),
+            object_id: "relay-object".to_string(),
+            valid_window_start: Some(signed_at.saturating_sub(10)),
+            valid_window_end: Some(signed_at + 10),
+            timestamp: Some(signed_at),
+        }
+    }
+
+    fn relay_request_envelope(
+        ring: &RingPayload,
+        statement: &RelayRequestStatement,
+    ) -> ReportEnvelope {
+        ReportEnvelope {
+            domain: REPORT_DOMAIN.to_string(),
+            report_type: UNAUTHORIZED_REQUEST_REPORT_TYPE.to_string(),
+            chain_id: statement.chain_id.clone(),
+            ring_id: statement.ring_id.clone(),
+            ring_pk: ring.ring_pk.clone(),
+            ring_state_sha256: ring_state_sha256(ring),
+            reporter_node_key: "reporter".to_string(),
+            accused_node_key: statement.relayer_node_key.clone(),
+            accused_peer_id: "aa".repeat(32),
+            observed_at: statement.signed_at - CHAIN_BLOCK_GRACE_SECS,
+            expires_at: statement.signed_at - CHAIN_BLOCK_GRACE_SECS + REPORT_TTL_SECS,
+            payload: Vec::new(),
+            session_id: statement.request_id.clone(),
+        }
+    }
+
+    fn validation_context(
+        app_state: &crate::app_state::AppState<DkgImpl>,
+        now: u64,
+    ) -> ReportValidationContext {
+        ReportValidationContext {
+            local_node_key: app_state.node_key.clone(),
+            requester_peer_id: None,
+            network: app_state.network.clone(),
+            peer_connection_pool: app_state.peer_connection_pool.clone(),
+            bulletin: app_state.bulletin.clone(),
+            authz: app_state.authz.clone(),
+            local_storage: app_state.local_storage.clone(),
+            routes: &network::V0,
+            now,
+            mode: ReportValidationMode::ReporterObservation,
         }
     }
 
@@ -2353,6 +2422,164 @@ mod tests {
             validate_evidence_anchor(CHAIN_BLOCK_GRACE_SECS - 1, 0),
             Err(ReportingError::Unauthorized(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn relay_request_statement_shape_accepts_valid_and_rejects_malformed() {
+        let db_name = "registry_relay_request_statement_shape";
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+        let ring = ring_fixture(2);
+        let valid = relay_request_statement(&ring, app_state.bulletin.chain_id(), 110);
+        let envelope = relay_request_envelope(&ring, &valid);
+        let context = validation_context(&app_state, envelope.observed_at);
+
+        validate_relay_request_statement_shape(&envelope, &context, &valid).unwrap();
+
+        let cases: Vec<(&str, Box<dyn FnOnce(&mut RelayRequestStatement)>)> = vec![
+            (
+                "wrong origin",
+                Box::new(|statement| statement.origin_protocol = "dkg".to_string()),
+            ),
+            (
+                "non-current accused scope",
+                Box::new(|statement| {
+                    statement.accused_committee_scope = CommitteeScope::PendingNew
+                }),
+            ),
+            (
+                "non-current signing scope",
+                Box::new(|statement| {
+                    statement.signing_committee_scope = CommitteeScope::PendingNew
+                }),
+            ),
+            (
+                "zero from_node_id",
+                Box::new(|statement| statement.from_node_id = 0),
+            ),
+            (
+                "empty actor_id",
+                Box::new(|statement| statement.actor_id.clear()),
+            ),
+            (
+                "empty object_id",
+                Box::new(|statement| statement.object_id.clear()),
+            ),
+            (
+                "half-set valid_window",
+                Box::new(|statement| statement.valid_window_end = None),
+            ),
+            (
+                "signed_at/user_signed_at drift",
+                Box::new(|statement| {
+                    statement.user_signed_at = statement.signed_at - RELAY_CHECK_MAX_DRIFT_SECS - 1
+                }),
+            ),
+        ];
+
+        for (case, mutate) in cases {
+            let mut statement = valid.clone();
+            mutate(&mut statement);
+            let error = validate_relay_request_statement_shape(&envelope, &context, &statement)
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    ReportingError::InvalidReport(_) | ReportingError::Unauthorized(_)
+                ),
+                "{case} should reject as a report validation error, got {error:?}"
+            );
+        }
+
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn relayed_request_refutation_rejects_anchor_time_drift() {
+        let db_name = "registry_relay_request_anchor_time_drift";
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+        let ring = ring_fixture(2);
+        let statement = relay_request_statement(&ring, app_state.bulletin.chain_id(), 1000);
+        let context = validation_context(&app_state, statement.signed_at);
+
+        let error = require_relayed_request_unauthorized(&context, &statement, "0")
+            .await
+            .unwrap_err();
+
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        assert!(error.to_string().contains("anchor time"));
+    }
+
+    #[tokio::test]
+    async fn relayed_request_refutation_rejects_authorized_request() {
+        let db_name = "registry_relay_request_authorized";
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+        let ring = ring_fixture(2);
+        let bulletin = std::sync::Arc::new(DummyBulletin::default());
+
+        let document = DocumentPayload {
+            ring_id: "ring".to_string(),
+            document: "{}".to_string(),
+            proof: String::new(),
+            policy_id: "policy".to_string(),
+            resource: "document".to_string(),
+            permission: "read".to_string(),
+            tier: Some("tier-a".to_string()),
+            timestamp: Some(10),
+        };
+        bulletin.set_post(
+            "relay-pre-object".to_string(),
+            BulletinPost {
+                id: "relay-pre-object".to_string(),
+                payload: document.try_into().unwrap(),
+            },
+        );
+
+        let key_derivation = KeyDerivation {
+            ring_id: "ring".to_string(),
+            derivation: "derivation".to_string(),
+            policy_id: "policy".to_string(),
+            resource: "key".to_string(),
+            permission: "sign".to_string(),
+        };
+        bulletin.set_post(
+            "relay-sign-object".to_string(),
+            BulletinPost {
+                id: "relay-sign-object".to_string(),
+                payload: serde_json::to_vec(&key_derivation).unwrap(),
+            },
+        );
+
+        let base_context = validation_context(&app_state, 10);
+        let context = ReportValidationContext {
+            bulletin,
+            ..base_context
+        };
+
+        // DummyAuthZ always authorizes. The positive unauthorized branch belongs in
+        // Docker/integration coverage, or a future unit fixture with deny-authz behavior.
+        for (origin_protocol, object_id) in
+            [("pre", "relay-pre-object"), ("sign", "relay-sign-object")]
+        {
+            let mut statement = relay_request_statement(&ring, context.bulletin.chain_id(), 10);
+            statement.origin_protocol = origin_protocol.to_string();
+            statement.object_id = object_id.to_string();
+
+            let error = require_relayed_request_unauthorized(&context, &statement, "0")
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("relayed request was authorized"),
+                "{origin_protocol} should reject authorized requests, got {error}"
+            );
+        }
+
+        crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 
     #[test]
