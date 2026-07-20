@@ -292,16 +292,16 @@ where
                             let relay_request_id =
                                 request_id.strip_prefix("nonce-").unwrap_or(&request_id);
                             let binding = RelayRequestBinding {
-                                ring: &ring_payload,
-                                ring_id: &key_derivation.ring_id,
+                                ring: ring_payload.clone(),
+                                ring_id: key_derivation.ring_id.clone(),
                                 protocol_version: self.routes.version,
-                                chain_id: &chain_id,
-                                request_id: relay_request_id,
-                                origin_protocol: "sign",
-                                actor_id: &token.issuer_id,
-                                object_id: derivation_id,
+                                chain_id,
+                                request_id: relay_request_id.to_string(),
+                                origin_protocol: "sign".to_string(),
+                                actor_id: token.issuer_id.clone(),
+                                object_id: derivation_id.clone(),
                                 user_signed_at: token.issued_time,
-                                valid_window: valid_window.as_ref(),
+                                valid_window: valid_window.clone(),
                                 timestamp: RelayRequestTimestampBinding::SignPolicy,
                                 from_node_id,
                             };
@@ -577,16 +577,16 @@ where
                 if let Some(statement) = &ctx.relay_statement {
                     let chain_id = self.app_state.bulletin.chain_id();
                     let binding = RelayRequestBinding {
-                        ring: &ring_payload,
-                        ring_id: &key_derivation.ring_id,
+                        ring: ring_payload.clone(),
+                        ring_id: key_derivation.ring_id.clone(),
                         protocol_version: self.routes.version,
-                        chain_id: &chain_id,
-                        request_id,
-                        origin_protocol: "sign",
-                        actor_id: &token.issuer_id,
-                        object_id: derivation_id,
+                        chain_id,
+                        request_id: request_id.to_string(),
+                        origin_protocol: "sign".to_string(),
+                        actor_id: token.issuer_id.clone(),
+                        object_id: derivation_id.clone(),
                         user_signed_at: token.issued_time,
-                        valid_window: valid_window.as_ref(),
+                        valid_window: valid_window.clone(),
                         timestamp: RelayRequestTimestampBinding::SignPolicy,
                         from_node_id,
                     };

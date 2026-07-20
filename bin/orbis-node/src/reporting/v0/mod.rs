@@ -147,17 +147,17 @@ pub enum RelayRequestTimestampBinding {
 
 /// Responder-observed request fields that a relayer's signed statement must
 /// describe before we can use it as `unauthorized_request` evidence.
-pub struct RelayRequestBinding<'a> {
-    pub ring: &'a RingPayload,
-    pub ring_id: &'a str,
+pub struct RelayRequestBinding {
+    pub ring: RingPayload,
+    pub ring_id: String,
     pub protocol_version: u64,
-    pub chain_id: &'a str,
-    pub request_id: &'a str,
-    pub origin_protocol: &'a str,
-    pub actor_id: &'a str,
-    pub object_id: &'a str,
+    pub chain_id: String,
+    pub request_id: String,
+    pub origin_protocol: String,
+    pub actor_id: String,
+    pub object_id: String,
     pub user_signed_at: u64,
-    pub valid_window: Option<&'a ValidWindow>,
+    pub valid_window: Option<ValidWindow>,
     pub timestamp: RelayRequestTimestampBinding,
     pub from_node_id: u32,
 }
@@ -168,19 +168,19 @@ pub struct RelayRequestBinding<'a> {
 /// request and make co-signers reject the report.
 pub fn validate_relay_request_binding(
     statement: &RelayRequestStatement,
-    expected: RelayRequestBinding<'_>,
+    expected: RelayRequestBinding,
 ) -> Result<()> {
     if statement.chain_id != expected.chain_id {
         return Err(relay_binding_mismatch(
             "chain_id",
-            expected.chain_id,
+            &expected.chain_id,
             &statement.chain_id,
         ));
     }
     if statement.ring_id != expected.ring_id {
         return Err(relay_binding_mismatch(
             "ring_id",
-            expected.ring_id,
+            &expected.ring_id,
             &statement.ring_id,
         ));
     }
@@ -191,7 +191,7 @@ pub fn validate_relay_request_binding(
             &statement.ring_pk,
         ));
     }
-    let expected_ring_state_sha256 = ring_state_sha256(expected.ring);
+    let expected_ring_state_sha256 = ring_state_sha256(&expected.ring);
     if statement.ring_state_sha256 != expected_ring_state_sha256 {
         return Err(relay_binding_mismatch(
             "ring_state_sha256",
@@ -209,28 +209,28 @@ pub fn validate_relay_request_binding(
     if statement.request_id != expected.request_id {
         return Err(relay_binding_mismatch(
             "request_id",
-            expected.request_id,
+            &expected.request_id,
             &statement.request_id,
         ));
     }
     if statement.origin_protocol != expected.origin_protocol {
         return Err(relay_binding_mismatch(
             "origin_protocol",
-            expected.origin_protocol,
+            &expected.origin_protocol,
             &statement.origin_protocol,
         ));
     }
     if statement.actor_id != expected.actor_id {
         return Err(relay_binding_mismatch(
             "actor_id",
-            expected.actor_id,
+            &expected.actor_id,
             &statement.actor_id,
         ));
     }
     if statement.object_id != expected.object_id {
         return Err(relay_binding_mismatch(
             "object_id",
-            expected.object_id,
+            &expected.object_id,
             &statement.object_id,
         ));
     }
@@ -244,6 +244,7 @@ pub fn validate_relay_request_binding(
 
     let expected_valid_window = expected
         .valid_window
+        .as_ref()
         .map(|window| (window.start, window.end));
     let actual_valid_window = match (statement.valid_window_start, statement.valid_window_end) {
         (Some(start), Some(end)) => Some((start, end)),

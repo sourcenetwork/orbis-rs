@@ -102,21 +102,21 @@ fn relay_binding_statement(
     }
 }
 
-fn relay_binding<'a>(
-    ring: &'a RingPayload,
-    origin_protocol: &'a str,
-    valid_window: Option<&'a ValidWindow>,
+fn relay_binding(
+    ring: &RingPayload,
+    origin_protocol: &str,
+    valid_window: Option<ValidWindow>,
     timestamp: RelayRequestTimestampBinding,
-) -> RelayRequestBinding<'a> {
+) -> RelayRequestBinding {
     RelayRequestBinding {
-        ring,
-        ring_id: RELAY_BINDING_RING_ID,
+        ring: ring.clone(),
+        ring_id: RELAY_BINDING_RING_ID.to_string(),
         protocol_version: network::V0.version,
-        chain_id: RELAY_BINDING_CHAIN_ID,
-        request_id: RELAY_BINDING_REQUEST_ID,
-        origin_protocol,
-        actor_id: RELAY_BINDING_ACTOR_ID,
-        object_id: RELAY_BINDING_OBJECT_ID,
+        chain_id: RELAY_BINDING_CHAIN_ID.to_string(),
+        request_id: RELAY_BINDING_REQUEST_ID.to_string(),
+        origin_protocol: origin_protocol.to_string(),
+        actor_id: RELAY_BINDING_ACTOR_ID.to_string(),
+        object_id: RELAY_BINDING_OBJECT_ID.to_string(),
         user_signed_at: RELAY_BINDING_USER_SIGNED_AT,
         valid_window,
         timestamp,
@@ -140,7 +140,7 @@ fn relay_request_binding_accepts_valid_pre_statement() {
         relay_binding(
             &ring,
             "pre",
-            Some(&window),
+            Some(window.clone()),
             RelayRequestTimestampBinding::Exact(Some(RELAY_BINDING_PRE_TIMESTAMP)),
         ),
     )
@@ -174,7 +174,7 @@ fn relay_request_binding_accepts_valid_sign_statement_timestamp_semantics() {
         relay_binding(
             &ring,
             "sign",
-            Some(&window),
+            Some(window.clone()),
             RelayRequestTimestampBinding::SignPolicy,
         ),
     )
@@ -188,7 +188,7 @@ fn relay_request_binding_accepts_valid_sign_statement_timestamp_semantics() {
         relay_binding(
             &ring,
             "sign",
-            Some(&window),
+            Some(window.clone()),
             RelayRequestTimestampBinding::SignPolicy,
         ),
     )
@@ -267,7 +267,7 @@ fn relay_request_binding_rejects_unbound_statement_fields() {
                 relay_binding(
                     &ring,
                     "pre",
-                    Some(&window),
+                    Some(window.clone()),
                     RelayRequestTimestampBinding::Exact(Some(RELAY_BINDING_PRE_TIMESTAMP)),
                 ),
             )

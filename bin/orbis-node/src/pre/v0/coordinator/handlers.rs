@@ -155,16 +155,16 @@ where
                 if let Some(statement) = &ctx.relay_statement {
                     let chain_id = self.app_state.bulletin.chain_id();
                     let binding = RelayRequestBinding {
-                        ring: &ring_payload,
-                        ring_id: &document_payload.ring_id,
+                        ring: ring_payload.clone(),
+                        ring_id: document_payload.ring_id.clone(),
                         protocol_version: self.routes.version,
-                        chain_id: &chain_id,
-                        request_id: &request_id,
-                        origin_protocol: "pre",
-                        actor_id: &token.issuer_id,
-                        object_id: &ctx.object_id,
+                        chain_id,
+                        request_id: request_id.clone(),
+                        origin_protocol: "pre".to_string(),
+                        actor_id: token.issuer_id.clone(),
+                        object_id: ctx.object_id.clone(),
                         user_signed_at: token.issued_time,
-                        valid_window: ctx.valid_window.as_ref(),
+                        valid_window: ctx.valid_window.clone(),
                         timestamp: RelayRequestTimestampBinding::Exact(document_payload.timestamp),
                         from_node_id,
                     };
