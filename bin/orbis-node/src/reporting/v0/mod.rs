@@ -82,8 +82,8 @@ where
 
 /// Build and queue an `unauthorized_request` report attributing the node that relayed a Sign/PRE
 /// request whose ACP re-check failed on this node. `statement` + `relay_signature` are the relayer's
-/// signed record of the request; `anchor_block_height` is the height the ACP refutation is anchored
-/// to (the reporter's current chain height ≈ the relay height).
+/// signed record of the request; `checked_at_anchor` is an opaque Authz anchor token whose format
+/// may vary by backend (not necessarily a block height).
 pub async fn queue_unauthorized_request_report<D, S>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
