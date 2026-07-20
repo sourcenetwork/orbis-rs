@@ -13,7 +13,7 @@ use crate::helpers::test_helpers::{
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::SignError;
-use crate::sign::v0::helpers::check_policy_access;
+use crate::sign::v0::helpers::{check_policy_access, check_policy_access_at};
 use crate::sign::v0::messages::{PolicyContext, SignContext};
 #[cfg(feature = "decaf377")]
 use crate::sign::v0::messages::{SignMessage, SignRequest};
@@ -1546,6 +1546,63 @@ async fn test_sign_policy_check_policy_access_enforces_authz_denial() {
         matches!(result.unwrap_err(), SignError::Unauthorized(_)),
         "Denial should be SignError::Unauthorized"
     );
+}
+
+#[tokio::test]
+async fn test_sign_policy_check_policy_access_at_uses_supplied_timestamp() {
+    struct TimestampAuthZ {
+        expected_timestamp: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl authz::r#trait::Authz for TimestampAuthZ {
+        async fn check(&self, permission: Vec<u8>, _: &str) -> authz::error::Result<bool> {
+            let req = AccessCheckRequest::from_bytes(&permission)
+                .expect("deserialize AccessCheckRequest");
+            assert_eq!(req.timestamp, Some(self.expected_timestamp));
+            Ok(true)
+        }
+        async fn check_at(
+            &self,
+            permission: Vec<u8>,
+            subject: &str,
+            _: &str,
+        ) -> authz::error::Result<bool> {
+            self.check(permission, subject).await
+        }
+        async fn current_anchor(&self) -> authz::error::Result<String> {
+            Ok("1".to_string())
+        }
+        async fn anchor_time(&self, _: &str) -> authz::error::Result<u64> {
+            Ok(self.expected_timestamp)
+        }
+    }
+
+    let key_derivation = KeyDerivation {
+        ring_id: "ring-1".to_string(),
+        derivation: "some-derivation".to_string(),
+        policy_id: "policy-1".to_string(),
+        resource: "document".to_string(),
+        permission: "sign".to_string(),
+    };
+    let timestamp = 1_700_000_123;
+    let valid_window = Some(ValidWindow {
+        start: timestamp - 10,
+        end: timestamp + 10,
+    });
+
+    check_policy_access_at(
+        &TimestampAuthZ {
+            expected_timestamp: timestamp,
+        },
+        &key_derivation,
+        POLICY_TEST_DERIVATION_ID,
+        "did:key:test",
+        valid_window,
+        Some(timestamp),
+    )
+    .await
+    .expect("policy check should use supplied timestamp");
 }
 
 /// check_policy_access must deny access when the current time falls outside the valid_window.

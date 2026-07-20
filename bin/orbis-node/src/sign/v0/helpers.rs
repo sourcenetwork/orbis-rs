@@ -553,23 +553,45 @@ pub async fn check_policy_access(
     issuer_id: &str,
     valid_window: Option<ValidWindow>,
 ) -> Result<()> {
-    let now = if valid_window.is_some() {
-        Some(
+    let timestamp = policy_access_timestamp(valid_window.as_ref())?;
+    check_policy_access_at(
+        authz,
+        derivation_payload,
+        derivation_id,
+        issuer_id,
+        valid_window,
+        timestamp,
+    )
+    .await
+}
+
+pub fn policy_access_timestamp(valid_window: Option<&ValidWindow>) -> Result<Option<u64>> {
+    if valid_window.is_some() {
+        Ok(Some(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs(),
-        )
+        ))
     } else {
-        None
-    };
+        Ok(None)
+    }
+}
 
+pub async fn check_policy_access_at(
+    authz: &(dyn Authz + Send + Sync),
+    derivation_payload: &KeyDerivation,
+    derivation_id: &str,
+    issuer_id: &str,
+    valid_window: Option<ValidWindow>,
+    timestamp: Option<u64>,
+) -> Result<()> {
     let permission = AccessCheckRequest::new(
         derivation_payload.policy_id.clone(),
         derivation_payload.resource.clone(),
         derivation_id.to_string(),
         derivation_payload.permission.clone(),
         None,
-        now,
+        timestamp,
         valid_window,
     )
     .to_bytes()

@@ -109,9 +109,15 @@ impl Authz for SourceHubAuth {
 
 /// Parse a SourceHub opaque anchor (a decimal block height).
 fn parse_anchor_height(anchor: &str) -> Result<u64> {
-    anchor.parse::<u64>().map_err(|e| {
+    let height = anchor.parse::<u64>().map_err(|e| {
         AuthZError::InvalidRequest(format!("invalid block-height anchor {anchor:?}: {e}"))
-    })
+    })?;
+    if height == 0 {
+        return Err(AuthZError::InvalidRequest(
+            "block-height anchor must be greater than zero".to_string(),
+        ));
+    }
+    Ok(height)
 }
 
 impl SourceHubAuth {

@@ -8,12 +8,13 @@ use super::types::{
 #[cfg(feature = "bls12-381")]
 use super::types::{SignResponseStatement, SIGN_RESPONSE_DOMAIN};
 use super::{
-    queue_report, validate_relay_request_binding, RelayRequestBinding, RelayRequestTimestampBinding,
+    build_signed_relay_statement, queue_report, validate_relay_request_binding,
+    RelayRequestBinding, RelayRequestTimestampBinding, RelayStatementInputs,
 };
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::helpers::node_routes::resolve_node_routes;
 use crate::helpers::test_helpers::{
-    cleanup_db, create_authenticated_request, get_test_ring_post,
+    cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_ring_post,
     setup_three_node_network_with_sign, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
 };
 use crate::ring_state::{RingPolyState, RingShareBundle};
@@ -274,6 +275,37 @@ fn relay_request_binding_rejects_unbound_statement_fields() {
             "{case} should reject"
         );
     }
+}
+
+#[tokio::test]
+async fn relay_statement_builder_rejects_relayer_key_outside_ring() {
+    let db_name = "relay_statement_builder_rejects_relayer_key_outside_ring";
+    let db_path = test_db_path(db_name);
+    cleanup_db(&db_path);
+    let app_state = create_test_app_state_default(db_name).await;
+    let ring = relay_binding_ring();
+
+    let error = build_signed_relay_statement(
+        RelayStatementInputs {
+            ring,
+            ring_id: RELAY_BINDING_RING_ID.to_string(),
+            protocol_version: network::V0.version,
+            chain_id: app_state.bulletin.chain_id(),
+            request_id: RELAY_BINDING_REQUEST_ID.to_string(),
+            origin_protocol: "pre".to_string(),
+            relayer_node_key: app_state.node_key.clone(),
+            actor_id: RELAY_BINDING_ACTOR_ID.to_string(),
+            object_id: RELAY_BINDING_OBJECT_ID.to_string(),
+            user_signed_at: RELAY_BINDING_USER_SIGNED_AT,
+            acp_timestamp: Some(RELAY_BINDING_PRE_TIMESTAMP),
+            valid_window: None,
+        },
+        &app_state.local_storage,
+    )
+    .unwrap_err();
+
+    cleanup_db(&db_path);
+    assert!(error.to_string().contains("not in ring"));
 }
 
 #[tokio::test]

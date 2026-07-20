@@ -1,4 +1,4 @@
-use super::SourceHubAuth;
+use super::{parse_anchor_height, SourceHubAuth};
 use crate::r#trait::Authz;
 use crate::sourcehub::{AccessCheckRequest, ValidWindow};
 use common::blockchain::{
@@ -11,6 +11,12 @@ use did_key::{generate, Ed25519KeyPair, Fingerprint};
 #[test]
 fn test_name() {
     assert_eq!(SourceHubAuth::name(), "authz/sourcehub");
+}
+
+#[test]
+fn parse_anchor_height_rejects_zero() {
+    assert_eq!(parse_anchor_height("1").unwrap(), 1);
+    assert!(parse_anchor_height("0").is_err());
 }
 
 /// Test policy for ACP - simple document access control

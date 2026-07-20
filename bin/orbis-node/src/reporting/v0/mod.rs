@@ -457,7 +457,12 @@ pub fn build_signed_relay_statement(
     let signed_at = current_unix_time()?;
     let from_node_id =
         determine_session_node_id(&inputs.relayer_node_key, &inputs.ring.peer_node_keys)
-            .unwrap_or(0);
+            .ok_or_else(|| {
+                ReportingError::InvalidReport(format!(
+                    "relayer node key {} is not in ring {}; cannot build relay request evidence",
+                    inputs.relayer_node_key, inputs.ring_id
+                ))
+            })?;
     let (valid_window_start, valid_window_end) = match &inputs.valid_window {
         Some(window) => (Some(window.start), Some(window.end)),
         None => (None, None),

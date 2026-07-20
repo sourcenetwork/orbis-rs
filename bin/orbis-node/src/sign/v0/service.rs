@@ -9,7 +9,8 @@ use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::{SignCoordinator, SigningOptions};
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::helpers::{
-    check_policy_access, fetch_bulletin_payloads_for_version, validate_sign_claims,
+    check_policy_access_at, fetch_bulletin_payloads_for_version, policy_access_timestamp,
+    validate_sign_claims,
 };
 use crate::sign::v0::messages::{PolicyContext, SignContext};
 use authn::SignClaims;
@@ -121,12 +122,14 @@ where
         .await?;
 
         // Authorize: check on-chain policy access (IO) ---
-        check_policy_access(
+        let relay_acp_timestamp = policy_access_timestamp(valid_window.as_ref())?;
+        check_policy_access_at(
             &*self.state.authz,
             &key_derivation,
             &req.derivation_id,
             &token.issuer_id,
             valid_window.clone(),
+            relay_acp_timestamp,
         )
         .await?;
 
@@ -175,13 +178,9 @@ where
                 })?;
         // The relayer signs a record that it forwarded this request (after passing its own ACP
         // check above), so a peer whose re-check fails can attribute it via `unauthorized_request`.
-        // Sign's ACP check only stamps a timestamp when a valid window is present, so mirror that
-        // here — the refutation trusts `statement.timestamp` for the sign origin.
-        let relay_acp_timestamp = if valid_window.is_some() {
-            Some(current_time)
-        } else {
-            None
-        };
+        // Sign's ACP check only stamps a timestamp when a valid window is present. Reuse the exact
+        // timestamp from the ACP check above so the relay statement cannot drift across a window
+        // boundary while JWT/bulletin IO is in flight.
         let (relay_statement, relay_signature) = build_signed_relay_statement(
             RelayStatementInputs {
                 ring: ring_payload.clone(),
