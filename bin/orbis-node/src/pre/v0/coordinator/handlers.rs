@@ -6,9 +6,12 @@ use crate::pre::v0::helpers::{
     validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::v0::messages::{PreMessage, ReencryptRequest};
-use crate::reporting::v0::report_unauthorized_relay;
 use crate::reporting::v0::types::{
     ring_state_sha256, PreReencryptResponseStatement, PRE_REENCRYPT_RESPONSE_DOMAIN,
+};
+use crate::reporting::v0::{
+    report_unauthorized_relay, validate_relay_request_binding, RelayRequestBinding,
+    RelayRequestTimestampBinding,
 };
 use crate::ring_state::RingShareBundle;
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
@@ -142,7 +145,7 @@ where
             &document_payload,
             &ctx.object_id,
             &token.issuer_id,
-            ctx.valid_window,
+            ctx.valid_window.clone(),
         )
         .await
         {
@@ -150,14 +153,40 @@ where
             // provided it signed a statement vouching that it forwarded this exact request.
             if let PreError::Unauthorized(_) = &error {
                 if let Some(statement) = &ctx.relay_statement {
-                    report_unauthorized_relay::<D, SignImpl>(
-                        self.app_state.clone(),
-                        self.routes,
-                        statement.clone(),
-                        ctx.relay_signature.clone(),
-                        current_time,
-                    )
-                    .await;
+                    let chain_id = self.app_state.bulletin.chain_id();
+                    let binding = RelayRequestBinding {
+                        ring: &ring_payload,
+                        ring_id: &document_payload.ring_id,
+                        protocol_version: self.routes.version,
+                        chain_id: &chain_id,
+                        request_id: &request_id,
+                        origin_protocol: "pre",
+                        actor_id: &token.issuer_id,
+                        object_id: &ctx.object_id,
+                        user_signed_at: token.issued_time,
+                        valid_window: ctx.valid_window.as_ref(),
+                        timestamp: RelayRequestTimestampBinding::Exact(document_payload.timestamp),
+                        from_node_id,
+                    };
+                    match validate_relay_request_binding(statement, binding) {
+                        Ok(()) => {
+                            report_unauthorized_relay::<D, SignImpl>(
+                                self.app_state.clone(),
+                                self.routes,
+                                statement.clone(),
+                                ctx.relay_signature.clone(),
+                                current_time,
+                            )
+                            .await;
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                %error,
+                                "Skipping unauthorized_request report: relay statement is not bound to failed PRE request"
+                            );
+                        }
+                    }
                 }
             }
             return Err(error);

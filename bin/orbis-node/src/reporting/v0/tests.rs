@@ -1,13 +1,15 @@
 use super::error::Result;
 use super::observation::{InvalidCryptoResponseObservation, OfflineObservation, ReportObservation};
-use super::queue_report;
 use super::types::{
     ring_state_sha256, CommitteeScope, InvalidCryptoResponse, PreReencryptResponseStatement,
-    ReportEnvelope, CHAIN_BLOCK_GRACE_SECS, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
-    PRE_REENCRYPT_RESPONSE_DOMAIN,
+    RelayRequestStatement, ReportEnvelope, CHAIN_BLOCK_GRACE_SECS,
+    INVALID_CRYPTO_RESPONSE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN,
 };
 #[cfg(feature = "bls12-381")]
 use super::types::{SignResponseStatement, SIGN_RESPONSE_DOMAIN};
+use super::{
+    queue_report, validate_relay_request_binding, RelayRequestBinding, RelayRequestTimestampBinding,
+};
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::helpers::node_routes::resolve_node_routes;
 use crate::helpers::test_helpers::{
@@ -15,6 +17,8 @@ use crate::helpers::test_helpers::{
     setup_three_node_network_with_sign, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
 };
 use crate::ring_state::{RingPolyState, RingShareBundle};
+use authz::sourcehub::ValidWindow;
+use bulletin::r#trait::UpgradeInfo;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, DocumentPayload, RingPayload};
 use common::blockchain::sign_node_message_with_hex_key;
 use crypto::r#trait::{
@@ -27,6 +31,250 @@ use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
+
+const RELAY_BINDING_CHAIN_ID: &str = "relay-binding-chain";
+const RELAY_BINDING_RING_ID: &str = "relay-binding-ring";
+const RELAY_BINDING_REQUEST_ID: &str = "relay-binding-request";
+const RELAY_BINDING_ACTOR_ID: &str = "did:key:z6Mkrelayactor";
+const RELAY_BINDING_OBJECT_ID: &str = "relay-binding-object";
+const RELAY_BINDING_RELAYER_KEY: &str = "accused";
+const RELAY_BINDING_FROM_NODE_ID: u32 = 1;
+const RELAY_BINDING_SIGNED_AT: u64 = 1_700_000_010;
+const RELAY_BINDING_USER_SIGNED_AT: u64 = 1_700_000_000;
+const RELAY_BINDING_PRE_TIMESTAMP: u64 = 1_699_999_900;
+
+fn relay_binding_ring() -> RingPayload {
+    RingPayload {
+        ring_pk: "relay-binding-ring-pk".to_string(),
+        peer_node_keys: vec![
+            "reporter".to_string(),
+            RELAY_BINDING_RELAYER_KEY.to_string(),
+            "validator".to_string(),
+        ],
+        threshold: 2,
+        pss_interval: 86_400,
+        upgrade_info: UpgradeInfo {
+            current_version: network::V0.version,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn relay_binding_window() -> ValidWindow {
+    ValidWindow {
+        start: RELAY_BINDING_SIGNED_AT - 60,
+        end: RELAY_BINDING_SIGNED_AT + 60,
+    }
+}
+
+fn relay_binding_statement(
+    ring: &RingPayload,
+    origin_protocol: &str,
+    valid_window: Option<ValidWindow>,
+    timestamp: Option<u64>,
+) -> RelayRequestStatement {
+    let (valid_window_start, valid_window_end) = valid_window
+        .as_ref()
+        .map(|window| (Some(window.start), Some(window.end)))
+        .unwrap_or((None, None));
+    RelayRequestStatement {
+        domain: RELAY_REQUEST_DOMAIN.to_string(),
+        chain_id: RELAY_BINDING_CHAIN_ID.to_string(),
+        ring_id: RELAY_BINDING_RING_ID.to_string(),
+        ring_pk: ring.ring_pk.clone(),
+        ring_state_sha256: ring_state_sha256(ring),
+        protocol_version: network::V0.version,
+        request_id: RELAY_BINDING_REQUEST_ID.to_string(),
+        signed_at: RELAY_BINDING_SIGNED_AT,
+        user_signed_at: RELAY_BINDING_USER_SIGNED_AT,
+        relayer_node_key: RELAY_BINDING_RELAYER_KEY.to_string(),
+        origin_protocol: origin_protocol.to_string(),
+        accused_committee_scope: CommitteeScope::Current,
+        signing_committee_scope: CommitteeScope::Current,
+        from_node_id: RELAY_BINDING_FROM_NODE_ID,
+        actor_id: RELAY_BINDING_ACTOR_ID.to_string(),
+        object_id: RELAY_BINDING_OBJECT_ID.to_string(),
+        valid_window_start,
+        valid_window_end,
+        timestamp,
+    }
+}
+
+fn relay_binding<'a>(
+    ring: &'a RingPayload,
+    origin_protocol: &'a str,
+    valid_window: Option<&'a ValidWindow>,
+    timestamp: RelayRequestTimestampBinding,
+) -> RelayRequestBinding<'a> {
+    RelayRequestBinding {
+        ring,
+        ring_id: RELAY_BINDING_RING_ID,
+        protocol_version: network::V0.version,
+        chain_id: RELAY_BINDING_CHAIN_ID,
+        request_id: RELAY_BINDING_REQUEST_ID,
+        origin_protocol,
+        actor_id: RELAY_BINDING_ACTOR_ID,
+        object_id: RELAY_BINDING_OBJECT_ID,
+        user_signed_at: RELAY_BINDING_USER_SIGNED_AT,
+        valid_window,
+        timestamp,
+        from_node_id: RELAY_BINDING_FROM_NODE_ID,
+    }
+}
+
+#[test]
+fn relay_request_binding_accepts_valid_pre_statement() {
+    let ring = relay_binding_ring();
+    let window = relay_binding_window();
+    let statement = relay_binding_statement(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        Some(RELAY_BINDING_PRE_TIMESTAMP),
+    );
+
+    validate_relay_request_binding(
+        &statement,
+        relay_binding(
+            &ring,
+            "pre",
+            Some(&window),
+            RelayRequestTimestampBinding::Exact(Some(RELAY_BINDING_PRE_TIMESTAMP)),
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn relay_request_binding_accepts_valid_sign_statement_timestamp_semantics() {
+    let ring = relay_binding_ring();
+    let no_window_statement = relay_binding_statement(&ring, "sign", None, None);
+    validate_relay_request_binding(
+        &no_window_statement,
+        relay_binding(
+            &ring,
+            "sign",
+            None,
+            RelayRequestTimestampBinding::SignPolicy,
+        ),
+    )
+    .unwrap();
+
+    let window = relay_binding_window();
+    let windowed_statement = relay_binding_statement(
+        &ring,
+        "sign",
+        Some(window.clone()),
+        Some(RELAY_BINDING_SIGNED_AT + 1),
+    );
+    validate_relay_request_binding(
+        &windowed_statement,
+        relay_binding(
+            &ring,
+            "sign",
+            Some(&window),
+            RelayRequestTimestampBinding::SignPolicy,
+        ),
+    )
+    .unwrap();
+
+    let mut stale_timestamp = windowed_statement;
+    stale_timestamp.timestamp =
+        Some(RELAY_BINDING_SIGNED_AT + crate::constants::RELAY_CHECK_MAX_DRIFT_SECS + 1);
+    assert!(validate_relay_request_binding(
+        &stale_timestamp,
+        relay_binding(
+            &ring,
+            "sign",
+            Some(&window),
+            RelayRequestTimestampBinding::SignPolicy,
+        ),
+    )
+    .is_err());
+}
+
+#[test]
+fn relay_request_binding_rejects_unbound_statement_fields() {
+    let ring = relay_binding_ring();
+    let window = relay_binding_window();
+    let valid = relay_binding_statement(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        Some(RELAY_BINDING_PRE_TIMESTAMP),
+    );
+    let window_start = window.start;
+
+    let cases: Vec<(&str, Box<dyn FnOnce(&mut RelayRequestStatement)>)> = vec![
+        (
+            "request_id",
+            Box::new(|statement| statement.request_id = "other-request".to_string()),
+        ),
+        (
+            "origin_protocol",
+            Box::new(|statement| statement.origin_protocol = "sign".to_string()),
+        ),
+        (
+            "actor_id",
+            Box::new(|statement| statement.actor_id = "did:key:z6Mkother".to_string()),
+        ),
+        (
+            "object_id",
+            Box::new(|statement| statement.object_id = "other-object".to_string()),
+        ),
+        (
+            "ring_id",
+            Box::new(|statement| statement.ring_id = "other-ring".to_string()),
+        ),
+        (
+            "ring_pk",
+            Box::new(|statement| statement.ring_pk = "other-ring-pk".to_string()),
+        ),
+        (
+            "ring_state_sha256",
+            Box::new(|statement| statement.ring_state_sha256 = "00".repeat(32)),
+        ),
+        (
+            "protocol_version",
+            Box::new(|statement| statement.protocol_version += 1),
+        ),
+        (
+            "from_node_id",
+            Box::new(|statement| statement.from_node_id += 1),
+        ),
+        (
+            "user_signed_at",
+            Box::new(|statement| statement.user_signed_at += 1),
+        ),
+        (
+            "valid_window",
+            Box::new(move |statement| statement.valid_window_start = Some(window_start + 1)),
+        ),
+        (
+            "pre timestamp",
+            Box::new(|statement| statement.timestamp = Some(RELAY_BINDING_PRE_TIMESTAMP + 1)),
+        ),
+    ];
+
+    for (case, mutate) in cases {
+        let mut statement = valid.clone();
+        mutate(&mut statement);
+        assert!(
+            validate_relay_request_binding(
+                &statement,
+                relay_binding(
+                    &ring,
+                    "pre",
+                    Some(&window),
+                    RelayRequestTimestampBinding::Exact(Some(RELAY_BINDING_PRE_TIMESTAMP)),
+                ),
+            )
+            .is_err(),
+            "{case} should reject"
+        );
+    }
+}
 
 #[tokio::test]
 #[serial_test::serial]

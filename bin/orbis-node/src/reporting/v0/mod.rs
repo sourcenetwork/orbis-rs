@@ -139,6 +139,200 @@ where
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum RelayRequestTimestampBinding {
+    Exact(Option<u64>),
+    SignPolicy,
+}
+
+/// Responder-observed request fields that a relayer's signed statement must
+/// describe before we can use it as `unauthorized_request` evidence.
+pub struct RelayRequestBinding<'a> {
+    pub ring: &'a RingPayload,
+    pub ring_id: &'a str,
+    pub protocol_version: u64,
+    pub chain_id: &'a str,
+    pub request_id: &'a str,
+    pub origin_protocol: &'a str,
+    pub actor_id: &'a str,
+    pub object_id: &'a str,
+    pub user_signed_at: u64,
+    pub valid_window: Option<&'a ValidWindow>,
+    pub timestamp: RelayRequestTimestampBinding,
+    pub from_node_id: u32,
+}
+
+/// Ensure the signed relay statement is about the exact request that failed this
+/// responder's ACP re-check. Without this binding, a relayer could attach a
+/// statement for an authorized actor/object pair to an unrelated unauthorized
+/// request and make co-signers reject the report.
+pub fn validate_relay_request_binding(
+    statement: &RelayRequestStatement,
+    expected: RelayRequestBinding<'_>,
+) -> Result<()> {
+    if statement.chain_id != expected.chain_id {
+        return Err(relay_binding_mismatch(
+            "chain_id",
+            expected.chain_id,
+            &statement.chain_id,
+        ));
+    }
+    if statement.ring_id != expected.ring_id {
+        return Err(relay_binding_mismatch(
+            "ring_id",
+            expected.ring_id,
+            &statement.ring_id,
+        ));
+    }
+    if statement.ring_pk != expected.ring.ring_pk {
+        return Err(relay_binding_mismatch(
+            "ring_pk",
+            &expected.ring.ring_pk,
+            &statement.ring_pk,
+        ));
+    }
+    let expected_ring_state_sha256 = ring_state_sha256(expected.ring);
+    if statement.ring_state_sha256 != expected_ring_state_sha256 {
+        return Err(relay_binding_mismatch(
+            "ring_state_sha256",
+            &expected_ring_state_sha256,
+            &statement.ring_state_sha256,
+        ));
+    }
+    if statement.protocol_version != expected.protocol_version {
+        return Err(relay_binding_mismatch(
+            "protocol_version",
+            expected.protocol_version,
+            statement.protocol_version,
+        ));
+    }
+    if statement.request_id != expected.request_id {
+        return Err(relay_binding_mismatch(
+            "request_id",
+            expected.request_id,
+            &statement.request_id,
+        ));
+    }
+    if statement.origin_protocol != expected.origin_protocol {
+        return Err(relay_binding_mismatch(
+            "origin_protocol",
+            expected.origin_protocol,
+            &statement.origin_protocol,
+        ));
+    }
+    if statement.actor_id != expected.actor_id {
+        return Err(relay_binding_mismatch(
+            "actor_id",
+            expected.actor_id,
+            &statement.actor_id,
+        ));
+    }
+    if statement.object_id != expected.object_id {
+        return Err(relay_binding_mismatch(
+            "object_id",
+            expected.object_id,
+            &statement.object_id,
+        ));
+    }
+    if statement.user_signed_at != expected.user_signed_at {
+        return Err(relay_binding_mismatch(
+            "user_signed_at",
+            expected.user_signed_at,
+            statement.user_signed_at,
+        ));
+    }
+
+    let expected_valid_window = expected
+        .valid_window
+        .map(|window| (window.start, window.end));
+    let actual_valid_window = match (statement.valid_window_start, statement.valid_window_end) {
+        (Some(start), Some(end)) => Some((start, end)),
+        (None, None) => None,
+        _ => {
+            return Err(ReportingError::InvalidReport(
+                "relay request statement valid_window is only partially set".to_string(),
+            ))
+        }
+    };
+    if actual_valid_window != expected_valid_window {
+        return Err(relay_binding_mismatch(
+            "valid_window",
+            expected_valid_window,
+            actual_valid_window,
+        ));
+    }
+
+    if statement.from_node_id != expected.from_node_id {
+        return Err(relay_binding_mismatch(
+            "from_node_id",
+            expected.from_node_id,
+            statement.from_node_id,
+        ));
+    }
+    let relayer_node_id =
+        determine_session_node_id(&statement.relayer_node_key, &expected.ring.peer_node_keys)
+            .ok_or_else(|| {
+                ReportingError::InvalidReport(
+                    "relay request statement relayer_node_key is not in the ring".to_string(),
+                )
+            })?;
+    if statement.from_node_id != relayer_node_id {
+        return Err(relay_binding_mismatch(
+            "relayer_node_id",
+            relayer_node_id,
+            statement.from_node_id,
+        ));
+    }
+
+    match expected.timestamp {
+        RelayRequestTimestampBinding::Exact(expected_timestamp) => {
+            if statement.timestamp != expected_timestamp {
+                return Err(relay_binding_mismatch(
+                    "timestamp",
+                    expected_timestamp,
+                    statement.timestamp,
+                ));
+            }
+        }
+        RelayRequestTimestampBinding::SignPolicy => {
+            if expected_valid_window.is_none() {
+                if statement.timestamp.is_some() {
+                    return Err(relay_binding_mismatch(
+                        "timestamp",
+                        None::<u64>,
+                        statement.timestamp,
+                    ));
+                }
+            } else {
+                let timestamp = statement.timestamp.ok_or_else(|| {
+                    ReportingError::InvalidReport(
+                        "relay request statement timestamp is required for windowed sign requests"
+                            .to_string(),
+                    )
+                })?;
+                if timestamp.abs_diff(statement.signed_at) > RELAY_CHECK_MAX_DRIFT_SECS {
+                    return Err(ReportingError::InvalidReport(format!(
+                        "relay request statement timestamp {} drifts from signed_at {} by more than {}s",
+                        timestamp, statement.signed_at, RELAY_CHECK_MAX_DRIFT_SECS
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn relay_binding_mismatch(
+    field: &str,
+    expected: impl std::fmt::Debug,
+    actual: impl std::fmt::Debug,
+) -> ReportingError {
+    ReportingError::InvalidReport(format!(
+        "relay request statement does not bind to failed request: {field} expected {expected:?}, got {actual:?}"
+    ))
+}
+
 /// Attribute the relaying node when a relayed request fails a responder's ACP re-check.
 ///
 /// Best-effort: verifies the relay statement is fresh and signed by the named relayer, captures the
