@@ -80,6 +80,53 @@ pub struct SourceHubAuth {
 #[async_trait]
 impl Authz for SourceHubAuth {
     async fn check(&self, permission: Vec<u8>, subject: &str) -> Result<bool> {
+        self.verify_at(permission, subject, None).await
+    }
+
+    /// For SourceHub the opaque anchor is a decimal block height.
+    async fn check_at(&self, permission: Vec<u8>, subject: &str, anchor: &str) -> Result<bool> {
+        let height = parse_anchor_height(anchor)?;
+        self.verify_at(permission, subject, Some(height)).await
+    }
+
+    async fn current_anchor(&self) -> Result<String> {
+        let height = self
+            .chain_client
+            .get_latest_height()
+            .await
+            .map_err(|e| AuthZError::ChainError(e.to_string()))?;
+        Ok(height.to_string())
+    }
+
+    async fn anchor_time(&self, anchor: &str) -> Result<u64> {
+        let height = parse_anchor_height(anchor)?;
+        self.chain_client
+            .get_block_time(height)
+            .await
+            .map_err(|e| AuthZError::ChainError(e.to_string()))
+    }
+}
+
+/// Parse a SourceHub opaque anchor (a decimal block height).
+fn parse_anchor_height(anchor: &str) -> Result<u64> {
+    let height = anchor.parse::<u64>().map_err(|e| {
+        AuthZError::InvalidRequest(format!("invalid block-height anchor {anchor:?}: {e}"))
+    })?;
+    if height == 0 {
+        return Err(AuthZError::InvalidRequest(
+            "block-height anchor must be greater than zero".to_string(),
+        ));
+    }
+    Ok(height)
+}
+
+impl SourceHubAuth {
+    async fn verify_at(
+        &self,
+        permission: Vec<u8>,
+        subject: &str,
+        height: Option<u64>,
+    ) -> Result<bool> {
         // Decode the access check request from bytes
         let request = AccessCheckRequest::from_bytes(&permission)?;
 
@@ -120,7 +167,7 @@ impl Authz for SourceHubAuth {
 
         let is_authorized = self
             .chain_client
-            .acp_verify_access(&request.policy_id, &access_request)
+            .acp_verify_access(&request.policy_id, &access_request, height)
             .await
             .map_err(|e| AuthZError::ChainError(e.to_string()))?;
 

@@ -65,6 +65,8 @@ pub struct DemeritConfig {
     pub reset_interval_seconds: u64,
     #[prost(uint64, tag = "3")]
     pub invalid_crypto_response_demerits: u64,
+    #[prost(uint64, tag = "4")]
+    pub unauthorized_request_demerits: u64,
 }
 
 /// Fault-report policy and automatic replacement settings stored on a ring.
@@ -1655,6 +1657,7 @@ mod tests {
                     node_offline_demerits: 3,
                     reset_interval_seconds: 42,
                     invalid_crypto_response_demerits: 7,
+                    unauthorized_request_demerits: 9,
                 }),
                 backup_node_keys: vec!["backup-2".to_string(), "backup-1".to_string()],
                 kick_threshold: 4,
@@ -1668,6 +1671,7 @@ mod tests {
         assert_eq!(config.node_offline_demerits, 3);
         assert_eq!(config.reset_interval_seconds, 42);
         assert_eq!(config.invalid_crypto_response_demerits, 7);
+        assert_eq!(config.unauthorized_request_demerits, 9);
         assert_eq!(
             reporting.backup_node_keys,
             vec!["backup-2".to_string(), "backup-1".to_string()]
@@ -1684,6 +1688,7 @@ mod tests {
                     node_offline_demerits: 5,
                     reset_interval_seconds: 60,
                     invalid_crypto_response_demerits: 2,
+                    unauthorized_request_demerits: 4,
                 }),
                 backup_node_keys: vec!["backup-a".to_string()],
                 kick_threshold: 6,
@@ -1697,6 +1702,8 @@ mod tests {
 
         assert_eq!(config.node_offline_demerits, 5);
         assert_eq!(config.reset_interval_seconds, 60);
+        assert_eq!(config.invalid_crypto_response_demerits, 2);
+        assert_eq!(config.unauthorized_request_demerits, 4);
         assert_eq!(reporting.backup_node_keys, vec!["backup-a".to_string()]);
         assert_eq!(reporting.kick_threshold, 6);
     }

@@ -11,6 +11,7 @@ use crate::pre::v0::helpers::{
     validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::v0::messages::PreRequestContext;
+use crate::reporting::v0::{build_signed_relay_statement, RelayStatementInputs};
 use crate::ring_state::RingPolyState;
 use authn::PreClaims;
 use authz::sourcehub::ValidWindow;
@@ -19,7 +20,6 @@ use crypto::PreImpl as ThresholdDealerNode;
 use proto::v0::pre::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
-
 /// Implementation of the v0 PreService.
 ///
 /// Accepts requests only for rings whose effective protocol version is 0.
@@ -205,6 +205,26 @@ where
             document_payload.ring_id.clone(),
             &ring_payload,
         );
+        // The relayer signs a record that it forwarded this request (after passing its own ACP
+        // check above), so a peer whose re-check fails can attribute it via `unauthorized_request`.
+        let (relay_statement, relay_signature) = build_signed_relay_statement(
+            RelayStatementInputs {
+                ring: ring_payload.clone(),
+                ring_id: document_payload.ring_id.clone(),
+                protocol_version: self.routes.version,
+                chain_id: self.state.bulletin.chain_id(),
+                request_id: request_id.clone(),
+                origin_protocol: "pre".to_string(),
+                relayer_node_key: self.state.node_key.clone(),
+                actor_id: token.issuer_id.clone(),
+                object_id: req.object_id.clone(),
+                user_signed_at: token.issued_time,
+                acp_timestamp: document_payload.timestamp,
+                valid_window: valid_window.clone(),
+            },
+            &self.state.local_storage,
+        )
+        .map_err(|e| PreError::Generic(format!("Failed to build relay statement: {}", e)))?;
         let ring = RingConfig {
             ring_id: document_payload.ring_id.clone(),
             ring_pk_bytes,
@@ -221,6 +241,8 @@ where
             derivation: req.derivation,
             salt: req.salt,
             valid_window,
+            relay_statement: Some(relay_statement),
+            relay_signature,
         };
         let result = coordinator
             .initiate_reencryption(request_id, ring, secret_bytes, ctx, report_binding)

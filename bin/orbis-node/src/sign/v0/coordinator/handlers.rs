@@ -8,7 +8,10 @@ use crate::reporting::v0::types::{
     ReportSigningContext, SignResponseStatement, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
     NODE_OFFLINE_REPORT_TYPE, SIGN_RESPONSE_DOMAIN,
 };
-use crate::reporting::v0::validate_signing_report;
+use crate::reporting::v0::{
+    report_unauthorized_relay, validate_relay_request_binding, validate_signing_report,
+    RelayRequestBinding, RelayRequestTimestampBinding,
+};
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::helpers::{
@@ -242,9 +245,9 @@ where
     ) -> Result<Option<SignMessage>> {
         let NonceRequest {
             request_id,
+            from_node_id,
             ring_pk: ring_pk_bytes,
             context,
-            ..
         } = req;
         // Auth check first — fail fast before burning a nonce.
         let mut refresh_candidate_bundle: Option<RingShareBundle> = None;
@@ -272,14 +275,59 @@ where
                     self.routes.version,
                 )
                 .await?;
-                check_policy_access(
+                if let Err(error) = check_policy_access(
                     &*self.app_state.authz,
                     &key_derivation,
                     derivation_id,
                     &token.issuer_id,
                     valid_window.clone(),
                 )
-                .await?;
+                .await
+                {
+                    // A relayed request that fails our ACP re-check is attributable to the relaying
+                    // node, provided it signed a statement vouching that it forwarded this request.
+                    if let SignError::Unauthorized(_) = &error {
+                        if let Some(statement) = &ctx.relay_statement {
+                            let chain_id = self.app_state.bulletin.chain_id();
+                            let relay_request_id =
+                                request_id.strip_prefix("nonce-").unwrap_or(&request_id);
+                            let binding = RelayRequestBinding {
+                                ring: ring_payload.clone(),
+                                ring_id: key_derivation.ring_id.clone(),
+                                protocol_version: self.routes.version,
+                                chain_id,
+                                request_id: relay_request_id.to_string(),
+                                origin_protocol: "sign".to_string(),
+                                actor_id: token.issuer_id.clone(),
+                                object_id: derivation_id.clone(),
+                                user_signed_at: token.issued_time,
+                                valid_window: valid_window.clone(),
+                                timestamp: RelayRequestTimestampBinding::SignPolicy,
+                                from_node_id,
+                            };
+                            match validate_relay_request_binding(statement, binding) {
+                                Ok(()) => {
+                                    report_unauthorized_relay::<D, S>(
+                                        self.app_state.clone(),
+                                        self.routes,
+                                        statement.clone(),
+                                        ctx.relay_signature.clone(),
+                                        current_time,
+                                    )
+                                    .await;
+                                }
+                                Err(error) => {
+                                    tracing::warn!(
+                                        request_id = %request_id,
+                                        %error,
+                                        "Skipping unauthorized_request report: relay statement is not bound to failed Sign nonce request"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    return Err(error);
+                }
                 Some(ring_payload.ring_pk)
             }
             // The ready marker proves this signing round belongs to an already accepted
@@ -479,6 +527,8 @@ where
     /// derived key; produces no report binding (unreportable by design).
     async fn authorize_policy_sign_request(
         &self,
+        request_id: &str,
+        from_node_id: u32,
         message: &[u8],
         ctx: &PolicyContext,
     ) -> Result<SignRequestAuthorization> {
@@ -512,14 +562,57 @@ where
         // For interactive (FROST), authz was already checked in handle_nonce_request
         // (Round 1) before the nonce was generated — can decide to skip the IO here (I choose not to but can if speed is needed).
         // For non-interactive (BLS), this is the first and only round, so check now.
-        check_policy_access(
+        if let Err(error) = check_policy_access(
             &*self.app_state.authz,
             &key_derivation,
             derivation_id,
             &token.issuer_id,
             valid_window.clone(),
         )
-        .await?;
+        .await
+        {
+            // A relayed request that fails our ACP re-check is attributable to the relaying node,
+            // provided it signed a statement vouching that it forwarded this exact request.
+            if let SignError::Unauthorized(_) = &error {
+                if let Some(statement) = &ctx.relay_statement {
+                    let chain_id = self.app_state.bulletin.chain_id();
+                    let binding = RelayRequestBinding {
+                        ring: ring_payload.clone(),
+                        ring_id: key_derivation.ring_id.clone(),
+                        protocol_version: self.routes.version,
+                        chain_id,
+                        request_id: request_id.to_string(),
+                        origin_protocol: "sign".to_string(),
+                        actor_id: token.issuer_id.clone(),
+                        object_id: derivation_id.clone(),
+                        user_signed_at: token.issued_time,
+                        valid_window: valid_window.clone(),
+                        timestamp: RelayRequestTimestampBinding::SignPolicy,
+                        from_node_id,
+                    };
+                    match validate_relay_request_binding(statement, binding) {
+                        Ok(()) => {
+                            report_unauthorized_relay::<D, S>(
+                                self.app_state.clone(),
+                                self.routes,
+                                statement.clone(),
+                                ctx.relay_signature.clone(),
+                                current_time,
+                            )
+                            .await;
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                %error,
+                                "Skipping unauthorized_request report: relay statement is not bound to failed Sign request"
+                            );
+                        }
+                    }
+                }
+            }
+            return Err(error);
+        }
 
         // Derivation and metadata come from the bulletin, not the client
         let derivation = Some(key_derivation.derivation.into_bytes());
@@ -698,7 +791,10 @@ where
                 self.authorize_bulletin_sign_request(&message, object_id)
                     .await?
             }
-            SignContext::Policy(ctx) => self.authorize_policy_sign_request(&message, ctx).await?,
+            SignContext::Policy(ctx) => {
+                self.authorize_policy_sign_request(&request_id, from_node_id, &message, ctx)
+                    .await?
+            }
             SignContext::RingReshareUpdate(ctx) => {
                 self.authorize_ring_reshare_update_sign_request(&message, ctx)
                     .await?

@@ -539,6 +539,7 @@ impl SourceHubClient {
         &self,
         policy_id: &str,
         access_request: &AccessRequest,
+        height: Option<u64>,
     ) -> Result<bool> {
         let request = QueryVerifyAccessRequestRequest {
             policy_id: policy_id.to_string(),
@@ -551,7 +552,7 @@ impl SourceHubClient {
             .abci_query(
                 "/sourcehub.acp.Query/VerifyAccessRequest",
                 request_bytes,
-                None,
+                height,
                 false,
             )
             .await?;

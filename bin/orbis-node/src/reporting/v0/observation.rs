@@ -3,8 +3,9 @@ use crate::helpers::identity::extract_node_part;
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::error::PreError;
 use crate::reporting::v0::types::{
-    CommitteeScope, InvalidCryptoResponse, CHAIN_BLOCK_GRACE_SECS,
+    CommitteeScope, InvalidCryptoResponse, UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS,
     INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
+    UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };
 use crate::sign::v0::error::SignError;
 
@@ -30,10 +31,22 @@ pub struct InvalidCryptoResponseObservation {
     pub evidence: InvalidCryptoResponse,
 }
 
+/// A relayed Sign/PRE request whose ACP re-check failed on this node, attributing the relayer.
+#[derive(Debug, Clone)]
+pub struct UnauthorizedRequestObservation {
+    pub ring_id: String,
+    /// The relaying node (accused).
+    pub accused_node_key: String,
+    pub accused_peer_id: String,
+    pub observed_at: u64,
+    pub payload: UnauthorizedRequestPayload,
+}
+
 #[derive(Debug, Clone)]
 pub enum ReportObservation {
     NodeOffline(OfflineObservation),
     InvalidCryptoResponse(Box<InvalidCryptoResponseObservation>),
+    UnauthorizedRequest(Box<UnauthorizedRequestObservation>),
 }
 
 impl ReportObservation {
@@ -41,6 +54,7 @@ impl ReportObservation {
         match self {
             Self::NodeOffline(_) => NODE_OFFLINE_REPORT_TYPE,
             Self::InvalidCryptoResponse(_) => INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
+            Self::UnauthorizedRequest(_) => UNAUTHORIZED_REQUEST_REPORT_TYPE,
         }
     }
 }

@@ -27,6 +27,11 @@ pub struct PolicyContext {
     /// Carried here to avoid a redundant bulletin lookup for the coordinator;
     /// peer nodes always re-fetch independently.
     pub key_derivation: KeyDerivation,
+    /// The relayer's signed record of this request, so a peer whose ACP re-check fails can attribute
+    /// the relaying node via an `unauthorized_request` report. Always set on the live relay path;
+    /// `None` only in unit tests that construct the context directly.
+    pub relay_statement: Option<crate::reporting::v0::types::RelayRequestStatement>,
+    pub relay_signature: Vec<u8>,
 }
 
 /// Canonical message signed by the new committee before a reshare bulletin update.

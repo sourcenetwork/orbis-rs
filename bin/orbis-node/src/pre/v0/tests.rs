@@ -264,6 +264,8 @@ async fn test_dkg_then_pre_end_to_end() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -464,6 +466,8 @@ async fn test_pre_with_large_secret() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -600,6 +604,8 @@ async fn test_pre_fails_with_wrong_key() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -732,6 +738,8 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -885,6 +893,8 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -1177,6 +1187,8 @@ async fn test_pre_fails_with_wrong_derivation() {
                 derivation: Some(correct_derivation.clone()),
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -1348,6 +1360,8 @@ async fn test_pre_fails_with_bad_proof() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload),
         )
@@ -1464,6 +1478,8 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
                 derivation: None,
                 salt: None,
                 valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
             },
             PreReportBinding::new(
                 "test-chain".to_string(),
@@ -1502,6 +1518,15 @@ async fn test_check_policy_access_enforces_authz_denial() {
     impl authz::r#trait::Authz for DenyAuthZ {
         async fn check(&self, _: Vec<u8>, _: &str) -> authz::error::Result<bool> {
             Ok(false)
+        }
+        async fn check_at(&self, _: Vec<u8>, _: &str, _: &str) -> authz::error::Result<bool> {
+            Ok(false)
+        }
+        async fn current_anchor(&self) -> authz::error::Result<String> {
+            Ok("0".to_string())
+        }
+        async fn anchor_time(&self, _: &str) -> authz::error::Result<u64> {
+            Ok(0)
         }
     }
 
