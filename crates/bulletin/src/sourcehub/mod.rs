@@ -372,6 +372,7 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
                         node_offline_demerits: dc.node_offline_demerits,
                         reset_interval_seconds: dc.reset_interval_seconds,
                         invalid_crypto_response_demerits: dc.invalid_crypto_response_demerits,
+                        unauthorized_request_demerits: dc.unauthorized_request_demerits,
                     },
                 ),
                 backup_node_keys: reporting.backup_node_keys,

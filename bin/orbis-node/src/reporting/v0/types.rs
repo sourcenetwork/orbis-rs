@@ -950,10 +950,13 @@ fn write_string_vec(out: &mut Vec<u8>, values: &[String]) {
     }
 }
 
+/// Field order is the canonical wire contract — the chain-side (Go)
+/// decoder must read fields in exactly this order.
 fn write_demerit_config(out: &mut Vec<u8>, value: &bulletin::r#trait::DemeritConfig) {
     write_u64(out, value.node_offline_demerits);
     write_u64(out, value.invalid_crypto_response_demerits);
     write_u64(out, value.reset_interval_seconds);
+    write_u64(out, value.unauthorized_request_demerits);
 }
 
 fn write_reporting_config(out: &mut Vec<u8>, value: &bulletin::r#trait::ReportingConfig) {
@@ -1482,7 +1485,7 @@ mod tests {
         assert_ne!(ring_state_sha256(&a), ring_state_sha256(&b));
         assert_eq!(
             ring_state_sha256(&a),
-            "f6561137d2827315c438a8e0608cdf86748e7e7d0aa4b741dedc065f536c7861"
+            "ad10dfb463d1d3aeca03644e200aa192c49d6689300e90fe243d710e645aba18"
         );
 
         a.threshold = 1;
