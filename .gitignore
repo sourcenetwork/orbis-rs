@@ -56,3 +56,5 @@ public_key.txt
 
 # Claude Code local task tracking
 tasks/
+
+bench-results/

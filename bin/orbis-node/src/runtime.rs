@@ -140,7 +140,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .grpc_url(args.authz_grpc.clone())
             .rpc_url(args.chain_rpc.clone())
             .rest_url(args.chain_rest.clone())
-            .denom(args.denom.clone());
+            .denom(args.denom.clone())
+            .gas_multiplier(args.chain_gas_multiplier);
 
         let authz: Arc<dyn Authz> = Arc::new(
             AuthzImpl::new(authz_chain_config)
@@ -152,7 +153,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .grpc_url(args.bulletin_grpc.clone())
             .rpc_url(args.chain_rpc.clone())
             .rest_url(args.chain_rest.clone())
-            .denom(args.denom.clone());
+            .denom(args.denom.clone())
+            .gas_multiplier(args.chain_gas_multiplier);
         let chain_config = bulletin_chain_config.clone().build();
         let signer =
             create_and_store_node_key(local_storage.clone(), chain_config, &runtime_base_path)
@@ -180,6 +182,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     .rpc_url(args.chain_rpc.clone())
                     .rest_url(args.chain_rest.clone())
                     .grpc_url(args.bulletin_grpc.clone())
+                    .gas_multiplier(args.chain_gas_multiplier)
                     .build();
                 cli_tool::fund(signer.address(), fund_config)
                     .await

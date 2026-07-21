@@ -1,0 +1,44 @@
+schema_version: 1
+name: orbis-50-node-capacity
+crypto: bls12-381
+
+networks:
+  - network_size: 50
+    cases:
+      - { ring_size: 3, threshold: 2 }
+
+operations: [dkg, pre, sign, pss_refresh]
+profiles:
+  - name: lan
+    kind: lan
+  - name: wan-50ms
+    kind: wan
+    delay_ms: 25
+    jitter_ms: 5
+    loss_percent: 0.1
+
+warmups: 1
+repetitions: 5
+seed: 185974508
+output_dir: bench-results
+
+load:
+  concurrency: [1, 4, 16]
+  warmup_secs: 10
+  measure_secs: 30
+
+timeouts:
+  setup_secs: 1800
+  dkg_secs: 900
+  pre_secs: 120
+  sign_secs: 120
+  pss_refresh_secs: 900
+
+resources:
+  cpus_per_node: null
+  memory_per_node: null
+
+sourcehub_ref: 392d69c6f8c10c2f9f9bf45eda882d2da2ab854c
+setup_batch_size: 25
+pss_interval_secs: 15
+pss_poll_interval_secs: 1

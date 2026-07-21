@@ -59,10 +59,26 @@ lazy_static! {
     pub static ref DKG_PHASE_DURATION_SECONDS: HistogramVec = register_histogram_vec!(
         "dkg_phase_duration_seconds",
         "Duration of DKG phases in seconds",
-        &["phase"],
-        vec![0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]
+        &["kind", "phase"],
+        vec![0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0]
     )
     .expect("failed to register dkg_phase_duration_seconds");
+
+    pub static ref DKG_SESSION_DURATION_SECONDS: HistogramVec = register_histogram_vec!(
+        "dkg_session_duration_seconds",
+        "End-to-end duration of DKG-backed ceremonies",
+        &["kind", "outcome"],
+        vec![0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0]
+    )
+    .expect("failed to register dkg_session_duration_seconds");
+
+    pub static ref PSS_SCHEDULER_DELAY_SECONDS: HistogramVec = register_histogram_vec!(
+        "pss_scheduler_delay_seconds",
+        "Delay between a refresh becoming due and a scheduler observing it",
+        &[],
+        vec![0.0, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]
+    )
+    .expect("failed to register pss_scheduler_delay_seconds");
 
     pub static ref DKG_MESSAGES_TOTAL: CounterVec = register_counter_vec!(
         "dkg_messages_total",
@@ -98,7 +114,7 @@ lazy_static! {
         "pre_request_duration_seconds",
         "PRE request duration in seconds",
         &[],
-        vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+        vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0]
     )
     .expect("failed to register pre_request_duration_seconds");
 
@@ -130,7 +146,7 @@ lazy_static! {
         "sign_request_duration_seconds",
         "Signing request duration in seconds",
         &[],
-        vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+        vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0]
     )
     .expect("failed to register sign_request_duration_seconds");
 
@@ -244,6 +260,8 @@ pub fn init() {
     lazy_static::initialize(&DKG_SESSIONS_TOTAL);
     lazy_static::initialize(&DKG_ACTIVE_SESSIONS);
     lazy_static::initialize(&DKG_PHASE_DURATION_SECONDS);
+    lazy_static::initialize(&DKG_SESSION_DURATION_SECONDS);
+    lazy_static::initialize(&PSS_SCHEDULER_DELAY_SECONDS);
     lazy_static::initialize(&DKG_MESSAGES_TOTAL);
     lazy_static::initialize(&DKG_ABANDONED_SESSIONS_TOTAL);
     lazy_static::initialize(&PRE_REQUESTS_TOTAL);
@@ -398,9 +416,20 @@ pub enum DkgCeremonyKind {
     Reshare,
 }
 
+impl DkgCeremonyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Refresh => "refresh",
+            Self::Reshare => "reshare",
+        }
+    }
+}
+
 /// Owns all active-session gauges for one DKG-backed ceremony.
 pub struct DkgSessionMetricsGuard {
     kind: DkgCeremonyKind,
+    start: Instant,
     finished: bool,
 }
 
@@ -414,11 +443,13 @@ impl DkgSessionMetricsGuard {
         }
         Self {
             kind,
+            start: Instant::now(),
             finished: false,
         }
     }
 
     pub fn complete(mut self) {
+        record_dkg_session_duration(self.kind, "completed", self.start.elapsed().as_secs_f64());
         record_dkg_session_completed();
         match self.kind {
             DkgCeremonyKind::Fresh => {}
@@ -429,6 +460,7 @@ impl DkgSessionMetricsGuard {
     }
 
     pub fn abandon(mut self) {
+        record_dkg_session_duration(self.kind, "abandoned", self.start.elapsed().as_secs_f64());
         record_dkg_session_abandoned();
         match self.kind {
             DkgCeremonyKind::Fresh => {}
@@ -444,6 +476,7 @@ impl Drop for DkgSessionMetricsGuard {
         if self.finished {
             return;
         }
+        record_dkg_session_duration(self.kind, "failed", self.start.elapsed().as_secs_f64());
         record_dkg_session_failed();
         match self.kind {
             DkgCeremonyKind::Fresh => {}
@@ -451,6 +484,24 @@ impl Drop for DkgSessionMetricsGuard {
             DkgCeremonyKind::Reshare => record_reshare_session_failed(),
         }
     }
+}
+
+pub fn record_dkg_phase_duration(kind: DkgCeremonyKind, phase: &str, duration_secs: f64) {
+    DKG_PHASE_DURATION_SECONDS
+        .with_label_values(&[kind.as_str(), phase])
+        .observe(duration_secs);
+}
+
+pub fn record_dkg_session_duration(kind: DkgCeremonyKind, outcome: &str, duration_secs: f64) {
+    DKG_SESSION_DURATION_SECONDS
+        .with_label_values(&[kind.as_str(), outcome])
+        .observe(duration_secs);
+}
+
+pub fn record_pss_scheduler_delay(duration_secs: f64) {
+    PSS_SCHEDULER_DELAY_SECONDS
+        .with_label_values(&[])
+        .observe(duration_secs);
 }
 
 /// Record a gRPC request
@@ -628,6 +679,9 @@ pub async fn start_metrics_server(
 mod tests {
     use super::*;
     use prometheus::{HistogramOpts, Opts};
+    use std::sync::Mutex;
+
+    static DKG_METRICS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn request_metrics() -> (&'static CounterVec, &'static Gauge, &'static HistogramVec) {
         let total = Box::leak(Box::new(
@@ -667,5 +721,16 @@ mod tests {
         assert_eq!(active.get(), baseline);
         assert_eq!(total.with_label_values(&["completed"]).get(), 1.0);
         assert_eq!(total.with_label_values(&["failed"]).get(), 0.0);
+    }
+
+    #[test]
+    fn dkg_guard_observes_one_outcome_and_balances_gauges() {
+        let _lock = DKG_METRICS_TEST_LOCK.lock().unwrap();
+        let histogram = DKG_SESSION_DURATION_SECONDS.with_label_values(&["fresh", "completed"]);
+        let count_before = histogram.get_sample_count();
+        let active_before = DKG_ACTIVE_SESSIONS.get();
+        DkgSessionMetricsGuard::new(DkgCeremonyKind::Fresh).complete();
+        assert_eq!(DKG_ACTIVE_SESSIONS.get(), active_before);
+        assert_eq!(histogram.get_sample_count(), count_before + 1);
     }
 }

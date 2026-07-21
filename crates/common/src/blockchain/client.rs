@@ -312,7 +312,21 @@ impl SourceHubClient {
         )?;
 
         // Submit to mempool (CheckTx) - releases lock after this
-        let sync_result = self.broadcast_tx_sync(tx_bytes).await?;
+        let sync_result = match self.broadcast_tx_sync(tx_bytes).await {
+            Ok(result) => result,
+            Err(error @ BlockchainError::TxFailed { .. }) => {
+                // CheckTx rejected the transaction, so the chain did not consume
+                // this sequence. Restore the signer's view before a caller
+                // retries with a smaller batch.
+                self.resync_nonce_inner(signer).await.map_err(|resync_err| {
+                    BlockchainError::Signing(format!(
+                        "Transaction was rejected before broadcast: {error}; additionally failed to resync nonce: {resync_err}"
+                    ))
+                })?;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
 
         // Lock is released here, allowing next tx to submit
         drop(_guard);
@@ -706,17 +720,41 @@ impl SourceHubClient {
         msg: &T,
         gas_multiplier: f64,
     ) -> Result<BroadcastResult> {
+        let any_msg = Any {
+            type_url: type_url.to_string(),
+            value: msg.encode_to_vec(),
+        };
+
+        self.broadcast_proto_msgs_with_gas(vec![any_msg], gas_multiplier)
+            .await
+    }
+
+    /// Broadcast several protobuf messages in one Cosmos transaction with
+    /// automatic gas estimation.
+    ///
+    /// Cosmos executes messages in order and rolls the transaction back if any
+    /// message fails. Callers should keep batches bounded by the chain's block
+    /// gas and transaction-size limits. This method intentionally accepts
+    /// [`Any`] values so a batch may contain different message types.
+    pub async fn broadcast_proto_msgs_with_gas(
+        &self,
+        messages: Vec<Any>,
+        gas_multiplier: f64,
+    ) -> Result<BroadcastResult> {
+        if messages.is_empty() {
+            return Err(BlockchainError::Config(
+                "Cannot broadcast an empty transaction".to_string(),
+            ));
+        }
+        if !gas_multiplier.is_finite() || gas_multiplier < 1.0 {
+            return Err(BlockchainError::Config(format!(
+                "Gas multiplier must be finite and at least 1.0, got {gas_multiplier}"
+            )));
+        }
+
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
-
-        // Encode message as protobuf (can do outside lock)
-        let msg_bytes = msg.encode_to_vec();
-
-        let any_msg = Any {
-            type_url: type_url.to_string(),
-            value: msg_bytes,
-        };
 
         // Acquire lock to ensure txs reach mempool in nonce order
         let _guard = self.tx_lock.lock().await;
@@ -727,7 +765,7 @@ impl SourceHubClient {
 
         // Build tx with high gas limit for simulation
         let sim_tx_bytes = signer.sign_tx(
-            vec![any_msg.clone()],
+            messages.clone(),
             account_number,
             sequence,
             Some(SIMULATION_GAS_LIMIT),
@@ -762,13 +800,7 @@ impl SourceHubClient {
 
         // Rebuild transaction with accurate gas limit
         // Note: We use the same sequence number - simulation doesn't change chain state
-        let tx_bytes = signer.sign_tx(
-            vec![any_msg],
-            account_number,
-            sequence,
-            Some(gas_limit),
-            None,
-        )?;
+        let tx_bytes = signer.sign_tx(messages, account_number, sequence, Some(gas_limit), None)?;
 
         // Submit to mempool
         let sync_result = self.broadcast_tx_sync(tx_bytes).await?;

@@ -49,6 +49,19 @@ pub enum DkgPhase {
     Phase4Complete,
 }
 
+impl DkgPhase {
+    fn as_metric_label(self) -> &'static str {
+        match self {
+            Self::Initializing => "initializing",
+            Self::Phase0CommitmentHashes => "phase0_commitment_hashes",
+            Self::Phase1Commitments => "phase1_commitments",
+            Self::Phase2Shares => "phase2_shares",
+            Self::Phase4Completing => "phase4_completing",
+            Self::Phase4Complete => "phase4_complete",
+        }
+    }
+}
+
 /// Outcome of a `SessionStateManager::create_session` call.
 ///
 /// Callers that claimed a ring/session pair for PSS before calling
@@ -417,6 +430,30 @@ impl<D: Dkg> DkgSessionState<D> {
             transport: SessionTransportState::default(),
             metrics_guard: None,
         }
+    }
+
+    fn ceremony_kind(&self) -> metrics::DkgCeremonyKind {
+        match &self.kind {
+            SessionKind::Fresh => metrics::DkgCeremonyKind::Fresh,
+            SessionKind::Refresh { .. } => metrics::DkgCeremonyKind::Refresh,
+            SessionKind::Reshare { .. } => metrics::DkgCeremonyKind::Reshare,
+        }
+    }
+
+    /// Move to a new protocol phase and observe the phase actually being
+    /// exited. Both state-machine claims and explicit phase initiators use this
+    /// path so an idempotent follow-up cannot double-count the transition.
+    pub(crate) fn transition_phase(&mut self, phase: DkgPhase) {
+        if self.phase == phase {
+            return;
+        }
+        metrics::record_dkg_phase_duration(
+            self.ceremony_kind(),
+            self.phase.as_metric_label(),
+            self.phase_started_at.elapsed().as_secs_f64(),
+        );
+        self.phase = phase;
+        self.phase_started_at = Instant::now();
     }
 
     /// Generate the polynomial for this session.
@@ -1026,11 +1063,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let generation = self.next_session_generation.fetch_add(1, Ordering::SeqCst);
         let mut new_state = DkgSessionState::new(node, total_participants, generation);
         init_fn(&mut new_state);
-        let ceremony_kind = match &new_state.kind {
-            SessionKind::Fresh => metrics::DkgCeremonyKind::Fresh,
-            SessionKind::Refresh { .. } => metrics::DkgCeremonyKind::Refresh,
-            SessionKind::Reshare { .. } => metrics::DkgCeremonyKind::Reshare,
-        };
+        let ceremony_kind = new_state.ceremony_kind();
         new_state.metrics_guard = Some(metrics::DkgSessionMetricsGuard::new(ceremony_kind));
         states.insert(session_id, new_state);
         CreateSessionOutcome::Created
@@ -1392,8 +1425,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
 
     pub async fn update_phase(&self, session_id: &u128, phase: DkgPhase) {
         self.with_state_mut(session_id, |state| {
-            state.phase = phase;
-            state.phase_started_at = Instant::now();
+            state.transition_phase(phase);
         })
         .await;
     }
@@ -1761,11 +1793,25 @@ mod tests {
     async fn test_phase_update_changes_phase_and_resets_timer() {
         let mgr = SessionStateManager::<DkgImpl>::new();
         mgr.create_session(1, make_node(1), 3, |_| {}).await;
+        let phase_histogram = crate::metrics::DKG_PHASE_DURATION_SECONDS
+            .with_label_values(&["fresh", "initializing"]);
+        let observations_before = phase_histogram.get_sample_count();
 
         // Capture a timestamp just before the update; monotonic time guarantees
         // phase_started_at set inside update_phase will be >= this value.
         let before_update = std::time::Instant::now();
         mgr.update_phase(&1, DkgPhase::Phase1Commitments).await;
+        assert_eq!(
+            phase_histogram.get_sample_count(),
+            observations_before + 1,
+            "the phase that was exited must be observed exactly once"
+        );
+        mgr.update_phase(&1, DkgPhase::Phase1Commitments).await;
+        assert_eq!(
+            phase_histogram.get_sample_count(),
+            observations_before + 1,
+            "an idempotent phase update must not emit a second observation"
+        );
 
         let (phase, started_at) = mgr
             .with_state(&1, |s| (s.phase, s.phase_started_at))

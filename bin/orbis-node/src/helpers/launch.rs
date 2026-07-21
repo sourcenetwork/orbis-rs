@@ -43,6 +43,10 @@ pub struct Args {
     /// denomination of chain gas tokens
     #[arg(long)]
     pub denom: Option<String>,
+    /// Safety multiplier applied to simulated chain gas before broadcasting transactions.
+    /// Increase this when concurrent writers can change state between simulation and delivery.
+    #[arg(long)]
+    pub chain_gas_multiplier: Option<f64>,
     /// Address for Prometheus metrics HTTP server (e.g., "0.0.0.0:9090")
     #[arg(short = 'm', long)]
     pub metrics_addr: Option<String>,

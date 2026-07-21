@@ -86,8 +86,7 @@ where
             };
             let transition = state_machine::transition(&snapshot, event);
             if let Some(next_phase) = transition.next_phase {
-                state.phase = next_phase;
-                state.phase_started_at = std::time::Instant::now();
+                state.transition_phase(next_phase);
             }
             (snapshot, transition)
         })

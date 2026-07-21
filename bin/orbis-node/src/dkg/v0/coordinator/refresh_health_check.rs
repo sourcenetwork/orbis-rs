@@ -9,7 +9,9 @@ use crate::constants::{REFRESH_HEALTH_CHECK_MAX_ATTEMPTS, REFRESH_HEALTH_CHECK_R
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::session_not_found;
 use crate::dkg::v0::messages::DkgMessage;
-use crate::dkg::v0::session_state::{PendingRefreshHealthCheckResult, RefreshHealthCheckCandidate};
+use crate::dkg::v0::session_state::{
+    DkgPhase, PendingRefreshHealthCheckResult, RefreshHealthCheckCandidate,
+};
 use crate::helpers::identity::is_self_peer_id;
 use crate::helpers::ring::RingConfig;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
@@ -449,6 +451,11 @@ where
         .app_state
         .dkg_session_state
         .unmark_ring_pss(&candidate.ring_key)
+        .await;
+    coord
+        .app_state
+        .dkg_session_state
+        .update_phase(&session_id, DkgPhase::Phase4Complete)
         .await;
     coord
         .app_state

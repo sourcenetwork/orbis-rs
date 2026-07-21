@@ -7,6 +7,7 @@ members = [
     "crates/crypto",
     "crates/local-storage",
     "bin/cli-tool",
+    "bin/orbis-bench",
     "crates/authn", 
     "crates/authz", 
     "crates/common", 

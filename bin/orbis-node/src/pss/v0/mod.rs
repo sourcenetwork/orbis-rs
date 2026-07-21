@@ -277,6 +277,7 @@ where
                 &node_id_assignments,
                 &node_id_to_peer_id,
                 protocol_routes,
+                elapsed.saturating_sub(pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)),
             )
             .await
         }
@@ -477,6 +478,7 @@ async fn trigger_refresh<D>(
     node_id_assignments: &std::collections::HashMap<String, u32>,
     node_id_to_peer_id: &std::collections::HashMap<u32, String>,
     protocol_routes: &'static network::ProtocolRoutes,
+    scheduler_delay_secs: u64,
 ) -> Result<(), DkgError>
 where
     D: Dkg<
@@ -521,7 +523,9 @@ where
         .claim_ring_pss_session(ring_pk_str, session_id)
         .await
     {
-        RingPssClaimOutcome::Claimed => {}
+        RingPssClaimOutcome::Claimed => {
+            crate::metrics::record_pss_scheduler_delay(scheduler_delay_secs as f64);
+        }
         RingPssClaimOutcome::AlreadyClaimedBySameSession => {
             tracing::debug!(
                 post_id = %post_id,

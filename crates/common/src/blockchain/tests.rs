@@ -254,3 +254,51 @@ async fn test_gas_simulation() {
 
     assert_eq!(result.code, 0, "Transaction should succeed");
 }
+
+/// Test that several protobuf messages are simulated, signed, and committed in
+/// one SourceHub transaction. The benchmark crate separately exercises bounded
+/// batch bisection and bad-item isolation around this client method.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_multi_message_auto_gas_broadcast() {
+    use crate::blockchain::bank;
+    use prost::Message;
+
+    let container = SourceHubTestContainer::new();
+    let config = container.chain_config();
+    let signer =
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone()).expect("create funded signer");
+    let client = SourceHubClient::with_signer(config.clone(), signer)
+        .await
+        .expect("create signed client");
+    let recipient = TxSigner::from_hex_key(
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        config,
+    )
+    .expect("create recipient")
+    .address();
+    let sender = client.signer().expect("signed client").address();
+    let messages = (0..3)
+        .map(|_| {
+            let message = bank::MsgSend {
+                from_address: sender.clone(),
+                to_address: recipient.clone(),
+                amount: vec![bank::Coin {
+                    denom: "uopen".into(),
+                    amount: "1".into(),
+                }],
+            };
+            cosmrs::Any {
+                type_url: bank::MsgSend::TYPE_URL.into(),
+                value: message.encode_to_vec(),
+            }
+        })
+        .collect();
+
+    let result = client
+        .broadcast_proto_msgs_with_gas(messages, 1.3)
+        .await
+        .expect("multi-message transaction should commit");
+    assert_eq!(result.code, 0);
+    assert_eq!(client.get_balance(&recipient, "uopen").await.unwrap(), 3);
+}
