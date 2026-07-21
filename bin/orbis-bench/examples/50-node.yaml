@@ -6,6 +6,12 @@ networks:
   - network_size: 50
     cases:
       - { ring_size: 3, threshold: 2 }
+      - { ring_size: 5, threshold: 4 }
+      - { ring_size: 10, threshold: 7 }
+      - { ring_size: 20, threshold: 14 }
+      - { ring_size: 30, threshold: 20 }
+      - { ring_size: 40, threshold: 27 }
+      - { ring_size: 50, threshold: 34 }
 
 operations: [dkg, pre, sign, pss_refresh]
 profiles:
