@@ -19,6 +19,7 @@ use crate::constants::{
     DKG_ATTEMPT_TIMEOUT, DKG_FORWARDED_START_RESPONSE_GRACE, DKG_GOSSIP_ISOLATION_GRACE,
     DKG_MAX_REPAIR_BACKOFF, DKG_PREPARATION_RETRY_MAX_BACKOFF, DKG_PREPARATION_TIMEOUT,
     DKG_REPAIR_STALL_INTERVAL, DKG_TOPOLOGY_PROBE_INTERVAL, PEER_RESPONSE_TIMEOUT,
+    PSS_GRACE_PERIOD_SECS,
 };
 use crate::dkg::v0::coordinator::message_handlers::{
     drive_private_share_completion, handle_session_init,
@@ -39,6 +40,7 @@ use crate::dkg::v0::transport::{
     DkgPublicMessage, DkgPublicPayload, MessageId, PhaseManifest, PrepareSession, PublicPhase,
     PUBLIC_CONTRIBUTION_SIGNING_DOMAIN,
 };
+use crate::helpers::auth::current_unix_time;
 use crate::helpers::identity::{extract_node_part, is_self_peer_id};
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, peer_ids_from_routes, resolve_node_routes,
@@ -248,12 +250,14 @@ where
     D: CoordinatorDkg,
 {
     let timeout_error = control_timeout_message(peer, &request, response_timeout);
-    let response = timeout(response_timeout, async {
-        let stream = state
+    let mut attempt_connection = None;
+    let exchange = timeout(response_timeout, async {
+        let (stream, parent_connection) = state
             .peer_connection_pool
-            .open_stream(&state.network, peer, routes.dkg_control_alpn)
+            .open_stream_with_connection(&state.network, peer, routes.dkg_control_alpn)
             .await
             .map_err(|error| DkgError::NetworkConnection(error.to_string()))?;
+        attempt_connection = Some(parent_connection);
         let encoded = transport::encode(&request).map_err(DkgError::Serialization)?;
         stream
             .send(Message::new(encoded, routes.dkg_control_alpn.to_vec()))
@@ -264,13 +268,67 @@ where
             .await
             .map_err(|error| DkgError::NetworkCommunication(error.to_string()))
     })
-    .await
-    .map_err(|_| DkgError::NetworkConnection(timeout_error))??;
+    .await;
+    let response = match exchange {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            invalidate_failed_control_connection(
+                state,
+                routes,
+                peer,
+                attempt_connection.as_ref(),
+                &error,
+            )
+            .await;
+            return Err(error);
+        }
+        Err(_) => {
+            let error = DkgError::NetworkConnection(timeout_error);
+            invalidate_failed_control_connection(
+                state,
+                routes,
+                peer,
+                attempt_connection.as_ref(),
+                &error,
+            )
+            .await;
+            return Err(error);
+        }
+    };
     let response = transport::decode(&response.data, MAX_CONTROL_MESSAGE_BYTES)
         .map_err(DkgError::Deserialization)?;
     match response {
         DkgControlMessage::Error { message, .. } => Err(DkgError::ProtocolError(message)),
         response => Ok(response),
+    }
+}
+
+async fn invalidate_failed_control_connection<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    peer: &str,
+    connection: Option<&Arc<dyn network::PeerConnection>>,
+    error: &DkgError,
+) where
+    D: CoordinatorDkg,
+{
+    if !retryable_control_error(error) {
+        return;
+    }
+    let Some(connection) = connection else {
+        return;
+    };
+    if state
+        .peer_connection_pool
+        .invalidate_if_same(peer, routes.dkg_control_alpn, connection)
+        .await
+    {
+        crate::metrics::record_dkg_hybrid_event("control", "connection_invalidated");
+        tracing::warn!(
+            peer = %extract_node_part(peer),
+            %error,
+            "invalidated failed DKG control connection"
+        );
     }
 }
 
@@ -872,12 +930,19 @@ where
 
 /// Coordinate a due PSS refresh. Callers must be the canonical committee
 /// leader; followers join only after receiving an authenticated Prepare.
-pub async fn start_refresh<D>(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RefreshStartOutcome {
+    Started(CeremonyId, AttemptId),
+    AlreadyActive(CeremonyId, AttemptId),
+    NotDue,
+}
+
+pub(crate) async fn start_refresh<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     ring_id: String,
     ring_pk: String,
-) -> Result<(CeremonyId, AttemptId)>
+) -> Result<RefreshStartOutcome>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
@@ -898,6 +963,18 @@ where
             "refresh ring public key differs from SourceHub state".into(),
         ));
     }
+    if let Some(session_id) = state
+        .dkg_session_state
+        .active_ring_pss_session(&ring_pk)
+        .await
+    {
+        if let Some(attempt_id) = state.dkg_session_state.hybrid_attempt(&session_id).await {
+            return Ok(RefreshStartOutcome::AlreadyActive(
+                CeremonyId(session_id),
+                attempt_id,
+            ));
+        }
+    }
     let bundle = RingShareBundle::load_by_ring_key(&state.local_storage, &ring_pk)
         .map_err(|error| DkgError::Storage(error.to_string()))?;
     let session_id = derive_refresh_session_id(
@@ -907,8 +984,22 @@ where
         &bundle.public_polynomial,
     )?;
     let _start_guard = lock_ceremony_start(&state, CeremonyId(session_id)).await;
+    // The scheduler's first due check precedes an asynchronous SourceHub read.
+    // A previous refresh can complete during that read and advance `last_pss`.
+    // Re-read under the start singleflight before creating an attempt so each
+    // completion cannot produce a guaranteed-too-early follow-up attempt.
+    let current_bundle = RingShareBundle::load_by_ring_key(&state.local_storage, &ring_pk)
+        .map_err(|error| DkgError::Storage(error.to_string()))?;
+    let now = current_unix_time().map_err(DkgError::SystemTime)?;
+    let elapsed = now.saturating_sub(current_bundle.last_pss);
+    if elapsed + PSS_GRACE_PERIOD_SECS < ring.pss_interval {
+        return Ok(RefreshStartOutcome::NotDue);
+    }
     if let Some(attempt_id) = state.dkg_session_state.hybrid_attempt(&session_id).await {
-        return Ok((CeremonyId(session_id), attempt_id));
+        return Ok(RefreshStartOutcome::AlreadyActive(
+            CeremonyId(session_id),
+            attempt_id,
+        ));
     }
     let ceremony_id = CeremonyId(session_id);
     let attempt_id = AttemptId::random();
@@ -946,7 +1037,9 @@ where
         ring_id,
     };
     prepare.config_digest = transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
-    coordinate_prepared(state, routes, prepare).await
+    coordinate_prepared(state, routes, prepare)
+        .await
+        .map(|(ceremony_id, attempt_id)| RefreshStartOutcome::Started(ceremony_id, attempt_id))
 }
 
 async fn coordinate_fresh<D>(
@@ -3161,12 +3254,14 @@ where
         let attempt_timeout =
             PEER_RESPONSE_TIMEOUT.min(deadline.saturating_duration_since(Instant::now()));
         let mut busy_retry_after = None;
+        let mut attempt_connection = None;
         let exchange = timeout(attempt_timeout, async {
-            let stream = state
+            let (stream, parent_connection) = state
                 .peer_connection_pool
-                .open_stream(&state.network, &peer, routes.dkg_private_alpn)
+                .open_stream_with_connection(&state.network, &peer, routes.dkg_private_alpn)
                 .await
                 .map_err(|error| DkgError::NetworkConnection(error.to_string()))?;
+            attempt_connection = Some(parent_connection);
             let remote = stream.peer_id().clone();
             stream
                 .send(Message::new(
@@ -3231,6 +3326,32 @@ where
             }
             Err(error) => {
                 drop(pair_metrics);
+                // `open_stream` may succeed on a cached QUIC connection whose
+                // subsequent request/response path is no longer making progress.
+                // Never retain that connection across a timeout: Iroh can otherwise
+                // keep returning new streams on it until its much longer path-health
+                // transition expires. A valid Busy response proves the transport is
+                // live and intentionally retains the connection.
+                if busy_retry_after.is_none() {
+                    if let Some(connection) = attempt_connection.as_ref() {
+                        if state
+                            .peer_connection_pool
+                            .invalidate_if_same(&peer, routes.dkg_private_alpn, connection)
+                            .await
+                        {
+                            crate::metrics::record_dkg_hybrid_event(
+                                "private",
+                                "connection_invalidated",
+                            );
+                            tracing::warn!(
+                                session_id = ceremony_id.0,
+                                %peer,
+                                %error,
+                                "invalidated stalled private DKG connection"
+                            );
+                        }
+                    }
+                }
                 crate::metrics::record_dkg_hybrid_event("private", "retry");
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 let retry_delay = private_retry_delay(

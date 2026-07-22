@@ -1055,7 +1055,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         self.rings_pss.read().await.contains_key(ring_pk_key)
     }
 
-    #[cfg(any(test, feature = "unsafe-testing"))]
+    /// Return the deterministic session currently claiming this ring, if any.
+    /// The production scheduler uses this to distinguish a new refresh from a
+    /// harmless tick that observes the already-active attempt.
     pub async fn active_ring_pss_session(&self, ring_pk_key: &str) -> Option<u128> {
         self.rings_pss.read().await.get(ring_pk_key).copied()
     }

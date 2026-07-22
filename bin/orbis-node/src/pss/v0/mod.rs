@@ -224,21 +224,20 @@ where
         )));
     }
 
-    let routes = resolve_node_routes(&app_state.bulletin, &ring_payload.peer_node_keys)
-        .await
-        .map_err(DkgError::InvalidInput)?;
-    let peer_ids = peer_ids_from_routes(&routes);
-    let node_id_assignments =
-        canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
-            .map_err(DkgError::InvalidInput)?;
-    let node_id_to_peer_id = node_id_to_peer_id_from_routes(&routes, &node_id_assignments)
-        .map_err(DkgError::InvalidInput)?;
-
     // Dispatch to the correct protocol implementation based on the ring's effective version.
     // Add a new arm here when a v1/ folder is introduced.
     match protocol_routes.version {
         0 => {
             if is_reshare {
+                let routes = resolve_node_routes(&app_state.bulletin, &ring_payload.peer_node_keys)
+                    .await
+                    .map_err(DkgError::InvalidInput)?;
+                let node_id_assignments =
+                    canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
+                        .map_err(DkgError::InvalidInput)?;
+                let node_id_to_peer_id =
+                    node_id_to_peer_id_from_routes(&routes, &node_id_assignments)
+                        .map_err(DkgError::InvalidInput)?;
                 return trigger_reshare(
                     app_state,
                     entry,
@@ -285,9 +284,6 @@ where
                 app_state,
                 entry,
                 &ring_payload,
-                &peer_ids,
-                &node_id_assignments,
-                &node_id_to_peer_id,
                 protocol_routes,
                 elapsed.saturating_sub(pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)),
             )
@@ -486,9 +482,6 @@ async fn trigger_refresh<D>(
     app_state: &Arc<AppState<D>>,
     entry: &RingIndexEntry,
     ring_payload: &RingPayload,
-    _peer_ids: &[String],
-    _node_id_assignments: &std::collections::HashMap<String, u32>,
-    _node_id_to_peer_id: &std::collections::HashMap<u32, String>,
     protocol_routes: &'static network::ProtocolRoutes,
     scheduler_delay_secs: u64,
 ) -> Result<(), DkgError>
@@ -503,14 +496,35 @@ where
         + Sync
         + 'static,
 {
-    crate::metrics::record_pss_scheduler_delay(scheduler_delay_secs as f64);
-    let (ceremony_id, attempt_id) = crate::dkg::v0::hybrid::start_refresh(
+    let outcome = crate::dkg::v0::hybrid::start_refresh(
         app_state.clone(),
         protocol_routes,
         entry.bulletin_post_id.clone(),
         entry.ring_pk_str.clone(),
     )
     .await?;
+    let (ceremony_id, attempt_id) = match outcome {
+        crate::dkg::v0::hybrid::RefreshStartOutcome::Started(ceremony_id, attempt_id) => {
+            (ceremony_id, attempt_id)
+        }
+        crate::dkg::v0::hybrid::RefreshStartOutcome::AlreadyActive(ceremony_id, attempt_id) => {
+            tracing::debug!(
+                session_id = ceremony_id.0,
+                attempt_id = %hex::encode(attempt_id.0),
+                ring_id = %entry.bulletin_post_id,
+                "PSS: canonical refresh attempt remains active"
+            );
+            return Ok(());
+        }
+        crate::dkg::v0::hybrid::RefreshStartOutcome::NotDue => {
+            tracing::debug!(
+                ring_id = %entry.bulletin_post_id,
+                "PSS: refresh became not due while scheduler state was being resolved"
+            );
+            return Ok(());
+        }
+    };
+    crate::metrics::record_pss_scheduler_delay(scheduler_delay_secs as f64);
     tracing::info!(
         session_id = ceremony_id.0,
         attempt_id = %hex::encode(attempt_id.0),

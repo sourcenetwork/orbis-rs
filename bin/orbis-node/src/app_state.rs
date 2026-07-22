@@ -65,11 +65,30 @@ impl PeerConnectionPool {
         Some(entry.connection.clone())
     }
 
-    pub async fn remove(&self, peer_id: &str, protocol: &[u8]) {
-        self.connections
-            .lock()
-            .await
-            .remove(&(peer_id.to_string(), protocol.to_vec()));
+    /// Evict and close the cached connection only if it is still the connection
+    /// observed by the caller. A concurrent reconnect may already have installed
+    /// a healthy replacement, which must not be removed by a late timeout from an
+    /// older stream attempt.
+    pub(crate) async fn invalidate_if_same(
+        &self,
+        peer_id: &str,
+        protocol: &[u8],
+        expected: &Arc<dyn PeerConnection>,
+    ) -> bool {
+        let key = (peer_id.to_string(), protocol.to_vec());
+        let removed = {
+            let mut connections = self.connections.lock().await;
+            let is_same = connections
+                .get(&key)
+                .is_some_and(|entry| Arc::ptr_eq(&entry.connection, expected));
+            is_same.then(|| connections.remove(&key)).flatten()
+        };
+        if let Some(entry) = removed {
+            let _ = entry.connection.close().await;
+            true
+        } else {
+            false
+        }
     }
 
     /// Get a cached connection for `(peer_id, protocol)`, or open and cache a new one.
@@ -131,23 +150,38 @@ impl PeerConnectionPool {
         new_conn
     }
 
+    /// Open a QUIC stream and return the parent pooled connection used for it.
+    /// The parent identity lets request protocols invalidate precisely the stale
+    /// connection whose stream timed out after `open_stream` itself succeeded.
+    pub(crate) async fn open_stream_with_connection(
+        &self,
+        network: &Arc<dyn Network>,
+        peer_id_str: &str,
+        protocol: &[u8],
+    ) -> Result<(Box<dyn Connection>, Arc<dyn PeerConnection>), network::error::NetworkError> {
+        let conn = self.get_or_connect(network, peer_id_str, protocol).await?;
+        match conn.open_stream().await {
+            Ok(stream) => Ok((stream, conn)),
+            Err(_) => {
+                self.invalidate_if_same(peer_id_str, protocol, &conn).await;
+                let fresh = self.get_or_connect(network, peer_id_str, protocol).await?;
+                let stream = fresh.open_stream().await?;
+                Ok((stream, fresh))
+            }
+        }
+    }
+
     /// Open a QUIC stream to a peer, evicting and reconnecting if the cached
-    /// connection is dead (e.g. closed by idle timeout or remote restart).
+    /// connection is already known to be dead while opening the stream.
     pub async fn open_stream(
         &self,
         network: &Arc<dyn Network>,
         peer_id_str: &str,
         protocol: &[u8],
     ) -> Result<Box<dyn Connection>, network::error::NetworkError> {
-        let conn = self.get_or_connect(network, peer_id_str, protocol).await?;
-        match conn.open_stream().await {
-            Ok(stream) => Ok(stream),
-            Err(_) => {
-                self.remove(peer_id_str, protocol).await;
-                let fresh = self.get_or_connect(network, peer_id_str, protocol).await?;
-                fresh.open_stream().await
-            }
-        }
+        self.open_stream_with_connection(network, peer_id_str, protocol)
+            .await
+            .map(|(stream, _)| stream)
     }
 
     #[cfg(test)]
@@ -214,6 +248,25 @@ mod peer_connection_pool_tests {
         assert!(!a_closed.load(Ordering::SeqCst));
         assert!(b_closed.load(Ordering::SeqCst));
         assert!(!c_closed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn invalidation_closes_only_the_connection_observed_by_the_caller() {
+        let pool = PeerConnectionPool::with_capacity(2);
+        let (stale, stale_closed) = fake("stale");
+        let (replacement, replacement_closed) = fake("replacement");
+        pool.cache_connection(("peer".into(), b"p".to_vec()), stale.clone())
+            .await;
+
+        assert!(pool.invalidate_if_same("peer", b"p", &stale).await);
+        assert!(stale_closed.load(Ordering::SeqCst));
+        assert_eq!(pool.len().await, 0);
+
+        pool.cache_connection(("peer".into(), b"p".to_vec()), replacement.clone())
+            .await;
+        assert!(!pool.invalidate_if_same("peer", b"p", &stale).await);
+        assert!(pool.get("peer", b"p").await.is_some());
+        assert!(!replacement_closed.load(Ordering::SeqCst));
     }
 }
 

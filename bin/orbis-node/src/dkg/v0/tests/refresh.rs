@@ -213,7 +213,7 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_hybrid_faults: bo
             .await;
     }
 
-    let (refresh_ceremony, refresh_attempt) = crate::dkg::v0::hybrid::start_refresh(
+    let refresh_outcome = crate::dkg::v0::hybrid::start_refresh(
         Arc::new(initiator_state),
         &::network::V0,
         TEST_FRESH_DKG_RING_ID.to_string(),
@@ -221,6 +221,11 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_hybrid_faults: bo
     )
     .await
     .expect("canonical leader should start hybrid refresh");
+    let crate::dkg::v0::hybrid::RefreshStartOutcome::Started(refresh_ceremony, refresh_attempt) =
+        refresh_outcome
+    else {
+        panic!("backdated refresh should start, got {refresh_outcome:?}");
+    };
 
     println!(
         "Hybrid PSS refresh initiated (session_id={}, attempt_id={})",

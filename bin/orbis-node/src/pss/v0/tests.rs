@@ -257,12 +257,22 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+    RingShareBundle {
+        share_bytes: vec![].into(),
+        public_polynomial: "malformed-route-test-poly".to_string(),
+        last_pss: 0,
+    }
+    .save_by_ring_key(&app_state.local_storage, ring_pk)
+    .expect("store due refresh bundle");
     let state_arc = Arc::new(app_state);
 
     let result = super::pss_ring(&state_arc, &entry).await;
     assert!(
-        matches!(result, Err(DkgError::InvalidInput(_))),
-        "Expected InvalidInput for unresolved node route, got: {:?}",
+        matches!(
+            result,
+            Err(DkgError::InvalidInput(_)) | Err(DkgError::Unauthorized(_))
+        ),
+        "Expected a route-resolution error for the unresolved node, got: {:?}",
         result
     );
     assert_eq!(
@@ -277,6 +287,40 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
             .await,
         "Refresh setup failure must not leave the ring claimed as in-progress"
     );
+
+    cleanup_db(&db_path);
+}
+
+/// Followers can decide that the canonical leader owns a refresh using the
+/// authenticated ring payload alone. They must not resolve the entire committee's
+/// NodeInfo on every scheduler tick, which becomes quadratic SourceHub load for a
+/// large committee and a short benchmark check interval.
+#[tokio::test]
+async fn test_refresh_follower_skips_committee_route_resolution() {
+    let db_name = "pss_follower_skips_route_resolution";
+    let (app_state, our_node_key, db_path, bulletin) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "pss_follower_route_ring".to_string(),
+        peer_node_keys: vec!["00-missing-canonical-leader".to_string(), our_node_key],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 0,
+        block_number_nonce: 0,
+        policy_id: None,
+        reporting: Default::default(),
+    };
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+    let state = Arc::new(app_state);
+
+    let result = super::pss_ring(&state, &entry).await;
+    assert!(
+        result.is_ok(),
+        "a follower should stand down without resolving the missing leader route: {result:?}"
+    );
+    assert_eq!(state.dkg_session_state.session_count().await, 0);
 
     cleanup_db(&db_path);
 }
