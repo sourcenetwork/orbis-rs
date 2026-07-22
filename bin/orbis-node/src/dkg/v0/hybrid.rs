@@ -20,7 +20,9 @@ use crate::constants::{
     DKG_MAX_REPAIR_BACKOFF, DKG_PREPARATION_RETRY_MAX_BACKOFF, DKG_PREPARATION_TIMEOUT,
     DKG_REPAIR_STALL_INTERVAL, DKG_TOPOLOGY_PROBE_INTERVAL, PEER_RESPONSE_TIMEOUT,
 };
-use crate::dkg::v0::coordinator::message_handlers::handle_session_init;
+use crate::dkg::v0::coordinator::message_handlers::{
+    drive_private_share_completion, handle_session_init,
+};
 use crate::dkg::v0::coordinator::types::{CoordinatorDkg, CoordinatorReportSigner};
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::error::{DkgError, Result};
@@ -49,6 +51,9 @@ use crypto::SignImpl;
 const MAX_CONTROL_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PUBLIC_COMMIT_RECEIPTS: usize = 4096;
 const INITIAL_CONTROL_RETRY_BACKOFF: Duration = Duration::from_millis(250);
+const INITIAL_PRIVATE_RETRY_BACKOFF: Duration = Duration::from_millis(100);
+const PRIVATE_BUSY_RETRY_AFTER: Duration = Duration::from_millis(250);
+const PRIVATE_INBOUND_QUEUE_WAIT: Duration = Duration::from_millis(500);
 
 #[derive(Default)]
 struct GossipNeighborTracker {
@@ -2704,7 +2709,18 @@ where
 {
     async fn handle(&self, connection: Box<dyn Connection>) -> network::Result<()> {
         let peer = connection.peer_id().clone();
-        let first = recv_private(&*connection).await?;
+        let peer_prefix: String = String::from_utf8_lossy(peer.as_bytes())
+            .chars()
+            .take(12)
+            .collect();
+        let first = timeout(PEER_RESPONSE_TIMEOUT, recv_private(&*connection))
+            .await
+            .map_err(|_| {
+                network::error::NetworkError::Protocol(format!(
+                    "private pair opener {peer_prefix} did not send its first message within {}ms",
+                    PEER_RESPONSE_TIMEOUT.as_millis()
+                ))
+            })??;
         let DkgPrivateMessage::ShareDelivery {
             ceremony_id,
             attempt_id,
@@ -2740,19 +2756,24 @@ where
             .await
             .map_err(|error| network::error::NetworkError::Protocol(error.to_string()))?;
         let semaphore = self.state.dkg_private_exchange_permits.clone();
-        let Ok(_permit) = semaphore.try_acquire_owned() else {
-            crate::metrics::record_dkg_hybrid_event("private", "busy");
-            send_private(
-                &*connection,
-                self.routes.dkg_private_alpn,
-                &DkgPrivateMessage::Busy {
+        let permit = match timeout(PRIVATE_INBOUND_QUEUE_WAIT, semaphore.acquire_owned()).await {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => {
+                return Err(network::error::NetworkError::Protocol(
+                    "private exchange semaphore closed".into(),
+                ));
+            }
+            Err(_) => {
+                crate::metrics::record_dkg_hybrid_event("private", "busy");
+                send_private_busy(
+                    &*connection,
+                    self.routes.dkg_private_alpn,
                     ceremony_id,
                     attempt_id,
-                    retry_after_ms: 250,
-                },
-            )
-            .await?;
-            return Ok(());
+                )
+                .await?;
+                return Ok(());
+            }
         };
         let pair_metrics = PrivatePairMetricsGuard::new();
         tracing::info!(
@@ -2767,14 +2788,11 @@ where
             .private_message_for_recipient(&session_id, from_node_id)
             .await
         else {
-            send_private(
+            send_private_busy(
                 &*connection,
                 self.routes.dkg_private_alpn,
-                &DkgPrivateMessage::Busy {
-                    ceremony_id,
-                    attempt_id,
-                    retry_after_ms: 250,
-                },
+                ceremony_id,
+                attempt_id,
             )
             .await?;
             return Ok(());
@@ -2782,23 +2800,39 @@ where
         let outgoing: DkgPrivateMessage =
             transport::decode(&outgoing_bytes, MAX_CONTROL_MESSAGE_BYTES)
                 .map_err(network::error::NetworkError::Serialization)?;
-        send_private(&*connection, self.routes.dkg_private_alpn, &outgoing).await?;
-        let ack = recv_private(&*connection).await?;
-        validate_share_ack(&outgoing, &ack).map_err(network::error::NetworkError::Protocol)?;
-        if let DkgPrivateMessage::ShareAck { message_id, .. } = ack {
-            self.state
-                .dkg_session_state
-                .acknowledge_private_message(&session_id, attempt_id, message_id)
-                .await;
-        }
-        let incoming_ack =
-            share_ack_for(&incoming).map_err(network::error::NetworkError::Protocol)?;
-        send_private(&*connection, self.routes.dkg_private_alpn, &incoming_ack).await?;
-        process_private_delivery(self.state.clone(), self.routes, incoming, &peer)
-            .await
-            .map_err(|error| network::error::NetworkError::Protocol(error.to_string()))?;
+        let completion = timeout(PEER_RESPONSE_TIMEOUT, async {
+            send_private(&*connection, self.routes.dkg_private_alpn, &outgoing).await?;
+            let ack = recv_private(&*connection).await?;
+            validate_share_ack(&outgoing, &ack).map_err(network::error::NetworkError::Protocol)?;
+            if let DkgPrivateMessage::ShareAck { message_id, .. } = ack {
+                self.state
+                    .dkg_session_state
+                    .acknowledge_private_message(&session_id, attempt_id, message_id)
+                    .await;
+            }
+            let completion =
+                accept_private_delivery(self.state.clone(), self.routes, &incoming, &peer)
+                    .await
+                    .map_err(|error| network::error::NetworkError::Protocol(error.to_string()))?;
+            let incoming_ack =
+                share_ack_for(&incoming).map_err(network::error::NetworkError::Protocol)?;
+            send_private(&*connection, self.routes.dkg_private_alpn, &incoming_ack).await?;
+            Ok::<PrivateShareCompletion, network::error::NetworkError>(completion)
+        })
+        .await
+        .map_err(|_| {
+            crate::metrics::record_dkg_hybrid_event("private", "inbound_timeout");
+            network::error::NetworkError::Protocol(format!(
+                "inbound private pair exchange with {peer_prefix} timed out after {}ms",
+                PEER_RESPONSE_TIMEOUT.as_millis()
+            ))
+        })??;
+        drop(permit);
         pair_metrics.complete();
         crate::metrics::record_dkg_hybrid_event("private", "pair_completed");
+        drive_private_completion(self.state.clone(), self.routes, completion)
+            .await
+            .map_err(|error| network::error::NetworkError::Protocol(error.to_string()))?;
         Ok(())
     }
 }
@@ -2810,6 +2844,33 @@ async fn send_private(
 ) -> network::Result<()> {
     let bytes = transport::encode(message).map_err(network::error::NetworkError::Serialization)?;
     connection.send(Message::new(bytes, alpn.to_vec())).await
+}
+
+async fn send_private_busy(
+    connection: &dyn Connection,
+    alpn: &[u8],
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+) -> network::Result<()> {
+    timeout(
+        PEER_RESPONSE_TIMEOUT,
+        send_private(
+            connection,
+            alpn,
+            &DkgPrivateMessage::Busy {
+                ceremony_id,
+                attempt_id,
+                retry_after_ms: PRIVATE_BUSY_RETRY_AFTER.as_millis() as u64,
+            },
+        ),
+    )
+    .await
+    .map_err(|_| {
+        network::error::NetworkError::Protocol(format!(
+            "sending private Busy response timed out after {}ms",
+            PEER_RESPONSE_TIMEOUT.as_millis()
+        ))
+    })?
 }
 
 async fn recv_private(connection: &dyn Connection) -> network::Result<DkgPrivateMessage> {
@@ -2927,12 +2988,19 @@ where
     Ok(())
 }
 
-async fn process_private_delivery<D>(
+#[derive(Debug, Clone, Copy)]
+struct PrivateShareCompletion {
+    session_id: u128,
+    from_node_id: u32,
+    should_drive: bool,
+}
+
+async fn accept_private_delivery<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
-    message: DkgPrivateMessage,
+    message: &DkgPrivateMessage,
     sender: &PeerId,
-) -> Result<()>
+) -> Result<PrivateShareCompletion>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
@@ -2945,14 +3013,14 @@ where
         nonce,
         report_evidence,
         ..
-    } = message
+    } = message.clone()
     else {
         return Err(DkgError::ProtocolError(
             "expected private ShareDelivery".into(),
         ));
     };
-    DkgCoordinator::with_routes(state, routes)
-        .handle_message(
+    let should_drive = DkgCoordinator::with_routes(state, routes)
+        .accept_private_share(
             DkgMessage::Share {
                 session_id: ceremony_id.0,
                 from_node_id,
@@ -2964,7 +3032,73 @@ where
             sender,
         )
         .await?;
+    Ok(PrivateShareCompletion {
+        session_id: ceremony_id.0,
+        from_node_id,
+        should_drive,
+    })
+}
+
+async fn drive_private_completion<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    completion: PrivateShareCompletion,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    if completion.should_drive {
+        drive_private_share_completion(
+            &DkgCoordinator::with_routes(state, routes),
+            completion.session_id,
+            completion.from_node_id,
+        )
+        .await?;
+    }
     Ok(())
+}
+
+/// Return a retry delay that is stable for one pair/attempt but changes for the
+/// next retry. Busy responses are treated as a minimum wait, while the growing
+/// local backoff supplies a widening jitter window. This prevents a committee
+/// burst from repeatedly hitting the same recipient in synchronized waves.
+fn private_retry_delay(
+    message_id: MessageId,
+    retry_attempt: u32,
+    backoff: Duration,
+    busy_retry_after: Option<Duration>,
+    remaining: Duration,
+) -> Duration {
+    let (floor, ceiling) = if let Some(retry_after) = busy_retry_after {
+        let floor = retry_after.min(DKG_MAX_REPAIR_BACKOFF);
+        (
+            floor,
+            floor.saturating_add(backoff).min(DKG_MAX_REPAIR_BACKOFF),
+        )
+    } else {
+        (backoff / 2, backoff)
+    };
+    let floor_ms = floor.as_millis() as u64;
+    let ceiling_ms = ceiling.as_millis() as u64;
+    let spread_ms = ceiling_ms.saturating_sub(floor_ms);
+
+    let mut seed_bytes = [0_u8; 8];
+    seed_bytes.copy_from_slice(&message_id.0[..8]);
+    let mut value = u64::from_le_bytes(seed_bytes)
+        ^ u64::from(retry_attempt).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    // SplitMix64 gives a deterministic, well-distributed word without adding a
+    // random generator to the hot path or making retry tests nondeterministic.
+    value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^= value >> 31;
+
+    let jitter_ms = if spread_ms == 0 {
+        0
+    } else {
+        value % (spread_ms + 1)
+    };
+    Duration::from_millis(floor_ms.saturating_add(jitter_ms)).min(remaining)
 }
 
 async fn open_private_pair<D>(
@@ -2996,7 +3130,8 @@ where
         .await
         .ok_or_else(|| DkgError::InvalidState("hybrid hard deadline is missing".into()))?
         .into();
-    let mut backoff = Duration::from_millis(100);
+    let mut backoff = INITIAL_PRIVATE_RETRY_BACKOFF;
+    let mut retry_attempt = 0_u32;
     loop {
         if Instant::now() >= deadline {
             return Err(DkgError::NetworkCommunication(format!(
@@ -3025,6 +3160,7 @@ where
         // bytes and exponential backoff, so a retry never regenerates crypto material.
         let attempt_timeout =
             PEER_RESPONSE_TIMEOUT.min(deadline.saturating_duration_since(Instant::now()));
+        let mut busy_retry_after = None;
         let exchange = timeout(attempt_timeout, async {
             let stream = state
                 .peer_connection_pool
@@ -3042,10 +3178,23 @@ where
             let response = recv_private(&*stream)
                 .await
                 .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
-            if matches!(response, DkgPrivateMessage::Busy { .. }) {
+            if let DkgPrivateMessage::Busy {
+                ceremony_id: busy_ceremony_id,
+                attempt_id: busy_attempt_id,
+                retry_after_ms,
+            } = response
+            {
+                if busy_ceremony_id != ceremony_id || busy_attempt_id != attempt_id {
+                    return Err(DkgError::ProtocolError(
+                        "private Busy response did not match the active attempt".into(),
+                    ));
+                }
+                busy_retry_after = Some(Duration::from_millis(retry_after_ms.max(1)));
                 return Err(DkgError::NetworkCommunication("private peer busy".into()));
             }
             validate_private_delivery(&state, &response, &remote).await?;
+            let completion =
+                accept_private_delivery(state.clone(), routes, &response, &remote).await?;
             let ack = share_ack_for(&response).map_err(DkgError::ProtocolError)?;
             send_private(&*stream, routes.dkg_private_alpn, &ack)
                 .await
@@ -3058,7 +3207,7 @@ where
                 .dkg_session_state
                 .acknowledge_private_message(&ceremony_id.0, attempt_id, message_id)
                 .await;
-            process_private_delivery(state.clone(), routes, response, &remote).await
+            Ok(completion)
         })
         .await
         .unwrap_or_else(|_| {
@@ -3069,7 +3218,7 @@ where
         });
         drop(permit);
         match exchange {
-            Ok(()) => {
+            Ok(completion) => {
                 pair_metrics.complete();
                 crate::metrics::record_dkg_hybrid_event("private", "pair_completed");
                 tracing::info!(
@@ -3077,14 +3226,26 @@ where
                     %peer,
                     "private DKG pair exchange completed"
                 );
+                drive_private_completion(state.clone(), routes, completion).await?;
                 return Ok(());
             }
             Err(error) => {
                 drop(pair_metrics);
                 crate::metrics::record_dkg_hybrid_event("private", "retry");
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let retry_delay = private_retry_delay(
+                    message_id,
+                    retry_attempt,
+                    backoff,
+                    busy_retry_after,
+                    remaining,
+                );
                 tracing::debug!(%peer, %error, backoff_ms = backoff.as_millis(),
+                    retry_delay_ms = retry_delay.as_millis(),
+                    retry_attempt,
                     "retrying private pair exchange with identical cached share");
-                sleep(backoff.min(deadline.saturating_duration_since(Instant::now()))).await;
+                sleep(retry_delay).await;
+                retry_attempt = retry_attempt.saturating_add(1);
                 backoff = (backoff * 2).min(DKG_MAX_REPAIR_BACKOFF);
             }
         }
@@ -3233,5 +3394,37 @@ mod stability_tests {
         let missing = missing_topology_peers(&expected, &acknowledged);
         assert_eq!(missing, vec!["bbbbbbbbbbbbbbbb"]);
         assert_eq!(missing_topology_peer_prefixes(&missing), "bbbbbbbbbbbb");
+    }
+
+    #[test]
+    fn private_busy_retries_honor_hint_and_desynchronize_pairs() {
+        let backoff = Duration::from_secs(1);
+        let busy_hint = Duration::from_millis(250);
+        let remaining = Duration::from_secs(30);
+        let first = private_retry_delay(MessageId([1; 32]), 0, backoff, Some(busy_hint), remaining);
+        let second_pair =
+            private_retry_delay(MessageId([2; 32]), 0, backoff, Some(busy_hint), remaining);
+        let next_attempt =
+            private_retry_delay(MessageId([1; 32]), 1, backoff, Some(busy_hint), remaining);
+
+        assert!(first >= busy_hint);
+        assert!(first <= busy_hint + backoff);
+        assert_ne!(first, second_pair);
+        assert_ne!(first, next_attempt);
+    }
+
+    #[test]
+    fn private_retry_delay_never_exceeds_deadline_or_global_cap() {
+        let remaining = Duration::from_millis(17);
+        assert_eq!(
+            private_retry_delay(
+                MessageId([3; 32]),
+                99,
+                DKG_MAX_REPAIR_BACKOFF,
+                Some(Duration::from_secs(300)),
+                remaining,
+            ),
+            remaining
+        );
     }
 }

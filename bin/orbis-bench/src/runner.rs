@@ -14,7 +14,9 @@ use crate::results::{
 };
 use crate::setup::{create_ring_governance, fund_nodes, update_peer_addresses};
 use anyhow::{bail, Context, Result};
-use common::blockchain::{ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY};
+use common::blockchain::{
+    orbis::Ring, ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+};
 use crypto::helpers::generate_keypair;
 use crypto::r#trait::{Dkg, ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoSerialize, DkgImpl, PreImpl, SignImpl};
@@ -946,8 +948,7 @@ impl BenchmarkRunner {
             Duration::from_secs(self.experiment.timeouts.dkg_secs),
         )
         .await?;
-        let original_chain_pk = controller
-            .orbis_read_ring(&ring.definition.id)
+        let original_chain_pk = read_ring_with_retry(controller, &ring.definition.id)
             .await?
             .context("PSS ring missing")?
             .ring_pk;
@@ -993,8 +994,7 @@ impl BenchmarkRunner {
             }
             let after = scrape_committee(&committee).await;
             let metric_deltas = metric_delta(&before, &after);
-            let chain_pk = controller
-                .orbis_read_ring(&ring.definition.id)
+            let chain_pk = read_ring_with_retry(controller, &ring.definition.id)
                 .await?
                 .map(|ring| ring.ring_pk);
             let failures = compose.container_failures().await.unwrap_or_default();
@@ -1003,16 +1003,12 @@ impl BenchmarkRunner {
                     if failures.is_empty()
                         && chain_pk.as_deref() == Some(original_chain_pk.as_str()) =>
                 {
-                    let scheduler_delay_ms =
-                        histogram_average_ms(&metric_deltas, "pss_scheduler_delay_seconds")
-                            .unwrap_or(measurement.scheduler_delay_ms);
-                    (
-                        true,
-                        (measurement.ceremony_ms - scheduler_delay_ms).max(0.0),
-                        Some(scheduler_delay_ms),
-                        None,
-                        None,
-                    )
+                    let (ceremony_ms, scheduler_delay_ms) = pss_timing(
+                        measurement.ceremony_ms,
+                        measurement.scheduler_delay_ms,
+                        histogram_average_ms(&metric_deltas, "pss_scheduler_delay_seconds"),
+                    );
+                    (true, ceremony_ms, Some(scheduler_delay_ms), None, None)
                 }
                 Ok(_) if !failures.is_empty() => (
                     false,
@@ -1599,6 +1595,46 @@ fn histogram_average_ms(deltas: &BTreeMap<String, f64>, metric: &str) -> Option<
     (*count > 0.0).then(|| sum / count * 1_000.0)
 }
 
+fn pss_timing(
+    due_to_completion_ms: f64,
+    observed_scheduler_delay_ms: f64,
+    metric_scheduler_delay_ms: Option<f64>,
+) -> (f64, f64) {
+    let valid_delay =
+        |delay: f64| delay.is_finite() && delay >= 0.0 && delay < due_to_completion_ms;
+    let scheduler_delay_ms = metric_scheduler_delay_ms
+        .filter(|delay| valid_delay(*delay))
+        .or_else(|| valid_delay(observed_scheduler_delay_ms).then_some(observed_scheduler_delay_ms))
+        .unwrap_or(0.0);
+    (
+        due_to_completion_ms - scheduler_delay_ms,
+        scheduler_delay_ms,
+    )
+}
+
+async fn read_ring_with_retry(controller: &SourceHubClient, ring_id: &str) -> Result<Option<Ring>> {
+    const MAX_ATTEMPTS: usize = 3;
+    let mut backoff = Duration::from_millis(250);
+    for attempt in 1..=MAX_ATTEMPTS {
+        match controller.orbis_read_ring(ring_id).await {
+            Ok(ring) => return Ok(ring),
+            Err(error) if attempt < MAX_ATTEMPTS => {
+                eprintln!(
+                    "ring {ring_id}: SourceHub read failed ({attempt}/{MAX_ATTEMPTS}): {error:#}; retrying"
+                );
+                sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(2));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("read ring {ring_id} from SourceHub after {MAX_ATTEMPTS} attempts")
+                });
+            }
+        }
+    }
+    unreachable!("bounded retry loop always returns")
+}
+
 fn start_resource_sampler(
     compose: DockerCompose,
     run_id: String,
@@ -1831,5 +1867,15 @@ mod tests {
     #[test]
     fn interpolated_percentile_is_reported() {
         assert_eq!(percentile_sorted(&[1.0, 2.0, 3.0], 0.5), Some(2.0));
+    }
+
+    #[test]
+    fn pss_timing_rejects_scheduler_delay_larger_than_observed_wait() {
+        assert_eq!(pss_timing(500.0, 0.0, Some(600.0)), (500.0, 0.0));
+    }
+
+    #[test]
+    fn pss_timing_separates_a_valid_scheduler_delay() {
+        assert_eq!(pss_timing(1_500.0, 0.0, Some(400.0)), (1_100.0, 400.0));
     }
 }

@@ -283,6 +283,115 @@ where
         Ok(response)
     }
 
+    /// Validate and durably accept a share delivered by the hybrid private-pair
+    /// transport without running any ceremony phase transition.
+    ///
+    /// The caller sends the digest acknowledgement only after this returns.  A
+    /// duplicate that races an in-flight copy waits for that copy to finish;
+    /// an already accepted duplicate requests another idempotent phase drive so
+    /// reconnecting after a lost ACK can also repair a cancelled drive task.
+    pub(crate) async fn accept_private_share(
+        &self,
+        message: DkgMessage,
+        sender_peer_id: &PeerId,
+    ) -> Result<bool>
+    where
+        SignImpl: CoordinatorReportSigner<D>,
+    {
+        let session_id = message.session_id();
+        let meta = inbound::DkgMessageMeta::from_message(&message);
+        if meta.message_type != DkgMessageType::Share {
+            return Err(DkgError::ProtocolError(
+                "hybrid private transport only accepts DKG shares".into(),
+            ));
+        }
+        metrics::record_dkg_message_received(meta.metric_label);
+
+        if let Some(session_version) = self
+            .app_state
+            .dkg_session_state
+            .with_state(&session_id, |state| state.protocol_version)
+            .await
+        {
+            if session_version != self.routes.version {
+                return Err(DkgError::ProtocolError(format!(
+                    "DKG session {} is pinned to protocol version {}, but private share arrived on version {}",
+                    session_id, session_version, self.routes.version
+                )));
+            }
+        }
+
+        inbound::wait_for_session(self, session_id).await?;
+        inbound::validate_sender(self, session_id, meta, sender_peer_id).await?;
+        let from_node_id = meta.sender_node_id.ok_or_else(|| {
+            DkgError::ProtocolError("private share is missing its sender node ID".into())
+        })?;
+
+        let claim_guard = loop {
+            match self
+                .app_state
+                .dkg_session_state
+                .try_claim_message_processing(&session_id, from_node_id, DkgMessageType::Share)
+                .await
+            {
+                MessageProcessingClaim::Claimed => {
+                    break MessageClaimGuard::new(
+                        session_id,
+                        from_node_id,
+                        DkgMessageType::Share,
+                        self.app_state.clone(),
+                    );
+                }
+                MessageProcessingClaim::AlreadyProcessed => {
+                    let was_recorded = self
+                        .app_state
+                        .dkg_session_state
+                        .with_state(&session_id, |state| {
+                            state
+                                .commitment_audit
+                                .received_shares
+                                .contains(&from_node_id)
+                        })
+                        .await
+                        .ok_or_else(|| session_not_found(session_id))?;
+                    return Ok(was_recorded);
+                }
+                MessageProcessingClaim::AlreadyProcessing => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                MessageProcessingClaim::MissingSession => {
+                    return Err(session_not_found(session_id));
+                }
+            }
+        };
+
+        let result = match message {
+            DkgMessage::Share {
+                from_node_id,
+                to_node_id,
+                share_value,
+                nonce,
+                report_evidence,
+                ..
+            } => {
+                message_handlers::accept_private_share_message(
+                    self,
+                    session_id,
+                    from_node_id,
+                    to_node_id,
+                    share_value,
+                    nonce,
+                    report_evidence,
+                )
+                .await
+            }
+            _ => unreachable!("private share type checked before claiming"),
+        };
+
+        claim_guard.finish(result.is_ok()).await;
+        result
+    }
+
     /// Create a new DKG session.
     ///
     /// Typically called when a `StartDkg` gRPC request is received,

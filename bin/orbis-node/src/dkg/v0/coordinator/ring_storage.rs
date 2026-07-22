@@ -8,13 +8,15 @@ use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::sleep;
+use tokio::time::{sleep, Instant};
 
 use super::{types::CoordinatorDkg, DkgCoordinator};
 
 const FINALIZATION_PERSISTENCE_RETRY_LIMIT: usize = 8;
 const FINALIZATION_PERSISTENCE_RETRY_INITIAL: Duration = Duration::from_millis(250);
 const FINALIZATION_PERSISTENCE_RETRY_CAP: Duration = Duration::from_secs(2);
+const FINALIZATION_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const FINALIZATION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 pub async fn cleanup_departing_dealer<D>(
     coord: &DkgCoordinator<D>,
@@ -177,7 +179,16 @@ async fn post_and_verify_fresh_ring_finalization(
     let mut persistence_retries = 0usize;
     let mut status_retries = 0usize;
     let mut retry_delay = FINALIZATION_PERSISTENCE_RETRY_INITIAL;
+    let deadline = Instant::now() + FINALIZATION_COMPLETION_TIMEOUT;
+    let mut persisted_confirmations = 0usize;
     loop {
+        if Instant::now() >= deadline {
+            return Err(DkgError::Bulletin(format!(
+                "Ring {ring_id} did not collect every FinalizeRing confirmation within {} seconds; last observed {persisted_confirmations} confirmations",
+                FINALIZATION_COMPLETION_TIMEOUT.as_secs()
+            )));
+        }
+
         match bulletin.ring_finalization_status(ring_id.to_string()).await {
             Ok(status) if status.ring_pk == ring_pk => break,
             Ok(status) if !status.ring_pk.is_empty() => {
@@ -194,17 +205,26 @@ async fn post_and_verify_fresh_ring_finalization(
                     }
                     break;
                 };
+                persisted_confirmations = confirmation_node_keys.len();
 
                 if confirmation_node_keys
                     .iter()
                     .any(|confirmed_node_key| confirmed_node_key == node_key)
                 {
-                    break;
-                }
-                if let Some(error) = post_error {
-                    return Err(error);
+                    // Seeing our own confirmation is not enough. A later concurrent
+                    // FinalizeRing transaction can expose an older confirmation set,
+                    // so every participant keeps observing the pending ring until the
+                    // chain publishes the final public key. If our confirmation
+                    // disappears, the next pass reposts the exact same payload.
+                    post_error = None;
+                    retry_delay = FINALIZATION_PERSISTENCE_RETRY_INITIAL;
+                    sleep(FINALIZATION_STATUS_POLL_INTERVAL).await;
+                    continue;
                 }
                 if persistence_retries >= FINALIZATION_PERSISTENCE_RETRY_LIMIT {
+                    if let Some(error) = post_error {
+                        return Err(error);
+                    }
                     return Err(DkgError::Bulletin(format!(
                         "SourceHub did not persist this node's FinalizeRing confirmation for ring {ring_id} after {persistence_retries} retries"
                     )));
@@ -356,13 +376,18 @@ mod tests {
             &self,
             _id: String,
         ) -> bulletin::error::Result<RingFinalizationStatus> {
-            let confirmation_node_keys = if self.posts.load(Ordering::SeqCst) >= 2 {
+            let persisted = self.posts.load(Ordering::SeqCst) >= 2;
+            let confirmation_node_keys = if persisted {
                 vec!["node-key".to_string()]
             } else {
                 Vec::new()
             };
             Ok(RingFinalizationStatus {
-                ring_pk: String::new(),
+                ring_pk: if persisted {
+                    "pk".to_string()
+                } else {
+                    String::new()
+                },
                 confirmation_node_keys: Some(confirmation_node_keys),
             })
         }
@@ -411,5 +436,109 @@ mod tests {
         assert_eq!(payloads.len(), 2);
         assert_eq!(payloads[0], payload);
         assert_eq!(payloads[1], payload);
+    }
+
+    #[derive(Default)]
+    struct OverwrittenConfirmationBulletin {
+        posts: AtomicUsize,
+        status_reads: AtomicUsize,
+        payloads: Mutex<Vec<Vec<u8>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Bulletin for OverwrittenConfirmationBulletin {
+        async fn post(
+            &self,
+            _kind: BulletinWriteKind,
+            payload: Vec<u8>,
+        ) -> bulletin::error::Result<String> {
+            self.payloads.lock().unwrap().push(payload);
+            self.posts.fetch_add(1, Ordering::SeqCst);
+            Ok("ring".to_string())
+        }
+
+        async fn update(
+            &self,
+            _id: String,
+            _signature_scheme: String,
+            _signature: Vec<u8>,
+        ) -> bulletin::error::Result<()> {
+            Ok(())
+        }
+
+        async fn read(
+            &self,
+            id: String,
+            _kind: BulletinKind,
+        ) -> bulletin::error::Result<BulletinPost> {
+            Err(BulletinError::NotFound { id })
+        }
+
+        async fn ring_finalization_status(
+            &self,
+            _id: String,
+        ) -> bulletin::error::Result<RingFinalizationStatus> {
+            let read = self.status_reads.fetch_add(1, Ordering::SeqCst);
+            let posts = self.posts.load(Ordering::SeqCst);
+            Ok(match (read, posts) {
+                // The first transaction appears persisted, then is overwritten
+                // by a concurrent stale confirmation set.
+                (0, _) => RingFinalizationStatus {
+                    ring_pk: String::new(),
+                    confirmation_node_keys: Some(vec!["node-key".to_string()]),
+                },
+                (_, 1) => RingFinalizationStatus {
+                    ring_pk: String::new(),
+                    confirmation_node_keys: Some(Vec::new()),
+                },
+                _ => RingFinalizationStatus {
+                    ring_pk: "pk".to_string(),
+                    confirmation_node_keys: Some(vec!["node-key".to_string()]),
+                },
+            })
+        }
+
+        async fn submit_report(
+            &self,
+            _submission: BulletinReportSubmission,
+        ) -> bulletin::error::Result<()> {
+            Ok(())
+        }
+
+        fn chain_id(&self) -> String {
+            "test-chain".to_string()
+        }
+
+        fn ring_reshare_finalize_sign_bytes(
+            &self,
+            _chain_id: &str,
+            _ring_id: &str,
+            _ring_pk: &str,
+            _current_ring_sha256: Vec<u8>,
+            _finalized_ring_sha256: Vec<u8>,
+            _block_number_nonce: u64,
+        ) -> bulletin::error::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn reposts_identical_finalization_if_a_visible_confirmation_disappears() {
+        let bulletin = OverwrittenConfirmationBulletin::default();
+        let payload = br#"{"ring_id":"ring","ring_pk":"pk"}"#.to_vec();
+
+        let retries = post_and_verify_fresh_ring_finalization(
+            &bulletin,
+            "node-key",
+            "ring",
+            "pk",
+            payload.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(retries, 1);
+        let payloads = bulletin.payloads.lock().unwrap();
+        assert_eq!(payloads.as_slice(), [payload.clone(), payload].as_slice());
     }
 }

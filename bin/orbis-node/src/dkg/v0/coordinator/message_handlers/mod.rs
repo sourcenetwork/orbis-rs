@@ -51,3 +51,4 @@ pub use commitment_audit::handle_commitment_audit_message;
 pub use commitment_hash::handle_commitment_hash_message;
 pub use session_init::handle_session_init;
 pub use share::handle_share_message;
+pub(crate) use share::{accept_private_share_message, drive_private_share_completion};
