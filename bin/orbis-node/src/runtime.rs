@@ -132,6 +132,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             network::NetworkImpl::builder()
                 .secret_key(secret_key)
                 .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
+                .keep_alive_interval_ms(constants::NETWORK_KEEP_ALIVE_INTERVAL_MS)
                 .build()
                 .await
                 .map_err(|e| format!("Failed to initialize network: {}", e))?,

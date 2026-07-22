@@ -120,6 +120,88 @@ async fn test_three_nodes_connect() {
     println!("Test completed successfully!");
 }
 
+/// Concurrent API starts for one ring must converge on the same leader-owned
+/// attempt instead of creating competing sessions or aborting the winner.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_concurrent_starts_on_different_nodes_share_one_attempt() {
+    let db_name = "test_concurrent_starts_on_different_nodes_share_one_attempt";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+    let mut network = setup_three_node_network(true, db_name).await;
+    let alice =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let bob = DkgServiceImpl::<DkgImpl>::with_routes(network.bob.app_state.clone(), &network::V0);
+    let token = TestKeyPair::new()
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("DKG JWT");
+    let alice_request = create_authenticated_request(
+        StartDkgRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &token,
+    )
+    .unwrap();
+    let bob_request = create_authenticated_request(
+        StartDkgRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &token,
+    )
+    .unwrap();
+
+    let (alice_result, bob_result) =
+        tokio::join!(alice.start_dkg(alice_request), bob.start_dkg(bob_request));
+    let alice_response = alice_result
+        .expect("Alice start should converge")
+        .into_inner();
+    let bob_response = bob_result.expect("Bob start should converge").into_inner();
+    assert_eq!(alice_response.session_id, bob_response.session_id);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let all_finished = network
+            .alice
+            .app_state
+            .dkg_session_state
+            .session_count()
+            .await
+            == 0
+            && network
+                .bob
+                .app_state
+                .dkg_session_state
+                .session_count()
+                .await
+                == 0
+            && network
+                .charlie
+                .app_state
+                .dkg_session_state
+                .session_count()
+                .await
+                == 0;
+        if all_finished {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the single converged attempt did not complete"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+    let ring = get_test_ring_post(network.dummy_bulletin.as_ref().expect("dummy bulletin"));
+    assert!(!ring.payload.is_empty(), "the converged DKG must finalize");
+
+    network.shutdown_routers().await.expect("shutdown routers");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
 /// Test: start_dkg fails closed when the ring does not exist on the bulletin.
 ///
 /// In the new flow the bulletin is read before any participant resolution happens,

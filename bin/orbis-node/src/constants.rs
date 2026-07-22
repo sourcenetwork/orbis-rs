@@ -79,6 +79,12 @@ pub const MAX_COMMITMENT_COEFFICIENTS: usize = 256;
 /// activity while maintaining reasonable resource usage.
 pub const MAX_DKG_SESSIONS: usize = 100;
 
+/// Maximum number of cached point-to-point QUIC connections across protocols.
+///
+/// Large rings can otherwise leave one connection per peer and protocol resident
+/// indefinitely. The LRU pool reconnects transparently after eviction.
+pub const MAX_CACHED_PEER_CONNECTIONS: usize = 256;
+
 /// Maximum number of persisted rings this node will manage locally.
 ///
 /// PSS scans the local `RingIndex` linearly on each scheduler tick, so this
@@ -110,6 +116,36 @@ pub const SESSION_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 /// SESSION_TTL. Set to 2 minutes, which gives ample headroom over
 /// PEER_RESPONSE_TIMEOUT (10s) even when all peers need to respond.
 pub const DKG_PHASE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Hard deadline for one hybrid DKG attempt. Unlike the legacy phase timeout,
+/// missing-message repair continues while this deadline has not elapsed.
+pub const DKG_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// Deadline for prepare/join/topology-probe coordination.
+pub const DKG_PREPARATION_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+
+/// Interval between retransmissions of the exact preparation topology probe.
+pub const DKG_TOPOLOGY_PROBE_INTERVAL: Duration = Duration::from_millis(500);
+
+/// A Gossip topic is considered isolated only after it has remained without a
+/// neighbor for this long. Individual neighbor changes are normal mesh churn.
+pub const DKG_GOSSIP_ISOLATION_GRACE: Duration = Duration::from_secs(3);
+
+/// Maximum retry backoff for preparation control messages and acknowledgements.
+pub const DKG_PREPARATION_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(2);
+
+/// A forwarded StartFresh request waits slightly longer than the leader's
+/// preparation deadline so the leader's specific failure can reach the caller.
+pub const DKG_FORWARDED_START_RESPONSE_GRACE: Duration = Duration::from_secs(30);
+
+/// Lack of progress that triggers explicit public/private repair.
+pub const DKG_REPAIR_STALL_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Maximum backoff between repair attempts.
+pub const DKG_MAX_REPAIR_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Maximum simultaneous private pair exchanges per node.
+pub const DKG_PRIVATE_EXCHANGE_CONCURRENCY: usize = 4;
 
 /// Timeout for the durable Phase 4 completion step before cleanup considers the
 /// session abandoned.
@@ -203,7 +239,13 @@ pub const SIGN_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// a clean CLOSE) keeps the pool slot occupied and causes `open_stream()` to
 /// hang until Quinn exhausts its retransmission backoff. On timeout the
 /// connection closes, `open_stream()` fails, and the pool reconnects.
-pub const NETWORK_IDLE_TIMEOUT_MS: u32 = 30_000;
+/// QUIC idle timeout. DKG control and repair traffic can legitimately pause while
+/// large commitments are computed, so keep the underlying connection longer than
+/// an individual phase stall interval.
+pub const NETWORK_IDLE_TIMEOUT_MS: u32 = 5 * 60 * 1_000;
+
+/// QUIC keep-alive interval for active peer connections.
+pub const NETWORK_KEEP_ALIVE_INTERVAL_MS: u64 = 10_000;
 
 /// Maximum concurrently executing inbound P2P handler tasks per protocol.
 ///

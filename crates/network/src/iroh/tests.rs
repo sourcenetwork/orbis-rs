@@ -7,6 +7,7 @@ use super::IrohNetwork;
 use crate::r#trait::{Connection, Message, Network, ProtocolHandler};
 use crate::tests as trait_tests;
 use crate::{PeerId, Result, SecretKey};
+use crate::{PubSubEvent, TopicId};
 use async_trait::async_trait;
 use std::net::SocketAddrV4;
 use std::sync::Arc;
@@ -106,6 +107,64 @@ async fn iroh_concurrent_connections() {
     let net2 = new_test_network().await;
     let net3 = new_test_network().await;
     trait_tests::test_concurrent_connections(&net1, &net2, &net3).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_authenticated_pubsub_roundtrip() {
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
+    let router1 = net1
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn first gossip router");
+    let router2 = net2
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn second gossip router");
+
+    let topic_id = TopicId::new([7u8; 32]);
+    let topic1 = net1
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![])
+        .await
+        .expect("open topic");
+    let topic2 = net2
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![peer_addr(&net1)])
+        .await
+        .expect("join topic");
+
+    for _ in 0..2 {
+        topic1
+            .broadcast(bytes::Bytes::from_static(b"signed payload"))
+            .await
+            .expect("broadcast identical semantic bytes");
+    }
+
+    let received = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut received = Vec::new();
+        while received.len() < 2 {
+            if let PubSubEvent::Received(message) = topic2.recv().await.expect("topic event") {
+                received.push(message);
+            }
+        }
+        received
+    })
+    .await
+    .expect("receive both authenticated retransmissions");
+    assert_eq!(received.len(), 2);
+    for message in received {
+        assert_eq!(message.origin, net1.local_peer_id());
+        assert_eq!(&message.data[..], b"signed payload");
+    }
+
+    router1.shutdown().await.unwrap();
+    router2.shutdown().await.unwrap();
 }
 
 #[test]

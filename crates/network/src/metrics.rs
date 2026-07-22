@@ -24,6 +24,13 @@ lazy_static! {
     )
     .expect("failed to register p2p_active_connections");
 
+    pub static ref P2P_GOSSIP_NEIGHBORS: GaugeVec = register_gauge_vec!(
+        "p2p_gossip_neighbors",
+        "Number of currently connected Gossip neighbors",
+        &["protocol"]
+    )
+    .expect("failed to register p2p_gossip_neighbors");
+
     // Message metrics
     pub static ref P2P_MESSAGES_SENT_TOTAL: CounterVec = register_counter_vec!(
         "p2p_messages_sent_total",
@@ -100,6 +107,7 @@ lazy_static! {
 pub fn init() {
     lazy_static::initialize(&P2P_CONNECTIONS_TOTAL);
     lazy_static::initialize(&P2P_ACTIVE_CONNECTIONS);
+    lazy_static::initialize(&P2P_GOSSIP_NEIGHBORS);
     lazy_static::initialize(&P2P_MESSAGES_SENT_TOTAL);
     lazy_static::initialize(&P2P_MESSAGES_RECEIVED_TOTAL);
     lazy_static::initialize(&P2P_BYTES_SENT_TOTAL);

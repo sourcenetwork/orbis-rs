@@ -398,6 +398,7 @@ pub async fn handle_session_init<D>(
     policy_id: Option<String>,
     ring_id: String,
     sender_peer_id: &PeerId,
+    start_immediately: bool,
 ) -> Result<Option<DkgMessage>>
 where
     D: CoordinatorDkg,
@@ -654,7 +655,7 @@ where
         SessionKind::Refresh { .. } => assigned_node_id == 1,
         SessionKind::Reshare { .. } => !session_init_from_self,
     };
-    if session_created_here && starts_phase && dkg_role != DkgRole::Receiver {
+    if start_immediately && session_created_here && starts_phase && dkg_role != DkgRole::Receiver {
         let peer_ids_for_phase1 = coord
             .app_state
             .dkg_session_state

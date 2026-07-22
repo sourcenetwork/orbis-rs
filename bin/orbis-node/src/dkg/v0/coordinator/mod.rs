@@ -21,7 +21,7 @@
 
 pub(crate) mod evidence;
 mod inbound;
-mod message_handlers;
+pub(crate) mod message_handlers;
 pub(crate) mod network;
 mod peers;
 mod phases;
@@ -29,7 +29,7 @@ mod refresh_health_check;
 mod reshare;
 mod ring_storage;
 mod state_machine;
-mod types;
+pub(crate) mod types;
 
 use crate::app_state::AppState;
 use crate::dkg::v0::error::{DkgError, Result};
@@ -224,6 +224,7 @@ where
                 policy_id.clone(),
                 ring_id.clone(),
                 sender_peer_id,
+                true,
             )
             .await;
         }

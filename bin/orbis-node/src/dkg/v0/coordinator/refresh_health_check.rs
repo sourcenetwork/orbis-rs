@@ -174,6 +174,24 @@ async fn broadcast_result<D>(
 where
     D: CoordinatorDkg,
 {
+    if coord
+        .app_state
+        .dkg_session_state
+        .hybrid_attempt(&session_id)
+        .await
+        .is_some()
+    {
+        return crate::dkg::v0::hybrid::submit_public_contribution(
+            coord,
+            session_id,
+            crate::dkg::v0::transport::DkgPublicPayload::RefreshHealthCheckResult {
+                statement: statement.clone(),
+                signature,
+            },
+        )
+        .await;
+    }
+
     for peer_id in peer_ids {
         if is_self_peer_id(&coord.app_state.network, peer_id) {
             continue;

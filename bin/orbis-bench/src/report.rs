@@ -207,6 +207,26 @@ fn render_report(
     }
     html.push_str("</tbody></table></div></section>");
 
+    html.push_str("<section><h2>Hybrid transport evidence</h2><div class=\"table-wrap\"><table><thead><tr><th>Plane</th><th>Measurement</th><th>Labels</th><th>Value</th></tr></thead><tbody>");
+    let mut transport_rows = hybrid_transport_evidence(&metric_totals);
+    transport_rows.extend(missing_topology_evidence(trials));
+    if transport_rows.is_empty() {
+        html.push_str("<tr><td colspan=\"4\" class=\"empty\">No hybrid transport metrics were recorded.</td></tr>");
+    } else {
+        for row in transport_rows {
+            write!(
+                html,
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td></tr>",
+                escape(&row.plane),
+                escape(&row.measurement),
+                escape(&row.labels),
+                escape(&row.value)
+            )
+            .ok();
+        }
+    }
+    html.push_str("</tbody></table></div><p class=\"note\">Counters and histogram observations are exact before/after deltas summed across trials. Active-connection and neighbor gauges are reported as end-minus-start deltas; use node scrapes for point-in-time values.</p></section>");
+
     html.push_str("<section><h2>Protocol and resource evidence</h2><div class=\"split\"><div><h3>Metric deltas</h3><div class=\"table-wrap compact\"><table><thead><tr><th>Metric</th><th>Total delta</th></tr></thead><tbody>");
     for (metric, value) in metric_totals.iter().take(30) {
         write!(
@@ -280,13 +300,19 @@ fn render_report(
         "P2P messages (counter delta)",
         &format!(
             "{:.0}",
-            metric_prefix_total(&metric_totals, "network_messages_").max(0.0)
+            (metric_prefix_total(&metric_totals, "p2p_messages_")
+                + metric_prefix_total(&metric_totals, "network_messages_"))
+            .max(0.0)
         ),
     );
     definition(
         &mut html,
         "P2P bytes (counter delta)",
-        &human_bytes(metric_prefix_total(&metric_totals, "network_bytes_").max(0.0) as u64),
+        &human_bytes(
+            (metric_prefix_total(&metric_totals, "p2p_bytes_")
+                + metric_prefix_total(&metric_totals, "network_bytes_"))
+            .max(0.0) as u64,
+        ),
     );
     html.push_str("</dl></div></div></section>");
 
@@ -472,6 +498,119 @@ struct PhaseBreakdown {
     total_ms: f64,
 }
 
+#[derive(Debug, PartialEq)]
+struct TransportEvidence {
+    plane: String,
+    measurement: String,
+    labels: String,
+    value: String,
+}
+
+fn hybrid_transport_evidence(metrics: &[(String, f64)]) -> Vec<TransportEvidence> {
+    let lookup: BTreeMap<&str, f64> = metrics
+        .iter()
+        .map(|(metric, value)| (metric.as_str(), *value))
+        .collect();
+    let mut rows = Vec::new();
+    for (metric, value) in metrics {
+        let (name, labels) = metric
+            .split_once('{')
+            .map_or((metric.as_str(), ""), |(name, labels)| {
+                (name, labels.strip_suffix('}').unwrap_or(labels))
+            });
+        let plane = if name.starts_with("dkg_control_") {
+            "control".to_string()
+        } else if name.starts_with("dkg_public_") {
+            "public".to_string()
+        } else if name.starts_with("dkg_private_") {
+            "private".to_string()
+        } else if name.starts_with("dkg_hybrid_") {
+            metric_label(metric, "plane").unwrap_or_else(|| "hybrid".into())
+        } else if name.starts_with("p2p_") {
+            "network".to_string()
+        } else {
+            continue;
+        };
+
+        if name.ends_with("_bucket") || name.ends_with("_created") {
+            continue;
+        }
+        if let Some(base) = name.strip_suffix("_sum") {
+            let count_key = if labels.is_empty() {
+                format!("{base}_count")
+            } else {
+                format!("{base}_count{{{labels}}}")
+            };
+            let count = lookup.get(count_key.as_str()).copied().unwrap_or(0.0);
+            if count > 0.0 {
+                rows.push(TransportEvidence {
+                    plane: plane.clone(),
+                    measurement: format!("{base} average"),
+                    labels: labels.to_string(),
+                    value: format!("{:.2} ms (n={count:.0})", value / count * 1_000.0),
+                });
+            }
+            continue;
+        }
+        if name.ends_with("_count") {
+            continue;
+        }
+
+        let value = if name.contains("bytes") {
+            human_bytes(value.max(0.0) as u64)
+        } else if name.contains("active") || name.contains("neighbors") {
+            format!("{value:+.0} end-minus-start")
+        } else {
+            format!("{value:.0}")
+        };
+        rows.push(TransportEvidence {
+            plane,
+            measurement: name.to_string(),
+            labels: labels.to_string(),
+            value,
+        });
+    }
+    rows.sort_by(|left, right| {
+        (&left.plane, &left.measurement, &left.labels).cmp(&(
+            &right.plane,
+            &right.measurement,
+            &right.labels,
+        ))
+    });
+    rows
+}
+
+fn missing_topology_evidence(trials: &[TrialRecord]) -> Vec<TransportEvidence> {
+    const MARKER: &str = "topology probe acknowledgement missing from ";
+    let mut rows = trials
+        .iter()
+        .filter_map(|trial| {
+            let details = trial.error.as_deref()?.split_once(MARKER)?.1;
+            let (count, remainder) = details.split_once(" participants")?;
+            let prefixes = remainder
+                .split_once(':')
+                .map(|(_, prefixes)| prefixes.trim())
+                .filter(|prefixes| !prefixes.is_empty())
+                .unwrap_or("prefixes unavailable");
+            Some(TransportEvidence {
+                plane: "control".into(),
+                measurement: "topology probe missing participants".into(),
+                labels: format!(
+                    "profile=\"{}\",network=\"{}\",ring=\"{}\",threshold=\"{}\",trial=\"{}\"",
+                    trial.profile,
+                    trial.network_size,
+                    trial.case.ring_size,
+                    trial.case.threshold,
+                    trial.trial_index
+                ),
+                value: format!("{count} ({prefixes})"),
+            })
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| (&left.labels, &left.value).cmp(&(&right.labels, &right.value)));
+    rows
+}
+
 fn phase_breakdown(metrics: &[(String, f64)]) -> Vec<PhaseBreakdown> {
     let lookup: BTreeMap<&str, f64> = metrics
         .iter()
@@ -583,6 +722,42 @@ mod tests {
     use crate::config::{Experiment, Operation, RingCase};
     use crate::results::{HostMetadata, RunStatus};
     use sha2::{Digest, Sha256};
+
+    fn sample_trial() -> TrialRecord {
+        TrialRecord {
+            run_id: "test-run".into(),
+            stack_id: "orbis-bench-test-s000".into(),
+            profile: "lan".into(),
+            network_size: 3,
+            case: RingCase {
+                ring_size: 3,
+                threshold: 2,
+            },
+            operation: Operation::Dkg,
+            trial_index: 0,
+            warmup: false,
+            concurrency: None,
+            started_at_unix_ms: 1,
+            duration_ms: 1.0,
+            client_total_ms: None,
+            acknowledgement_ms: None,
+            verification_ms: None,
+            scheduler_delay_ms: None,
+            throughput_per_sec: None,
+            successful_requests: None,
+            failed_requests: None,
+            latency_p50_ms: None,
+            latency_p95_ms: None,
+            latency_p99_ms: None,
+            success: true,
+            error_class: None,
+            error: None,
+            ring_id: Some("ring".into()),
+            ring_pk: Some("pk".into()),
+            metric_deltas: BTreeMap::new(),
+        }
+    }
+
     #[test]
     fn html_escapes_user_supplied_names() {
         assert_eq!(escape("<x>&\""), "&lt;x&gt;&amp;&quot;");
@@ -610,6 +785,86 @@ mod tests {
         assert_eq!(rows[0].phase, "phase2_shares");
         assert_eq!(rows[0].average_ms, 500.0);
         assert_eq!(rows[0].total_ms, 2_000.0);
+    }
+
+    #[test]
+    fn hybrid_transport_evidence_reports_latency_events_and_network_deltas() {
+        let metrics = vec![
+            (
+                "dkg_control_readiness_duration_seconds_count{kind=\"fresh\"}".into(),
+                2.0,
+            ),
+            (
+                "dkg_control_readiness_duration_seconds_sum{kind=\"fresh\"}".into(),
+                1.0,
+            ),
+            (
+                "dkg_hybrid_transport_events_total{plane=\"public\",event=\"repair\"}".into(),
+                3.0,
+            ),
+            (
+                "dkg_hybrid_transport_events_total{plane=\"control\",event=\"probe_ack\"}".into(),
+                8.0,
+            ),
+            (
+                "dkg_hybrid_transport_events_total{plane=\"public\",event=\"rejoin_isolation\"}"
+                    .into(),
+                1.0,
+            ),
+            (
+                "p2p_bytes_sent_total{protocol=\"gossip\"}".into(),
+                1_048_576.0,
+            ),
+            ("p2p_gossip_neighbors{protocol=\"gossip\"}".into(), -1.0),
+        ];
+        let rows = hybrid_transport_evidence(&metrics);
+        assert!(rows.iter().any(|row| {
+            row.plane == "control"
+                && row.measurement == "dkg_control_readiness_duration_seconds average"
+                && row.value == "500.00 ms (n=2)"
+        }));
+        assert!(rows.iter().any(|row| {
+            row.plane == "public"
+                && row.measurement == "dkg_hybrid_transport_events_total"
+                && row.value == "3"
+        }));
+        assert!(rows.iter().any(|row| {
+            row.plane == "control" && row.labels.contains("probe_ack") && row.value == "8"
+        }));
+        assert!(rows.iter().any(|row| {
+            row.plane == "public" && row.labels.contains("rejoin_isolation") && row.value == "1"
+        }));
+        assert!(rows.iter().any(|row| {
+            row.plane == "network"
+                && row.measurement == "p2p_bytes_sent_total"
+                && row.value == "1.0 MiB"
+        }));
+        assert!(rows.iter().any(|row| {
+            row.measurement == "p2p_gossip_neighbors" && row.value == "-1 end-minus-start"
+        }));
+    }
+
+    #[test]
+    fn failed_preparation_surfaces_exact_missing_participants() {
+        let mut trial = sample_trial();
+        trial.profile = "lan".into();
+        trial.network_size = 50;
+        trial.case.ring_size = 8;
+        trial.case.threshold = 7;
+        trial.trial_index = 3;
+        trial.success = false;
+        trial.error = Some(
+            "Network communication error: topology probe acknowledgement missing from 2 participants before preparation deadline: aaaaaaaaaaaa,bbbbbbbbbbbb"
+                .into(),
+        );
+
+        let rows = missing_topology_evidence(&[trial]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].plane, "control");
+        assert_eq!(rows[0].measurement, "topology probe missing participants");
+        assert!(rows[0].labels.contains("network=\"50\""));
+        assert!(rows[0].labels.contains("ring=\"8\""));
+        assert_eq!(rows[0].value, "2 (aaaaaaaaaaaa,bbbbbbbbbbbb)");
     }
 
     #[test]
@@ -704,7 +959,7 @@ mod tests {
         let html = render_report(&manifest, &[trial], &rows, &ResourceSummary::default());
         assert_eq!(
             hex::encode(Sha256::digest(html)),
-            "dadd9decfb3774b02d89fd8a846b704b48e4d2b24484f4524c4de8924e868c99"
+            "9aacd59268705de6adddb197e173741cbff47282a977877021857387fc12ade7"
         );
     }
 }

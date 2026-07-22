@@ -3,7 +3,8 @@ use crate::{
     r#trait::{
         Bulletin, BulletinKind, BulletinPost, BulletinReportSubmission, BulletinWriteKind,
         DemeritConfig, DocumentPayload, KeyDerivation, NodeInfo, ReportingConfig,
-        RingCancellationPayload, RingFinalizationPayload, RingPayload, UpgradeInfo,
+        RingCancellationPayload, RingFinalizationPayload, RingFinalizationStatus, RingPayload,
+        UpgradeInfo,
     },
 };
 use async_trait::async_trait;
@@ -203,6 +204,24 @@ impl Bulletin for SourceHubBulletin {
                 node_info_to_bulletin_post(node_info, &id)
             }
         }
+    }
+
+    async fn ring_finalization_status(&self, id: String) -> Result<RingFinalizationStatus> {
+        let ring = self
+            .chain_client
+            .orbis_read_ring(&id)
+            .await
+            .map_err(|e| BulletinError::ChainError(e.to_string()))?
+            .ok_or(BulletinError::NotFound { id })?;
+        Ok(RingFinalizationStatus {
+            ring_pk: ring.ring_pk,
+            confirmation_node_keys: Some(
+                ring.confirmations
+                    .into_iter()
+                    .map(|confirmation| confirmation.node_key)
+                    .collect(),
+            ),
+        })
     }
 
     fn chain_id(&self) -> String {

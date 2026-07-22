@@ -3,12 +3,18 @@ use crate::constants::MAX_LOCAL_RINGS_PER_NODE;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::helpers::auth::current_unix_time;
 use crate::ring_state::RingIndexEntry;
-use bulletin::r#trait::{BulletinWriteKind, RingFinalizationPayload};
+use bulletin::r#trait::{Bulletin, BulletinWriteKind, RingFinalizationPayload};
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::sleep;
 
 use super::{types::CoordinatorDkg, DkgCoordinator};
+
+const FINALIZATION_PERSISTENCE_RETRY_LIMIT: usize = 8;
+const FINALIZATION_PERSISTENCE_RETRY_INITIAL: Duration = Duration::from_millis(250);
+const FINALIZATION_PERSISTENCE_RETRY_CAP: Duration = Duration::from_secs(2);
 
 pub async fn cleanup_departing_dealer<D>(
     coord: &DkgCoordinator<D>,
@@ -136,20 +142,117 @@ where
         ))
     })?;
 
-    coord
-        .app_state
-        .bulletin
-        .post(BulletinWriteKind::Finalize, payload_bytes)
-        .await
-        .map_err(|e| DkgError::Bulletin(format!("Failed to finalize ring: {}", e)))?;
+    let persistence_retries = post_and_verify_fresh_ring_finalization(
+        coord.app_state.bulletin.as_ref(),
+        &coord.app_state.node_key,
+        ring_id,
+        &ring_pk,
+        payload_bytes,
+    )
+    .await?;
 
     tracing::info!(
         ring_pk = %ring_pk,
         ring_id = %ring_id,
+        persistence_retries = persistence_retries,
         "DKG Coordinator: Successfully confirmed fresh DKG on bulletin"
     );
 
     Ok(())
+}
+
+async fn post_and_verify_fresh_ring_finalization(
+    bulletin: &(dyn Bulletin + Send + Sync),
+    node_key: &str,
+    ring_id: &str,
+    ring_pk: &str,
+    payload_bytes: Vec<u8>,
+) -> Result<usize> {
+    let mut post_error = bulletin
+        .post(BulletinWriteKind::Finalize, payload_bytes.clone())
+        .await
+        .err()
+        .map(|e| DkgError::Bulletin(format!("Failed to finalize ring: {}", e)));
+
+    let mut persistence_retries = 0usize;
+    let mut status_retries = 0usize;
+    let mut retry_delay = FINALIZATION_PERSISTENCE_RETRY_INITIAL;
+    loop {
+        match bulletin.ring_finalization_status(ring_id.to_string()).await {
+            Ok(status) if status.ring_pk == ring_pk => break,
+            Ok(status) if !status.ring_pk.is_empty() => {
+                return Err(DkgError::Bulletin(format!(
+                    "Ring {ring_id} finalized with conflicting public key {}",
+                    status.ring_pk
+                )));
+            }
+            Ok(status) => {
+                status_retries = 0;
+                let Some(confirmation_node_keys) = status.confirmation_node_keys else {
+                    if let Some(error) = post_error {
+                        return Err(error);
+                    }
+                    break;
+                };
+
+                if confirmation_node_keys
+                    .iter()
+                    .any(|confirmed_node_key| confirmed_node_key == node_key)
+                {
+                    break;
+                }
+                if let Some(error) = post_error {
+                    return Err(error);
+                }
+                if persistence_retries >= FINALIZATION_PERSISTENCE_RETRY_LIMIT {
+                    return Err(DkgError::Bulletin(format!(
+                        "SourceHub did not persist this node's FinalizeRing confirmation for ring {ring_id} after {persistence_retries} retries"
+                    )));
+                }
+
+                persistence_retries += 1;
+                tracing::warn!(
+                    ring_id = %ring_id,
+                    node_key = %node_key,
+                    retry = persistence_retries,
+                    persisted_confirmations = confirmation_node_keys.len(),
+                    "FinalizeRing transaction succeeded but this node's confirmation is absent on-chain; retrying identical confirmation"
+                );
+                sleep(retry_delay).await;
+                retry_delay = retry_delay
+                    .saturating_mul(2)
+                    .min(FINALIZATION_PERSISTENCE_RETRY_CAP);
+                post_error = bulletin
+                    .post(BulletinWriteKind::Finalize, payload_bytes.clone())
+                    .await
+                    .err()
+                    .map(|e| DkgError::Bulletin(format!("Failed to finalize ring: {}", e)));
+            }
+            Err(error) => {
+                if status_retries >= FINALIZATION_PERSISTENCE_RETRY_LIMIT {
+                    if let Some(post_error) = post_error {
+                        return Err(post_error);
+                    }
+                    return Err(DkgError::Bulletin(format!(
+                        "Failed to verify FinalizeRing persistence for ring {ring_id}: {error}"
+                    )));
+                }
+                status_retries += 1;
+                tracing::warn!(
+                    ring_id = %ring_id,
+                    retry = status_retries,
+                    error = %error,
+                    "Failed to read FinalizeRing persistence; retrying status query"
+                );
+                sleep(retry_delay).await;
+                retry_delay = retry_delay
+                    .saturating_mul(2)
+                    .min(FINALIZATION_PERSISTENCE_RETRY_CAP);
+            }
+        }
+    }
+
+    Ok(persistence_retries)
 }
 
 fn remove_ring_index_entry(storage: &impl LocalStorage, ring_key: &str) -> Result<()> {
@@ -202,4 +305,111 @@ fn ensure_local_ring_capacity(ring_index: &[RingIndexEntry], storage_key: &str) 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bulletin::error::BulletinError;
+    use bulletin::r#trait::{
+        BulletinKind, BulletinPost, BulletinReportSubmission, RingFinalizationStatus,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct LostFirstConfirmationBulletin {
+        posts: AtomicUsize,
+        payloads: Mutex<Vec<Vec<u8>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Bulletin for LostFirstConfirmationBulletin {
+        async fn post(
+            &self,
+            _kind: BulletinWriteKind,
+            payload: Vec<u8>,
+        ) -> bulletin::error::Result<String> {
+            self.payloads.lock().unwrap().push(payload);
+            self.posts.fetch_add(1, Ordering::SeqCst);
+            Ok("ring".to_string())
+        }
+
+        async fn update(
+            &self,
+            _id: String,
+            _signature_scheme: String,
+            _signature: Vec<u8>,
+        ) -> bulletin::error::Result<()> {
+            Ok(())
+        }
+
+        async fn read(
+            &self,
+            id: String,
+            _kind: BulletinKind,
+        ) -> bulletin::error::Result<BulletinPost> {
+            Err(BulletinError::NotFound { id })
+        }
+
+        async fn ring_finalization_status(
+            &self,
+            _id: String,
+        ) -> bulletin::error::Result<RingFinalizationStatus> {
+            let confirmation_node_keys = if self.posts.load(Ordering::SeqCst) >= 2 {
+                vec!["node-key".to_string()]
+            } else {
+                Vec::new()
+            };
+            Ok(RingFinalizationStatus {
+                ring_pk: String::new(),
+                confirmation_node_keys: Some(confirmation_node_keys),
+            })
+        }
+
+        async fn submit_report(
+            &self,
+            _submission: BulletinReportSubmission,
+        ) -> bulletin::error::Result<()> {
+            Ok(())
+        }
+
+        fn chain_id(&self) -> String {
+            "test-chain".to_string()
+        }
+
+        fn ring_reshare_finalize_sign_bytes(
+            &self,
+            _chain_id: &str,
+            _ring_id: &str,
+            _ring_pk: &str,
+            _current_ring_sha256: Vec<u8>,
+            _finalized_ring_sha256: Vec<u8>,
+            _block_number_nonce: u64,
+        ) -> bulletin::error::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn retries_identical_finalization_when_successful_write_is_absent() {
+        let bulletin = LostFirstConfirmationBulletin::default();
+        let payload = br#"{"ring_id":"ring","ring_pk":"pk"}"#.to_vec();
+
+        let retries = post_and_verify_fresh_ring_finalization(
+            &bulletin,
+            "node-key",
+            "ring",
+            "pk",
+            payload.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(retries, 1);
+        let payloads = bulletin.payloads.lock().unwrap();
+        assert_eq!(payloads.len(), 2);
+        assert_eq!(payloads[0], payload);
+        assert_eq!(payloads[1], payload);
+    }
 }

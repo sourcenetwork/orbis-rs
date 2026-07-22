@@ -5,6 +5,8 @@
 pub struct ProtocolRoutes {
     pub version: u64,
     pub dkg_alpn: &'static [u8],
+    pub dkg_control_alpn: &'static [u8],
+    pub dkg_private_alpn: &'static [u8],
     pub reencrypt_alpn: &'static [u8],
     pub sign_alpn: &'static [u8],
     pub reporting_health_alpn: &'static [u8],
@@ -14,6 +16,8 @@ pub struct ProtocolRoutes {
 pub const V0: ProtocolRoutes = ProtocolRoutes {
     version: 0,
     dkg_alpn: b"orbis/dkg/0",
+    dkg_control_alpn: b"orbis/dkg-control/0",
+    dkg_private_alpn: b"orbis/dkg-private/0",
     reencrypt_alpn: b"orbis/reencrypt/0",
     sign_alpn: b"orbis/sign/0",
     reporting_health_alpn: b"orbis/reporting/health/0",
@@ -37,6 +41,8 @@ mod tests {
     #[test]
     fn v0_alpns_are_stable() {
         assert_eq!(V0.dkg_alpn, b"orbis/dkg/0");
+        assert_eq!(V0.dkg_control_alpn, b"orbis/dkg-control/0");
+        assert_eq!(V0.dkg_private_alpn, b"orbis/dkg-private/0");
         assert_eq!(V0.reencrypt_alpn, b"orbis/reencrypt/0");
         assert_eq!(V0.sign_alpn, b"orbis/sign/0");
         assert_eq!(V0.reporting_health_alpn, b"orbis/reporting/health/0");

@@ -269,6 +269,18 @@ where
                 return Ok(());
             }
 
+            let canonical_leader =
+                crate::dkg::v0::transport::canonical_leader(&ring_payload.peer_node_keys)
+                    .ok_or_else(|| DkgError::InvalidParticipantCount(0))?;
+            if canonical_leader != app_state.node_key {
+                tracing::debug!(
+                    ring_id = %post_id,
+                    leader = %canonical_leader,
+                    "PSS: refresh is due; canonical leader will schedule it"
+                );
+                return Ok(());
+            }
+
             trigger_refresh(
                 app_state,
                 entry,
@@ -471,6 +483,46 @@ fn read_ring_index(storage: &impl LocalStorage) -> Result<Vec<RingIndexEntry>, D
 
 /// Initiate a Refresh ceremony (same secret, new shares, same committee).
 async fn trigger_refresh<D>(
+    app_state: &Arc<AppState<D>>,
+    entry: &RingIndexEntry,
+    ring_payload: &RingPayload,
+    _peer_ids: &[String],
+    _node_id_assignments: &std::collections::HashMap<String, u32>,
+    _node_id_to_peer_id: &std::collections::HashMap<u32, String>,
+    protocol_routes: &'static network::ProtocolRoutes,
+    scheduler_delay_secs: u64,
+) -> Result<(), DkgError>
+where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = GroupAffine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    crate::metrics::record_pss_scheduler_delay(scheduler_delay_secs as f64);
+    let (ceremony_id, attempt_id) = crate::dkg::v0::hybrid::start_refresh(
+        app_state.clone(),
+        protocol_routes,
+        entry.bulletin_post_id.clone(),
+        entry.ring_pk_str.clone(),
+    )
+    .await?;
+    tracing::info!(
+        session_id = ceremony_id.0,
+        attempt_id = %hex::encode(attempt_id.0),
+        ring_id = %entry.bulletin_post_id,
+        threshold = ring_payload.threshold,
+        "PSS: hybrid refresh session initiated by canonical leader"
+    );
+    Ok(())
+}
+
+#[allow(dead_code)]
+async fn trigger_refresh_legacy<D>(
     app_state: &Arc<AppState<D>>,
     entry: &RingIndexEntry,
     ring_payload: &RingPayload,

@@ -65,7 +65,7 @@ pub struct RingReshareUpdateContext {
 ///
 /// This signature is never posted or persisted. It exists only to prove that at
 /// least a threshold subset can sign using the refreshed active public polynomial.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RefreshHealthCheckStatement {
     /// Domain separator, must equal [`REFRESH_HEALTH_CHECK_DOMAIN`].
     pub domain: String,

@@ -504,6 +504,28 @@ where
 
     let (revealer_node_id, target_peers) = resolved;
 
+    if !matches!(
+        coord
+            .app_state
+            .dkg_session_state
+            .with_state(&session_id, |state| state.kind.clone())
+            .await,
+        Some(SessionKind::Reshare { .. })
+    ) && coord
+        .app_state
+        .dkg_session_state
+        .hybrid_attempt(&session_id)
+        .await
+        .is_some()
+    {
+        return crate::dkg::v0::hybrid::submit_public_contribution(
+            coord,
+            session_id,
+            crate::dkg::v0::transport::DkgPublicPayload::CommitmentAudit { revealed },
+        )
+        .await;
+    }
+
     let message = DkgMessage::CommitmentAudit {
         session_id,
         revealer_node_id,

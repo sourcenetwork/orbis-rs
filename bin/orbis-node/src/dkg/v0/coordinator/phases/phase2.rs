@@ -108,6 +108,104 @@ where
         "DKG Coordinator: Sending shares to peers"
     );
 
+    if !is_reshare {
+        if let Some((ceremony_id, attempt_id, _, _, activated)) = coord
+            .app_state
+            .dkg_session_state
+            .hybrid_transport_info(&session_id)
+            .await
+        {
+            if !activated {
+                return Err(DkgError::ProtocolError(
+                    "private shares generated before hybrid attempt activation".to_string(),
+                ));
+            }
+            let mut outgoing = Vec::with_capacity(shares.len().saturating_sub(1));
+            for share in &shares {
+                if share.to_id == node_id {
+                    continue;
+                }
+                let target_peer_id = coord
+                    .app_state
+                    .dkg_session_state
+                    .get_peer_id_for_node(&session_id, share.to_id)
+                    .await
+                    .ok_or_else(|| {
+                        DkgError::ProtocolError(format!(
+                            "Missing peer mapping for node_id {}; refusing to route private share",
+                            share.to_id
+                        ))
+                    })?;
+                let share_value = CryptoSerialize::to_bytes(&share.value).map_err(|error| {
+                    DkgError::Serialization(format!(
+                        "Failed to serialize private share value: {error}"
+                    ))
+                })?;
+                let report_evidence = match (&evidence_context, &commitment_evidence) {
+                    (Some(context), Some(commitment_evidence)) => {
+                        Some(build_share_evidence_with_context(
+                            coord,
+                            context,
+                            node_id,
+                            share.to_id,
+                            share_value.clone(),
+                            share.nonce,
+                            commitment_evidence,
+                        )?)
+                    }
+                    _ => None,
+                };
+                let message_id = crate::dkg::v0::transport::derive_private_message_id(
+                    ceremony_id,
+                    attempt_id,
+                    node_id,
+                    share.to_id,
+                    &share_value,
+                    &share.nonce,
+                );
+                let private = crate::dkg::v0::transport::DkgPrivateMessage::ShareDelivery {
+                    ceremony_id,
+                    attempt_id,
+                    message_id,
+                    from_node_id: node_id,
+                    to_node_id: share.to_id,
+                    share_value,
+                    nonce: share.nonce,
+                    report_evidence,
+                };
+                let exact_bytes =
+                    crate::dkg::v0::transport::encode(&private).map_err(DkgError::Serialization)?;
+                if coord
+                    .app_state
+                    .dkg_session_state
+                    .cache_private_message(&session_id, message_id, exact_bytes.clone())
+                    .await
+                    != Some(true)
+                {
+                    return Err(DkgError::ProtocolError(
+                        "private share retransmission bytes changed".to_string(),
+                    ));
+                }
+                outgoing.push((share.to_id, target_peer_id, message_id, exact_bytes));
+            }
+            tracing::info!(
+                session_id,
+                node_id,
+                pair_count = outgoing.len(),
+                "Phase 2: cached exact private shares; starting bounded pair exchanges"
+            );
+            crate::dkg::v0::hybrid::exchange_private_shares(coord, session_id, outgoing).await?;
+            return drive_post_phase2_event(
+                coord,
+                session_id,
+                DkgEvent::Phase2SharesDistributed {
+                    local_node_id: node_id,
+                },
+            )
+            .await;
+        }
+    }
+
     // Send shares to peers.
     // For Reshare: route using the resolved new-committee node_id -> peer_id map.
     // For Fresh/Refresh: use node_id_to_peer_id map, falling back to broadcast.

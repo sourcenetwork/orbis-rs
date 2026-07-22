@@ -1,4 +1,5 @@
 use crate::dkg::v0::session_state::SessionStateManager;
+use crate::dkg::v0::transport::{AttemptId, CeremonyId, MessageId};
 use crate::pre::v0::response_state::PreResponseManager;
 use crate::reporting::v0::state::ReportingState;
 use crate::sign::v0::response_state::SignResponseManager;
@@ -9,8 +10,12 @@ use local_storage::LocalStorageImpl;
 use network::{Connection, Network};
 use network::{PeerConnection, PeerId};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
+use tokio::time::Instant;
+
+use crate::constants::{DKG_PRIVATE_EXCHANGE_CONCURRENCY, MAX_CACHED_PEER_CONNECTIONS};
 
 /// Global per-peer, per-protocol connection pool.
 ///
@@ -18,10 +23,16 @@ use tokio::sync::{Mutex, RwLock};
 /// persistent QUIC connection. Callers open lightweight QUIC streams via
 /// [`PeerConnection::open_stream`] for individual requests or DKG sessions,
 /// so concurrent sessions to the same peer run on independent streams with no
-/// head-of-line blocking. The connection itself is never evicted — only
-/// replaced on connection-level errors.
+/// head-of-line blocking. Entries are bounded and evicted least-recently-used.
 pub struct PeerConnectionPool {
-    connections: RwLock<HashMap<(String, Vec<u8>), Arc<dyn PeerConnection>>>,
+    connections: Mutex<HashMap<(String, Vec<u8>), PoolEntry>>,
+    max_entries: usize,
+    access_clock: AtomicU64,
+}
+
+struct PoolEntry {
+    connection: Arc<dyn PeerConnection>,
+    last_used: u64,
 }
 
 impl Default for PeerConnectionPool {
@@ -32,22 +43,31 @@ impl Default for PeerConnectionPool {
 
 impl PeerConnectionPool {
     pub fn new() -> Self {
+        Self::with_capacity(MAX_CACHED_PEER_CONNECTIONS)
+    }
+
+    pub fn with_capacity(max_entries: usize) -> Self {
         Self {
-            connections: RwLock::new(HashMap::new()),
+            connections: Mutex::new(HashMap::new()),
+            max_entries: max_entries.max(1),
+            access_clock: AtomicU64::new(0),
         }
     }
 
+    fn next_access(&self) -> u64 {
+        self.access_clock.fetch_add(1, Ordering::Relaxed)
+    }
+
     pub async fn get(&self, peer_id: &str, protocol: &[u8]) -> Option<Arc<dyn PeerConnection>> {
-        self.connections
-            .read()
-            .await
-            .get(&(peer_id.to_string(), protocol.to_vec()))
-            .cloned()
+        let mut connections = self.connections.lock().await;
+        let entry = connections.get_mut(&(peer_id.to_string(), protocol.to_vec()))?;
+        entry.last_used = self.next_access();
+        Some(entry.connection.clone())
     }
 
     pub async fn remove(&self, peer_id: &str, protocol: &[u8]) {
         self.connections
-            .write()
+            .lock()
             .await
             .remove(&(peer_id.to_string(), protocol.to_vec()));
     }
@@ -71,14 +91,44 @@ impl PeerConnectionPool {
         let new_conn: Arc<dyn PeerConnection> =
             Arc::from(network.connect(&peer_id_obj, protocol).await?);
         let key = (peer_id_str.to_string(), protocol.to_vec());
-        let mut map = self.connections.write().await;
+        Ok(self.cache_connection(key, new_conn).await)
+    }
+
+    async fn cache_connection(
+        &self,
+        key: (String, Vec<u8>),
+        new_conn: Arc<dyn PeerConnection>,
+    ) -> Arc<dyn PeerConnection> {
+        let mut map = self.connections.lock().await;
         // Re-check under the write lock: another task may have inserted while we
         // were connecting. Prefer the existing entry to avoid displacing it.
-        if let Some(existing) = map.get(&key) {
-            return Ok(existing.clone());
+        if let Some(existing) = map.get_mut(&key) {
+            existing.last_used = self.next_access();
+            let existing = existing.connection.clone();
+            drop(map);
+            let _ = new_conn.close().await;
+            return existing;
         }
-        map.insert(key, new_conn.clone());
-        Ok(new_conn)
+        let evicted = if map.len() >= self.max_entries {
+            map.iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone())
+                .and_then(|key| map.remove(&key))
+        } else {
+            None
+        };
+        map.insert(
+            key,
+            PoolEntry {
+                connection: new_conn.clone(),
+                last_used: self.next_access(),
+            },
+        );
+        drop(map);
+        if let Some(evicted) = evicted {
+            let _ = evicted.connection.close().await;
+        }
+        new_conn
     }
 
     /// Open a QUIC stream to a peer, evicting and reconnecting if the cached
@@ -98,6 +148,72 @@ impl PeerConnectionPool {
                 fresh.open_stream().await
             }
         }
+    }
+
+    #[cfg(test)]
+    pub async fn len(&self) -> usize {
+        self.connections.lock().await.len()
+    }
+}
+
+#[cfg(test)]
+mod peer_connection_pool_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::atomic::AtomicBool;
+
+    struct FakePeerConnection {
+        peer_id: PeerId,
+        closed: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl PeerConnection for FakePeerConnection {
+        async fn open_stream(&self) -> network::Result<Box<dyn Connection>> {
+            Err(network::NetworkError::Connection(
+                "unused fake connection".into(),
+            ))
+        }
+
+        fn peer_id(&self) -> &PeerId {
+            &self.peer_id
+        }
+
+        async fn close(&self) -> network::Result<()> {
+            self.closed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn fake(name: &str) -> (Arc<dyn PeerConnection>, Arc<AtomicBool>) {
+        let closed = Arc::new(AtomicBool::new(false));
+        (
+            Arc::new(FakePeerConnection {
+                peer_id: PeerId::from_bytes(name.as_bytes()),
+                closed: closed.clone(),
+            }),
+            closed,
+        )
+    }
+
+    #[tokio::test]
+    async fn bounded_pool_evicts_and_closes_least_recently_used_connection() {
+        let pool = PeerConnectionPool::with_capacity(2);
+        let (a, a_closed) = fake("a");
+        let (b, b_closed) = fake("b");
+        let (c, c_closed) = fake("c");
+        pool.cache_connection(("a".into(), b"p".to_vec()), a).await;
+        pool.cache_connection(("b".into(), b"p".to_vec()), b).await;
+        assert!(pool.get("a", b"p").await.is_some());
+        pool.cache_connection(("c".into(), b"p".to_vec()), c).await;
+
+        assert_eq!(pool.len().await, 2);
+        assert!(pool.get("a", b"p").await.is_some());
+        assert!(pool.get("b", b"p").await.is_none());
+        assert!(pool.get("c", b"p").await.is_some());
+        assert!(!a_closed.load(Ordering::SeqCst));
+        assert!(b_closed.load(Ordering::SeqCst));
+        assert!(!c_closed.load(Ordering::SeqCst));
     }
 }
 
@@ -130,6 +246,18 @@ where
     pub ring_index_lock: Arc<Mutex<()>>,
     /// Global per-peer, per-protocol connection pool shared across DKG, PRE, and Sign.
     pub peer_connection_pool: Arc<PeerConnectionPool>,
+    /// Node-wide cap shared by inbound and outbound private DKG pair exchanges,
+    /// including ceremonies for different rings.
+    pub dkg_private_exchange_permits: Arc<tokio::sync::Semaphore>,
+    /// Ceremony-keyed leader singleflight locks. A node manages at most the
+    /// bounded local-ring limit, so retaining one small lock per seen ceremony
+    /// avoids duplicate-attempt races without serializing unrelated rings.
+    pub dkg_ceremony_start_locks: Arc<Mutex<HashMap<u128, Arc<Mutex<()>>>>>,
+    /// Recently completed public-result commits. Refresh result application
+    /// removes the ceremony state, so this bounded, short-lived receipt cache
+    /// lets an authenticated leader safely retry after an ACK is lost.
+    pub dkg_public_commit_receipts:
+        Arc<Mutex<HashMap<(CeremonyId, AttemptId, MessageId), (Vec<u8>, Instant)>>>,
     /// Independent MPC fault-reporting subsystem: state, registry, and sink.
     pub reporting_state: Arc<ReportingState>,
 }
@@ -156,6 +284,11 @@ where
             bulletin,
             ring_index_lock: Arc::new(Mutex::new(())),
             peer_connection_pool: Arc::new(PeerConnectionPool::new()),
+            dkg_private_exchange_permits: Arc::new(tokio::sync::Semaphore::new(
+                DKG_PRIVATE_EXCHANGE_CONCURRENCY,
+            )),
+            dkg_ceremony_start_locks: Arc::new(Mutex::new(HashMap::new())),
+            dkg_public_commit_receipts: Arc::new(Mutex::new(HashMap::new())),
             reporting_state: Arc::new(ReportingState::new()),
         }
     }

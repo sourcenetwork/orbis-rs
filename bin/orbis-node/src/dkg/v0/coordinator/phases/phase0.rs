@@ -43,6 +43,33 @@ where
         .update_phase(&session_id, DkgPhase::Phase0CommitmentHashes)
         .await;
 
+    if coord
+        .app_state
+        .dkg_session_state
+        .hybrid_attempt(&session_id)
+        .await
+        .is_some()
+    {
+        crate::dkg::v0::hybrid::submit_public_contribution(
+            coord,
+            session_id,
+            crate::dkg::v0::transport::DkgPublicPayload::CommitmentHash { commitment_hash },
+        )
+        .await?;
+        coord
+            .app_state
+            .dkg_session_state
+            .mark_commitment_hash_broadcast_complete(&session_id)
+            .await;
+        return drive_event(
+            coord,
+            session_id,
+            DkgEvent::CommitmentHashRecorded,
+            Some(peer_ids),
+        )
+        .await;
+    }
+
     let mut peers_sent = 0;
     let mut expected_peers = 0;
     for peer_id_str in peer_ids {

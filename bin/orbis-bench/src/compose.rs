@@ -12,6 +12,12 @@ pub const CONTROLLER_PUBLIC_KEY: &str =
 pub const RING_GOVERNANCE_POLICY_ID: &str =
     "3199b84b4a6862c40fe2623879dfc36df281a2262898da36f7de65c376a93e05";
 
+// SourceHub simulation can under-report the final write cost when a large
+// FinalizeRing transaction changes chain state between simulation and delivery.
+// Capacity runs need enough headroom that chain bookkeeping does not turn a
+// completed 50-member ceremony into a false protocol timeout.
+const BENCHMARK_CHAIN_GAS_MULTIPLIER: f64 = 3.0;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RingDefinition {
     pub id: String,
@@ -155,7 +161,7 @@ fn node_service_value(input: &ComposeInput<'_>, index: usize) -> Value {
         "--chain-rest".to_string(),
         "http://sourcehub:1317".to_string(),
         "--chain-gas-multiplier".to_string(),
-        "1.5".to_string(),
+        BENCHMARK_CHAIN_GAS_MULTIPLIER.to_string(),
         "--metrics-addr".to_string(),
         "0.0.0.0:9090".to_string(),
         "--runtime-base-path".to_string(),
@@ -278,6 +284,18 @@ mod tests {
         assert!(yaml.contains("node-050"));
         assert_eq!(yaml.matches("127.0.0.1::50051").count(), 50);
         assert_eq!(yaml.matches("--chain-gas-multiplier").count(), 50);
+        let document: Value = serde_yaml::from_str(&yaml).unwrap();
+        for service in document["services"].as_object().unwrap().values() {
+            let Some(command) = service.get("command").and_then(Value::as_array) else {
+                continue;
+            };
+            if let Some(position) = command
+                .iter()
+                .position(|argument| argument.as_str() == Some("--chain-gas-multiplier"))
+            {
+                assert_eq!(command[position + 1].as_str(), Some("3"));
+            }
+        }
         assert!(!yaml.contains("container_name"));
         assert!(!yaml.contains("NET_ADMIN"));
     }
@@ -351,11 +369,11 @@ mod tests {
         let genesis = serde_json::to_string_pretty(&genesis_patch(&[ring])).unwrap();
         assert_eq!(
             hex::encode(Sha256::digest(compose_3)),
-            "99d7861297946ba7f853cc77fbf8a47558b57527b552e31ce38b216047ae147f"
+            "b07b6053d8d7be2de84bc4fb1ee26da99a0bb9590db041c3f3a3b2865715dcd5"
         );
         assert_eq!(
             hex::encode(Sha256::digest(compose_50)),
-            "9818cccd9492519b710476b872bf0e24b1ee477a356b6fd11fa8ec0dc83c0c14"
+            "9852a702c91d6e0978852626476d90146e2ba64b32d3c6bfc1f1096dbedfac96"
         );
         assert_eq!(
             hex::encode(Sha256::digest(genesis)),

@@ -19,8 +19,9 @@ use crate::{
     constants::{
         GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_SIGN_REQUEST_BYTES,
         MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES, MIN_NODE_BALANCE,
-        PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
+        PEER_RESPONSE_TIMEOUT, PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
     },
+    dkg::v0::transport::{self, DkgControlMessage, DkgPrivateMessage},
     helpers::{
         launch::{create_and_store_node_key, LogLevel},
         test_helpers::{
@@ -46,6 +47,8 @@ use proto::{
 };
 use std::sync::Arc;
 use tokio::time::Duration;
+
+const MAX_TEST_CONTROL_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
 
 // =========================================================================
 // Test infrastructure
@@ -288,6 +291,208 @@ async fn setup_ring(
 // =========================================================================
 // Tests
 // =========================================================================
+
+/// Fresh DKG retransmits a silently lost topology probe and does not turn
+/// transient Gossip neighbor changes into a rejoin cascade.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_dkg_recovers_lost_topology_probe_and_neighbor_flaps() {
+    let net = setup_fault_three_node_network("fault_dkg_topology_recovery", 51057).await;
+
+    let leader_node_key = net.node_keys.iter().min().expect("committee").clone();
+
+    for controller in [
+        &net.alice.fault_ctrl,
+        &net.bob.fault_ctrl,
+        &net.charlie.fault_ctrl,
+    ] {
+        controller.drop_gossip_broadcasts_after(0, 1).await;
+        controller.inject_gossip_neighbor_flaps(2).await;
+        controller
+            .fail_protocol_responses_after(network::V0.dkg_control_alpn, 0, 1)
+            .await;
+    }
+
+    let initiator = [
+        (&net.node_keys[0], &net.alice.grpc_endpoint),
+        (&net.node_keys[1], &net.bob.grpc_endpoint),
+        (&net.node_keys[2], &net.charlie.grpc_endpoint),
+    ]
+    .into_iter()
+    .min_by(|left, right| left.0.cmp(right.0))
+    .expect("committee")
+    .1
+    .clone();
+
+    let (ring_pk, ring_id) = setup_ring(
+        &net.chain_config,
+        &initiator,
+        &net.node_keys,
+        2,
+        &net.policy_id,
+    )
+    .await;
+
+    assert!(!ring_pk.is_empty(), "retransmitted-probe DKG must finalize");
+    assert!(
+        !ring_id.is_empty(),
+        "retransmitted-probe DKG keeps its ring ID"
+    );
+
+    for (node_key, controller) in [
+        (&net.node_keys[0], &net.alice.fault_ctrl),
+        (&net.node_keys[1], &net.bob.fault_ctrl),
+        (&net.node_keys[2], &net.charlie.fault_ctrl),
+    ] {
+        if node_key == &leader_node_key {
+            continue;
+        }
+        let acknowledgements = controller
+            .sent_protocol_messages(network::V0.dkg_control_alpn)
+            .await
+            .into_iter()
+            .filter(|bytes| {
+                matches!(
+                    transport::decode::<DkgControlMessage>(bytes, MAX_TEST_CONTROL_MESSAGE_BYTES,),
+                    Ok(DkgControlMessage::TopologyProbeAck { .. })
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            acknowledgements.len() >= 2,
+            "lost acknowledgement response must cause a retransmission"
+        );
+        assert!(
+            acknowledgements.windows(2).all(|pair| pair[0] == pair[1]),
+            "topology acknowledgement retries must be byte-identical"
+        );
+    }
+}
+
+/// A nonleader API node must preserve the leader's concrete preparation error
+/// instead of hiding it behind the forwarded StartFresh response timeout.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_nonleader_dkg_start_returns_leader_preparation_error() {
+    let net = setup_fault_three_node_network("fault_dkg_forwarded_error", 51075).await;
+    let leader_index = net
+        .node_keys
+        .iter()
+        .enumerate()
+        .min_by(|left, right| left.1.cmp(right.1))
+        .expect("committee")
+        .0;
+    let controllers = [
+        &net.alice.fault_ctrl,
+        &net.bob.fault_ctrl,
+        &net.charlie.fault_ctrl,
+    ];
+    controllers[leader_index]
+        .corrupt_protocol_responses_after(network::V0.dkg_control_alpn, 0, 1)
+        .await;
+
+    let endpoints = [
+        &net.alice.grpc_endpoint,
+        &net.bob.grpc_endpoint,
+        &net.charlie.grpc_endpoint,
+    ];
+    let initiator_index = (0..endpoints.len())
+        .find(|index| *index != leader_index)
+        .expect("nonleader API node");
+    let ring_id =
+        create_ring_on_chain(&net.chain_config, &net.node_keys, 2, &net.policy_id, None).await;
+    let error = cli_tool::do_dkg(endpoints[initiator_index].clone(), ring_id)
+        .await
+        .expect_err("malformed Prepared response must fail the attempt");
+    let error = format!("{error:#}");
+
+    assert!(
+        error.contains("Deserialization error"),
+        "forwarded caller must receive the leader's preparation error: {error}"
+    );
+    assert!(
+        !error.contains("control start-fresh response timed out"),
+        "leader error must arrive before the forwarded response margin: {error}"
+    );
+}
+
+/// Fresh DKG completes after public Gossip loss and retryable private QUIC
+/// stream failures.
+///
+/// Every subscriber accepts the first public delivery (the topology probe),
+/// then loses the next four public deliveries. The fault wrapper reports those
+/// losses as subscriber lag so the production rejoin/direct-repair path runs.
+/// The first private pair stream opened by every possible deterministic opener
+/// fails, and the next response silently stalls beyond the peer timeout. This
+/// proves both failure modes retry without regenerating share bytes.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_dkg_repairs_gossip_loss_and_private_disconnects() {
+    let net = setup_fault_three_node_network("fault_dkg_hybrid_repair", 51058).await;
+
+    for controller in [
+        &net.alice.fault_ctrl,
+        &net.bob.fault_ctrl,
+        &net.charlie.fault_ctrl,
+    ] {
+        controller.drop_gossip_deliveries_after(1, 4).await;
+        controller
+            .fail_protocol_streams_after(network::V0.dkg_private_alpn, 0, 1)
+            .await;
+        controller
+            .stall_protocol_responses_after(
+                network::V0.dkg_private_alpn,
+                0,
+                1,
+                PEER_RESPONSE_TIMEOUT + Duration::from_secs(1),
+            )
+            .await;
+    }
+
+    let (ring_pk, ring_id) = setup_ring(
+        &net.chain_config,
+        &net.alice.grpc_endpoint,
+        &net.node_keys,
+        2,
+        &net.policy_id,
+    )
+    .await;
+
+    assert!(
+        !ring_pk.is_empty(),
+        "repaired DKG must finalize a public key"
+    );
+    assert!(
+        !ring_id.is_empty(),
+        "repaired DKG must preserve its ring ID"
+    );
+
+    let mut saw_identical_retransmission = false;
+    for controller in [
+        &net.alice.fault_ctrl,
+        &net.bob.fault_ctrl,
+        &net.charlie.fault_ctrl,
+    ] {
+        let mut deliveries = std::collections::HashMap::<_, Vec<_>>::new();
+        for bytes in controller
+            .sent_protocol_messages(network::V0.dkg_private_alpn)
+            .await
+        {
+            if let Ok(DkgPrivateMessage::ShareDelivery { message_id, .. }) =
+                transport::decode(&bytes, MAX_TEST_CONTROL_MESSAGE_BYTES)
+            {
+                deliveries.entry(message_id).or_default().push(bytes);
+            }
+        }
+        saw_identical_retransmission |= deliveries.values().any(|attempts| {
+            attempts.len() >= 2 && attempts.windows(2).all(|pair| pair[0] == pair[1])
+        });
+    }
+    assert!(
+        saw_identical_retransmission,
+        "a silently stalled private response must retransmit the exact cached share"
+    );
+}
 
 /// PRE succeeds when one of three nodes is down (threshold=2, one node crashed).
 ///

@@ -93,6 +93,32 @@ where
         build_and_store_commitment_evidence(coord, session_id, node_id, commitment_bytes.clone())
             .await?;
 
+    if !is_reshare
+        && coord
+            .app_state
+            .dkg_session_state
+            .hybrid_attempt(&session_id)
+            .await
+            .is_some()
+    {
+        crate::dkg::v0::hybrid::submit_public_contribution(
+            coord,
+            session_id,
+            crate::dkg::v0::transport::DkgPublicPayload::Commitment {
+                commitment: commitment_bytes,
+                report_evidence,
+            },
+        )
+        .await?;
+
+        // Gossip delivery is not phase-ordered. Remote commitments may have
+        // arrived and been validated while this fresh session was still in the
+        // hash-reveal phase. Re-evaluate Phase 1 after publishing our own
+        // commitment so those already-recorded contributions can advance the
+        // session without requiring another network message.
+        return check_and_trigger_phase2(coord, session_id, peer_ids).await;
+    }
+
     let mut peers_sent = 0;
     let mut expected_peers = 0;
     for peer_id_str in peer_ids {

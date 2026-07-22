@@ -8,8 +8,8 @@
 //! a single unified structure.
 
 use crate::constants::{
-    DKG_COMPLETED_SESSION_TTL, DKG_PHASE4_COMPLETION_TIMEOUT, DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS,
-    SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
+    DKG_ATTEMPT_TIMEOUT, DKG_COMPLETED_SESSION_TTL, DKG_PHASE4_COMPLETION_TIMEOUT,
+    DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS, SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
 };
 use crate::dkg::v0::coordinator::evidence::commitments_prove_equivocation;
 use crate::dkg::v0::error::DkgError;
@@ -20,13 +20,14 @@ use crate::ring_state::RingShareBundle;
 use crate::sign::v0::messages::RefreshHealthCheckStatement;
 use crypto::r#trait::{DistributedShare, Dkg, DkgMode, DkgRole};
 use network::Connection;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use zeroize::Zeroize;
@@ -213,6 +214,39 @@ pub(crate) enum CommitmentHashRecordOutcome {
     Mismatch { existing: [u8; 32] },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HybridConfigureOutcome {
+    Configured,
+    AlreadyConfigured,
+    ConflictingAttempt,
+    MissingSession,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HybridActivationOutcome {
+    Activated,
+    AlreadyActivated,
+    StaleAttempt,
+    MissingSession,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TopologyAckRecordOutcome {
+    Recorded,
+    Duplicate,
+    StaleAttempt,
+    WrongNonce,
+    MissingSession,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublicContributionRecordOutcome {
+    Recorded,
+    DuplicateSame,
+    ConflictingDuplicate,
+    MissingSession,
+}
+
 #[derive(Default)]
 pub(crate) struct CommitRevealState {
     pub received_hashes: HashMap<u32, [u8; 32]>,
@@ -274,10 +308,79 @@ pub(crate) struct DkgReportEvidenceBinding {
     pub receiver_node_keys: Vec<String>,
 }
 
-#[derive(Default)]
 pub(crate) struct SessionTransportState {
     pub peer_streams: HashMap<String, Arc<dyn Connection>>,
     pub peer_send_locks: HashMap<String, Arc<Mutex<()>>>,
+    pub hybrid: HybridSessionTransportState,
+}
+
+pub(crate) struct HybridSessionTransportState {
+    pub ceremony_id: Option<crate::dkg::v0::transport::CeremonyId>,
+    pub attempt_id: Option<crate::dkg::v0::transport::AttemptId>,
+    pub committee_digest: Option<[u8; 32]>,
+    pub config_digest: Option<[u8; 32]>,
+    pub topic_id: Option<network::TopicId>,
+    pub leader_node_key: Option<String>,
+    pub topic: Option<Arc<dyn network::Topic>>,
+    pub topology_probe_nonce: Option<[u8; 32]>,
+    pub topology_probe_acknowledgements: BTreeSet<String>,
+    pub topology_probe_notify: Arc<Notify>,
+    pub activated: bool,
+    pub prepared_at: Option<Instant>,
+    pub hard_deadline: Option<Instant>,
+    pub last_progress_at: Instant,
+    pub public_contributions:
+        HashMap<crate::dkg::v0::transport::PublicPhase, BTreeMap<u32, network::SignedPayload>>,
+    pub public_phase_started_at: HashMap<crate::dkg::v0::transport::PublicPhase, Instant>,
+    pub published_public_phases: HashSet<crate::dkg::v0::transport::PublicPhase>,
+    pub outbound_private_messages: HashMap<crate::dkg::v0::transport::MessageId, Vec<u8>>,
+    pub acknowledged_private_messages: HashSet<crate::dkg::v0::transport::MessageId>,
+    pub topic_task: Option<tokio::task::AbortHandle>,
+}
+
+impl Default for HybridSessionTransportState {
+    fn default() -> Self {
+        Self {
+            ceremony_id: None,
+            attempt_id: None,
+            committee_digest: None,
+            config_digest: None,
+            topic_id: None,
+            leader_node_key: None,
+            topic: None,
+            topology_probe_nonce: None,
+            topology_probe_acknowledgements: BTreeSet::new(),
+            topology_probe_notify: Arc::new(Notify::new()),
+            activated: false,
+            prepared_at: None,
+            hard_deadline: None,
+            last_progress_at: Instant::now(),
+            public_contributions: HashMap::new(),
+            public_phase_started_at: HashMap::new(),
+            published_public_phases: HashSet::new(),
+            outbound_private_messages: HashMap::new(),
+            acknowledged_private_messages: HashSet::new(),
+            topic_task: None,
+        }
+    }
+}
+
+impl Drop for HybridSessionTransportState {
+    fn drop(&mut self) {
+        if let Some(task) = self.topic_task.take() {
+            task.abort();
+        }
+    }
+}
+
+impl Default for SessionTransportState {
+    fn default() -> Self {
+        Self {
+            peer_streams: HashMap::new(),
+            peer_send_locks: HashMap::new(),
+            hybrid: HybridSessionTransportState::default(),
+        }
+    }
 }
 
 /// Reshare-specific parameters stored in session state during an active reshare ceremony.
@@ -454,6 +557,7 @@ impl<D: Dkg> DkgSessionState<D> {
         );
         self.phase = phase;
         self.phase_started_at = Instant::now();
+        self.transport.hybrid.last_progress_at = Instant::now();
     }
 
     /// Generate the polynomial for this session.
@@ -814,6 +918,25 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     to_remove_ids.push(*session_id);
                     continue;
                 }
+                if state.transport.hybrid.attempt_id.is_some() {
+                    let hard_deadline = state
+                        .transport
+                        .hybrid
+                        .hard_deadline
+                        .unwrap_or(state.created_at + DKG_ATTEMPT_TIMEOUT);
+                    if now >= hard_deadline {
+                        tracing::warn!(
+                            session_id = session_id,
+                            phase = ?state.phase,
+                            attempt_id = ?state.transport.hybrid.attempt_id,
+                            "SessionStateManager: Removing hybrid DKG attempt at hard deadline"
+                        );
+                        to_remove_ids.push(*session_id);
+                    }
+                    // Hybrid attempts use explicit repair while making no progress;
+                    // do not let the legacy two-minute phase timeout race that repair.
+                    continue;
+                }
                 let phase_timeout = match state.phase {
                     DkgPhase::Phase4Completing => DKG_PHASE4_COMPLETION_TIMEOUT,
                     _ => DKG_PHASE_TIMEOUT,
@@ -1084,11 +1207,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             .await;
     }
 
-    pub async fn set_ring_id(&self, session_id: &u128, ring_id: String) {
-        self.with_state_mut(session_id, |s| s.routing.ring_id = ring_id)
-            .await;
-    }
-
     /// Stage a refresh bundle while waiting for the post-refresh health-check result.
     pub async fn set_refresh_health_check_candidate(
         &self,
@@ -1142,11 +1260,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     /// Store the PSS refresh interval for this session so Phase 4 can persist it.
-    pub async fn set_pss_interval(&self, session_id: &u128, interval: u64) {
-        self.with_state_mut(session_id, |s| s.pss_interval = interval)
-            .await;
-    }
-
     pub async fn get_peer_ids(&self, session_id: &u128) -> Option<Vec<String>> {
         self.with_state(session_id, |s| s.routing.peer_ids.clone())
             .await
@@ -1160,6 +1273,531 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub async fn ring_id_for_session(&self, session_id: &u128) -> Option<String> {
         self.with_state(session_id, |s| s.routing.ring_id.clone())
             .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn configure_hybrid_transport(
+        &self,
+        session_id: &u128,
+        ceremony_id: crate::dkg::v0::transport::CeremonyId,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+        committee_digest: [u8; 32],
+        config_digest: [u8; 32],
+        topic_id: network::TopicId,
+        leader_node_key: String,
+        topic: Arc<dyn network::Topic>,
+    ) -> HybridConfigureOutcome {
+        self.with_state_mut(session_id, |state| {
+            let hybrid = &mut state.transport.hybrid;
+            if let Some(existing) = hybrid.attempt_id {
+                return if existing == attempt_id
+                    && hybrid.ceremony_id == Some(ceremony_id)
+                    && hybrid.config_digest == Some(config_digest)
+                {
+                    HybridConfigureOutcome::AlreadyConfigured
+                } else {
+                    HybridConfigureOutcome::ConflictingAttempt
+                };
+            }
+            let now = Instant::now();
+            hybrid.ceremony_id = Some(ceremony_id);
+            hybrid.attempt_id = Some(attempt_id);
+            hybrid.committee_digest = Some(committee_digest);
+            hybrid.config_digest = Some(config_digest);
+            hybrid.topic_id = Some(topic_id);
+            hybrid.leader_node_key = Some(leader_node_key);
+            hybrid.topic = Some(topic);
+            hybrid.prepared_at = Some(now);
+            hybrid.last_progress_at = now;
+            hybrid.hard_deadline = Some(now + crate::constants::DKG_ATTEMPT_TIMEOUT);
+            HybridConfigureOutcome::Configured
+        })
+        .await
+        .unwrap_or(HybridConfigureOutcome::MissingSession)
+    }
+
+    pub(crate) async fn activate_hybrid_transport(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+    ) -> HybridActivationOutcome {
+        self.with_state_mut(session_id, |state| {
+            if state.transport.hybrid.attempt_id != Some(attempt_id) {
+                return HybridActivationOutcome::StaleAttempt;
+            }
+            if state.transport.hybrid.activated {
+                return HybridActivationOutcome::AlreadyActivated;
+            }
+            state.transport.hybrid.activated = true;
+            state.transport.hybrid.last_progress_at = Instant::now();
+            HybridActivationOutcome::Activated
+        })
+        .await
+        .unwrap_or(HybridActivationOutcome::MissingSession)
+    }
+
+    pub(crate) async fn hybrid_configuration(
+        &self,
+        session_id: &u128,
+    ) -> Option<(
+        crate::dkg::v0::transport::CeremonyId,
+        crate::dkg::v0::transport::AttemptId,
+        [u8; 32],
+    )> {
+        self.with_state(session_id, |state| {
+            let hybrid = &state.transport.hybrid;
+            Some((
+                hybrid.ceremony_id?,
+                hybrid.attempt_id?,
+                hybrid.config_digest?,
+            ))
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn hybrid_attempt(
+        &self,
+        session_id: &u128,
+    ) -> Option<crate::dkg::v0::transport::AttemptId> {
+        self.with_state(session_id, |state| state.transport.hybrid.attempt_id)
+            .await
+            .flatten()
+    }
+
+    pub(crate) async fn hybrid_hard_deadline(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+    ) -> Option<Instant> {
+        self.with_state(session_id, |state| {
+            (state.transport.hybrid.attempt_id == Some(attempt_id))
+                .then_some(state.transport.hybrid.hard_deadline)
+                .flatten()
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn hybrid_preparation_deadline(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+    ) -> Option<Instant> {
+        self.with_state(session_id, |state| {
+            let hybrid = &state.transport.hybrid;
+            (hybrid.attempt_id == Some(attempt_id))
+                .then(|| {
+                    hybrid
+                        .prepared_at
+                        .map(|prepared_at| prepared_at + crate::constants::DKG_PREPARATION_TIMEOUT)
+                })
+                .flatten()
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn hybrid_topic(&self, session_id: &u128) -> Option<Arc<dyn network::Topic>> {
+        self.with_state(session_id, |state| state.transport.hybrid.topic.clone())
+            .await
+            .flatten()
+    }
+
+    pub(crate) async fn replace_hybrid_topic(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+        topic: Arc<dyn network::Topic>,
+    ) -> Option<bool> {
+        self.with_state_mut(session_id, |state| {
+            if state.transport.hybrid.attempt_id != Some(attempt_id) {
+                return false;
+            }
+            state.transport.hybrid.topic = Some(topic);
+            state.transport.hybrid.last_progress_at = Instant::now();
+            true
+        })
+        .await
+    }
+
+    pub(crate) async fn set_hybrid_topic_task(
+        &self,
+        session_id: &u128,
+        task: tokio::task::AbortHandle,
+    ) -> Option<()> {
+        self.with_state_mut(session_id, |state| {
+            if let Some(previous) = state.transport.hybrid.topic_task.replace(task) {
+                previous.abort();
+            }
+        })
+        .await
+    }
+
+    pub(crate) async fn begin_topology_probe(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+        nonce: [u8; 32],
+        self_peer: String,
+    ) -> Option<Arc<Notify>> {
+        self.with_state_mut(session_id, |state| {
+            let hybrid = &mut state.transport.hybrid;
+            if hybrid.attempt_id != Some(attempt_id) {
+                return None;
+            }
+            hybrid.topology_probe_nonce = Some(nonce);
+            hybrid.topology_probe_acknowledgements.clear();
+            hybrid.topology_probe_acknowledgements.insert(self_peer);
+            hybrid.last_progress_at = Instant::now();
+            Some(hybrid.topology_probe_notify.clone())
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn record_topology_probe(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+        nonce: [u8; 32],
+    ) -> Option<bool> {
+        self.with_state_mut(session_id, |state| {
+            if state.transport.hybrid.attempt_id != Some(attempt_id) {
+                return false;
+            }
+            if state
+                .transport
+                .hybrid
+                .topology_probe_nonce
+                .is_some_and(|existing| existing != nonce)
+            {
+                return false;
+            }
+            state.transport.hybrid.topology_probe_nonce = Some(nonce);
+            state.transport.hybrid.last_progress_at = Instant::now();
+            true
+        })
+        .await
+    }
+
+    pub(crate) async fn record_topology_probe_ack(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+        nonce: [u8; 32],
+        peer: String,
+    ) -> TopologyAckRecordOutcome {
+        let outcome = self
+            .with_state_mut(session_id, |state| {
+                let hybrid = &mut state.transport.hybrid;
+                if hybrid.attempt_id != Some(attempt_id) {
+                    return TopologyAckRecordOutcome::StaleAttempt;
+                }
+                if hybrid.topology_probe_nonce != Some(nonce) {
+                    return TopologyAckRecordOutcome::WrongNonce;
+                }
+                if !hybrid.topology_probe_acknowledgements.insert(peer) {
+                    return TopologyAckRecordOutcome::Duplicate;
+                }
+                hybrid.last_progress_at = Instant::now();
+                hybrid.topology_probe_notify.notify_waiters();
+                TopologyAckRecordOutcome::Recorded
+            })
+            .await
+            .unwrap_or(TopologyAckRecordOutcome::MissingSession);
+        outcome
+    }
+
+    pub(crate) async fn topology_probe_acknowledgements(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+        nonce: [u8; 32],
+    ) -> Option<BTreeSet<String>> {
+        self.with_state(session_id, |state| {
+            let hybrid = &state.transport.hybrid;
+            (hybrid.attempt_id == Some(attempt_id) && hybrid.topology_probe_nonce == Some(nonce))
+                .then(|| hybrid.topology_probe_acknowledgements.clone())
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn topology_probe_seen(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+        nonce: [u8; 32],
+    ) -> bool {
+        self.with_state(session_id, |state| {
+            state.transport.hybrid.attempt_id == Some(attempt_id)
+                && state.transport.hybrid.topology_probe_nonce == Some(nonce)
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    pub(crate) async fn record_public_contribution(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+        phase: crate::dkg::v0::transport::PublicPhase,
+        origin_node_id: u32,
+        contribution: network::SignedPayload,
+    ) -> PublicContributionRecordOutcome {
+        self.with_state_mut(session_id, |state| {
+            if state.transport.hybrid.attempt_id != Some(attempt_id) {
+                return PublicContributionRecordOutcome::ConflictingDuplicate;
+            }
+            let hybrid = &mut state.transport.hybrid;
+            match hybrid
+                .public_contributions
+                .get(&phase)
+                .and_then(|contributions| contributions.get(&origin_node_id))
+            {
+                Some(existing) if existing == &contribution => {
+                    PublicContributionRecordOutcome::DuplicateSame
+                }
+                Some(_) => PublicContributionRecordOutcome::ConflictingDuplicate,
+                None => {
+                    hybrid
+                        .public_phase_started_at
+                        .entry(phase)
+                        .or_insert_with(Instant::now);
+                    hybrid
+                        .public_contributions
+                        .entry(phase)
+                        .or_default()
+                        .insert(origin_node_id, contribution);
+                    hybrid.last_progress_at = Instant::now();
+                    PublicContributionRecordOutcome::Recorded
+                }
+            }
+        })
+        .await
+        .unwrap_or(PublicContributionRecordOutcome::MissingSession)
+    }
+
+    pub(crate) async fn public_contributions(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+        phase: crate::dkg::v0::transport::PublicPhase,
+    ) -> Option<BTreeMap<u32, network::SignedPayload>> {
+        self.with_state(session_id, |state| {
+            (state.transport.hybrid.attempt_id == Some(attempt_id)).then(|| {
+                state
+                    .transport
+                    .hybrid
+                    .public_contributions
+                    .get(&phase)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn public_phase_collection_elapsed(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+        phase: crate::dkg::v0::transport::PublicPhase,
+    ) -> Option<std::time::Duration> {
+        self.with_state(session_id, |state| {
+            (state.transport.hybrid.attempt_id == Some(attempt_id))
+                .then(|| {
+                    state
+                        .transport
+                        .hybrid
+                        .public_phase_started_at
+                        .get(&phase)
+                        .map(Instant::elapsed)
+                })
+                .flatten()
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn claim_public_phase_publish(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+        phase: crate::dkg::v0::transport::PublicPhase,
+        expected: usize,
+    ) -> bool {
+        self.with_state_mut(session_id, |state| {
+            let hybrid = &mut state.transport.hybrid;
+            if hybrid.attempt_id != Some(attempt_id)
+                || hybrid
+                    .public_contributions
+                    .get(&phase)
+                    .map_or(0, BTreeMap::len)
+                    != expected
+                || hybrid.published_public_phases.contains(&phase)
+            {
+                return false;
+            }
+            hybrid.published_public_phases.insert(phase);
+            true
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    pub(crate) async fn hybrid_transport_info(
+        &self,
+        session_id: &u128,
+    ) -> Option<(
+        crate::dkg::v0::transport::CeremonyId,
+        crate::dkg::v0::transport::AttemptId,
+        [u8; 32],
+        String,
+        bool,
+    )> {
+        self.with_state(session_id, |state| {
+            let hybrid = &state.transport.hybrid;
+            Some((
+                hybrid.ceremony_id?,
+                hybrid.attempt_id?,
+                hybrid.committee_digest?,
+                hybrid.leader_node_key.clone()?,
+                hybrid.activated,
+            ))
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn hybrid_repair_due(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+        stall_interval: std::time::Duration,
+    ) -> bool {
+        self.with_state(session_id, |state| {
+            let hybrid = &state.transport.hybrid;
+            hybrid.attempt_id == Some(attempt_id)
+                && hybrid.activated
+                && hybrid.last_progress_at.elapsed() >= stall_interval
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    pub(crate) async fn cache_private_message(
+        &self,
+        session_id: &u128,
+        message_id: crate::dkg::v0::transport::MessageId,
+        exact_bytes: Vec<u8>,
+    ) -> Option<bool> {
+        self.with_state_mut(session_id, |state| {
+            match state
+                .transport
+                .hybrid
+                .outbound_private_messages
+                .get(&message_id)
+            {
+                Some(existing) => existing == &exact_bytes,
+                None => {
+                    state
+                        .transport
+                        .hybrid
+                        .outbound_private_messages
+                        .insert(message_id, exact_bytes);
+                    true
+                }
+            }
+        })
+        .await
+    }
+
+    pub(crate) async fn acknowledge_private_message(
+        &self,
+        session_id: &u128,
+        attempt_id: crate::dkg::v0::transport::AttemptId,
+        message_id: crate::dkg::v0::transport::MessageId,
+    ) -> Option<bool> {
+        self.with_state_mut(session_id, |state| {
+            if state.transport.hybrid.attempt_id != Some(attempt_id) {
+                return false;
+            }
+            state
+                .transport
+                .hybrid
+                .acknowledged_private_messages
+                .insert(message_id);
+            state.transport.hybrid.last_progress_at = Instant::now();
+            true
+        })
+        .await
+    }
+
+    pub(crate) async fn private_message(
+        &self,
+        session_id: &u128,
+        message_id: crate::dkg::v0::transport::MessageId,
+    ) -> Option<Vec<u8>> {
+        self.with_state(session_id, |state| {
+            state
+                .transport
+                .hybrid
+                .outbound_private_messages
+                .get(&message_id)
+                .cloned()
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn private_message_for_recipient(
+        &self,
+        session_id: &u128,
+        recipient_node_id: u32,
+    ) -> Option<Vec<u8>> {
+        self.with_state(session_id, |state| {
+            state
+                .transport
+                .hybrid
+                .outbound_private_messages
+                .values()
+                .find(|bytes| {
+                    crate::dkg::v0::transport::decode::<
+                        crate::dkg::v0::transport::DkgPrivateMessage,
+                    >(bytes, 2 * 1024 * 1024)
+                    .is_ok_and(|message| {
+                        matches!(
+                            message,
+                            crate::dkg::v0::transport::DkgPrivateMessage::ShareDelivery {
+                                to_node_id,
+                                ..
+                            } if to_node_id == recipient_node_id
+                        )
+                    })
+                })
+                .cloned()
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn private_message_acknowledged(
+        &self,
+        session_id: &u128,
+        message_id: crate::dkg::v0::transport::MessageId,
+    ) -> bool {
+        self.with_state(session_id, |state| {
+            state
+                .transport
+                .hybrid
+                .acknowledged_private_messages
+                .contains(&message_id)
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// Set node_id to peer_id mappings for efficient routing
@@ -2408,6 +3046,193 @@ mod tests {
         assert!(
             !mgr.session_exists(&20).await,
             "session past SESSION_TTL should be removed by the expiration worker"
+        );
+    }
+
+    #[tokio::test]
+    async fn hybrid_private_retransmission_keeps_exact_cached_bytes() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(21, make_node(1), 3, |_| {}).await;
+        let attempt = crate::dkg::v0::transport::AttemptId([7; 32]);
+        {
+            let mut states = mgr.states.write().await;
+            let state = states.get_mut(&21).expect("session");
+            state.transport.hybrid.attempt_id = Some(attempt);
+        }
+        let message_id = crate::dkg::v0::transport::MessageId([9; 32]);
+        let exact = vec![1, 2, 3, 4, 5];
+        assert_eq!(
+            mgr.cache_private_message(&21, message_id, exact.clone())
+                .await,
+            Some(true)
+        );
+        assert_eq!(
+            mgr.cache_private_message(&21, message_id, exact.clone())
+                .await,
+            Some(true),
+            "an identical reconnect must reuse the retained bytes"
+        );
+        assert_eq!(
+            mgr.cache_private_message(&21, message_id, vec![5, 4, 3, 2, 1])
+                .await,
+            Some(false),
+            "the same message ID must reject regenerated or conflicting bytes"
+        );
+        assert_eq!(mgr.private_message(&21, message_id).await, Some(exact));
+    }
+
+    #[tokio::test]
+    async fn hybrid_public_duplicates_are_idempotent_and_conflicts_are_rejected() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(22, make_node(1), 3, |_| {}).await;
+        let attempt = crate::dkg::v0::transport::AttemptId([7; 32]);
+        {
+            let mut states = mgr.states.write().await;
+            states
+                .get_mut(&22)
+                .expect("session")
+                .transport
+                .hybrid
+                .attempt_id = Some(attempt);
+        }
+        let phase = crate::dkg::v0::transport::PublicPhase::Commitments;
+        let exact = network::SignedPayload {
+            origin: vec![1; 32],
+            signature: vec![2; 64],
+            data: vec![3; 16],
+        };
+        assert_eq!(
+            mgr.record_public_contribution(&22, attempt, phase, 2, exact.clone())
+                .await,
+            PublicContributionRecordOutcome::Recorded
+        );
+        assert_eq!(
+            mgr.record_public_contribution(&22, attempt, phase, 2, exact.clone())
+                .await,
+            PublicContributionRecordOutcome::DuplicateSame
+        );
+        let mut conflicting = exact.clone();
+        conflicting.data[0] ^= 1;
+        assert_eq!(
+            mgr.record_public_contribution(&22, attempt, phase, 2, conflicting)
+                .await,
+            PublicContributionRecordOutcome::ConflictingDuplicate
+        );
+        assert_eq!(
+            mgr.public_contributions(&22, attempt, phase)
+                .await
+                .expect("attempt")
+                .get(&2),
+            Some(&exact)
+        );
+        assert_eq!(
+            mgr.record_public_contribution(
+                &22,
+                crate::dkg::v0::transport::AttemptId([8; 32]),
+                phase,
+                3,
+                exact,
+            )
+            .await,
+            PublicContributionRecordOutcome::ConflictingDuplicate,
+            "a stale attempt cannot populate the active attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn topology_acknowledgements_are_scoped_and_idempotent() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(23, make_node(1), 3, |_| {}).await;
+        let ceremony = crate::dkg::v0::transport::CeremonyId(23);
+        let attempt = crate::dkg::v0::transport::AttemptId([7; 32]);
+        let nonce = [9; 32];
+        {
+            let mut states = mgr.states.write().await;
+            let hybrid = &mut states.get_mut(&23).expect("session").transport.hybrid;
+            hybrid.ceremony_id = Some(ceremony);
+            hybrid.attempt_id = Some(attempt);
+        }
+
+        mgr.begin_topology_probe(&23, attempt, nonce, "leader".into())
+            .await
+            .expect("probe state");
+        assert_eq!(
+            mgr.record_topology_probe_ack(&23, attempt, nonce, "peer-a".into())
+                .await,
+            TopologyAckRecordOutcome::Recorded
+        );
+        assert_eq!(
+            mgr.record_topology_probe_ack(&23, attempt, nonce, "peer-a".into())
+                .await,
+            TopologyAckRecordOutcome::Duplicate
+        );
+        assert_eq!(
+            mgr.record_topology_probe_ack(&23, attempt, [8; 32], "peer-b".into())
+                .await,
+            TopologyAckRecordOutcome::WrongNonce
+        );
+        assert_eq!(
+            mgr.record_topology_probe_ack(
+                &23,
+                crate::dkg::v0::transport::AttemptId([6; 32]),
+                nonce,
+                "peer-b".into(),
+            )
+            .await,
+            TopologyAckRecordOutcome::StaleAttempt
+        );
+        assert_eq!(
+            mgr.topology_probe_acknowledgements(&23, attempt, nonce)
+                .await
+                .expect("ack set"),
+            BTreeSet::from(["leader".to_string(), "peer-a".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn hybrid_activation_starts_once_and_gates_stall_repair() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(24, make_node(1), 3, |_| {}).await;
+        let attempt = crate::dkg::v0::transport::AttemptId([4; 32]);
+        {
+            let mut states = mgr.states.write().await;
+            states
+                .get_mut(&24)
+                .expect("session")
+                .transport
+                .hybrid
+                .attempt_id = Some(attempt);
+        }
+
+        assert!(
+            !mgr.hybrid_repair_due(&24, attempt, crate::constants::DKG_REPAIR_STALL_INTERVAL)
+                .await
+        );
+        assert_eq!(
+            mgr.activate_hybrid_transport(&24, attempt).await,
+            HybridActivationOutcome::Activated
+        );
+        assert_eq!(
+            mgr.activate_hybrid_transport(&24, attempt).await,
+            HybridActivationOutcome::AlreadyActivated
+        );
+        assert!(
+            !mgr.hybrid_repair_due(&24, attempt, crate::constants::DKG_REPAIR_STALL_INTERVAL)
+                .await
+        );
+
+        {
+            let mut states = mgr.states.write().await;
+            states
+                .get_mut(&24)
+                .expect("session")
+                .transport
+                .hybrid
+                .last_progress_at = Instant::now() - crate::constants::DKG_REPAIR_STALL_INTERVAL;
+        }
+        assert!(
+            mgr.hybrid_repair_due(&24, attempt, crate::constants::DKG_REPAIR_STALL_INTERVAL)
+                .await
         );
     }
 

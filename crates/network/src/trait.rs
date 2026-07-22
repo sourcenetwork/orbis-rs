@@ -8,6 +8,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::sync::Arc;
 
+use crate::pubsub::PubSub;
+
 /// Inbound stream limits enforced by routers before protocol handlers run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RouterIngressLimits {
@@ -169,6 +171,14 @@ pub trait Network: Send + Sync {
     /// This is primarily useful for testing and peer discovery.
     fn bound_addresses(&self) -> Vec<std::net::SocketAddr> {
         Vec::new() // Default implementation returns empty
+    }
+
+    /// Return the authenticated pub-sub transport, when supported by this backend.
+    ///
+    /// Pub-sub is deliberately a separate capability from point-to-point streams so
+    /// callers must make an explicit choice about which messages are safe to publish.
+    fn pubsub(&self) -> Option<Arc<dyn PubSub>> {
+        None
     }
 
     /// Create a router builder for this network

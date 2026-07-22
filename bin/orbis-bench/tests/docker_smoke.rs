@@ -59,16 +59,82 @@ fn assert_core_smoke_passed(run_dir: &std::path::Path) {
     );
 }
 
+fn hybrid_event_delta(trial: &orbis_bench::results::TrialRecord, event: &str) -> f64 {
+    let event_label = format!("event=\"{event}\"");
+    trial
+        .metric_deltas
+        .iter()
+        .filter(|(key, _)| {
+            key.starts_with("dkg_hybrid_transport_events_total{") && key.contains(&event_label)
+        })
+        .map(|(_, value)| value)
+        .sum()
+}
+
+fn assert_preparation_transport_evidence<'a>(
+    trials: impl IntoIterator<Item = &'a orbis_bench::results::TrialRecord>,
+    expected_acknowledgements: usize,
+) {
+    for trial in trials {
+        assert_eq!(
+            hybrid_event_delta(trial, "probe_ack"),
+            expected_acknowledgements as f64,
+            "each successful preparation must record every committee member exactly once"
+        );
+
+        let rejoins = [
+            "rejoin_isolation",
+            "rejoin_lag",
+            "rejoin_subscription_error",
+        ]
+        .into_iter()
+        .map(|event| hybrid_event_delta(trial, event))
+        .sum::<f64>();
+        assert!(
+            rejoins <= expected_acknowledgements as f64,
+            "preparation caused a Gossip rejoin storm: {rejoins} rejoins for {expected_acknowledgements} members"
+        );
+    }
+}
+
 #[tokio::test]
-#[ignore = "50-node acceptance run; intentionally resource intensive"]
-async fn fifty_node_acceptance_always_preserves_a_report() {
+#[ignore = "50-node LAN preparation gate; one warm-up plus ten measured 7-of-8 DKG trials"]
+async fn fifty_node_ring_eight_preparation_acceptance_lan() {
+    let mut experiment = smoke_experiment(NetworkProfile::lan(), 50, 8);
+    experiment.name = "hybrid-50-node-ring-8-threshold-7-preparation".into();
+    experiment.networks[0].cases[0].threshold = 7;
+    experiment.warmups = 1;
+    experiment.repetitions = 10;
+    experiment.operations = BTreeSet::from([Operation::Dkg]);
+    let run_dir = BenchmarkRunner::new(experiment, RunOptions::default())
+        .unwrap()
+        .run()
+        .await
+        .unwrap();
+
+    let trials = read_trials(&run_dir).expect("read 7-of-8 acceptance evidence");
+    let measured = trials
+        .iter()
+        .filter(|trial| !trial.warmup)
+        .collect::<Vec<_>>();
+    assert_eq!(measured.len(), 10, "ten measured DKG trials are required");
+    assert!(
+        measured.iter().all(|trial| trial.success),
+        "7-of-8 preparation acceptance produced failures; inspect {}",
+        run_dir.display()
+    );
+    assert_preparation_transport_evidence(measured, 8);
+}
+
+#[tokio::test]
+#[ignore = "50-node LAN/WAN hybrid acceptance; intentionally resource intensive"]
+async fn fifty_node_hybrid_acceptance_lan_and_wan() {
     let mut experiment = smoke_experiment(NetworkProfile::lan(), 50, 50);
-    experiment.operations = BTreeSet::from([
-        Operation::Dkg,
-        Operation::Pre,
-        Operation::Sign,
-        Operation::PssRefresh,
-    ]);
+    experiment.name = "hybrid-50-node-34-threshold-acceptance".into();
+    experiment.profiles = vec![NetworkProfile::lan(), NetworkProfile::wan_50ms()];
+    experiment.warmups = 1;
+    experiment.repetitions = 5;
+    experiment.operations = BTreeSet::from([Operation::Dkg, Operation::PssRefresh]);
     let run_dir = BenchmarkRunner::new(experiment, RunOptions::default())
         .unwrap()
         .run()
@@ -77,4 +143,21 @@ async fn fifty_node_acceptance_always_preserves_a_report() {
     assert!(run_dir.join("manifest.json").is_file());
     assert!(run_dir.join("trials.jsonl").is_file());
     assert!(run_dir.join("report.html").is_file());
+
+    let trials = read_trials(&run_dir).expect("read 50-node acceptance evidence");
+    let measured = trials
+        .iter()
+        .filter(|trial| !trial.warmup)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        measured.len(),
+        20,
+        "five DKG and five refresh trials are required for each of LAN and WAN"
+    );
+    assert!(
+        measured.iter().all(|trial| trial.success),
+        "50-node hybrid acceptance produced failures; inspect {}",
+        run_dir.display()
+    );
+    assert_preparation_transport_evidence(measured, 50);
 }

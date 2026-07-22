@@ -988,6 +988,8 @@ mod tests {
         static V1_ROUTES: network::ProtocolRoutes = network::ProtocolRoutes {
             version: 1,
             dkg_alpn: b"orbis/dkg/1",
+            dkg_control_alpn: b"orbis/dkg-control/1",
+            dkg_private_alpn: b"orbis/dkg-private/1",
             reencrypt_alpn: b"orbis/reencrypt/1",
             sign_alpn: b"orbis/sign/1",
             reporting_health_alpn: b"orbis/reporting/health/1",

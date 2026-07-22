@@ -43,6 +43,10 @@ pub struct IrohNetwork {
     local_peer_id: PeerId,
     config: IrohNetworkConfig,
     handlers: Arc<RwLock<HashMap<Vec<u8>, Arc<dyn ProtocolHandler>>>>,
+    #[cfg(feature = "gossip")]
+    gossip: iroh_gossip::net::Gossip,
+    #[cfg(feature = "gossip")]
+    pubsub: Arc<crate::iroh::pubsub::IrohPubSub>,
 }
 
 impl IrohNetwork {
@@ -78,6 +82,7 @@ pub struct IrohNetworkBuilder {
     bind_addr_v4: Option<SocketAddrV4>,
     no_relay: bool,
     idle_timeout_ms: Option<u32>,
+    keep_alive_interval_ms: Option<u64>,
 }
 
 impl IrohNetworkBuilder {
@@ -124,6 +129,12 @@ impl IrohNetworkBuilder {
         self
     }
 
+    /// Send QUIC keep-alives while ceremony connections are active.
+    pub fn keep_alive_interval_ms(mut self, ms: u64) -> Self {
+        self.keep_alive_interval_ms = Some(ms);
+        self
+    }
+
     /// Build the IrohNetwork instance
     pub async fn build(self) -> Result<IrohNetwork> {
         let mut builder = Endpoint::builder();
@@ -140,9 +151,14 @@ impl IrohNetworkBuilder {
             builder = builder.relay_mode(iroh::RelayMode::Disabled);
         }
 
-        if let Some(ms) = self.idle_timeout_ms {
+        if self.idle_timeout_ms.is_some() || self.keep_alive_interval_ms.is_some() {
             let mut transport = TransportConfig::default();
-            transport.max_idle_timeout(Some(VarInt::from_u32(ms).into()));
+            if let Some(ms) = self.idle_timeout_ms {
+                transport.max_idle_timeout(Some(VarInt::from_u32(ms).into()));
+            }
+            if let Some(ms) = self.keep_alive_interval_ms {
+                transport.keep_alive_interval(Some(std::time::Duration::from_millis(ms)));
+            }
             builder = builder.transport_config(transport);
         }
 
@@ -154,11 +170,30 @@ impl IrohNetworkBuilder {
         let node_id = endpoint.id();
         let peer_id = PeerId::from_bytes(node_id.as_bytes());
 
+        #[cfg(feature = "gossip")]
+        let static_provider = iroh::discovery::static_provider::StaticProvider::new();
+        #[cfg(feature = "gossip")]
+        endpoint.discovery().add(static_provider.clone());
+        #[cfg(feature = "gossip")]
+        let gossip = iroh_gossip::net::Gossip::builder()
+            .max_message_size(self.config.max_message_size)
+            .spawn(endpoint.clone());
+        #[cfg(feature = "gossip")]
+        let pubsub = Arc::new(crate::iroh::pubsub::IrohPubSub::new(
+            endpoint.clone(),
+            gossip.clone(),
+            static_provider,
+        ));
+
         Ok(IrohNetwork {
             endpoint,
             local_peer_id: peer_id,
             config: self.config,
             handlers: Arc::new(RwLock::new(HashMap::new())),
+            #[cfg(feature = "gossip")]
+            gossip,
+            #[cfg(feature = "gossip")]
+            pubsub,
         })
     }
 }
@@ -262,8 +297,17 @@ impl Network for IrohNetwork {
         self.endpoint.bound_sockets()
     }
 
+    #[cfg(feature = "gossip")]
+    fn pubsub(&self) -> Option<Arc<dyn crate::pubsub::PubSub>> {
+        Some(self.pubsub.clone())
+    }
+
     fn create_router_builder(&self) -> Result<Box<dyn RouterBuilderTrait>> {
-        Ok(Box::new(IrohRouterBuilder::new(self.endpoint.clone())))
+        Ok(Box::new(IrohRouterBuilder::new(
+            self.endpoint.clone(),
+            #[cfg(feature = "gossip")]
+            Some(self.gossip.clone()),
+        )))
     }
 }
 
