@@ -5633,4 +5633,281 @@ mod stability_tests {
             remaining
         );
     }
+
+    // =========================================================================
+    // GossipNeighborTracker
+    // =========================================================================
+
+    fn tracker_peer(byte: u8) -> PeerId {
+        PeerId::from_bytes(&[byte; 32])
+    }
+
+    #[test]
+    fn gossip_neighbor_tracker_is_not_isolated_before_any_neighbor() {
+        let mut tracker = GossipNeighborTracker::default();
+        assert!(!tracker.is_isolated());
+        assert_eq!(tracker.neighbor_count(), 0);
+        // A down event for a peer that was never a neighbor is a no-op and
+        // must not arm isolation before any neighbor was ever seen.
+        assert!(!tracker.neighbor_down(&tracker_peer(1), Instant::now()));
+        assert!(!tracker.is_isolated());
+        assert!(tracker.isolation_deadline().is_none());
+    }
+
+    #[test]
+    fn gossip_neighbor_tracker_arms_isolation_only_after_last_neighbor_leaves() {
+        let mut tracker = GossipNeighborTracker::default();
+        let peer_a = tracker_peer(1);
+        let peer_b = tracker_peer(2);
+
+        tracker.neighbor_up(&peer_a);
+        tracker.neighbor_up(&peer_b);
+        assert_eq!(tracker.neighbor_count(), 2);
+        assert!(!tracker.is_isolated());
+
+        // One neighbor leaving while another remains must not arm isolation.
+        assert!(tracker.neighbor_down(&peer_a, Instant::now()));
+        assert_eq!(tracker.neighbor_count(), 1);
+        assert!(!tracker.is_isolated());
+        assert!(tracker.isolation_deadline().is_none());
+
+        // The last neighbor leaving arms isolation with a grace deadline.
+        let now = Instant::now();
+        assert!(tracker.neighbor_down(&peer_b, now));
+        assert_eq!(tracker.neighbor_count(), 0);
+        assert!(tracker.is_isolated());
+        let deadline = tracker
+            .isolation_deadline()
+            .expect("isolation deadline must be armed once every neighbor is gone");
+        assert!(deadline >= now);
+    }
+
+    #[test]
+    fn gossip_neighbor_tracker_rejoin_clears_isolation() {
+        let mut tracker = GossipNeighborTracker::default();
+        let peer_a = tracker_peer(1);
+
+        tracker.neighbor_up(&peer_a);
+        tracker.neighbor_down(&peer_a, Instant::now());
+        assert!(tracker.is_isolated());
+        assert!(tracker.isolation_deadline().is_some());
+
+        // A fresh neighbor coming up must clear isolation immediately.
+        tracker.neighbor_up(&tracker_peer(2));
+        assert!(!tracker.is_isolated());
+        assert!(tracker.isolation_deadline().is_none());
+    }
+
+    #[test]
+    fn gossip_neighbor_tracker_reset_after_rejoin_returns_to_initial_state() {
+        let mut tracker = GossipNeighborTracker::default();
+        let peer_a = tracker_peer(1);
+        tracker.neighbor_up(&peer_a);
+        tracker.neighbor_down(&peer_a, Instant::now());
+        assert!(tracker.is_isolated());
+
+        tracker.reset_after_rejoin();
+        assert!(!tracker.is_isolated());
+        assert_eq!(tracker.neighbor_count(), 0);
+        assert!(tracker.isolation_deadline().is_none());
+        // A subsequent down-event on an unrelated peer must not arm
+        // isolation, exactly like the pre-any-neighbor state, since
+        // `ever_had_neighbor` was cleared by the reset.
+        assert!(!tracker.neighbor_down(&tracker_peer(3), Instant::now()));
+        assert!(!tracker.is_isolated());
+    }
+
+    // =========================================================================
+    // verify_signed_contribution — per-phase/scope authorization matrix
+    // =========================================================================
+
+    /// Build a single-node test `AppState` with a session pre-configured as if
+    /// `configure_transport`/`activate_transport` had already run, then sign a
+    /// contribution from `origin` using that same node's own endpoint identity
+    /// so `verify_signed_contribution`'s route-authentication step succeeds
+    /// and only the phase/scope authorization matrix is under test.
+    async fn contribution_test_state(
+        db_name: &str,
+        session_id: u128,
+        kind: SessionKind,
+        active_dealers: Vec<ParticipantRef>,
+        origin: ParticipantRef,
+    ) -> (Arc<AppState<crypto::DkgImpl>>, CeremonyId, AttemptId, [u8; 32]) {
+        let state = Arc::new(
+            crate::helpers::test_helpers::create_test_app_state_default(db_name).await,
+        );
+        let node = *{
+            use crypto::r#trait::Dkg as _;
+            crypto::DkgImpl::new(1, 2, 3, 0, crypto::r#trait::DkgRole::Standard)
+                .expect("construct DkgImpl for test session")
+        };
+        assert_eq!(
+            state
+                .dkg_session_state
+                .create_session(session_id, node, 3, |_| {})
+                .await,
+            crate::dkg::v0::session_state::CreateSessionOutcome::Created
+        );
+
+        let ceremony_id = CeremonyId(session_id);
+        let attempt_id = AttemptId([9u8; 32]);
+        let committee_digest = [3u8; 32];
+        let local_peer_hex = hex::encode(state.network.local_peer_id().as_bytes());
+
+        {
+            let mut states = state.dkg_session_state.states.write().await;
+            let session = states.get_mut(&session_id).expect("session was just created");
+            session.kind = kind;
+            session.transport.ceremony_id = Some(ceremony_id);
+            session.transport.attempt_id = Some(attempt_id);
+            session.transport.committee_digest = Some(committee_digest);
+            session.transport.leader_node_key = Some("test-leader".to_string());
+            session.transport.active_dealers = active_dealers;
+            session
+                .routing
+                .node_id_to_peer_id
+                .insert(origin.node_id, local_peer_hex.clone());
+            session
+                .routing
+                .reshare_new_node_id_to_peer_id
+                .insert(origin.node_id, local_peer_hex);
+        }
+
+        (state, ceremony_id, attempt_id, committee_digest)
+    }
+
+    async fn sign_contribution(
+        state: &Arc<AppState<crypto::DkgImpl>>,
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+        committee_digest: [u8; 32],
+        origin: ParticipantRef,
+        payload: DkgPublicPayload,
+    ) -> network::SignedPayload {
+        let contribution = DkgPublicContribution::new(
+            ceremony_id,
+            attempt_id,
+            "test-ring-post".to_string(),
+            committee_digest,
+            origin,
+            payload,
+        )
+        .expect("construct contribution");
+        let encoded = transport::encode(&contribution).expect("encode contribution");
+        state
+            .network
+            .pubsub()
+            .expect("pubsub enabled")
+            .sign(PUBLIC_CONTRIBUTION_SIGNING_DOMAIN, encoded.into())
+            .await
+            .expect("sign contribution with local endpoint identity")
+    }
+
+    #[tokio::test]
+    async fn verify_signed_contribution_rejects_reshare_commitment_from_non_dealer() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+            "verify_signed_contribution_rejects_non_dealer",
+            4242,
+            SessionKind::Reshare {
+                ring_pk_hex: "test-ring".to_string(),
+                new_peer_node_keys: vec!["node-a".to_string()],
+                new_threshold: 1,
+                bulletin_post_id: "test-ring-post".to_string(),
+            },
+            vec![ParticipantRef::current(2)], // origin (node 1) is deliberately not a dealer
+            origin,
+        )
+        .await;
+
+        let signed = sign_contribution(
+            &state,
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            origin,
+            DkgPublicPayload::Commitment {
+                commitment: vec![1, 2, 3],
+                report_evidence: None,
+            },
+        )
+        .await;
+
+        let error = verify_signed_contribution(&state, &signed)
+            .await
+            .expect_err(
+                "a non-dealer origin must not be allowed to submit a reshare Commitments contribution",
+            );
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+    }
+
+    #[tokio::test]
+    async fn verify_signed_contribution_accepts_reshare_commitment_from_active_dealer() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+            "verify_signed_contribution_accepts_active_dealer",
+            4243,
+            SessionKind::Reshare {
+                ring_pk_hex: "test-ring".to_string(),
+                new_peer_node_keys: vec!["node-a".to_string()],
+                new_threshold: 1,
+                bulletin_post_id: "test-ring-post".to_string(),
+            },
+            vec![origin], // origin is an active dealer this time
+            origin,
+        )
+        .await;
+
+        let signed = sign_contribution(
+            &state,
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            origin,
+            DkgPublicPayload::Commitment {
+                commitment: vec![1, 2, 3],
+                report_evidence: None,
+            },
+        )
+        .await;
+
+        verify_signed_contribution(&state, &signed)
+            .await
+            .expect("an active dealer must be allowed to submit a reshare Commitments contribution");
+    }
+
+    #[tokio::test]
+    async fn verify_signed_contribution_rejects_next_scope_origin_during_refresh() {
+        // Refresh has no "next" committee at all — a contribution whose origin
+        // claims `CommitteeScope::Next` must be rejected regardless of phase.
+        let origin = ParticipantRef::next(1);
+        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+            "verify_signed_contribution_rejects_next_scope_refresh",
+            4244,
+            SessionKind::Refresh {
+                ring_pk_hex: "test-ring".to_string(),
+            },
+            Vec::new(),
+            origin,
+        )
+        .await;
+
+        let signed = sign_contribution(
+            &state,
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            origin,
+            DkgPublicPayload::Commitment {
+                commitment: vec![1, 2, 3],
+                report_evidence: None,
+            },
+        )
+        .await;
+
+        let error = verify_signed_contribution(&state, &signed)
+            .await
+            .expect_err("a Next-scope origin must never be accepted during a Refresh ceremony");
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+    }
 }

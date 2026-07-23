@@ -3291,4 +3291,72 @@ mod tests {
             "rings_pss claim should be cleared after session expiration"
         );
     }
+
+    // =========================================================================
+    // TransportMessageClaimGuard
+    // =========================================================================
+
+    #[tokio::test]
+    async fn transport_claim_guard_finish_marks_processed() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        let session_id = 100u128;
+        mgr.create_session(session_id, make_node(1), 3, |_| {}).await;
+        let message_id = crate::dkg::v0::transport::MessageId([1u8; 32]);
+
+        assert_eq!(
+            mgr.claim_transport_message(&session_id, message_id).await,
+            MessageProcessingClaim::Claimed
+        );
+        let guard = TransportMessageClaimGuard::new(mgr.clone(), session_id, message_id);
+        guard.finish(true).await;
+
+        assert_eq!(
+            mgr.claim_transport_message(&session_id, message_id).await,
+            MessageProcessingClaim::AlreadyProcessed,
+            "finish(true) should mark the message processed, not just release the claim"
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_claim_guard_releases_claim_when_dropped_without_finish() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        let session_id = 101u128;
+        mgr.create_session(session_id, make_node(1), 3, |_| {}).await;
+        let message_id = crate::dkg::v0::transport::MessageId([2u8; 32]);
+
+        assert_eq!(
+            mgr.claim_transport_message(&session_id, message_id).await,
+            MessageProcessingClaim::Claimed
+        );
+        // A concurrent retry of the exact same message sees it as in-flight.
+        assert_eq!(
+            mgr.claim_transport_message(&session_id, message_id).await,
+            MessageProcessingClaim::AlreadyProcessing
+        );
+
+        // Simulate the future driving processing being cancelled (e.g. by an
+        // outer `tokio::time::timeout`) after the claim succeeded but before
+        // `finish` ran: build the guard and drop it without calling `finish`.
+        let guard = TransportMessageClaimGuard::new(mgr.clone(), session_id, message_id);
+        drop(guard);
+
+        // `Drop` releases the claim via a spawned task rather than
+        // synchronously; poll until it lands instead of assuming one yield
+        // is enough.
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if mgr.claim_transport_message(&session_id, message_id).await
+                    == MessageProcessingClaim::Claimed
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect(
+            "a dropped guard must release the claim as failed, not leave the message \
+             stuck in AlreadyProcessing for the rest of the attempt",
+        );
+    }
 }

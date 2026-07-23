@@ -382,6 +382,188 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
     }
 }
 
+/// A non-canonical committee member takes over as refresh leader, and the
+/// ceremony completes end to end, when the canonical (rank-0) leader is
+/// unreachable. This exercises the `start_refresh` forward-chain walk against
+/// a live 3-node network — the base refresh test above always calls
+/// `start_refresh` as the canonical leader itself, so it never exercises the
+/// fallback path.
+#[cfg(feature = "fault-injection")]
+#[tokio::test]
+#[serial_test::serial]
+async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
+    let db_name = "test_pss_refresh_leader_failover";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .try_init();
+
+    let mut network = setup_three_node_network(false, db_name).await;
+
+    let mut controllers = Vec::with_capacity(3);
+    for node in [&mut network.alice, &mut network.bob, &mut network.charlie] {
+        let (fault_network, controller) =
+            network::FaultNetwork::new(node.app_state.network.clone());
+        node.app_state.network = Arc::new(fault_network);
+        controllers.push(controller);
+    }
+    for node in [&mut network.alice, &mut network.bob, &mut network.charlie] {
+        node.router = Some(
+            crate::helpers::create_routers::create_router_with_all_handlers::<
+                DkgImpl,
+                crypto::PreImpl,
+                crypto::SignImpl,
+            >(&node.app_state.network, Arc::new(node.app_state.clone()))
+            .expect("start faultable refresh-failover test router"),
+        );
+    }
+
+    // ── Phase A: Run the initial DKG ──────────────────────────────────────────
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("create JWT");
+    let tonic_req = create_authenticated_request(
+        StartDkgRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &token,
+    )
+    .unwrap();
+    alice_service
+        .start_dkg(tonic_req)
+        .await
+        .expect("DKG should start");
+
+    // Wait for DKG Phase 4 to complete (bulletin has a ring entry).
+    let (key_string, ring_pk_hex) = {
+        let start = Instant::now();
+        let max_wait = Duration::from_secs(60);
+        loop {
+            let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap();
+            let post = get_test_ring_post(dummy_bulletin);
+            if !post.payload.is_empty() {
+                let ring_payload: RingPayload = post.try_into().expect("parse RingPayload");
+                let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+                let agg_key = <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes)
+                    .expect("deserialize aggregate PK");
+                break (agg_key.to_string(), ring_payload.ring_pk);
+            }
+            assert!(start.elapsed() < max_wait, "DKG did not complete in time");
+            sleep(Duration::from_millis(500)).await;
+        }
+    };
+
+    // Backdate last_pss on all three nodes so refresh is immediately due.
+    for state in [
+        &network.alice.app_state,
+        &network.bob.app_state,
+        &network.charlie.app_state,
+    ] {
+        let mut bundle =
+            crate::ring_state::RingShareBundle::load_by_ring_key(&state.local_storage, &key_string)
+                .expect("load RingShareBundle for backdate");
+        bundle.last_pss = 0;
+        bundle
+            .save_by_ring_key(&state.local_storage, &key_string)
+            .expect("save backdated RingShareBundle");
+    }
+
+    // ── Phase B: Block the canonical leader, trigger refresh from the next
+    // candidate in the forward-chain order ─────────────────────────────────
+    let peer_node_keys = vec![
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        network.charlie.app_state.node_key.clone(),
+    ];
+    let candidates = crate::dkg::v0::transport::canonical_leader_candidates(&peer_node_keys);
+    let canonical_key = candidates[0].to_string();
+    let fallback_key = candidates[1].to_string();
+
+    let nodes = [
+        (&network.alice, &controllers[0]),
+        (&network.bob, &controllers[1]),
+        (&network.charlie, &controllers[2]),
+    ];
+    let canonical_peer_hex = nodes
+        .iter()
+        .find(|(node, _)| node.app_state.node_key == canonical_key)
+        .map(|(node, _)| hex::encode(node.app_state.network.local_peer_id().as_bytes()))
+        .expect("canonical node must be present in the test network");
+    let fallback_state = nodes
+        .iter()
+        .find(|(node, _)| node.app_state.node_key == fallback_key)
+        .map(|(node, _)| node.app_state.clone())
+        .expect("fallback node must be present in the test network");
+
+    // Block every other node's outbound connections to the canonical leader,
+    // simulating it being down or partitioned without actually stopping it.
+    for (node, controller) in &nodes {
+        if node.app_state.node_key != canonical_key {
+            controller.block_peer(&canonical_peer_hex).await;
+        }
+    }
+
+    let outcome = crate::dkg::v0::network::start_refresh(
+        Arc::new(fallback_state),
+        &::network::V0,
+        TEST_FRESH_DKG_RING_ID.to_string(),
+        key_string.clone(),
+    )
+    .await
+    .expect("the reachable fallback candidate should take over refresh leadership");
+    assert!(
+        matches!(
+            outcome,
+            crate::dkg::v0::network::RefreshStartOutcome::Started(_, _)
+        ),
+        "expected the fallback candidate to become leader locally after the \
+         canonical leader was unreachable, got {outcome:?}"
+    );
+
+    // ── Phase C: Wait for the fallback-led refresh to complete on all nodes ──
+    {
+        let start = Instant::now();
+        let max_wait = Duration::from_secs(60);
+        loop {
+            let all_done = [
+                &network.alice.app_state.local_storage,
+                &network.bob.app_state.local_storage,
+                &network.charlie.app_state.local_storage,
+            ]
+            .iter()
+            .all(|storage| {
+                RingPolyState::load_from_ring_pk_hex(*storage, &ring_pk_hex)
+                    .map(|s| s.last_pss > 0)
+                    .unwrap_or(false)
+            });
+            if all_done {
+                println!("Failover-led refresh complete (all 3 nodes updated RingPolyState)");
+                break;
+            }
+            assert!(
+                start.elapsed() < max_wait,
+                "PSS refresh did not complete within {} seconds",
+                max_wait.as_secs()
+            );
+            sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    network.shutdown_routers().await.expect("shutdown routers");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
 /// Verify that a Share arriving just before the sender's Phase 1 commitment is
 /// retried once the commitment lands.  This covers scheduler-driven PSS refreshes
 /// where independent peer streams can briefly reorder commitment/share delivery.
